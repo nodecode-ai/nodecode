@@ -179,13 +179,19 @@ against *RELEASE-DIRECTORY* and *RELEASE-URL*. => T, or a refusal: DOING it fail
                  "-File" (uiop:native-namestring installer))
            (list "sh" (uiop:native-namestring installer) "--no-modify-path"))
        :environment
-       (list (format nil "NODECODE_STAGE=~a" mode)
-             (format nil "NODECODE_VERSION=~a" version)
-             (format nil "NODECODE_BASE_URL=~a" (release-url))
-             ;; where the versions lie: install.sh's name for it, install.ps1's
-             (format nil "~a=~a"
-                     (if (eq (nlk:platform) :windows) "NODECODE_INSTALL_DIR" "NODECODE_HOME")
-                     (string-right-trim "/\\" (uiop:native-namestring *release-directory*))))
+       (list* (format nil "NODECODE_STAGE=~a" mode)
+              (format nil "NODECODE_VERSION=~a" version)
+              (format nil "NODECODE_BASE_URL=~a" (release-url))
+              ;; where the versions lie: install.sh's name for it, install.ps1's
+              (format nil "~a=~a"
+                      (if (eq (nlk:platform) :windows) "NODECODE_INSTALL_DIR" "NODECODE_HOME")
+                      (string-right-trim "/\\" (uiop:native-namestring *release-directory*)))
+              ;; A PSModulePath inherited from PowerShell 7 names its own module
+              ;; folders first, and the Windows PowerShell 5.1 this runs cannot
+              ;; load its Microsoft.PowerShell.Utility from them: `Get-FileHash'
+              ;; is not found, and every staging fails at the sha256. Left
+              ;; empty, 5.1 reads its own.
+              (and (eq (nlk:platform) :windows) (list "PSModulePath=")))
        ;; a fetch of a whole release over a slow link, and no longer
        :seconds 1800)
     (or (eql code 0)
