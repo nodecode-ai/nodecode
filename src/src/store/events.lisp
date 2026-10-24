@@ -954,8 +954,8 @@ contract hash, invocation text, and SEQUENCE when the writer names one."
            (resolved-event-id (or event-id (make-durable-id "event"))))
       ;; An EVENT-ID already in the log answers the fact there when it is this
       ;; one (its sequence, and T as the fourth value) and is EVENT-ID-CONFLICT
-      ;; when it is not. Without EXPECTED-SEQUENCE the write is one statement,
-      ;; the aggregate's next sequence taken inside it.
+      ;; when it is not. The aggregate's next sequence is allocated under the
+      ;; same write transaction as the INSERT.
       (labels ((same (existing)
                  (multiple-value-bind (log-position existing-sequence)
                      (same-event-row existing resolved-event-id aggregate-type aggregate-id
@@ -1085,25 +1085,13 @@ facts that waited on it, in order."
 
 (defparameter +insert-event-sql+
   (let ((columns (mapcar #'first (rest +event-row-columns+))))
-    (flet ((parameter (column)
-             (1+ (position column columns :test #'string=))))
-      (format nil "insert into events (~{~a~^, ~}) values (~{~a~^, ~})
-                   on conflict (event_id) do nothing
-                   returning log_position, aggregate_sequence"
-              columns
-              (loop for column in columns
-                    for n from 1
-                    collect (if (string= column "aggregate_sequence")
-                                (format nil "coalesce(?~d, coalesce((select max(aggregate_sequence) ~
-                                             from events where aggregate_type = ?~d ~
-                                             and aggregate_id = ?~d), 0) + 1)"
-                                        n (parameter "aggregate_type")
-                                        (parameter "aggregate_id"))
-                                (format nil "?~d" n))))))
+    (format nil "insert into events (~{~a~^, ~}) values (~{?~d~^, ~})
+                 on conflict (event_id) do nothing
+                 returning log_position, aggregate_sequence"
+            columns (loop for n from 1 to (length columns) collect n)))
   "INSERT-EVENT-ROW's statement: every envelope column but LOG_POSITION,
-which is the store's own. An unstated AGGREGATE_SEQUENCE is the aggregate's
-next, read inside the statement; an EVENT_ID already in the log writes
-nothing and returns no row.")
+which is the store's own. An EVENT_ID already in the log writes nothing
+and returns no row.")
 
 (defun insert-event-row (handle &rest columns)
   "Write one envelope row inside the caller's transaction: COLUMNS are the
@@ -1118,6 +1106,22 @@ the aggregate's next."
   ;; lands (REMEMBER-COMMITTED-EVENT): a row no reader could hydrate fails the
   ;; write instead of landing, and a consumer draining the memory holds the
   ;; very object PAGE-EVENTS would have built from the row.
+  ;; Allocate under the caller's write transaction, but outside the INSERT.
+  ;; A parameter-sensitive indexed subquery in the INSERT makes SQLite
+  ;; recompile its entire trigger program whenever bindings are cleared.
+  ;; The small indexed read can replan without recompiling every projection.
+  (let ((sequence-index
+          (load-time-value
+           (1- (position :aggregate-sequence +event-row-columns+ :key #'second)))))
+    (unless (nth sequence-index columns)
+      (setf (nth sequence-index columns)
+            (1+ (current-aggregate-sequence
+                 (nth (load-time-value
+                       (1- (position :aggregate-type +event-row-columns+ :key #'second)))
+                      columns)
+                 (nth (load-time-value
+                       (1- (position :aggregate-id +event-row-columns+ :key #'second)))
+                      columns))))))
   (destructuring-bind (&optional position sequence)
       (first (apply #'sqlite:execute-to-list handle +insert-event-sql+ columns))
     (when position

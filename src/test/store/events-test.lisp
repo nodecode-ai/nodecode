@@ -234,6 +234,10 @@ N; KEYS reach RECORD-EVENT, whose answer this is."
     (is (= 5000 (hash-table-count ids)) "5000 generated IDs are distinct")))
 
 (deftest two-thousand-appends-under-250ms (with-session-store ("s-perf"))
+  ;; Scenario: durable independent appends stay within the existing budget.
+  ;; Given a durable session on the normal WAL store,
+  ;; When 2000 independent probe transactions commit,
+  ;; Then all 2000 appends finish in less than 250 ms (no batching or relaxed durability).
   ;; The window times the appends alone: a nursery that earlier tests left
   ;; nearly full would bill their collection, some 60 ms, to it.
   (sb-ext:gc)
