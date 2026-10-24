@@ -40,7 +40,7 @@ Windows, in PowerShell:
 irm https://nodecode.ai/install.ps1 | iex
 ```
 
-Then run `nodecode`. The first launch opens setup. If another coding agent lives on the machine (Claude Code, Codex, Hermes Agent, OpenCode, Cursor CLI, Gemini CLI and 9 more), setup first imports its keys, instructions, memory, skills, MCP servers, bots and jobs, without asking. Then you pick a provider, a model and the reasoning effort. See [Quickstart](https://nodecode.ai/docs/quickstart) and [First run](https://nodecode.ai/docs/first-run).
+Then run `nodecode`. The first launch opens setup. If another coding agent lives on the machine (Claude Code, Codex, Hermes Agent, OpenCode, Cursor CLI, Gemini CLI and 9 more), setup names it and asks before it reads anything; say Import and it brings over the agent's keys, instructions, memory, skills, MCP servers, bots and jobs, or Skip and `/import` brings them over later. Then you pick a provider, a model and the reasoning effort. See [Quickstart](https://nodecode.ai/docs/quickstart) and [First run](https://nodecode.ai/docs/first-run).
 
 ## What's different
 

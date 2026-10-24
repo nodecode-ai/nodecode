@@ -120,44 +120,20 @@ The explicit nodecode import request walks only the import stage."
           model.setup-walk run)
     (forget-setup-issues model)
     (if (null request)
-        ;; Paint before reading another harness's home; its import owner is the
-        ;; only reader/writer of artifacts, just as on automatic first launch.
-        ;; The walk waits for the keys alone, the one thing its steps read; the
-        ;; rest of the homes lands behind it (SETUP-IMPORT-REST). Waiting for
-        ;; a whole home would hold this panel for seconds on a large home.
+        ;; Paint before reading another harness's home: detection runs off the
+        ;; loop, and a home it finds is a question (SETUP-IMPORT-OFFER) before
+        ;; a file in it is opened.
         (setup-import-wait
-         model run "Importing…"
-         (lambda (progress)
-           (when-let (worlds (offered-import-worlds))
-             (let ((request (list :import worlds :offered t :only "providers")))
-               (setup-import-rest model run request)
-               (list request (setup-import-call model "apply" request nil :progress progress)))))
-         (lambda (model result)
-           (prog1 (cond ((off-loop-failure result)
-                         (setup-caveat run "import: ~a" (off-loop-failure result))
-                         (setup-import-report run (make-json-object))
-                         (setup-stage-provider model run))
-                        (result
-                         (destructuring-bind (request value) result
-                           (setup-import-applied model run request nil
-                                                 (lambda (model)
-                                                   ;; The model the operator ran elsewhere, its
-                                                   ;; key answering: the walk is over, and the
-                                                   ;; first frame takes a task
-                                                   (if-let (item (setup-import-ready run))
-                                                     (progn
-                                                       (setup-note run "~:[the import's pick~;~:*~a~] — /models changes it"
-                                                                   (json-value item :string "reason"))
-                                                       ;; a model run more, on a credential that stayed behind
-                                                       (when-let (passed (imported-default-model (setup-run-import run) "skipped"))
-                                                         (setup-note run "~a" (json-value passed :string "reason")))
-                                                       (setup-stage-finish model run))
-                                                     (setup-stage-provider model run)))
-                                                 value :behind t)))
-                        (t (setup-import-report run (json-object "items" #()))
-                           (setup-stage-provider model run)))
-             (setup-import-rest-due model run)))
-         :importing t)
+         model run "Looking for other coding agents…"
+         (lambda () (offered-import-worlds))
+         (lambda (model worlds)
+           (cond ((off-loop-failure worlds)
+                  (setup-caveat run "import: ~a" (off-loop-failure worlds))
+                  (setup-import-report run (make-json-object))
+                  (setup-stage-provider model run))
+                 (worlds (setup-import-offer model run worlds))
+                 (t (setup-import-report run (json-object "items" #()))
+                    (setup-stage-provider model run)))))
         (let ((next (lambda (model) (setup-stage-finish model run)))
               (subtitle "Loading the import folder and reading the home…"))
           (if (and (getf request :yes) (not (getf request :dry-run)))
@@ -317,14 +293,16 @@ on a first launch's ledger, and its items for the Details page."
 ;;; What is read and how each piece lands is the import's (src/src/import/),
 ;;; reached through the organism's route, POST /api/import.
 ;;;
-;;; Unasked, it does not ask: a plan whose every item is a fact this home
-;;; does not have is not a question, and a yes/no on the first frame is the
-;;; friction this whole path exists to remove. The report is the walk's
-;;; Details page either way, an existing fact here always wins, and `/import
-;;; <world>' re-runs any of it later. On request — `nodecode import
-;;; <world>', whose flags ride the request — the preview and its yes/no
-;;; stand: that is somebody asking a question, and it deserves an answer
-;;; before anything is written.
+;;; Unasked, it asks first: another harness's home holds the operator's
+;;; keys, bot tokens and memory, and nothing in it is read before they say
+;;; Import (SETUP-IMPORT-OFFER). The question names the agents detection
+;;; found and costs no plan, so the first frame still waits on the keys
+;;; alone once it is answered. Skip is an answer the marker keeps. The
+;;; report is the walk's Details page, an existing fact here always wins,
+;;; and `/import <world>' re-runs any of it later. On request — `nodecode
+;;; import <world>', whose flags ride the request — the plan's preview and
+;;; its yes/no stand: that is somebody asking for this one import, and it
+;;; deserves its whole plan before anything is written.
 
 ;;; NIL — the hermetic test posture — offers nothing unasked.
 (define-startup-parameter *import-worlds* nlk:*agent-worlds*
@@ -388,8 +366,8 @@ question the unasked offer turns on."
                  (if known outstanding +import-watched-kinds+)))))
 
 (defun offered-import-worlds ()
-  "The detected worlds the walk imports without asking — every one on the box
-but those the operator declined — or NIL once an import has brought this home
+  "The detected worlds the walk offers to import — every one on the box but
+those the operator declined — or NIL once an import has brought this home
 what it came for."
   ;; The one check the first frame, `setup' and /setup make. A Skip is an
   ;; answer: a declined world is never read again unasked, and `nodecode import
@@ -433,9 +411,9 @@ gateway not served yet, for at most SECONDS."
 (defun request-takeover (request)
   "Whether the import REQUEST takes a running foreign gateway's bots over:
 the verb's default, which asks first; --keep-running leaves it running, and
-so does the first frame's own offer, which asks nobody."
-  ;; Stopping and disabling somebody else's live service is not what an
-  ;; unasked first frame gets to do: its bots land off and come on by
+so does the first frame's own offer, whose yes names no gateway."
+  ;; Stopping and disabling somebody else's live service is not what a yes to
+  ;; the first frame's offer gives: its bots land off and come on by
   ;; themselves once that gateway stops, and `nodecode import WORLD' moves them.
   (not (or (getf request :keep-running) (getf request :offered))))
 
@@ -578,6 +556,76 @@ an apply response, whose terminal result is the same plan JSON as a preview."
 
 (defun close-setup-placeholder (model kind &aux (open model.dialog))
   (when (and (picker-dialog-p open) (eq (picker-dialog-kind open) kind)) (setf model.dialog nil)))
+
+(defun setup-import-offer (model run worlds)
+  "The first frame's yes/no over WORLDS, the detected homes nobody declined:
+Import brings them over (SETUP-IMPORT-OFFERED); Skip or Esc reads and
+writes nothing but the Skip, and the walk goes on to the provider."
+  ;; Asked before a plan, which would read every home to count it: the
+  ;; question is whether to read them at all.
+  (let* ((names (mapcar (lambda (name)
+                          (if-let (world (nlk:find-agent-world name)) (nlk:agent-world-label world) name))
+                        worlds))
+         (skip (lambda (model)
+                 (ignore-errors (note-import-declined (json-object "worlds" (coerce worlds 'vector))))
+                 (setup-note run "import skipped — /import brings ~:[it~;them~] over later" (rest worlds))
+                 (setup-ledger-note run (list :keys "–" "import" "skipped, nothing read"))
+                 (setup-stage-provider model run))))
+    (open-picker-dialog
+     model "Setup"
+     (list (make-picker-row :label (format nil "Import from ~{~a~#[~; and ~:;, ~]~}" names)
+                            :detail "keys, instructions, memory, skills, MCP servers, bots and jobs"
+                            :value :import)
+           (make-picker-row :label "Skip"
+                            :detail "nothing read or written; /import later"
+                            :value :skip))
+     (lambda (model choice)
+       (ecase choice
+         (:import (setup-import-offered model run worlds))
+         (:skip (funcall skip model)))
+       nil)
+     :context (setup-context run :import "Import")
+     :subtitle (format nil "Found ~{~a~#[~; and ~:;, ~]~} on this machine — bring ~:[it~;them~] over?"
+                       names (rest names))
+     :hint "enter select  esc skip  ↑↓ navigate"
+     :kind :setup-import-offer
+     :option-marker t
+     :on-cancel skip)))
+
+(defun setup-import-offered (model run worlds)
+  "Bring WORLDS over once the operator said Import: the keys while the walk
+waits, the one thing its steps read, and the rest of the homes behind it
+(SETUP-IMPORT-REST) -- waiting for a whole home would hold this panel for
+seconds on a large home."
+  (setup-import-wait
+   model run "Importing…"
+   (lambda (progress)
+     (let ((request (list :import worlds :offered t :only "providers")))
+       (setup-import-rest model run request)
+       (list request (setup-import-call model "apply" request nil :progress progress))))
+   (lambda (model result)
+     (prog1 (if-let (why (off-loop-failure result))
+              (progn (setup-caveat run "import: ~a" why)
+                     (setup-import-report run (make-json-object))
+                     (setup-stage-provider model run))
+              (destructuring-bind (request value) result
+                (setup-import-applied model run request nil
+                                      (lambda (model)
+                                        ;; The model the operator ran elsewhere, its
+                                        ;; key answering: the walk is over, and the
+                                        ;; first frame takes a task
+                                        (if-let (item (setup-import-ready run))
+                                          (progn
+                                            (setup-note run "~:[the import's pick~;~:*~a~] — /models changes it"
+                                                        (json-value item :string "reason"))
+                                            ;; a model run more, on a credential that stayed behind
+                                            (when-let (passed (imported-default-model (setup-run-import run) "skipped"))
+                                              (setup-note run "~a" (json-value passed :string "reason")))
+                                            (setup-stage-finish model run))
+                                          (setup-stage-provider model run)))
+                                      value :behind t)))
+       (setup-import-rest-due model run)))
+   :importing t))
 
 (defun setup-import-confirm (model run request value next)
   "The yes/no over the plan VALUE, for an import somebody asked for: import

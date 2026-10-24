@@ -684,13 +684,13 @@ what the walk sends off the loop, newest first, and only a first job runs."
                 (funcall continuation model (funcall thunk)))))
          ,@body))))
 
-(deftest setup-import-brings-a-past-over-unasked-and-walks-the-verb (let ((calls '())
-                                                                          (scopes '())))
+(deftest setup-import-asks-before-it-brings-a-past-over-and-walks-the-verb (let ((calls '())
+                                                                                (scopes '())))
   ;; A coding-agent home on the box opens the wizard on the import stage,
-  ;; and the unasked offer does NOT ask: the apply runs with no yes/no and
-  ;; no plan before it -- the keys alone while the walk waits, the rest
-  ;; beside it -- the marker is left, a live foreign gateway is left
-  ;; running (the takeover is off), and the next /setup goes
+  ;; and the offer asks before it reads: nothing is called until Import.
+  ;; Then the apply runs with no plan before it -- the keys alone while the
+  ;; walk waits, the rest beside it -- the marker is left, a live foreign
+  ;; gateway is left running (the takeover is off), and the next /setup goes
   ;; straight to the provider. A typed request keeps its preview: `nodecode
   ;; import hermes --dry-run' still walks the stage alone, and --keep-running
   ;; plans without the takeover.
@@ -709,7 +709,10 @@ what the walk sends off the loop, newest first, and only a first job runs."
             "report" "the report")))
       (with-frame-model (model 100 30 :session-id "setup-import")
         (is (null (run-setup model)) "/setup opens silently")
-        (is (equal '(("apply" nil nil nil) ("apply" nil nil nil)) calls) "two applies, no plan")
+        (is (eq :setup-import-offer (nle::picker-dialog-kind model.dialog)) "on the question")
+        (is (null calls) "which reads nothing before it is answered")
+        (nle::picker-dialog-key model :enter)
+        (is (equal '(("apply" nil nil nil) ("apply" nil nil nil)) calls) "Import: two applies, no plan")
         ;; the keys while the walk waits, and beside them the rest but the
         ;; conversations -- asked first, where nothing runs off the loop
         (is (equal '((nil "providers,sessions") ("providers" nil)) (reverse scopes)))
@@ -780,6 +783,7 @@ what the walk sends off the loop, newest first, and only a first job runs."
                     "report" "the report"))))
           (with-frame-model (model 100 30 :session-id "setup-import-line")
             (run-setup model)
+            (nle::picker-dialog-key model :enter)
             (let ((dialog (nle::chat-model-dialog model)))
               (is (nle::connect-dialog-p dialog) "the provider list opens after an import too")
               (when (nle::connect-dialog-p dialog)
@@ -808,7 +812,7 @@ what the walk sends off the loop, newest first, and only a first job runs."
               ("channels.telegram stays with it" "and which bot stays")
               ("`nodecode import hermes' asks first, then moves it here"
                "with the command that finishes it")
-              (:absent "took over" "the unasked first frame takes nothing over")
+              (:absent "took over" "a yes to the first frame's offer takes nothing over")
               ("/import --only sessions"
                "and the conversations it left read as waiting, not lost"))))))))
 
@@ -889,10 +893,11 @@ what the walk sends off the loop, newest first, and only a first job runs."
           (is (not (nle::import-done-p)) "a Skip is no import")
           (let ((nle::*import-worlds* (list (nlk:find-agent-world "hermes"))))
             (is (null (walk t)) "the first frame, `setup' and /setup import nothing declined"))
-          ;; A world nobody declined is still brought over unasked, alone: its
-          ;; keys, then the rest.
+          ;; A world nobody declined is still offered, alone, and Import brings
+          ;; it over: its keys, then the rest.
           (let ((nle::*import-worlds* (mapcar #'nlk:find-agent-world '("hermes" "codex"))))
-            (is (equal '(("apply" ("codex")) ("apply" ("codex"))) (walk t))))
+            (is (null (walk t)) "the offer reads nothing before it is answered")
+            (is (equal '(("apply" ("codex")) ("apply" ("codex"))) (walk t :enter))))
           (is (equal '("hermes") (nle::declined-import-worlds)) "and the Skip stands")
           (multiple-value-bind (calls asked) (walk (list :import "hermes") :enter)
             (is asked "asking by name offers a declined world again")
@@ -903,6 +908,43 @@ what the walk sends off the loop, newest first, and only a first job runs."
           (is (equal '("hermes") (nle::declined-import-worlds)) "Esc is a Skip too")
           (let ((nle::*import-worlds* (list (nlk:find-agent-world "hermes"))))
             (is (null (walk t)))))))))
+
+(deftest setup-first-frame-names-what-it-found-and-a-skip-reads-nothing (let ((calls '())))
+  ;; Another harness's home holds the operator's keys and bot tokens: the
+  ;; first frame names the agents it found and opens none of their files
+  ;; until Import. Skip or Esc reads and writes nothing but the Skip, the
+  ;; walk goes on to the provider, and the next launch does not ask again.
+  (with-hermes-box (marker "offer")
+    (with-stubbed-fdefinitions
+        ((nle::setup-import-call (model method request takeover &key progress)
+           (push method calls)
+           (import-answer 1 0 0 "applied" t "worlds" (vector "hermes")
+                          "items" (vector) "report" "the report")))
+      (with-frame-model (model 100 30 :session-id "setup-import-offer")
+        (flet ((walk (&rest keys)
+                 (setf calls '() model.dialog nil)
+                 (run-setup model)
+                 (let ((asked (and (nle::picker-dialog-p model.dialog)
+                                   (eq :setup-import-offer (nle::picker-dialog-kind model.dialog))
+                                   model.dialog)))
+                   (dolist (key keys) (nle::picker-dialog-key model key))
+                   asked)))
+          (let ((asked (walk)))
+            (is asked "a home on the box is a question")
+            (when asked
+              ;; naming the agent it found
+              (is (search "Found Hermes Agent on this machine" (nle::picker-dialog-subtitle asked)))
+              (is (equal '(:import :skip) (mapcar #'nle::picker-row-value (nle::picker-dialog-rows asked))))))
+          (is (null calls) "nothing is read before the answer")
+          (dolist (keys '((:escape) (:down :enter)))
+            (ignore-errors (delete-file marker))
+            (apply #'walk keys)
+            (is (null calls) "Skip and Esc read nothing")
+            (is (equal '("hermes") (nle::declined-import-worlds)) "and put the world on the marker")
+            (is (nle::connect-dialog-p model.dialog) "the walk goes on to the provider"))
+          ;; a Skip is not asked again
+          (is (null (walk)))
+          (is (null calls)))))))
 
 (deftest setup-import-checks-the-imported-target-before-it-claims-it ()
   ;; A key that worked in another harness is not a key that works now. When
@@ -943,6 +985,7 @@ what the walk sends off the loop, newest first, and only a first job runs."
                          "report" "the report"))))
                (with-frame-model (model 100 30 :session-id "setup-import-verify")
                  (run-setup model)
+                 (nle::picker-dialog-key model :enter)
                  (let ((dialog model.dialog))
                    (values (reverse calls)
                            dialog
@@ -1380,6 +1423,8 @@ what the walk sends off the loop, newest first, and only a first job runs."
         (with-frame-model (model 100 30 :session-id "setup-import-again")
           (setf calls '())
           (run-setup model)
+          (is (eq :setup-import-offer (nle::picker-dialog-kind model.dialog)) "the offer is asked again")
+          (nle::picker-dialog-key model :enter)
           (is (not (member "plan" calls :test #'equal)) "the apply reads the home once")
           (is (member "apply" calls :test #'equal))
           (setf model.dialog nil))
