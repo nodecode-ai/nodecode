@@ -44,7 +44,7 @@ repeating the color search for every selected character.
 - The test matrix is not a claim of complete application or visual approval.
   It does not enumerate every slash command, tool-specific panel or custom theme.
 - Transparent unknown terminal canvases and basic ANSI/default foregrounds are
-  terminal-defined. They are not assigned invented RGB values by the new ink
+  terminal-defined (including indexed `38;5;0` through `38;5;15`). They are not assigned invented RGB values by the new ink
   correction. The pre-existing selection wash still uses its nominal ground
   when no detected canvas is available.
 - Reverse-video selection cells are left alone rather than misreading their

@@ -122,3 +122,22 @@
         (is (logtest nlt::+attr-reverse+ (nlt:cell-attrs old)) "fixture is reverse-video")
         (is (equal (nlt:cell-fg old) (nlt:cell-fg new)) "reverse ink is not guessed")
         (is (= (nlt:cell-attrs old) (nlt:cell-attrs new)) "reverse attributes stay intact")))))
+
+(deftest chrome-contrast-selection-leaves-indexed-system-ink ()
+  ;; SGR 38;5;0..15 still names a terminal-configured system color.
+  ;; The built-in ANSI16 palette is not evidence of its actual RGB.
+  (dolist (nle::*color-profile* '(:truecolor :ansi256))
+    (with-frame-model (model 80 24 :session-id "chrome-indexed-system")
+      (setf (nle::chat-model-selection model) '((3 . 2) . (3 . 3)))
+      (dotimes (index 16)
+        (let* ((rows (list "" "" ""
+                           (format nil "  ~c[38;5;~d;48;2;100;100;100;2mX~c[0m"
+                                   #\Escape index #\Escape)))
+               (before (nlt:parse-styled-string rows 80 24))
+               (after (washed-frame model rows))
+               (old (nlt:screen-buffer-ref before 2 3))
+               (new (nlt:screen-buffer-ref after 2 3)))
+          (is (equal (nlt:cell-fg old) (nlt:cell-fg new))
+              "indexed system ink must not be inferred from a stock palette")
+          (is (= (nlt:cell-attrs old) (nlt:cell-attrs new))
+              "unknown system ink keeps its faint and other attributes"))))))

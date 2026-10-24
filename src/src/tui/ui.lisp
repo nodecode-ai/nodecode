@@ -10989,7 +10989,11 @@ readable, correcting it only if the new surface would lose contrast."
                                   (char (nlt:cell-char cell)))
                               (when (and (member profile '(:truecolor :ansi256))
                                          fg (or (uiop:string-prefix-p "38;2;" fg)
-                                                (uiop:string-prefix-p "38;5;" fg))
+                                                (and (uiop:string-prefix-p "38;5;" fg)
+                                                     ;; Indexed 0..15 are system colors too.
+                                                     (let ((index (parse-integer fg :start 5
+                                                                                  :junk-allowed t)))
+                                                       (and index (<= 16 index 255)))))
                                          (not (char= char #\Space))
                                          (not (<= #x2500 (char-code char) #x259f))
                                          (not (logtest nlt::+attr-reverse+ (nlt:cell-attrs cell))))
