@@ -627,7 +627,7 @@ of stacking."
   :perform (test-op (operation component)
              (let* ((tests (symbol-value (uiop:find-symbol* '#:*tests* '#:nodecode.test)))
                     (entries (remove-if-not
-                              (lambda (entry) (search "CONTRAST-AUDIT-" (symbol-name (car entry))))
+                              (lambda (entry) (uiop:string-prefix-p "CONTRAST-AUDIT-" (symbol-name (car entry))))
                               tests))
                     (failed (uiop:symbol-call '#:nodecode.test '#:run-tests entries)))
                (format t "~&contrast-audit: ~d tests, ~d failed~%" (length entries) (length failed))
