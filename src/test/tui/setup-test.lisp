@@ -243,11 +243,11 @@ answers what the command answers."
         (is (ready-page-p model))
         (let ((rows (nle::picker-dialog-rows model.dialog)))
           (is (equal '(:start :details) (mapcar #'nle::picker-row-value rows)))
-          (is (equal "what came over, and why 2 did not" (nle::picker-row-detail (second rows)))))
+          (is (zerop (length (nle::picker-row-detail (second rows)))) "Details needs no gloss"))
         (dialog-keys model :down :enter)
         (let ((dialog model.dialog))
           (is (eq :setup-details (nle::picker-dialog-kind dialog)))
-          (is (equal "2 imported · 1 skipped · 0 conflicts · 1 error" (nle::picker-dialog-subtitle dialog)))
+          (is (equal "2 imported · 1 skipped · 1 error" (nle::picker-dialog-subtitle dialog)))
           ;; world by world, in the order the report read them
           (is (equal '("codex" "claude")
                      (loop for row in (nle::picker-dialog-rows dialog)
@@ -806,7 +806,7 @@ what the walk sends off the loop, newest first, and only a first job runs."
             (is (ready-page-p model) "Esc ends the walk on its last page")
             (is (null (said-rows model)) "and the chat holds none of it")
             (is-carrying (text (nlk:one-line (page-said model)))
-              ("imported from hermes and codex: 7 imported"
+              ("Hermes Agent and Codex: 7 imported"
                "the closing line names every world it read")
               ("hermes-gateway.service is still running" "and says whose gateway it left")
               ("channels.telegram stays with it" "and which bot stays")
@@ -1150,7 +1150,7 @@ what the walk sends off the loop, newest first, and only a first job runs."
       (is (null (nle::chat-model-toasts model)) "nor a toast that points at it")
       (let ((dialog model.dialog)
             (lines (nle::split-lines (page-said model))))
-        (is (search "to check" (nle::picker-dialog-context dialog)))
+        (is (search "issue" (nle::picker-dialog-context dialog)))
         (is (uiop:string-prefix-p "! check" (first lines)) "the caveat leads")
         (is (search "nothing listens at 127.0.0.1:1 for p — is its server running?"
                     (nlk:one-line (page-said model))))
@@ -1193,7 +1193,7 @@ what the walk sends off the loop, newest first, and only a first job runs."
         (is (ready-page-p model))
         (is-carrying (block (nlk:one-line (page-said model)))
           "check import: 2 items failed — Details names them")
-        (is (search "to check" (nle::picker-dialog-context model.dialog)))
+        (is (search "issue" (nle::picker-dialog-context model.dialog)))
         (is (notany (lambda (row) (eq :start (nle::picker-row-value row)))
                     (list (first (nle::picker-dialog-rows model.dialog)))) "the first row is the way back, not Start")
         (is (null (said-rows model)))))))
@@ -1329,15 +1329,15 @@ what the walk sends off the loop, newest first, and only a first job runs."
             (is (ready-page-p model) "the walk ends on its last page")
             (is-present (problem (find name (nle::setup-caveats (nle::make-setup-run))
                                        :key #'second :test #'search)) "the folder's problem"
-              (is (equal (list "problem" (format nil "~a did not load — /cells names why" name)) problem)))
+              (is (equal (list "cell" (format nil "~a did not load · /cells says why" name)) problem)))
             (is-carrying (text (nlk:one-line (page-said model)))
-              (format nil "~a did not load — /cells names why" name)
+              (format nil "~a did not load · /cells says why" name)
               (:absent "COMPILE-FILE-ERROR") (:absent "#<") (:absent "caught ERROR") (:absent "no such clause"))
             ;; said once
             (is (= 1 (count-if (lambda (line) (search "did not load" line))
                                (nle::split-lines (page-said model)))))
-            (is (uiop:string-prefix-p "! problem" (page-said model)) "leading the page")
-            (is (search "to check" (nle::picker-dialog-context model.dialog)))))))))
+            (is (uiop:string-prefix-p "! cell" (page-said model)) "leading the page")
+            (is (search "issue" (nle::picker-dialog-context model.dialog)))))))))
 
 (deftest setup-import-rest-landing-after-the-walk-is-one-toast (with-hermes-box (marker "rest"))
   ;; The rest of the homes lands behind the walk, seconds after the keys. A
@@ -1362,7 +1362,7 @@ what the walk sends off the loop, newest first, and only a first job runs."
       (is (null (said-rows model)) "no row in the chat")
       (is-present (toast (first (nle::chat-model-toasts model))) "one toast"
         (is-carrying (text (nle::toast-text toast))
-          "imported from hermes and codex: 3 imported · 0 skipped · 0 conflicts · 1 error"
+          "Hermes Agent and Codex: 3 imported · 1 error"
           "import: 1 item failed")
         (is (nle::toast-stays toast) "a failure stays until it is closed"))
       (is (= 3 (gethash "imported" (nlk:decode-json (nlk:read-text marker)))) "the marker has the whole import")
@@ -1391,7 +1391,7 @@ what the walk sends off the loop, newest first, and only a first job runs."
                                         (funcall item "mcp" "imported" "config.yaml"))))
         (is (ready-page-p model) "the page is still up")
         (is-carrying (text (nlk:one-line (page-said model)))
-          "✓ 1 memory hermes" "imported from hermes: 3 imported")
+          "✓ 1 memory hermes" "Hermes Agent: 3 imported")
         (is (member :details (mapcar #'nle::picker-row-value (nle::picker-dialog-rows model.dialog))) "and its Details now lists the items")
         (is (null (nle::chat-model-toasts model)))
         (is (null (said-rows model)))))))
@@ -1420,7 +1420,7 @@ what the walk sends off the loop, newest first, and only a first job runs."
         (is (eq :landed (nle::setup-run-behind run)))
         (is (null (said-rows model)) "no row in the chat")
         (is-carrying (text (nle::toast-text (first (nle::chat-model-toasts model))))
-          "imported from hermes: 3 imported · 0 skipped · 0 conflicts · 0 errors")
+          "Hermes Agent: 3 imported")
         (is (= 3 (gethash "imported" (nlk:decode-json (nlk:read-text marker)))) "the marker has both")))))
 
 (deftest setup-import-asks-again-while-a-run-left-the-keys-or-the-bots-behind (let ((connected nil)
@@ -1598,8 +1598,25 @@ what the walk sends off the loop, newest first, and only a first job runs."
   ;; a home that could not be read says so, never `0 keys'
   (is (equal '((:keys "!" "home" "could not be read, so nothing in it is counted"))
              (nle::setup-discovery-entries (nlk:json-object))))
-  (is (equal '((:keys "–" "0 keys" "") (:configs "–" "0 configs" "") (:memory "–" "0 memories" ""))
-             (nle::setup-discovery-entries (nlk:json-object "items" #())))))
+  ;; and a home read whole that held none of them lists nothing
+  (is (null (nle::setup-discovery-entries (nlk:json-object "items" #())))))
+
+(deftest setup-last-page-names-the-problem-and-glosses-nothing ()
+  ;; The walk's last page over no model: the row is labelled with what the
+  ;; problem is with, the context counts it as an issue, and no button
+  ;; carries a gloss.
+  (let ((run (nle::make-setup-run :steps '(:provider :model :effort))))
+    (with-frame-model (model 100 30 :session-id "setup-plain")
+      (with-stubbed-fdefinitions ((nle::health-facts ()
+                                    (list (nle::health-fact :model "model" "no model configured"
+                                                            :tone :warn :remedy "pick one in /models")))
+                                  (nle::shared-model-pin () nil))
+        (is (equal '(("model" "no model configured · pick one in /models")) (nle::setup-caveats run)))
+        (nle::setup-stage-finish model run)
+        (is (ready-page-p model))
+        (is (equal "1 issue" (nle::picker-dialog-context model.dialog)))
+        (is (equal '(:provider :start) (mapcar #'nle::picker-row-value (nle::picker-dialog-rows model.dialog))))
+        (is (every (lambda (row) (zerop (length (nle::picker-row-detail row)))) (nle::picker-dialog-rows model.dialog)))))))
 
 (deftest setup-first-launch-wait-is-themed-and-discards-late-completion ()
   (let ((completion nil) (continued 0)

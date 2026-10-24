@@ -285,8 +285,8 @@ on a first launch's ledger, and its items for the Details page."
 ;;; connected and the stages that follow ask only what no home answers.
 ;;;
 ;;; Discovery costs one stat per world (NLK:DETECT-AGENT-WORLDS), then the
-;;; import owner reads and brings over reusable artifacts. A blank box gets
-;;; measured zero counts; an unreadable home says counts are unavailable.
+;;; import owner reads and brings over reusable artifacts. A blank box lists
+;;; nothing found; an unreadable home says counts are unavailable.
 ;;; Imported keys suggest providers, but the first launch still asks the
 ;;; operator to choose provider, model and reasoning on every setup entrypoint.
 ;;; Cell configuration remains a separate /cells action.
@@ -461,12 +461,19 @@ an apply response, whose terminal result is the same plan JSON as a preview."
                  result))))))))
 
 (defun import-summary-line (value &aux (summary (gethash "summary" value)))
-  "`3 to import · 2 skipped · 1 conflict · 0 errors' from the plan's summary
-— `3 imported' once the plan has been applied, which the plan itself says."
+  "`3 to import · 2 skipped · 1 conflict' from the plan's summary, or `3
+imported' once the plan has been applied, which the plan itself says. A count
+of zero is left out, all but the first."
   (flet ((count-of (key) (or (and (hash-table-p summary) (gethash key summary)) 0)))
-    (format nil "~d ~a · ~d skipped · ~d conflict~:p · ~d error~:p"
-            (count-of "imported") (if (eq t (gethash "applied" value)) "imported" "to import")
-            (count-of "skipped") (count-of "conflict") (count-of "error"))))
+    (format nil "~{~a~^ · ~}"
+            (cons (format nil "~d ~a" (count-of "imported")
+                          (if (eq t (gethash "applied" value)) "imported" "to import"))
+                  (loop for (key one many) in '(("skipped" "skipped" "skipped")
+                                                ("conflict" "conflict" "conflicts")
+                                                ("error" "error" "errors"))
+                        for count = (count-of key)
+                        when (plusp count)
+                          collect (format nil "~d ~a" count (if (= 1 count) one many)))))))
 
 
 (defun setup-import-item-label (item)
@@ -859,8 +866,11 @@ said) where it came from and what it did, and any item that failed."
             (setup-caveat run "~a is still running, so ~{~a~^ and ~} stay~:[s~;~] with it — `nodecode import ~a' asks first, then moves ~:[it~;them~] here"
                           unit bots (rest bots) (nlk:agent-world-name world) (rest bots))))))
   (when sources
-    (setup-note run "imported from ~:[the box~;~:*~{~a~#[~; and ~:;, ~]~}~]: ~a"
-                (coerce (or (gethash "worlds" sources) #()) 'list)
+    ;; the agents by the names they go by: `claude' is Claude Code
+    (setup-note run "~:[import~;~:*~{~a~#[~; and ~:;, ~]~}~]: ~a"
+                (mapcar (lambda (name)
+                          (if-let (world (nlk:find-agent-world name)) (nlk:agent-world-label world) name))
+                        (coerce (or (gethash "worlds" sources) #()) 'list))
                 (import-summary-line sources)))
   ;; An import that partly failed qualifies the walk: under a note, a
   ;; closing toast said `type a task' over it.
@@ -1318,14 +1328,11 @@ when an import ran. Start and Esc close it on an empty chat."
       (open-picker-dialog
        model "Setup"
        (append (if caveats
-                   (list (make-picker-row :label "Change provider or key" :detail "back to step 1"
-                                          :value :provider)
-                         (make-picker-row :label "Start anyway" :detail "the footer keeps the count"
-                                          :value :start))
+                   (list (make-picker-row :label "Change provider or key" :value :provider)
+                         (make-picker-row :label "Start anyway" :value :start))
                    (list (make-picker-row :label "Start" :detail +setup-try-text+ :value :start)))
                (when (setup-report-items report)
-                 (list (make-picker-row :label "Details" :detail (setup-details-line report)
-                                        :value :details))))
+                 (list (make-picker-row :label "Details" :value :details))))
        (lambda (model choice)
          (ecase choice
            (:start (start model))
@@ -1339,7 +1346,7 @@ when an import ran. Start and Esc close it on an empty chat."
                                   (setup-ready-page model run :selection (if caveats 2 1)))
                                 run)))
          nil)
-       :context (if caveats (format nil "~d thing~:p to check" (length caveats)) "Ready")
+       :context (if caveats (format nil "~d issue~:p" (length caveats)) "Ready")
        :summary-rows (setup-line-rows (setup-ready-lines run caveats) (setup-panel-width model))
        :selection selection
        :kind :setup-ready
@@ -1351,14 +1358,6 @@ when an import ran. Start and Esc close it on an empty chat."
 (defun setup-report-items (report)
   "REPORT's items as a list; none without a report."
   (and report (coerce (or (json-value report :array "items") #()) 'list)))
-
-(defun setup-details-line (report &aux (summary (gethash "summary" report)))
-  "The Details row's words for REPORT: what it lists, and how many did not come over."
-  (let ((left (loop for key in '("skipped" "conflict" "error")
-                    sum (or (and (hash-table-p summary) (gethash key summary)) 0))))
-    (if (plusp left)
-        (format nil "what came over, and why ~d did not" left)
-        "what came over, item by item")))
 
 (defun setup-details-page (model report back &optional run)
   "REPORT's items, world by world, each a row whose detail says what became
@@ -1419,11 +1418,11 @@ still has."
   ;; entry with no base_url would be re-checked as a key and the toast would
   ;; name the model pick instead of the missing base_url.
   (flet ((problem (fact)
-           (list "problem"
-                 (if (eq fact.key :cell)
-                     ;; its first failure was the compiler's whole log, forty rows of Lisp
-                     (format nil "~a did not load — /cells names why" (cell-label fact.label))
-                     (format nil "~a: ~a~@[ — ~a~]" fact.label fact.detail fact.remedy)))))
+           ;; the label names what the problem is with: the row's mark says it is one
+           (if (eq fact.key :cell)
+               ;; its first failure was the compiler's whole log, forty rows of Lisp
+               (list "cell" (format nil "~a did not load · /cells says why" (cell-label fact.label)))
+               (list fact.label (format nil "~a~@[ · ~a~]" fact.detail fact.remedy)))))
     (append
      (when refusal
        (list (list "problem" (format nil "~@[~a on ~]~a cannot run a turn — ~a" (second pin) pinned refusal))))
@@ -1460,8 +1459,9 @@ still has."
 
 (defun setup-discovery-entries (value &optional (lines '(:keys :configs :memory)))
   "What the import owner located in VALUE, LINES of it, as ledger lines (KEY
-MARK LABEL TEXT): how many, and from where; no secret values. Configs are
-distinct source files; memory systems are distinct source worlds."
+MARK LABEL TEXT): how many, and from where, for each kind it found any of; no
+secret values. Configs are distinct source files; memory systems are distinct
+source worlds."
   (let ((items (json-value value :array "items")) (keys '()) (configs '()) (memories '()))
     (unless items
       (return-from setup-discovery-entries
@@ -1480,14 +1480,15 @@ distinct source files; memory systems are distinct source worlds."
                           source (plusp (length source)))
                  (pushnew (list world source) configs :test #'equal)))
     (flet ((entry (key count one many text)
-             (list key (if (plusp count) "✓" "–") (format nil "~d ~a" count (if (= 1 count) one many))
-                   text))
+             ;; a kind it found none of is no line: `0 keys' over an import says nothing
+             (when (plusp count)
+               (list key "✓" (format nil "~d ~a" count (if (= 1 count) one many)) text)))
            (worlds (names)
              (format nil "~{~a~^ · ~}"
                      (remove-duplicates (remove-if-not #'plusp names :key #'length)
                                         :test #'equal :from-end t))))
       (loop for line in lines
-            collect (ecase line
+            when (ecase line
                       (:keys (entry :keys (length keys) "key" "keys"
                                     (format nil "~{~a~^, ~}"
                                             (loop for (destination world) in (reverse keys)
@@ -1497,7 +1498,8 @@ distinct source files; memory systems are distinct source worlds."
                       (:configs (entry :configs (length configs) "config" "configs"
                                        (worlds (mapcar (lambda (pair) (or (first pair) "")) (reverse configs)))))
                       (:memory (entry :memory (length memories) "memory" "memories"
-                                      (worlds (reverse memories)))))))))
+                                      (worlds (reverse memories)))))
+            collect it))))
 
 (defun setup-stage-effort (model run)
   "The selected model's own reasoning ladder, through /think's writer."

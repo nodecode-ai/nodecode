@@ -93,7 +93,7 @@ reflection's note left out (NLK::+NOTE-SOURCE+); NIL when it cannot be read."
                                      :tone (if why :danger :ok) :remedy why)))
                      (t (health-fact :model "model" "no model configured"
                                      :tone :warn
-                                     :remedy "/models picks one, and writes it to the shared config"))))
+                                     :remedy "pick one in /models"))))
                  (health-fact :cells "cells"
                               (if records
                                   (format nil "~d loaded~@[ · ~d refused at start~]~@[ · ~d FAILED~]"
