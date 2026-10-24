@@ -613,3 +613,22 @@ of stacking."
   ;; RUN-ALL is defined by support, the first file above.
   :perform (test-op (operation component)
                     (uiop:symbol-call '#:nodecode.test '#:run-all)))
+
+;; Developer-only: never loaded by the application or the core test suite.
+(defsystem "nodecode/contrast-audit"
+  :description "Opt-in contrast diagnostics for already-rendered terminal cells."
+  :depends-on ("nodecode")
+  :components ((:file "tools/contrast-audit"))
+  :in-order-to ((test-op (test-op "nodecode/contrast-audit/test"))))
+
+(defsystem "nodecode/contrast-audit/test"
+  :depends-on ("nodecode/test" "nodecode/contrast-audit")
+  :components ((:file "test/tui/contrast-audit-test"))
+  :perform (test-op (operation component)
+             (let* ((tests (symbol-value (uiop:find-symbol* '#:*tests* '#:nodecode.test)))
+                    (entries (remove-if-not
+                              (lambda (entry) (search "CONTRAST-AUDIT-" (symbol-name (car entry))))
+                              tests))
+                    (failed (uiop:symbol-call '#:nodecode.test '#:run-tests entries)))
+               (format t "~&contrast-audit: ~d tests, ~d failed~%" (length entries) (length failed))
+               (when failed (error "Contrast audit tests failed")))))

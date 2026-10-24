@@ -86,6 +86,11 @@ explicitly in canonical load order — a directory is a file's address, never
 its load position, so `session/checkpoint` still loads before
 `engine/provider`. A new file lands by taking its place in that list.
 
+For opt-in final-cell contrast diagnostics (no rendering hooks or application
+startup changes), see [the contrast auditor](tools/contrast-audit.md). Load it
+with `(asdf:load-system :nodecode/contrast-audit)` and test it separately with
+`(asdf:test-system :nodecode/contrast-audit)`.
+
 ## The two packages
 
 `nodecode.kernel` is the floor: what must run before any layer or
