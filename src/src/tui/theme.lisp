@@ -1059,17 +1059,11 @@ strong accent, and LINK, its links' blue, on CANVAS."
                         (solved (rgb-hsl link) 0.7d0 4.6d0)))))))
 
 ;;; --- a theme turned over -------------------------------------------------
-;;; A transparent theme stands on the terminal's own canvas, and that can be
-;;; paper where the theme was drawn for the dark: Tungstene's near-white ink
-;;; on a cream terminal read 1.05:1. Once the terminal has said what its
-;;; canvas is and it lies on the other side of the theme's own, or is a
-;;; colour of its own (PowerShell's blue, not a near-black), every colour
-;;; of the theme turns onto it: its own hue and saturation, at the
-;;; lightness that stands it as far off the terminal's canvas as it stood off
-;;; the theme's -- text as far off the paper, a panel the same step from it --
-;;; on the side of it the ink now is, or past it for what stood past the
-;;; theme's canvas. What derives from those colours (an answer's hues, the
-;;; washes, the legibility floors) then derives on the canvas the screen shows.
+;;; A transparent theme stands on the terminal's canvas, which can be paper
+;;; where the theme was drawn for the dark (Tungstene's ink read 1.05:1 on
+;;; cream) or a colour of its own (PowerShell's navy). There every colour of
+;;; the theme turns onto that canvas, as far off it as it stood off the
+;;; theme's own; what derives from those colours derives on it too.
 
 (defun washed-rgb (pole paper target &aux (lo 0d0) (hi 1d0))
   "PAPER washed toward POLE just far enough to stand TARGET:1 off it: POLE
@@ -1149,9 +1143,8 @@ onto TO: a tone no theme key reaches stands on the turned canvas too."
 chooseRgb fallback chains, verbatim."
   ;; A chain that resolves to nothing keeps the default, so a sparse theme
   ;; still renders completely; attributes (bold, dim) always survive because
-  ;; the overlay only replaces colors. A transparent theme on a terminal
-  ;; canvas on the other side of its own overlays turned over onto that
-  ;; canvas, defaults and all (TURNING-CANVAS).
+  ;; the overlay only replaces colors. On a canvas TURNING-CANVAS names,
+  ;; the theme overlays turned onto it, defaults and all.
   (flet ((c (&rest keys)
            (some (lambda (key) (gethash key colors)) keys))
          (fg (tone) (visual-style-fg (gethash tone palette)))
@@ -1218,11 +1211,9 @@ chooseRgb fallback chains, verbatim."
                                    ((:toast :toast-hover :toast-danger) (:toast :toast-hover)))
           do (dolist (tone tones)
                (put tone :fg (legible-rgb (fg tone) (mapcar #'bg grounds) (fg :foreground))))))
-  ;; A transparent theme's text stands on the terminal's canvas, not the
-  ;; theme's: a tone legible on the canvas it was drawn for and not on the
-  ;; one the terminal shows is lifted toward the theme's text until it is,
-  ;; the floor the quiet tones above clear. A theme turned onto that canvas
-  ;; already stands on it, and a tone drawn faint stays faint.
+  ;; A transparent theme's text stands on the terminal's canvas: a tone
+  ;; legible on the theme's own canvas and not on that one is lifted until
+  ;; it is. A tone drawn faint stays faint.
   (let ((terminal (and (gethash :transparent-background colors) *terminal-canvas*))
         (own (visual-style-bg (gethash :background palette)))
         (ink (visual-style-fg (gethash :foreground palette))))
