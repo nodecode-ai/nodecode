@@ -8,12 +8,24 @@
     (nlk:with-cleanup ((when (probe-file path) (delete-file path)))
       (ensure-directories-exist path)
       (with-open-file (out path :direction :output :if-exists :supersede)
-        (format out "(require :asdf)~%(push ~s asdf:*central-registry*)~%(asdf:load-system :nodecode)~%"
-                (namestring (asdf:system-source-directory :nodecode)))
+        ;; A child does not inherit the parent's ASDF/Quicklisp registrations.
+        ;; Reuse resolved source directories rather than a developer's init file:
+        ;; otherwise all the guard assertions merely observe a missing dependency.
+        (let ((sources
+                (remove-duplicates
+                 (loop for name in (asdf:registered-systems)
+                       for source = (asdf:system-source-file (asdf:find-system name))
+                       when source collect (uiop:pathname-directory-pathname source))
+                 :test #'equal)))
+          (format out "(require :asdf)~%(asdf:initialize-source-registry '~s)~%(asdf:load-system :nodecode)~%"
+                  `(:source-registry ,@(mapcar (lambda (source) `(:directory ,source)) sources)
+                    :ignore-inherited-configuration)))
         (when guard (write-line "(nle::install-worker-error-guard)" out))
         (write-line body out))
       (nlk:run-bounded (list (namestring sb-ext:*runtime-pathname*)
-                             "--noinform" "--non-interactive" "--load" (namestring path))
+                             "--dynamic-space-size" "4096" "--control-stack-size" "8MB"
+                             "--noinform" "--no-sysinit" "--no-userinit"
+                             "--non-interactive" "--load" (namestring path))
                        :seconds 30))))
 
 (defmacro deftest-worker (name source &body checks)
@@ -51,3 +63,13 @@
   (is (search "LOG-ONLY-SURVIVED" out) "the parent remains live")
   (is (not (search "RAW-WORKER-NOTICE" out)) "no raw worker diagnostic is broadcast to user notifications")
   (is (search "debug-only worker failure" err) "the actual worker failure remains in its debug log"))
+
+;; Scenario: A disposable worker proof inherits the parent's resolved sources.
+(deftest given-resolved-dependencies-when-worker-child-loads-then-it-runs ()
+  ;; Given NODECODE and its cell dependencies were resolved by this test image.
+  ;; When a disposable child starts from those same source directories.
+  (multiple-value-bind (out err status)
+      (worker-guard-child "(format t \"DEPENDENCY-BOOTSTRAP-READY~%\")")
+    (declare (ignore err))
+    (is (eql 0 status) "Then the child reaches its body rather than failing in ASDF")
+    (is (search "DEPENDENCY-BOOTSTRAP-READY" out) "Then the worker guard proof actually executes")))
