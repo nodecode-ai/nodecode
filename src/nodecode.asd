@@ -531,6 +531,8 @@ of stacking."
      (:file "tui/footer-pending-test")
      ;; toast-test drives ui-test's frame-model fixture and mouse helper.
      (:file "tui/toast-test")
+     ;; Actual chrome painters and the post-render selection overlay.
+     (:file "tui/chrome-contrast-test")
      ;; canvas-test too, and theme-test's THEME-PALETTE.
      (:file "tui/canvas-test")
      (:file "tui/timestamps-test")

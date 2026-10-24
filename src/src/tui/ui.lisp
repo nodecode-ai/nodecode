@@ -10946,9 +10946,9 @@ basic 40-47/100-107 — or NIL for the terminal's default."
                                       (selection-bg (visual-style-bg (style-for-tone :selection))))
   "The translucent drag-selection wash as the frame's overlay (NLT:MAKE-VIEW
 :OVERLAY), or NIL while nothing is marked: every cell of the mark keeps its
-glyph and foreground and gets the :selection background blended over its own
-at +SELECTION-OVERLAY-ALPHA+ -- the Zig design_system.selectionOverlayStyle
-cell loop."
+glyph and gets the :selection background blended over its own at
++SELECTION-OVERLAY-ALPHA+. Extended-color text keeps its foreground when
+readable, correcting it only if the new surface would lose contrast."
   ;; Span semantics match FRAME-SELECTION-TEXT: screen cells inside
   ;; TRANSCRIPT-LANE, the release column inclusive, an interior row washed
   ;; across the lane's width, never the shell's chrome or the rail. A
@@ -10963,7 +10963,8 @@ cell loop."
     (let ((canvas-bg (or (canvas-rgb) (visual-style-bg (style-for-tone :selection-ground))))
           ;; The parser hands every cell of one colour the same string, so a
           ;; frame blends each colour it washes once.
-          (washes (make-hash-table :test 'eq)))
+          (washes (make-hash-table :test 'eq))
+          (inks (make-hash-table :test 'equal)))
       (multiple-value-bind (top bottom left right) (transcript-lane model)
       (destructuring-bind ((r1 . c1) . (r2 . c2)) selection
         (lambda (buffer &aux (width (nlt:screen-buffer-width buffer)))
@@ -10978,7 +10979,31 @@ cell loop."
                                             (color-sgr (blend-rgb selection-bg
                                                                   (or (sgr-rgb under) canvas-bg)
                                                                   +selection-overlay-alpha+)
-                                                       nil profile))))))))))))
+                                                       nil profile))))
+                            ;; This overlay runs after SEG-RENDER. A foreground
+                            ;; that passed on the old surface can fail on the wash.
+                            ;; Do not guess default/basic ANSI inks, change line
+                            ;; decorations, or reinterpret reverse-video cells.
+                            (let ((fg (nlt:cell-fg cell))
+                                  (bg (nlt:cell-bg cell))
+                                  (char (nlt:cell-char cell)))
+                              (when (and (member profile '(:truecolor :ansi256))
+                                         fg (or (uiop:string-prefix-p "38;2;" fg)
+                                                (uiop:string-prefix-p "38;5;" fg))
+                                         (not (char= char #\Space))
+                                         (not (<= #x2500 (char-code char) #x259f))
+                                         (not (logtest nlt::+attr-reverse+ (nlt:cell-attrs cell))))
+                                (let* ((key (list fg bg))
+                                       (ink (or (gethash key inks)
+                                                (setf (gethash key inks)
+                                                      (color-sgr
+                                                       (visual-style-fg
+                                                        (readable-text-style
+                                                         (vstyle :fg (sgr-rgb fg) :bg (sgr-rgb bg))))
+                                                       t profile)))))
+                                  (setf (nlt:cell-fg cell) ink
+                                        (nlt:cell-attrs cell)
+                                        (logandc2 (nlt:cell-attrs cell) nlt::+attr-faint+)))))))))))))
 
 (defun handle-mouse-wheel (model msg)
   "One wheel notch, routed to what the pointer is on: the overlay under it — an

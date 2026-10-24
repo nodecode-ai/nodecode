@@ -4019,7 +4019,14 @@ and the DELIVERY its handler declares."
                   (let ((before (nlt:screen-buffer-ref bare column 3))
                         (after (nlt:screen-buffer-ref buffer column 3)))
                     (is (equal (nlt:cell-char before) (nlt:cell-char after)) "wide glyph and its continuation survive")
-                    (is (equal (nlt:cell-fg before) (nlt:cell-fg after)) "selection preserves the foreground")
+                    (if (equal (nlt:cell-fg before) (nlt:cell-fg after))
+                        (is t "selection preserves already-readable or unsupported ink")
+                        (progn
+                          (is (member nle::*color-profile* '(:truecolor :ansi256)))
+                          (is (< (nle::contrast-ratio (nle::sgr-rgb (nlt:cell-fg before))
+                                                     (nle::sgr-rgb (nlt:cell-bg after))) 4.5d0) "only unreadable ink on the new surface changes")
+                          (is (>= (nle::contrast-ratio (nle::sgr-rgb (nlt:cell-fg after))
+                                                      (nle::sgr-rgb (nlt:cell-bg after))) 4.5d0) "corrected selected ink passes on the actual wash")))
                     (is (= (nlt::cell-attrs before) (nlt::cell-attrs after)) "selection preserves text attributes")))))))))))
 
 (deftest a-mark-restyles-no-row (let ((nle::*color-profile* :truecolor)))
