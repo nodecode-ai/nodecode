@@ -312,6 +312,8 @@ is not EQ to the one a later eval interns — names compare, symbols do not."
 ;;; --- startup-resolved paths ----------------------------------
 
 (deftest cells-startup-parameters-resolve-from-the-live-home ()
+  ;; Given independent HOME and NODECODE_HOME, When startup re-resolves each
+  ;; profile rung and unwinds, Then it follows the restored environment too.
   ;; The HOME= landmine: a release binary must read the home it was started
   ;; under, never the builder's. RESOLVE-STARTUP-PARAMETERS is what the saved
   ;; core runs first; here it runs against a swapped $HOME, and then up the
@@ -361,7 +363,8 @@ is not EQ to the one a later eval interns — names compare, symbols do not."
         (nlk:resolve-startup-parameters)
         (is (search "/.nodecode/profiles/writer/" (namestring nlk:*home*)))
         (is (equal "writer" (nlk:sticky-profile)) "the sticky name reads back")))
-    (is (search real-home (namestring nlk::*default-store-path*)))
+    (is (equal (merge-pathnames "history.db" (nlk:locate-home))
+               nlk::*default-store-path*) "Then the restored profile ladder, not HOME alone, selects the store")
     (is (member 'nlk:resolve-startup-parameters sb-ext:*init-hooks*))))
 
 (deftest cells-source-root-is-the-shipped-tree ()
@@ -1539,28 +1542,29 @@ except OSError:
     ;; released with the load
     (is (not (compile-lock-contended-p path)))))
 
-(deftest cells-shipped-listing-never-waits-on-a-load (with-saved-globals (nlk::*image-systems*))
-  ;; /cells, the walk's Cells step and its summary list the shipped
-  ;; folders on the shell's own thread, and a load holds the load lock for as
-  ;; long as it compiles -- longer when it waits on another process's compile
-  ;; into the cache: without this, reading the listing under that lock would
-  ;; freeze the shell. Every name a shipped folder stands on is one the image
-  ;; carries, answered off the list its save or its last freeze took.
-  (nlk::note-image-systems)
-  (let ((release (hold-load-lock))
-        (lister nil))
-    (nlk:with-cleanup ((funcall release) (when lister (sb-thread:join-thread lister :default nil)))
-      (setf lister (sb-thread:make-thread #'nlk:shipped-cells :name "test-listing-lister"))
-      (let ((entries (sb-thread:join-thread lister :timeout 20 :default :waited)))
-        ;; listed while the load holds the lock
-        (is (not (eq :waited entries)))
-        (is (consp entries))
-        (funcall release)
-        (when (consp entries)
-          ;; and as ASDF itself answers, asked with no list to go by
-          (let ((nlk::*image-systems* '()))
-            (is (equal (mapcar #'nlk:offer-missing (nlk:shipped-cells))
-                       (mapcar #'nlk:offer-missing entries)))))))))
+(deftest cells-shipped-listing-never-waits-on-a-load (with-temp-directory (root "listing-shipped"))
+  ;; Given an actual catalog and an image carrying its dependencies,
+  ;; When another thread holds the load lock, Then listing still completes
+  ;; with the same dependency answer as an unlocked ASDF-backed listing.
+  ;; The catalog is a fixture: a bare checkout need not have pulled cells.
+  (write-peripheral-folder root "nl-listing-probe" :depends-on '("nodecode" "cl-ppcre"))
+  (with-saved-globals (nlk::*image-systems*)
+    (nlk::note-image-systems)
+    (let ((release (hold-load-lock))
+          (lister nil))
+      (nlk:with-cleanup ((funcall release) (when lister (sb-thread:join-thread lister :default nil)))
+        (setf lister (sb-thread:make-thread (lambda () (nlk:shipped-cells :root root))
+                                           :name "test-listing-lister"))
+        (let ((entries (sb-thread:join-thread lister :timeout 20 :default :waited)))
+          (is (not (eq :waited entries)) "Then listing completes while the load lock is held")
+          (is (consp entries) "Then the fixture cell is listed, not an empty catalog")
+          (funcall release)
+          (when (consp entries)
+            (is (equal '("nl-listing-probe") (mapcar #'nlk:offer-name entries)))
+            (is (null (nlk:offer-missing (first entries))))
+            (let ((nlk::*image-systems* '()))
+              (is (equal (mapcar #'nlk:offer-missing (nlk:shipped-cells :root root))
+                         (mapcar #'nlk:offer-missing entries))))))))))
 
 (deftest cells-a-load-waits-while-another-process-compiles-into-its-cache (with-cell-fixture (root))
   ;; The cure for ip-02 is the compile lock LOAD-CELL-FOLDERS takes around a

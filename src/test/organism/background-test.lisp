@@ -105,7 +105,18 @@ under *UNIT-DIRECTORY*, its enablement and its process FAKE's."
 
 ;;; --- the unit ---------------------------------------------------------------
 
-(deftest gateway-unit-name-follows-the-home ()
+(defmacro with-scripted-account-home (() &body body)
+  "BODY with the password database's account home scripted to the entry $HOME.
+Changing $HOME inside BODY still models a borrowed home, on any test host."
+  (let ((account (gensym "ACCOUNT-HOME")))
+    `(let ((,account (user-homedir-pathname)))
+       (with-stubbed-fdefinition (nlk::account-home () ,account)
+         ,@body))))
+
+(deftest gateway-unit-name-follows-the-home (with-scripted-account-home ())
+  ;; Given an account whose home is the fixture's $HOME,
+  ;; When either service manager names a default or named home,
+  ;; Then it gets the plain account name; unrelated homes remain distinct.
   (is (equal "nodecode-gateway.service" (nlk:gateway-unit-name (nlk:default-home) :systemd)))
   (is (equal "nodecode-gateway-coder.service" (nlk:gateway-unit-name (nlk:profile-home "coder") :systemd)))
   (let ((one (nlk:gateway-unit-name #p"/srv/a/agent/" :systemd))
@@ -114,7 +125,9 @@ under *UNIT-DIRECTORY*, its enablement and its process FAKE's."
     (is (= (length "nodecode-gateway-12345678.service") (length one)))
     (is (not (equal one two)) "two folders called the same are two organisms")))
 
-(deftest a-borrowed-home-never-takes-the-accounts-gateway ()
+(deftest a-borrowed-home-never-takes-the-accounts-gateway (with-scripted-account-home ())
+  ;; Given a known account home, When $HOME is borrowed, Then its gateway is
+  ;; distinct and opt-in; restoring $HOME restores the account name.
   ;; Sai's Mac, 2026-10-21: a proof ran under a scratch $HOME whose
   ;; ~/.nodecode/ was its default home; its first launch bootstrapped
   ;; nodecode-gateway into the account's one launchd domain and the account's
@@ -123,7 +136,7 @@ under *UNIT-DIRECTORY*, its enablement and its process FAKE's."
   ;; plainly or come on by themselves.
   (let ((real-home (sb-posix:getenv "HOME"))
         (scratch (namestring (temp-path "home"))))
-    (is (nlk::own-account-home-p) "the suite runs under the account's own $HOME")
+    (is (nlk::own-account-home-p) "Given the scripted account starts under its own $HOME")
     (is (equal "nodecode-gateway" (nlk:gateway-label (nlk:default-home))) "which keeps its name")
     (nlk:with-cleanup ((sb-posix:setenv "HOME" real-home 1)
                        (ignore-errors (uiop:delete-directory-tree (pathname scratch) :validate t)))
@@ -370,17 +383,20 @@ under *UNIT-DIRECTORY*, its enablement and its process FAKE's."
                        (ignore-errors (sb-ext:process-wait process)))
       (is (nlk:gateway-process-p (sb-ext:process-pid process))))))
 
-(deftest profile-delete-takes-its-gateway-with-it (with-scripted-systemd (fake))
-  (nlk:profile-create "coder")
-  (let* ((home (nlk:profile-home "coder"))
-         (path (nlk:gateway-unit-path home)))
-    (nlk:gateway-on :home home :program +test-binary+)
-    (is (probe-file path) "the profile's own unit")
-    (is (equal "nodecode-gateway-coder.service" (file-namestring path)))
-    (nlk:profile-delete "coder")
-    (is (null (probe-file path)) "the unit went with the home")
-    (is (member "disable" (unit-verbs fake) :test #'equal))
-    (is (not (uiop:directory-exists-p home)))))
+(deftest profile-delete-takes-its-gateway-with-it (with-scripted-account-home ())
+  ;; Given a named profile and its unit, When the profile is deleted,
+  ;; Then the service is disabled and its unit and home are removed.
+  (with-scripted-systemd (fake)
+    (nlk:profile-create "coder")
+    (let* ((home (nlk:profile-home "coder"))
+           (path (nlk:gateway-unit-path home)))
+      (nlk:gateway-on :home home :program +test-binary+)
+      (is (probe-file path) "the profile's own unit")
+      (is (equal "nodecode-gateway-coder.service" (file-namestring path)))
+      (nlk:profile-delete "coder")
+      (is (null (probe-file path)) "the unit went with the home")
+      (is (member "disable" (unit-verbs fake) :test #'equal))
+      (is (not (uiop:directory-exists-p home))))))
 
 ;;; --- launchd: the same verbs on macOS -----------------------------------------
 ;;; WITH-SCRIPTED-LAUNCHD is the macOS twin of WITH-SCRIPTED-SYSTEMD: the
@@ -483,13 +499,16 @@ FAKE-LAUNCHD made from OPTIONS."
   (loop for argv in (fake-launchd-calls fake)
         when (equal (first argv) "launchctl") collect (second argv)))
 
-(deftest launchd-names-the-agent-plainly (with-scripted-launchd (fake))
-  (let ((coder (nlk:profile-home "coder")))
-    (is (equal "nodecode-gateway" (nlk:gateway-unit-name (nlk:default-home))))
-    (is (equal "nodecode-gateway-coder" (nlk:gateway-unit-name coder)))
-    (is (equal "nodecode-gateway-coder.plist" (file-namestring (nlk:gateway-unit-path coder))))
-    (is (equal "nodecode-gateway-coder.log" (file-namestring (nlk:gateway-log-path coder))))
-    (is (search "Library/Logs/nodecode/" (namestring (nlk:gateway-log-path))))))
+(deftest launchd-names-the-agent-plainly (with-scripted-account-home ())
+  ;; Given an account home, When launchd names its agents,
+  ;; Then the label, plist and log all carry the same plain name.
+  (with-scripted-launchd (fake)
+    (let ((coder (nlk:profile-home "coder")))
+      (is (equal "nodecode-gateway" (nlk:gateway-unit-name (nlk:default-home))))
+      (is (equal "nodecode-gateway-coder" (nlk:gateway-unit-name coder)))
+      (is (equal "nodecode-gateway-coder.plist" (file-namestring (nlk:gateway-unit-path coder))))
+      (is (equal "nodecode-gateway-coder.log" (file-namestring (nlk:gateway-log-path coder))))
+      (is (search "Library/Logs/nodecode/" (namestring (nlk:gateway-log-path)))))))
 
 (deftest launchd-agent-text-is-a-plist-naming-the-home (with-scripted-launchd (fake))
   (is-carrying (text (nlk:gateway-unit-text :manager :launchd :home #p"/tmp/h--x/"
@@ -616,7 +635,9 @@ FAKE-LAUNCHD made from OPTIONS."
 (deftest launchd-unit-text-of-a-manager-with-no-arm-is-refused (let ((nlk:*service-manager* nil)))
   (is (signals-error error (nlk:gateway-unit-text :home #p"/tmp/h/" :program "/n/nodecode"))))
 
-(deftest gateway-by-default-is-a-named-homes-own ()
+(deftest gateway-by-default-is-a-named-homes-own (with-scripted-account-home ())
+  ;; Given the account home, When boot chooses gateway defaults,
+  ;; Then account homes opt in and a custom path does not.
   (is (nlk:gateway-by-default-p (nlk:default-home)) "the default home's gateway comes on by itself")
   (is (nlk:gateway-by-default-p (nlk:profile-home "coder")) "and a named profile's")
   (is (not (nlk:gateway-by-default-p #p"/srv/a/agent/")) "a folder $NODECODE_HOME names is the operator's to turn on"))
