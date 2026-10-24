@@ -303,6 +303,10 @@ exit 0~%" ,report ,score))
         (is (equal '(2 2 2) (list heads trees statuses)) "a later read gets fresh repository facts")))))
 
 (deftest generation-history-prefilter-preserves-caps-undo-and-merge-paths (with-warm-fixture (key root cache))
+  ;; Scenario: literal Unicode paths survive a capped merge history.
+  ;; Given commits on two branches and no dependency on a host Git identity,
+  ;; When they are merged and the capped range is read in both directions,
+  ;; Then the exact and prefiltered histories agree, including the side keep.
   (let* ((layer (merge-pathnames "nl-warm/" root))
          (pathspec "alpha space/")
          (file (merge-pathnames "alpha space/模型 file.lisp" layer)))
@@ -329,7 +333,9 @@ exit 0~%" ,report ,score))
       (write-temp-file (merge-pathnames "alpha space/side file.lisp" layer) "side")
       (is (nlk:git-commit-all layer "alpha side"))
       (is (eql 0 (nth-value 1 (nlk::git-in-layer layer "switch" branch))))
-      (is (eql 0 (nth-value 1 (nlk::git-in-layer layer "merge" "--no-ff" "side" "-m" "merge side"))))
+      (is (eql 0 (nth-value 1 (apply #'nlk::git-in-layer layer
+                                                    (append (nlk::git-identity layer)
+                                                            '("merge" "--no-ff" "side" "-m" "merge side"))))))
       (let* ((merged (nlk::git-head-sha layer))
              (exact (nlk::folder-keeps layer pathspec base merged))
              (filtered (nlk::folder-keeps layer pathspec base merged (make-hash-table :test #'equal))))

@@ -23,7 +23,6 @@
         (when guard (write-line "(nle::install-worker-error-guard)" out))
         (write-line body out))
       (nlk:run-bounded (list (namestring sb-ext:*runtime-pathname*)
-                             "--dynamic-space-size" "4096" "--control-stack-size" "8MB"
                              "--noinform" "--no-sysinit" "--no-userinit"
                              "--non-interactive" "--load" (namestring path))
                        :seconds 30))))
