@@ -41,12 +41,19 @@ carries it, handed to MODEL the way the loop thread hands it."
                                                          :occurred-at (nlk::iso-now))))))
 
 (deftest a-live-only-subscription-streams-without-a-replay (with-temp-gateway (port))
-  ;; The preview lane's follow at the gateway: the entry joins the
-  ;; session's live stream and gets no replay and no band snapshot; the
-  ;; attached entry beside it is served as ever.
+  ;; Given an established live-only follow beside the attached session,
+  ;; When a new turn is published, Then its live frames arrive without
+  ;; replaying followed history or a band snapshot.
   (seed-user-inputs "s-att" '("attached history"))
   (seed-user-inputs "ag-follow" '("followed history"))
   (is-let* ((frames (frames-while (ws port :subscribe '("s-att" ("ag-follow" :live-only t)))
+                      ;; SEND queues the command; it does not acknowledge it.
+                      ;; Direct store publication must follow server installation,
+                      ;; not race it as a second command on the same socket cannot.
+                      (let ((gws (nle::find-or-create-gw-session "ag-follow")))
+                        (is-eventually (bt2:with-lock-held ((nle::gw-session-lock gws))
+                                         (not (null (nle::gw-session-peers gws))))
+                                       "Given the live-only subscription is installed" :seconds 2))
                       (nlk:admit-turn "ag-follow" "ag-follow-cmd" "live prompt")
                       (nle::publish-turn-facts "ag-follow" 0)))
             (resumed (frames-of-type frames "session_stream_resumed"))
