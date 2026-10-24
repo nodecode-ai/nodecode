@@ -2447,6 +2447,38 @@ while the terminal has not said, which nothing guesses at."
 16 it would land on black or white."
   (member (effective-color-profile) '(:truecolor :ansi256)))
 
+(defvar *text-contrast-cache* (make-hash-table :test #'equalp)
+  "(foreground background profile painted-background-p) -> readable foreground.")
+
+(defun readable-text-style (style)
+  "Keep composed text at 4.5:1 on its actual surface, after dim and shadow.
+Unknown terminal backgrounds and terminal-defined ANSI colors are not guessed."
+  (let ((fg (or style.fg (visual-style-fg (style-for-tone :foreground))))
+        (bg (or style.bg (canvas-rgb)))
+        (profile (effective-color-profile)))
+    (if (and fg bg (member profile '(:truecolor :ansi256)))
+        (let* ((key (list fg bg profile (not (null style.bg))))
+               (ink (or (gethash key *text-contrast-cache*)
+                        (setf (gethash key *text-contrast-cache*)
+                              (flet ((painted (rgb)
+                                       (if (eq profile :ansi256)
+                                           (ansi256-rgb (rgb-to-ansi256 rgb)) rgb)))
+                                (let* ((ground (if style.bg (painted bg) bg))
+                                       (toward (if (> (contrast-ratio '(0 0 0) ground)
+                                                      (contrast-ratio '(255 255 255) ground))
+                                                   '(0 0 0) '(255 255 255))))
+                                  (loop for percent from 0 to 100
+                                        for candidate = (blend-rgb toward fg percent)
+                                        when (>= (contrast-ratio (painted candidate) ground) 4.5d0)
+                                          return candidate
+                                        finally (return toward))))))))
+          ;; Inline colors can be arbitrary; do not retain an unbounded transcript.
+          (when (> (hash-table-count *text-contrast-cache*) 4096)
+            (clrhash *text-contrast-cache*))
+          (if (and style.fg (not style.dim) (equal ink fg)) style
+              (style-with style :fg ink :dim nil)))
+        style)))
+
 (defun seg-render (seg fill-bg &key force-bg shadow)
   "Paint SEG, including the session-id's opacity dim over the title palette."
   ;; SHADOW lays the shadow over the finished style: the text at less of the
@@ -2476,6 +2508,9 @@ while the terminal has not said, which nothing guesses at."
     (when (and shadow (not (eq tone :thought)))
       ;; A thought's disclosure label is chrome, not its shadowed prose.
       (setf style (shadow-style style)))
+    ;; Rules and quote/slab gutters are decoration, not reading text.
+    (unless (member tone '(:markdown-line :markdown-bar))
+      (setf style (readable-text-style style)))
     (let ((painted (styled seg.text style)))
       (if (and (stringp seg.link)
                (not (eq (effective-color-profile) :none)))

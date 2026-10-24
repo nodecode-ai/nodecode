@@ -504,7 +504,6 @@ box: its rows less the day headings over them."
       (let* ((nle::*color-profile* :truecolor)
              (fg (nle::visual-style-fg (nle:style-for-tone :foreground)))
              (canvas (nle::visual-style-bg (nle:style-for-tone :background)))
-             (code (nle::visual-style-fg (nle:style-for-tone :inline-code)))
              (muted (nle::visual-style-fg (nle:style-for-tone :muted)))
              (assistant (format nil "~{~a~}" (block-rows :text :role "assistant")))
              (reasoning (block-rows :reasoning))
@@ -514,7 +513,7 @@ box: its rows less the day headings over them."
                  (every (lambda (row) (search (bg-sgr canvas) row)) reasoning)))
         (is (not (rows-carry-p (bg-sgr (nle::shadow-rgb canvas)) reasoning)))
         (is (search (fg-sgr (nle::shadow-rgb fg)) all))
-        (is (search (fg-sgr (nle::shadow-rgb code)) all))
+        (is (search (fg-sgr '(110 138 161)) all)) ; shadowed code clears 4.5:1
         (is (not (rows-carry-p (fg-sgr fg) (butlast (rest reasoning)))))
         (let ((prose (block-rows :text :role "assistant")))
           ;; the answer's strong run stands on a chip.
@@ -1052,7 +1051,8 @@ its dispatch keeping each frame for LINK-COMMANDS."
     (let* ((row (nth 19 (nle::compose-frame model)))
            (fill (nle::style-for-tone :composer)))
       (is (search (nle:styled (format nil "~vaReady" (nle::composer-text-inset) "")
-                              (nle::style-with (nle::style-for-tone :muted) :bg fill.bg))
+                              (nle::readable-text-style
+                                (nle::style-with (nle::style-for-tone :muted) :bg fill.bg)))
                   row))
       (is (not (search (nle:styled " Ready" fill) row))))))
 
@@ -6109,8 +6109,10 @@ with no live bar: the blank stays the band's one scrollable line."
 ;;; --- Transcript labels have distinct, palette-owned semantic colors --------
 ;; Whether CELL's foreground is TONE's (at its shadow when SHADOW) under PROFILE.
 (defun tone-fg-p (cell tone &key shadow (profile :truecolor))
-  (let ((rgb (nle::visual-style-fg (nle:style-for-tone tone))))
-    (equal (nle::color-sgr (if shadow (nle::shadow-rgb rgb) rgb) t profile)
+  (let* ((nle::*color-profile* profile)
+         (style (nle:style-for-tone tone))
+         (resolved (nle::readable-text-style (if shadow (nle::shadow-style style) style))))
+    (equal (nle::color-sgr (nle::visual-style-fg resolved) t profile)
            (and cell (nlt:cell-fg cell)))))
 (deftest think-label-paints-the-blue-complement-of-evals-orange ()
   (let* ((nle::*tool-detail* :standard)

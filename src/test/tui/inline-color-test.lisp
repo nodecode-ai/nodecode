@@ -43,7 +43,7 @@
             (let* ((plain (first plains))
                    (x (nle::text-display-width (subseq plain 0 (search "λ" plain))))
                    (buf (nlt:parse-styled-string painted 120 1)))
-              (is (equal (nle::color-sgr '(125 109 154) t :truecolor) (nlt:cell-fg (nlt:screen-buffer-ref buf x 0))) "Think shadow still dims the requested color"))))))
+              (is (equal (nle::color-sgr '(142 128 167) t :truecolor) (nlt:cell-fg (nlt:screen-buffer-ref buf x 0))) "Think shadow preserves the hue under a readable contrast floor"))))))
     (let* ((nle::*color-profile* :truecolor)
            (source (format nil "<span style=\"color:#B8A1E3\">~c[2J</span>" #\Escape))
            (paint (nle::lline-rows (first (nle::markdown-llines source)) 120)))
@@ -69,8 +69,70 @@
     (dolist (shadow '(nil t))
       (let* ((line (first (nle::markdown-llines "Some **Bold** plain" :shadow shadow)))
              (buf (nlt:parse-styled-string (nle::lline-rows line 80) 80 1)))
-        (is (equal (nle::color-sgr (if shadow '(105 131 157) '(253 179 118)) t :truecolor)
+        (is (equal (nle::color-sgr (if shadow '(113 137 162) '(253 179 118)) t :truecolor)
                    (nlt:cell-fg (nlt:screen-buffer-ref buf 8 0))) "only reasoning strong changes to the selected shadowed Ice blue")
         (is (equal (nle::color-sgr (if shadow '(159 161 165) '(235 238 244)) t :truecolor)
                    (nlt:cell-fg (nlt:screen-buffer-ref buf 3 0))) "ordinary prose retains its foreground and reasoning shadow")
         (is (logtest nlt::+attr-bold+ (nlt:cell-attrs (nlt:screen-buffer-ref buf 8 0))) "emphasis stays bold")))))
+
+(defun painted-cell-rgb (sgr)
+  "Decode a truecolor or xterm-256 cell color for contrast assertions."
+  (when sgr
+    (let ((parts (mapcar #'parse-integer (uiop:split-string sgr :separator ";"))))
+      (ecase (second parts)
+        (2 (cddr parts))
+        (5 (nle::ansi256-rgb (third parts)))))))
+
+(deftest composed-text-contrast-on-rendered-surfaces ()
+  ;; Palette-only checks miss nested spans on heading bands and the final
+  ;; reasoning shadow. Check the colors the terminal parser actually sees.
+  (dolist (name (nle:theme-catalog :user nil))
+    (let ((nle::*palette* (theme-palette name)))
+      (dolist (nle::*color-profile* '(:truecolor :ansi256))
+        (dolist (ground '(nil :title-band :slab :composer :user-block))
+          (dolist (tone '(:foreground :muted :thought-strong :code-quiet :inline-code :link))
+            (dolist (shadow '(nil t))
+              (let* ((fill (and ground (nle::visual-style-bg (nle:style-for-tone ground))))
+                     (paint (nle::seg-render (nle::make-seg :text "X" :tone tone)
+                                            fill :force-bg t :shadow shadow))
+                     (buf (nlt:parse-styled-string (list paint) 1 1))
+                     (cell (nlt:screen-buffer-ref buf 0 0))
+                     (fg (painted-cell-rgb (nlt:cell-fg cell)))
+                     (bg (or (painted-cell-rgb (nlt:cell-bg cell)) (nle::canvas-rgb))))
+                (when (and fg bg)
+                  (is (>= (nle::contrast-ratio fg bg) 4.5d0)
+                      (format nil "~a ~a on ~a (~a shadow ~a)" name tone ground nle::*color-profile* shadow)))))))))))
+
+(deftest composed-text-contrast-on-detected-terminal-canvas ()
+  (let ((nle::*palette* (theme-palette "Tungstene")))
+    (dolist (nle::*color-profile* '(:truecolor :ansi256))
+      ;; OSC-11 canvas RGB is not quantized: only emitted SGR fills are.
+      (dolist (nle::*terminal-canvas* '((250 250 250) (15 15 15) (108 108 108)))
+        (let* ((paint (nle::seg-render (nle::make-seg :text "X") nil))
+               (buf (nlt:parse-styled-string (list paint) 1 1))
+               (cell (nlt:screen-buffer-ref buf 0 0)))
+          ;; Transparent themes adapt their ink, never adding an opaque fill.
+          (is (null (nlt:cell-bg cell)))
+          (is (>= (nle::contrast-ratio (painted-cell-rgb (nlt:cell-fg cell)) nle::*terminal-canvas*) 4.5d0)))))
+    (let* ((nle::*terminal-canvas* nil)
+           (style (nle:style-for-tone :foreground)))
+      ;; An unknown terminal background is not guessed.
+      (is (eq style (nle::readable-text-style style))))))
+
+(deftest composed-text-contrast-preserves-renderer-boundaries ()
+  (let ((nle::*palette* (theme-palette "Tungstene")))
+    (dolist (nle::*color-profile* '(:none :ansi))
+      (let ((style (nle::vstyle :fg '(40 40 40) :bg '(30 30 30))))
+        (is (eq style (nle::readable-text-style style)))))
+    (let* ((nle::*color-profile* :truecolor)
+           (style (nle::vstyle :bg '(0 0 0) :bold t))
+           (resolved (nle::readable-text-style style)))
+      ;; Tested fallback ink must actually be emitted, preserving attributes.
+      (is (nle::visual-style-fg resolved))
+      (is (nle::visual-style-bold resolved))
+      (is (not (nle::visual-style-dim
+                 (nle::readable-text-style
+                   (nle::vstyle :fg '(255 255 255) :bg '(0 0 0) :dim t)))))
+      (dolist (tone '(:markdown-line :markdown-bar))
+        (is (equal (nle::styled "|" (nle:style-for-tone tone))
+                   (nle::seg-render (nle::make-seg :text "|" :tone tone) nil)))))))
