@@ -946,6 +946,45 @@ what the walk sends off the loop, newest first, and only a first job runs."
           (is (null (walk)))
           (is (null calls)))))))
 
+(deftest setup-first-frame-imports-only-the-agents-ticked (let ((calls '())))
+  ;; Two homes on the box: the question offers them all, one by one, or none.
+  ;; Choose which opens a checklist with every agent ticked; Esc goes back to
+  ;; the question. Space unticks one and Enter brings the rest over, the
+  ;; unticked one put on the marker as declined; none ticked is a Skip.
+  (with-hermes-box (marker "choose")
+    (write-temp-file (merge-pathnames ".codex/config.toml" nlk::*agent-home*) "model = \"m\"")
+    (with-stubbed-fdefinitions
+        ((nle::setup-import-call (model method request takeover &key progress)
+           (push (list method (getf request :import)) calls)
+           (import-answer 1 0 0 "applied" t "worlds" (coerce (getf request :import) 'vector)
+                          "items" (vector) "report" "the report")))
+      (let ((nle::*import-worlds* (mapcar #'nlk:find-agent-world '("hermes" "codex"))))
+        (with-frame-model (model 100 30 :session-id "setup-import-choose")
+          (flet ((walk (&rest keys)
+                   (setf calls '() model.dialog nil)
+                   (ignore-errors (delete-file marker))
+                   (run-setup model)
+                   (dolist (key keys) (nle::picker-dialog-key model key))
+                   (reverse calls))
+                 (kind ()
+                   (and (nle::picker-dialog-p model.dialog) (nle::picker-dialog-kind model.dialog))))
+            (is (null (walk)) "the question reads nothing")
+            (is (equal '(:import :choose :skip) (mapcar #'nle::picker-row-value (nle::picker-dialog-rows model.dialog))))
+            (is (search "Import from all 2" (nle::picker-row-label (first (nle::picker-dialog-rows model.dialog)))))
+            (is (null (walk :down :enter :escape)) "Esc on the checklist reads nothing")
+            (is (eq :setup-import-offer (kind)) "and goes back to the question")
+            (walk :down :enter)
+            (is (eq :setup-import-choose (kind)) "Choose which opens the checklist")
+            (let* ((first-world (nle::picker-row-value (first (nle::picker-dialog-rows model.dialog))))
+                   (other (if (equal first-world "hermes") "codex" "hermes")))
+              (is (null (set-exclusive-or '("hermes" "codex") (nle::picker-dialog-marks model.dialog) :test #'equal)) "every agent starts ticked")
+              (nle::picker-dialog-key model #\Space)
+              (nle::picker-dialog-key model :enter)
+              (is (equal (list (list "apply" (list other)) (list "apply" (list other))) (reverse calls)) "Enter brings the ticked one over")
+              (is (equal (list first-world) (nle::declined-import-worlds)) "and the unticked one is declined"))
+            (is (null (walk :down :enter #\Space :down #\Space :enter)) "none ticked reads nothing")
+            (is (null (set-exclusive-or '("hermes" "codex") (nle::declined-import-worlds) :test #'equal)) "and is a Skip")))))))
+
 (deftest setup-import-checks-the-imported-target-before-it-claims-it ()
   ;; A key that worked in another harness is not a key that works now. When
   ;; the import selected a default model, the walk asks that target to

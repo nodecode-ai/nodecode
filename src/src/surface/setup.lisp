@@ -297,7 +297,8 @@ on a first launch's ledger, and its items for the Details page."
 ;;; keys, bot tokens and memory, and nothing in it is read before they say
 ;;; Import (SETUP-IMPORT-OFFER). The question names the agents detection
 ;;; found and costs no plan, so the first frame still waits on the keys
-;;; alone once it is answered. Skip is an answer the marker keeps. The
+;;; alone once it is answered; with more than one, Choose which ticks them
+;;; one by one. Skip, or an agent left unticked, is an answer the marker keeps. The
 ;;; report is the walk's Details page, an existing fact here always wins,
 ;;; and `/import <world>' re-runs any of it later. On request — `nodecode
 ;;; import <world>', whose flags ride the request — the plan's preview and
@@ -557,32 +558,39 @@ an apply response, whose terminal result is the same plan JSON as a preview."
 (defun close-setup-placeholder (model kind &aux (open model.dialog))
   (when (and (picker-dialog-p open) (eq (picker-dialog-kind open) kind)) (setf model.dialog nil)))
 
+(defun setup-world-label (name)
+  "What a report calls the world NAME: its label, else NAME itself."
+  (if-let (world (nlk:find-agent-world name)) (nlk:agent-world-label world) name))
+
 (defun setup-import-offer (model run worlds)
-  "The first frame's yes/no over WORLDS, the detected homes nobody declined:
-Import brings them over (SETUP-IMPORT-OFFERED); Skip or Esc reads and
-writes nothing but the Skip, and the walk goes on to the provider."
+  "The first frame's question over WORLDS, the detected homes nobody declined:
+Import brings them all over (SETUP-IMPORT-OFFERED), Choose which ticks them
+one by one (SETUP-IMPORT-CHOOSE); Skip or Esc reads and writes nothing but
+the Skip, and the walk goes on to the provider."
   ;; Asked before a plan, which would read every home to count it: the
   ;; question is whether to read them at all.
-  (let* ((names (mapcar (lambda (name)
-                          (if-let (world (nlk:find-agent-world name)) (nlk:agent-world-label world) name))
-                        worlds))
-         (skip (lambda (model)
-                 (ignore-errors (note-import-declined (json-object "worlds" (coerce worlds 'vector))))
-                 (setup-note run "import skipped — /import brings ~:[it~;them~] over later" (rest worlds))
-                 (setup-ledger-note run (list :keys "–" "import" "skipped, nothing read"))
-                 (setup-stage-provider model run))))
+  (let ((names (mapcar #'setup-world-label worlds)))
     (open-picker-dialog
      model "Setup"
-     (list (make-picker-row :label (format nil "Import from ~{~a~#[~; and ~:;, ~]~}" names)
-                            :detail "keys, instructions, memory, skills, MCP servers, bots and jobs"
-                            :value :import)
-           (make-picker-row :label "Skip"
-                            :detail "nothing read or written; /import later"
-                            :value :skip))
+     (append
+      (list (make-picker-row :label (if (rest worlds)
+                                        (format nil "Import from all ~d" (length worlds))
+                                        (format nil "Import from ~a" (first names)))
+                             :detail "keys, instructions, memory, skills, MCP servers, bots and jobs"
+                             :value :import))
+      ;; one agent is all or nothing already
+      (when (rest worlds)
+        (list (make-picker-row :label "Choose which…"
+                               :detail "tick the agents to bring over"
+                               :value :choose)))
+      (list (make-picker-row :label "Skip"
+                             :detail "nothing read or written; /import later"
+                             :value :skip)))
      (lambda (model choice)
        (ecase choice
          (:import (setup-import-offered model run worlds))
-         (:skip (funcall skip model)))
+         (:choose (setup-import-choose model run worlds))
+         (:skip (setup-import-skip model run worlds)))
        nil)
      :context (setup-context run :import "Import")
      :subtitle (format nil "Found ~{~a~#[~; and ~:;, ~]~} on this machine — bring ~:[it~;them~] over?"
@@ -590,7 +598,48 @@ writes nothing but the Skip, and the walk goes on to the provider."
      :hint "enter select  esc skip  ↑↓ navigate"
      :kind :setup-import-offer
      :option-marker t
-     :on-cancel skip)))
+     :on-cancel (lambda (model) (setup-import-skip model run worlds)))))
+
+(defun setup-import-skip (model run worlds)
+  "Put WORLDS on the marker as declined, nothing of theirs read, and go on to
+the provider."
+  (ignore-errors (note-import-declined (json-object "worlds" (coerce worlds 'vector))))
+  (setup-note run "import skipped — /import brings ~:[it~;them~] over later" (rest worlds))
+  (setup-ledger-note run (list :keys "–" "import" "skipped, nothing read"))
+  (setup-stage-provider model run))
+
+(defun setup-import-choose (model run worlds)
+  "WORLDS as a checklist, every one ticked: Enter brings the ticked ones over
+and declines the rest, none ticked being a Skip; Esc goes back to the
+question (SETUP-IMPORT-OFFER)."
+  (open-picker-dialog
+   model "Setup"
+   (loop for name in worlds
+         for world = (nlk:find-agent-world name)
+         collect (make-picker-row :label (setup-world-label name)
+                                  :detail (if-let (root (and world (first (nlk:agent-world-roots world))))
+                                            (format nil "~~/~a" root)
+                                            "")
+                                  :value name))
+   (lambda (model chosen)
+     ;; in the order detection found them, whatever order they were ticked in
+     (let ((taken (remove-if-not (lambda (name) (member name chosen :test #'string-equal)) worlds))
+           (left (remove-if (lambda (name) (member name chosen :test #'string-equal)) worlds)))
+       (cond ((null taken) (setup-import-skip model run worlds))
+             (t (when left
+                  ;; an unticked agent is a Skip of its own: never read again unasked
+                  (ignore-errors (note-import-declined (json-object "worlds" (coerce left 'vector))))
+                  (setup-note run "left ~{~a~#[~; and ~:;, ~]~} out — /import brings ~:[it~;them~] over later"
+                              (mapcar #'setup-world-label left) (rest left)))
+                (setup-import-offered model run taken))))
+     nil)
+   :context (setup-context run :import "Import")
+   :subtitle "Tick the agents to bring over"
+   :hint "space toggle  enter import  esc back  ↑↓ navigate"
+   :kind :setup-import-choose
+   :marks (copy-list worlds)
+   :on-toggle (lambda (model value marked) (declare (ignore model value marked)) nil)
+   :on-cancel (lambda (model) (setup-import-offer model run worlds))))
 
 (defun setup-import-offered (model run worlds)
   "Bring WORLDS over once the operator said Import: the keys while the walk
