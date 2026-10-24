@@ -1,0 +1,113 @@
+--- a/channels/discord/test/voice-test.lisp
++++ b/channels/discord/test/voice-test.lisp
+@@ -542,10 +542,8 @@
+                  (subseq (voice-rows (nth-value 1 (ncd:voice-command "" (voice-section) "tui-1"))) 2 4))))
+     (let ((ncd:*voice-lane* (voice-lane-for-test)) (nck:*command-source* nil))
+       (is (equal '("Sitting in" "Talking through" "Hearing")
+-                 (mapcar #'first (voice-seat-rows (nth-value 1 (ncd:voice-command "" (voice-section) "tui-1")))))
+-          "a shell's dialog offers no notes to take and no voice messages"))
+-    (is (null (nth-value 1 (ncd:voice-command "status" (voice-section))))
+-        "/voice status stays words")))
++                 (mapcar #'first (voice-seat-rows (nth-value 1 (ncd:voice-command "" (voice-section) "tui-1"))))) "a shell's dialog offers no notes to take and no voice messages"))
++    (is (null (nth-value 1 (ncd:voice-command "status" (voice-section)))) "/voice status stays words")))
+ 
+ (deftest channel-discord-voice-sub-lists-pick-and-the-pick-lands ()
+   ;; Join with nobody to sit beside lists the voice channels and who is in
+@@ -809,12 +807,9 @@
+           (gethash 11 (ncd::voice-lane-speaker-ids lane)) "u-allowed"
+           (gethash 12 (ncd::voice-lane-speaker-ids lane)) "u-allowed")
+     (ncd::voice-close-finished-utterances lane)
+-    (is (null (gethash 11 (ncd::voice-lane-utterances lane)))
+-        "a quiet entry that never held a word is dropped")
+-    (is (not (null (gethash 12 (ncd::voice-lane-utterances lane))) )
+-        "one still filling is not")
+-    (is (null (nck:queue-pop (ncd::voice-lane-work-queue lane) 0))
+-        "and neither becomes an ask")))
++    (is (null (gethash 11 (ncd::voice-lane-utterances lane))) "a quiet entry that never held a word is dropped")
++    (is (not (null (gethash 12 (ncd::voice-lane-utterances lane))) ) "one still filling is not")
++    (is (null (nck:queue-pop (ncd::voice-lane-work-queue lane) 0)) "and neither becomes an ask")))
+ 
+ (deftest channel-discord-voice-audio-that-never-opens-is-deafness ()
+   ;; Audio from a mouth this lane holds a key for that decrypts to nothing
+--- a/channels/kit/test/host-test.lisp
++++ b/channels/kit/test/host-test.lisp
+@@ -1510,11 +1510,9 @@
+                     (mapcar #'nck:press-token lines))))
+       (is (eql count (length datas)) "every press was minted")
+       (let ((nck::*presses* (make-hash-table :test #'equal :synchronized t)))
+-        (is (equal (car (last lines)) (nck:said-line (car (last datas))))
+-            "the newest press reads back from the store")
++        (is (equal (car (last lines)) (nck:said-line (car (last datas)))) "the newest press reads back from the store")
+         (is (loop for line in lines for data in datas
+-                  always (member (nck:said-line data) (list nil line) :test #'equal))
+-            "a displaced press says nothing, never another's line")))))
++                  always (member (nck:said-line data) (list nil line) :test #'equal)) "a displaced press says nothing, never another's line")))))
+ 
+ (deftest channel-a-command-answers-a-room-its-dialog-as-a-card ()
+   ;; A command answers a shell with a dialog beside its words (NLE:SLASH's
+@@ -1627,8 +1625,7 @@
+                                                                 "run" (nlk:json-object "enter" "/voice leave"))))))
+       (is (equal '((:row nil "Sitting in" "#General" ("Leave" "/voice leave" :secondary nil))
+                    (("Refresh" "/voice" :secondary nil)))
+-                 (press-lines (nth-value 1 (nck::dialog-card own "/voice"))))
+-          "a row that names its own press is pressed by that word, over the hint's"))))
++                 (press-lines (nth-value 1 (nck::dialog-card own "/voice")))) "a row that names its own press is pressed by that word, over the hint's"))))
+ 
+ (deftest channel-a-dialog-card-draws-a-rows-options-as-its-menu ()
+   ;; A row that offers picks (NLE:LIST-DIALOG's OPTIONS) is a menu in its
+--- a/channels/kit/test/thread-test.lisp
++++ b/channels/kit/test/thread-test.lisp
+@@ -403,11 +403,9 @@
+       ;; The reaper lets the lane go; the platform restates the ask.
+       (nck:remove-lane (nck:host-lanes host) "chat-100-m5")
+       (thread-ask host "<@999> fix the auth bug")
+-      (is (await (:timeout 10) (and (lane) (not (nck::lane-live-p (lane)))))
+-          "the second admission settled: no line left waiting on a turn")
++      (is (await (:timeout 10) (and (lane) (not (nck::lane-live-p (lane))))) "the second admission settled: no line left waiting on a turn")
+       (is (= 1 (started)) "the ask ran once")
+-      (is (= 1 (length (plans-matching (recorded-plans executor) :content "the answer")))
+-          "and was answered once"))))
++      (is (= 1 (length (plans-matching (recorded-plans executor) :content "the answer"))) "and was answered once"))))
+ 
+ (deftest channel-a-line-holds-its-turn-without-its-first-frame ()
+   ;; A line learned its turn only from TURN.STARTED's frame, and one the fold
+@@ -418,8 +416,7 @@
+                   :name "no-first-frame")
+     (nle:unhook :frame (format nil "channel-~a" (nck::host-id host)))
+     (thread-ask host "<@999> fix the auth bug")
+-    (is (await-plan executor :content "the answer" :timeout 20)
+-        "the answer landed though no frame was folded")))
++    (is (await-plan executor :content "the answer" :timeout 20) "the answer landed though no frame was folded")))
+ 
+ (deftest channel-stop-settles-a-line-with-no-turn ()
+   ;; Stop cancelled by turn id alone: on a line with none it warned and left
+@@ -431,8 +428,7 @@
+       (bt2:with-lock-held ((nck::lane-lock lane))
+         (nck:lane-open-digest lane (nck::now-ms)))
+       (nck::stop-pressed host "u1" "chat-100-m9" "kim")
+-      (is (eq :cancelled (nck:turn-digest-phase (nck:lane-digest lane)))
+-          "the line settled")
++      (is (eq :cancelled (nck:turn-digest-phase (nck:lane-digest lane))) "the line settled")
+       (is (equal "stopped by kim" (nck::turn-digest-detail (nck:lane-digest lane))))
+       (is (await (:timeout 10) (not (nck::lane-live-p lane)))))))
+ 
+--- a/channels/kit/host.lisp
++++ b/channels/kit/host.lisp
+@@ -2202,7 +2202,7 @@
+ 
+ (defun bind-admitted-turn (lane admission
+                            &aux (turn-id (nlk:active-input-admission-turn-id admission))
+-                             (stopped nil))
++                           (stopped nil))
+   "LANE's line watches the turn the engine says its ask started -- ADMISSION
+ names it -- from the admission on, not from that turn's first frame."
+   ;; A line opened at admission learned its turn only from TURN.STARTED's
+@@ -2245,7 +2245,7 @@
+ 
+ (defun drop-duplicate-admission (host lane admission
+                                  &aux (turn-id (nlk:active-input-admission-turn-id admission))
+-                                      (status-id nil) (reactions '()))
++                                 (status-id nil) (reactions '()))
+   "An ask the engine refused as one it had already admitted -- ADMISSION
+ names the turn its command id ran -- runs nothing: the line this delivery
+ opened settles unseen, a thread it opened goes with the lane, the ask's

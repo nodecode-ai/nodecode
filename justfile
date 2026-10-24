@@ -90,10 +90,14 @@ loc:
         printf 'loc: HEAD is %s code lines, exactly at the ceiling.\n' "$code"; \
       fi
 
+# Offline regressions for pinned-cell patch materialization.
+cell-patches-test:
+    @python3 src/tools/tests/test_cell_patches.py
+
 # Cheapest first: a paren defect fails in a second, not after the whole
 # suite has run.
 # Gate a change: lint, loc, build, test.
-check: lint loc build test
+check: cell-patches-test lint loc build test
 
 # The heap set here is the binary's for good:
 # the dump saves its runtime options, so the executable ignores them on its

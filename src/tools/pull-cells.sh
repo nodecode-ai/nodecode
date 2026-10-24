@@ -8,7 +8,8 @@
 #   {"git": URL, "commit": SHA, "cells": {"channels/discord": "rooms/nodecode-channel-discord", ...}}
 # Each folder is laid down from that commit and marked (.bundle: the URL, the
 # commit, the path in the repository), so a run at the same pin does nothing
-# and a moved pin replaces the folder whole. The source of a shipped cell is
+# and a moved pin replaces the folder whole. Committed, pin-scoped patches
+# from bundle.json are applied on fresh and repeat pulls. The source of a shipped cell is
 # in that repository, never here: inside a git checkout every local path must
 # be git-ignored, and the run refuses one that is not. The organism reads the
 # folder as any shipped one (SHIPPED-CELLS), and a hub index never lists a
@@ -21,6 +22,8 @@ test -f "$manifest" || { printf 'pull-cells: no %s\n' "$manifest" >&2; exit 2; }
 command -v git >/dev/null 2>&1 || { printf 'pull-cells: git is needed\n' >&2; exit 2; }
 py="$(command -v python3 || command -v python || true)"
 test -n "$py" || { printf 'pull-cells: python3 is needed to read %s\n' "$manifest" >&2; exit 2; }
+
+"$py" "$here/src/tools/patch-cells.py" check "$manifest"
 
 # the manifest as lines: URL, COMMIT, then one "LOCAL HUB" a folder -- read
 # line by line, since a Mac's /bin/bash is 3.2 and has no mapfile
@@ -85,7 +88,9 @@ for pair in "${pairs[@]}"; do
   need+=("$pair")
 done
 if [ "${#need[@]}" -eq 0 ]; then
-  printf 'pull-cells: every shipped cell is at %s\n' "${commit:0:9}"; exit 0
+  printf 'pull-cells: every shipped cell is at %s\n' "${commit:0:9}"
+  "$py" "$here/src/tools/patch-cells.py" apply "$manifest"
+  exit 0
 fi
 
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
@@ -100,3 +105,5 @@ for pair in "${need[@]}"; do
   printf '%s\n%s\n%s\n' "$url" "$commit" "$hub_path" > "$cells/$local_path/.bundle"
   printf 'pull-cells: %s <- %s at %s\n' "$local_path" "$hub_path" "${commit:0:9}"
 done
+
+"$py" "$here/src/tools/patch-cells.py" apply "$manifest"

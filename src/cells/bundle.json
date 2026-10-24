@@ -22,5 +22,11 @@
     "template": "template",
     "web": "rooms/nodecode-web",
     "websearch": "tools/nodecode-websearch"
-  }
+  },
+  "patches": [
+    {
+      "file": "formatting.patch",
+      "commit": "780fbc5eeb65ca4c85decc6f2c3f7ff3dc324d13"
+    }
+  ]
 }

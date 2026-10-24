@@ -3,3 +3,5 @@
 # how the first Windows build died in Coalton (2026-09-06).
 *.lisp text eol=lf
 *.asd text eol=lf
+# A unified diff's empty context line is a required single-space marker.
+src/cells/formatting.patch whitespace=-blank-at-eol
