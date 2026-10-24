@@ -85,3 +85,42 @@ stands on a ground of its own."
           (is (= (1+ short) (band-end "## The verdict")) "a heading's band ends two past its words")
           (is (= (1+ long) (band-end "## The verdict on the whole table and its client adapter")) "a longer sentence's band is that much longer")
           (is (= (1+ short) (band-end "**The verdict** and the prose that follows it")) "a lead run's band is its run's, never under the prose after it"))))))
+
+;;; Issue #1: a theme drawn for the dark, on a terminal that is paper.
+;;; Tungstene leaves its canvas to the terminal; on a cream one its
+;;; near-white ink read 1.05:1 and the answer was not there to read.
+
+(defun canvas-contrast (palette tone ground &aux (style (gethash tone palette))) "The contrast TONE's text stands at in PALETTE: on its own ground, else GROUND."
+  (nle::contrast-ratio (nle::visual-style-fg style) (or (nle::visual-style-bg style) ground)))
+
+(deftest a-dark-theme-turns-over-onto-the-paper-the-terminal-shows ()
+  (let* ((paper '(239 235 212))
+         (own-canvas (gethash :background (nle:theme-colors-for-name "Tungstene" :user nil)))
+         (own (let ((nle::*terminal-canvas* nil)) (theme-palette "Tungstene" :user nil)))
+         (turned (let ((nle::*terminal-canvas* paper)) (theme-palette "Tungstene" :user nil)))
+         (legible (loop for tone being the hash-keys of own using (hash-value style)
+                        when (and (nle::visual-style-fg style)
+                                  (>= (canvas-contrast own tone own-canvas) 4.5d0))
+                          collect tone)))
+    (is (>= (canvas-contrast turned :foreground paper) 12) "the ink is ink on the paper")
+    (is (> (length legible) 40) "the gate covers the theme's text")
+    (dolist (tone legible)
+      (is (>= (canvas-contrast turned tone paper) 4.5d0) (format nil "~(~a~), legible on the dark, is legible on the paper: ~,2f:1" tone (canvas-contrast turned tone paper))))
+    (is (null (nle::visual-style-bg (gethash :background turned))) "and the canvas is still the terminal's own")))
+
+(deftest a-dark-terminal-keeps-the-theme-as-drawn ()
+  (dolist (canvas '(nil (19 19 19)))
+    (let ((palette (let ((nle::*terminal-canvas* canvas)) (theme-palette "Tungstene" :user nil))))
+      (is (equal '(231 229 228) (nle::visual-style-fg (gethash :foreground palette))) (format nil "on ~a Tungstene's ink is its own" canvas))
+      (is (equal '(59 57 55) (nle::visual-style-bg (gethash :user-block palette))) (format nil "on ~a its user block is its own" canvas))))
+  (let ((palette (let ((nle::*terminal-canvas* '(19 19 19))) (theme-palette "Blueprint Daylight" :user nil))))
+    (is (equal (gethash :foreground (nle:theme-colors-for-name "Blueprint Daylight" :user nil))
+               (nle::visual-style-fg (gethash :foreground palette))) "a theme that paints its own canvas never turns")))
+
+(deftest a-shadow-on-paper-fades-toward-the-paper ()
+  (let* ((paper '(239 235 212))
+         (nle:*palette* (let ((nle::*terminal-canvas* paper)) (theme-palette "Tungstene" :user nil)))
+         (ink (nle::visual-style-fg (nle:style-for-tone :foreground)))
+         (shadowed (nle::shadow-rgb ink)))
+    (is (< (nle::contrast-ratio shadowed paper) (nle::contrast-ratio ink paper)) "a shadowed thought is quieter than the answer, not louder")
+    (is (>= (nle::contrast-ratio shadowed paper) 4.5d0) "and still read")))
