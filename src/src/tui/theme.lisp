@@ -1062,8 +1062,9 @@ strong accent, and LINK, its links' blue, on CANVAS."
 ;;; A transparent theme stands on the terminal's own canvas, and that can be
 ;;; paper where the theme was drawn for the dark: Tungstene's near-white ink
 ;;; on a cream terminal read 1.05:1. Once the terminal has said what its
-;;; canvas is and it lies on the other side of the theme's own, every colour
-;;; of the theme turns over onto it: its own hue and saturation, at the
+;;; canvas is and it lies on the other side of the theme's own, or is a
+;;; colour of its own (PowerShell's blue, not a near-black), every colour
+;;; of the theme turns onto it: its own hue and saturation, at the
 ;;; lightness that stands it as far off the terminal's canvas as it stood off
 ;;; the theme's -- text as far off the paper, a panel the same step from it --
 ;;; on the side of it the ink now is, or past it for what stood past the
@@ -1103,11 +1104,15 @@ turns into TO washed toward black or white."
               (hsl-rgb hue saturation (solved-lightness hue saturation ratio to lighter)))))))
 
 (defun turning-canvas (colors &aux (own (gethash :background colors)) (terminal *terminal-canvas*))
-  "The terminal canvas theme COLORS turns over onto, or NIL: a transparent
+  "The terminal canvas theme COLORS turns onto, or NIL: a transparent
 theme's, once the terminal has said what it is, when it lies on the other
-side of the theme's own."
+side of the theme's own or is a colour of its own: its channels at least
+30 apart, PowerShell's navy (85) and Solarized's teal (54) but not a
+near-black's blue tint (Dracula's 14)."
   (and (gethash :transparent-background colors) own terminal
-       (not (eq (dark-rgb-p own) (dark-rgb-p terminal)))
+       (not (equal own terminal))
+       (or (not (eq (dark-rgb-p own) (dark-rgb-p terminal)))
+           (>= (- (reduce #'max terminal) (reduce #'min terminal)) 30))
        terminal))
 
 (defun turned-colors (colors to &aux (turned (make-hash-table :test #'eq))
@@ -1213,6 +1218,21 @@ chooseRgb fallback chains, verbatim."
                                    ((:toast :toast-hover :toast-danger) (:toast :toast-hover)))
           do (dolist (tone tones)
                (put tone :fg (legible-rgb (fg tone) (mapcar #'bg grounds) (fg :foreground))))))
+  ;; A transparent theme's text stands on the terminal's canvas, not the
+  ;; theme's: a tone legible on the canvas it was drawn for and not on the
+  ;; one the terminal shows is lifted toward the theme's text until it is,
+  ;; the floor the quiet tones above clear. A theme turned onto that canvas
+  ;; already stands on it, and a tone drawn faint stays faint.
+  (let ((terminal (and (gethash :transparent-background colors) *terminal-canvas*))
+        (own (visual-style-bg (gethash :background palette)))
+        (ink (visual-style-fg (gethash :foreground palette))))
+    (when (and terminal own (not (equal terminal own)))
+      (loop for tone being the hash-keys of palette using (hash-value style)
+            when (and style.fg (null style.bg)
+                      (>= (contrast-ratio-x100 style.fg own) 450)
+                      (< (contrast-ratio-x100 style.fg terminal) 450))
+              do (setf (gethash tone palette)
+                       (style-with style :fg (legible-rgb style.fg (list terminal) ink))))))
   ;; The selection is blended later, over the painter's cells. Retain its
   ;; nominal canvas ground before clearing the actual canvas fill: the
   ;; inherited terminal RGB is unknown, not the selection color itself.

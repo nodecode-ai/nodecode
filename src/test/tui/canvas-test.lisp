@@ -124,3 +124,28 @@ stands on a ground of its own."
          (shadowed (nle::shadow-rgb ink)))
     (is (< (nle::contrast-ratio shadowed paper) (nle::contrast-ratio ink paper)) "a shadowed thought is quieter than the answer, not louder")
     (is (>= (nle::contrast-ratio shadowed paper) 4.5d0) "and still read")))
+
+;;; Every terminal canvas, not only paper: white, PowerShell's navy, a mid
+;;; grey, Dracula's near-black.
+
+(deftest text-legible-on-the-theme-s-canvas-stays-legible-on-the-terminal-s ()
+  (let* ((own-canvas (gethash :background (nle:theme-colors-for-name "Tungstene" :user nil)))
+         (own (let ((nle::*terminal-canvas* nil)) (theme-palette "Tungstene" :user nil)))
+         (legible (loop for tone being the hash-keys of own using (hash-value style)
+                        when (and (nle::visual-style-fg style) (null (nle::visual-style-bg style))
+                                  (>= (canvas-contrast own tone own-canvas) 4.5d0))
+                          collect tone)))
+    (is (> (length legible) 30) "the gate covers the theme's text")
+    (dolist (canvas '((255 255 255) (1 36 86) (60 60 60) (40 42 54)))
+      (let ((palette (let ((nle::*terminal-canvas* canvas)) (theme-palette "Tungstene" :user nil))))
+        (dolist (tone legible)
+          (is (>= (round (* 100 (canvas-contrast palette tone canvas))) 450) (format nil "~(~a~) on ~a: ~,2f:1" tone canvas (canvas-contrast palette tone canvas))))))))
+
+(deftest panels-on-a-coloured-terminal-take-its-colour ()
+  (let* ((navy '(1 36 86))
+         (palette (let ((nle::*terminal-canvas* navy)) (theme-palette "Tungstene" :user nil))))
+    (dolist (tone '(:user-block :composer :sheet))
+      (destructuring-bind (r g b) (nle::visual-style-bg (gethash tone palette))
+        (is (> b (+ r 20)) (format nil "~(~a~) is navy's blue, not a warm grey slab on it: ~a" tone (list r g b))))))
+  (let ((palette (let ((nle::*terminal-canvas* '(40 42 54))) (theme-palette "Tungstene" :user nil))))
+    (is (equal '(59 57 55) (nle::visual-style-bg (gethash :user-block palette))) "a near-black's tint leaves the theme as drawn")))
