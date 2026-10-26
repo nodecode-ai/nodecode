@@ -306,10 +306,11 @@ the free GET /models asks before it saves)."
              (where (format nil "~a · ~a" provider
                             (case source
                               (:config "set in config.jsonc") (:api-key "saved in auth.json")
+                              (:secret-file "saved in secrets/")
                               (:env "from the environment") (t (string-downcase source)))))
              ;; Only a key of its own is asked about: a !command is not run
              ;; for a question, and a login is its cell's to check.
-             (key (and (member source '(:config :api-key :env)) (credential-key credential)))
+             (key (and (member source '(:config :secret-file :api-key :env)) (credential-key credential)))
              (refusal (and (plusp (length key)) (char/= #\! (char key 0))
                            (multiple-value-bind (verdict words) (provider-key-check provider key)
                              (and (member verdict '(:refused :unreachable)) words)))))

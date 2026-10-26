@@ -245,7 +245,7 @@ with no key, what is wrong with it (PROVIDER-FIX)."
                                 (if (member source '(nil :public))
                                     "none"
                                     (substitute #\_ #\- (string-downcase source)))
-                                (and (member source '(:config :api-key :env))
+                                (and (member source '(:config :secret-file :api-key :env))
                                      (key-tail (credential-key credential))))))
                       (sort ids #'string-lessp))))
     (mapcar (lambda (row)

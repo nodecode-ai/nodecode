@@ -683,6 +683,7 @@ stream, chunked transfer undone; signals when the answer is not a 200."
     (values (nth-value 0 (sb-sys:with-deadline (:seconds *feed-read-timeout*)
                            (if (feed-streams-p)
                                (dex:get url :want-stream t :force-binary t
+                                            :proxy (nlk:proxy-for url)
                                             :connect-timeout 10
                                             :use-connection-pool nil)
                                (feed-open-socket url))))

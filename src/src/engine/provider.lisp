@@ -3037,7 +3037,13 @@ trimmedEnvValue rule: empty-after-trim counts as absent)."
   ;; stop resolution, not silently yield the environment tier.
   (when-let (truename (probe-file path))
     (let ((text (handler-case (uiop:read-file-string truename)
-                  (error (e) (credential-fail "auth file unreadable: ~a" e)))))
+                  (error (e)
+                    ;; A jailed organism (`nodecode --sandbox') has auth.json
+                    ;; denied: its keys sit in secrets/, masked, and the store
+                    ;; it cannot read is no store at all there.
+                    (when (uiop:getenv "NODECODE_SANDBOXED")
+                      (return-from read-auth-file nil))
+                    (credential-fail "auth file unreadable: ~a" e)))))
       (when (> (length text) (* 1024 1024)) ; providers/root.zig max_auth_file_bytes
         (credential-fail "auth file exceeds the 1MiB bound"))
       (let ((parsed (handler-case (nlk:decode-json text)
@@ -3049,6 +3055,49 @@ trimmedEnvValue rule: empty-after-trim counts as absent)."
 (defun auth-api-key (auth provider)
   "auth.json api_keys.<PROVIDER>.key — exact id match only, no aliases."
   (json-value auth :text "api_keys" provider "key"))
+
+;;; One secret per file: a provider key kept alone, its bare value in a 0600
+;;; file under the secrets folder (surface/settings.lisp), named the way a
+;;; pasted section secret is, <section>.<field> -- providers.<id>.api_key. A
+;;; sandbox can stand a sentinel in for one such file and give the real value
+;;; back only on the way out to that provider's host; it cannot do that for
+;;; one key inside auth.json, a JSON object the sentinel would no longer
+;;; parse as. `nodecode secrets split' moves auth.json's keys here
+;;; (surface/secrets.lisp). The folder's parameter is settings.lisp's, which
+;;; loads after this file.
+(declaim (special *secrets-directory*))
+
+(defun provider-secret-file (provider &optional (directory *secrets-directory*))
+  "The file PROVIDER's key is kept alone in under DIRECTORY, the secrets
+folder: providers.<PROVIDER>.api_key; NIL for an id no file can be named for."
+  ;; Native parsing: an id is a name, never a wildcard or a path.
+  (when (and (stringp provider) (plusp (length provider))
+             (not (find-if (lambda (c) (member c '(#\/ #\\ #\Nul))) provider))
+             (char/= #\. (char provider 0)))
+    (merge-pathnames (uiop:parse-native-namestring (format nil "providers.~a.api_key" provider))
+                     (uiop:ensure-directory-pathname directory))))
+
+(defun secret-file-regular-p (path)
+  "Whether PATH names a regular file, a link to one included."
+  (handler-case (sb-posix:s-isreg (sb-posix:stat-mode (sb-posix:stat path)))
+    (sb-posix:syscall-error () nil)))
+
+(defun provider-secret-key (provider &key (directory *secrets-directory*) probe)
+  "PROVIDER's key from its own secret file (PROVIDER-SECRET-FILE): the file's
+first line, whitespace trimmed; NIL when no regular file is there. A file that
+cannot be read, or reads empty, is CREDENTIAL-ERROR -- under PROBE it reads as
+none, as a corrupt auth file does."
+  (when-let (path (provider-secret-file provider directory))
+    (when (secret-file-regular-p path)
+      (with-handlers ((credential-error (condition) (if probe nil (error condition))))
+        (let ((line (handler-case (with-open-file (in path :external-format :utf-8)
+                                    (read-line in nil ""))
+                      (error (e) (credential-fail "secret file ~a unreadable: ~a"
+                                                  (file-namestring path) e)))))
+          (let ((key (nlk:trimmed line)))
+            (when (zerop (length key))
+              (credential-fail "empty secret file ~a" (file-namestring path)))
+            key))))))
 
 ;;; --- what a credential is -------------------------------------------------
 ;;; A credential is a PLIST — (:key SECRET :source PROVENANCE :attributes
@@ -3073,8 +3122,8 @@ request ATTRIBUTES."
              `(defun ,(alexandria:symbolicate 'credential- key) (credential) ,documentation
                 (getf credential ,key))))
   (reader :key "The secret the credential sends.")
-  (reader :source "Where the credential came from: :config, :api-key, :env and :public for
-this file's own rungs; whatever a cell names for its own.")
+  (reader :source "Where the credential came from: :config, :secret-file, :api-key, :env and
+:public for this file's own rungs; whatever a cell names for its own.")
   (reader :attributes "The request attributes the credential carries, or NIL."))
 
 ;;; The frozen config carries the attributes BESIDE it, in a table keyed by the
@@ -3124,8 +3173,8 @@ anthropic only (still sent as x-api-key)."
 (defun resolve-provider-credential (provider &key (auth-path *auth-file-path*) endpoint probe)
   "The CREDENTIAL PROVIDER resolves to."
   ;;
-  ;; Chain: config (*API-KEY*, ! indirection) -> auth api_keys -> the
-  ;; :CREDENTIAL point -> env ladder -> "public". ENDPOINT is the address the
+  ;; Chain: config (*API-KEY*, ! indirection) -> the provider's own secret
+  ;; file -> auth api_keys -> the :CREDENTIAL point -> env ladder -> "public". ENDPOINT is the address the
   ;; provider would dial; the point carries it, and a hook may answer a
   ;; credential of its own for another address (a backend a saved login is
   ;; served at). PROBE walks the same chain without its two side effects, for
@@ -3165,6 +3214,11 @@ anthropic only (still sent as x-api-key)."
               (credential-fail "credential command produced no output"))
             (return-from resolve-provider-credential
               (make-credential result :config))))))
+    ;; The secret-file tier: the key kept alone in secrets/ (PROVIDER-SECRET-KEY),
+    ;; ahead of auth.json, so a key `nodecode secrets split' moved answers from
+    ;; its file -- the one a sandbox can mask.
+    (when-let (key (provider-secret-key provider :probe probe))
+      (return-from resolve-provider-credential (make-credential key :secret-file)))
     ;; The store tier: AUTH is the parsed auth.json (NIL when there is none),
     ;; whose api_keys entry is read here; then the whole parsed object is
     ;; offered to the :CREDENTIAL hooks — a cell reads the store this process
@@ -3429,8 +3483,8 @@ PROVIDER-FAILURE-REASON; SECONDS, how long it took."
 
 (defun provider-auth-state (provider &key (auth-path *auth-file-path*))
   "The credential source PROVIDER would resolve from, WITHOUT running any
-!command indirection or touching the network: :config, :api-key, :oauth,
-:env, or :none."
+!command indirection or touching the network: :config, :secret-file,
+:api-key, :oauth, :env, or :none."
   ;; The chain itself, probed (RESOLVE-PROVIDER-CREDENTIAL :PROBE): a
   ;; !command never runs, and a corrupt auth file reads as :none rather than
   ;; signalling (a listing must not crash the dialog). The :CREDENTIAL point
@@ -3540,15 +3594,29 @@ out."
       (credential-fail "provider id must be non-empty"))
     (when (and key (zerop (length key)))
       (credential-fail "api key must be non-empty"))
-    (update-auth-file
-     (lambda (auth)
-       (let ((api-keys (or (json-value auth :object "api_keys")
-                           (setf (gethash "api_keys" auth)
-                                 (make-hash-table :test #'equal)))))
-         (if key
-             (setf (gethash id api-keys) (json-object "provider" id "key" key))
-             (remhash id api-keys))))
-     :auth-path auth-path)
+    ;; A key `nodecode secrets split' moved into its own file is answered from
+    ;; there first (RESOLVE-PROVIDER-CREDENTIAL): a new key replaces that file,
+    ;; and none takes it out, or a key saved to auth.json would sit behind it.
+    (let ((file (provider-secret-file id)))
+      (if (and file (secret-file-regular-p file))
+          (progn
+            (if key
+                (nlk:write-file-atomically file (format nil "~a~%" key)
+                                           :mode #o600 :directory-mode #o700)
+                (delete-file file))
+            (update-auth-file (lambda (auth)
+                                (when-let (api-keys (json-value auth :object "api_keys"))
+                                  (remhash id api-keys)))
+                              :auth-path auth-path))
+          (update-auth-file
+           (lambda (auth)
+             (let ((api-keys (or (json-value auth :object "api_keys")
+                                 (setf (gethash "api_keys" auth)
+                                       (make-hash-table :test #'equal)))))
+               (if key
+                   (setf (gethash id api-keys) (json-object "provider" id "key" key))
+                   (remhash id api-keys))))
+           :auth-path auth-path)))
     id))
 
 (defun update-auth-file (change &key (auth-path *auth-file-path*))
@@ -3719,7 +3787,7 @@ TRANSIENT-P whether one more attempt can plausibly succeed."
             (values body status)
             (values nil (format nil "HTTP ~d~@[ ~a~]" status (error-body-code body)))))
     ((or error sb-sys:deadline-timeout) (condition)
-     (values nil (transport-failure-label condition (or proxy dex:*default-proxy* url))
+     (values nil (transport-failure-label condition (or (nlk:proxy-for url proxy) url))
              (transient-transport-failure-p condition)))))
 
 (defun error-body-code (body &aux (parsed (ignore-errors (nlk:decode-json (nlk:body-text body)))))
@@ -4510,7 +4578,7 @@ functions below."
               (flet ((post (whole)
                        (multiple-value-bind (content content-headers)
                            (body-wire endpoint request-json session :whole whole)
-                         (cancellable-post (request-json (or config.proxy dex:*default-proxy* endpoint))
+                         (cancellable-post (request-json (or (nlk:proxy-for endpoint config.proxy) endpoint))
                            (dex:post endpoint
                                      ;; the lane's headers, then whatever the credential brings,
                                      ;; then the app's name for a host that ranks apps
@@ -4530,7 +4598,7 @@ functions below."
                                      ;; is gone. :CONNECT-TIMEOUT is a real deadline on the dial.
                                      :read-timeout (* 4 seconds)
                                      :connect-timeout seconds
-                                     :proxy (or config.proxy dex:*default-proxy*)
+                                     :proxy (nlk:proxy-for endpoint config.proxy)
                                      :want-stream t
                                      ;; Octets: dexador's own character decoding fills a
                                      ;; 128-byte buffer INSIDE the POST — a park where a

@@ -1461,6 +1461,14 @@ thread reads it and clears this place.")
             (with-json ((text :string "text") (level :string "level") (key :string "key")) payload
               (unless (and model.setup-walk (equal "nodecode-shipped-cells" key))
                 (toast model text :error-p (equal "error" level) :key key))))
+           ((and *sandboxed-shell*
+                 (member kind '("organism.loaded" "organism.cells" "organism.upgraded")
+                         :test #'string=))
+            ;; A sandboxed shell runs outside the jail on the binary alone:
+            ;; code the jailed organism made live, turned on or moved to is
+            ;; never evaluated here, or the jail would end at this process.
+            (unless (shiftf *sandbox-load-noted* t)
+              (toast model "[sandbox] the shell keeps its own code; relaunch to take layer changes")))
            ((string= kind "organism.loaded")
             ;; The organism's image made definitions live from a file of
             ;; its trees (NLK:SOURCE-LOADED): this shell evaluates the same
@@ -2124,7 +2132,9 @@ else NIL."
          (integerp pid)
          (or (= pid (sb-posix:getpid))
              (and (not (nlk::store-lease-mine-p store-path))
-                  (pid-live-p pid)
+                  ;; A jailed owner names its pid in the jail's own pid
+                  ;; namespace, which means nothing here: its lock vouches.
+                  (or *sandboxed-shell* (pid-live-p pid))
                   (ignore-errors (nlk::store-lease-held-p store-path))))
          port)))
 
@@ -2255,11 +2265,11 @@ organism comes back under the unit `gateway off' stops, never beside it."
   ;; plus a reason string when nothing was launched. Candidates are disposable
   ;; by design — the fcntl lease elects, losers exit 0 — so spawning is safe
   ;; to race against other clients and against a supervisor respawn.
-  (if (gateway-supervises-p store-path)
+  (if (and (not *sandboxed-shell*) (gateway-supervises-p store-path))
       (if (nlk:gateway-start)
           (values (nlk:gateway-start-argv) :systemd)
           (values nil "the service manager would not start the gateway"))
-      (let ((command (serve-command store-path)))
+      (let ((command (sandbox-wrap-command (serve-command store-path))))
         (if (null command)
             (values nil "this image has no serve binary to exec")
             ;; The candidate's log lands next to the database it fought for.
@@ -2320,12 +2330,14 @@ or NIL."
   "The organism this shell started, while it may run: (:PIPE STREAM :WAITER
 THREAD), the pipe on its stdin and the thread that reaps it.")
 
-(defun front-organism (store-path)
+(defun front-organism (store-path &key (wrap #'sandbox-wrap-command))
   "Start STORE-PATH's organism as a headless serve in a process of its own,
 fronted by this shell, and return once it serves -- its gateway published,
 which this shell's reconnector attaches to -- or once another process holds
 the store, an election it lost. One that exits before either is a boot that
-died: ORGANISM-EXITED, with the last line it wrote to its log."
+died: ORGANISM-EXITED, with the last line it wrote to its log. WRAP turns
+the serve argv into the one spawned: the jail's (SANDBOX-WRAP-COMMAND), which
+is the argv itself outside a sandboxed shell."
   (let* ((command (or (serve-command store-path)
                       (error "this image names no nodecode binary to run the organism with")))
          (log (stdio-log-path store-path))
@@ -2333,7 +2345,7 @@ died: ORGANISM-EXITED, with the last line it wrote to its log."
          (word (format nil "~a=" +front-variable+))
          (exited (list nil)))
     (bind (((pid _ _ process pipe)
-            (spawn-program (session-argv command)
+            (spawn-program (session-argv (funcall wrap command))
                            :environment (cons (format nil "~a~d" word (sb-posix:getpid))
                                               (remove-if (lambda (entry) (uiop:string-prefix-p word entry))
                                                          (sb-ext:posix-environ)))
@@ -2361,7 +2373,8 @@ to let the store go -- bounded, so a wedged organism is left to end on its own."
       (ignore-errors (when why (write-line why pipe)) (finish-output pipe))
       (ignore-errors (close pipe)))
     (when wait
-      (nlk::%join-bounded (getf front :waiter) 10))))
+      (nlk::%join-bounded (getf front :waiter) 10))
+    (stop-sandbox-bridge)))
 
 (defvar *organism-notes-shown* '()
   "The organism.note texts this shell has put in its transcript: the
@@ -5003,7 +5016,10 @@ the list on both shells)."
                               (format nil "~d model~:p" count)
                               (format nil "~d model~:p  ~a (~(~a~))" count
                                       (or (key-check-state id) "connected")
-                                      (if (eq state :api-key) "auth.json" state)))))))
+                                      (case state
+                                        (:api-key "auth.json")
+                                        (:secret-file "secrets/")
+                                        (t state))))))))
       ;; Configured and local providers need a row even without a models.dev entry.
       ;; Their models and listing failures still come from the one model catalog.
       (dolist (id (union connected listable :test #'string-equal))

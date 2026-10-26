@@ -325,6 +325,8 @@ of stacking."
      ;; Settings tab and the shell's /settings, a pasted secret kept in a
      ;; file of its own.
      (:file "surface/settings")
+     (:file "surface/secrets")
+     (:file "surface/sandbox")
      ;; sheet: the canvas, inks, pointer targets and key-row line every
      ;; dialog in the middle of the frame paints and calls with.
      (:file "tui/sheet")
@@ -434,6 +436,7 @@ of stacking."
      (:file "waist/config-test")
      (:file "waist/os-test")
      (:file "waist/dial-test")
+     (:file "waist/proxy-test")
      (:file "waist/paths-test")
      (:file "waist/verbs-test")
      (:file "waist/textrules-test")
@@ -584,6 +587,8 @@ of stacking."
      ;; cells-test's hub fixtures and opens ui-test's frame-model wizard.
      (:file "surface/provider-offers-test")
      (:file "surface/settings-test")
+     (:file "surface/secrets-test")
+     (:file "surface/sandbox-test")
      ;; Quick TUI settings gates reuse the canonical route's isolated fixture.
      (:file "tui/settings-test")
      (:file "tui/generations-test")
