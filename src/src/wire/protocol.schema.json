@@ -84,13 +84,20 @@
       "anyOf": [{ "required": ["prompt"] }, { "required": ["content"] }]
     },
     "StartTurn": {
-      "description": "Start a turn; one already running queues it behind (result status queued).",
+      "description": "Start a turn; one already running queues it behind (result status queued). provider, model and effort, each optional, are the target a session not yet begun runs on, the default left where it is; a begun session takes only its own target (else rejected, session_pinned).",
       "type": "object",
       "required": ["type", "request"],
       "allOf": [{ "$ref": "#/$defs/CommandIdentity" }],
       "properties": {
         "type": { "const": "start_turn" },
-        "request": { "$ref": "#/$defs/Prompt" }
+        "request": {
+          "allOf": [{ "$ref": "#/$defs/Prompt" }],
+          "properties": {
+            "provider": { "type": "string", "minLength": 1 },
+            "model": { "type": "string", "minLength": 1 },
+            "effort": { "type": "string", "minLength": 1 }
+          }
+        }
       }
     },
     "SteerTurn": {

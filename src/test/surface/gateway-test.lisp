@@ -2696,6 +2696,97 @@ the one reader."
 (is (equal "kept" (config-pin path "default_model" "model")))
 (is (equal "kept" nle::*model*) "as are the globals"))
 
+;;; --- start_turn names the target a fresh session runs on ---------------------
+
+(defun %drive-start-turn (peer session-id command-id &rest members)
+  "Drive the start_turn handler for SESSION-ID as PEER, subscribed to it, with
+the prompt hello and MEMBERS, wire keys and values alternating, on the
+request."
+  (funcall (gethash :start-turn nle::*sync-command-handlers*)
+           peer
+           (apply #'nlk:make-json-object "session_id" session-id "prompt" "hello" members)
+           command-id command-id
+           (list (list session-id))))
+
+(deftest a-start-turn-pins-the-target-a-fresh-session-runs-on
+    (with-session-store ("pin-fresh"))
+  ;; A program driving rpc names the model of the one task it starts: that
+  ;; session runs on it, and the default every other session takes stays.
+  (with-model-selection-config
+      (path "{\"general\": {\"default_model\": {\"provider\": \"openai-completions\", \"model\": \"boot-model\"}}}")
+    (setf nle::*provider* "openai-completions"
+          nle::*model* "boot-model")
+    (let ((seen '()))
+      (with-silent-peer (peer state :pin-fresh-peer)
+        (with-provider-stub (nil (push (list nle::*provider* nle::*model*) seen)
+                                 (wire-message "assistant" :content "ok"))
+          (%drive-start-turn peer "pin-fresh" "pin-fresh-1" "model" "cheap-model" "effort" "low")
+          (is-eventually (not (nlk:active-turn-p "pin-fresh")) "the turn ran")
+          (is (row-carrying "turn admitted" (%peer-frames state)) "once admitted")))
+      (is (equal '(("openai-completions" "cheap-model")) seen) "on the model it named, the session's lane kept")
+      (is-model-pin "pin-fresh" "openai-completions" "cheap-model" "the session is pinned to it" "as a pair")
+      (is (equal "low" (nlk:session-model-effort "pin-fresh")) "at the effort it named")
+      (is (equal "boot-model" (config-pin path "default_model" "model")) "the config's default stays")
+      (is (equal "boot-model" nle::*model*) "as does the image's"))))
+
+(deftest a-begun-session-takes-only-its-own-target-from-a-start-turn
+    (with-session-store ("pin-begun"))
+  ;; A begun session keeps what it began on: another target is refused before
+  ;; anything is admitted, and its own -- a reconnecting client's resend -- is
+  ;; taken.
+  (with-model-selection-config (path)
+    (setf nle::*provider* "openai-completions"
+          nle::*model* "boot-model")
+    (nlk:record-session-model-selection "pin-begun" :provider "openai-completions" :model "boot-model")
+    (let ((calls 0))
+      (with-silent-peer (peer state :pin-begun-peer)
+        (with-provider-stub (nil (incf calls) (wire-message "assistant" :content "ok"))
+          (%drive-start-turn peer "pin-begun" "pin-begun-1" "model" "cheap-model")
+          (is (row-carrying "session_pinned" (%peer-frames state)) "another model is refused")
+          (is (= 0 calls) "before any turn is admitted")
+          (is-model-pin "pin-begun" "openai-completions" "boot-model" "the pin stands" "unmoved")
+          (%drive-start-turn peer "pin-begun" "pin-begun-2"
+                             "provider" "openai-completions" "model" "boot-model")
+          (is-eventually (= 1 calls) "its own target is taken, and the turn runs")
+          (is-eventually (not (nlk:active-turn-p "pin-begun")) "to its end"))))))
+
+(deftest a-start-turn-target-refused-pins-nothing
+    (with-session-store ("pin-refused"))
+  ;; The members are checked before anything is written: a refused target
+  ;; leaves the session as it was and admits no turn.
+  (with-model-selection-config (path)
+    (setf nle::*provider* "openai-completions"
+          nle::*model* "boot-model")
+    (let ((calls 0))
+      (with-silent-peer (peer state :pin-refused-peer)
+        (with-provider-stub (nil (incf calls) (wire-message "assistant" :content "ok"))
+          (%drive-start-turn peer "pin-refused" "pin-refused-1" "provider" "no-such-lane" "model" "m")
+          (is (row-carrying "unknown_provider" (%peer-frames state)) "an unknown lane is refused by its reason")
+          (%drive-start-turn peer "pin-refused" "pin-refused-2" "model" "cheap-model" "effort" "turbo")
+          (is (row-carrying "effort_unsupported" (%peer-frames state)) "as is a rung the target lacks")
+          (is (= 0 calls) "neither admitted a turn")
+          (is-model-pin "pin-refused" nil nil "and neither pinned" "the session"))))))
+
+(deftest an-admission-refused-after-the-pin-takes-the-pin-back
+    (with-session-store ("pin-undo"))
+  ;; The pin lands before admission; an admission refused after it leaves the
+  ;; session following the default, as it was.
+  (let ((gws (nle::find-or-create-gw-session "pin-undo"))
+        (nle::*turn-latch-timeout-seconds* 0.2))
+    (with-model-selection-config (path)
+      (setf nle::*provider* "openai-completions"
+            nle::*model* "boot-model")
+      (with-silent-peer (peer state :pin-undo-peer)
+        (nlk:with-cleanup ((bt2:with-lock-held ((nle::gw-session-lock gws))
+                             (setf (nle::gw-session-turn-active-p gws) nil
+                                   (nle::gw-session-peers gws) '())))
+          (bt2:with-lock-held ((nle::gw-session-lock gws))
+            (setf (nle::gw-session-peers gws) (list peer)
+                  (nle::gw-session-turn-active-p gws) t))
+          (%drive-start-turn peer "pin-undo" "pin-undo-1" "model" "cheap-model")
+          (is (row-carrying "worker_unavailable" (%peer-frames state)) "the admission is refused")
+          (is-model-pin "pin-undo" nil nil "and the pin it followed is taken back" "whole"))))))
+
 (deftest select-model-lands-the-pick-and-every-shell-learns ()
   ;; The model-facing verb must be the whole meaning of a pick — the
   ;; durable pin, the default new sessions start on, and a frame every

@@ -304,6 +304,13 @@ live by SESSION-ID's turn when one is named."
     (is (equal (append nlk::+session-frame-kinds+ nlk:+unsequenced-frame-kinds+)
                (coerce (nlk:json-value defs :array "Payload" "properties" "type" "enum") 'list)))))
 
+(deftest protocol-schema-names-the-start-turn-target ()
+  ;; A program finds the members a fresh session's target rides in the schema,
+  ;; beside the prompt (gateway.lisp PIN-START-TURN-TARGET).
+  (let ((members (nlk:json-value (protocol-schema-defs) :object
+                                 "StartTurn" "properties" "request" "properties")))
+    (is (and members (every (lambda (key) (gethash key members)) '("provider" "model" "effort"))))))
+
 (deftest protocol-resume-and-state-ride-the-wire ()
   ;; A resumed replay says the position it resumed past; get_state decodes as
   ;; a flat command naming its session.
