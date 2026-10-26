@@ -17,6 +17,17 @@
 ;;;; Every secret file under secrets/ (providers.<id>.api_key, Fork B's
 ;;;; convention) is masked: inside the jail the file reads as a sentinel, and
 ;;;; the proxy swaps the real key back only on egress to that provider's host.
+;;;;
+;;;; What the jail writes must not run outside it later. The home's layer and
+;;;; cells are the jail's to write, so a home that has run sandboxed carries a
+;;;; mark (<home>/sandbox/jailed.json, written outside the jail and
+;;;; write-denied inside it): a launch that would load the folder unjailed
+;;;; refuses until `nodecode sandbox review' has been read and `release --yes'
+;;;; lifts it. What the launcher itself reads -- config.jsonc (the providers,
+;;;; hence the hosts a real key is injected toward), sandbox.jsonc, secrets/ --
+;;;; is write-denied in the jail, and the jail keeps a cache of its own, so the
+;;;; catalog and the warm images every launch on this machine reads are not
+;;;; its to write.
 
 (in-package #:nodecode.evolved)
 
@@ -105,7 +116,6 @@ and srt's trees and +SANDBOX-HOME-READ+ read back. EXISTS decides which
 entries are mounted (srt refuses a path that is not there)."
   (let* ((home-dir (uiop:native-namestring (uiop:ensure-directory-pathname home)))
          (folder-dir (uiop:native-namestring (uiop:ensure-directory-pathname folder)))
-         (cache-dir (uiop:native-namestring (merge-pathnames ".cache/nodecode/" (user-homedir-pathname))))
          (binary-dir (and binary (uiop:native-namestring (uiop:pathname-directory-pathname binary))))
          (string-list (lambda (items) (coerce (remove-duplicates (remove nil items) :test #'string= :from-end t) 'vector)))
          (present (lambda (paths) (remove-if-not (lambda (path) (and path (ignore-errors (funcall exists path)))) paths)))
@@ -121,17 +131,19 @@ entries are mounted (srt refuses a path that is not there)."
          (allow-read (funcall string-list
                               (and deny-home
                                    (funcall present
-                                            (append (list folder-dir home-dir cache-dir binary-dir
+                                            (append (list folder-dir home-dir binary-dir
                                                           (and srt-dir (uiop:native-namestring srt-dir)))
                                                     (mapcar #'sandbox-expand +sandbox-home-read+)
                                                     (mapcar #'sandbox-expand (getf policy :allow-read))
                                                     (mapcar #'sandbox-expand (getf policy :allow-write)))))))
          (allow-write (funcall string-list
-                               (append (list folder-dir home-dir cache-dir "/tmp")
+                               (append (list folder-dir home-dir "/tmp")
                                        (mapcar #'sandbox-expand (getf policy :allow-write)))))
          (deny-write (funcall string-list
                               (list (sandbox-home-path home "sandbox.jsonc")
+                                    (sandbox-home-path home "config.jsonc")
                                     (sandbox-home-path home (format nil "sandbox/~a" +sandbox-settings-name+))
+                                    (sandbox-home-path home (format nil "sandbox/~a" +sandbox-mark-name+))
                                     (sandbox-home-path home "secrets/")
                                     (and binary (uiop:native-namestring binary))
                                     (and srt-dir (uiop:native-namestring srt-dir)))))
@@ -199,6 +211,137 @@ only be given whole, so --sandbox asks for `nodecode secrets split' first."
          (let ((keys (json-value auth :object "api_keys")))
            (and (hash-table-p keys) (sort (alexandria:hash-table-keys keys) #'string<))))))
 
+;;; --- the mark: a home that has run sandboxed ----------------------------------
+
+(defun sandboxed-process-p ()
+  "Whether this process runs inside a --sandbox jail: NODECODE_SANDBOXED set
+and not blank (the launcher's wrap sets it to 1)."
+  (plusp (length (nlk:trimmed (or (uiop:getenv "NODECODE_SANDBOXED") "")))))
+
+(defparameter +sandbox-mark-name+ "jailed.json"
+  "The mark's name under <home>/sandbox/: written outside the jail at a
+home's first sandboxed launch, write-denied inside it.")
+
+(defun sandbox-mark-path (home)
+  "HOME's mark: present once the home has run sandboxed."
+  (merge-pathnames (format nil "sandbox/~a" +sandbox-mark-name+) (uiop:ensure-directory-pathname home)))
+
+(defun sandbox-cell-heads (home)
+  "An alist (NAME . HEAD) for every folder under HOME's cells/: its git HEAD,
+or NIL for a folder with no repository."
+  (loop for dir in (ignore-errors (uiop:subdirectories (merge-pathnames "cells/" (uiop:ensure-directory-pathname home))))
+        for name = (car (last (pathname-directory dir)))
+        collect (cons name
+                      (and (probe-file (merge-pathnames ".git/" dir))
+                           (let ((out (ignore-errors
+                                       (uiop:run-program (list "git" "-C" (uiop:native-namestring dir) "rev-parse" "HEAD")
+                                                         :output :string :ignore-error-status t))))
+                             (and out (= 40 (length (nlk:trimmed out))) (nlk:trimmed out)))))))
+
+(defun sandbox-mark (home)
+  "Write HOME's mark unless it has one: when, and what its cells/ held -- each
+folder and its HEAD -- so a review can name what the jail added since. The
+first mark stands until a release: a later sandboxed launch never moves it."
+  (let ((path (sandbox-mark-path home)))
+    (unless (probe-file path)
+      (let ((heads (sandbox-cell-heads home)))
+        (nlk::write-file-atomically
+         path
+         (nlk:encode-json-object
+          (nlk:make-json-object "since" (nlk::iso-now)
+                                "cells" (let ((object (nlk:make-json-object)))
+                                          (loop for (name . head) in heads
+                                                do (setf (gethash name object) (or head :null)))
+                                          object)))
+         :mode #o600 :directory-mode #o700)))
+    path))
+
+(defun sandbox-mark-object (home)
+  "HOME's mark as read, or NIL when it has none."
+  (let ((path (sandbox-mark-path home)))
+    (and (probe-file path) (ignore-errors (nlk:decode-json (uiop:read-file-string path))))))
+
+(defun sandbox-jailed-refusal (home &key asked sandboxed loads)
+  "Why a launch of HOME that LOADS its folder must not run outside the jail,
+or NIL: HOME carries the mark and the launch neither ASKED for --sandbox nor
+runs SANDBOXED already."
+  (when (and loads (not asked) (not sandboxed))
+    (when-let (mark (sandbox-mark-object home))
+      (format nil "this home has run under --sandbox since ~a, and what ran in the jail could have written code this launch would run outside it. `nodecode --sandbox' runs it jailed; `nodecode sandbox review' shows what changed, and `nodecode sandbox release --yes' lifts this once you have read it."
+              (or (ignore-errors (json-value mark :text "since")) "an unknown time")))))
+
+(defun sandbox-review-text (home)
+  "What HOME's cells/ gained since its mark: each new folder, and each
+folder's commits past the HEAD the mark recorded, with the files they touch."
+  (let ((mark (sandbox-mark-object home)))
+    (if (null mark)
+        "this home has not run under --sandbox: nothing to review"
+        (let* ((recorded (or (json-value mark :object "cells") (nlk:make-json-object)))
+               (cells (merge-pathnames "cells/" (uiop:ensure-directory-pathname home)))
+               (lines (list (format nil "under --sandbox since ~a. Written in the jail since then:"
+                                    (or (json-value mark :text "since") "?"))))
+               (changed 0))
+          (flet ((git (dir &rest args)
+                   (nlk:trimmed (or (ignore-errors
+                                     (uiop:run-program (list* "git" "-C" (uiop:native-namestring dir) args)
+                                                       :output :string :ignore-error-status t))
+                                    ""))))
+            (loop for (name . head) in (sandbox-cell-heads home)
+                  for dir = (merge-pathnames (format nil "~a/" name) cells)
+                  for (before present) = (multiple-value-list (gethash name recorded))
+                  for before-head = (and (stringp before) before)
+                  do (cond ((not present)
+                            (incf changed)
+                            (push (format nil "- cells/~a: a new folder~@[, ~a commit~:p~]" name
+                                          (and head (ignore-errors (parse-integer (git dir "rev-list" "--count" "HEAD")))))
+                                  lines)
+                            (when head (push (git dir "log" "--oneline" "-n" "20") lines)))
+                           ((and head before-head (string/= head before-head))
+                            (incf changed)
+                            (push (format nil "- cells/~a: ~a commit~:p since the mark" name
+                                          (or (ignore-errors (parse-integer (git dir "rev-list" "--count" (format nil "~a..HEAD" before-head)))) "?"))
+                                  lines)
+                            (push (git dir "log" "--oneline" "-n" "20" (format nil "~a..HEAD" before-head)) lines)
+                            (push (git dir "diff" "--stat" before-head "HEAD") lines)))
+                     (when present
+                       ;; a file written since the mark loads whether or not
+                       ;; a commit carries it: a plain folder, or an edit the
+                       ;; jail left uncommitted
+                       (let ((newer (nlk:trimmed
+                                     (or (ignore-errors
+                                          (uiop:run-program
+                                           (list "find" (uiop:native-namestring dir) "-path" "*/.git" "-prune" "-o"
+                                                 "-type" "f" "-newer" (uiop:native-namestring (sandbox-mark-path home)) "-print")
+                                           :output :string :ignore-error-status t))
+                                         ""))))
+                         (when (plusp (length newer))
+                           (incf changed)
+                           (push (format nil "- cells/~a: files written since the mark:" name) lines)
+                           (push newer lines))))))
+          (when (zerop changed) (push "- nothing: cells/ is as the mark found it" lines))
+          (format nil "~{~a~^~%~}" (reverse (remove "" lines :test #'string=)))))))
+
+(defun sandbox-answer (words)
+  "The `sandbox' command line as (values TEXT EXIT-CODE STREAM): `review'
+prints what the jail wrote since the mark; `release --yes' lifts the mark
+(and drops the hub cache the jail could also write), never from inside the
+jail."
+  (let ((home (nlk:home)))
+    (cond ((equal words '("review")) (values (sandbox-review-text home) 0 :output))
+          ((equal (first words) "release")
+           (cond ((sandboxed-process-p)
+                  (values "the mark is lifted from outside the jail, never from inside it" 1 :error))
+                 ((null (sandbox-mark-object home))
+                  (values "this home has not run under --sandbox: nothing to release" 0 :output))
+                 ((not (equal (rest words) '("--yes")))
+                  (values "release lets this home launch outside the jail again, running what the jail wrote: read `nodecode sandbox review' first, then `nodecode sandbox release --yes'" 2 :error))
+                 (t (delete-file (sandbox-mark-path home))
+                    (ignore-errors (uiop:delete-directory-tree
+                                    (merge-pathnames "hub/" (uiop:ensure-directory-pathname home))
+                                    :validate t :if-does-not-exist :ignore))
+                    (values "released: this home launches outside the jail again (the hub cache is dropped and fetched afresh)" 0 :output))))
+          (t (values "nodecode sandbox review | release [--yes]" 2 :error)))))
+
 (defun sandbox-srt-tree (srt)
   "The installed srt package SRT runs from -- its bin link resolved and two
 levels up from dist/cli.js -- which the jail reads (its seccomp helper runs
@@ -238,6 +381,15 @@ when it cannot run (SANDBOX-REQUIREMENTS), else write the srt settings under
         (let* ((home (nlk:home))
                (srt (srt-program))
                (run (merge-pathnames "sandbox/run/" (uiop:ensure-directory-pathname home)))
+               (cache (merge-pathnames "sandbox/cache/" (uiop:ensure-directory-pathname home)))
+               (policy-file (merge-pathnames "sandbox.jsonc" (uiop:ensure-directory-pathname home)))
+               ;; An absent policy file would be the jail's to create, and the
+               ;; next launch would read it: it is made here, empty, and the
+               ;; jail sees it write-denied. The mark goes down before the
+               ;; settings that deny writing it.
+               (_ (progn (unless (probe-file policy-file)
+                           (nlk::write-file-atomically policy-file (format nil "{}~%") :mode #o600))
+                         (sandbox-mark home)))
                (settings (merge-pathnames +sandbox-settings-name+
                                           (merge-pathnames "sandbox/" (uiop:ensure-directory-pathname home))))
                (socket (merge-pathnames "gateway.sock" run))
@@ -251,18 +403,21 @@ when it cannot run (SANDBOX-REQUIREMENTS), else write the srt settings under
                         :secret-files secret-files
                         :hidden (sandbox-hidden-files home (mapcar #'car secret-files))
                         :provider-hosts (sandbox-provider-hosts))))
+          (declare (ignore _))
           ;; The jailed gateway and this shell share a token minted for this
           ;; launch: the home's operator-token is read-denied in the jail.
           (nlk::set-environment-variable "NODECODE_GATEWAY_OPERATOR_TOKEN"
                                          (format nil "~(~{~2,'0x~}~)" (coerce (nlk:random-bytes 32) 'list)))
           (ensure-directories-exist run)
+          (ensure-directories-exist cache)
           #-win32 (ignore-errors (sb-posix:chmod (uiop:native-namestring run) #o700))
           (nlk::write-file-atomically settings (nlk:encode-json-object object) :mode #o600 :directory-mode #o700)
-          (setf *sandbox-plan* (list :srt srt :settings settings :socket socket :port port :run run)
+          (setf *sandbox-plan* (list :srt srt :settings settings :socket socket :port port :run run
+                                     :cache cache)
                 *sandboxed-shell* t)
           nil))))
 
-(defun sandbox-wrap (argv &key srt settings socket port run)
+(defun sandbox-wrap (argv &key srt settings socket port run cache)
   "ARGV, the serve's own, as the command line that runs it jailed: env sets
 the gateway port the jail binds and a runtime directory it may write and
 takes the shell's pristine marker away (the shell stands on the binary
@@ -276,6 +431,8 @@ unix SOCKET."
   (append (list "env" "-u" "NODECODE_PRISTINE" "NODECODE_SANDBOXED=1"
                 (format nil "NODECODE_GATEWAY_PORT=~d" port)
                 (format nil "XDG_RUNTIME_DIR=~a" (string-right-trim "/" (uiop:native-namestring run)))
+                (format nil "XDG_CACHE_HOME=~a" (string-right-trim "/" (uiop:native-namestring
+                                                                     (or cache (merge-pathnames "cache/" (uiop:pathname-parent-directory-pathname run))))))
                 srt "--settings" (uiop:native-namestring settings) "--" "sh" "-c"
                 "socat UNIX-LISTEN:\"$0\",fork,unlink-early TCP:127.0.0.1:\"$1\" & shift; exec \"$@\""
                 (uiop:native-namestring socket) (princ-to-string port))
@@ -292,7 +449,7 @@ running on the plan's port."
             (start-sandbox-bridge (getf plan :port) (getf plan :socket)))
           (sandbox-wrap command :srt (getf plan :srt) :settings (getf plan :settings)
                                 :socket (getf plan :socket) :port (getf plan :port)
-                                :run (getf plan :run)))
+                                :run (getf plan :run) :cache (getf plan :cache)))
         command)))
 
 (defun start-sandbox-bridge (port socket)

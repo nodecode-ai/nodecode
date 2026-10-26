@@ -55,12 +55,12 @@
                                  :socket "/h/.nodecode/sandbox/run/gateway.sock" :port 41234
                                  :run "/h/.nodecode/sandbox/run/")))
     (is (equal '("env" "-u" "NODECODE_PRISTINE" "NODECODE_SANDBOXED=1" "NODECODE_GATEWAY_PORT=41234"
-                 "XDG_RUNTIME_DIR=/h/.nodecode/sandbox/run" "/opt/srt/srt" "--settings"
-                 "/h/.nodecode/sandbox/srt-settings.json" "--" "sh" "-c")
-               (subseq argv 0 12)) "env, srt, its settings and the -- that keeps the words apart")
+                 "XDG_RUNTIME_DIR=/h/.nodecode/sandbox/run" "XDG_CACHE_HOME=/h/.nodecode/sandbox/cache"
+                 "/opt/srt/srt" "--settings" "/h/.nodecode/sandbox/srt-settings.json" "--" "sh" "-c")
+               (subseq argv 0 13)) "env, srt, its settings and the -- that keeps the words apart")
     (is (equal '("/h/.nodecode/sandbox/run/gateway.sock" "41234" "/opt/nc/nodecode" "serve" "--store" "/h/a b/store.db")
-               (subseq argv 13)) "the socket and port as $0 $1, then the serve argv word for word")
-    (is (search "exec \"$@\"" (nth 12 argv)) "the script execs the serve")))
+               (subseq argv 14)) "the socket and port as $0 $1, then the serve argv word for word")
+    (is (search "exec \"$@\"" (nth 13 argv)) "the script execs the serve")))
 
 (deftest sandbox-wrap-command-is-the-argv-itself-outside-a-sandbox ()
   (let ((nle::*sandbox-plan* nil))
@@ -106,3 +106,83 @@
     (is (find "/h/.nodecode/auth.json" deny :test #'string=) "auth.json is not read in the jail")
     (is (find "/h/.nodecode/operator-token" deny :test #'string=) "nor the gateway's token")
     (is (zerop (length (nlk:json-value settings :array "filesystem" "allowRead"))) "without the home deny nothing needs reading back")))
+
+(deftest sandbox-settings-deny-writing-what-the-launcher-reads ()
+  (let ((deny (nlk:json-value (sandbox-test-settings) :array "filesystem" "denyWrite"))
+        (allow (nlk:json-value (sandbox-test-settings) :array "filesystem" "allowWrite")))
+    (dolist (path '("/h/.nodecode/config.jsonc" "/h/.nodecode/sandbox.jsonc" "/h/.nodecode/sandbox/jailed.json" "/h/.nodecode/secrets/"))
+      (is (find path deny :test #'string=) (format nil "~a is the launcher's, not the jail's" path)))
+    (is (notany (lambda (path) (search ".cache/nodecode" path)) allow) "the machine's shared cache is not the jail's to write")))
+
+(defun sandbox-test-home ()
+  "A scratch home with one cells/ folder under git, one commit in it."
+  (let ((home (uiop:ensure-directory-pathname
+               (merge-pathnames (format nil "nc-sbx-~36r/" (random (expt 36 8))) (uiop:temporary-directory)))))
+    (ensure-directories-exist (merge-pathnames "cells/vise/" home))
+    (with-open-file (o (merge-pathnames "cells/vise/a.lisp" home) :direction :output :if-exists :supersede)
+      (write-line "(defun a () 1)" o))
+    (uiop:run-program (list "sh" "-c" "git init -q && git add -A && git -c user.email=t@t -c user.name=t commit -qm one")
+                      :directory (merge-pathnames "cells/vise/" home))
+    home))
+
+(deftest sandbox-mark-holds-its-first-snapshot ()
+  (let ((home (sandbox-test-home)))
+    (unwind-protect
+         (progn
+           (is (null (nle::sandbox-jailed-refusal home :loads t)) "an unmarked home launches anywhere")
+           (nle::sandbox-mark home)
+           (let ((first (uiop:read-file-string (nle::sandbox-mark-path home))))
+             (with-open-file (o (merge-pathnames "cells/vise/b.lisp" home) :direction :output :if-exists :supersede)
+               (write-line "(defparameter *b* (sb-ext:run-program \"/bin/true\" nil))" o))
+             (uiop:run-program (list "sh" "-c" "git add -A && git -c user.email=t@t -c user.name=t commit -qm escape")
+                               :directory (merge-pathnames "cells/vise/" home))
+             (nle::sandbox-mark home)
+             (is (equal first (uiop:read-file-string (nle::sandbox-mark-path home))) "a later sandboxed launch never moves the mark")))
+      (uiop:delete-directory-tree home :validate t :if-does-not-exist :ignore))))
+
+(deftest sandbox-mark-refuses-an-unjailed-load ()
+  (let ((home (sandbox-test-home)))
+    (unwind-protect
+         (progn
+           (nle::sandbox-mark home)
+           (is (search "has run under --sandbox" (nle::sandbox-jailed-refusal home :loads t)) "a plain launch, serve or rpc is refused")
+           (is (null (nle::sandbox-jailed-refusal home :loads t :asked t)) "--sandbox runs")
+           (is (null (nle::sandbox-jailed-refusal home :loads t :sandboxed "1")) "the organism inside the jail runs")
+           (is (null (nle::sandbox-jailed-refusal home :loads nil)) "a verb that loads no folder runs"))
+      (uiop:delete-directory-tree home :validate t :if-does-not-exist :ignore))))
+
+(deftest sandbox-review-names-what-the-jail-wrote ()
+  (let ((home (sandbox-test-home)))
+    (unwind-protect
+         (progn
+           (nle::sandbox-mark home)
+           (is (search "nothing: cells/ is as the mark found it" (nle::sandbox-review-text home)) "an untouched home has nothing to show")
+           (with-open-file (o (merge-pathnames "cells/vise/b.lisp" home) :direction :output :if-exists :supersede)
+             (write-line "(defun b () 2)" o))
+           (uiop:run-program (list "sh" "-c" "git add -A && git -c user.email=t@t -c user.name=t commit -qm escape-commit")
+                             :directory (merge-pathnames "cells/vise/" home))
+           (ensure-directories-exist (merge-pathnames "cells/planted/" home))
+           (let ((text (nle::sandbox-review-text home)))
+             (is (search "cells/vise: 1 commit since the mark" text) "a new commit in the layer is counted")
+             (is (search "escape-commit" text) "and named")
+             (is (search "b.lisp" text) "with the files it touches")
+             (is (search "cells/planted: a new folder" text) "a folder the jail planted is named")))
+      (uiop:delete-directory-tree home :validate t :if-does-not-exist :ignore))))
+
+(deftest sandbox-release-needs-yes-and-the-outside ()
+  (let* ((home (sandbox-test-home))
+         (nlk::*home* home)
+         (saved (uiop:getenv "NODECODE_SANDBOXED")))
+    (unwind-protect
+         (progn
+           (nle::sandbox-mark home)
+           (is (= 2 (nth-value 1 (nle::sandbox-answer '("release")))) "release asks for --yes")
+           (nlk::set-environment-variable "NODECODE_SANDBOXED" "1")
+           (is (= 1 (nth-value 1 (nle::sandbox-answer '("release" "--yes")))) "never from inside the jail")
+           (nlk::set-environment-variable "NODECODE_SANDBOXED" "")
+           (is (probe-file (nle::sandbox-mark-path home)) "the mark still stands")
+           (is (zerop (nth-value 1 (nle::sandbox-answer '("release" "--yes")))) "from outside, with --yes, it lifts")
+           (is (null (probe-file (nle::sandbox-mark-path home))) "and the mark is gone"))
+      (nlk::set-environment-variable "NODECODE_SANDBOXED" (or saved ""))
+      (uiop:delete-directory-tree home :validate t :if-does-not-exist :ignore))))
+

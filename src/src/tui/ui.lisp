@@ -14444,6 +14444,10 @@ Zig launcher gives the same thing."
                   :label "secrets [split | list]"
                   :arguments "split [--dry-run] | list"
                   :detail "split moves every api_keys entry of auth.json into secrets/providers.<id>.api_key, one 0600 file per key, and leaves the rest of auth.json (sign-in tokens) where it is; --dry-run says what would move. list names the files, never a value. --sandbox needs it: a key in a file of its own is a stand-in inside the jail, and the real one is put back only on its way to that provider.")
+   (nlk:make-verb "sandbox" "review what a sandboxed organism wrote, or release the home"
+                  :label "sandbox [review | release]"
+                  :arguments "review | release [--yes]"
+                  :detail "A home that has run under --sandbox is marked: a launch that would load its folder outside the jail refuses, since the jail could have written code into the layer or cells. review lists what cells/ gained since the mark -- new folders, new commits and the files they touch; release --yes lifts the mark after you have read it.")
    (nlk:make-verb "gateway" "keep this home's organism running in the background, and at login"
                   :label "gateway [VERB]"
                   :arguments "[VERB]")
@@ -14653,7 +14657,7 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE)."
                  ;; and the launch parser has no business reading them — the
                  ;; verbs the operating system answers, which run before any
                  ;; folder loads, print, and exit.
-                 ((member name '("add" "profile" "secrets" "gateway" "update" "web" "generations" "rollback")
+                 ((member name '("add" "profile" "secrets" "sandbox" "gateway" "update" "web" "generations" "rollback")
                           :test #'string=)
                   (setf child (list (intern (string-upcase name) :keyword) args)
                         args nil))
@@ -14693,7 +14697,7 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE)."
     (when (and child (eq (first child) :rpc) (or serve session-id setup))
       (launch-usage-error "rpc is a command of its own: nodecode [-p NAME] rpc ~a"
                           (nlk:verb-arguments (nlk:find-verb "rpc" *launch-verbs*))))
-    (when (and child (member (first child) '(:login :machine-link :add :profile :secrets :gateway :update :web :generations :rollback))
+    (when (and child (member (first child) '(:login :machine-link :add :profile :secrets :sandbox :gateway :update :web :generations :rollback))
                (or serve session-id store-path ephemeral setup))
       (launch-usage-error "~a is a command of its own: nodecode [-p NAME] ~:*~a ..."
                           (substitute #\Space #\- (string-downcase (first child)))))
@@ -14914,6 +14918,16 @@ condition's report, exit 1."
         (when-let (refusal (sandbox-launch-preflight store-path))
           (print-answer-and-quit refusal 1 :error))
         (setf nlk::*pristine* t))
+      ;; A home that has run sandboxed loads its folder in the jail only:
+      ;; what the jail wrote into its layer or cells would otherwise run here,
+      ;; outside it, at the next plain launch, serve or warm image.
+      (when-let (refusal (sandbox-jailed-refusal
+                          (nlk:home)
+                          :asked *sandbox-asked*
+                          :sandboxed (sandboxed-process-p)
+                          :loads (or (null child) serve
+                                     (member (first child) '(:rpc :trial :warm :warm-dump)))))
+        (print-answer-and-quit refusal 1 :error))
       ;; The launch-cache verbs run before any folder loads: the `warm`
       ;; supervisor loads nothing itself, and `warm-dump` must load the
       ;; folder directly — never through the cache it is building.
@@ -14926,6 +14940,7 @@ condition's report, exit 1."
           (:machine-link (machine-link-main (second child)))
           (:profile (multiple-value-call #'print-answer-and-quit (profile-answer (second child))))
           (:secrets (multiple-value-call #'print-answer-and-quit (secrets-answer (second child))))
+          (:sandbox (multiple-value-call #'print-answer-and-quit (sandbox-answer (second child))))
           (:gateway (gateway-main (second child)))
           (:update (answer-and-quit (values (update-text (second child)) 0 :output)))
           (:generations (generations-main (second child)))

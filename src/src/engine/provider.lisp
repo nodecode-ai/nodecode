@@ -3041,7 +3041,7 @@ trimmedEnvValue rule: empty-after-trim counts as absent)."
                     ;; A jailed organism (`nodecode --sandbox') has auth.json
                     ;; denied: its keys sit in secrets/, masked, and the store
                     ;; it cannot read is no store at all there.
-                    (when (uiop:getenv "NODECODE_SANDBOXED")
+                    (when (sandboxed-process-p)
                       (return-from read-auth-file nil))
                     (credential-fail "auth file unreadable: ~a" e)))))
       (when (> (length text) (* 1024 1024)) ; providers/root.zig max_auth_file_bytes
