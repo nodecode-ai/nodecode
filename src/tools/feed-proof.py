@@ -24,6 +24,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
 import ssl
 import subprocess
@@ -273,4 +274,8 @@ def main():
 
 
 if __name__ == "__main__":
+    # A driver that stops the proof early (mac-build.sh, when a step beside it
+    # fails) sends SIGTERM: exit through main's finally, so the serve it
+    # started stops and its scratch goes, rather than dying around them.
+    signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(128 + signum))
     sys.exit(main())

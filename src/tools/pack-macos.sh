@@ -29,7 +29,9 @@
 #
 # This driver then proves what came back is the revision it sent: every file of
 # src/src and of the shipped cells, the system definition and the installer
-# byte-equal inside the tarball, and the sidecar the hash of the bytes.
+# byte-equal inside the tarball, and the sidecar the hash of the bytes. It
+# brings the tarball home as soon as the Mac calls it final, while the Mac's
+# own proofs still run, and holds it to the hash the Mac ends on.
 set -euo pipefail
 
 REV="${1:-HEAD}"
@@ -76,7 +78,9 @@ facts="$(ssh_mac 'uname -sm' 2>&1)" || {
 
 work="$(mktemp -d)"
 locked=''
+fetch_pid=''
 cleanup() {
+  if [ -n "$fetch_pid" ]; then kill "$fetch_pid" 2>/dev/null || true; fi
   if [ -n "$locked" ]; then ssh_mac "rm -rf \"$mroot/.lock\"" >/dev/null 2>&1 || true; fi
   rm -rf "$work"
 }
@@ -116,24 +120,10 @@ echo "pack-macos: building $name on $mac under $mroot; the log is $log"
 # The run directory is each build's own: what the last one left is replaced.
 tar -C "$ship" -cf - repo mac.sh |
   ssh_mac "rm -rf \"$mroot/run\" && mkdir -p \"$mroot/run\" && tar -xf - -C \"$mroot/run\""
-rc=0
-ssh_mac "/bin/bash \"$mroot/run/mac.sh\" $label \"$mroot\"" 2>&1 | tee "$log" || rc=$?
-[ "$rc" = 0 ] || { echo "pack-macos: the Mac run failed (rc $rc); read $log (its tree stays in $mroot/run on $mac)" >&2; exit 1; }
-verdict="$(grep "^macos-release-ok $label " "$log" | tail -n 1)"
-[ -n "$verdict" ] || { echo "pack-macos: the Mac never said 'macos-release-ok $label'; read $log" >&2; exit 1; }
-
-scp -q "$mac:$mroot/run/repo/dist/$name.tar.gz" "$mac:$mroot/run/repo/dist/$name.tar.gz.sha256" "$OUT/"
-local_sha="$(sha256sum "$archive" | cut -d' ' -f1)"
-sidecar_sha="$(cut -d' ' -f1 < "$archive.sha256")"
-mac_sha="$(printf '%s\n' "$verdict" | sed -n 's/.* sha256 \([0-9a-f]*\).*/\1/p')"
-[ "$local_sha" = "$sidecar_sha" ] && [ "$local_sha" = "$mac_sha" ] || {
-  echo "pack-macos: the tarball is not the bytes the Mac proved: here $local_sha, sidecar $sidecar_sha, Mac $mac_sha" >&2
-  exit 1
-}
-
 # What shipped is the tree, not what the Mac says it packed (pack-windows.sh's
 # proof, for a tarball): every file of src/src and of the shipped cells, the
 # system definition and the installer, hashed against the tree sent.
+prove_tree() {
 python3 - "$archive" "$work/tree" "$name" <<'PY'
 import hashlib, os, sys, tarfile
 
@@ -182,6 +172,45 @@ with tarfile.open(archive) as t:
     print('pack-macos: %d tree files byte-equal inside %s (%d members, %d bytes)'
           % (len(pairs), os.path.basename(archive), len(members), os.path.getsize(archive)))
 PY
+}
+
+# The tarball comes home once the Mac says it is final (`macos-tarball-ready'),
+# and is proven against the tree while the Mac's own proofs -- the trial seams,
+# a serve, the feed proof's minute and more -- still run. A Mac run that ends
+# before saying it ends the wait; its own failure is the one reported.
+: > "$log"
+ended="$work/mac-ended"
+fetch_log="$work/fetch.log"
+(
+  until grep -q "^macos-tarball-ready $label " "$log"; do
+    [ ! -e "$ended" ] || exit 3
+    sleep 1
+  done
+  scp -q "$mac:$mroot/run/repo/dist/$name.tar.gz" "$mac:$mroot/run/repo/dist/$name.tar.gz.sha256" "$OUT/"
+  prove_tree
+) >"$fetch_log" 2>&1 &
+fetch_pid=$!
+rc=0
+ssh_mac "/bin/bash \"$mroot/run/mac.sh\" $label \"$mroot\"" 2>&1 | tee -a "$log" || rc=$?
+touch "$ended"
+fetch_rc=0
+wait "$fetch_pid" || fetch_rc=$?
+fetch_pid=''
+[ "$rc" = 0 ] || { echo "pack-macos: the Mac run failed (rc $rc); read $log (its tree stays in $mroot/run on $mac)" >&2; exit 1; }
+verdict="$(grep "^macos-release-ok $label " "$log" | tail -n 1)"
+[ -n "$verdict" ] || { echo "pack-macos: the Mac never said 'macos-release-ok $label'; read $log" >&2; exit 1; }
+cat "$fetch_log"
+[ "$fetch_rc" = 0 ] || { echo "pack-macos: bringing the tarball home failed (rc $fetch_rc)" >&2; exit 1; }
+
+# The bytes brought home are the bytes the Mac proved to the end: a tarball
+# that changed after it was called final fails here.
+local_sha="$(sha256sum "$archive" | cut -d' ' -f1)"
+sidecar_sha="$(cut -d' ' -f1 < "$archive.sha256")"
+mac_sha="$(printf '%s\n' "$verdict" | sed -n 's/.* sha256 \([0-9a-f]*\).*/\1/p')"
+[ "$local_sha" = "$sidecar_sha" ] && [ "$local_sha" = "$mac_sha" ] || {
+  echo "pack-macos: the tarball is not the bytes the Mac proved: here $local_sha, sidecar $sidecar_sha, Mac $mac_sha" >&2
+  exit 1
+}
 
 # The build tree goes; the toolchain, quicklisp and the caches stay for the
 # next release.

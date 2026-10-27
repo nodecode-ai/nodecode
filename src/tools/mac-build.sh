@@ -3,7 +3,9 @@
 # it as run/mac.sh) and of the Mac CI job (ci-macos.sh): the toolchain, the
 # stack scrub, quicklisp on the pinned dist, `just tarball' of the tree at
 # B/run/repo, the trial seams, a headless serve and the feed proof, ending in
-# one line, `macos-release-ok LABEL minos M sha256 S'.
+# one line, `macos-release-ok LABEL minos M sha256 S'. Once the tarball is
+# unpacked and checked it says `macos-tarball-ready LABEL sha256 S', and
+# pack-macos.sh brings the tarball home while the proofs after it still run.
 #
 # SPDX-License-Identifier: MIT
 #
@@ -130,6 +132,27 @@ version="$("$dir/nodecode" --version 2>&1 | tail -n 1)"
 echo "version: $version"
 case "$version" in *"+$label"*) ;; *) echo "mac: the binary says '$version', not $label" >&2; exit 1 ;; esac
 
+# The release feed over real TLS against a host that goes silent and never
+# closes: the gateway must leave it and act on the next label. Its seventy
+# seconds are the gateway's own idle limit and reconnect, real ones, so it
+# starts here and the trial seams and the serve run while it waits; its log is
+# printed, and its verdict taken, at the end. A step that fails beside it
+# stops it on the way out.
+step 'the release feed leaves a silent connection (beside the steps below)'
+feed_log="$run/feed-proof.log"
+OPENSSL=/opt/homebrew/opt/openssl@3/bin/openssl python3 src/tools/feed-proof.py "$dir/nodecode" >"$feed_log" 2>&1 &
+feed_pid=$!
+stop_feed() {
+  if [ -n "$feed_pid" ] && kill -0 "$feed_pid" 2>/dev/null; then
+    kill -TERM "$feed_pid" 2>/dev/null || true
+    wait "$feed_pid" 2>/dev/null || true
+  fi
+}
+trap stop_feed EXIT
+
+# The tarball is final from here: nothing below writes dist.
+printf 'macos-tarball-ready %s sha256 %s\n' "$label" "$(shasum -a 256 "dist/$name.tar.gz" | cut -d' ' -f1)"
+
 # The trial seams, as the lane ran them. A scratch home that is not
 # $HOME/.nodecode: no step here may stand for the account's own home.
 step 'the platform seams through the trial verb'
@@ -194,10 +217,12 @@ sleep 2
 if kill -0 "$pid" 2>/dev/null; then kill -9 "$pid"; echo 'mac: serve did not stop on SIGTERM' >&2; exit 1; fi
 echo 'serve stopped'
 
-# The release feed over real TLS against a host that goes silent and never
-# closes: the gateway must leave it and act on the next label.
-step 'the release feed leaves a silent connection'
-OPENSSL=/opt/homebrew/opt/openssl@3/bin/openssl python3 src/tools/feed-proof.py "$dir/nodecode"
+step 'the release feed proof, awaited'
+feed_rc=0
+wait "$feed_pid" || feed_rc=$?
+feed_pid=''
+cat "$feed_log"
+[ "$feed_rc" = 0 ] || { echo "mac: the feed proof failed (rc $feed_rc)" >&2; exit 1; }
 
 sha="$(shasum -a 256 "dist/$name.tar.gz" | cut -d' ' -f1)"
 printf '\nmacos-release-ok %s minos %s sha256 %s (%ss)\n' "$label" "$minos" "$sha" "$SECONDS"
