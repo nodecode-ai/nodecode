@@ -699,8 +699,10 @@ nursery collections on. => that generation's size while they were live."
     (is (= reported sb-ext:*gc-run-time*) "reports SBCL's own counter, not a copy")))
 
 (deftest collection-stats-are-a-single-snapshot (let ((stats (nlk::collection-stats))))
+  ;; Present, not set: :LAST-PAUSE stays NIL until a forced collection has
+  ;; run, and which test ran one first is the suite's order.
   (dolist (key '(:gc-run-time :last-pause :forced-collections :nursery :heap-bytes))
-    (is (nth-value 1 (get-properties stats (list key)))
+    (is (get-properties stats (list key))
         (format nil "~a present in the snapshot" key)))
   (is (integerp (getf stats :heap-bytes)) "heap-bytes is a number")
   (is (plusp (getf stats :nursery)) "nursery is positive"))

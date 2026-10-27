@@ -340,6 +340,23 @@ prints a pass or FAIL line. Answers the names that failed, in order."
                       suite rewrites global config state and rebuilds the evolved ~
                       package; run it in a scratch image (just test)"))
 
+(defun run-shard (index count)
+  "Run shard INDEX (from 0) of COUNT: every registered test whose place in the
+suite is INDEX modulo COUNT. COUNT processes, one per shard, run the whole
+suite between them; the split is fixed by the suite's order, so a red shard
+reruns alone with the same two numbers."
+  (check-type count (integer 1))
+  (check-type index (integer 0))
+  (assert (< index count) (index count) "shard ~d is past the last of ~d" index count)
+  (run-suite (loop for entry in *tests*
+                   for place from 0
+                   when (= (mod place count) index)
+                     collect entry)
+             "run-shard refuses to run in a live image: store ~a is open — the ~
+              suite rewrites global config state and rebuilds the evolved ~
+              package; run it in a scratch image (just test)"
+             (format nil "shard ~d/~d" (1+ index) count)))
+
 (defun run-suite (entries refusal &optional name)
   "Run ENTRIES as one suite: refused while a store is open (REFUSAL, a format
 control over its path), then the count line and an error naming every
