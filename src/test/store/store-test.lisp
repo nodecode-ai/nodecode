@@ -556,19 +556,23 @@ nursery collections on. => that generation's size while they were live."
   ;; an older one that is dead too. Only a full walk finds it, and only a
   ;; quiet that has lasted is worth one.
   (with-saved-globals ((nlk::*forced-heap-at* 0) (nlk::*idle-checks* 0)
-                       (nlk::*idle-input-at* nil))
-    ;; No operator at the keys: a key inside the interval is work.
+                       (nlk::*idle-input-at* nil) (nlk::*idle-consing* most-positive-fixnum)
+                       nlk::*idle-consed-at*)
+    ;; No operator at the keys, and no interval counts as work: the checks
+    ;; are driven here, one call each, rather than counted off a timer over a
+    ;; sleep -- a repeating timer that fires late fires again at once, so a
+    ;; loaded machine counted five checks inside a 0.35 s sleep. The timer
+    ;; itself is the idle-organism test's.
     (nlk:cap-nursery (* 8 1024 1024))
-    (with-idle-collection (0.1)
-      (let ((collections nlk::*idle-collections*))
-        ;; Four checks of quiet are not enough for the walk.
-        (sleep 0.35)
-        (is (< nlk::*idle-checks* nlk::*idle-checks-before-full*))
-        (sleep 0.5)
-        (is (>= nlk::*idle-checks* nlk::*idle-checks-before-full*))
-        (is (> nlk::*idle-collections* collections) "the walk ran")
-        (is (< (- (sb-kernel:dynamic-usage) nlk::*forced-heap-at*)
-               (* 8 1024 1024)))))))
+    (let ((collections nlk::*idle-collections*))
+      ;; Four checks of quiet are not enough for the walk.
+      (loop repeat (1- nlk::*idle-checks-before-full*) do (nlk::collect-when-idle))
+      (is (< nlk::*idle-checks* nlk::*idle-checks-before-full*))
+      (nlk::collect-when-idle)
+      (is (>= nlk::*idle-checks* nlk::*idle-checks-before-full*))
+      (is (> nlk::*idle-collections* collections) "the walk ran")
+      (is (< (- (sb-kernel:dynamic-usage) nlk::*forced-heap-at*)
+             (* 8 1024 1024))))))
 
 (deftest work-in-the-interval-is-not-quiet
     (with-saved-globals ((nlk::*idle-checks* 4) (nlk::*idle-input-at* nil) *nursery-junk*))
