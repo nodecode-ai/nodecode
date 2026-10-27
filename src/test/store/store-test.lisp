@@ -556,7 +556,7 @@ nursery collections on. => that generation's size while they were live."
   ;; an older one that is dead too. Only a full walk finds it, and only a
   ;; quiet that has lasted is worth one.
   (with-saved-globals ((nlk::*forced-heap-at* 0) (nlk::*idle-checks* 0)
-                       (nlk::*idle-input-at* 0))
+                       (nlk::*idle-input-at* nil))
     ;; No operator at the keys: a key inside the interval is work.
     (nlk:cap-nursery (* 8 1024 1024))
     (with-idle-collection (0.1)
@@ -571,7 +571,7 @@ nursery collections on. => that generation's size while they were live."
                (* 8 1024 1024)))))))
 
 (deftest work-in-the-interval-is-not-quiet
-    (with-saved-globals ((nlk::*idle-checks* 4) (nlk::*idle-input-at* 0) *nursery-junk*))
+    (with-saved-globals ((nlk::*idle-checks* 4) (nlk::*idle-input-at* nil) *nursery-junk*))
   (with-idle-collection (0.1)
     ;; Cons through two checks: each one finds the organism working. The list
     ;; goes to a special: a binding nothing reads, the compiler never conses.
@@ -590,7 +590,7 @@ nursery collections on. => that generation's size while they were live."
     (is (sb-ext:timer-scheduled-p (nlk:collect-while-idle 60)) "armed again")))
 
 (deftest a-long-quiet-empties-the-nursery-to-a-collection-that-returns-its-pages
-    (with-saved-globals ((nlk::*idle-checks* 4) nlk::*idle-consed-at* (nlk::*idle-input-at* 0)
+    (with-saved-globals ((nlk::*idle-checks* 4) nlk::*idle-consed-at* (nlk::*idle-input-at* nil)
                          nlk::*idle-consing*))
   ;; Without the fifth quiet check, a nursery emptied by its own collections
   ;; keeps its pages. That check collects it at a level that hands them back.
@@ -602,6 +602,15 @@ nursery collections on. => that generation's size while they were live."
   (is (> (sb-ext:generation-bytes-allocated 0) nlk::*consing-budget*) "the nursery holds garbage")
   (nlk::collect-when-idle)
   (is (< (sb-ext:generation-bytes-allocated 0) nlk::*consing-budget*) "the quiet emptied it"))
+
+(deftest no-key-yet-is-quiet-from-the-first-check
+    (with-saved-globals ((nlk::*idle-checks* 0) nlk::*idle-consed-at* (nlk::*idle-input-at* nil)))
+  ;; Internal real time counts from the process's start: an input stamp of 0
+  ;; read as a key at launch, so a fresh process held off its idle collector
+  ;; for its first *IDLE-INTERVAL* with no operator there. No stamp is quiet.
+  (setf nlk::*idle-consed-at* (sb-ext:get-bytes-consed))
+  (nlk::collect-when-idle)
+  (is (= 1 nlk::*idle-checks*) "a process no key has reached is quiet"))
 
 (deftest operator-input-in-the-interval-is-not-quiet
     (with-saved-globals ((nlk::*idle-checks* 4) nlk::*idle-consed-at* nlk::*idle-input-at*))
