@@ -1,0 +1,57 @@
+name: CI
+
+# Every push to main, and every pull request from a branch of this repository,
+# is built on self-hosted runners, the same way a release is built:
+#   linux    lint, the release tarball (pack.sh), the core test suite
+#   macos    the Mac half of the release, driven over ssh (pack-macos.sh)
+#   windows  the release's Windows half: build-windows.ps1 and both smokes
+# The scripts live in src/tools/ci-*, so a job is one step and the same check
+# runs by hand on the same machine.
+#
+# The repository is public, so a pull request from a fork never runs here:
+# its code would run on our machines. Those jobs show as skipped; a
+# maintainer pushes the branch into this repository to build it.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  linux:
+    name: Linux
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, nc-linux]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint, build the release tarball, run the core suite
+        run: src/tools/ci-linux.sh
+
+  macos:
+    name: macOS
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, nc-mac-driver]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build, pack and smoke the Mac release
+        run: src/tools/ci-macos.sh
+
+  windows:
+    name: Windows
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, nc-windows]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build nodecode.exe and run both smokes
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File src\tools\ci-windows.ps1
