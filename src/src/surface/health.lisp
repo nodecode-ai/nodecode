@@ -70,7 +70,9 @@ nothing of the folder loaded, so no cell and no cell's command. NIL otherwise."
   ;; Said where the operator looks -- the landing screen's :danger rows and /doctor --
   ;; and not only to the layer's session (HAND-FAILED-SELF): a shell attached
   ;; to a pristine gateway otherwise reads every cell command as unknown.
-  (when nlk:*pristine*
+  ;; A sandboxed shell stands on the binary alone by design -- its organism
+  ;; loads the folder in the jail -- so that floor is no fault to report.
+  (when (and nlk:*pristine* (not *sandboxed-shell*))
     (let ((held (>= (or (json-value (nlk:read-death-marker) :integer "deaths") 0) 2)))
       (health-fact :self "self"
                    (format nil "pristine: generation 0, no cell loaded -- ~a" (nlk:pristine-reason))

@@ -14917,7 +14917,8 @@ condition's report, exit 1."
       (when *sandbox-asked*
         (when-let (refusal (sandbox-launch-preflight store-path))
           (print-answer-and-quit refusal 1 :error))
-        (setf nlk::*pristine* t))
+        (setf nlk::*pristine* t
+              nlk::*pristine-reason* "a sandboxed shell stands on the binary alone; its organism loads the folder in the jail"))
       ;; A home that has run sandboxed loads its folder in the jail only:
       ;; what the jail wrote into its layer or cells would otherwise run here,
       ;; outside it, at the next plain launch, serve or warm image.

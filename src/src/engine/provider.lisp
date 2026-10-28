@@ -3099,6 +3099,26 @@ none, as a corrupt auth file does."
               (credential-fail "empty secret file ~a" (file-namestring path)))
             key))))))
 
+(defun secret-file-provider-ids (&optional (directory *secrets-directory*))
+  "The provider ids whose key is kept alone under the secrets folder
+DIRECTORY and reads as a key (PROVIDER-SECRET-KEY, probed): each
+providers.<id>.api_key, sorted; never a value."
+  ;; A credentialed provider like an auth.json api_keys entry: a home whose
+  ;; keys `nodecode secrets split' moved, or one set up for --sandbox with
+  ;; the key in its file alone, is connected -- the first frame must not
+  ;; open the Connect walk over a key it would use.
+  (when directory
+    (sort (loop for path in (ignore-errors (uiop:directory-files (uiop:ensure-directory-pathname directory)))
+                for name = (file-namestring path)
+                for end = (- (length name) (length ".api_key"))
+                for id = (and (> end (length "providers."))
+                              (string= "providers." name :end2 (length "providers."))
+                              (string= ".api_key" name :start2 end)
+                              (subseq name (length "providers.") end))
+                when (and id (ignore-errors (provider-secret-key id :directory directory :probe t)))
+                  collect id)
+          #'string<)))
+
 ;;; --- what a credential is -------------------------------------------------
 ;;; A credential is a PLIST — (:key SECRET :source PROVENANCE :attributes
 ;;; PLIST) — and not a structure, because it is what a :CREDENTIAL hook
@@ -3504,8 +3524,10 @@ PROVIDER-FAILURE-REASON; SECONDS, how long it took."
 (defun configured-provider-inventory (&key (auth-path *auth-file-path*))
   "(values PROVIDER-IDS MODELS): the credentialed provider set and the
 configured model list (config.zig configuredProviderInventory)."
-  ;; IDS = auth.json providers plus shared-config providers carrying config
-  ;; credentials, case-insensitively deduplicated, sorted ascending. MODELS =
+  ;; IDS = auth.json providers, the providers whose key sits in a file of its
+  ;; own under secrets/ (SECRET-FILE-PROVIDER-IDS) and shared-config providers
+  ;; carrying config credentials, case-insensitively deduplicated, sorted
+  ;; ascending. MODELS =
   ;; each credentialed config provider's models entries as plists
   ;; (:provider-id :provider-display :model-id :context-window); malformed
   ;; entries are skipped rather than refused — a dialog listing must not
@@ -3522,6 +3544,9 @@ configured model list (config.zig configuredProviderInventory)."
               for id = (subseq trimmed 0 (and (string= section "oauth_tokens")
                                               (position #\: trimmed)))
               when (plusp (length id)) do (pushnew id ids :test #'string-equal))))
+    ;; the secret-file tier: a key alone in secrets/ credentials its provider
+    (dolist (id (secret-file-provider-ids))
+      (pushnew id ids :test #'string-equal))
     ;; config providers in two passes: the credentialed ids (config.zig
     ;; providerHasConfigCredentials), then the models of every id listed
     (loop for (id . entry) in entries

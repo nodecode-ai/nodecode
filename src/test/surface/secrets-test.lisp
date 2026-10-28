@@ -40,6 +40,23 @@ process key."
         (is (null (nlk:json-value left :object "api_keys")))
         (is (equal "tok-gamma" (nlk:json-value left :text "oauth_tokens" "gamma" "access")))))))
 
+(deftest a-key-alone-in-secrets-connects-its-provider ()
+  ;; A home set up for --sandbox keeps its key in secrets/ alone, with no
+  ;; auth.json entry and no config key: its provider is credentialed, so the
+  ;; first frame does not open the Connect walk over it.
+  (with-secret-home (auth secrets :contents "{}")
+    (let ((nle::*auth-file-path* auth))
+      (is (null (nle::configured-provider-inventory)) "no file, no provider")
+      (nle::write-secret-file (nle::provider-secret-file "alpha") "sk-alpha-0123")
+      ;; an empty file is no key, and a file not named for a provider is no provider
+      (with-open-file (out (nle::provider-secret-file "blank") :direction :output :if-exists :supersede))
+      (with-open-file (out (merge-pathnames "notes.txt" (uiop:ensure-directory-pathname secrets))
+                           :direction :output :if-exists :supersede)
+        (write-line "sk-not-a-provider" out))
+      (is (equal '("alpha") (nle::secret-file-provider-ids)))
+      (is (equal '("alpha") (nle::configured-provider-inventory)) "the file credentials its provider")
+      (is (nle::provider-connected-p) "so the provider is connected"))))
+
 (deftest secrets-split-dry-run-writes-nothing ()
   (with-secret-home (auth secrets)
     (let ((before (uiop:read-file-string auth))
