@@ -8228,18 +8228,52 @@ or NIL when it names no image type or carries no payload."
                        :stripped t))
       (return (values media-type output)))))
 
+(defun stage-composer-image (model media-type base64)
+  "Stage one image as a pending attachment of MODEL's next submit, behind an
+`[Image #N] ' marker typed where the cursor is. => T."
+  (editor-insert (chat-model-editor model)
+                 (format nil "[Image #~d] "
+                         (1+ (length (chat-model-pending-images model)))))
+  (alexandria:appendf (chat-model-pending-images model)
+                      (list (cons media-type base64)))
+  t)
+
 (defun paste-clipboard-image (model)
-  "Stage the system clipboard's image as a pending attachment of MODEL's
-next submit, behind an `[Image #N] ' marker typed where the cursor is.
-=> T when there was one."
+  "Stage the system clipboard's image in MODEL's composer. => T when there
+was one."
   (multiple-value-bind (media-type base64) (read-clipboard-image-base64)
     (when media-type
-      (editor-insert (chat-model-editor model)
-                     (format nil "[Image #~d] "
-                             (1+ (length (chat-model-pending-images model)))))
-      (alexandria:appendf (chat-model-pending-images model)
-                          (list (cons media-type base64)))
-      t)))
+      (stage-composer-image model media-type base64))))
+
+(defun pasted-image-file (text)
+  "TEXT, a paste, when it is nothing but the path of an image file on this
+machine => (values MEDIA-TYPE BASE64), else NIL."
+  ;; What Windows Terminal pastes for a snip (Win+Shift+S, PrintScreen) or an
+  ;; image copied in Explorer -- the clipboard carries the file too, and the
+  ;; terminal pastes files as their paths -- and what a file dragged onto a
+  ;; terminal types. The path may come quoted; dragged onto a POSIX terminal,
+  ;; its spaces may come backslashed. The type is the file's own bytes, and a
+  ;; file past the provider's ceiling stays a path.
+  (let* ((path (string-trim '(#\Space #\Tab #\Newline #\Return) text))
+         (path (if (and (>= (length path) 2)
+                        (find (char path 0) "\"'")
+                        (char= (char path 0) (char path (1- (length path)))))
+                   (subseq path 1 (1- (length path)))
+                   path)))
+    (when (and (< 0 (length path) 4096)
+               (not (find #\Newline path))
+               (some (lambda (extension)
+                       (let ((end (- (length path) (length extension))))
+                         (and (plusp end) (string-equal extension path :start2 end))))
+                     '(".png" ".jpg" ".jpeg" ".gif" ".webp")))
+      (dolist (candidate (remove-duplicates
+                          (list path #-win32 (ppcre:regex-replace-all "\\\\(.)" path "\\1"))
+                          :test #'equal))
+        (let* ((octets (ignore-errors
+                        (nlt:file-octets (uiop:parse-native-namestring candidate) *image-max-bytes*)))
+               (media-type (nlt:image-media-type octets)))
+          (when media-type
+            (return (values media-type (cl-base64:usb8-array-to-base64-string octets)))))))))
 
 ;;; --- the docked dialog panel -------------------------------------------------
 ;;; One chrome for every dialog, mirroring src/tui/dialog.zig
@@ -12379,13 +12413,19 @@ from the ones COLLECT-DURING-WAIT hid inside provider wait."
       ;; An EMPTY paste is the terminal's own paste key over a clipboard that
       ;; holds no text: Windows Terminal keeps Ctrl+V for itself and, with only
       ;; an image copied, sends ESC [ 200 ~ ESC [ 201 ~ and nothing between --
-      ;; so it asks for the image, as the paste-image key does.
+      ;; so it asks for the image, as the paste-image key does. A paste that is
+      ;; only an image file's path -- a snip, an image copied in Explorer, a
+      ;; file dragged in -- stages that file.
       ((nlt:paste-msg-p msg)
        (cond ((chat-model-dialog model)
               (picker-dialog-paste model (nlt:paste-msg-text msg)))
-             (t (if (zerop (length (nlt:paste-msg-text msg)))
-                    (paste-clipboard-image model)
-                    (attach-composer-paste model (nlt:paste-msg-text msg)))
+             (t (let ((text (nlt:paste-msg-text msg)))
+                  (if (zerop (length text))
+                      (paste-clipboard-image model)
+                      (multiple-value-bind (media-type base64) (pasted-image-file text)
+                        (if media-type
+                            (stage-composer-image model media-type base64)
+                            (attach-composer-paste model text)))))
                 (reset-history-navigation model)
                 (setf (chat-model-slash-selection model) 0))))
 
