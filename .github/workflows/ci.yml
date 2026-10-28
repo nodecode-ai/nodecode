@@ -2,7 +2,9 @@ name: CI
 
 # Every push to main, and every pull request from a branch of this repository,
 # is built on self-hosted runners, the same way a release is built:
-#   linux    lint, the release tarball (pack.sh), the core test suite
+#   linux    lint, the release tarball (pack.sh), the core test suite, every
+#            shipped cell's suite, and the release answering a Discord
+#            message end to end against fake Discord and provider APIs
 #   macos    the Mac half of the release, driven over ssh (pack-macos.sh)
 #   windows  the release's Windows half: build-windows.ps1 and both smokes
 # The scripts live in src/tools/ci-*, so a job is one step and the same check
@@ -32,8 +34,18 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - name: Lint, build the release tarball, run the core suite
+      - name: Lint, build the release, run the core and cell suites, answer Discord end to end
         run: src/tools/ci-linux.sh
+        env:
+          CI_OUT: ${{ runner.temp }}/ci-out
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-logs
+          path: ${{ runner.temp }}/ci-out/*.log
+          retention-days: 7
+          if-no-files-found: ignore
 
   macos:
     name: macOS
