@@ -58,14 +58,15 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      # Relative: pack.sh writes OUT under the checkout.
       - name: Pack the Linux tarball (pack.sh)
-        run: just tarball HEAD "$RUNNER_TEMP/release"
+        run: just tarball HEAD release-out
         env:
           NODECODE_BUILD_HOME: /var/tmp/nodecode-ci-build
       - uses: actions/upload-artifact@v4
         with:
           name: release-x86_64-linux
-          path: ${{ runner.temp }}/release/nodecode-${{ needs.check.outputs.label }}-x86_64-linux.tar.gz*
+          path: release-out/nodecode-${{ needs.check.outputs.label }}-x86_64-linux.tar.gz*
           retention-days: 7
           if-no-files-found: error
 
@@ -105,7 +106,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    name: ${{ github.event_name == 'push' && 'Publish' || 'Rehearse the publish' }}
+    name: Publish
     needs: [check, linux, macos, windows]
     runs-on: [self-hosted, nc-linux]
     environment: release
