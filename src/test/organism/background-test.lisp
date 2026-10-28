@@ -368,7 +368,11 @@ under *UNIT-DIRECTORY*, its enablement and its process FAKE's."
                                      :wait nil)))
     (nlk:with-cleanup ((ignore-errors (sb-ext:process-kill process 9))
                        (ignore-errors (sb-ext:process-wait process)))
-      (is (nlk:gateway-process-p (sb-ext:process-pid process))))))
+      ;; RUN-PROGRAM answers once it has forked, before the child's exec lands:
+      ;; until then /proc/PID/cmdline is the parent's argv or empty. Ask until
+      ;; the exec is in, as a gateway's own pid is only ever read long after.
+      (is (nlk:wait-until (lambda () (nlk:gateway-process-p (sb-ext:process-pid process)))
+                          (nlk:deadline-after 5))))))
 
 (deftest profile-delete-takes-its-gateway-with-it (with-scripted-systemd (fake))
   (nlk:profile-create "coder")
