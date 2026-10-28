@@ -37,6 +37,9 @@ OUT="${2:-dist}"
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$repo"
+# OUT relative is under the checkout (dist by default); absolute, as CI passes
+# its own scratch directory, it is taken as given.
+case "$OUT" in /*) dest="$OUT" ;; *) dest="$repo/$OUT" ;; esac
 
 os="$(uname -s | tr '[:upper:]' '[:lower:]')"
 arch="$(uname -m)"
@@ -219,11 +222,11 @@ if [ -n "$leak" ]; then
   printf '%s\n' "$leak" | head -5 >&2
   exit 1
 fi
-mkdir -p "$repo/$OUT"
-rm -rf "$repo/$OUT/$name"
-mv "$stage" "$repo/$OUT/$name"
+mkdir -p "$dest"
+rm -rf "$dest/$name"
+mv "$stage" "$dest/$name"
 
-cd "$repo/$OUT"
+cd "$dest"
 rm -f "$name.tar.gz" "$name.tar.gz.sha256"
 # gzip, not zstd: measured 26 MB against 25 MB on this tree, and a bare
 # debian:trixie-slim has tar but no zstd -- a megabyte is not worth handing
