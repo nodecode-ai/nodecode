@@ -373,3 +373,43 @@ where an Eval or a Think label stands."
       (assert (equal (color-sgr (visual-style-bg (style-for-tone :user-block)) nil :truecolor)
                      (nlt:cell-bg (nlt::screen-buffer-ref buffer 8 4))))
       (assert (null (nlt:cell-bg (nlt::screen-buffer-ref buffer 8 5)))))))
+
+;;; Every view that folds gateway events notes its clocks here: the shell's own
+;;; fold, and the gateway's rows views -- a channel lane's, a late shell's
+;;; catch-up -- each on the thread that serves it. They fold at once.
+
+(nodecode.test:deftest nodecode.test::transcript-clocks-hold-while-views-fold-at-once ()
+  (let* ((views 8) (each 300) (base 970000000)
+         (table *transcript-time-facts*)
+         (faults '()) (lock (bt2:make-lock :name "fold-faults")))
+    (flet ((turn (k i) (format nil "fold-at-once-~d-~d" k i))
+           (position-of (k i) (+ base (* k each) i)))
+      (unwind-protect
+           (let ((threads
+                   (loop for k below views
+                         collect (let ((k k))
+                                   (bt2:make-thread
+                                    (lambda ()
+                                      (let ((*transcript-time-facts* table)
+                                            (state (make-hash-table :test 'equal)))
+                                        (handler-case
+                                            (dotimes (i each)
+                                              (setf state
+                                                    (apply-gateway-event
+                                                     state
+                                                     (json-object "type" "turn.usage" "input-tokens" 10 "output-tokens" 2
+                                                                  "provider" "p" "model" "m"
+                                                                  "metadata" (json-object "turn_id" (turn k i)
+                                                                                          "log_position" (position-of k i)
+                                                                                          "occurred_at" "2026-10-28T19:00:00.000Z")))))
+                                          (error (e) (bt2:with-lock-held (lock) (push (princ-to-string e) faults))))))
+                                    :name "fold-at-once")))))
+             (dolist (thread threads)
+               (bt2:join-thread thread))
+             (nodecode.test::is (null faults) (format nil "no fold faulted: ~{~a~^; ~}" (subseq faults 0 (min 3 (length faults)))))
+             (nodecode.test::is (loop for k below views always (loop for i below each always (gethash (position-of k i) table))) "every fold's event clock is kept")
+             (nodecode.test::is (loop for k below views always (loop for i below each always (getf (gethash (turn k i) table) :usage))) "every turn's usage is kept"))
+        (dotimes (k views)
+          (dotimes (i each)
+            (remhash (turn k i) table)
+            (remhash (position-of k i) table)))))))

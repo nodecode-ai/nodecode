@@ -6,7 +6,10 @@
 (in-package #:nodecode.evolved)
 
 
-(defvar *transcript-time-facts* (make-hash-table :test 'equal) "Persisted-history event clocks: log position -> universal-time-ms; turn id -> timing plist.")
+;; Every view that folds gateway events notes into this one table -- the
+;; shell's own fold, and the gateway's rows views, each on the thread serving
+;; it -- so it is synchronized, and each read-modify-write holds its lock.
+(defvar *transcript-time-facts* (make-hash-table :test 'equal :synchronized t) "Persisted-history event clocks: log position -> universal-time-ms; turn id -> timing plist.")
 
 (defvar *transcript-live-times* (make-hash-table :test 'eq :weakness :key) "Live-only first-paint clocks for rows without durable event ownership.")
 
@@ -17,24 +20,26 @@
   (when-let (ms (and at (if (integerp at) at (iso-8601-ms at))))
     (when (integerp position) (setf (gethash position *transcript-time-facts*) ms))
     (when turn-id
-      (let ((timing (gethash turn-id *transcript-time-facts*)))
-        (cond ((equal kind "turn.started") (setf (getf timing :started) ms))
-              ((member kind '("turn.completed" "turn.cancelled" "turn.failed") :test #'equal)
-               (setf (getf timing :ended) ms)
-               (when (and (getf timing :started) (<= (getf timing :started) ms))
-                 (setf (getf timing :elapsed) (- ms (getf timing :started))))))
-        (setf (gethash turn-id *transcript-time-facts*) timing)))))
+      (sb-ext:with-locked-hash-table (*transcript-time-facts*)
+        (let ((timing (copy-list (gethash turn-id *transcript-time-facts*))))
+          (cond ((equal kind "turn.started") (setf (getf timing :started) ms))
+                ((member kind '("turn.completed" "turn.cancelled" "turn.failed") :test #'equal)
+                 (setf (getf timing :ended) ms)
+                 (when (and (getf timing :started) (<= (getf timing :started) ms))
+                   (setf (getf timing :elapsed) (- ms (getf timing :started))))))
+          (setf (gethash turn-id *transcript-time-facts*) timing))))))
 
 ;; Retain canonical turn totals beside timestamp facts, then expose them on the user's timestamp.
 (defun note-transcript-usage (turn-id usage)
   "Snapshot the turn's canonical usage accumulator into its timestamp facts."
   (when turn-id
-    (let ((timing (copy-list (gethash turn-id *transcript-time-facts*))))
-      (dolist (key '(:provider :model :response-model :effort :finish-reason))
-        (when (json-value (getf usage key) :text)
-          (setf (getf timing key) (getf usage key))))
-      (setf (getf timing :usage) (copy-list usage)
-            (gethash turn-id *transcript-time-facts*) timing))))
+    (sb-ext:with-locked-hash-table (*transcript-time-facts*)
+      (let ((timing (copy-list (gethash turn-id *transcript-time-facts*))))
+        (dolist (key '(:provider :model :response-model :effort :finish-reason))
+          (when (json-value (getf usage key) :text)
+            (setf (getf timing key) (getf usage key))))
+        (setf (getf timing :usage) (copy-list usage)
+              (gethash turn-id *transcript-time-facts*) timing)))))
 
 (defun transcript-clock (row)
   "Use the original fact's time for history and a stable first-paint clock for live ephemera."
