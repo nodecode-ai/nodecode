@@ -2346,7 +2346,7 @@ NIL when no line differs. VERB, when given, names what changed it."
       (json-object "path" path
                    "added" added
                    "removed" removed
-                   "patch" (format nil "diff --git a/~a b/~a~%--- ~:[/dev/null~;a/~a~]~%+++ b/~a~%~a"
+                   "patch" (format nil "diff --git a/~a b/~a~%--- ~:[/dev/null~*~;a/~a~]~%+++ b/~a~%~a"
                                    path path before path path (unified-hunks operations))
                    :opt "verb" verb))))
 
