@@ -52,9 +52,8 @@ LINE-NUMBER TEXT pairs written in their place."
         (is-shape (aref files 0)
           ("path" (format nil "~a/notes.md" (string-right-trim "/" shown)))
           ("added" 1) ("removed" 0) ("verb" "edit"))
-        (is (search (format nil " ## Unreleased~%+- greet takes a person and punctuation~% ~%")
-                    (nlk:json-value (aref files 0) :string "patch"))
-            "diffed from before the call, to the file as it ends"))
+        (let ((patch (nlk:json-value (aref files 0) :string "patch")))
+          (is (search (format nil " ## Unreleased~%+- greet takes a person and punctuation~% ~%") patch) "diffed from before the call, to the file as it ends")))
       ;; The bracket's own files stand; a verb's file it already names is not
       ;; listed twice, and the working key goes.
       (let ((metadata nle::*tool-result-metadata*)
@@ -124,11 +123,11 @@ BEFORE to AFTER, then its answer."
     (is (rows-carry-p "Ran 1 command, edited 1 file +1 -1" lines))
     (is (rows-carry-p "greet takes a person +1 -1" lines) "the edit's own line")
     (is (rows-carry-p "+1 -1 greet.py" lines) "its file's header")
+    ;; The diff under its header, above the answer.
     (is (< (row-index-of "+1 -1 greet.py" lines :required t)
            (row-index-of "3 - l3" lines :required t)
            (row-index-of "3 + THREE" lines :required t)
-           (row-index-of "done" lines :required t))
-        "the diff under its header, above the answer")
+           (row-index-of "done" lines :required t)))
     (is (not (rows-carry-p "listed" lines)) "a plain command stays folded")
     ;; A run of edits alone is worded as edits.
     (is (rows-carry-p "Edited 1 file +1 -1" (edit-diff-lines (edit-diff-state :commands 0))))
@@ -155,8 +154,7 @@ BEFORE to AFTER, then its answer."
            (key (list :diff (nle::tool-row-expand-key row) "greet.py"))
            (more (find-if (lambda (line) (search "… +" (nle::lline-text line)))
                           (nle::workspace-diff-llines row))))
-      (is (every (lambda (span) (equal key (nle::mspan-link span))) (nle::lline-spans more))
-          "the count opens the file, as its header does")
+      (is (every (lambda (span) (equal key (nle::mspan-link span))) (nle::lline-spans more)) "the count opens the file, as its header does")
       (let* ((nle::*expanded-tool-call* (list :fold key))
              (open (edit-diff-lines state)))
         (is (rows-carry-p "40 + l40" open) "opened, the whole diff")
