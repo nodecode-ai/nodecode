@@ -548,6 +548,7 @@ of stacking."
      (:file "surface/think-off-test")
      ;; Uses gateway-test's detached shell and the real organism.loaded fold.
      (:file "tui/mutation-collapse-test")
+     (:file "tui/edit-diff-test")
      (:file "tui/eval-error-test")
      (:file "tui/tool-hover-test")
      (:file "tui/collapse-scroll-test")

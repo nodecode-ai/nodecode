@@ -633,7 +633,9 @@ diff names from the session's directory: the same, behind a ./, or whole."
            (append entries
                    (loop for file across (json-array metadata "workspace_diff" "files")
                          for path = (json-value file :text "path")
-                         when (and path (loop for (family source) in entries
+                         ;; A file a verb stamped (MERGE-VERB-DIFFS) is that verb's entry.
+                         when (and path (null (json-value file :text "verb"))
+                                   (loop for (family source) in entries
                                               never (and (member family '(:write :edit))
                                                          (activity-same-file-p source path))))
                            collect (list :edit path nil)))))

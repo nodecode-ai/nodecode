@@ -3549,8 +3549,37 @@ added and removed, onto LLINE -- nothing for a call that changed none."
           finally (append-lline-run lline (format nil " +~d" added) :tone :diff-added)
                   (append-lline-run lline (format nil " -~d" removed) :tone :diff-removed))))
 
+(defparameter *diff-preview-lines* 12
+  "How many lines of a changed file's diff stand under its header before
+the header is clicked open: an edit reads as an edit at a glance, and a
+long one does not bury the turn.")
+
+(nlk:define-side-table parsed-patch (:weakness :key)
+  "Weak memo: a diff document file -> PARSE-UNIFIED-PATCH of its patch, so
+a run listing its edits on every frame parses each patch once.")
+
+(defun file-diff-llines (file key &aux (open (detail-open-p key)))
+  "The diff of FILE, a diff document file, as lines under its header: all
+of it while the header (KEY) is clicked open, else its first
+*DIFF-PREVIEW-LINES* and a line counting the rest, which opens it too."
+  (let* ((patch (json-value file :string "patch"))
+         (entries (and patch (memoized (parsed-patch file) (patch) (parse-unified-patch patch))))
+         (maximum (reduce #'max entries :key (lambda (entry) (or (diff-line-number entry) 0)) :initial-value 0))
+         (gutter (if (plusp maximum) (length (format nil "~d" maximum)) 0))
+         (shown (if open entries (subseq entries 0 (min (length entries) *diff-preview-lines*))))
+         (hidden (- (length entries) (length shown))))
+    (append (mapcar (lambda (entry) (diff-body-lline entry gutter)) shown)
+            (when (plusp hidden)
+              (let ((more (make-lline :text (make-string (if (plusp gutter) (+ gutter 3) 2)
+                                                         :initial-element #\Space)
+                                      :tone :muted :role :tool-cont)))
+                (append-lline-run more (format nil "… +~d line~:p" hidden) :tone :muted)
+                (dolist (span (lline-spans more)) (setf (mspan-link span) key))
+                (list more))))))
+
 (defun workspace-diff-llines (row)
-  "File disclosures immediately below their tool, each opening its own full diff."
+  "File disclosures immediately below their tool, each showing the head of
+its diff and opening its own full diff (FILE-DIFF-LLINES)."
   (when-let (document (json-value row.metadata :object "workspace_diff"))
     (let ((truncated (or (json-value document :integer "truncated") 0)))
       (append
@@ -3573,13 +3602,7 @@ added and removed, onto LLINE -- nothing for a call that changed none."
                        ;; All glyphs on the header toggle this file, never the
                        ;; OS opener or another file in the same Eval.
                        (dolist (span (lline-spans header)) (setf (mspan-link span) key))
-                       (cons header
-                             (when (detail-open-p key)
-                               (let* ((patch (json-value file :string "patch"))
-                                      (entries (and patch (parse-unified-patch patch)))
-                                      (maximum (reduce #'max entries :key (lambda (entry) (or (diff-line-number entry) 0)) :initial-value 0))
-                                      (gutter (if (plusp maximum) (length (format nil "~d" maximum)) 0)))
-                                 (mapcar (lambda (entry) (diff-body-lline entry gutter)) entries))))))
+                       (cons header (file-diff-llines file key))))
        (when (plusp truncated)
          (list (make-lline :text (format nil "... +~d more file~:p" truncated)
                            :tone :muted :dim t :role :tool-cont)))))))
@@ -4837,9 +4860,14 @@ the state's live execs, shows what it has written under it."
                         ;; A call clicked open under the shut title stays
                         ;; listed there past its round, until a click
                         ;; closes it.
-                        ((and process (some #'run-member-open-p group.members))
+                        ;; So does a call that changed files: what an edit
+                        ;; changed is the turn's work, and shut away behind
+                        ;; `Ran 2 commands' it read as commands run.
+                        ((and process (some (lambda (row) (or (run-member-open-p row) (row-edited-p row)))
+                                            group.members))
                          (remove-if-not (lambda (row) (or (member row group.tail :test #'eq)
-                                                          (run-member-open-p row)))
+                                                          (run-member-open-p row)
+                                                          (row-edited-p row)))
                                         group.members))
                         (t group.tail)))
          ;; A disclosure's state rides the gutter: ▸ shut, ▾ open.
@@ -4855,16 +4883,39 @@ the state's live execs, shows what it has written under it."
                    ;; A live run counts up as its calls land, `…' while one runs.
                    ;; Without this, one that has run nothing yet would say `Ran 0
                    ;; commands' and would read as nothing happening.
-                   (let ((mutations (count-if #'row-notice-summary group.members)))
-                     (make-lline :text (if (or calls (plusp mutations))
-                                           (format nil "Ran ~d command~:p~a~:[~;…~]" (length calls)
-                                                   (if (plusp mutations) (format nil ", Mutated ~d time~:p" mutations) "")
-                                                   running)
-                                           (if (some (lambda (row) (and (eq :reasoning row.kind) (thinking-p row)))
-                                                     group.members)
-                                               "Thinking…"
-                                               "Thought"))
-                                 :tone :muted :role role :gutter-tone :muted)))
+                   ;; A call that changed files counts as the files it
+                   ;; edited, not as a command: `Edited 2 files +4 -2'.
+                   (let* ((mutations (count-if #'row-notice-summary group.members))
+                          (mutated (if (plusp mutations) (format nil ", Mutated ~d time~:p" mutations) ""))
+                          (edited (remove-if-not #'row-edited-p calls))
+                          (files (loop for row in edited
+                                       append (loop for file across (json-array row.metadata "workspace_diff" "files")
+                                                    collect (json-value file :text "path"))))
+                          (commands (- (length calls) (length edited)))
+                          (line (make-lline :text (cond ((and edited files)
+                                                         (format nil "~:[Edited~;Ran ~:*~d command~:p, edited~] ~d file~:p~a~:[~;…~]"
+                                                                 (and (plusp commands) commands)
+                                                                 (length (remove-duplicates files :test #'equal))
+                                                                 mutated running))
+                                                        ((or calls (plusp mutations))
+                                                         (format nil "Ran ~d command~:p~a~:[~;…~]" (length calls)
+                                                                 mutated running))
+                                                        ((some (lambda (row) (and (eq :reasoning row.kind) (thinking-p row)))
+                                                               group.members)
+                                                         "Thinking…")
+                                                        (t "Thought"))
+                                            :tone :muted :role role :gutter-tone :muted)))
+                     (when (and edited files (not running))
+                       (loop for row in edited
+                             sum (loop for file across (json-array row.metadata "workspace_diff" "files")
+                                       sum (or (json-value file :integer "added") 0))
+                               into added
+                             sum (loop for file across (json-array row.metadata "workspace_diff" "files")
+                                       sum (or (json-value file :integer "removed") 0))
+                               into removed
+                             finally (append-lline-run line (format nil " +~d" added) :tone :diff-added)
+                                     (append-lline-run line (format nil " -~d" removed) :tone :diff-removed)))
+                     line))
                   ;; A reflection's recap as its one quiet line: `Reflection recap', and
                   ;; while it is closed the first words of its answer, cut to WIDTH so the
                   ;; line stays one row. The web page's recap summary, whose words hide
@@ -4923,8 +4974,12 @@ the state's live execs, shows what it has written under it."
                                           ;; the rail under the call's first word: stepped
                                           ;; in, it stood two columns right of everything.
                                           (fork-tree-llines member width)
-                                          (when (run-member-open-p member)
-                                            (mapcar #'stepped-in (without-note member (rest (row-body-llines member width)))))
+                                          (cond ((run-member-open-p member)
+                                                 (mapcar #'stepped-in (without-note member (rest (row-body-llines member width)))))
+                                                ;; Shut, a call that changed files
+                                                ;; still shows them, each diff's head.
+                                                ((row-edited-p member)
+                                                 (mapcar #'stepped-in (workspace-diff-llines member))))
                                           (listed-output member width backgrounds))))
                                   ((tool-group-p member) (list (tool-group-display-block member width backgrounds)))
                                   (mutation
@@ -4989,9 +5044,14 @@ the state's live execs, shows what it has written under it."
                                     :refs refs
                                     :lines lines
                                     :plain-lines plains)))))
-      (if (or open listing)
+      ;; A shut run listing only settled calls that changed files shows the
+      ;; same lines until the pointer or the accordion moves: those two ride
+      ;; its memo, NIL for a run listing nothing so they never wake it.
+      (if (or open (some (lambda (row) (or (member row group.tail :test #'eq) (run-member-open-p row)))
+                         listing))
           (compose)
-          (memoized (tool-group-block group) (title width *palette* *color-profile* hover disclosure)
+          (memoized (tool-group-block group) (title width *palette* *color-profile* hover disclosure
+                                                    (and listing *hover-row*) (and listing *expanded-tool-call*))
             (compose))))))
 
 (defun project-state (state &key (width 80) start end prompt)

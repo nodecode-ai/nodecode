@@ -3593,6 +3593,9 @@ recovery closes those (RECOVER-INTERRUPTED-TURNS)."
                  (when document
                    (unless (hash-table-p run.metadata) (setf run.metadata (make-json-object)))
                    (setf (gethash "workspace_diff" run.metadata) document))))
+             ;; What EDIT and WRITE-FILE changed outside the bracket's folder
+             ;; (or with captures off) rides the same document.
+             (merge-verb-diffs run.metadata)
              ;; The spend line rides the fact's metadata beside what the
              ;; tool said, and only the model's copy renders it.
              (let ((text run.text)

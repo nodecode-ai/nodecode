@@ -2192,6 +2192,7 @@ answer a receipt naming the line."
       (t
        (let ((edited (uiop:strcat (subseq text 0 start) new (subseq text (+ start (length old))))))
          (write-file-text resolved edited)
+         (note-verb-diff "edit" resolved text edited)
          (format nil "edited ~a: line ~d, -~d +~d line~:p~{~@[; ~a~]~}"
                  (namestring resolved)
                  (1+ (count #\Newline text :end start))
@@ -2209,9 +2210,205 @@ replaced whole — and answer a one-line receipt."
   (let* ((resolved (eval-snippet-path path))
          (before (nlk:read-text resolved)))
     (write-file-text resolved text)
+    (note-verb-diff "write-file" resolved before text)
     (format nil "wrote ~a: ~d line~:p, ~d character~:p~{~@[; ~a~]~}"
             (namestring resolved) (text-line-count text) (length text)
             (source-clauses resolved text before))))
+
+;;; --- a verb's own diff ------------------------------------------------------
+;;; EDIT and WRITE-FILE hold the text they replace, so each stamps its change
+;;; on the running call as a diff document file -- the shape
+;;; WORKSPACE-DIFF-DOCUMENT ships, which the transcript draws under the call
+;;; (ui.lisp WORKSPACE-DIFF-LLINES). The workspace bracket walks the
+;;; session's folder alone: without this, an edit in a worktree, a ticket or
+;;; another repository changed a file and showed no diff of it, only its
+;;; receipt. Inside the folder the bracket stays the authority
+;;; (MERGE-VERB-DIFFS): it also sees what a shell command wrote there.
+
+(defparameter *verb-diff-context* 4
+  "Unchanged lines a verb's diff keeps around each change: the bracket's
+`--unified=4'.")
+
+(defparameter *verb-diff-lcs-limit* 250000
+  "The most line pairs a verb's diff compares to find the fewest changed
+lines between the unchanged head and tail of a file; past it the middle
+reads as one replacement, its old lines removed and its new ones added.")
+
+(nlk:define-side-table verb-diff-befores (:weakness :key)
+  "A call's result metadata -> a table of the files its verbs changed, each
+file's namestring -> its text before the call first changed it (NIL for a
+file the call made), so a file changed twice in one snippet diffs once.")
+
+(defun diff-text-lines (text)
+  "TEXT's lines as a vector, a final newline ending the last line rather
+than opening an empty one; NIL or empty TEXT has none."
+  (if (zerop (length text))
+      #()
+      (let ((lines (uiop:split-string text :separator '(#\Newline))))
+        (when (and (rest lines) (equal "" (car (last lines))))
+          (setf lines (butlast lines)))
+        (coerce lines 'vector))))
+
+(defun line-diff-operations (old new)
+  "The edit script from OLD to NEW, vectors of lines: (KIND . LINE) in file
+order, KIND :SAME, :REMOVED or :ADDED, a change's removals before its
+additions (git's order)."
+  ;; The unchanged head and tail are cut first, so an edit of one line in a
+  ;; long file compares that line alone; the middle is the fewest-changes
+  ;; walk while it is small enough (*VERB-DIFF-LCS-LIMIT*).
+  (let* ((n (length old))
+         (m (length new))
+         (head (or (mismatch old new :test #'string=) n))
+         (tail (loop for k from 0
+                     while (and (< (+ head k) n) (< (+ head k) m)
+                                (string= (aref old (- n k 1)) (aref new (- m k 1))))
+                     finally (return k)))
+         (a (subseq old head (- n tail)))
+         (b (subseq new head (- m tail)))
+         (p (length a))
+         (q (length b)))
+    (flet ((run (kind lines) (map 'list (lambda (line) (cons kind line)) lines)))
+      (append
+       (run :same (subseq old 0 head))
+       (if (and (plusp p) (plusp q) (<= (* p q) *verb-diff-lcs-limit*))
+           ;; (aref table i j): the longest common run of A[i..] and B[j..]
+           (let ((table (make-array (list (1+ p) (1+ q)) :element-type 'fixnum :initial-element 0))
+                 (i 0)
+                 (j 0)
+                 (operations '()))
+             (loop for i from (1- p) downto 0
+                   do (loop for j from (1- q) downto 0
+                            do (setf (aref table i j)
+                                     (if (string= (aref a i) (aref b j))
+                                         (1+ (aref table (1+ i) (1+ j)))
+                                         (max (aref table (1+ i) j) (aref table i (1+ j)))))))
+             (loop while (and (< i p) (< j q))
+                   do (cond ((string= (aref a i) (aref b j))
+                             (push (cons :same (aref a i)) operations)
+                             (incf i)
+                             (incf j))
+                            ((>= (aref table (1+ i) j) (aref table i (1+ j)))
+                             (push (cons :removed (aref a i)) operations)
+                             (incf i))
+                            (t (push (cons :added (aref b j)) operations)
+                               (incf j))))
+             (append (nreverse operations)
+                     (run :removed (subseq a i))
+                     (run :added (subseq b j))))
+           (append (run :removed a) (run :added b)))
+       (run :same (subseq old (- n tail)))))))
+
+(defun unified-hunks (operations &optional (context *verb-diff-context*))
+  "OPERATIONS (LINE-DIFF-OPERATIONS) as unified hunks, `@@ -A,B +C,D @@'
+each, CONTEXT unchanged lines around a change; changes whose context
+would meet share a hunk."
+  (let* ((operations (coerce operations 'vector))
+         (count (length operations))
+         (old-at (make-array (1+ count)))
+         (new-at (make-array (1+ count)))
+         (spans '()))
+    ;; The old and new line number each operation starts at.
+    (loop with old = 1 and new = 1
+          for k below count
+          do (setf (aref old-at k) old (aref new-at k) new)
+             (case (car (aref operations k))
+               (:same (incf old) (incf new))
+               (:removed (incf old))
+               (:added (incf new)))
+          finally (setf (aref old-at count) old (aref new-at count) new))
+    (loop for k below count
+          unless (eq :same (car (aref operations k)))
+            do (let ((start (max 0 (- k context)))
+                     (end (min count (+ k context 1))))
+                 (if (and spans (<= start (cdr (first spans))))
+                     (setf (cdr (first spans)) (max end (cdr (first spans))))
+                     (push (cons start end) spans))))
+    (with-output-to-string (out)
+      (loop for (start . end) in (nreverse spans)
+            for old-lines = (count :added operations :start start :end end :key #'car :test-not #'eq)
+            for new-lines = (count :removed operations :start start :end end :key #'car :test-not #'eq)
+            ;; A side with no lines names the line before the hunk, as git does.
+            do (format out "@@ -~d,~d +~d,~d @@~%"
+                       (- (aref old-at start) (if (zerop old-lines) 1 0)) old-lines
+                       (- (aref new-at start) (if (zerop new-lines) 1 0)) new-lines)
+               (loop for k from start below end
+                     for (kind . line) = (aref operations k)
+                     do (format out "~c~a~%" (ecase kind (:same #\Space) (:removed #\-) (:added #\+)) line))))))
+
+(defun verb-diff-file (path before after &optional verb)
+  "The diff document file -- {path, added, removed, patch} -- for the file
+named PATH going from the text BEFORE (NIL for a file made new) to AFTER;
+NIL when no line differs. VERB, when given, names what changed it."
+  (let* ((operations (line-diff-operations (diff-text-lines before) (diff-text-lines after)))
+         (added (count :added operations :key #'car))
+         (removed (count :removed operations :key #'car)))
+    (when (plusp (+ added removed))
+      (json-object "path" path
+                   "added" added
+                   "removed" removed
+                   "patch" (format nil "diff --git a/~a b/~a~%--- ~:[/dev/null~;a/~a~]~%+++ b/~a~%~a"
+                                   path path before path path (unified-hunks operations))
+                   :opt "verb" verb))))
+
+(defun verb-diff-path (resolved)
+  "How a diff names the file RESOLVED: from the session's folder when it is
+inside it -- the bracket's own spelling -- else from home, else whole."
+  (let* ((file (or (ignore-errors (truename resolved)) resolved))
+         (directory (ambient-session-directory))
+         (folder (and directory
+                      (or (ignore-errors (truename (uiop:ensure-directory-pathname directory)))
+                          (uiop:ensure-directory-pathname directory))))
+         (inside (and folder (uiop:subpathp file folder))))
+    (if inside
+        (substitute #\/ #\\ (uiop:native-namestring inside))
+        (nlk:home-abbreviated (uiop:native-namestring file)))))
+
+(defun note-verb-diff (verb resolved before after)
+  "Stamp the change VERB made to the file RESOLVED on the running call's
+result metadata under \"verb_diffs\": one diff document file per file, from
+the text BEFORE the call first changed it to AFTER. Nothing outside a tool
+call, and it never signals: a diff that cannot be made is no diff."
+  (when *executing-tool-call-id*
+    (with-handlers ((error () nil))
+      (unless (hash-table-p *tool-result-metadata*)
+        (setf *tool-result-metadata* (make-json-object)))
+      (let* ((metadata *tool-result-metadata*)
+             (befores (or (verb-diff-befores metadata)
+                          (setf (verb-diff-befores metadata) (make-hash-table :test #'equal))))
+             (key (namestring resolved))
+             (origin (multiple-value-bind (text found) (gethash key befores)
+                       (if found text (setf (gethash key befores) before))))
+             (shown (verb-diff-path resolved))
+             (file (verb-diff-file shown origin after verb))
+             (files (coerce (json-array metadata "verb_diffs") 'list))
+             (at (position shown files :key (lambda (entry) (json-value entry :text "path")) :test #'equal)))
+        (setf (gethash "verb_diffs" metadata)
+              (coerce (cond ((and at file) (substitute file (nth at files) files :count 1))
+                            (at (remove (nth at files) files :count 1))
+                            (file (append files (list file)))
+                            (t files))
+                      'vector))))))
+
+(defun merge-verb-diffs (metadata)
+  "Fold METADATA's verb_diffs into its workspace_diff document: each file a
+verb changed that the bracket's document does not name rides after the
+files the bracket saw. The verb_diffs key goes. => METADATA."
+  (when (hash-table-p metadata)
+    (let ((verbs (coerce (json-array metadata "verb_diffs") 'list)))
+      (remhash "verb_diffs" metadata)
+      (when verbs
+        (let* ((document (json-value metadata :object "workspace_diff"))
+               (seen (and document
+                          (map 'list (lambda (file) (json-value file :text "path"))
+                               (json-array document "files"))))
+               (extra (remove-if (lambda (file) (member (json-value file :text "path") seen :test #'equal))
+                                 verbs)))
+          (when extra
+            (let ((document (or document
+                                (setf (gethash "workspace_diff" metadata) (json-object "files" #())))))
+              (setf (gethash "files" document)
+                    (concatenate 'vector (json-array document "files") extra))))))))
+  metadata)
 
 ;;; --- look: an image file, shown at the next round ------------------------
 ;;; The model has no eyes of its own on the filesystem: an image it wants to
