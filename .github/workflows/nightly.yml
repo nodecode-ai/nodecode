@@ -1,0 +1,41 @@
+name: Nightly
+
+# Once a night, and by hand: main's release, built on the Linux runner the way
+# CI builds it, answers a message on real Discord with the test bot's token
+# (src/tools/e2e/discord-live.sh). Only the model provider is a stand-in, so
+# a red night is Discord or nodecode, never a model.
+#
+# Never on a pull request: the token is a repository secret, and a schedule
+# or a dispatch only ever runs this repository's own main. The test bot is
+# not the product's bot -- the run sets the bot's slash commands to this
+# build's -- and its channel sits in a private test server.
+# Secrets: NODECODE_LIVE_DISCORD_TOKEN, NODECODE_LIVE_DISCORD_CHANNEL. A
+# missing one fails the run rather than skipping it.
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+jobs:
+  discord-live:
+    name: Discord, real token
+    runs-on: [self-hosted, nc-linux]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the release
+        run: just tarball HEAD "$RUNNER_TEMP/nightly"
+        env:
+          NODECODE_BUILD_HOME: /var/tmp/nodecode-ci-build
+      - name: The release answers on real Discord
+        run: src/tools/e2e/discord-live.sh "$(ls "$RUNNER_TEMP"/nightly/nodecode-*.tar.gz | head -n 1)"
+        env:
+          NODECODE_LIVE_DISCORD_TOKEN: ${{ secrets.NODECODE_LIVE_DISCORD_TOKEN }}
+          NODECODE_LIVE_DISCORD_CHANNEL: ${{ secrets.NODECODE_LIVE_DISCORD_CHANNEL }}
