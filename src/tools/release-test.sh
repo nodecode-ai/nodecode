@@ -57,6 +57,30 @@ say 'a commit main does not carry is refused'
 check || fail "a run by hand on main was refused: $(cat "$root/check-out")"
 say 'a run by hand needs no tag'
 
+# --- pack-windows-zst.sh: one zip, one tar.zst ----------------------------------------
+# A publish that uploads and then fails is re-run, and the re-run packs the
+# Windows tar.zst again: the host already holds the first pack under that name,
+# and a published name keeps its bytes, so the second pack must be the first.
+packdir="$root/pack"
+mkdir -p "$packdir/one" "$packdir/two"
+python3 - "$packdir/one/nodecode-$label-x86_64-windows.zip" <<'PY'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], 'w') as z:
+    z.writestr('nodecode/nodecode.exe', b'MZ' + bytes(range(256)) * 64)
+    z.writestr('nodecode\\lib\\zstd.dll', b'dll' * 1000)
+    z.writestr('nodecode/README.txt', b'read me\n')
+PY
+cp "$packdir/one/nodecode-$label-x86_64-windows.zip" "$packdir/two/"
+bash "$work/src/tools/pack-windows-zst.sh" --here "$packdir/one/nodecode-$label-x86_64-windows.zip" > "$root/pack-out" 2>&1 \
+  || fail "the first pack failed: $(cat "$root/pack-out")"
+sleep 1.1
+(umask 0077 && bash "$work/src/tools/pack-windows-zst.sh" --here "$packdir/two/nodecode-$label-x86_64-windows.zip") > "$root/pack-out" 2>&1 \
+  || fail "the second pack failed: $(cat "$root/pack-out")"
+[ "$(cut -d' ' -f1 < "$packdir/one/nodecode-$label-x86_64-windows.tar.zst.sha256")" = \
+  "$(cut -d' ' -f1 < "$packdir/two/nodecode-$label-x86_64-windows.tar.zst.sha256")" ] \
+  || fail 'the same zip packed twice gave two tar.zst bodies'
+say 'the same zip packs to the same tar.zst, a second later and under another umask'
+
 # --- release-publish.sh rehearse ---------------------------------------------------
 site="$root/site.git"
 git init -q --bare "$site"

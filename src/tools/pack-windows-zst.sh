@@ -56,7 +56,13 @@ PY
   # body wins over the fastest pack -- but no wider than 27: a 2 GB window
   # needs 2 GB to decode, which tar.exe (and zstd without --long) refuses.
   # 27 is 128 MB, and every reader reads it.
-  tar -cf - -C "$tree" . | zstd --ultra -22 --long=27 -T0 -q -f -o "$out.tmp"
+  #
+  # The bytes are the zip's alone -- names sorted, no clock, no owner, one mode
+  # -- so a re-run after an upload packs the body the host already holds (a
+  # published name keeps its bytes) instead of one that only differs in when
+  # and by whom it was unpacked. zstd's output does not depend on -T.
+  tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --mode='u=rwX,go=rX' \
+      --format=gnu -cf - -C "$tree" . | zstd --ultra -22 --long=27 -T0 -q -f -o "$out.tmp"
   mv "$out.tmp" "$out"
   # The sidecar names the file alone, as every sidecar on /dl does.
   (cd "$(dirname "$out")" && sha256sum "$(basename "$out")") > "$out.sha256"

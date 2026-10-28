@@ -149,11 +149,13 @@ if has_platform x86_64-windows && [ ! -s "$tar_zst" ] && [ -s "$OUT/nodecode-$la
   }
 fi
 
+# The restart's log is this run's own: a fixed /tmp name is a file another
+# account's publish may own, and the release runner's could not write it.
 restart_web() {
   ssh -o BatchMode=yes "$host" \
     "cd '$app_dir' && docker compose -f '$compose_file' --env-file '$env_file' restart web" \
-    >/tmp/nodecode-publish-restart.log 2>&1 || {
-      cat /tmp/nodecode-publish-restart.log
+    >"$work/restart.log" 2>&1 || {
+      cat "$work/restart.log"
       return 1
     }
 }
