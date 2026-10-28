@@ -1804,6 +1804,18 @@ them itself, one per block (the Anthropic lane's reasoning_blocks)."
   (setf asm.signature-seen-p t)
   (when (plusp (length text)) (emit-stream-part asm.on-part :reasoning-signature :text text)))
 
+(defun wire-call-id (id)
+  "ID when the provider sent a non-empty one, else an id minted here."
+  ;; Some OpenAI-compatible routes stream tool_call frames with no id, for
+  ;; every call of a batch or now and then (GH #32). Kept as "", the call and
+  ;; its result replay with empty ids, and a strict endpoint (OpenRouter's
+  ;; validator) refuses the whole history with a 400 on every later turn.
+  ;; The id only pairs a call with its result, so ours serves as well as
+  ;; theirs; minted once here, it is stored with the call and replays as is.
+  (if (and (stringp id) (plusp (length id)))
+      id
+      (nlk:make-durable-id "call")))
+
 (defun open-tool-buffer (asm index &key id name arguments)
   "Buffer a whole tool call announced at INDEX and bracket it immediately."
   ;; A fresh buffer is never :started-p, so LIFECYCLE-TOOL-PROGRESS can only
@@ -5035,11 +5047,16 @@ chat-shaped assistant message."
                         (id :string "id")
                         (name :string "function" "name")
                         (fragment :string "function" "arguments")
-                        ;; created empty (bracket shut) on the first delta naming its index
+                        ;; created empty (bracket shut) on the first delta naming its
+                        ;; index, under that delta's id or one minted for a call sent without
                         (buf (or (cdr (assoc idx (lane-assembly-tool-buffers asm)))
-                                 (open-tool-buffer asm idx :name "" :arguments ""))))
+                                 (open-tool-buffer asm idx :id (wire-call-id id)
+                                                           :name "" :arguments ""))))
                 tc
-              (when id (setf (getf buf :id) id))
+              ;; a real id arriving after the first delta still names the
+              ;; call, until its bracket opened under the minted one
+              (when (and (plusp (length id)) (not (getf buf :started-p)))
+                (setf (getf buf :id) id))
               (when name
                 (setf (getf buf :name) (concatenate 'string (getf buf :name) name)))
               (if fragment
@@ -5474,7 +5491,7 @@ the chat wire shape (content string, tool_calls vector, reasoning_content)."
                                   ;; id and name are both known at block start, so
                                   ;; the bracket opens immediately.
                                   (open-tool-buffer asm index
-                                                    :id (or (gethash "id" block) "")
+                                                    :id (wire-call-id (gethash "id" block))
                                                     :name (or (gethash "name" block) "")))
                                  ;; Redacted thinking: the API sends ciphertext at
                                  ;; block start and no deltas. The span still opens
@@ -6064,7 +6081,7 @@ wire shape."
              ;; call_ids.
              ((equal item-type "function_call")
               (open-tool-buffer asm (or (json-value frame :integer "output_index") 0)
-                                :id (or (json-value item :string "call_id") "")
+                                :id (wire-call-id (json-value item :string "call_id"))
                                 :name (or (json-value item :string "name") ""))))))
         ((equal type "response.function_call_arguments.delta")
          (assembly-tool-fragment asm (or (json-value frame :integer "output_index") 0)

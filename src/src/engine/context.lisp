@@ -249,10 +249,26 @@ message below UNREASONED-BEFORE."
         ;; Reminders met while a call stood open, newest first, each with its
         ;; fact's position: each follows the tool messages that close it,
         ;; never splits a call from them.
-        (held-reminders '()))
+        (held-reminders '())
+        ;; Ids this fold named for calls journaled with an empty one, oldest
+        ;; first: what the empty-id results that follow answer, in order.
+        (blank-call-ids '()))
     (labels ((emit (msg source)
                (setf (message-source msg) source)
                (push msg result))
+             (named-call-id (call-id position k)
+               ;; A call journaled with an empty id -- a provider that sent
+               ;; none, before the lane minted one (GH #32) -- would replay as
+               ;; "", and a strict endpoint refuses the whole history: the
+               ;; session bricked for good. It folds named by its fact's
+               ;; position, the same name on every fold, so a cached prefix
+               ;; holds; its result, journaled under "" too, answers it in order.
+               (if (and (stringp call-id) (plusp (length call-id)))
+                   call-id
+                   (let ((named (format nil "call-~a-~d" position k)))
+                     (setf blank-call-ids (append blank-call-ids (list named))
+                           (gethash named call-positions) position)
+                     named)))
              (note-issued (call-id tool-name)
                (when (stringp call-id)
                  (unless (shiftf (gethash call-id issued-call-ids) t)
@@ -266,7 +282,8 @@ message below UNREASONED-BEFORE."
                  (emit (message "tool" +orphan-tool-result+
                                 :name (cdr open) :tool-call-id (car open))
                        (format nil "~ao" (gethash (car open) call-positions (car open)))))
-               (setf open-calls '())
+               (setf open-calls '()
+                     blank-call-ids '())
                (release-reminders))
              (release-reminders ()
                (loop for (text . position) in (reverse held-reminders)
@@ -278,7 +295,9 @@ message below UNREASONED-BEFORE."
                         "assistant" :null
                         :tool-calls
                         (map 'vector
-                             (lambda (event &aux (call-id (nlk:tool-call-event-call-id event))
+                             (lambda (event &aux (call-id (named-call-id
+                                                           (nlk:tool-call-event-call-id event)
+                                                           (nlk:event-log-position event) 0))
                                                  (tool-name (nlk:tool-call-event-tool-name event)))
                                (note-issued call-id tool-name)
                                (chat-tool-call-object call-id tool-name
@@ -305,10 +324,13 @@ message below UNREASONED-BEFORE."
                                   (calls (gethash "tool_calls" copy)))
                              (setf stored-tool-calls-p (vectorp calls))
                              (loop for call across (if (vectorp calls) calls #())
+                                   for k from 0
                                    for function = (json-value call :object "function")
                                    when (hash-table-p call)
                                      do (note-issued
-                                         (gethash "id" call)
+                                         (setf (gethash "id" call)
+                                               (named-call-id (gethash "id" call)
+                                                              event.log-position k))
                                          (json-value call :string "function" "name"))
                                    ;; the fold's own copy is made wire-safe in place
                                    when function
@@ -338,7 +360,10 @@ message below UNREASONED-BEFORE."
            ;; material: folded, it would pair the run call's tool_use id twice.
            (unless (background-shell-exit-fact-p event)
              (flush-pending-calls)
-             (let ((call-id (nlk:tool-result-event-call-id event)))
+             (let ((call-id (let ((journaled (nlk:tool-result-event-call-id event)))
+                              (if (and (equal journaled "") blank-call-ids)
+                                  (pop blank-call-ids)
+                                  journaled))))
                (when (gethash call-id issued-call-ids)
                  (setf open-calls (remove call-id open-calls
                                           :key #'car :test #'equal :count 1))
