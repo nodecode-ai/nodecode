@@ -8163,7 +8163,8 @@ TIFF, which is re-encoded.")
 (defparameter *windows-clipboard-image*
   "$ProgressPreference = 'SilentlyContinue'
 $ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+[void][Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms')
+[void][Reflection.Assembly]::LoadWithPartialName('System.Drawing')
 $types = @{ '.png' = 'image/png'; '.jpg' = 'image/jpeg'; '.jpeg' = 'image/jpeg'; '.gif' = 'image/gif'; '.webp' = 'image/webp' }
 $d = [Windows.Forms.Clipboard]::GetDataObject()
 if ($d -eq $null) { exit 1 }
@@ -8176,13 +8177,14 @@ if ($d.GetDataPresent([Windows.Forms.DataFormats]::FileDrop)) {
   }
 }
 $i = [Windows.Forms.Clipboard]::GetImage()
-if ($i -ne $null) { $m = New-Object IO.MemoryStream; $i.Save($m, [Drawing.Imaging.ImageFormat]::Png); 'image/png ' + [Convert]::ToBase64String($m.ToArray()); exit 0 }
+if ($i -ne $null) { $m = [IO.MemoryStream]::new(); $i.Save($m, [Drawing.Imaging.ImageFormat]::Png); 'image/png ' + [Convert]::ToBase64String($m.ToArray()); exit 0 }
 exit 1"
   "The Windows clipboard's image as one `MEDIA-TYPE BASE64' line, through
 Windows PowerShell: the PNG a browser or the snipping tool puts there, else
 the first image file copied in Explorer, else the bitmap a screenshot key
 leaves, re-encoded as PNG. Nothing is printed, and the exit is 1, when the
-clipboard holds no image.")
+clipboard holds no image. No cmdlet runs, so no module loads: a cold run
+is the .NET start alone, about a fifth of a second.")
 
 (defun windows-clipboard-image-argv ()
   "The argv that runs *WINDOWS-CLIPBOARD-IMAGE*: Windows PowerShell, which
