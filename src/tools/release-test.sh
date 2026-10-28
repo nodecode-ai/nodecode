@@ -32,6 +32,15 @@ for f in release-check.sh release-publish.sh publish-config.sh pack-windows-zst.
 done
 label="$(git -C "$work" rev-parse --short=9 HEAD)"
 
+# --- every script release.yml runs by path is executable in git ------------------
+# 2522703 rewrote release-publish.sh 0644 and the next run's Publish answered
+# `Permission denied' (exit 126) before a line of it ran.
+while read -r script; do
+  script_mode="$(git -C "$repo" ls-files -s -- "$script" | cut -d' ' -f1)"
+  [ "$script_mode" = 100755 ] || fail "$script is $script_mode in git; release.yml runs it by path"
+done < <(grep -o -E '(^|[ "])src/tools/[a-z0-9-]+\.sh' "$repo/.github/workflows/release.yml" | tr -d ' "' | sort -u)
+say 'every script release.yml runs by path is executable in git'
+
 # --- release-check.sh -----------------------------------------------------------
 check() { (cd "$work" && env "$@" bash src/tools/release-check.sh) > "$root/check-out" 2>&1; }
 check GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v1.2.3 GITHUB_OUTPUT="$root/gh-output" \
