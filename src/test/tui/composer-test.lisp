@@ -383,6 +383,54 @@ reader: ESC [ 200 ~, the text, ESC [ 201 ~."
         (is (equal "" dialog.input))
         (is (row-carrying "paste with your terminal (Ctrl+Shift+V)" (nle::compose-frame model)))))))
 
+;;; An image paste on Windows. Windows Terminal keeps Ctrl+V and Ctrl+Shift+V
+;;; for its own paste, and with nothing but an image on the clipboard that
+;;; paste is empty: ESC [ 200 ~ then ESC [ 201 ~, nothing between. Ctrl+Alt+V
+;;; comes through as ESC ^V, and the console host passes Ctrl+V on as ^V. Each
+;;; asks the clipboard for its image -- which Windows answers through
+;;; PowerShell, the one reader every Windows box has.
+
+(deftest an-empty-terminal-paste-stages-the-clipboard-image ()
+  (with-frame-model (model 80 30 :session-id "empty-paste-image")
+    (with-stubbed-fdefinition (nle::read-clipboard-image-base64 ()
+                                (values "image/png" "iVBORw0KGgo="))
+      (paste-wire model "")
+      (is-composer model "[Image #1] " "the empty paste staged the clipboard's image")
+      (is (equal '(("image/png" . "iVBORw0KGgo=")) (nle::chat-model-pending-images model)) "the image rides the next submit")
+      (press-wire model 27 22)
+      (is-composer model "[Image #1] [Image #2] " "Ctrl+Alt+V, as ESC ^V, stages the next one")
+      (press-wire model 22)
+      (is-composer model "[Image #1] [Image #2] [Image #3] " "and Ctrl+V, as the console host passes it")
+      (is (= 3 (length (nle::chat-model-pending-images model))) "three images staged"))))
+
+(deftest an-empty-terminal-paste-without-an-image-types-nothing ()
+  (with-frame-model (model 80 30 :session-id "empty-paste-none")
+    (with-stubbed-fdefinition (nle::read-clipboard-image-base64 () nil)
+      (paste-wire model "")
+      (is-composer model "" "nothing to stage, nothing typed")
+      (is (null (nle::chat-model-pending-images model)) "no image staged"))))
+
+(deftest a-text-paste-never-asks-for-the-clipboard-image ()
+  (with-frame-model (model 80 30 :session-id "text-paste-no-probe")
+    (let ((asked 0))
+      (with-stubbed-fdefinition (nle::read-clipboard-image-base64 ()
+                                  (incf asked)
+                                  (values "image/png" "iVBORw0KGgo="))
+        (paste-wire model "hello")
+        (is-composer model "hello" "the text landed as typed")
+        (is (zerop asked) "the clipboard was never asked for an image")))))
+
+(deftest windows-reads-the-clipboard-image-through-powershell ()
+  (let* ((argv (nle::windows-clipboard-image-argv))
+         (script (sb-ext:octets-to-string (cl-base64:base64-string-to-usb8-array (car (last argv))) :external-format :utf-16le)))
+    (is (equal '("powershell.exe" "-NoProfile" "-NonInteractive" "-STA" "-EncodedCommand") (butlast argv)) "Windows PowerShell, no profile, single-threaded for the clipboard")
+    (is (equal nle::*windows-clipboard-image* script) "the encoded command is the reader script, as UTF-16LE base64"))
+  (is (equal '("image/png" "iVBORw0KGgo=") (multiple-value-list (nle::clipboard-image-line "image/png iVBORw0KGgo="))) "the reader's line splits into its media type and its base64")
+  (is (equal '("image/jpeg" "/9j/") (multiple-value-list (nle::clipboard-image-line "image/jpeg /9j/"))) "a copied JPEG file keeps its own type")
+  (is (null (nle::clipboard-image-line nil)) "no output, no image")
+  (is (null (nle::clipboard-image-line "image/png ")) "a type with no payload is no image")
+  (is (null (nle::clipboard-image-line "text/plain hello")) "only an image type is taken"))
+
 (deftest connect-wizard-close-runs-the-chained-continuation ()
   ;; Esc that closes the /models wizard runs the continuation a caller
   ;; chained it with. The setup walk chains it: a close that ran nothing
