@@ -1,7 +1,9 @@
-;;;; edit-diff-test.lisp --- what a call's edits changed shows as a diff, wherever the file is.
+;;;; edit-diff-test.lisp --- a call's workspace-snapshot diffs show under it, unfolded.
 (in-package #:nodecode.test)
 
-;;; --- the producer: EDIT and WRITE-FILE stamp their own diff -----------------
+;;; The workspace bracket diffs the session's folder around every call and
+;;; stamps what changed on its result as workspace_diff. The transcript draws
+;;; from that alone, whatever verb or command made the change.
 
 (defun numbered-lines (count &rest changes)
   "Lines `l1'..`lCOUNT', one per line, each a final newline; CHANGES is
@@ -10,91 +12,24 @@ LINE-NUMBER TEXT pairs written in their place."
           (loop for k from 1 to count
                 collect (or (getf changes k) (format nil "l~d" k)))))
 
-(deftest a-verb-diff-is-the-fewest-changed-lines-in-gits-hunks ()
-  ;; Four lines of context, as the workspace bracket's `--unified=4', and
-  ;; changes whose context meets share one hunk.
-  (let ((file (nle::verb-diff-file "a.py" (numbered-lines 10) (numbered-lines 11 4 "FOUR" 11 "eleven"))))
-    (is-shape file ("path" "a.py") ("added" 2) ("removed" 1))
-    (is (equal (format nil "diff --git a/a.py b/a.py~%--- a/a.py~%+++ b/a.py~%@@ -1,10 +1,11 @@~%~{~a~%~}"
-                       '(" l1" " l2" " l3" "-l4" "+FOUR" " l5" " l6" " l7" " l8" " l9" " l10" "+eleven"))
-               (nlk:json-value file :string "patch"))))
-  ;; Two changes far apart are two hunks, each numbered where it starts,
-  ;; and the transcript separates them with its elision row.
-  (let* ((file (nle::verb-diff-file "b.txt" (numbered-lines 30) (numbered-lines 30 2 "L2" 25 "L25")))
-         (patch (nlk:json-value file :string "patch")))
-    (is (search (format nil "@@ -1,6 +1,6 @@~%") patch))
-    (is (search (format nil "@@ -21,9 +21,9 @@~%") patch))
-    (is (equal '(:context :removed :added :context :context :context :context
-                 :context :context :context :context :context :removed :added
-                 :context :context :context :context)
-               (mapcar #'nle::diff-line-sign (nle::parse-unified-patch patch))))
-    (is (equal "..." (nle::diff-line-text (nth 7 (nle::parse-unified-patch patch))))))
-  ;; A file the call made is all additions, from /dev/null.
-  (let ((patch (nlk:json-value (nle::verb-diff-file "new.md" nil (format nil "a~%b~%")) :string "patch")))
-    (is (search (format nil "--- /dev/null~%+++ b/new.md~%@@ -0,0 +1,2 @@~%+a~%+b~%") patch)))
-  (is (null (nle::verb-diff-file "same.txt" (numbered-lines 3) (numbered-lines 3))) "no line changed, no diff"))
+(defun snapshot-diff-file (path hunk-lines)
+  "A workspace_diff document file for PATH whose one hunk is HUNK-LINES,
+each a line of the unified patch after its `@@' header (sign first)."
+  (let ((old 0) (new 0) (added 0) (removed 0))
+    (dolist (line hunk-lines)
+      (case (char line 0)
+        (#\Space (incf old) (incf new))
+        (#\- (incf old) (incf removed))
+        (#\+ (incf new) (incf added))))
+    (nlk:json-object "path" path "added" added "removed" removed
+                     "patch" (format nil "diff --git a/~a b/~a~%--- a/~a~%+++ b/~a~%@@ -1,~d +1,~d @@~%~{~a~%~}"
+                                     path path path path old new hunk-lines))))
 
-(deftest edits-outside-the-session-folder-carry-their-own-diff ()
-  ;; The bracket walks the session's folder alone: an edit in another tree
-  ;; reached the transcript as its receipt and no diff. The verb stamps it,
-  ;; one file per file, from the text before the call first changed it.
-  (with-temp-directory (dir "edit-diff")
-    (let* ((path (merge-pathnames "notes.md" dir))
-           (shown (nlk:home-abbreviated (uiop:native-namestring (truename dir))))
-           (nle::*executing-tool-call-id* nil)
-           (nle::*tool-result-metadata* nil))
-      (nle::write-file path (format nil "# Notes~%~%## Unreleased~%~%## 0.1.0~%"))
-      (setf nle::*executing-tool-call-id* "call-edit")
-      (nle::edit path (format nil "## Unreleased~%") (format nil "## Unreleased~%- greet takes a person~%"))
-      (nle::edit path "- greet takes a person" "- greet takes a person and punctuation")
-      (let ((files (nlk:json-array nle::*tool-result-metadata* "verb_diffs")))
-        (is (= 1 (length files)) "one file changed twice is one diff")
-        (is-shape (aref files 0)
-          ("path" (format nil "~a/notes.md" (string-right-trim "/" shown)))
-          ("added" 1) ("removed" 0) ("verb" "edit"))
-        (let ((patch (nlk:json-value (aref files 0) :string "patch")))
-          (is (search (format nil " ## Unreleased~%+- greet takes a person and punctuation~% ~%") patch) "diffed from before the call, to the file as it ends")))
-      ;; The bracket's own files stand; a verb's file it already names is not
-      ;; listed twice, and the working key goes.
-      (let ((metadata nle::*tool-result-metadata*)
-            (verb-path (nlk:json-value (aref (nlk:json-array nle::*tool-result-metadata* "verb_diffs") 0) :text "path")))
-        (setf (gethash "workspace_diff" metadata)
-              (nlk:json-object "files" (vector (nlk:json-object "path" "greet.py" "added" 1 "removed" 1))))
-        (nle::merge-verb-diffs metadata)
-        (is (null (nth-value 1 (gethash "verb_diffs" metadata))))
-        (is (equal (list "greet.py" verb-path)
-                   (map 'list (lambda (file) (nlk:json-value file :text "path"))
-                        (nlk:json-array metadata "workspace_diff" "files"))))))
-    ;; Outside a tool call nothing is stamped.
-    (let ((nle::*executing-tool-call-id* nil)
-          (nle::*tool-result-metadata* nil))
-      (nle::write-file (merge-pathnames "loose.txt" dir) "x")
-      (is (null nle::*tool-result-metadata*)))))
-
-(deftest a-verbs-own-diff-is-not-a-second-entry-of-its-call ()
-  ;; The call's receipt already names the file it edited: the title says
-  ;; `Edited ~/notes.md' once, not again for the diff's spelling of it.
-  (let ((activity (nle::tool-call-activity
-                   "eval" "(edit \"/home/someone/notes.md\" ($ \"old\") ($ \"new\"))"
-                   :metadata (nlk:json-object
-                              "calls" (vector (nlk:json-object "verb" "edit" "source" "/home/someone/notes.md"))
-                              "workspace_diff" (nlk:json-object
-                                                "files" (vector (nlk:json-object "path" "~/notes.md" "added" 1
-                                                                                 "removed" 0 "verb" "edit")))))))
-    (is (equal '((:edit "/home/someone/notes.md" nil)) (nle::activity-entries activity)))))
-
-;;; --- the transcript: a run shows what its edits changed ---------------------
-
-(defun edit-diff-metadata (path before after)
-  "An edit call's result metadata: its receipt and the diff of PATH."
-  (nlk:json-object "calls" (vector (nlk:json-object "verb" "edit" "source" path))
-                   "workspace_diff" (nlk:json-object
-                                     "files" (vector (nle::verb-diff-file path before after)))))
-
-(defun edit-diff-state (&key (commands 1) (before (numbered-lines 6)) (after (numbered-lines 6 3 "THREE"))
-                        (turn-id "edit-turn"))
-  "A settled turn: COMMANDS plain calls, then one edit of greet.py from
-BEFORE to AFTER, then its answer."
+(defun edit-diff-state (&key (commands 1)
+                             (hunk '(" l1" " l2" "-l3" "+THREE" " l4" " l5" " l6"))
+                             (turn-id "edit-turn"))
+  "A settled turn: COMMANDS plain calls, then one call whose snapshot
+changed greet.py by HUNK, then its answer."
   (let ((state (nle::ingest-message-fact nil "user" "change greet" :turn-id turn-id)))
     (dotimes (i commands)
       (setf state (nle::ingest-tool-call-fact state (format nil "call-~d" i) "eval" "{\"form\":\"(sh \\\"ls\\\")\"}" :turn-id turn-id)
@@ -103,7 +38,9 @@ BEFORE to AFTER, then its answer."
                                             "{\"form\":\";; greet takes a person\\n(edit \\\"greet.py\\\" ($ \\\"old\\\") ($ \\\"new\\\"))\"}"
                                             :turn-id turn-id)
           state (nle::ingest-tool-result-fact state "call-edit" "eval" "edited greet.py" :turn-id turn-id
-                                              :metadata (edit-diff-metadata "greet.py" before after))
+                                              :metadata (nlk:json-object
+                                                         "workspace_diff" (nlk:json-object
+                                                                           "files" (vector (snapshot-diff-file "greet.py" hunk)))))
           state (nle::ingest-message-fact state "assistant" "done" :turn-id turn-id)
           state (nle::ingest-turn-terminal state "completed" :turn-id turn-id))
     state))
@@ -112,26 +49,27 @@ BEFORE to AFTER, then its answer."
   (mapcan (lambda (block) (copy-list (nle::display-block-plain-lines block)))
           (nle:project-state state :width 100)))
 
-(deftest a-settled-run-shows-the-diffs-its-edits-made ()
+(deftest a-settled-run-shows-the-diffs-its-snapshots-took ()
   ;; A turn's run folded every call behind `Ran 2 commands', edits too: what
   ;; changed took three clicks to see and read as commands run. Shut, the
-  ;; run now names its edits and lists the call that made them, each
-  ;; changed file under it with its diff; a plain command stays folded.
+  ;; run now names the files its snapshots saw change and lists the call
+  ;; that changed them, each file under it with its diff; a call that
+  ;; changed nothing stays folded.
   (let* ((nle::*tool-detail* :standard)
          (state (edit-diff-state))
          (lines (edit-diff-lines state)))
     (is (rows-carry-p "Ran 1 command, edited 1 file +1 -1" lines))
-    (is (rows-carry-p "greet takes a person +1 -1" lines) "the edit's own line")
+    (is (rows-carry-p "greet takes a person +1 -1" lines) "the call's own line")
     (is (rows-carry-p "+1 -1 greet.py" lines) "its file's header")
     ;; The diff under its header, above the answer.
     (is (< (row-index-of "+1 -1 greet.py" lines :required t)
            (row-index-of "3 - l3" lines :required t)
            (row-index-of "3 + THREE" lines :required t)
            (row-index-of "done" lines :required t)))
-    (is (not (rows-carry-p "listed" lines)) "a plain command stays folded")
-    ;; A run of edits alone is worded as edits.
+    (is (not (rows-carry-p "listed" lines)) "a call that changed nothing stays folded")
+    ;; A run whose every call changed files is worded as edits.
     (is (rows-carry-p "Edited 1 file +1 -1" (edit-diff-lines (edit-diff-state :commands 0))))
-    ;; Opened, the run lists every call, the edit's diff still under it.
+    ;; Opened, the run lists every call, the diff still under its call.
     (let* ((group (find-if #'nle::tool-group-p (mapcar #'nle::display-block-row (nle:project-state state :width 100))))
            (nle::*expanded-tool-call* (nle::tool-group-key group))
            (open (edit-diff-lines state)))
@@ -143,8 +81,9 @@ BEFORE to AFTER, then its answer."
   ;; A diff stands under its file's header to *DIFF-PREVIEW-LINES*, the rest
   ;; counted on a line that opens it, as the header does.
   (let* ((nle::*tool-detail* :standard)
-         (state (edit-diff-state :commands 0 :before (numbered-lines 2)
-                                 :after (numbered-lines 40 1 "first")))
+         (state (edit-diff-state :commands 0
+                                 :hunk (append '("-l1" "+first" " l2")
+                                               (loop for k from 3 to 40 collect (format nil "+l~d" k)))))
          (lines (edit-diff-lines state))
          (diff (remove-if-not (lambda (line) (ppcre:scan "^ *[0-9]+ [-+ ] " line)) lines)))
     (is (= nle::*diff-preview-lines* (length diff)) "the head of the diff")
