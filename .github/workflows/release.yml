@@ -1,0 +1,135 @@
+name: Release
+
+# A version tag pushed here is a release:
+#
+#   git tag v0.1.2 <commit> && git push origin v0.1.2
+#
+# The tag must match :version in src/nodecode.asd at that commit, and the
+# commit must be on main. The three archives are built on the same
+# self-hosted runners that build every CI run, with the same scripts -- the
+# Linux tarball by pack.sh, the Mac tarball by pack-macos.sh, the Windows zip
+# by release-windows.ps1 in the Windows guest -- and handed to one publish
+# job, which packs nothing: publish.sh finds every archive already built,
+# ships them, proves the bytes the site serves, writes the channel pointers,
+# and lists the release on GitHub under the tag. Nothing builds on the
+# machine that pushes the tag.
+#
+# Run by hand (Actions > Release > Run workflow, from main) it is a
+# rehearsal: the same three builds, the archives handed over, the Windows
+# tar.zst packed, and every credential the publish uses tried -- no archive is
+# shipped, no pointer moves, no release is listed.
+#
+# The publish job's credentials are the `release' environment's secrets,
+# which that environment hands only to a v* tag or to main: a pull request's
+# code runs the build jobs at most, and those hold no secret.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One release at a time, and never one cancelled halfway through its pointers.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Version
+    runs-on: [self-hosted, nc-linux]
+    timeout-minutes: 5
+    outputs:
+      label: ${{ steps.check.outputs.label }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: The tag names main's commit and its version
+        id: check
+        run: src/tools/release-check.sh
+
+  linux:
+    name: Linux
+    needs: check
+    runs-on: [self-hosted, nc-linux]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pack the Linux tarball (pack.sh)
+        run: just tarball HEAD "$RUNNER_TEMP/release"
+        env:
+          NODECODE_BUILD_HOME: /var/tmp/nodecode-ci-build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-x86_64-linux
+          path: ${{ runner.temp }}/release/nodecode-${{ needs.check.outputs.label }}-x86_64-linux.tar.gz*
+          retention-days: 7
+          if-no-files-found: error
+
+  macos:
+    name: macOS
+    needs: check
+    runs-on: [self-hosted, nc-mac-driver]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pack the Mac tarball on the Mac (pack-macos.sh)
+        run: src/tools/pack-macos.sh HEAD "$RUNNER_TEMP/release"
+        env:
+          NODECODE_MACOS_BUILD_DIR: /Users/Shared/nodecode-ci
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-arm64-darwin
+          path: ${{ runner.temp }}/release/nodecode-${{ needs.check.outputs.label }}-arm64-darwin.tar.gz*
+          retention-days: 7
+          if-no-files-found: error
+
+  windows:
+    name: Windows
+    needs: check
+    runs-on: [self-hosted, nc-windows]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build, smoke and zip the Windows release (release-windows.ps1)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File src\tools\ci-windows.ps1 -Root "$env:RUNNER_TEMP\nodecode-release"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-x86_64-windows
+          path: ${{ runner.temp }}/nodecode-release/share/nodecode-${{ needs.check.outputs.label }}-x86_64-windows.zip*
+          retention-days: 7
+          if-no-files-found: error
+
+  publish:
+    name: ${{ github.event_name == 'push' && 'Publish' || 'Rehearse the publish' }}
+    needs: [check, linux, macos, windows]
+    runs-on: [self-hosted, nc-linux]
+    environment: release
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/dist
+      - name: ${{ github.event_name == 'push' && format('Publish {0} as v{1}', needs.check.outputs.label, needs.check.outputs.version) || 'Check the archives and every credential; move nothing' }}
+        run: src/tools/release-publish.sh "${{ github.event_name == 'push' && 'publish' || 'rehearse' }}" "$RUNNER_TEMP/dist"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLISH_ENV: ${{ secrets.PUBLISH_ENV }}
+          PUBLISH_SSH_CONFIG: ${{ secrets.PUBLISH_SSH_CONFIG }}
+          PUBLISH_SSH_KEY: ${{ secrets.PUBLISH_SSH_KEY }}
+          PUBLISH_KNOWN_HOSTS: ${{ secrets.PUBLISH_KNOWN_HOSTS }}
+          SITE_DEPLOY_KEY: ${{ secrets.SITE_DEPLOY_KEY }}
+      - name: Clear the downloaded archives
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/dist"

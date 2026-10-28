@@ -171,7 +171,8 @@ case "${1:-}" in
   # The site repository: its origin, and a clone of its branch is the
   # sandbox's copy of it.
   remote) printf '%s\n' 'git@site.invalid:nodecode-website.git' ;;
-  clone) for arg in "$@"; do dest="$arg"; done
+  clone) printf '%s\n' "$*" >> "${PUBLISH_TEST_CLONES:-/dev/null}"
+         for arg in "$@"; do dest="$arg"; done
          mkdir -p "$dest"; cp -R "$PUBLISH_TEST_SITE/." "$dest/" ;;
   # Two commits, the newer touching what ships; asked by path, only it.
   log) case "$*" in
@@ -213,6 +214,7 @@ publish() {
   PUBLISH_TEST_FLAKY="$root/flaky-502" \
   PUBLISH_TEST_COMMITS="$root/$2-commits" \
   PUBLISH_TEST_PUSHES="$root/$2-pushes" \
+  PUBLISH_TEST_CLONES="$root/$2-clones" \
   PUBLISH_TEST_SCP="$root/$2-scp" \
   PUBLISH_TEST_SLEEPS="$root/$2-sleeps" \
   PUBLISH_TEST_SITE="$sandbox/site-remote" \
@@ -223,7 +225,7 @@ publish() {
   PUBLISH_TEST_PS1="$sandbox/src/tools/install.ps1" \
   NODECODE_PUBLISH_INSTALLER_PATH="$sandbox/src/tools/install.sh" \
   NODECODE_PUBLISH_PS1_PATH="$sandbox/src/tools/install.ps1" \
-  NODECODE_PUBLISH_MARKETPLACE_DIR="$sandbox/marketplace" \
+  NODECODE_PUBLISH_MARKETPLACE_DIR="${PUBLISH_TEST_MARKETPLACE:-$sandbox/marketplace}" \
   NODECODE_GIT_COMMIT_HELPER="$fake_bin/commit-owned" \
   NODECODE_PUBLISH_CONFIG="$root/no-publish-config" \
   NODECODE_PUBLISH_HOST=publish-test.invalid NODECODE_PUBLISH_REMOTE_DIR=dl \
@@ -319,6 +321,16 @@ grep -q 'stable-x86_64-windows points at latest999' "$root/again-output" || fail
 grep -q '^release upload v9.9.9 -R test/nodecode --clobber ' "$root/again-gh" || fail 'the republish did not update its own release'
 ! grep -q '^release create' "$root/again-gh" || fail 'the republish made a second release'
 printf '%s\n' 'publish-test: a republish ships the archives already built and updates its own release'
+
+# --- a publisher with no clone of the site names it ---------------------------
+# The Release workflow holds no clone of the site: NODECODE_PUBLISH_SITE_REMOTE
+# names the repository the installers are mirrored to, and wins over a clone.
+PUBLISH_TEST_NO_BUILD=1 PUBLISH_TEST_MARKETPLACE="$root/no-site-clone" \
+  NODECODE_PUBLISH_SITE_REMOTE=git@site-env.invalid:site.git publish dist siteenv \
+  || { cat "$root/siteenv-errors" >&2; fail 'a publish naming the site repository failed'; }
+grep -q 'git@site-env.invalid:site.git' "$root/siteenv-clones" \
+  || fail "the installers' mirror did not clone the named site: $(cat "$root/siteenv-clones" 2>/dev/null)"
+printf '%s\n' 'publish-test: NODECODE_PUBLISH_SITE_REMOTE stands in for a clone of the site'
 
 # --- a version already released elsewhere moves nothing ----------------------
 # A version is released once: when its tag names another commit, the publish
