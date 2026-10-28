@@ -24,6 +24,13 @@
                    :opt "files" files
                    "refusal" (or refusal :null)))
 
+(defun earlier-today (seconds)
+  "The universal time SECONDS ago, or local midnight when that was yesterday:
+a change made a minute ago reads as today's even in the first minute of a day."
+  (let ((now (get-universal-time)))
+    (multiple-value-bind (second minute hour) (decode-universal-time now)
+      (- now (min seconds (+ second (* 60 minute) (* 3600 hour)))))))
+
 (defun history-answer (&key follows (edits '(("mylayer" . 13))) (now 9))
   "The list route's answer the sheet is read from."
   (nlk:json-object
@@ -31,7 +38,7 @@
    "edits" (map 'vector (lambda (entry) (nlk:json-object "name" (car entry) "count" (cdr entry))) edits)
    "changes" (vector
               (history-entry :kind "nodecode" :from 9 :to 9 :nodecode t
-                             :at (nlk::iso-time (- (get-universal-time) 60 nlk:+unix-epoch+))
+                             :at (nlk::iso-time (- (earlier-today 60) nlk:+unix-epoch+))
                              :title "nodecode aaaaaaa → bbbbbbb" :where "14 built-in cells")
               (history-entry :kind "agent" :from 6 :to 8
                              :at (local-iso 2026 10 14 23 14) :first-at (local-iso 2026 10 14 23 7)

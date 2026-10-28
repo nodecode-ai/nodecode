@@ -372,9 +372,13 @@ check gives them back.")
 ;;; The shell stamps every key and pointer event, and the collections that
 ;;; can wait hold off from it: the idle collector for *IDLE-INTERVAL*, a
 ;;; slack walk for *SLACK-WALK-REST*.
-(defvar *idle-input-at* 0
+;;; NIL until the first event: internal real time counts from the process's
+;;; start, so a 0 here would read as a key pressed at launch, and for the first
+;;; *IDLE-INTERVAL* of every process the idle collector would wait on an
+;;; operator who never typed.
+(defvar *idle-input-at* nil
   "INTERNAL-REAL-TIME of the operator's last key or pointer event, as the
-shell stamps it (NOTE-OPERATOR-INPUT).")
+shell stamps it (NOTE-OPERATOR-INPUT), or NIL before the first.")
 
 (defun note-operator-input ()
   "The shell saw a key or pointer event: the collections that can wait hold
@@ -429,9 +433,11 @@ operator's input has rested *SLACK-WALK-REST*."
                                (- *forced-heap-at* (sb-ext:generation-bytes-allocated 6)))))))
     (setf *slack-walk-pending* t)
     (labels ((rest-left ()
-               (max 0 (- *slack-walk-rest*
-                         (/ (- (get-internal-real-time) *idle-input-at*)
-                            (float internal-time-units-per-second 1d0)))))
+               (if *idle-input-at*
+                   (max 0 (- *slack-walk-rest*
+                             (/ (- (get-internal-real-time) *idle-input-at*)
+                                (float internal-time-units-per-second 1d0))))
+                   0))
              (walk ()
                (if (plusp (rest-left))
                    (arm)
@@ -605,8 +611,9 @@ image's pages back if it is holding any."
       ((or (>= recent *idle-consing*)
            ;; An interval that holds the operator's input (NOTE-OPERATOR-INPUT) is not
            ;; quiet whatever it consed.
-           (< (- (get-internal-real-time) *idle-input-at*)
-              (* *idle-interval* internal-time-units-per-second)))
+           (and *idle-input-at*
+                (< (- (get-internal-real-time) *idle-input-at*)
+                   (* *idle-interval* internal-time-units-per-second))))
        (setf *idle-checks* 0))
       (t
        (incf *idle-checks*)

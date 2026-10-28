@@ -3826,12 +3826,12 @@ and the DELIVERY its handler declares."
   ;; GC.LISP's idle collector holds its stop-the-world pause off while the
   ;; operator types: every key and pointer event stamps the moment.
   (with-frame-model (model 80 24 :session-id "input-stamp")
-    (let ((nlk::*idle-input-at* 0))
+    (let ((nlk::*idle-input-at* nil))
       (nle:update model (nlt:make-key-press-msg :code #\a))
-      (is (plusp nlk::*idle-input-at*) "a key stamps the operator's last input")
-      (setf nlk::*idle-input-at* 0)
+      (is (integerp nlk::*idle-input-at*) "a key stamps the operator's last input")
+      (setf nlk::*idle-input-at* nil)
       (nle:update model (nlt:make-tick-msg))
-      (is (zerop nlk::*idle-input-at*) "a clock tick is not the operator"))))
+      (is (null nlk::*idle-input-at*) "a clock tick is not the operator"))))
 
 (deftest moving-selection-still-previews-at-the-throttle-cadence ()
   ;; The staged lane's live-follow contract (the search-narrowing case):

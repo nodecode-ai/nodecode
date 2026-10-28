@@ -37,7 +37,10 @@ function Find-Sbcl {
 }
 
 function Ensure-Quicklisp {
-  $setup = Join-Path $HOME 'quicklisp\setup.lisp'
+  # SBCL's (user-homedir-pathname) reads $env:HOME before the profile folder,
+  # and PowerShell's $HOME is always the profile: look where SBCL will load.
+  $lispHome = if ($env:HOME) { $env:HOME } else { $HOME }
+  $setup = Join-Path $lispHome 'quicklisp\setup.lisp'
   if (Test-Path $setup) { return }
   Write-Host "installing quicklisp for $env:USERNAME"
   $bootstrap = Join-Path $env:TEMP 'quicklisp.lisp'

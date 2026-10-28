@@ -556,22 +556,26 @@ nursery collections on. => that generation's size while they were live."
   ;; an older one that is dead too. Only a full walk finds it, and only a
   ;; quiet that has lasted is worth one.
   (with-saved-globals ((nlk::*forced-heap-at* 0) (nlk::*idle-checks* 0)
-                       (nlk::*idle-input-at* 0))
-    ;; No operator at the keys: a key inside the interval is work.
+                       (nlk::*idle-input-at* nil) (nlk::*idle-consing* most-positive-fixnum)
+                       nlk::*idle-consed-at*)
+    ;; No operator at the keys, and no interval counts as work: the checks
+    ;; are driven here, one call each, rather than counted off a timer over a
+    ;; sleep -- a repeating timer that fires late fires again at once, so a
+    ;; loaded machine counted five checks inside a 0.35 s sleep. The timer
+    ;; itself is the idle-organism test's.
     (nlk:cap-nursery (* 8 1024 1024))
-    (with-idle-collection (0.1)
-      (let ((collections nlk::*idle-collections*))
-        ;; Four checks of quiet are not enough for the walk.
-        (sleep 0.35)
-        (is (< nlk::*idle-checks* nlk::*idle-checks-before-full*))
-        (sleep 0.5)
-        (is (>= nlk::*idle-checks* nlk::*idle-checks-before-full*))
-        (is (> nlk::*idle-collections* collections) "the walk ran")
-        (is (< (- (sb-kernel:dynamic-usage) nlk::*forced-heap-at*)
-               (* 8 1024 1024)))))))
+    (let ((collections nlk::*idle-collections*))
+      ;; Four checks of quiet are not enough for the walk.
+      (loop repeat (1- nlk::*idle-checks-before-full*) do (nlk::collect-when-idle))
+      (is (< nlk::*idle-checks* nlk::*idle-checks-before-full*))
+      (nlk::collect-when-idle)
+      (is (>= nlk::*idle-checks* nlk::*idle-checks-before-full*))
+      (is (> nlk::*idle-collections* collections) "the walk ran")
+      (is (< (- (sb-kernel:dynamic-usage) nlk::*forced-heap-at*)
+             (* 8 1024 1024))))))
 
 (deftest work-in-the-interval-is-not-quiet
-    (with-saved-globals ((nlk::*idle-checks* 4) (nlk::*idle-input-at* 0) *nursery-junk*))
+    (with-saved-globals ((nlk::*idle-checks* 4) (nlk::*idle-input-at* nil) *nursery-junk*))
   (with-idle-collection (0.1)
     ;; Cons through two checks: each one finds the organism working. The list
     ;; goes to a special: a binding nothing reads, the compiler never conses.
@@ -590,7 +594,7 @@ nursery collections on. => that generation's size while they were live."
     (is (sb-ext:timer-scheduled-p (nlk:collect-while-idle 60)) "armed again")))
 
 (deftest a-long-quiet-empties-the-nursery-to-a-collection-that-returns-its-pages
-    (with-saved-globals ((nlk::*idle-checks* 4) nlk::*idle-consed-at* (nlk::*idle-input-at* 0)
+    (with-saved-globals ((nlk::*idle-checks* 4) nlk::*idle-consed-at* (nlk::*idle-input-at* nil)
                          nlk::*idle-consing*))
   ;; Without the fifth quiet check, a nursery emptied by its own collections
   ;; keeps its pages. That check collects it at a level that hands them back.
@@ -602,6 +606,15 @@ nursery collections on. => that generation's size while they were live."
   (is (> (sb-ext:generation-bytes-allocated 0) nlk::*consing-budget*) "the nursery holds garbage")
   (nlk::collect-when-idle)
   (is (< (sb-ext:generation-bytes-allocated 0) nlk::*consing-budget*) "the quiet emptied it"))
+
+(deftest no-key-yet-is-quiet-from-the-first-check
+    (with-saved-globals ((nlk::*idle-checks* 0) nlk::*idle-consed-at* (nlk::*idle-input-at* nil)))
+  ;; Internal real time counts from the process's start: an input stamp of 0
+  ;; read as a key at launch, so a fresh process held off its idle collector
+  ;; for its first *IDLE-INTERVAL* with no operator there. No stamp is quiet.
+  (setf nlk::*idle-consed-at* (sb-ext:get-bytes-consed))
+  (nlk::collect-when-idle)
+  (is (= 1 nlk::*idle-checks*) "a process no key has reached is quiet"))
 
 (deftest operator-input-in-the-interval-is-not-quiet
     (with-saved-globals ((nlk::*idle-checks* 4) nlk::*idle-consed-at* nlk::*idle-input-at*))
@@ -690,8 +703,10 @@ nursery collections on. => that generation's size while they were live."
     (is (= reported sb-ext:*gc-run-time*) "reports SBCL's own counter, not a copy")))
 
 (deftest collection-stats-are-a-single-snapshot (let ((stats (nlk::collection-stats))))
+  ;; Present, not set: :LAST-PAUSE stays NIL until a forced collection has
+  ;; run, and which test ran one first is the suite's order.
   (dolist (key '(:gc-run-time :last-pause :forced-collections :nursery :heap-bytes))
-    (is (nth-value 1 (get-properties stats (list key)))
+    (is (get-properties stats (list key))
         (format nil "~a present in the snapshot" key)))
   (is (integerp (getf stats :heap-bytes)) "heap-bytes is a number")
   (is (plusp (getf stats :nursery)) "nursery is positive"))
