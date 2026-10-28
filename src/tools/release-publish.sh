@@ -90,9 +90,34 @@ mkdir "$priv/bin"
 for tool in ssh scp; do
   printf '#!/bin/sh\nexec %s -F %s "$@"\n' "$(command -v "$tool")" "$priv/ssh_config" > "$priv/bin/$tool"
 done
+# mirror-installers.sh commits the site's installers through
+# NODECODE_GIT_COMMIT_HELPER -- on the PC its owned-path helper. The run's
+# clone of the site is its own, so the run's helper commits just the paths it
+# is named, as the workflow. v0.1.3's publish died here: the first release
+# whose installers changed, with no helper in the run.
+cat > "$priv/bin/commit-owned" <<'EOF'
+#!/usr/bin/env bash
+# commit-owned --message MSG --path P [--path P]...: commit exactly those paths.
+set -euo pipefail
+message=''; paths=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --message) message="$2"; shift 2 ;;
+    --path) paths+=("$2"); shift 2 ;;
+    *) echo "commit-owned: unknown argument $1" >&2; exit 2 ;;
+  esac
+done
+[ -n "$message" ] && [ ${#paths[@]} -gt 0 ] || { echo 'commit-owned: --message and at least one --path' >&2; exit 2; }
+git add -- "${paths[@]}"
+git -c user.name='nodecode release workflow' \
+    -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+    commit -q -m "$message" -- "${paths[@]}"
+EOF
 chmod 0700 "$priv/bin"/*
 export PATH="$priv/bin:$PATH"
 export NODECODE_PUBLISH_CONFIG="$priv/publish.env"
+grep -q '^NODECODE_GIT_COMMIT_HELPER=' "$priv/publish.env" \
+  || export NODECODE_GIT_COMMIT_HELPER="${NODECODE_GIT_COMMIT_HELPER:-$priv/bin/commit-owned}"
 
 . src/tools/publish-config.sh
 host="$(publish_setting NODECODE_PUBLISH_HOST)"
@@ -120,6 +145,14 @@ git ls-remote --exit-code "$site_remote" "refs/heads/$site_branch" > /dev/null |
   exit 1
 }
 echo "release: the site repository's $site_branch answers the deploy key"
+door="$priv/commit-door"
+git init -q "$door" && printf 'door\n' > "$door/door"
+if ! (cd "$door" && "$(publish_setting NODECODE_GIT_COMMIT_HELPER)" --message 'release: door' --path door) > /dev/null \
+   || [ "$(git -C "$door" log -1 --format=%s 2>/dev/null)" != 'release: door' ]; then
+  echo 'release: the commit helper the installer mirror needs does not commit' >&2
+  exit 1
+fi
+echo 'release: the commit helper the installer mirror needs commits'
 gh api "repos/$github_repo/releases" --jq 'length' > /dev/null
 echo "release: $github_repo's releases answer the run's token"
-echo "release-rehearsal-ok $label: all three archives, the Windows tar.zst, the host, the site and GitHub answer; nothing moved"
+echo "release-rehearsal-ok $label: all three archives, the Windows tar.zst, the host, the site, the commit helper and GitHub answer; nothing moved"

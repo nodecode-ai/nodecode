@@ -129,7 +129,7 @@ rehearse() {
     PUBLISH_SSH_CONFIG="$(printf '%s\n' 'Host pubhost' '  HostName pub.invalid' '  User pub')" \
     PUBLISH_SSH_KEY='host key' PUBLISH_KNOWN_HOSTS='pub.invalid ssh-ed25519 AAAAtest' \
     SITE_DEPLOY_KEY='site key' GH_TOKEN=token "$@" \
-    bash src/tools/release-publish.sh rehearse "$dist") > "$root/rehearse-out" 2>&1
+    bash src/tools/release-publish.sh "${mode:-rehearse}" "$dist") > "$root/rehearse-out" 2>&1
 }
 
 make_dist
@@ -162,4 +162,32 @@ grep -q 'SITE_DEPLOY_KEY is empty' "$root/rehearse-out" || fail "the missing sec
 make_dist
 if rehearse RELEASE_TEST_SSH_EXIT=1; then fail 'a host that does not answer passed the rehearsal'; fi
 [ -z "$(ls -A "$root/runner-temp")" ] || fail 'a failed rehearsal left its credentials behind'
+
+# --- release-publish.sh publish: the installer mirror commits in the run --------
+# v0.1.3 (2026-10-28) was the first tag whose installers changed, and its
+# publish died at the mirror: no NODECODE_GIT_COMMIT_HELPER in the run. The
+# publish here is the real mirror-installers.sh against the local site.
+cp "$repo/src/tools/mirror-installers.sh" "$work/src/tools/mirror-installers.sh"
+cat > "$work/src/tools/publish.sh" <<'EOF'
+#!/usr/bin/env bash
+# A publish.sh of nothing but the installer mirror, the step the helper serves.
+set -euo pipefail
+. src/tools/publish-config.sh
+d="$(mktemp -d)"
+printf 'echo sh installer\n' > "$d/install.sh"
+printf 'Write-Host ps1 installer\n' > "$d/install.ps1"
+bash src/tools/mirror-installers.sh "$(publish_setting NODECODE_PUBLISH_SITE_REMOTE)" main \
+  "$d/install.sh" "$d/install.ps1" 'release: test installers'
+EOF
+chmod 0755 "$work/src/tools/publish.sh"
+make_dist
+mode=publish rehearse || fail "a publish whose installers changed did not mirror them: $(cat "$root/rehearse-out")"
+[ "$(git -C "$site" show main:web/public/install.ps1)" = 'Write-Host ps1 installer' ] \
+  || fail 'the site main does not carry the new install.ps1'
+[ "$(git -C "$site" log -1 --format=%s main)" = 'release: test installers' ] \
+  || fail "the site's commit is not the mirror's: $(git -C "$site" log -1 --format=%s main)"
+[ "$(git -C "$site" show --name-only --format= main | sort | tr '\n' ' ')" = 'web/public/install.ps1 web/public/install.sh ' ] \
+  || fail 'the mirror commit carries more than the two installers'
+[ -z "$(ls -A "$root/runner-temp")" ] || fail 'a publish left its credentials behind'
+say 'a publish commits the changed installers to the site through the run helper'
 say 'a missing or wrong archive, a missing secret, or a silent host stops it, and no key is left'
