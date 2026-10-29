@@ -171,7 +171,7 @@ expect() { local got; got="$(trial "$2")"; [ "$got" = "$1" ] || { echo "FAIL ($3
 expect 3 '(+ 1 2)' arithmetic
 expect 1 '(if (eq :darwin (nlk:platform)) 1 0)' platform
 expect 1 '(if (= 2 (length (multiple-value-list (nlt:terminal-size)))) 1 0)' 'terminal-size without a terminal'
-expect 1 '(if (equal "/bin/sh" nlk:*shell*) 1 0)' 'the shell is /bin/sh'
+expect 1 '(if (equal "/bin/bash" nlk:*shell*) 1 0)' 'the shell is /bin/bash'
 expect 1 '(if (equal "/usr/bin/perl" (first nlk:*session-wrapper*)) 1 0)' 'perl leads the session'
 expect 1 '(multiple-value-bind (out err status) (nlk:run-bounded (nlk:shell-argv "echo hi; echo bad 1>&2; exit 4") :seconds 20) (if (and (search "hi" out) (search "bad" err) (eql status 4)) 1 0))' run-bounded
 expect 1 '(if (eq :timeout (nth-value 2 (nlk:run-bounded (nlk:shell-argv "sleep 30") :seconds 1))) 1 0)' 'run-bounded timeout'
