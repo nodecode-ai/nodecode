@@ -2584,6 +2584,52 @@ lane function, so nothing dials."
       (is (= 1 calls) "no retry and no candidate")
       (is (eq t (nle::probe-model "alt" "alt-model")) "a model that answers is OK"))))
 
+(defun refusal-hold-probes (verdicts rounds)
+  "The rounds of a ROUNDS-round turn that asked the selection, under the
+turn's refusal hold, when each ask answers the next of VERDICTS (T, a
+refusal; NIL, an answer; past the list, an answer)."
+  (let* ((selection (user-context))
+         (candidate (nle::context-with selection :provider-config
+                                       (stub-effective-provider-config "alt" "alt-model")))
+         (hold (nle::make-refusal-hold))
+         (context selection)
+         (probes '()))
+    (dotimes (round rounds (nreverse probes))
+      (setf context
+            (if (eq context selection)
+                (progn (push round probes)
+                       (if (pop verdicts)
+                           ;; CALL-PROVIDER's answer for a refused round: the
+                           ;; candidate's context, the selection to resume
+                           (nle::next-round-context
+                            candidate
+                            (list :resume-provider-config
+                                  (nle::compiled-turn-context-provider-config selection))
+                            hold)
+                           (nle::next-round-context selection nil hold)))
+                (nle::next-round-context context nil hold)))
+      (unless (member context (list selection candidate))
+        ;; the resumed selection is a fresh context over the same config
+        (setf context (if (eq (nle::compiled-turn-context-provider-config context)
+                              (nle::compiled-turn-context-provider-config selection))
+                          selection
+                          candidate))))))
+
+(deftest a-refused-selection-waits-on-its-candidate-doubling-to-the-cap ()
+  ;; After the Nth refusal in a row the candidate answers 1, 2, 4 ... rounds
+  ;; (at most *REFUSAL-HOLD-CAP*) before the selection is asked again; an
+  ;; answer ends the streak.
+  (is (equal '(0 2 5 10 11 13) (refusal-hold-probes '(t t t nil t nil) 14)))
+  (let ((probes (refusal-hold-probes (make-list 40 :initial-element t) 40)))
+    (is (equal '(0 2 5 10 19 28 37) probes) "the wait stops doubling at the cap")
+    ;; proofs/RefusalHold.lean: refused asks <= 4 + rounds/9 at cap 8, and the
+    ;; selection is asked at least once every cap+1 rounds
+    (is (<= (length probes) (+ 4 (floor 40 9))))
+    (is (every (lambda (a b) (<= (- b a) (1+ nle::*refusal-hold-cap*))) probes (rest probes))))
+  (is (equal '(0 1 2 3 4 5) (refusal-hold-probes '() 6)) "no refusal, no wait")
+  (let ((nle::*refusal-hold-cap* 0))
+    (is (equal '(0 1 2 3 4 5) (refusal-hold-probes '(t t t t t t) 6)) "a cap of 0 asks the selection every round, as before the hold")))
+
 (deftest a-failover-past-a-spent-budget-holds-for-the-turn ()
   ;; Only a refusal's round is the candidate's alone: a round the chain took
   ;; for a spent budget names no resume, and the next round stays on it.
