@@ -866,6 +866,50 @@ completed. BODY runs with SID bound."
         ("DEEP" "the verdict names the recursion")
         ("unwound before the guard page" "and says why it was stopped")))))
 
+(deftest a-runaway-verdict-holds-while-its-unwind-runs-cleanups ()
+  ;; An unwind runs each UNWIND-PROTECT cleanup with the stack pointer still
+  ;; where the verdict was signalled: the abandoned frames stay below it until
+  ;; the handler is reached. A probe landing in a cleanup there (the
+  ;; compilation unit's summary wraps every snippet) read the stack as past
+  ;; the limit, walked a frame chain that no longer holds the recursion, and
+  ;; its unnamed verdict replaced the named one. One verdict per climb: the
+  ;; next waits for the stack to come back under the limit, unless it climbs
+  ;; on to the hard mark.
+  (destructuring-bind (first in-cleanup held-climb past-hard shallow again)
+      (bt2:join-thread
+       (nlk:spawn "runaway-climb"
+         (let ((nle::*runaway-climb* (list nil)))
+           (multiple-value-bind (used span) (nle::control-stack-usage)
+             (declare (ignore used))
+             (let* ((limit (min (* 16 1024 1024) (floor span 2)))
+                    (hard (+ limit (floor (- span limit) 2)))
+                    (in-cleanup :unset))
+               (labels ((probe ()
+                          (handler-case (progn (nle::eval-runaway-thread-probe) :quiet)
+                            (nle::eval-runaway (e) (princ-to-string e))))
+                        (climb (mark)
+                          (if (> (nle::control-stack-usage) mark)
+                              (progn (nle::eval-runaway-thread-probe) 0)
+                              (1+ (climb mark))))
+                        (verdict (mark)
+                          (handler-case (progn (climb mark) :quiet)
+                            (nle::eval-runaway (e) (princ-to-string e)))))
+                 (list (handler-case (unwind-protect (climb limit)
+                                       (setf in-cleanup (probe)))
+                         (nle::eval-runaway (e) (princ-to-string e)))
+                       in-cleanup
+                       (verdict limit)
+                       (verdict hard)
+                       (probe)
+                       (verdict limit))))))))
+    (is (search "control stack runaway" first) "past the limit, the verdict")
+    (is (search "CLIMB" first) "naming the recursion")
+    (is (eq :quiet in-cleanup) "a probe inside its unwind's cleanup holds")
+    (is (eq :quiet held-climb) "and so does a second climb before the stack came back down")
+    (is (search "control stack runaway" past-hard) "unless it climbs on to the hard mark")
+    (is (eq :quiet shallow) "a shallow probe is quiet and clears the hold")
+    (is (search "control stack runaway" again) "so the next climb takes its verdict at the limit")))
+
 (deftest control-stack-usage-grows-with-depth (labels ((deep (n)
                                                          (if (zerop n)
                                                              (list (nle::control-stack-usage))
