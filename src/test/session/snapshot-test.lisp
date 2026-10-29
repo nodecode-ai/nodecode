@@ -10,8 +10,8 @@
 ;;;;        per path, and -z parsing survives spaces in names.
 ;;;;   SN4. A foreign write is skipped and reported, never clobbered; a path
 ;;;;        the session never wrote restores without a claim.
-;;;;   SN5. The store lives outside the work tree; sqlite state and a
-;;;;        workspace's own .nodecode/ stay out of capture.
+;;;;   SN5. Home-owned snapshot storage, even inside the work tree, sqlite
+;;;;        state and a workspace's own .nodecode/ stay out of capture.
 ;;;;   SN6. Two sessions share objects but never an index file.
 ;;;;   SN7. Unavailability degrades: no git means no store, and the durable
 ;;;;        capture fact still records with an unavailable-reason.
@@ -261,6 +261,48 @@ completed once BODY is done."
       ("state.sqlite" "sqlite file excluded")
       ("state.sqlite-wal" "sqlite sidecar excluded")
       (".nodecode/state" "a workspace's own .nodecode/ excluded"))))
+
+(deftest snapshot-excludes-nested-storage-across-captures (with-temp-directory (dir "snap-nested"))
+  (let ((nlk::*home* (merge-pathnames "agent_home/.nodecode/" dir))
+        (other-dir (merge-pathnames "other/" dir)))
+    (%write-file dir ".gitignore" (format nil "!agent_home/.nodecode/snapshots/**~%")
+                 "real.txt" "content" "other/real.txt" "other workspace"
+                 "agent_home/.nodecode/notes.txt" "outside snapshot storage"
+                 "agent_home-copy/.nodecode/snapshots/keep.txt" "not the storage path")
+    (let ((store (nlk:ensure-snapshot-store (namestring dir) "nested"))
+          (other (nlk:ensure-snapshot-store (namestring other-dir) "neighbor")))
+      (cond ((nlk:git-available-p)
+             (%anchored-capture other "neighbor")
+             (let ((previous nil))
+               (loop for workspace in (list dir (merge-pathnames "other/../" dir) dir) do
+                 (setf store (nlk:ensure-snapshot-store (namestring workspace) "nested"))
+                 (let* ((sha (%anchored-capture store "nested"))
+                        (paths (nlk::run-snapshot-git store (list "ls-tree" "-r" "--name-only" sha))))
+                   (is (not (search "agent_home/.nodecode/snapshots/" paths)) "neither this store nor neighboring stores enter the tree")
+                   (dolist (path '("real.txt" "other/real.txt" "agent_home/.nodecode/notes.txt"
+                                   "agent_home-copy/.nodecode/snapshots/keep.txt"))
+                     (is (stringp (nlk:hash-in-tree store sha path)) "workspace files outside snapshot storage remain captured"))
+                   (when previous
+                     (is (equal previous sha) "unchanged captures do not ingest their own index or objects"))
+                   (setf previous sha)))))
+            (t (is (and (null store) (null other)) "git unavailable: both stores degrade to nil"))))))
+
+(deftest snapshot-reopen-removes-previously-indexed-storage (with-temp-directory (dir "snap-indexed"))
+  (let ((nlk::*home* (merge-pathnames "agent_home/.nodecode/" dir))
+        (captured-path "agent_home/.nodecode/snapshots/legacy/objects/blob"))
+    (%write-file dir "real.txt" "content" captured-path "previously captured snapshot object")
+    (let ((store (nlk:ensure-snapshot-store (namestring dir) "indexed")))
+      (cond ((nlk:git-available-p)
+             (nlk::run-snapshot-git store (list "add" "-f" "--" captured-path))
+             (let ((sha (%anchored-capture store "old index")))
+               (is (stringp (nlk:hash-in-tree store sha captured-path)) "the fixture starts with snapshot storage already tracked"))
+             (let* ((reopened (nlk:ensure-snapshot-store (namestring dir) "indexed"))
+                    (sha (nlk:capture-workspace-tree reopened)))
+               (is (null (nlk:hash-in-tree reopened sha captured-path)) "reopening clears captured storage from the existing index")
+               (is (stringp (nlk:hash-in-tree reopened sha "real.txt")) "ordinary tracked workspace files stay in the index")
+               (is (equal "previously captured snapshot object" (%read-file dir captured-path)) "untracking does not delete snapshot files from disk")
+               (is (equal sha (nlk:capture-workspace-tree reopened)) "later captures keep the storage out")))
+            (t (is (null store) "git unavailable: ensure degrades to nil"))))))
 
 (deftest a-work-tree-cannot-ship-the-snapshot-store ()
   ;; SN5. A cloned repo may carry .nodecode/workspace_snapshots/ -- the folder
