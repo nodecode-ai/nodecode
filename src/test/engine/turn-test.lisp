@@ -337,6 +337,51 @@ them spells the message out."
     ("ERROR" result))
   (is-eval "*snippet-c*" ("UNBOUND-VARIABLE" "the first form never evaluated")))
 
+(deftest eval-raw-text-reads-exactly-what-is-written ()
+  ;; Quotes, backslashes, parens and a newline at the end: nothing escaped,
+  ;; nothing lost -- the file a model writes is the file on disk.
+  (is-eval (format nil "(string= #>T~%\"q\" \\ (~%T (coerce (list #\\\" #\\q #\\\" #\\Space #\\\\ #\\Space #\\( #\\Newline) 'string))")
+    (:= "T" "quotes, a backslash and an open paren read as themselves"))
+  (is-eval (format nil "(length #>E~%a\\nb~%E)")
+    (:= "5" "a backslash-n is two characters, then the line's newline")
+    (:absent "[reader" "and no escape warning: raw text is not a string literal")))
+
+(deftest eval-raw-text-ends-at-a-line-that-starts-with-its-tag ()
+  (is-eval (format nil "(equal (list #>END~%abc~%END 42) (list (format nil \"abc~~%\") 42))")
+    (:= "T" "what follows the closing tag on its line reads on"))
+  (is-eval (format nil "(equal (list #>END~%  abc~%  END) (list (format nil \"  abc~~%\")))")
+    (:= "T" "an indented closing line closes it, and the text keeps its own indentation"))
+  (is-eval (format nil "(equal (list #>END~%ENDING~%END) (list (format nil \"ENDING~~%\")))")
+    (:= "T" "a line that only begins with the tag's letters is text")))
+
+(deftest eval-raw-text-is-not-structure-for-completion ()
+  ;; A Python line with an open paren inside raw text must neither open a
+  ;; form nor take a closer; the snippet's own missing paren still lands by
+  ;; indentation.
+  (is-eval (format nil "(defparameter *raw-text-a*~%  (concatenate 'string #>PY~%def f(:~%PY~%    \"x\")")
+    ("*RAW-TEXT-A*" result))
+  (is-eval "(string= *raw-text-a* (format nil \"def f(:~%x\"))" (:= "T" "the raw text and the string after it, as written")))
+
+(deftest eval-raw-text-that-never-ends-runs-nothing ()
+  (is-eval (format nil "(defparameter *raw-text-b* 1)~%(list #>END~%abc")
+    ("raw text" result)
+    ("never ends" "the open raw text is named"))
+  (is-eval "(boundp '*raw-text-b*)" (:= "NIL" "nothing ran"))
+  (is-eval (format nil "(list #>~%abc)")
+    ("#> wants a tag" "a #> without a tag says what it wants")))
+
+(deftest raw-text-loads-from-a-file ()
+  ;; The layer keeps the bytes a snippet was read from, and a launch loads
+  ;; them with LOAD: the image's readtable reads raw text, not only eval's.
+  (let ((path (uiop:tmpize-pathname (merge-pathnames "raw-text.lisp" (uiop:temporary-directory)))))
+    (unwind-protect
+         (progn
+           (with-open-file (out path :direction :output :if-exists :supersede)
+             (format out "(in-package #:nodecode.evolved)~%(defparameter *raw-text-c* #>END~%a \"b\" \\c~%END)~%"))
+           (load path)
+           (is (equal (format nil "a \"b\" \\c~%") (symbol-value (find-symbol "*RAW-TEXT-C*" '#:nodecode.evolved))) "loaded as written"))
+      (delete-file path))))
+
 (deftest eval-value-elides-as-a-tree-not-a-cut ()
   ;; A value past the limit prints under *PRINT-LEVEL*/*PRINT-LENGTH*
   ;; instead of being cut mid-token: the model reads a tree with an

@@ -2012,7 +2012,9 @@ exactly as the model sent it, JSON escaping only."
              (nlk:clip name 60)))
     (unless (hash-table-p strings)
       (error "this eval call carried no strings object; pass ~
-              strings {~s: \"...\"} beside the form" name))
+              strings {~s: \"...\"} beside the form, or put the text in the ~
+              form itself as raw text: #>END ends its line, then the text, ~
+              then a line starting with END" name))
     (multiple-value-bind (value presentp) (gethash name strings)
       (cond ((not presentp)
              (error "no strings entry named ~s in this call; it carries ~
@@ -2489,7 +2491,7 @@ nothing, which is no fence's to repeat."
  "eval"
  (list :description
        (concatenate 'string
-                    "Evaluate Common Lisp forms in the live image and return their printed values; only the last value prints in full. (sh \"ls -la\") runs a shell command and returns its output. (edit path ($ \"old\") ($ \"new\")) with strings {\"old\": \"<the text now in the file>\", \"new\": \"<its replacement>\"} replaces the one occurrence of old in the file; (write-file path ($ \"text\")) with strings {\"text\": \"<the whole file>\"} writes a whole file, parents created. $ takes an entry's name, never the text itself. (look path) shows you an image file. In a Lisp string a backslash only escapes the next character (\"\\n\" reads as n), so text dense with backslashes, double quotes or newlines goes in the strings object, whichever verb takes it; a shell command carrying a heredoc goes there whole: strings {\"script\": \"...\"} with (sh ($ \"script\")). A snippet's opening ;; line is its note, kept past eviction: write what you would resume from. When you use eval for work, begin the form with one concise leading ;; progress comment naming what you are about to do; this comment becomes the live activity label in channel cards and the TUI."
+                    "Evaluate Common Lisp forms in the live image and return their printed values; only the last value prints in full. (sh \"ls -la\") runs a shell command and returns its output. (edit path ($ \"old\") ($ \"new\")) with strings {\"old\": \"<the text now in the file>\", \"new\": \"<its replacement>\"} replaces the one occurrence of old in the file; (write-file path ($ \"text\")) with strings {\"text\": \"<the whole file>\"} writes a whole file, parents created. $ takes an entry's name, never the text itself. (look path) shows you an image file. In a Lisp string a backslash only escapes the next character (\"\\n\" reads as n), so text dense with backslashes, double quotes or newlines goes in the strings object, whichever verb takes it, or raw in the form itself: #>END ends its line, the text follows exactly as written, and a line starting with END closes it - (write-file \"a.py\" #>PY, the file's lines, PY); a shell command carrying a heredoc goes there whole: strings {\"script\": \"...\"} with (sh ($ \"script\")). A snippet's opening ;; line is its note, kept past eviction: write what you would resume from. When you use eval for work, begin the form with one concise leading ;; progress comment naming what you are about to do; this comment becomes the live activity label in channel cards and the TUI."
                     #+linux " A snippet's last form, when it only reads - no verb, file, process, socket, assignment or definition - is watched: it runs again after each later snippet and comes back as one line only when its value changes."
                     " (help :eval) has the rest.")
        :parameters
