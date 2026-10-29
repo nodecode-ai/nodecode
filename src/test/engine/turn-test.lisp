@@ -7860,8 +7860,9 @@ and a context_over_200k no reader may trust: it names no size.")
 
 (deftest call-provider-withholds-the-images-a-provider-refused (with-session-store ("withhold"))
   ;; The round is re-sent without its images once, at once, a note where
-  ;; each stood; the turn's staging is marked so no later round carries
-  ;; the refused bytes and LOOK refuses the next image with the reason.
+  ;; each stood. One failure is no verdict on them -- an outage fails a
+  ;; request with images as a refusal does -- so the turn's staging keeps
+  ;; them, the next round carries them, and LOOK still shows the next one.
   (let ((prompt "[Image #1] what is this?"))
     (with-durable-turn (turn "withhold" :command-id "withhold-cmd" :input prompt
                              :current t :retry-delay 0)
@@ -7890,13 +7891,13 @@ and a context_over_200k no reader may trust: it names no size.")
                                          :provider-config
                                          (test-provider-config :model "text-only-alias")))))
               (is (equal "read it another way" (gethash "content" reply))))
-            (is (nle::turn-images-withheld-p turn-id))
-            (is (eq :withheld (car (second (first (nle::turn-images turn-id))))))
+            (is (not (nle::turn-images-withheld-p turn-id)) "one failure does not blind the turn")
+            (is (equal '(nil ("image/png" . "QUJD")) (first (nle::turn-images turn-id))) "the staging keeps the image")
             (let* ((next (nle::compiled-turn-context-messages
                           (compiled-context (list (nle::message "user" prompt)))))
                    (parts (nle::message-content-parts
                            (gethash "content" (aref next 0)))))
-              (is (equal '("text" "text") (mapcar #'nle::content-part-type parts))))))
+              (is (equal '("text" "image_url") (mapcar #'nle::content-part-type parts)) "the next round carries it again"))))
         (is (= 2 calls) "one refusal, one re-send, no ladder")
         (let* ((rounds (reverse seen))
                (first-parts (nle::message-content-parts
@@ -7912,7 +7913,7 @@ and a context_over_200k no reader may trust: it names no size.")
             (is (search "openai-completions text-only-alias did not accept" note))
             ("status 503" "and the status")
             ("upstream unavailable" "and the provider's detail")
-            ("select-model" "and the way out")))
+            ("carries it again" "and that the next request tries it again")))
         (let ((retries (remove-if-not (lambda (event)
                                         (typep event 'nlk:provider-retry-event))
                                       (nle::collect-session-events "withhold"))))
@@ -7921,6 +7922,49 @@ and a context_over_200k no reader may trust: it names no size.")
           (is (search "1 image withheld after: upstream unavailable"
                       (nlk::provider-retry-event-detail (first retries))))
           (is (zerop (nlk::provider-retry-event-delay-seconds (first retries)))))))))
+
+(deftest a-second-failed-request-with-images-withholds-them-for-the-turn (with-session-store ("withhold-twice"))
+  ;; A provider that fails every request carrying an image costs one extra
+  ;; failed request, never a blind turn after one outage: the first round
+  ;; withholds the image from itself alone, the second marks the staging,
+  ;; and from then on no round carries the bytes and LOOK says why.
+  (let ((prompt "[Image #1] what is this?"))
+    (with-durable-turn (turn "withhold-twice" :command-id "withhold-twice-cmd" :input prompt
+                             :current t :retry-delay 0)
+      (let ((turn-id turn.turn-id)
+            (calls 0)
+            (with-images 0)
+            (last-note nil))
+        (nle::forget-turn-images turn-id)
+        (nle::attach-turn-images turn-id '(("image/png" . "QUJD")))
+        (nlk:with-cleanup ((nle::forget-turn-images turn-id))
+          (with-streaming-provider-stub
+              (context on-part
+               (incf calls)
+               (let ((parts (nle::message-content-parts
+                             (gethash "content" (aref context.messages 0)))))
+                 (cond ((find "image_url" parts :key #'nle::content-part-type :test #'equal)
+                        (incf with-images)
+                        (error 'nle::provider-error :status 503 :detail "no images here"
+                                                    :scope :request))
+                       (t (setf last-note (gethash "text" (second parts)))
+                          (wire-message "assistant" :content "ok")))))
+            (flet ((round-now ()
+                     (nle::call-provider
+                      (local-context (list (nle::message "user" prompt))
+                                     :visible-images (nle::turn-images turn-id)))))
+              (round-now)
+              (is (not (nle::turn-images-withheld-p turn-id)) "after one failure the image stays")
+              (is (search "carries it again" last-note) last-note)
+              (round-now)
+              (is (nle::turn-images-withheld-p turn-id) "after the second the turn withholds it")
+              (is (eq :withheld (car (second (first (nle::turn-images turn-id))))))
+              (is-carrying (note last-note)
+                ("the second this turn" "the note says why now")
+                ("select-model" "and the way out"))
+              (round-now))))
+        (is (= 2 with-images) "the image went out twice, never a third time")
+        (is (= 5 calls) "two refused, two re-sent, one round with no image at all")))))
 
 (deftest a-refused-connection-keeps-the-images (with-session-store ("withhold-refused"))
   ;; A port nothing listens on is not the images' fault: the round stands with
@@ -8022,14 +8066,14 @@ and a context_over_200k no reader may trust: it names no size.")
     ("one toplevel form" "the topic teaches the bulk retire")))
 
 (deftest eval-tool-names-the-escape-the-reader-does-not-have ()
-  ;; A "\n" inside a Lisp string reads as a plain n. Without this, a file
-  ;; with no line breaks would be produced. The snippet names it on the
-  ;; result, before the value, and still evaluates the form.
-  (is-eval "(length \"a\\nb\")"
-    (is (eql 0 (search "[reader: \"\\n\" at char 10 is inside a string literal" result))
+  ;; A "\n" inside a Lisp string reads as a plain n. Run as read, a file
+  ;; would lose its line breaks and a grep its pattern, and answer as if it
+  ;; worked. The snippet is refused with the escape named and nothing runs.
+  (is-eval "(progn (setf cl-user::*escape-ran* t) (length \"a\\nb\"))"
+    (is (eql 0 (search "ERROR: nothing ran. [reader: \"\\n\" at char 48 is inside a string literal" result))
         result)
     ("($ \"name\")" "the strings channel is the way out")
-    (is (uiop:string-suffix-p result "3") "and the form still ran, as written"))
+    (is (not (boundp 'cl-user::*escape-ran*)) "and nothing in the form ran"))
   (is (null (nle::string-escape-report "(sh \"printf 'a\\\\nb'\")")))
   (is (null (nle::string-escape-report "(list #\\n \"x\")")))
   (is (null (nle::string-escape-report "(list 1) ; \"\\n\"")))
@@ -8044,8 +8088,8 @@ and a context_over_200k no reader may trust: it names no size.")
     "\"\\|\" at char" "written twice")
   (is (null (nle::string-escape-report "(sh \"grep 'a\\\\|b' f\")")) "a doubled backslash is kept")
   (is-eval "(error \"x\\ny\")"
-    (is (eql 0 (search "[reader: \"\\n\"" result)) result)
-    ("xny" "the error itself follows")))
+    (is (eql 0 (search "ERROR: nothing ran. [reader: \"\\n\"" result)) result)
+    (is (not (search "xny" result)) "the form never ran to signal")))
 
 ;; 39 DeepSeek calls named sh, look, write-file, edit or plan as a tool of
 ;; their own (2026-09): the refusal names the call they meant.

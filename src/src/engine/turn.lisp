@@ -94,9 +94,9 @@ a verb the organism grows for itself is pushed here to be found.")
 
 Background evaluations. A form still running when yield_time_ms closes (default 10000, at most 600000) keeps evaluating in the background, never killed: the call answers {\"status\":\"running\",\"eval_id\":N} with the output so far. Do not wait for it: go on with anything else, or end your turn - when it exits, the harness reads it for you with an (eval-status N) call carrying the rest of its output and its value: in this turn, after the calls running then, or, once the turn has ended, in a turn that wakes this session. (eval-status N) is one non-blocking look at the output since the last look. (list-evals) lists this image's evaluations, those other sessions started included. (eval-interrupt N) aborts one, (eval-interrupt N :force t) if it traps the abort. (eval-await N) parks until new output or the exit ((eval-await N :until-exit t) the exit alone), at most the calling snippet's yield_time_ms (10000 when unset), and only when a short wait beats ending the turn - never park a long window, and never poll with a shell sleep.
 
-sh. (sh \"cmd\") runs a string through sh -c - /bin/sh, or Git's sh.exe on Windows, POSIX sh either way - in the session's folder ((sh \"cmd\" :directory \"dir\") elsewhere); a list is argv with no shell: (sh (list \"git\" \"commit\" \"-m\" ($ \"msg\"))). Stdin is empty, so a program that reads it sees end of file; a heredoc in the command feeds it. stdout and stderr arrive merged, with a final [exit N] line when the status is not 0; output past the capture limit is cut and says so. Any other child process reaches you only through Lisp streams - (sh ...), or :output :string or *standard-output* to run-program; this process's own file descriptors 0-2 go to a log neither you nor the operator sees, so never write to one, as (make-fd-stream 1) would.
+sh. (sh \"cmd\") runs a string through bash -c where the machine has bash - /bin/sh otherwise, Git's sh.exe on Windows - in the session's folder ((sh \"cmd\" :directory \"dir\") elsewhere); a list is argv with no shell: (sh (list \"git\" \"commit\" \"-m\" ($ \"msg\"))). Stdin is empty, so a program that reads it sees end of file; a heredoc in the command feeds it. stdout and stderr arrive merged, with a final [exit N] line when the status is not 0; output past the capture limit is cut and says so. Any other child process reaches you only through Lisp streams - (sh ...), or :output :string or *standard-output* to run-program; this process's own file descriptors 0-2 go to a log neither you nor the operator sees, so never write to one, as (make-fd-stream 1) would.
 
-Literal text. strings {\"name\": \"...\"} beside the form, read inside it as ($ \"name\"), arrives exact, JSON escaping only; ($ \"name\") takes an entry's name, never the text itself. In a Lisp string a backslash only escapes the next character - \"\\n\" reads as n, \"\\|\" as | - so a newline vanishes, a regex changes and edit's old misses without a sound. So text dense with backslashes, double quotes or newlines never tunnels through a Lisp string, nor through a shell heredoc written into the form: edit's old and new, file bodies, source, a note's or a prompt's body, and a whole shell command carrying a heredoc, (sh ($ \"script\")), all go in strings.
+Literal text. strings {\"name\": \"...\"} beside the form, read inside it as ($ \"name\"), arrives exact, JSON escaping only; ($ \"name\") takes an entry's name, never the text itself. In a Lisp string a backslash only escapes the next character - \"\\n\" would read as n, \"\\|\" as | - so a snippet holding an escape the reader does not have is refused before anything runs. So text dense with backslashes, double quotes or newlines never tunnels through a Lisp string, nor through a shell heredoc written into the form: edit's old and new, file bodies, source, a note's or a prompt's body, and a whole shell command carrying a heredoc, (sh ($ \"script\")), all go in strings.
 
 Files. (edit path old new) replaces the one occurrence of old in the file at path: a miss names where the file and old diverge, several occurrences give the count - widen old until it names one place. (write-file path text) writes a whole file, parents created. A relative path resolves against the session's folder. On a Lisp file the receipt ends with the paren verdict - the form that never closes or the ) that closes nothing, named by line - and, for a file this image loads itself from, what the write made live: the definitions it changed are evaluated back into this image under the file's own package, so `live here: ...' is already running in this process and `not live until a relaunch: ...' is what only a relaunch carries. (patch name old new) changes one subform of a definition you kept: name, old and new are written unquoted, as they stand in the definition, and neither is evaluated; the one occurrence of old becomes new, and the result is evaluated and kept again - a fix costs its two subforms, never the block over.
 
@@ -676,22 +676,29 @@ the provider's explanation but no HTTP status."
         (and (or (eql status 400) (null status))
              (some (lambda (needle) (search needle detail)) +overflow-needles+)))))
 
-(defun withheld-images-note (condition count)
+(defun withheld-images-note (condition count &key latched)
   "The text that stands where COUNT images stood in the request CONDITION
 failed: what was withheld, which lane refused the request that carried it,
-with what status and detail, and what the model can do instead. The
-detail is clipped and flattened to one line: the note rides every later
-round of the turn."
+with what status and detail, and what follows. The first failed request
+that carries a turn's images withholds them from its own round alone -- an
+outage fails a request with images exactly as a refusal of them does, so
+the next round carries them again; LATCHED, the second, withholds them for
+the rest of the turn and says what the model can do instead. The detail is
+clipped and flattened to one line."
   (let ((clipped (nlk:clip (substitute #\Space #\Newline
                                        (or (provider-error-detail condition) ""))
                            200)))
-    (format nil "[~d image~:p withheld: ~a ~a did not accept the request that carried ~:[them~;it~]~@[ (status ~a)~]~@[: ~a~]. The request was sent again without ~:[them~;it~]. This model may read text only here: work from the file another way, its text, its dimensions, a DOM or OCR, or (select-model ...) one whose input includes image and look again.]"
+    (format nil "[~d image~:p withheld~:[ from this request~;~]: ~a ~a did not accept the request that carried ~:[them~;it~]~@[ (status ~a)~]~@[: ~a~]~:[~;, the second this turn to carry images and fail~]. The request was sent again without ~:[them~;it~]. ~:[The failure may have nothing to do with images, so the next request carries ~:[them~;it~] again; only a second failed request carrying this turn's images withholds them for the rest of the turn.~;~*This model may read text only here: work from the file another way, its text, its dimensions, a DOM or OCR, or (select-model ...) one whose input includes image and look again.~]]"
             count
+            latched
             (provider-error-provider condition)
             (provider-error-model condition)
             (= count 1)
             (provider-error-status condition)
             (and (plusp (length clipped)) clipped)
+            latched
+            (= count 1)
+            latched
             (= count 1))))
 
 (defun context-edge-length-cut-p (context finish-reason usage)
@@ -2044,12 +2051,20 @@ asked — that is the property that makes this substrate worth choosing."
             (unless text
               (display-fact "error" (json-object "code" "READER-ERROR"))
               (return-from eval-form-printed (values (format nil "ERROR: ~a" note) t)))
+            ;; The reader's one silent miss is a gate: a backslash escape
+            ;; it does not have reads as the plain character, so the form
+            ;; would run other than written -- a grep pattern losing its
+            ;; \|, a file losing its line breaks -- and answer as if it
+            ;; worked (a benchmark run read a broken grep's exit 1 as done).
+            ;; Refused, it costs one call and runs nothing.
+            (when-let (escapes (string-escape-report text))
+              (display-fact "error" (json-object "code" "READER-ESCAPE"))
+              (return-from eval-form-printed
+                (values (format nil "ERROR: nothing ran. ~a" escapes) t)))
             (setf *snippet-note* (snippet-note text))
-            ;; What the reader closed leads the result, then the reader's
-            ;; one silent miss: both are hints, not gates — the snippet still
-            ;; evaluates.
+            ;; What the reader closed leads the result: a hint, not a gate
+            ;; — the snippet still evaluates.
             (when note (format t "~&~a~%" note))
-            (when-let (escapes (string-escape-report text)) (format t "~&~a~%" escapes))
             (let ((forms (read-snippet-forms text)))
               (when (null forms)
                 (error "nothing to evaluate"))
@@ -2864,42 +2879,51 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                ;; why). Before the ladder and outside its budgets: a relay
                ;; reports a refused image as the same 503 as an outage, and
                ;; the request minus its images tells the two apart in one
-               ;; attempt where the ladder spent 88 seconds failing. The
-               ;; turn's staging is marked the same way, so no later round
-               ;; sends the refused bytes and LOOK refuses the next image
-               ;; with the reason. The failed attempt is sealed and
-               ;; journaled like any retry — a turn.provider_retry fact whose
-               ;; detail names the withholding, the live reset — with no
-               ;; wait, and no attempt or limit on the live part because no
-               ;; ladder is being climbed. => T when images were withheld,
-               ;; NIL when the request carried none.
-               (multiple-value-bind (groups count)
-                   (withhold-image-groups
-                    context.visible-images
-                    (lambda (n) (withheld-images-note e n)))
-                 (when (plusp count)
-                   (when *current-durable-turn*
-                     (withhold-turn-images
-                      (nlk:durable-turn-turn-id *current-durable-turn*)
-                      (lambda (n) (withheld-images-note e n))))
-                   (seal-streamed-attempt (provider-error-detail e) "rerun")
-                   (announce-retry e :request 0
-                                   (format nil "~d image~:p withheld after: ~a"
-                                           count (provider-error-detail e))
-                                   nil nil nil)
-                   (incf provider-attempt)
-                   (void-partial-stream)
-                   (setf context
-                         (context-with
-                          context
-                          :visible-images groups
-                          :messages (messages-with-visible-images
-                                     (messages-at-boundary
-                                      context.history-turns
-                                      context.history-boundary
-                                      context.history-floors)
-                                     groups)))
-                   t))))
+               ;; attempt where the ladder spent 88 seconds failing. One
+               ;; failure is no verdict on the images -- a transient 500
+               ;; mid-stream once blinded LOOK for the last 27 calls of a
+               ;; turn -- so the first withholds them from this round alone
+               ;; and the next round carries them again. The second failed
+               ;; request carrying the turn's images marks its staging the
+               ;; same way, so no later round sends the refused bytes and
+               ;; LOOK refuses the next image with the reason. The failed
+               ;; attempt is sealed and journaled like any retry — a
+               ;; turn.provider_retry fact whose detail names the
+               ;; withholding, the live reset — with no wait, and no attempt
+               ;; or limit on the live part because no ladder is being
+               ;; climbed. => T when images were withheld, NIL when the
+               ;; request carried none.
+               (let* ((turn-id (and *current-durable-turn*
+                                    (nlk:durable-turn-turn-id *current-durable-turn*)))
+                      (latched (plusp (turn-image-refusals turn-id))))
+                 (multiple-value-bind (groups count)
+                     (withhold-image-groups
+                      context.visible-images
+                      (lambda (n) (withheld-images-note e n :latched latched)))
+                   (when (plusp count)
+                     (count-turn-image-refusal turn-id)
+                     (when latched
+                       (withhold-turn-images
+                        turn-id
+                        (lambda (n) (withheld-images-note e n :latched t))))
+                     (seal-streamed-attempt (provider-error-detail e) "rerun")
+                     (announce-retry e :request 0
+                                     (format nil "~d image~:p withheld after: ~a"
+                                             count (provider-error-detail e))
+                                     nil nil nil)
+                     (incf provider-attempt)
+                     (void-partial-stream)
+                     (setf context
+                           (context-with
+                            context
+                            :visible-images groups
+                            :messages (messages-with-visible-images
+                                       (messages-at-boundary
+                                        context.history-turns
+                                        context.history-boundary
+                                        context.history-floors)
+                                       groups)))
+                     t)))))
      (loop
       (handler-case
           ;; The attempt runs as the identity it targets: a failure names the
@@ -3731,7 +3755,8 @@ result rather than on the prompt."
 with it rather than holding megabytes of base64 for the life of the image."
   (when turn-id
     (bt2:with-lock-held (*turn-images-lock*)
-      (remhash turn-id *turn-images*))))
+      (remhash turn-id *turn-images*)
+      (remhash turn-id *turn-image-refusals*))))
 
 (defun withhold-turn-images (turn-id note-fn)
   "Replace TURN-ID's staged images with their notes, group by group
@@ -3746,6 +3771,27 @@ again. => the images withheld, zero when none were staged."
           (when (plusp count)
             (setf (gethash turn-id *turn-images*) groups))
           count))))
+
+(defvar *turn-image-refusals* (make-hash-table :test #'equal)
+  "TURN-ID -> how many requests carrying that turn's images a provider failed,
+under *TURN-IMAGES-LOCK*: the first withholds them from its round alone, the
+second for the rest of the turn.")
+
+(defun turn-image-refusals (turn-id)
+  "How many requests carrying TURN-ID's images have failed this turn; zero
+with no turn."
+  (if (null turn-id)
+      0
+      (bt2:with-lock-held (*turn-images-lock*)
+        (gethash turn-id *turn-image-refusals* 0))))
+
+(defun count-turn-image-refusal (turn-id)
+  "Count one more failed request that carried TURN-ID's images. => the new
+count, zero with no turn."
+  (if (null turn-id)
+      0
+      (bt2:with-lock-held (*turn-images-lock*)
+        (incf (gethash turn-id *turn-image-refusals* 0)))))
 
 (defun turn-images-withheld-p (turn-id)
   "True once a provider has refused TURN-ID's images this turn — the mark

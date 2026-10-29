@@ -1863,8 +1863,8 @@ given, is called with each piece as it arrives."
   (values (get-output-stream-string out) (>= taken limit)))
 
 (defun sh (command &key directory)
-  "Run COMMAND — a string through sh -c (/bin/sh; Git for Windows' sh.exe
-on Windows), a list as argv with no shell — and answer its output: stdout and stderr merged as they arrived, with a
+  "Run COMMAND — a string through the shell's -c (*SHELL*: bash where the
+machine has it, else /bin/sh; Git for Windows' sh.exe on Windows), a list as argv with no shell — and answer its output: stdout and stderr merged as they arrived, with a
 final [exit N] line when the status is not 0; the status is the second
 value."
   ;; Stdin is empty, so a program that reads it sees end of file rather than
@@ -2302,7 +2302,7 @@ bytes — and answer a one-line receipt."
     (let ((turn (or *current-durable-turn*
                     (error "no turn is running to show ~a in" (namestring resolved)))))
       (when (turn-images-withheld-p (nlk:durable-turn-turn-id turn))
-        (error "~a ~a did not accept the request that carried this turn's last image and would not take ~a either; work from the file another way, or (select-model ...) one whose input includes image"
+        (error "~a ~a did not accept two requests that carried this turn's images and would not take ~a either; work from the file another way, or (select-model ...) one whose input includes image"
                *provider* *model* (namestring resolved)))
       (attach-turn-images (nlk:durable-turn-turn-id turn)
                           (list (cons media-type

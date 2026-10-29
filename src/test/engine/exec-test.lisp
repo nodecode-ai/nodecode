@@ -691,6 +691,15 @@ completed. BODY runs with SID bound."
    (format nil "out~%err~%[exit 3]") 3 "the status is the second value")
   (a-clean-run-verbatim "printf hi" "hi" 0 "zero status"))
 
+(deftest sh-runs-bash-where-the-machine-has-it ()
+  ;; Ubuntu's /bin/sh is dash, which has no `time' keyword and no [[ ]]:
+  ;; three of four benchmark runs lost a call to `time: not found'.
+  #-win32
+  (when (probe-file "/bin/bash")
+    (is (search "bash" (uiop:native-namestring nlk:*shell*)))
+    (is (equal (format nil "yes~%") (nle:sh "[[ a == a ]] && echo yes")))
+    (is (eql 0 (nth-value 1 (nle:sh "time true"))) "time is the shell's own")))
+
 (deftest sh-runs-argv-without-a-shell ()
   (is (equal "a b" (nle:sh (list "printf" "%s" "a b"))) "argv is not re-split"))
 
@@ -992,8 +1001,8 @@ executing tool call of a current durable turn carrying that id."
         (is (search "image/png" (nle:look path)))))))
 
 (deftest look-refuses-once-this-turn-had-an-image-refused ()
-  ;; When the provider refuses the request that carries the turn's image,
-  ;; the images are withheld and the staging marked. A second look in the
+  ;; When the provider refuses a second request that carries the turn's
+  ;; images, they are withheld and the staging marked. A second look in the
   ;; same turn is refused with the reason instead of sent into the same
   ;; refusal — the turn is the horizon of that evidence, as it is of the
   ;; images themselves.

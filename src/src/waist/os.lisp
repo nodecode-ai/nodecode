@@ -24,11 +24,12 @@
 ;;;; one upstream place; the few calls SBCL does not wrap (a process handle,
 ;;;; a flush, a std handle) are declared here. A descriptor on Windows is a C
 ;;;; runtime descriptor over a HANDLE, which is why the file layer speaks
-;;;; descriptors to sb-posix and handles to the kernel. The one shell is the
-;;;; POSIX shell on every platform: /bin/sh, and on Windows the sh.exe Git
-;;;; for Windows carries — git is already required for layers, so the shell
-;;;; comes with it, and every command string, heredoc and exit convention
-;;;; the tool text teaches holds on all three.
+;;;; descriptors to sb-posix and handles to the kernel. The one shell is
+;;;; bash on every platform that has it: /bin/bash (else /bin/sh), and on
+;;;; Windows the sh.exe Git for Windows carries, itself bash — git is already
+;;;; required for layers, so the shell comes with it, and every command
+;;;; string, heredoc and exit convention the tool text teaches holds on all
+;;;; three.
 
 (in-package #:nodecode.kernel)
 
@@ -111,8 +112,15 @@ and each TYPE are SB-ALIEN's, or SAP, INT or STR for the three most written."
                                               directory :ensure-directory t)))))))
 
 (define-startup-parameter *shell*
+    ;; Bash where the machine has it: the commands a model writes are bash --
+    ;; `time', [[ ]], arrays, brace expansion -- and on Debian and Ubuntu
+    ;; /bin/sh is dash, where `time' alone is "not found" (three of four
+    ;; benchmark runs lost a call to it). Every script this image runs through
+    ;; the shell is POSIX sh, which bash runs as written.
     ;; Windows: on PATH, beside the git on PATH (cmd/git.exe by bin/sh.exe), or Git's two homes.
-    #-win32 "/bin/sh"
+    #-win32 (or (and (probe-file "/bin/bash") "/bin/bash")
+                (executable-on-path "bash")
+                "/bin/sh")
     #+win32
     (flet ((under (root &rest relative)
              (and root
@@ -131,8 +139,8 @@ and each TYPE are SB-ALIEN's, or SAP, INT or STR for the three most written."
                               "Git/bin/sh.exe" "Programs/Git/bin/sh.exe")))
                 '("ProgramFiles" "LOCALAPPDATA"))))
   "The shell SHELL-ARGV runs command strings through, resolved when the
-process starts: /bin/sh, Git for Windows' sh.exe, or NIL when the machine
-has none.")
+process starts: bash (/bin/bash, else the first on PATH), else /bin/sh;
+Git for Windows' sh.exe; or NIL when the machine has none.")
 
 (defun shell-argv (command &key login)
   "COMMAND, a string, as the argv that runs it through the shell: sh -c, or
