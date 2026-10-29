@@ -152,6 +152,37 @@ Set-Location $tree
   if ((Trial "(progn (nlk:replace-file `"$from`" `"$to`") (if (and (search `"new`" (uiop:read-file-string `"$to`")) (not (probe-file `"$from`"))) 1 0))") -ne '1') { throw 'replace-file' }
 }
 
+# --- the launcher ------------------------------------------------------------
+# What the user PATH names: bin\nodecode.exe runs the release `current` names,
+# the arguments as typed, stdin and the exit code passed through, and the next
+# launch follows `current` when it moves - a window opened before an update
+# runs the new release.
+Write-Host 'release-windows: === smoke: the launcher ==='
+& {
+  $ErrorActionPreference = 'Stop'
+  $root = Join-Path $scratchTemp 'launcher'
+  $bin = Join-Path $root 'bin'
+  $current = Join-Path $root 'current'
+  New-Item -ItemType Directory -Force $bin | Out-Null
+  Copy-Item (Join-Path $tree 'nodecode-launcher.exe') (Join-Path $bin 'nodecode.exe')
+  $launch = Join-Path $bin 'nodecode.exe'
+  $none = (& { $ErrorActionPreference = 'Continue'; & $launch --version 2>&1 | Out-String })
+  if ($LASTEXITCODE -ne 127 -or $none -notmatch 'no release is current') { throw "the launcher with no current: $LASTEXITCODE $none" }
+  New-Item -ItemType Junction -Path $current -Target $tree | Out-Null
+  $out = ('(+ 4 5)' | & $launch trial 2>&1 | Out-String)
+  if ($out -notmatch 'nodecode-trial-score 9') { throw "the launcher's trial: $out" }
+  & { $ErrorActionPreference = 'Continue'; & $launch --no-such-flag 2>&1 | Out-Null }
+  if ($LASTEXITCODE -ne 2) { throw "the launcher passed exit $LASTEXITCODE for usage's 2" }
+  $other = Join-Path $root 'other'
+  New-Item -ItemType Directory -Force $other | Out-Null
+  (Get-Item $current).Delete()
+  New-Item -ItemType Junction -Path $current -Target $other | Out-Null
+  $moved = (& { $ErrorActionPreference = 'Continue'; & $launch --version 2>&1 | Out-String })
+  if ($LASTEXITCODE -ne 127 -or $moved -notmatch 'holds no nodecode.exe') { throw "the launcher did not follow current: $moved" }
+  (Get-Item $current).Delete()
+  Write-Host 'launcher ok'
+}
+
 # --- a headless serve, the store lock and the release of it -------------------
 # The other half of the port: a Windows box with no console still boots, serves
 # and publishes the port a client attaches to, and its store lock is held while
@@ -196,7 +227,8 @@ Write-Host 'release-windows: === stage ==='
 $stage = Join-Path $tree 'dist\nodecode'
 New-Item -ItemType Directory -Force $stage | Out-Null
 Copy-Item (Join-Path $tree 'nodecode.exe'), (Join-Path $tree 'libsqlite3.dll'),
-          (Join-Path $tree 'libssl-3-x64.dll'), (Join-Path $tree 'libcrypto-3-x64.dll') $stage
+          (Join-Path $tree 'libssl-3-x64.dll'), (Join-Path $tree 'libcrypto-3-x64.dll'),
+          (Join-Path $tree 'nodecode-launcher.exe') $stage
 Copy-Item (Join-Path $tree 'src\tools\install.ps1') $stage
 New-Item -ItemType Directory -Force (Join-Path $stage 'src') | Out-Null
 Copy-Item -Recurse (Join-Path $tree 'src\src') (Join-Path $stage 'src\src')
@@ -208,13 +240,15 @@ Copy-Item (Join-Path $tree 'src\nodecode.asd') (Join-Path $stage 'src\nodecode.a
 
 # The gate: the build account's home is written nowhere in the program a
 # stranger runs (SBCL keeps every build path in the image).
-$exeText = [System.Text.Encoding]::GetEncoding(28591).GetString([System.IO.File]::ReadAllBytes((Join-Path $stage 'nodecode.exe')))
-foreach ($form in @("$accountHome\", (($accountHome -replace '\\', '/') + '/'))) {
-  if ($exeText.IndexOf($form, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
-    throw "refusing: the build account's home ($form) is written in nodecode.exe"
+foreach ($shipped in @('nodecode.exe', 'nodecode-launcher.exe')) {
+  $exeText = [System.Text.Encoding]::GetEncoding(28591).GetString([System.IO.File]::ReadAllBytes((Join-Path $stage $shipped)))
+  foreach ($form in @("$accountHome\", (($accountHome -replace '\\', '/') + '/'))) {
+    if ($exeText.IndexOf($form, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+      throw "refusing: the build account's home ($form) is written in $shipped"
+    }
   }
+  Remove-Variable exeText
 }
-Remove-Variable exeText
 $zip = Join-Path $Share "$name.zip"
 Remove-Item -Force $zip, "$zip.sha256" -ErrorAction SilentlyContinue
 Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip

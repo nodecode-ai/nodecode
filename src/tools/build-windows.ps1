@@ -10,7 +10,9 @@
   settings, then lays the three DLLs the image loads at run time beside the
   executable: libsqlite3.dll and the OpenSSL pair Git for Windows carries.
   The result is <repo>\nodecode.exe plus its DLLs — the same files
-  install.ps1 unpacks from a release zip.
+  install.ps1 unpacks from a release zip — and nodecode-launcher.exe, the
+  launcher install.ps1 puts on the PATH (src\tools\launcher.cs), compiled by
+  the C# compiler of the .NET Framework every Windows 10 and 11 carries.
 
 .PARAMETER SqliteZip
   The sqlite.org DLL zip to fetch when no libsqlite3.dll sits beside src/.
@@ -110,4 +112,10 @@ if (-not (Test-Path $exe)) { throw "no executable at $exe after the build" }
 foreach ($dll in @('libsqlite3.dll', 'libssl-3-x64.dll', 'libcrypto-3-x64.dll')) {
   Copy-Item (Join-Path $src $dll) (Join-Path $repo $dll) -Force
 }
-Write-Host "build-windows complete: $exe ($([math]::Round((Get-Item $exe).Length / 1MB)) MB)"
+
+$csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+if (-not (Test-Path $csc)) { throw "no C# compiler at ${csc}: the launcher is built with the .NET Framework 4's" }
+$launcher = Join-Path $repo 'nodecode-launcher.exe'
+& $csc /nologo /optimize+ /target:exe /platform:x64 "/out:$launcher" (Join-Path $src 'tools\launcher.cs')
+if ($LASTEXITCODE -ne 0) { throw "the launcher did not compile ($LASTEXITCODE)" }
+Write-Host "build-windows complete: $exe ($([math]::Round((Get-Item $exe).Length / 1MB)) MB), $launcher"

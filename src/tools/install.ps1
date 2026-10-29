@@ -13,19 +13,25 @@
   %LOCALAPPDATA%\Programs\nodecode\<version>\ - the executable, its three
   DLLs, and src\, the source the organism reads itself from and the cell
   folders it ships - then points a stable `current` junction at it, puts
-  the version's own folder on the user PATH, and clears mark-of-the-web so
+  the launcher folder bin\ on the user PATH, and clears mark-of-the-web so
   the executable runs without a SmartScreen stop. Re-running installs the
-  newer version beside the old and moves the junction and the PATH entry; a
-  running organism keeps its own files, since nothing is overwritten in
-  place.
+  newer version beside the old and moves the junction; a running organism
+  keeps its own files, since nothing is overwritten in place.
 
-  The PATH names the version's folder, not `current`: Windows 11 refuses an
-  elevated process passage through a junction a non-elevated one made
-  (RedirectionGuard, error 448, "an untrusted mount point"), and PowerShell
-  skips such a PATH entry without a word. The organism's own update moves
-  `current` unelevated, and an SSH login to an administrator is elevated, so
-  after the first update `nodecode` was "not recognized" in every SSH shell
-  (winpc, build 26200, 2026-10-04).
+  bin\nodecode.exe is the launcher a release carries (nodecode-launcher.exe,
+  src\tools\launcher.cs): it runs the nodecode.exe of the release `current`
+  names, read at every launch. A window keeps the PATH it opened with, and
+  when the PATH named each version's own folder, a window that ran
+  `nodecode update` went on running the release it updated from. The PATH
+  cannot name `current` itself: Windows 11 refuses an elevated process
+  passage through a junction a non-elevated one made (RedirectionGuard, error
+  448, "an untrusted mount point"), and PowerShell skips such a PATH entry
+  without a word. The organism's own update moves `current` unelevated, and
+  an SSH login to an administrator is elevated, so after the first update
+  `nodecode` was "not recognized" in every SSH shell (winpc, build 26200,
+  2026-10-04). The launcher reads where the junction points without passing
+  through it. A release that carries no launcher, or one that does not
+  answer, puts the version's own folder on the PATH instead.
 
   Git for Windows is required at run time (layers commit through git, and
   its sh.exe is the shell commands run through); the installer says so when
@@ -37,8 +43,9 @@
 
     stage   lay the version out beside the others and probe it where it
             lies; `current` does not move, the PATH is not touched
-    link    point `current` at a version laid out earlier, and the user
-            PATH's entry under the install folder at it; no download
+    link    point `current` at a version laid out earlier, lay its launcher
+            in bin\, and move the user PATH's entry under the install
+            folder to bin\; no download
 
   NODECODE_INSTALL_DIR names where the versions lie.
 
@@ -323,6 +330,46 @@ function Set-UserPath([string]$dir, [switch]$Add) {
   return $true
 }
 
+function Test-SameFile([string]$a, [string]$b) {
+  if (-not (Test-Path $a) -or -not (Test-Path $b)) { return $false }
+  $x = [IO.File]::ReadAllBytes($a)
+  $y = [IO.File]::ReadAllBytes($b)
+  if ($x.Length -ne $y.Length) { return $false }
+  for ($i = 0; $i -lt $x.Length; $i++) { if ($x[$i] -ne $y[$i]) { return $false } }
+  return $true
+}
+
+function Set-Launcher([string]$release) {
+  # bin\nodecode.exe becomes the launcher $release carries, which runs whatever
+  # `current` names. => bin\, the folder the user PATH names, or nothing when
+  # neither $release nor an earlier install left a launcher that answers - the
+  # PATH then names the release's own folder, as it did before launchers.
+  $bin = Join-Path $root 'bin'
+  $exe = Join-Path $bin 'nodecode.exe'
+  $from = Join-Path $release 'nodecode-launcher.exe'
+  if ((Test-Path $from) -and -not (Test-SameFile $from $exe)) {
+    New-Item -ItemType Directory -Force $bin | Out-Null
+    $new = "$exe.new-" + [guid]::NewGuid().ToString('n')
+    Copy-Item $from $new
+    Invoke-Retried {
+      # A launcher a window runs holds its file, and Windows lets it be moved
+      # but not replaced: it goes aside, runs on, and a later install removes it.
+      if (Test-Path $exe) { [IO.File]::Move($exe, "$exe.old-" + [guid]::NewGuid().ToString('n')) }
+      [IO.File]::Move($new, $exe)
+    }
+  }
+  foreach ($old in @(Get-ChildItem -Path $bin -Filter 'nodecode.exe.*-*' -ErrorAction SilentlyContinue)) {
+    if ($old.Name -match '\.old-' -or $old.LastWriteTime -lt (Get-Date).AddHours(-1)) {
+      Remove-Item -LiteralPath $old.FullName -Force -ErrorAction SilentlyContinue
+    }
+  }
+  if (-not (Test-Path $exe)) { return $null }
+  $probe = Test-Executable $exe
+  if ($probe.Runs) { return $bin }
+  Say "the launcher in $bin did not answer ($($probe.Answer)); the PATH names the release's own folder"
+  return $null
+}
+
 function Test-LaidOut([string]$dir) {
   # A folder holding a release: its executable answering beside its src\.
   $exe = Join-Path $dir 'nodecode.exe'
@@ -503,8 +550,10 @@ function Install-Nodecode {
     }
     Invoke-Retried { Set-Current $target }
     Say "current is $Version"
-    if (-not ($NoModifyPath -or $env:NODECODE_NO_MODIFY_PATH) -and (Set-UserPath $target)) {
-      Say "the user PATH names $Version"
+    $onPath = Set-Launcher $target
+    if (-not $onPath) { $onPath = $target }
+    if (-not ($NoModifyPath -or $env:NODECODE_NO_MODIFY_PATH) -and (Set-UserPath $onPath)) {
+      Say "the user PATH names $onPath"
     }
     Remove-OldReleases $target $previous
     return
@@ -548,14 +597,16 @@ function Install-Nodecode {
     elseif (Test-Path $kept) { Remove-Item $kept }
   }
 
+  $onPath = Set-Launcher $target
+  if (-not $onPath) { $onPath = $target }
   if ($NoModifyPath -or $env:NODECODE_NO_MODIFY_PATH) {
-    Say "add $target to your PATH to run nodecode"
-  } elseif (Set-UserPath $target -Add) {
+    Say "add $onPath to your PATH to run nodecode"
+  } elseif (Set-UserPath $onPath -Add) {
     # Set-UserPath gave this session the folder as well. Run as the one-liner
     # (`irm | iex`, no script path), this session is the operator's own
     # window; run with -File, it is a child whose PATH dies with it.
-    if ($PSCommandPath) { Say "your user PATH names $target; open a new terminal to pick it up" }
-    else { Say "your user PATH names $target; nodecode runs in this window now, and in new ones" }
+    if ($PSCommandPath) { Say "your user PATH names $onPath; open a new terminal to pick it up" }
+    else { Say "your user PATH names $onPath; nodecode runs in this window now, and in new ones" }
   }
 
   if (-not (Get-Command git.exe -ErrorAction SilentlyContinue)) {
