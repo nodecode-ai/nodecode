@@ -125,6 +125,8 @@ It walks one channel from the bot's token to a connected bot. The token stays in
 ## Fewer tokens, same games won
 
 <picture>
+  <source media="(max-width: 600px) and (prefers-color-scheme: light)" srcset="resources/assets/readme/bars-mobile-light.svg">
+  <source media="(max-width: 600px)" srcset="resources/assets/readme/bars-mobile-dark.svg">
   <source media="(prefers-color-scheme: light)" srcset="resources/assets/readme/bars-light.svg">
   <img alt="Tokens to finish ARC-AGI-3, all 25 public games. Claude Opus 5.5, both scoring 100: Nodecode 181M tokens ($124), Claude Code 393M ($210). GPT-6.1 Sol, both winning all 25 games: Nodecode 58M ($33), Codex CLI 172M ($43)." src="resources/assets/readme/bars-dark.svg" width="100%">
 </picture>
