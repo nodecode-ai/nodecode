@@ -593,9 +593,29 @@ be watched."
      "an unbound variable gets the same answer")))
 
 (deftest eval-tool-hints-the-nearest-defined-name ()
+  ;; A qualified miss in a package that exists answers that package's own
+  ;; exports, the names sharing text with the miss first.
   (is-eval "(uiop:run-prog \"x\")"
-    ("hint: nothing named RUN-PROG is defined; similar: " result)
-    ("RUN-PROGRAM (function)" result)))
+    ("hint: UIOP/DRIVER exports no RUN-PROG; its exported names: run-program" result)))
+
+(deftest eval-tool-hints-what-a-package-exports-for-a-verb-it-lacks ()
+  ;; `cron:list' was answered "LIST is COMMON-LISP:LIST -- reachable
+  ;; unqualified from here" 16 times in three days: true of every package,
+  ;; and no lead to the cron verb the form reached for.
+  (let ((package (make-package (string (gensym "HINT-PROBE-")) :use '(#:common-lisp))))
+    (unwind-protect
+         (flet ((verb (name &key (export t))
+                  (let ((symbol (intern name package)))
+                    (setf (fdefinition symbol) (lambda () nil))
+                    (when export (export symbol package)))))
+           (verb "LIST-JOBS") (verb "SHOW") (verb "HIDDEN" :export nil)
+           (let* ((name (package-name package))
+                  (listed (nle:eval-string (format nil "(~a:list)" name)))
+                  (hidden (nle:eval-string (format nil "(~a:hidden)" name))))
+             (is (search (format nil "hint: ~a exports no LIST; its exported names: list-jobs, show" name) listed) listed)
+             (is (not (search "COMMON-LISP:LIST" listed)) "a symbol the package already reaches is no lead")
+             (is (search (format nil "hint: ~a exports no HIDDEN (~a::HIDDEN is internal: function)" name name) hidden) hidden)))
+      (delete-package package))))
 
 (deftest eval-tool-hints-past-an-exact-name-that-is-not-a-function ()
   ;; SB-EXT:FILE-EXISTS is a condition class; a form that called

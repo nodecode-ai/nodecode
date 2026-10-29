@@ -1042,6 +1042,38 @@ colons when internal."
               (eq :external (nth-value 1 (find-symbol (symbol-name symbol) package)))
               (symbol-name symbol))))
 
+(defparameter *package-exports-hint-limit* 15
+  "The most exported names PACKAGE-EXPORTS-HINT lists.")
+
+(defun package-exports-hint (name package kind)
+  "One hint line for PACKAGE:NAME read where PACKAGE exports no NAME: the
+names PACKAGE does export that are defined (KIND, a symbol's meaning or
+NIL), those sharing text with NAME first, and NAME's own internal symbol
+when PACKAGE defines one."
+  (let* ((internal (multiple-value-bind (symbol status) (find-symbol name package)
+                     (and symbol (eq status :internal) (funcall kind symbol) symbol)))
+         (exports (let (found)
+                    (do-external-symbols (symbol package)
+                      (when (funcall kind symbol) (pushnew symbol found)))
+                    found))
+         (near (lambda (symbol)
+                 (let ((other (symbol-name symbol)))
+                   (or (search name other :test #'char-equal)
+                       (search other name :test #'char-equal)))))
+         (ranked (sort (copy-list exports)
+                       (lambda (a b)
+                         (let ((near-a (funcall near a)) (near-b (funcall near b)))
+                           (if (eq (not near-a) (not near-b))
+                               (string< (symbol-name a) (symbol-name b))
+                               near-a)))))
+         (shown (subseq ranked 0 (min *package-exports-hint-limit* (length ranked)))))
+    (format nil "hint: ~a exports no ~a~@[ (~a)~]; ~:[it exports nothing defined~;~:*its exported names: ~(~{~a~^, ~}~)~]~[~:;, and ~:*~d more~]"
+            (package-name package) name
+            (and internal (format nil "~a is internal: ~a"
+                                  (qualified-symbol-name internal) (funcall kind internal)))
+            (mapcar #'symbol-name shown)
+            (- (length ranked) (length shown)))))
+
 (defun condition-symbol-hint (condition)
   "One line locating the name a failing form reached for, or NIL when
 CONDITION names none. \"undefined function\" and \"not found in the
@@ -1070,10 +1102,25 @@ very name it then fails to call, so mere presence proves nothing."
                           ((fboundp symbol) "function")
                           ((boundp symbol) "variable")
                           ((find-class symbol nil) "class")))))
-        (let* ((exact (loop for package in (list-all-packages)
+        (let* (;; PACKAGE:NAME where PACKAGE exists: the model guessed that
+               ;; package's verb. A symbol PACKAGE already reaches is no lead
+               ;; for it -- every package uses COMMON-LISP, and `cron:list'
+               ;; was answered "LIST is COMMON-LISP:LIST -- reachable
+               ;; unqualified", true and the wrong lead 16 times in three days
+               ;; (2026-10-26..29) -- so with no other lead the hint is what
+               ;; PACKAGE does export.
+               (target (let ((package (and (typep condition 'sb-int:simple-reader-package-error)
+                                           (find-package (second (simple-condition-format-arguments
+                                                                  condition))))))
+                         (and package
+                              (not (member package (list (find-package '#:common-lisp)
+                                                         (find-package '#:keyword))))
+                              package)))
+               (exact (loop for package in (list-all-packages)
                             for symbol = (find-symbol name package)
                             when (and symbol (eq (symbol-package symbol) package)
-                                      (kind symbol))
+                                      (kind symbol)
+                                      (not (and target (eq symbol (find-symbol name target)))))
                               collect symbol))
                (here (find-symbol name (find-package '#:nodecode.evolved)))
                ;; A class or variable of the exact name does not answer a
@@ -1095,6 +1142,7 @@ very name it then fails to call, so mere presence proves nothing."
                    (format nil "hint: ~a is ~{~a~^, ~}~:[~; — reachable unqualified from here~]~@[; similar: ~{~a~^, ~}~]"
                            name (described exact) (and here (member here exact))
                            (and similar (described similar))))
+                  (target (package-exports-hint name target #'kind))
                   (similar
                    (format nil "hint: nothing named ~a is defined; similar: ~{~a~^, ~}"
                            name (described similar)))
