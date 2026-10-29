@@ -5,7 +5,7 @@
 ;;;; One waist between the turn loop and every provider dialect, mirroring the
 ;;;; Zig SDK split (src/ai/core.zig StreamPart + per-dialect lanes). The turn
 ;;;; loop and the gateway consume STREAM-PARTs and the assembled chat-shaped
-;;;; assistant message; only this file and the lanes under engine/lanes/, one
+;;;; assistant message; only this file and the dialect files under engine/providers/, one
 ;;;; file per dialect, read provider wire bytes.
 ;;;;
 ;;;; Contracts owned here:
@@ -18,7 +18,7 @@
 ;;;;     frames signal, a stream that ends without its done marker signals
 ;;;;     PROVIDER-STREAM-INCOMPLETE instead of passing truncation off as success
 ;;;;   - retry classification and delay policy (Retry-After first, capped)
-;;;;   - the lane registry the files under engine/lanes/ register into
+;;;;   - the lane registry the files under engine/providers/ register into
 ;;;;
 ;;;; The retry loop itself, context compilation, and overflow eviction stay in
 ;;;; turn.lisp: they are turn policy folded over this layer, not part of it.
@@ -4782,7 +4782,7 @@ parameters schema under SCHEMA-KEY."
 
 
 ;;; --- what the lanes share --------------------------------------------------
-;;; Defined before the lane files under engine/lanes/ load: the response
+;;; Defined before the lane files under engine/providers/ load: the response
 ;;; envelope every lane emits, DEFINE-PROVIDER-LANE that each lane is written
 ;;; in, the data: URI reading the anthropic and google lanes share, and the
 ;;; two OpenAI wires' thinking-mode model test and cache-routing key.

@@ -11,7 +11,7 @@
 ;;;; we run them and recur with the enriched history. Session state is the
 ;;;; argument being folded through the recursion.
 ;;;;
-;;;; The provider dialects themselves live in engine/lanes/ behind
+;;;; The provider dialects themselves live in engine/providers/ behind
 ;;;; provider.lisp's STREAM-PART waist, and the context engine — the log-to-provider-input
 ;;;; pipeline, eviction policy, and the pure request compile — lives in
 ;;;; context.lisp. This file owns turn policy folded over both layers: the
