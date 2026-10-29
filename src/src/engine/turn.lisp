@@ -1879,17 +1879,29 @@ with TAG; see RAW-TEXT-END."
                                           (when (char= c #\Newline) (return)))))))))))
       (if *read-suppress* nil text))))
 
-(defun ensure-raw-text-reader (&optional (readtable *readtable*))
-  "Make READTABLE read #>TAG raw text, once. The standard readtable refuses
-to change, and is left as it is."
-  (unless (get-dispatch-macro-character #\# #\> readtable)
-    (ignore-errors (set-dispatch-macro-character #\# #\> 'read-raw-text readtable)))
-  readtable)
+(defun raw-text-readtable (&optional (readtable *readtable*))
+  "READTABLE, made to read #>TAG raw text: changed in place once, or a copy
+when it refuses change, as the standard readtable does."
+  (cond ((get-dispatch-macro-character #\# #\> readtable) readtable)
+        ((ignore-errors (set-dispatch-macro-character #\# #\> 'read-raw-text readtable) t) readtable)
+        (t (let ((copy (copy-readtable readtable)))
+             (set-dispatch-macro-character #\# #\> 'read-raw-text copy)
+             copy))))
 
-(ensure-raw-text-reader)
-(pushnew 'ensure-raw-text-reader sb-ext:*init-hooks*)
+(defun install-raw-text-reader ()
+  "Make the image's readtable read raw text, so every thread started after
+it and every LOAD of a layer file reads #> as a snippet does. MAIN calls it
+before the first thread exists: the dumped binary started without it when a
+load-time change was all there was, and the first raw text a model wrote met
+`no dispatch function defined for #\\>' (2026-10-29)."
+  (setf *readtable* (raw-text-readtable)))
+
+(install-raw-text-reader)
 
 (defun read-snippet-forms (text &aux (*read-eval* nil)
+                                     ;; whatever readtable this thread was
+                                     ;; given, raw text reads in it
+                                     (*readtable* (raw-text-readtable))
                                      (*package* *package*)
                                      (eof (list :eof))
                                      (position 0)

@@ -14838,6 +14838,9 @@ condition's report, exit 1."
   ;; The debugger-disabled runtime otherwise exits the whole process when
   ;; any background thread reaches its debugger, including layer workers.
   (install-worker-error-guard)
+  ;; Raw text (#>TAG) in the image's reader before the first thread exists,
+  ;; so eval and every layer load read it (turn.lisp, INSTALL-RAW-TEXT-READER).
+  (install-raw-text-reader)
   ;; Ordinary pages before the first thread exists: with huge pages on,
   ;; every thread the organism starts costs some 4 MB resident for a few
   ;; hundred bytes of stack (os.lisp, DISABLE-HUGE-PAGES). And two malloc

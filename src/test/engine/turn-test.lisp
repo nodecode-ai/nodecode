@@ -370,6 +370,13 @@ them spells the message out."
   (is-eval (format nil "(list #>~%abc)")
     ("#> wants a tag" "a #> without a tag says what it wants")))
 
+(deftest eval-raw-text-reads-in-a-thread-whose-readtable-lacks-it ()
+  ;; The dumped binary's eval met `no dispatch function defined for #\>':
+  ;; its readtable never had it. A snippet reads raw text whatever readtable
+  ;; its thread was given.
+  (let ((*readtable* (copy-readtable nil)))
+    (is-eval (format nil "(length #>E~%ab~%E)") (:= "3" "raw text reads in a plain standard readtable"))))
+
 (deftest raw-text-loads-from-a-file ()
   ;; The layer keeps the bytes a snippet was read from, and a launch loads
   ;; them with LOAD: the image's readtable reads raw text, not only eval's.
