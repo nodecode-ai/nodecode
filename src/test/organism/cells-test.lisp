@@ -361,7 +361,9 @@ is not EQ to the one a later eval interns — names compare, symbols do not."
         (nlk:resolve-startup-parameters)
         (is (search "/.nodecode/profiles/writer/" (namestring nlk:*home*)))
         (is (equal "writer" (nlk:sticky-profile)) "the sticky name reads back")))
-    (is (search real-home (namestring nlk::*default-store-path*)))
+    ;; Restored, the store is back where the run started: under
+    ;; $NODECODE_HOME when the suite was given one, else under $HOME.
+    (is (search (or real-nodecode-home real-home) (namestring nlk::*default-store-path*)))
     (is (member 'nlk:resolve-startup-parameters sb-ext:*init-hooks*))))
 
 (deftest cells-source-root-is-the-shipped-tree ()
