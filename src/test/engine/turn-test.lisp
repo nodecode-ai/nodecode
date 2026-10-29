@@ -7657,6 +7657,90 @@ and a context_over_200k no reader may trust: it names no size.")
     (is (null (nth-value 1 (gethash "output_config" body))))
     (is (= 0.7 (gethash "temperature" body)))))
 
+(defun adaptive-body-declaring (declared effort)
+  "An adaptive model's request at EFFORT, its endpoint having declared the
+thinking types DECLARED (a list, :UNDECLARED, or NIL for never asked)."
+  (nlk:bind ((nle::*models-catalog-path* nil) (nle::*model* "claude-adaptive-test")
+             (nle::*model-capability-overrides*
+               '(("claude-adaptive-test"
+                  . (:effort-levels ("low" "medium" "high" "xhigh" "max")))))
+             (nle::*temperature* 0.7) (nle::*reasoning-effort* effort)
+             (nle::*anthropic-thinking-types* (make-hash-table :test #'equal))
+             (context (anthropic-user-context))
+             (config (nle::compiled-turn-context-provider-config context)))
+    (when declared
+      (setf (gethash (cons (nle::anthropic-models-url (nle::effective-provider-config-endpoint config))
+                           "claude-adaptive-test")
+                     nle::*anthropic-thinking-types*)
+            declared))
+    (nle::anthropic-request-body context)))
+
+(deftest anthropic-off-is-the-spelling-the-model-declares ()
+  ;; Off is no one spelling: Sonnet 5.5 refuses "disabled" and takes
+  ;; "between_tools", Opus 5.5 refuses both because it always thinks, and
+  ;; either refusal is a 400 that fails the turn. What the endpoint's Models
+  ;; API declares picks; an endpoint that declares nothing keeps "disabled".
+  (flet ((off-type (declared effort)
+           (gethash "type" (gethash "thinking" (adaptive-body-declaring declared effort)))))
+    (let* ((body (adaptive-body-declaring '("adaptive" "between_tools") "off"))
+           (thinking (gethash "thinking" body)))
+      (is (equal "between_tools" (gethash "type" thinking)) "sonnet 5.5's off")
+      (is (null (nth-value 1 (gethash "display" thinking))) "between_tools refuses a display")
+      (is (null (nth-value 1 (gethash "output_config" body)))))
+    (is (equal "between_tools" (off-type '("adaptive" "between_tools") nil)) "an effort never set is off too")
+    (is (equal "disabled" (off-type '("adaptive" "between_tools" "disabled") "off")))
+    (is (equal "disabled" (off-type :undeclared "off")) "an endpoint that declares nothing keeps disabled")
+    (is (equal "disabled" (off-type nil "off")) "and so does one never asked")
+    (is (equal "adaptive" (off-type '("adaptive" "between_tools") "high")) "a rung thinks, whatever off is")
+    (let ((body (adaptive-body-declaring '("adaptive") "off")))
+      (is (equal "adaptive" (gethash "type" (gethash "thinking" body))) "a model that always thinks")
+      (is (equal "low" (gethash "effort" (gethash "output_config" body))) "spends its weakest rung")
+      (is (null (nth-value 1 (gethash "temperature" body))) "and samples as a thinking request does"))))
+
+(defun models-api-config (url)
+  "A config whose Messages endpoint sits beside URL's fixture server."
+  (nle::make-effective-provider-config
+   :provider "anthropic" :lane "anthropic" :model "claude-x" :api-key "k"
+   :endpoint (ppcre:regex-replace "/api\\.json$" url "/v1/messages")))
+
+(deftest anthropic-thinking-types-are-asked-once-of-the-models-api ()
+  ;; The fixture answers one request and closes, so a second read that
+  ;; dialed would hear nothing: the kept answer is what it reads.
+  (multiple-value-bind (url server)
+      (serve-catalog-once "{\"id\": \"claude-x\", \"capabilities\": {\"thinking\": {\"supported\": true, \"types\": {\"adaptive\": {\"supported\": true}, \"between_tools\": {\"supported\": true}, \"disabled\": {\"supported\": false}, \"enabled\": {\"supported\": false}}}}}")
+    (nlk:bind ((nle::*anthropic-thinking-types* (make-hash-table :test #'equal))
+               (nle::*provider-models-cache-path* "listing.json")
+               (config (models-api-config url)))
+      (flet ((declared () (sort (copy-list (nle::anthropic-thinking-types config :fetch t)) #'string<)))
+        (is (equal '("adaptive" "between_tools") (declared)))
+        (bt2:join-thread server)
+        (is (equal '("adaptive" "between_tools") (declared)) "kept, not asked again")
+        (is (equal "between_tools" (nle::anthropic-thinking-off config)))))))
+
+(deftest anthropic-thinking-types-keep-a-relay-answer-and-not-a-silence ()
+  ;; A relay serving no Models API answers with something else: that is its
+  ;; answer, kept, and off stays "disabled". A server nobody hears is no
+  ;; answer, and the next request asks again.
+  (multiple-value-bind (url server) (serve-catalog-once "<html>a relay's web page</html>")
+    (nlk:bind ((nle::*anthropic-thinking-types* (make-hash-table :test #'equal))
+               (nle::*provider-models-cache-path* "listing.json")
+               (config (models-api-config url)))
+      (is (null (nle::anthropic-thinking-types config :fetch t)))
+      (bt2:join-thread server)
+      (is (eq :undeclared (gethash (cons (nle::anthropic-models-url (nle::effective-provider-config-endpoint config)) "claude-x")
+                                   nle::*anthropic-thinking-types*)))
+      (is (equal "disabled" (nle::anthropic-thinking-off config)))
+      (setf nle::*anthropic-thinking-types* (make-hash-table :test #'equal))
+      (is (null (nle::anthropic-thinking-types config :fetch t)) "the closed port answers nothing")
+      (is (zerop (hash-table-count nle::*anthropic-thinking-types*)) "and nothing is kept"))))
+
+(deftest a-hermetic-anthropic-lane-asks-no-models-api ()
+  (nlk:bind ((nle::*anthropic-thinking-types* (make-hash-table :test #'equal))
+             (nle::*provider-models-cache-path* nil)
+             (config (models-api-config "http://127.0.0.1:9/api.json")))
+    (is (null (nle::anthropic-thinking-types config :fetch t)))
+    (is (zerop (hash-table-count nle::*anthropic-thinking-types*)))))
+
 (deftest anthropic-budget-thinking-survives-a-ladder-that-stops-at-high ()
   (nlk:bind ((nle::*models-catalog-path* nil) (nle::*model* "claude-budget-test")
              (nle::*model-capability-overrides*

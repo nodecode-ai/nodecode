@@ -5277,6 +5277,84 @@ signed."
   (and (some (lambda (level) (> (or (effort-rank level) -1) ceiling)) effort-levels)
        t))
 
+;;; --- how a model takes thinking off -----------------------------------------
+;;; The adaptive models disagree on how a request turns thinking off. Most
+;;; take {"type": "disabled"}; Claude Sonnet 5.5 refuses it and takes
+;;; {"type": "between_tools"}; Claude Opus 5.5, like the Fable and Mythos
+;;; models, refuses both, because it always thinks. A spelling the model
+;;; refuses is a 400 that fails the turn. Anthropic's Models API declares what
+;;; each model takes (capabilities.thinking.types, a type false exactly when a
+;;; request sending it gets that 400), so the lane asks it, once per endpoint
+;;; and model, and only for a request that turns thinking off. An endpoint
+;;; that declares nothing, a relay serving no Models API, keeps "disabled",
+;;; the spelling every model took before these.
+
+(defvar *anthropic-thinking-types* (make-hash-table :test #'equal :synchronized t)
+  "(MODELS-URL . MODEL) -> the thinking types the endpoint at MODELS-URL
+declares MODEL takes, a list of type names, or :UNDECLARED when its answer
+declared none.")
+
+(defun thinking-effort-p (effort)
+  "True when EFFORT asks for thinking: a rung, and not off. An effort never
+set asks for none."
+  (and (stringp effort) (not (string-equal effort "off"))))
+
+(defun anthropic-models-url (endpoint)
+  "The Models API beside ENDPOINT, a Messages API URL, or NIL when ENDPOINT
+is not one."
+  (and (stringp endpoint) (uiop:string-suffix-p endpoint "/messages")
+       (uiop:strcat (subseq endpoint 0 (- (length endpoint) (length "/messages"))) "/models")))
+
+(defun fetch-anthropic-thinking-types (url config)
+  "(values TYPES DEFINITE-P): the thinking types GET URL/<model> declares
+CONFIG's model takes, NIL when it declares none, and whether that answer is
+the endpoint's own to keep."
+  ;; A body that is no Models API answer (a relay's web page) declares none.
+  ;; A refusal is the endpoint's answer too; a timeout, a 408, a 429 or a 5xx
+  ;; is not, and the next request asks again.
+  (multiple-value-bind (body reason transient)
+      (http-fetch (format nil "~a/~a" url (quri:url-encode config.model))
+                  :headers (provider-auth-headers :anthropic config.api-key)
+                  :timeout *provider-models-fetch-timeout-seconds* :proxy config.proxy)
+    (if body
+        (let ((types (json-value (ignore-errors (nlk:decode-json (nlk:body-text body)))
+                                 :object "capabilities" "thinking" "types")))
+          (values (and types
+                       (loop for name being the hash-keys of types using (hash-value support)
+                             when (json-value support :boolean "supported") collect name))
+                  t))
+        (values nil (and (not transient)
+                         (ppcre:register-groups-bind ((#'parse-integer status))
+                             ("^HTTP (\\d+)" reason)
+                           (and (<= 400 status 499) (not (member status '(408 429))))))))))
+
+(defun anthropic-thinking-types (config &key fetch)
+  "The thinking types CONFIG's endpoint declares its model takes, or NIL when
+it declares none or was never asked. FETCH asks it when no answer is kept."
+  ;; The hermetic posture, which has no listing cache, dials nothing.
+  (let* ((url (anthropic-models-url config.endpoint))
+         (key (and url (cons url config.model))))
+    (when key
+      (multiple-value-bind (kept present) (gethash key *anthropic-thinking-types*)
+        (cond (present (and (listp kept) kept))
+              ((and fetch *provider-models-cache-path*)
+               (multiple-value-bind (types definite) (fetch-anthropic-thinking-types url config)
+                 (when definite
+                   (setf (gethash key *anthropic-thinking-types*) (or types :undeclared)))
+                 types)))))))
+
+(defun anthropic-thinking-off (config)
+  "How a request takes thinking off on CONFIG's model: \"disabled\",
+\"between_tools\", or NIL when the model always thinks."
+  (let ((types (anthropic-thinking-types config)))
+    (cond ((or (null types) (member "disabled" types :test #'string=)) "disabled")
+          ((member "between_tools" types :test #'string=) "between_tools"))))
+
+(defun lowest-effort (levels)
+  "The weakest rung LEVELS names above off, or NIL."
+  (let ((rungs (remove-if-not (lambda (level) (plusp (or (effort-rank level) 0))) levels)))
+    (and rungs (reduce (lambda (a b) (if (< (effort-rank b) (effort-rank a)) b a)) rungs))))
+
 ;;; --- anthropic prompt-cache breakpoints ------------------------------------
 ;;; Anthropic caches by prefix in tools -> system -> messages order, and
 ;;; honours at most four cache_control breakpoints per request. The tail
@@ -5354,16 +5432,27 @@ breakpoints placed by policy."
   ;; Thinking crosses the wire two ways, and which one is the model's own
   ;; answer. A model whose declared ladder reaches above `high` thinks
   ;; adaptively: it decides how much to spend, and the request carries only
-  ;; the effort name in a top-level output_config. Every other model spends a
+  ;; the effort name in a top-level output_config. An adaptive request that
+  ;; asks for no thinking, its effort off or never set, says so in the
+  ;; model's own spelling (ANTHROPIC-THINKING-OFF), and a model that always
+  ;; thinks spends its weakest rung instead. Every other model spends a
   ;; budget, clamped under max_tokens minus answer headroom (the
   ;; planRequestTokens rule); a budget clamped below the wire minimum drops
   ;; thinking rather than sending a request the API refuses.
   (with-request-shape context
       ;; the lane fallback, the wire requiring max_tokens: every current model takes 32k
       ((max-tokens (or (effective-max-output-tokens context) 32000))
-       (thinking-p (and (stringp effort) (not (string-equal effort "off"))))
+       (thinking-p (thinking-effort-p effort))
        (adaptive-p (anthropic-adaptive-p
                     config.effort-levels))
+       ;; no thinking, as this model spells it: NIL when it always thinks
+       (off (and adaptive-p (not thinking-p) (anthropic-thinking-off config)))
+       ;; the effort an adaptive request names: the pick, or the weakest rung
+       ;; of a model that cannot stop thinking
+       (adaptive-effort (and adaptive-p
+                             (if thinking-p
+                                 effort
+                                 (and (null off) (lowest-effort config.effort-levels)))))
        ;; 1024 tokens of answer headroom inside max_tokens, and 1024 the wire's minimum budget
        (tier (and (not adaptive-p) (anthropic-thinking-budget effort)))
        (budget (let ((clamped (and tier (min tier (max 0 (- max-tokens 1024))))))
@@ -5373,7 +5462,7 @@ breakpoints placed by policy."
                            (cdr (assoc choice
                                        '(("auto" . "auto") ("required" . "any") ("any" . "any"))
                                        :test #'string-equal))))
-       (sampling-p (not (or budget (and adaptive-p thinking-p))))
+       (sampling-p (not (or budget adaptive-effort)))
        ;; the head joins before the breakpoints: it is the prefix
        (conversation (multiple-value-list
                       (anthropic-messages (messages-with-head context)
@@ -5394,13 +5483,13 @@ breakpoints placed by policy."
               ;; so the request names only the effort. `display` is
               ;; load-bearing — the API default on the newest models is
               ;; "omitted", which would blank the thinking text the
-              ;; transcript renders.
-              :when adaptive-p "thinking"
-              (if thinking-p
-                  (json-object "type" "adaptive" "display" "summarized")
-                  (json-object "type" "disabled"))
-              :when (and adaptive-p thinking-p) "output_config"
-              (json-object "effort" effort)
+              ;; transcript renders. The off spellings take no `display`:
+              ;; between_tools refuses one.
+              :opt "thinking" (cond (adaptive-effort
+                                     (json-object "type" "adaptive" "display" "summarized"))
+                                    (off (json-object "type" off)))
+              :opt "output_config" (and adaptive-effort
+                                        (json-object "effort" adaptive-effort))
               ;; Budget thinking: the older contract, a token allowance
               ;; carved out of max_tokens.
               :opt "thinking" (and budget
@@ -5434,11 +5523,17 @@ the chat wire shape (content string, tool_calls vector, reasoning_content)."
                  ;; streams the block's own deltas fill; newest first here.
                  (thinking-blocks '())
                  (stop-reason nil))
-         :request (multiple-value-bind (body betas prefix) (anthropic-request-body context)
-                    (setf request-betas betas
-                          request-prefix prefix)
-                    (setf (gethash "stream" body) t)
-                    (encode-json-octets body))
+         :request (progn
+                    ;; A request about to take thinking off first learns how
+                    ;; its model spells that (ANTHROPIC-THINKING-OFF).
+                    (when (and (anthropic-adaptive-p config.effort-levels)
+                               (not (thinking-effort-p config.reasoning-effort)))
+                      (anthropic-thinking-types config :fetch t))
+                    (multiple-value-bind (body betas prefix) (anthropic-request-body context)
+                      (setf request-betas betas
+                            request-prefix prefix)
+                      (setf (gethash "stream" body) t)
+                      (encode-json-octets body)))
          ;; The messages.zig flushOpenBlocks order: text, reasoning, then the
          ;; tool drain. Runs when a stop_reason arrives and again before
          ;; :finish; every helper is idempotent.
