@@ -265,7 +265,7 @@ signed."
 declares MODEL takes, a list of type names, or :UNDECLARED when its answer
 declared none.")
 
-(defun thinking-effort-p (effort)
+(defun anthropic-thinking-effort-p (effort)
   "True when EFFORT asks for thinking: a rung, and not off. An effort never
 set asks for none."
   (and (stringp effort) (not (string-equal effort "off"))))
@@ -321,7 +321,7 @@ it declares none or was never asked. FETCH asks it when no answer is kept."
     (cond ((or (null types) (member "disabled" types :test #'string=)) "disabled")
           ((member "between_tools" types :test #'string=) "between_tools"))))
 
-(defun lowest-effort (levels)
+(defun anthropic-lowest-effort (levels)
   "The weakest rung LEVELS names above off, or NIL."
   (let ((rungs (remove-if-not (lambda (level) (plusp (or (effort-rank level) 0))) levels)))
     (and rungs (reduce (lambda (a b) (if (< (effort-rank b) (effort-rank a)) b a)) rungs))))
@@ -413,7 +413,7 @@ breakpoints placed by policy."
   (with-request-shape context
       ;; the lane fallback, the wire requiring max_tokens: every current model takes 32k
       ((max-tokens (or (effective-max-output-tokens context) 32000))
-       (thinking-p (thinking-effort-p effort))
+       (thinking-p (anthropic-thinking-effort-p effort))
        (adaptive-p (anthropic-adaptive-p
                     config.effort-levels))
        ;; no thinking, as this model spells it: NIL when it always thinks
@@ -423,7 +423,7 @@ breakpoints placed by policy."
        (adaptive-effort (and adaptive-p
                              (if thinking-p
                                  effort
-                                 (and (null off) (lowest-effort config.effort-levels)))))
+                                 (and (null off) (anthropic-lowest-effort config.effort-levels)))))
        ;; 1024 tokens of answer headroom inside max_tokens, and 1024 the wire's minimum budget
        (tier (and (not adaptive-p) (anthropic-thinking-budget effort)))
        (budget (let ((clamped (and tier (min tier (max 0 (- max-tokens 1024))))))
@@ -498,7 +498,7 @@ the chat wire shape (content string, tool_calls vector, reasoning_content)."
                     ;; A request about to take thinking off first learns how
                     ;; its model spells that (ANTHROPIC-THINKING-OFF).
                     (when (and (anthropic-adaptive-p config.effort-levels)
-                               (not (thinking-effort-p config.reasoning-effort)))
+                               (not (anthropic-thinking-effort-p config.reasoning-effort)))
                       (anthropic-thinking-types config :fetch t))
                     (multiple-value-bind (body betas prefix) (anthropic-request-body context)
                       (setf request-betas betas
