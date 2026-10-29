@@ -546,6 +546,59 @@ asks again after a pause -- and stops the moment the image has caught up."
     (is (equal (format nil "this home's organism: already at tv9~%this binary: tv1")
                (answer "tv1" t)))))
 
+(defun numbered-release-files (number)
+  "A release's files whose nodecode.asd says NUMBER, as a release's does."
+  (list (cons "src/src/a.lisp" *update-old-a*)
+        (cons "src/nodecode.asd"
+              (format nil "(defsystem \"upg\" :version \"~a\" :depends-on (\"uiop\") :components ((:file \"a\")))" number))))
+
+(deftest update-a-window-whose-path-predates-the-update-is-told-why ()
+  ;; Windows puts the version's own folder on the user PATH, and a window keeps
+  ;; the PATH it opened with: after `nodecode update' there, `nodecode' still
+  ;; finds the old folder and `--version' says the update never happened --
+  ;; "update doesn't work, no error". The answer names both releases, and the
+  ;; way to the new one.
+  (with-release-host (dist (list (cons "tv1" (numbered-release-files "9.0.1"))
+                                 (cons "tv2" (numbered-release-files "9.0.2"))))
+    (is (null (nle::current-label)) "nothing installed, nothing current")
+    (nle::stage-release "tv1")
+    (nle::link-release "tv1")
+    (nle::stage-release "tv2")
+    (nle::link-release "tv2")
+    (is (equal "tv2" (nle::current-label)))
+    (is (equal "9.0.2 (tv2)" (nle::release-name "tv2")))
+    (is (equal "no-such" (nle::release-name "no-such")) "a release not laid out here keeps its label")
+    (with-stubbed-fdefinition (nle::window-release () "tv1")
+      (is (equal "this window still runs 9.0.1 (tv1): its PATH is from before the update. Open a new terminal or tab to run 9.0.2 (tv2)"
+                 (nle::stale-window-text))))
+    (with-stubbed-fdefinition (nle::window-release () "tv2")
+      (is (null (nle::stale-window-text)) "a window that runs `current' is told nothing"))
+    (with-stubbed-fdefinition (nle::window-release () nil)
+      (is (null (nle::stale-window-text)) "nor one whose PATH names no version folder"))))
+
+(deftest update-path-names-a-folder-whatever-its-trailing-separator ()
+  (let ((sep (if (eq (nlk:platform) :windows) ";" ":")))
+    (is (nle::path-names-directory-p #p"/opt/nc/tv1/" (format nil "/usr/bin~a/opt/nc/tv1~a/bin" sep sep)))
+    (is (nle::path-names-directory-p #p"/opt/nc/tv1/" (format nil "/opt/nc/tv1/~a/bin" sep)))
+    (is (not (nle::path-names-directory-p #p"/opt/nc/tv1/" (format nil "/opt/nc/tv2~a/opt/nc/current" sep))))
+    (is (not (nle::path-names-directory-p #p"/opt/nc/tv1/" nil)))))
+
+(deftest update-locally-takes-the-release-current-names-as-it-lies (with-organism-tree ("tv2" (upg-source 2 "a")))
+  ;; A second `nodecode update' in a window that still runs the old release
+  ;; used to fetch and lay out the release `current' already named, and say
+  ;; "tv2 is current" -- which reads as nothing to do -- beside the classifier's
+  ;; line, which says nothing to a person whose next launch runs the build whole.
+  (with-stubbed-fdefinitions ((nle::organism-port () nil)
+                              (nle::window-release () nil))
+    (is (equal "updated to tv2: the next launch runs it" (nle::update-text '("tv2"))))
+    (is (equal "tv2" (nle::current-label)))
+    (with-stubbed-fdefinition (nle::stage-release (version) (error "~a was staged again" version))
+      (is (equal "tv2 is installed already: the next launch runs it" (nle::update-text '("tv2"))))
+      (with-stubbed-fdefinition (nle::window-release () "tv1")
+        (is (equal (format nil "tv2 is installed already~%~
+                                this window still runs tv1: its PATH is from before the update. Open a new terminal or tab to run tv2")
+                   (nle::update-text '("tv2"))))))))
+
 ;;; --- the note a new release says -------------------------------------------
 
 (defun changes-list (&rest lines)
