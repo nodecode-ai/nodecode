@@ -475,7 +475,11 @@ be watched."
     (nil "(incf (gethash :k *seen*))" "an assignment through a place")
     (nil "(sort *moves* #'<)" "destroys what it is handed")
     (nil "(defun masks () nil)" "a definition")
-    (nil "(length *)" "the last snippet's value moves under every snippet")))
+    (nil "(length *)" "the last snippet's value moves under every snippet")
+    (nil "(eval-interrupt 1006)" "stops a background evaluation")
+    (nil "(eval-status 1006)" "takes the output since the last look")
+    (nil "(eval-await 1006)" "parks on a background evaluation and takes its output")
+    (t "(list-evals)" "listing the evaluations only reads")))
 
 (deftest a-read-snippet-is-watched-and-comes-back-only-when-it-changes
     (with-session-store ("watch"))

@@ -1331,9 +1331,14 @@ this closes it.")
   '(setf setq psetf psetq incf decf push pop pushnew rotatef shiftf remf set
     makunbound fmakunbound remhash clrhash rplaca rplacd nconc delete
     delete-if delete-if-not delete-duplicates nreverse sort stable-sort fill
-    replace map-into vector-push vector-push-extend in-package eval load)
+    replace map-into vector-push vector-push-extend in-package eval load
+    eval-status eval-await eval-interrupt)
   "Names a watched snippet may not mention: each assigns, destroys what it is
-handed, or runs code the form does not show.")
+handed, or runs code the form does not show -- or steers a background
+evaluation: EVAL-STATUS and EVAL-AWAIT take the output since the last look,
+so a run again would eat what the model has not read, and EVAL-INTERRUPT
+stops a thread. Their values move under every snippet besides, so a watch of
+one prints a line under every later result.")
 
 (defstruct (watch (:copier nil))
   "One watched snippet: TEXT, its form as written, on one line; FORM, as read;
