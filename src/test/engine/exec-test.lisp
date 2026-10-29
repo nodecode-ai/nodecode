@@ -915,6 +915,23 @@ completed. BODY runs with SID bound."
     (is (search "2 lines" receipt) receipt)
     (is (equal (format nil "one~%two~%") (uiop:read-file-string path)))))
 
+(deftest write-file-names-a-missing-final-newline (with-temp-trees ((root "write-file-eol")))
+  ;; The receipt counts lines the way an editor does, so `one~%two` and
+  ;; `one~%two~%` both read "2 lines" while wc -l counts 1 and 2: the
+  ;; receipt says which one it wrote, so a read-back never looks like a lost
+  ;; character.
+  (flet ((receipt (name text)
+           (nle:write-file (namestring (merge-pathnames name root)) text)))
+    (let ((open (receipt "open.txt" (format nil "one~%two")))
+          (solo (receipt "solo.txt" "one"))
+          (closed (receipt "closed.txt" (format nil "one~%two~%")))
+          (empty (receipt "empty.txt" "")))
+      (is (search "2 lines, 7 characters (no trailing newline)" open) open)
+      (is (search "1 line, 3 characters (no trailing newline)" solo) solo)
+      (is (not (search "trailing newline" closed)) closed)
+      (is (not (search "trailing newline" empty)) "an empty file has no last line to leave open")
+      (is (equal (format nil "one~%two") (uiop:read-file-string (merge-pathnames "open.txt" root))) "the bytes stay as given"))))
+
 ;;; --- look: an image file, shown at the next round ------------------------
 ;;; The verb stages the file on the live turn under its own call id; the
 ;;; engine's placement is context-test's; here: the receipt, the staging,

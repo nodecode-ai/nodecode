@@ -2200,7 +2200,9 @@ answer a receipt naming the line."
 
 (defun write-file (path text)
   "Write TEXT to the file at PATH — parents created, an existing file
-replaced whole — and answer a one-line receipt."
+replaced whole — and answer a one-line receipt. The counts are TEXT's as
+given, its lines as an editor counts them; TEXT whose last line has no
+newline says so, since a reader that counts newlines finds one line fewer."
   ;; A relative PATH is against the session's directory. Deliver TEXT through
   ;; the call's strings object — ($ "text") — rather than escaping it into the
   ;; form.
@@ -2209,8 +2211,12 @@ replaced whole — and answer a one-line receipt."
   (let* ((resolved (eval-snippet-path path))
          (before (nlk:read-text resolved)))
     (write-file-text resolved text)
-    (format nil "wrote ~a: ~d line~:p, ~d character~:p~{~@[; ~a~]~}"
+    ;; "a~%b" and "a~%b~%" are both two lines: without the marker the two
+    ;; receipts differ by one character only, and a model reading the file
+    ;; back (wc -l, a cat) spends a round checking for a lost character.
+    (format nil "wrote ~a: ~d line~:p, ~d character~:p~:[~; (no trailing newline)~]~{~@[; ~a~]~}"
             (namestring resolved) (text-line-count text) (length text)
+            (/= (text-line-count text) (count #\Newline text))
             (source-clauses resolved text before))))
 
 ;;; --- look: an image file, shown at the next round ------------------------
