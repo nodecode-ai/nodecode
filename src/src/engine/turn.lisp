@@ -11,8 +11,8 @@
 ;;;; we run them and recur with the enriched history. Session state is the
 ;;;; argument being folded through the recursion.
 ;;;;
-;;;; The provider dialects themselves live in provider.lisp behind the
-;;;; STREAM-PART waist, and the context engine — the log-to-provider-input
+;;;; The provider dialects themselves live in engine/lanes/ behind
+;;;; provider.lisp's STREAM-PART waist, and the context engine — the log-to-provider-input
 ;;;; pipeline, eviction policy, and the pure request compile — lives in
 ;;;; context.lisp. This file owns turn policy folded over both layers: the
 ;;;; ambient-state freeze into a CONTEXT-REQUEST, the retry loop, overflow
@@ -1042,6 +1042,38 @@ colons when internal."
               (eq :external (nth-value 1 (find-symbol (symbol-name symbol) package)))
               (symbol-name symbol))))
 
+(defparameter *package-exports-hint-limit* 15
+  "The most exported names PACKAGE-EXPORTS-HINT lists.")
+
+(defun package-exports-hint (name package kind)
+  "One hint line for PACKAGE:NAME read where PACKAGE exports no NAME: the
+names PACKAGE does export that are defined (KIND, a symbol's meaning or
+NIL), those sharing text with NAME first, and NAME's own internal symbol
+when PACKAGE defines one."
+  (let* ((internal (multiple-value-bind (symbol status) (find-symbol name package)
+                     (and symbol (eq status :internal) (funcall kind symbol) symbol)))
+         (exports (let (found)
+                    (do-external-symbols (symbol package)
+                      (when (funcall kind symbol) (pushnew symbol found)))
+                    found))
+         (near (lambda (symbol)
+                 (let ((other (symbol-name symbol)))
+                   (or (search name other :test #'char-equal)
+                       (search other name :test #'char-equal)))))
+         (ranked (sort (copy-list exports)
+                       (lambda (a b)
+                         (let ((near-a (funcall near a)) (near-b (funcall near b)))
+                           (if (eq (not near-a) (not near-b))
+                               (string< (symbol-name a) (symbol-name b))
+                               near-a)))))
+         (shown (subseq ranked 0 (min *package-exports-hint-limit* (length ranked)))))
+    (format nil "hint: ~a exports no ~a~@[ (~a)~]; ~:[it exports nothing defined~;~:*its exported names: ~(~{~a~^, ~}~)~]~[~:;, and ~:*~d more~]"
+            (package-name package) name
+            (and internal (format nil "~a is internal: ~a"
+                                  (qualified-symbol-name internal) (funcall kind internal)))
+            (mapcar #'symbol-name shown)
+            (- (length ranked) (length shown)))))
+
 (defun condition-symbol-hint (condition)
   "One line locating the name a failing form reached for, or NIL when
 CONDITION names none. \"undefined function\" and \"not found in the
@@ -1070,10 +1102,25 @@ very name it then fails to call, so mere presence proves nothing."
                           ((fboundp symbol) "function")
                           ((boundp symbol) "variable")
                           ((find-class symbol nil) "class")))))
-        (let* ((exact (loop for package in (list-all-packages)
+        (let* (;; PACKAGE:NAME where PACKAGE exists: the model guessed that
+               ;; package's verb. A symbol PACKAGE already reaches is no lead
+               ;; for it -- every package uses COMMON-LISP, and `cron:list'
+               ;; was answered "LIST is COMMON-LISP:LIST -- reachable
+               ;; unqualified", true and the wrong lead 16 times in three days
+               ;; (2026-10-26..29) -- so with no other lead the hint is what
+               ;; PACKAGE does export.
+               (target (let ((package (and (typep condition 'sb-int:simple-reader-package-error)
+                                           (find-package (second (simple-condition-format-arguments
+                                                                  condition))))))
+                         (and package
+                              (not (member package (list (find-package '#:common-lisp)
+                                                         (find-package '#:keyword))))
+                              package)))
+               (exact (loop for package in (list-all-packages)
                             for symbol = (find-symbol name package)
                             when (and symbol (eq (symbol-package symbol) package)
-                                      (kind symbol))
+                                      (kind symbol)
+                                      (not (and target (eq symbol (find-symbol name target)))))
                               collect symbol))
                (here (find-symbol name (find-package '#:nodecode.evolved)))
                ;; A class or variable of the exact name does not answer a
@@ -1095,6 +1142,7 @@ very name it then fails to call, so mere presence proves nothing."
                    (format nil "hint: ~a is ~{~a~^, ~}~:[~; — reachable unqualified from here~]~@[; similar: ~{~a~^, ~}~]"
                            name (described exact) (and here (member here exact))
                            (and similar (described similar))))
+                  (target (package-exports-hint name target #'kind))
                   (similar
                    (format nil "hint: nothing named ~a is defined; similar: ~{~a~^, ~}"
                            name (described similar)))
@@ -2391,13 +2439,60 @@ is the merged message CALL-PROVIDER returns, never these two."
                                                    (length reasoning))))))
     (context-with context :messages (append (coerce context.messages 'list) (list assistant nudge)))))
 
-(defun next-round-context (context metadata)
+(defparameter *refusal-hold-cap* 8
+  "The most rounds a refused selection waits on its candidate before it is
+asked again (REFUSAL-HOLD-ROUNDS); 0 asks it again on the very next round.")
+
+(defstruct (refusal-hold (:constructor make-refusal-hold ()))
+  "One turn's refusal backoff: STREAK, the selection's consecutive refused
+rounds; REMAINING, the rounds its candidate still answers before the
+selection is asked again; SELECTION, the config to go back to."
+  (streak 0 :type (integer 0))
+  (remaining 0 :type (integer 0))
+  (selection nil))
+
+(defvar *refusal-hold* nil
+  "The running turn's REFUSAL-HOLD, bound where the turn enters AGENT-LOOP;
+NIL outside a turn, where a refused round's next round is the selection's.")
+
+(defun refusal-hold-rounds (streak)
+  "How many rounds the candidate answers after the selection's STREAK-th
+refusal in a row: 1, 2, 4, ... up to *REFUSAL-HOLD-CAP*."
+  (min (expt 2 (min 30 (max 0 (1- streak)))) *refusal-hold-cap*))
+
+(defun next-round-context (context metadata &optional (hold *refusal-hold*))
   "The context the next round starts from: CONTEXT, the one this round ended
 with -- a failover holds for the turn -- unless a refusal sent this round to a
 candidate, which answered it alone (CALL-PROVIDER's :RESUME-PROVIDER-CONFIG
-in METADATA): then the selection's config again."
+in METADATA): then the selection's config again, once the turn's HOLD has
+let the candidate answer REFUSAL-HOLD-ROUNDS rounds more."
+  ;; A refusal is the selection's verdict on one request, but its classifier
+  ;; reads the same context again next round: across 925 rounds of turns that
+  ;; met one (2026-10-26..29), the round right after a refusal was refused 39%
+  ;; of the time, against 6% after an answer, and 20%, 15%, 12% two to four
+  ;; rounds on. Asking at once spent a whole request each time -- 86 refused
+  ;; requests, 13.4M input tokens, 26 minutes. Doubling the wait while the
+  ;; refusals go on bounds the waste; the cap bounds how long the operator's
+  ;; model is away (proofs/RefusalHold.lean).
   (let ((resume (getf metadata :resume-provider-config)))
-    (if resume (context-with context :provider-config resume) context)))
+    (cond
+      ((null hold)
+       (if resume (context-with context :provider-config resume) context))
+      ;; A held round ran on the candidate: count it off, and when the wait is
+      ;; over the selection is asked again. A refusal the candidate itself met
+      ;; meanwhile names the candidate as RESUME, never the selection.
+      ((plusp (refusal-hold-remaining hold))
+       (if (zerop (decf (refusal-hold-remaining hold)))
+           (context-with context :provider-config (refusal-hold-selection hold))
+           context))
+      (resume
+       (let ((rounds (refusal-hold-rounds (incf (refusal-hold-streak hold)))))
+         (setf (refusal-hold-selection hold) resume
+               (refusal-hold-remaining hold) rounds)
+         (if (plusp rounds) context (context-with context :provider-config resume))))
+      ;; The selection answered: its streak is over.
+      (t (setf (refusal-hold-streak hold) 0)
+         context))))
 
 (defun call-provider (context &key (on-part *turn-part-fn*))
   "Call the selected provider lane with turn retry policy folded on top.
@@ -3205,9 +3300,10 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
              nil)
             ;; A refusal is the selection's verdict on this one request, not
             ;; on the turn: with a chain configured, its first candidate
-            ;; answers this round and the next round is the selection's
-            ;; again. Without a fallback, a refusal would be terminal
-            ;; instead of trying the fallback.
+            ;; answers this round and the selection is asked again once the
+            ;; turn's refusal hold is over (NEXT-ROUND-CONTEXT). Without a
+            ;; fallback, a refusal would be terminal instead of trying the
+            ;; fallback.
             ((and (typep e 'provider-refused)
                   (null fallback-tried)
                   (try-fallback e))
@@ -4362,16 +4458,19 @@ outranks the default effort the same way while the turn's effective
                  ;; fact lands ahead of the first round's facts.
                  :defer t)))
             (multiple-value-bind (message steered handoff)
-                (agent-loop
-                 session
-                 :prefill prefill
-                 ;; A resumed turn continues its round progression:
-                 ;; each completed round left a durable assistant
-                 ;; closure, and the count is 0 for fresh turns.
-                 :round (if (and turn (nlk:store-open-p))
-                            (nlk:turn-assistant-round-count
-                             (nlk:durable-turn-turn-id turn))
-                            0))
+                ;; One refusal backoff per turn: the next turn asks the
+                ;; selection first, whatever this one met.
+                (let ((*refusal-hold* (make-refusal-hold)))
+                  (agent-loop
+                   session
+                   :prefill prefill
+                   ;; A resumed turn continues its round progression:
+                   ;; each completed round left a durable assistant
+                   ;; closure, and the count is 0 for fresh turns.
+                   :round (if (and turn (nlk:store-open-p))
+                              (nlk:turn-assistant-round-count
+                               (nlk:durable-turn-turn-id turn))
+                              0)))
               ;; Assistant messages are durable per provider round. A
               ;; parked steer ended the loop at a boundary it would
               ;; have continued past: the completion says so.

@@ -227,6 +227,12 @@ of stacking."
      ;; provider precedes turn: the stream-part waist, lane registry, and
      ;; frozen-config structs are the layer the turn loop folds policy over.
      (:file "engine/provider")
+     ;; the lanes follow provider: one file per provider dialect, each written
+     ;; in DEFINE-PROVIDER-LANE and registered into the registry provider owns.
+     (:file "engine/lanes/openai-completions")
+     (:file "engine/lanes/anthropic")
+     (:file "engine/lanes/google")
+     (:file "engine/lanes/openai-responses")
      ;; meter precedes context and turn: the running turn as a value -- what
      ;; it spent, the budget it runs under, the spend line a tool result
      ;; carries -- is the record RUN binds and the loop folds, the line the

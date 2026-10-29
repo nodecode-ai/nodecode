@@ -1862,11 +1862,13 @@ given, is called with each piece as it arrives."
            (incf taken got))
   (values (get-output-stream-string out) (>= taken limit)))
 
-(defun sh (command &key directory)
+(defun sh (command &key directory timeout)
   "Run COMMAND — a string through the shell's -c (*SHELL*: bash where the
 machine has it, else /bin/sh; Git for Windows' sh.exe on Windows), a list as argv with no shell — and answer its output: stdout and stderr merged as they arrived, with a
 final [exit N] line when the status is not 0; the status is the second
-value."
+value. TIMEOUT, seconds, bounds the command: past it the whole process
+tree is killed and the answer is the output so far with a [timed out
+after N s] line."
   ;; Stdin is empty, so a program that reads it sees end of file rather than
   ;; waiting on a terminal nobody holds; a heredoc in the command string is
   ;; the shell's own way to feed it. The child runs in DIRECTORY, else the
@@ -1897,7 +1899,13 @@ value."
   ;; interpreter would be misread as a missing command. One name with the
   ;; capture, the search path and the stdin already right leaves nothing to
   ;; rediscover.
+  ;; TIMEOUT is the bound a model reaches for first -- (sh "..." :timeout
+  ;; 600) was 81 failed calls in three days of one operator's sessions
+  ;; (2026-10-26..29) while sh took no such key -- so it is a real bound,
+  ;; not an accepted-and-ignored key: a timer kills the tree, the read
+  ;; reaches end of file, and the answer says why it ended.
   (check-type command (or string cons))
+  (check-type timeout (or null (real (0))))
   (receipt-call "sh" command)
   ;; A unified diff is a mutation payload, never a shell command. Refuse it
   ;; before launch so a malformed tool route cannot execute diff markers via
@@ -1917,30 +1925,43 @@ value."
                            :error-output :output)))
       (when snippet (setf (exec-process-child-pid snippet) pid
                           (exec-process-stalled-ticks snippet) 0))
-      (with-cleanup ((when snippet (setf (exec-process-child-pid snippet) nil))
-                     (when (pid-live-p pid)
-                       ;; Descendants first: a killed shell's children reparent to init
-                       ;; and would otherwise outlive the call that started them (the
-                       ;; timeout/sbcl/tail tree).
-                       (kill-process-tree pid)
-                       (ignore-errors (wait-for-child pid process)))
-                     (ignore-errors (close output-stream)))
-        (bind (((captured cut) (slurp-bounded output-stream *sh-capture-limit* *sh-chunk*)))
-          ;; The tree goes before the wait: a child still writing into a pipe
-          ;; nobody reads would block there forever, and the wait with it.
-          (when (and cut (pid-live-p pid)) (kill-process-tree pid))
-          (bind ((output (if cut
-                             (format nil "~a~%[output cut at ~:d characters]"
-                                     captured *sh-capture-limit*)
-                             captured))
-                 (status (wait-for-child pid process)))
-          ;; The status on the evaluation, as the verdict its exit is shown
-          ;; with: a surface reads the field, never the [exit N] line.
-          (when snippet (setf (exec-process-shell-exit snippet) status))
-          (values (if (eql status 0)
-                      output
-                      (format nil "~a~&[exit ~a]" output status))
-                  status)))))))
+      (let* ((timed-out nil)
+             (timer (and timeout
+                         (sb-ext:make-timer (lambda ()
+                                              (when (pid-live-p pid)
+                                                (setf timed-out t)
+                                                (kill-process-tree pid)))
+                                            :thread t :name "sh timeout"))))
+        (when timer (sb-ext:schedule-timer timer timeout))
+        (with-cleanup ((when timer (ignore-errors (sb-ext:unschedule-timer timer)))
+                       (when snippet (setf (exec-process-child-pid snippet) nil))
+                       (when (pid-live-p pid)
+                         ;; Descendants first: a killed shell's children reparent to init
+                         ;; and would otherwise outlive the call that started them (the
+                         ;; timeout/sbcl/tail tree).
+                         (kill-process-tree pid)
+                         (ignore-errors (wait-for-child pid process)))
+                       (ignore-errors (close output-stream)))
+          (bind (((captured cut) (slurp-bounded output-stream *sh-capture-limit* *sh-chunk*)))
+            ;; The tree goes before the wait: a child still writing into a pipe
+            ;; nobody reads would block there forever, and the wait with it.
+            (when (and cut (pid-live-p pid)) (kill-process-tree pid))
+            (bind ((output (if cut
+                               (format nil "~a~%[output cut at ~:d characters]"
+                                       captured *sh-capture-limit*)
+                               captured))
+                   (status (wait-for-child pid process))
+                   (answer (if timed-out
+                               (format nil "~a~&[timed out after ~a s: the process tree was killed]"
+                                       output timeout)
+                               output)))
+            ;; The status on the evaluation, as the verdict its exit is shown
+            ;; with: a surface reads the field, never the [exit N] line.
+            (when snippet (setf (exec-process-shell-exit snippet) status))
+            (values (if (eql status 0)
+                        answer
+                        (format nil "~a~&[exit ~a]" answer status))
+                    status))))))))
 
 ;;; --- the strings side-channel and the file verbs -------------------------
 ;;; Literal text used to reach a file only by tunneling JSON -> Lisp string

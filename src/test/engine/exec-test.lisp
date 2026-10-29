@@ -716,6 +716,23 @@ completed. BODY runs with SID bound."
   (is (equal "\"hi\"" (nle:eval-string "(sh \"printf hi\")")))
   (is (search "[exit 1]" (nle:eval-string "(sh \"exit 1\")"))))
 
+(deftest sh-bounds-a-command-by-its-timeout ()
+  ;; (sh "..." :timeout 600) was the model's first reach 81 times in three
+  ;; days while sh took no such key: the bound is real, the tree dies with
+  ;; it, and the answer says why the output stops.
+  #-win32
+  (let ((marker "47.3")
+        (start (get-internal-real-time)))
+    (multiple-value-bind (output status)
+        (nle:sh (format nil "echo started; sleep ~a; echo never" marker) :timeout 0.5)
+      (is (search "started" output) "what ran before the bound is kept")
+      (is (search "[timed out after 0.5 s: the process tree was killed]" output) output)
+      (is (not (search "never" output)) "nothing past the bound ran")
+      (is (not (eql 0 status)) "a killed command is no success")
+      (is (< (/ (- (get-internal-real-time) start) internal-time-units-per-second) 10) "the call returned at the bound, not at the command's end"))
+    (is (equal "" (nle:sh (format nil "pgrep -x -f 'sleep ~a' || true" marker))) "no child outlives the bound"))
+  (is (equal "hi" (nle:sh "printf hi" :timeout 10)) "a command inside its bound answers as before"))
+
 (deftest sh-kills-its-child-when-the-evaluation-unwinds ()
   ;; eval-interrupt on a stuck (sh ...) must not leave the child running.
   (let* ((marker "31.7")
