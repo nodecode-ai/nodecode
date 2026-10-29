@@ -636,6 +636,21 @@ and the threads evaluating a snippet in place, which no registry holds."
               (- sp start))
           (- end start)))
 
+(defvar *runaway-climb* nil
+  "Inside a guarded evaluation, a one-element list whose car is true while a
+control-stack verdict raised on this thread has not yet seen the stack come
+back under the limit; NIL outside one.")
+
+;;; One verdict per climb. An unwind runs each UNWIND-PROTECT cleanup with the
+;;; stack pointer still where the verdict was signalled, the abandoned frames
+;;; below it until the handler is reached, so a probe landing in a cleanup
+;;; (the compilation unit's summary wraps every snippet) read the stack as past
+;;; the limit, walked a frame chain that no longer held the recursion, and
+;;; its unnamed verdict replaced the named one: 1 probe in ~600 under load
+;;; (T-394). After a verdict the next one waits for a probe to read the stack
+;;; back under the limit. A form that takes the verdict in its own
+;;; HANDLER-CASE and climbs again before any probe saw it shallow still gets
+;;; one at the hard mark, half way from the limit to the end of the stack.
 (defun eval-runaway-thread-probe ()
   "The interruption body for a thread evaluating a snippet in place: signal the
 verdict when there is one."
@@ -644,8 +659,14 @@ verdict when there is one."
   (when-let (verdict (ignore-errors
                       (bind (((used span) (control-stack-usage))
                              (limit (min (* 16 1024 1024) (floor span 2)))
+                             (climb *runaway-climb*)
                              (heap (sb-kernel:dynamic-usage)) (cap (sb-ext:dynamic-space-size)))
-                        (cond ((> used limit)
+                        (when (and climb (car climb) (<= used limit))
+                          (setf (car climb) nil))
+                        (cond ((> used (if (and climb (car climb))
+                                           (+ limit (floor (- span limit) 2))
+                                           limit))
+                               (when climb (setf (car climb) t))
                                (format nil "control stack runaway: ~:d KB of frames on a ~:d KB stack~@[, deepest in ~a~] — a recursion that does not bottom out, unwound before the guard page (an overflow inside an allocation there kills the whole image). Iterate, or bound the depth."
                                        (floor used 1024) (floor span 1024) (runaway-frame-name)))
                               ((> heap (* *eval-heap-soft-fraction* cap))
@@ -728,7 +749,10 @@ worker."
   "Run THUNK with this thread on the guarded list and the watcher running."
   ;; The list entry is removed on every exit, normal or not.
   (ensure-eval-guard)
-  (let ((self (bt2:current-thread)))
+  (let ((self (bt2:current-thread))
+        ;; Bound outside the UNWIND-PROTECT, so it still holds while a
+        ;; verdict's unwind runs the cleanups inside.
+        (*runaway-climb* (list nil)))
     (bt2:with-lock-held (*eval-guard-lock*)
       (push self *evaluating-threads*))
     (unwind-protect (funcall thunk)
