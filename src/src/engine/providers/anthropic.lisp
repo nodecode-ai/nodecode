@@ -148,7 +148,8 @@ THINKING-P."
 ;;; --- the prefix a thinking block is bound to --------------------------------
 ;;; The newest adaptive models (claude-opus-5-5 among them) sign each thinking
 ;;; block against the conversation that produced it -- the system prompt, the
-;;; set of tools, every message before the block. A request whose prefix
+;;; set of tools, every message before the block, the thinking that rode ahead
+;;; of it included. A request whose prefix
 ;;; changed behind a replayed one would be refused: 400 `Invalid signature in
 ;;; thinking block. The block is bound to a different conversation'. An eviction
 ;;; is such a change (the stub joins the first user message, the oldest rounds
@@ -186,13 +187,16 @@ order is no change."
   "Convert the chat-shaped message vector to Anthropic messages, merging
 consecutive same-role entries into one message's content blocks. => (values
 MESSAGES PREFIX): PREFIX, an adaptive request's ANTHROPIC-FRAME-PREFIX,
-extended over every block but the thinking ones -- what the reply's thinking
+extended over every block the request carries -- what the reply's thinking
 is bound to -- or NIL under budget thinking."
   ;; A message with no blocks is left out (the wire refuses empty content);
   ;; its neighbours then merge, so the roles still alternate. Under PREFIX an
   ;; assistant message's thinking replays only behind the prefix its round was
-  ;; sent with: thinking blocks are not part of the prefix, so stripping one
-  ;; changes none after it.
+  ;; sent with. The thinking that replays is part of that prefix: the API binds
+  ;; a block to the thinking ahead of it too (400 `created as the first
+  ;; thinking block after its prompt, but another one now precedes it'), so a
+  ;; block shed or replayed again changes the prefix of every round after it,
+  ;; and their thinking sheds with it.
   (loop with messages = (make-array 0 :adjustable t :fill-pointer t)
         with role-before = nil
         for msg across wire
@@ -205,9 +209,7 @@ is bound to -- or NIL under budget thinking."
                    (unless (equal role role-before)
                      (setf prefix (anthropic-prefix prefix role)))
                    (dolist (block blocks)
-                     (unless (member (gethash "type" block) '("thinking" "redacted_thinking")
-                                     :test #'equal)
-                       (setf prefix (anthropic-prefix prefix block)))))
+                     (setf prefix (anthropic-prefix prefix block))))
                  ;; BLOCKS join the last message when it has ROLE, else stand as one of their own
                  (if (equal role (shiftf role-before role))
                      (let ((last (aref messages (1- (length messages)))))

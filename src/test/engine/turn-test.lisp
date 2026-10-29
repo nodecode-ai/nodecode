@@ -3771,6 +3771,35 @@ thinking signed sig-N against PREFIX (none when NIL)."
         (is (null (prefix ask)))
         (is (equal '("sig-2") (replayed ask stub (bound-round 2 nil) (bound-result 2))))))))
 
+(deftest anthropic-thinking-replays-only-behind-the-thinking-it-was-signed-after ()
+  ;; The API binds a block to the thinking ahead of it too: a round signed
+  ;; while an earlier round's thinking was shed must not replay once that
+  ;; thinking rides again (400 `created as the first thinking block after its
+  ;; prompt, but another one now precedes it').
+  (flet ((prefix (&rest messages)
+           (nth-value 2 (nle::anthropic-request-body (anthropic-context messages))))
+         (replayed (&rest messages)
+           (replayed-signatures (nle::anthropic-request-body (anthropic-context messages)))))
+    (let ((ask (nle::message "user" "count")))
+      (with-adaptive-claude ()
+        (let* ((shed (bound-round 1 "a prefix this request does not carry"))
+               (live (bound-round 1 (prefix ask)))
+               ;; round 2 signed while round 1's thinking was shed
+               (after-shed (bound-round 2 (prefix ask shed (bound-result 1))))
+               ;; round 2 signed behind round 1's thinking
+               (after-live (bound-round 2 (prefix ask live (bound-result 1)))))
+          (is (not (equal (prefix ask shed (bound-result 1))
+                          (prefix ask live (bound-result 1)))))
+          ;; each round replays in the context it was signed in
+          (is (equal '("sig-2") (replayed ask shed (bound-result 1) after-shed (bound-result 2))))
+          (is (equal '("sig-1" "sig-2") (replayed ask live (bound-result 1)
+                                                  after-live (bound-result 2))))
+          ;; round 1's thinking riding again sheds the round signed without it
+          (is (equal '("sig-1") (replayed ask live (bound-result 1)
+                                          after-shed (bound-result 2))))
+          ;; and round 1's thinking shed sheds the round signed behind it
+          (is (null (replayed ask shed (bound-result 1) after-live (bound-result 2)))))))))
+
 (deftest anthropic-thinking-never-replays-to-another-model ()
   ;; A refusal's fallback round (CALL-PROVIDER) is another model's: what one
   ;; model signed is bound to it, so neither model's thinking reaches the other.
