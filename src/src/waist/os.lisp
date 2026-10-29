@@ -559,10 +559,17 @@ says: :STREAM, a pipe of its own; :OUTPUT, joined to stdout; a namestring.
                                                argv-sap envp-sap)))
                       (unless (zerop code)
                         ;; A file action can be what failed -- a chdir into a
-                        ;; directory that is gone returns ENOENT -- so name
-                        ;; it, or a missing working directory reads as a
-                        ;; missing program.
-                        (error "spawning ~a~@[ in ~a~]: ~a" (first argv) directory
+                        ;; directory that is gone, or an output file in a
+                        ;; folder that is not there, returns ENOENT -- so name
+                        ;; it, or a missing working directory or log folder
+                        ;; reads as a missing program.
+                        (error "spawning ~a~@[ in ~a~]~@[, its output to ~a~]: ~a" (first argv) directory
+                               (find-if (lambda (target)
+                                          (and (stringp target)
+                                               (not (uiop:directory-exists-p
+                                                     (uiop:pathname-directory-pathname
+                                                      (uiop:parse-native-namestring target))))))
+                                        (list output errors))
                                (sb-int:strerror code)))
                       (setf pid child))))))))
         (dolist (descriptor (list out-write err-write in-read))

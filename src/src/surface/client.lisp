@@ -2421,7 +2421,9 @@ the store, an election it lost. One that exits before either is a boot that
 died: ORGANISM-EXITED, with the last line it wrote to its log."
   (let* ((command (or (serve-command store-path)
                       (error "this image names no nodecode binary to run the organism with")))
-         (log (stdio-log-path store-path))
+         ;; A home never used has no folder yet, and the log is the first
+         ;; thing put in it: without this, the spawn opening it fails.
+         (log (ensure-directories-exist (stdio-log-path store-path)))
          (from (or (nlk:file-bytes log) 0))
          (word (format nil "~a=" +front-variable+))
          (exited (list nil)))
