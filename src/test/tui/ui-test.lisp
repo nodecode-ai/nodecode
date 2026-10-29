@@ -5644,9 +5644,14 @@ and the DELIVERY its handler declares."
           (is (search "Looking" (subseq (nle::plain-frame-row (nth y rows)) x0 x1)) "over its words")
           (let ((screen (nlt:parse-styled-string rows 100 30))
                 (canvas (nle::color-sgr (nle::canvas-fill-bg) t :truecolor)))
+            ;; Light 0 lasts the first 2.5 ms of the 250 ms rise, which a loaded
+            ;; machine overruns between seating the fade and painting it (CI
+            ;; red, 6 in 900 under load): the rise starts a minute from now, so
+            ;; the paint is its first instant's, and then is all the way up.
+            (setf (nle::fade-at fade) (+ (get-internal-real-time) (* 60000 ms)))
             (funcall (nle::frame-overlay model) screen)
             (is (equal canvas (nlt:cell-fg (nlt:screen-buffer-ref screen x0 y))) "coming up out of the canvas")
-            (decf (nle::fade-at fade) (* in ms))
+            (setf (nle::fade-at fade) (- (get-internal-real-time) (* in ms)))
             (is (nle::fade-moved-p model) "the light moving repaints")
             (is (null (nle::fade-overlay model)) "all the way up, nothing to paint over")
             (is (not (nle::fade-moved-p model)) "and a tick at the same light repaints nothing"))
