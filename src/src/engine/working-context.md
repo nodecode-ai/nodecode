@@ -4,7 +4,8 @@
 stands and returns its path. The first line names the export (`[[context
 NONCE]]`) and says how full the window is when a round has reported it
 (`context 87k of 410k`). Below it, each message of the retained history is a
-block under a `[[m:NONCE ID ROLE]]` line, `ID` the log position the message
+block under a `[[m:NONCE ID KIND]]` line (a tool block adds its tool's
+name), `ID` the log position the message
 stands for: a user ask, an assistant's text, a tool block (its call on a
 `→ ARGS` first line, then its result) or a note. Ordinary `edit`, `write-file`,
 shell commands or Lisp edit it. There is no summarization API and no

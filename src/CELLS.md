@@ -141,7 +141,8 @@ A folder says what its section of the config is made of, once, as data:
 ```
 
 Field types: `:string`, `:secret` (a value written inline), `:env` (the
-name of an environment variable holding a secret), `:path`, `:boolean`,
+name of an environment variable holding a secret), `:path`, `:directory`
+(`~/` expanded; a relative default is under the home), `:boolean`,
 `:integer`, `:list` (an array of strings), `:choice` with `:options`. A
 field may be `:required`; an `:integer` may carry `:min`; a `:list` may
 carry `:choices`, a function of the section's table answering
@@ -151,8 +152,8 @@ convention is the folder's name.
 
 Five readers derive from the one declaration and cannot disagree:
 `(nlk:section-problems section table)` is what the folder refuses on at
-start, in words that name the key; the setup wizard's panel is the fields
-in order; the model's setup primer is `(nlk:section-text section)`; the
+start, in words that name the key; the `/settings` panel (and the page's
+Settings tab) is the fields in order; the model's setup primer is `(nlk:section-text section)`; the
 cells report's line for an unconfigured folder is
 `(nlk:section-summary section table)`; and the typed, immutable values the
 folder actually runs on are `(nlk:section-settings section table)` — the
@@ -284,7 +285,7 @@ second struct and no second parser to keep in step. A member of the wrong
 shape, a `:choice` outside its options or an `:integer` under its `:min`
 **refuses** — `NLK:CONFIG-REFUSAL`, which the gateway renders as the
 folder's `REFUSED` line and one standing notice. A member that is merely
-absent does not: `:required` is the setup panel's gate, and a folder whose
+absent does not: `:required` is what `/settings` reports as still needed, and a folder whose
 section is unanswered still runs whatever half of itself needs no answer.
 
 Where the shape of a section outruns what the declaration carries — a
@@ -303,10 +304,10 @@ come off in the reverse:
 | `(:section (PATH...) CLAUSE...)` | `nlk:define-section`, verbatim | — |
 | `(:settings FUNCTION)` | `(lambda (values table) ...)` | — |
 | `(:tool NAME SCHEMA FN)` | `nle:register-tool` | `nle:unregister-tool` |
-| `(:command NAME RUN &key description argument-hint trigger complete)` | `nle:register-command`: `/NAME` in the one slash catalog, wherever it is typed; RUN takes `(args session-id)` and answers `(values TEXT DIALOG)`; COMPLETE takes `(text session-id)`, the argument typed so far, and answers `(:name :value)` plists, the choices a menu offers while it is typed | `nle:unregister-commands` |
+| `(:command NAME RUN &key description argument-hint label catches session trigger complete)` | `nle:register-command`: `/NAME` in the one slash catalog, wherever it is typed; RUN takes `(args session-id)` and answers `(values TEXT DIALOG)`; LABEL and CATCHES name its failure line; SESSION NIL marks a command that acts on no session; COMPLETE takes `(text session-id)`, the argument typed so far, and answers `(:name :value)` plists, the choices a menu offers while it is typed | `nle:unregister-commands` |
 | `(:help TOPIC SUMMARY TEXT)` | `nle:set-help-topic`: `(help TOPIC)` answers TEXT, every request's `help` section carries SUMMARY, one line | `(nle:set-help-topic TOPIC nil)` |
 | `(:hook NAME FN)` | `nle:hook` on a point or a function name | `nle:unhook` |
-| `(:route PATH FN)` | `nle:route`: PATH answered on the gateway's own port | `(nle:route PATH nil)` |
+| `(:route PATH FN &key public)` | `nle:route`: PATH answered on the gateway's own port, to the operator's token, to anyone under PUBLIC | `(nle:route PATH nil)` |
 | `(:start FUNCTION)` | `(lambda () ...)`, with the settings already set | whatever it gives `nle:on-stop` |
 
 Everything is filed under one key, the declaring package's name downcased,
@@ -337,15 +338,17 @@ hand and reaches for the same pieces:
 (nle:register-tool NAME SCHEMA FN)            ; (nle:unregister-tool NAME)
 (nle:register-command OWNER CMD RUN ...)      ; (nle:unregister-commands OWNER)
 (nle:hook NAME KEY FN)                        ; (nle:unhook NAME KEY)
-(nle:route PATH FN)                           ; (nle:route PATH nil)
+(nle:route PATH FN &key public)               ; (nle:route PATH nil)
 (nlk:worker-start NAME STEP :wake N)          ; (nlk:worker-stop W), (nlk:worker-poke W)
 ```
 
 `nle:route` answers PATH on the gateway's own port — a page, a webhook, a
 sign-in callback — and a PATH ending in `/` answers everything under it. FN
 takes the request's clack environment and returns a clack response or a JSON
-value. No operator token is asked for, so FN owns its own trust; the gateway
-has already refused any Host that is not loopback.
+value. A request without the operator token is refused before FN runs,
+unless `:public t` -- which is for what cannot carry the token (a browser
+page, a webhook, a sign-in callback), and whose FN owns its own trust; the
+gateway has already refused any Host that is not loopback.
 
 A boundary the declaration does not fit keeps the readers under it.
 `register-tool` still takes the plist `(:description TEXT :parameters
@@ -382,8 +385,9 @@ there needs no `*worker*` anybody has to remember to clear.
 ## Turning a cell on, and setting it up
 
 `nodecode setup`, `/setup`, and — unasked — the first frame of a shell
-that can resolve no provider from anywhere walk the provider, the model and
-its reasoning effort, and nothing else. A cell is turned on in `/cells`, a
+with no provider or no saved default model offer to import from other
+coding agents found on the machine, then walk the provider, the model and
+its reasoning effort, and nothing else: no cell is installed or asked about. A cell is turned on in `/cells`, a
 sheet over the organism's listing: Home holds every folder this home holds
 and every shipped one it does not, those that need a look first; Hub holds
 the hub's entries once the organism has read its index; the chosen one is
@@ -391,7 +395,8 @@ laid open beside the list, and Space turns it on or off. Every switch — `/cell
 the web page's Cells tab, `nodecode add` — is one request to the organism,
 `POST /api/gateway/cells`, which installs the folder with the offered ones
 it stands on, loads and starts it, and tells every attached shell to load it
-too (`organism.cells`). What the folder's section declares is set in
+too (`organism.cells`). `nodecode add` with no organism running installs
+the folders itself, and they load at the next launch. What the folder's section declares is set in
 `/settings` or on the page's Settings tab, both over `/api/gateway/config`,
 whose write is refused when the section's own reader would refuse it; a
 folder left unconfigured is the state the primer above teaches from, so
@@ -407,8 +412,9 @@ before a build, a release, a pack or any cell lane, marks each with `.bundle`,
 and does nothing while the marker names the pin; the paths are git-ignored, so
 a shipped cell is edited in that repository (checked out at `~/nodecode-cells`;
 `.github/test-cell.sh FOLDER` there runs its tests) and the pin moved here. A
-hub index never lists a shipped name, so a shipped cell is on from the first
-launch.
+hub index never lists a shipped name, so a shipped name always means the
+shipped folder. A shipped cell is off until the operator turns it on, in
+`/cells` or with `nodecode add`.
 
 The binary ships its folders beside its source (`src/cells/`):
 `(nlk:shipped-cells)` reads them as data — name, dependencies, and what
@@ -419,9 +425,11 @@ linked blind) — `(nlk:install-cell name)` puts one under
 and `(nlk:load-cell name ...)` runs the boot loader's per-folder load now
 so the record lands on `(cells)` without a relaunch; `start-cells` then
 starts it. The organism does all three when it turns a folder on; a shell
-never installs into its own process. At boot, an older home is told through
-a standing notice which shipped folders it does not have yet and is given
-`/cells` as the explicit choice; installing the folders clears that notice. Cells are never
+never installs into its own process. At boot, a home is told through a
+standing info notice which shipped folders it does not have, and is given
+`/cells` as the explicit choice. Each folder is named once per home (kept in
+`~/.nodecode/cells-named`), so the notice goes once the folders are
+installed or have been named. Cells are never
 silently linked, because folder presence is consent. An install follows the
 binary that boots it: before the folder
 loads, a link into another tree's shipped folder — the release installed
@@ -440,7 +448,7 @@ names the file.
 
 Folders beyond the release are listed in two indexes, in one format.
 Nodecode's own cells are in `index.json` in the repository
-`nodecode-ai/cells`, and arrive there by pull request; `just publish-hub`
+`nodecode-ai/cells`, and arrive there by pull request; `src/tools/publish-hub.sh`
 puts that file, at a commit of the repository, where `*hub-index-url*`
 reads it: `https://nodecode.ai/dl/cells/index.json`
 (`$NODECODE_HUB_INDEX` names another). The ones other people publish are submitted at nodecode.ai: the
@@ -512,8 +520,9 @@ commit.
   upstream body being rewritten as long as the signature holds, and two
   folders advising one function under different keys both run, in load
   order. `(unhook 'compose-frame "mine")` removes yours. The same primitive
-  serves the two named points, `:tool` (one tool dispatch) and `:frame` (one
-  live frame leaving the gateway), whose hooks are `(lambda (op next))`. A
+  serves the named points, `:tool` (one tool dispatch), `:frame` (one
+  live frame leaving the gateway), `:credential` and `:round`, whose hooks
+  are `(lambda (op next))`. A
   `:tool` hook that refuses a call answers `(nle:failure "ERROR: ...")`, as
   a tool that knows its call failed does: the result fact is recorded
   failed, and every transcript draws the call failed from it.
@@ -608,9 +617,9 @@ does not prove is refused by name on the board, and no image is built for
 it. `(generations)` lists them, `/generations` picks one, and `(rollback N)`
 or `nodecode rollback N` puts every folder back to what N recorded: the
 layer by one commit forward whose tree is N's (its history kept, so forward
-is the same verb), a hub cell cloned again at N's pin, a shipped folder
-following N's release, which is then pinned until `nodecode update` lifts
-it; then the organism exits once no turn is in flight and the next launch
+is the same verb), a hub cell cloned again at N's pin; a shipped folder
+stays with the release the binary runs, since only `nodecode update` moves
+that side; then the organism exits once no turn is in flight and the next launch
 runs N. The rule for a folder of your own: its git `HEAD` is its revision,
 and a folder with no repository is known by its content and never restored
 — the restore refuses by name before anything moves. A folder whose load
@@ -623,9 +632,9 @@ Config stays outside every folder on purpose: the folder gets pushed, and
 
 A profile is another home — `~/.nodecode/profiles/<name>/`, run with
 `nodecode -p NAME` — with a `cells/` of its own: its own layer, its own
-installed peripherals. `profile create NAME --clone` links the peripherals
-again and starts a fresh layer; `--clone-all` clones the layer with its
-history. A cell reads its home through `(nlk:home "...")`, never a
+installed peripherals. `profile create NAME` carries the settings and the
+installed peripherals over a fresh store and layer (`--blank` for an empty
+home); `--clone-all` clones the layer with its history. A cell reads its home through `(nlk:home "...")`, never a
 literal `~/.nodecode/`, so it follows the profile without knowing.
 
 ## Vendoring dependencies

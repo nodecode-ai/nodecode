@@ -71,11 +71,15 @@ src/
                        turn loop, background exec
   src/tui/             shell material: theme, editor, slash, keys, ui
   src/surface/         the network surfaces: gateway server, TUI client, rpc
+  src/import/          another coding agent's home brought into this one:
+                       readers (yaml, toml), worlds, the plan, the takeover
+                       (package nodecode.import)
+  src/warm.lisp        the release dump's warm-up, loaded by nodecode/bin only
   test/                mirrors the src/ grouping; support.lisp at the root
   cells/               bundle.json: the commit of nodecode-ai/cells every
                        shipped cell is pulled at (`just cells-pull`), one
                        git-ignored directory each carrying its own .asd:
-                       channels/ (kit/, discord/, telegram/), guard/, chrome/,
+                       channels/ (kit/, discord/, telegram/, slack/), guard/, chrome/,
                        websearch/, mcp/, cron/, ..., and template/, the
                        skeleton to copy (see below)
   tools/               structure lint, bloat ledger, install and release scripts
@@ -96,6 +100,9 @@ fresh-process seams, the scribe. The boot owner applies
 
 `nodecode.evolved` is the mutable material: prompt, tool table, turn loop,
 projections, UI methods.
+
+Beneath both sits `nodecode.term` (`nlt`), the terminal core neither owns;
+beside them, `nodecode.import` (`nik`) holds the import folder.
 
 The turn loop sits in `evolved` deliberately. It is the primary mutation target,
 and protecting it would defeat the point of choosing this substrate.
@@ -212,10 +219,11 @@ SBCL's 1GB default heap died in production under a 418MB core
 ("Heap exhausted during garbage collection", 2026-08-18). The dumped
 `./nodecode` carries its own ceiling, baked in by `just release`.
 
-Tests, once a slice has landed one:
+Tests: `just test`, which runs this from `src/`:
 
 ```sh
-sbcl --eval '(asdf:test-system :nodecode)'
+sbcl --eval '(push (truename ".") asdf:*central-registry*)' \
+     --eval '(asdf:test-system :nodecode)'
 ```
 
 ## Providers: base_url, sdk, api_key
@@ -337,16 +345,17 @@ once the highlight rests, runs live — the shell follows that session with a
 second, live-only subscription, so its typing, tool calls and answers land
 in the preview as they happen, with the running turn's bar beneath it.
 Enter attaches it, F2 renames it, typing searches every conversation. The
-footer advertises the gesture as `← sessions` beside `? help`, or `← 2
-running` while sessions are at work.
+footer advertises the gesture as `← sessions` beside the model name, or
+`← sessions · 2 running` while sessions are at work.
 
 The model reaches the same sessions through plain functions: `(nlk:list-sessions)`
 lists them, `(submit "id" "text")` puts a prompt into any session and
 `(recall-log :session-id "id")` reads one's log.
 
-## Channel cells (Discord / Telegram)
+## Channel cells (Discord / Telegram / Slack)
 
-Optional ASDF systems, not core: nothing in `src/` names them. A cell is
+Optional ASDF systems, not core: no system in `src/` depends on them (the
+import and setup paths name them only to install or restart them). A cell is
 a directory carrying its `.asd` under `~/.nodecode/cells/` (in development,
 a symlink: `ln -s $PWD/src/cells/channels/kit ~/.nodecode/cells/nodecode-channel-kit`);
 every process loads the folder at boot, and the gateway calls each
@@ -371,7 +380,8 @@ own `/models` set a room's at runtime (`kit/operator.lisp`).
 `discord/README.md` opens the Discord guide, and `discord/docs/` holds the
 rest: the portal walk, the permission integer, the intents, every key and the
 room's commands. Proof lanes: `just channels-check`, and `just discord-qa`,
-the built shell against a loopback Discord; manual live smoke:
+`just telegram-qa` and `just slack-qa`, the built shell against a loopback
+Discord, Telegram or Slack; manual live smoke:
 `rooms/live-smoke.lisp` in nodecode-ai/cells. The `just *` recipes register each cell
 directory with ASDF the same way the folder loader does.
 

@@ -222,7 +222,7 @@ No builds yet for arm64 Linux or Intel Macs. See [Current support](https://nodec
 <summary><b>Update and uninstall</b></summary>
 <br>
 
-An installed build updates itself by default; `nodecode update` moves to the latest release now, and `nodecode --version` names the build you run. To uninstall on Linux or macOS, run `nodecode gateway off`, then delete `~/.local/share/nodecode/` and `~/.local/bin/nodecode`. On Windows, delete `%LOCALAPPDATA%\Programs\nodecode\` and its user PATH entry. Delete `~/.nodecode/` only to remove your sessions, keys and definitions too. See [Updates](https://nodecode.ai/docs/updates).
+An installed build updates itself by default; `nodecode update` moves to the latest release now, and `nodecode --version` names the build you run. To uninstall on Linux or macOS, run `nodecode gateway off`, then delete `~/.local/share/nodecode/` and `~/.local/bin/nodecode` (on macOS, also `~/Library/Application Support/nodecode/` and `~/Library/Logs/nodecode/`). On Windows, delete `%LOCALAPPDATA%\Programs\nodecode\` and its user PATH entry. Delete `~/.nodecode/` only to remove your sessions, keys and definitions too. See [Updates](https://nodecode.ai/docs/updates).
 
 </details>
 
@@ -230,7 +230,7 @@ An installed build updates itself by default; `nodecode update` moves to the lat
 <summary><b>Build from source</b></summary>
 <br>
 
-You need SBCL, [Quicklisp](https://www.quicklisp.org/beta/), git, python3 and `just`.
+You need SBCL, [Quicklisp](https://www.quicklisp.org/beta/), git, python3 and `just` (plus `tokei` for `just check`, and the Xcode command-line tools on macOS).
 
 ```sh
 git clone https://github.com/nodecode-ai/nodecode && cd nodecode
