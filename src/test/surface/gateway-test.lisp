@@ -5445,3 +5445,89 @@ default target is PROVIDER/MODEL-ID, restored after."
       (is frame)
       (is-shape frame ((:string "payload" "comment") "Fold finished work")
         ((:string "payload" "session_id") "mutate-peer") ("sequence" eql 0)))))
+
+;;; --- the shell's presence record ------------------------------------------
+;;; Which session a shell is on, for a program outside the organism: a desktop
+;;; restorer that reopens each terminal tab on its conversation (issue #49).
+
+(defmacro with-shell-presence ((path) &body body &aux (dir (gensym "DIR")))
+  "BODY with this process a shell keeping its presence record at PATH, under a
+scratch runtime directory."
+  `(with-temp-directory (,dir "shell-presence")
+     (let* ((,path (format nil "~anodecode/shells/~d.json" (namestring ,dir) (sb-posix:getpid)))
+            (nle::*shell-presence-path* ,path))
+       ,@body)))
+
+(defun shell-presence-record (path)
+  "The presence record at PATH, read as a program outside would."
+  (shasht:read-json (uiop:read-file-string path)))
+
+#-win32
+(deftest a-shell-presence-record-names-its-session-and-how-to-reopen-it ()
+  ;; Every switch rewrites it: a /sessions pick, /new, a resume.
+  (with-shell-presence (path)
+    (let ((model (detached-shell "s-boot")))
+      (with-stubbed-fdefinition (nle::send-subscribe (ws session-ids) nil)
+        (nle::switch-gateway-session model "s-own"))
+      (let ((record (shell-presence-record path)))
+        (is (equal "s-own" (gethash "session_id" record)))
+        (is (eql (sb-posix:getpid) (gethash "pid" record)))
+        (is (equal (nle::shell-resume-argv "s-own") (coerce (gethash "resume_argv" record) 'list)))
+        (is (equal "s-own" (car (last (coerce (gethash "resume_argv" record) 'list)))))
+        (is (equal (nle::workspace-directory) (gethash "cwd" record)))
+        (is (= #o600 (logand #o777 (sb-posix:stat-mode (sb-posix:stat path)))) "only its user reads it")
+        #+linux (is (eql (nle::process-start-ticks) (gethash "start_ticks" record)) "a reused pid never matches"))
+      (with-stubbed-fdefinition (nle::send-subscribe (ws session-ids) nil)
+        (nle::switch-gateway-session model "s-next"))
+      (is (equal "s-next" (gethash "session_id" (shell-presence-record path)))))))
+
+#-win32
+(deftest a-shell-presence-record-never-names-the-session-its-preview-follows ()
+  ;; The preview lane rides the same subscribe, live-only; only the shell's
+  ;; own session is what a restorer reopens.
+  (with-shell-presence (path)
+    (let ((model (detached-shell "s-own"))
+          (sent '()))
+      (setf (nle::gateway-model-last-sequence model) 4
+            (nle::gateway-model-preview-session-id model) "s-peek")
+      (with-stubbed-fdefinitions ((nle::send-subscribe (ws session-ids) (setf sent session-ids))
+                                  (nle::render-state (m) nil))
+        ;; A gap resubscribes both: the own session and the follow.
+        (nlt:update model (make-instance 'nle::gw-projection-msg
+                                         :frame (nlk::make-sync-message
+                                                 :type :projection :sequence 6
+                                                 :payload (nlk::make-json-object "type" "item_delta")))))
+      (is (member "s-peek" sent :key (lambda (entry) (if (consp entry) (first entry) entry)) :test #'equal) "the follow rode the subscribe")
+      (is (equal "s-own" (gethash "session_id" (shell-presence-record path)))))))
+
+#-win32
+(deftest a-shell-presence-record-goes-with-its-shell-and-a-dead-shells-is-swept ()
+  (with-shell-presence (path)
+    (nle::note-shell-presence "s-own")
+    (is (probe-file path))
+    (nle::close-shell-presence)
+    (is (not (probe-file path)) "a shell that ends takes its record")
+    (is (null nle::*shell-presence-path*) "and writes no more")
+    (nle::note-shell-presence "s-late")
+    (is (not (probe-file path))))
+  (with-shell-presence (path)
+    (let* ((dead (sb-ext:process-pid (sb-ext:run-program "true" '() :search t :wait t)))
+           (stale (format nil "~a~d.json" (directory-namestring path) dead)))
+      (nle::note-shell-presence "s-own")
+      (write-temp-file stale "{}")
+      (nle::sweep-shell-presence path)
+      (is (not (probe-file stale)) "a killed shell's record is swept")
+      (is (probe-file path) "a live shell's stays"))))
+
+#-win32
+(deftest a-shell-presence-path-needs-an-absolute-runtime-directory ()
+  (let ((saved (uiop:getenv "XDG_RUNTIME_DIR")))
+    (nlk:with-cleanup ((if saved
+                           (sb-posix:setenv "XDG_RUNTIME_DIR" saved 1)
+                           (sb-posix:unsetenv "XDG_RUNTIME_DIR")))
+      (sb-posix:setenv "XDG_RUNTIME_DIR" "/run/user/1000/" 1)
+      (is (equal "/run/user/1000/nodecode/shells/42.json" (nle::shell-presence-path 42)))
+      (sb-posix:setenv "XDG_RUNTIME_DIR" "relative" 1)
+      (is (null (nle::shell-presence-path 42)))
+      (sb-posix:unsetenv "XDG_RUNTIME_DIR")
+      (is (null (nle::shell-presence-path 42)) "no runtime directory, no record"))))

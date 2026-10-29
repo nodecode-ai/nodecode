@@ -331,6 +331,98 @@ follows live when one is armed."
   (cons model.session-id
         (when followed (list (list followed :live-only t)))))
 
+;;; --- which session this shell is on, for programs outside it ---------------
+;;; A desktop restorer reopens each terminal tab on the conversation it held.
+;;; It finds the agent by its pid and asks the agent's own record: Claude Code
+;;; keeps ~/.claude/sessions/<pid>.json, Pi
+;;; $XDG_RUNTIME_DIR/pi-session-presence/<pid>.json. The gateway's map of
+;;; shells (ATTACHED-SHELLS) is readable only from inside the organism, and it
+;;; cannot tell a shell's own session from the one its preview lane follows, so
+;;; the shell, which knows, says it: $XDG_RUNTIME_DIR/nodecode/shells/<pid>.json,
+;;; written whenever its own session is set or switched -- every subscribe --
+;;; and removed when the shell ends. The runtime directory is the user's own
+;;; and emptied at every boot; a record a killed shell left behind names a pid
+;;; whose start time no longer matches, and the next shell sweeps it.
+
+(defvar *shell-presence-path* nil
+  "Where this process's terminal shell keeps its presence record while it
+runs (RUN-CHAT-GATEWAY), or NIL: not a shell, or no runtime directory.")
+
+(defun shell-presence-path (&optional (pid (sb-posix:getpid)))
+  "$XDG_RUNTIME_DIR/nodecode/shells/PID.json, or NIL when the environment
+names no absolute runtime directory."
+  #+win32 (declare (ignore pid))
+  #-win32 (let ((runtime (uiop:getenv "XDG_RUNTIME_DIR")))
+            (when (and runtime (plusp (length runtime)) (char= #\/ (char runtime 0)))
+              (format nil "~a/nodecode/shells/~d.json" (string-right-trim "/" runtime) pid))))
+
+(defun process-start-ticks (&optional (pid (sb-posix:getpid)))
+  "When PID started, in clock ticks since boot (/proc/PID/stat field 22), or
+NIL where there is no /proc: what tells this process from a later one given
+the same pid."
+  (ignore-errors
+   (let* ((stat (uiop:read-file-string (format nil "/proc/~d/stat" pid)))
+          ;; The command name may hold spaces and parens; the fields after
+          ;; its last paren start at field 3.
+          (fields (uiop:split-string (subseq stat (+ 2 (position #\) stat :from-end t)))
+                                     :separator " ")))
+     (parse-integer (nth 19 fields)))))
+
+(defun shell-resume-argv (session-id)
+  "The command that opens a shell on SESSION-ID in this home again."
+  (cond ((nlk:profile-named-p) (list "nodecode" "-p" (nlk:profile-name) "resume" session-id))
+        ((equal (namestring (nlk:home)) (namestring (nlk:default-home)))
+         (list "nodecode" "resume" session-id))
+        ;; A custom $NODECODE_HOME is no profile -p can name.
+        (t (list "env" (format nil "NODECODE_HOME=~a" (uiop:native-namestring (nlk:home)))
+                 "nodecode" "resume" session-id))))
+
+(defun sweep-shell-presence (path)
+  "Delete the records beside PATH whose shell is gone: a shell killed before
+its unwind leaves one."
+  #+win32 (declare (ignore path))
+  #-win32
+  (dolist (file (ignore-errors (uiop:directory-files (uiop:pathname-directory-pathname path) "*.json")))
+    (let ((pid (ignore-errors (parse-integer (pathname-name file)))))
+      (when (and pid (/= pid (sb-posix:getpid))
+                 (handler-case (progn (sb-posix:kill pid 0) nil)
+                   (sb-posix:syscall-error (condition)
+                     (= (sb-posix:syscall-errno condition) sb-posix:esrch))))
+        (ignore-errors (delete-file file))))))
+
+(defun note-shell-presence (session-id &aux (path *shell-presence-path*))
+  "Say SESSION-ID is this shell's own session, in its presence record. A
+session only the preview lane follows is never named here."
+  ;; The record costs the shell nothing: a runtime directory it cannot write
+  ;; is no reason to stop a subscribe.
+  (when (and path session-id)
+    (ignore-errors
+     (write-file-atomically
+      path
+      (encode-json-object
+       (json-object "version" 1
+                    "kind" "nodecode-shell"
+                    "pid" (sb-posix:getpid)
+                    "start_ticks" (or (process-start-ticks) :null)
+                    "session_id" session-id
+                    "profile" (nlk:profile-name)
+                    "home" (uiop:native-namestring (nlk:home))
+                    "cwd" (workspace-directory)
+                    "resume_argv" (coerce (shell-resume-argv session-id) 'vector)
+                    "updated_at" (nlk:unix-now)))
+      :mode #o600 :directory-mode #o700))))
+
+(defun open-shell-presence ()
+  "Make this process a shell that keeps a presence record, clearing the ones
+dead shells left. => the record's path, or NIL."
+  (when-let (path (shell-presence-path))
+    (sweep-shell-presence path)
+    (setf *shell-presence-path* path)))
+
+(defun close-shell-presence (&aux (path (shiftf *shell-presence-path* nil)))
+  "The shell ends: its record goes."
+  (when path (ignore-errors (delete-file path))))
+
 (defun preview-follow (model session-id)
   "Have the preview lane follow SESSION-ID live: a live-only subscription
 beside the attached one, so the frames the session publishes from here on
@@ -1621,6 +1713,7 @@ thread reads it and clears this place.")
                      (show-status model "Gateway resync required"))
                     ((not model.quiet-resync) (show-status model "History rewound; resyncing")))
               (send-subscribe model.ws (subscription-entries model))
+              (note-shell-presence model.session-id)
               (render-state model)))
            ((eq (gateway-frame-accepted-p model frame) :apply)
             ;; A live frame the pending start_turn produced admits it: the
@@ -2713,7 +2806,8 @@ gateway."
   ;; or /sessions must not re-attach the boot session -- and the session
   ;; its preview lane follows. The subscribe is what proves the link:
   ;; its frames carry the replay that paints the transcript.
-  (send-subscribe link (subscription-entries model)))
+  (send-subscribe link (subscription-entries model))
+  (note-shell-presence model.session-id))
 
 (defun gateway-client (port token)
   "A WebSocket client of the gateway at PORT, TOKEN its bearer when there is one."
@@ -2750,6 +2844,9 @@ session the shell ended on, or NIL when it never attached."
   ;; STORE-PATH also names the store whose sidecar the ladder re-resolves
   ;; after a sustained outage.
   (engage-theme)
+  ;; Programs outside the organism read which session this shell is on
+  ;; from its presence record (NOTE-SHELL-PRESENCE).
+  (open-shell-presence)
   (let* ((pinned (and port t))
          (port (or port (live-published-endpoint store-path)))
          (token (gateway-configured-operator-token))
@@ -3179,7 +3276,8 @@ nodecode manually"
                         (dolist (thread (remove nil (list boot-thread takeover)))
                           (nlk::%join-bounded thread 5))
                         (stop-front :why (and quit "quit")
-                                    :wait (not nlk:*profile-switch-parked*)))
+                                    :wait (not nlk:*profile-switch-parked*))
+                        (close-shell-presence))
            (call-with-severed-stdio (stdio-log-path store-path)
              (lambda ()
                (call-with-tui-error-capture prog
@@ -6981,6 +7079,7 @@ resubscribe — the replay that answers rebuilds the transcript."
       (pin-transcript-bottom model)
       (render-state model))
     (send-subscribe model.ws (list session-id))
+    (note-shell-presence session-id)
     ;; The facts this shell held were the session it left: its pin, its
     ;; effort. The switch blanked them (INVALIDATE-GATEWAY-MODEL-FACTS) and
     ;; nothing else refetches for a switch -- the gateway broadcasts
