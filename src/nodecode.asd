@@ -49,7 +49,7 @@ of stacking."
 (defsystem "nodecode"
   :description "A self-modifying agent organism in SBCL: gateway, session, turn loop, and heredity."
   :license "MIT"
-  :version "0.1.4"
+  :version "0.1.5"
   ;; Dependency amendment seam.
   ;; A1 added: shasht (JSON codec) and two SBCL contribs.
   ;;
