@@ -3960,13 +3960,32 @@ replaces the first. => (:session-id S :turn-id T :waits QUESTION-OR-T)"
 reasoning before it names; too low a ceiling would yield no title.
 Hermes gives its titles 512.")
 
+(defparameter +title-markup+ "<[A-Za-z/!?|｜][^<>]*>|\\{\\s*\"|\\[TOOL_CALLS\\]"
+  "What no title holds: a tag (<tool_call>, </parameter>, <|channel|>,
+<｜DSML｜invoke>) or a JSON object, the syntax a model writes a tool call in
+(WRITTEN-TITLE). A less-than sign before anything else (p<0.05) is no tag.")
+
+(defun title-request (text)
+  "The naming call's one message: TEXT quoted as the message that opened the
+conversation, for the model to name and never to answer (NAME-SESSION)."
+  ;; Bare, the message reads as an ask put to the namer, and a model tuned for
+  ;; agent work carries it out: it says it cannot browse, or writes the tool
+  ;; call it would make as text. Quoted, it is a thing to name (2026-10-30,
+  ;; mimo-v2.6-flash on 80 asks: 8 answered bare, none quoted).
+  (format nil "The message that opened the conversation, addressed to an assistant, not to you:~2%\"\"\"~%~a~%\"\"\"~2%Answer with its title alone." text))
+
 (defun written-title (text &aux (bag '(#\Space #\Tab #\Return #\" #\' #\` #\*)))
   "The title a naming call's TEXT holds, or NIL when it holds none: its first
 line that says something, any label, quotes and trailing period taken off,
-cut at a word to the 64 characters a session's name keeps."
+cut at a word to the 64 characters a session's name keeps. TEXT holding
+markup anywhere (+TITLE-MARKUP+) holds none."
   ;; Past twelve words the model answered the message instead of naming it,
-  ;; and the session keeps its prompt's line.
+  ;; and the session keeps its prompt's line. So it did when the answer holds
+  ;; markup: a model with no tools that carried the message out writes its
+  ;; tool call as text, and a thread wears its session's name in public
+  ;; (2026-10-30: "<tool_call><function=youtube_search_videos>...").
   (let* ((line (and (stringp text)
+                    (not (ppcre:scan +title-markup+ text))
                     (find-if (lambda (line) (plusp (length (trimmed line))))
                              (uiop:split-string text :separator '(#\Newline)))))
          (line (and line (string-left-trim bag line)))
@@ -3990,7 +4009,8 @@ COMPLETE's does."
   ;; cell's own (cron names a job's session as its fire is admitted).
   (let ((title (if (<= (length words) 5)
                    (and words (format nil "~{~a~^ ~}" words))
-                   (written-title (complete +title-instruction+ (clip text 1000 :ellipsis "")
+                   (written-title (complete +title-instruction+
+                                            (title-request (clip text 1000 :ellipsis ""))
                                             :session-id session-id
                                             :max-tokens +title-max-tokens+)))))
     (when (and title (not (nlk:events :session-id session-id :kind nlk::+kind-session-title+

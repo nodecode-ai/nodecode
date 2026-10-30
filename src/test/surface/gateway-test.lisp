@@ -2294,8 +2294,10 @@ had time to send anything more: a row sent twice arrives after the match."
                  (await (:tries 50) (not (nlk:active-turn-p session-id)))))
           (ask "gw-named" "count the pelican nests along the north shore" "gw-named-1")
           (is (equal "Pelican nest survey" (nlk::session-title "gw-named")) "the model's title")
-          ;; one call, on the session's own target when no auxiliary one is set
-          (is (equal '(("gw-named" "count the pelican nests along the north shore")) asked))
+          ;; one call, on the session's own target when no auxiliary one is set,
+          ;; the prompt quoted to it
+          (is (equal (list (list "gw-named" (nle::title-request "count the pelican nests along the north shore")))
+                     asked))
           (ask "gw-named" "and now the south shore too, the same way" "gw-named-2")
           (is (= 1 (length asked)) "a named session is named once")
           (ask "gw-given" "count the pelican nests along the north shore" "gw-given-1")
@@ -2308,7 +2310,8 @@ had time to send anything more: a row sent twice arrives after the match."
 (deftest a-written-title-reads-a-title ()
   ;; What a naming call answered, as a session's name: the first line that
   ;; says something, its label, quotes and period off, cut at a word; an
-  ;; answer to the message instead of its name is no title.
+  ;; answer to the message instead of its name is no title, and neither is
+  ;; one that holds markup anywhere -- a tool call written as text.
   (is-each (nle::written-title)
     ("Capital of Australia vs Sydney" "Capital of Australia vs Sydney" "a bare title")
     ("Title: \"Fix the auth bug.\"" "Fix the auth bug" "label, quotes and period off")
@@ -2319,7 +2322,31 @@ had time to send anything more: a row sent twice arrives after the match."
     ("Supercalifragilistic expialidocious antidisestablishmentarianism floccinaucinihilipilification"
      "Supercalifragilistic expialidocious antidisestablishmentarianism" "cut at a word")
     ("" nil "nothing")
-    (nil nil "no reply")))
+    (nil nil "no reply")
+    ("<tool_call><function=youtube_search_videos><parameter=query>indydevdan</parameter></function></tool_call>"
+     nil "a tool call written as text")
+    ("I'll fetch the channel's latest videos.<tool_call><function=Bash><parameter=command>curl -sL https://www.youtube.com/@indydevdan/videos"
+     nil "a word of narration, then the call")
+    ((format nil "Latest indydevdan videos~%<tool_call>~%<function=web_fetch>") nil "a title over a call: the answer acted")
+    ("<｜DSML｜function_calls><｜DSML｜invoke name=\"web_search\">" nil "special tokens")
+    ("{\"name\": \"web_search\", \"arguments\": {\"query\": \"indydevdan\"}}" nil "a call as JSON")
+    ("Compare p<0.05 results across runs" "Compare p<0.05 results across runs" "a less-than sign is no tag")))
+
+(deftest a-naming-call-that-acts-names-nothing (with-temp-store ())
+  ;; A model with no tools that carried the message out instead of naming it
+  ;; answers with its tool call as text (2026-10-30: a Discord thread was
+  ;; renamed "<tool_call><function=youtube_search_videos>..."). That names
+  ;; nothing: the session keeps its prompt's line, and no title is recorded
+  ;; for a channel to wear.
+  (let ((nle::*session-naming* :inline))
+    (with-stubbed-fdefinition (nle:complete (system user &key session-id max-tokens fallback-p)
+                                "<tool_call><function=youtube_search_videos><parameter=query>indydevdan</parameter></function></tool_call>")
+      (with-provider-stub (nil (wire-message "assistant" :content "ok"))
+        (ensure-durable-session "gw-acted")
+        (nle:submit "gw-acted" "quickly check the latest 4 videos of indydevdan on youtube" :command-id "gw-acted-1")
+        (await (:tries 50) (not (nlk:active-turn-p "gw-acted")))
+        (is (not (nlk:events :session-id "gw-acted" :kind nlk::+kind-session-title+ :as :exists)) "no title recorded")
+        (is (equal "quickly check the latest 4 videos of indydevdan on youtube" (nlk::session-title "gw-acted")) "the prompt's line stands")))))
 
 (defmacro with-retract-turn ((turn turn-id peer state session-id &key prompt prior (parked t))
                              stub &body body)
