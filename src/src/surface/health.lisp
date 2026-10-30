@@ -189,7 +189,8 @@ nothing of the folder loaded, so no cell and no cell's command. NIL otherwise."
 ;;; of the landing screen and every open of the Dashboard. A doctor goes and
 ;;; looks: it reads the whole store back through a connection of its own,
 ;;; asks whether the build on disk is still the one running, what the disk
-;;; has free, whether config.jsonc parses and every section declared in it is
+;;; has free, whether one home's gateway runs under two units, whether
+;;; config.jsonc parses and every section declared in it is
 ;;; whole, and whether the default model's provider takes its key.
 ;;; DOCTOR-FACTS is the passive facts and those looks in one list; /doctor
 ;;; prints it and the web page's Check everything shows it, so the two never
@@ -329,9 +330,24 @@ notice, else how the config has it look."
                  :tone :warn :remedy "Update now on the web page's Gateway tab; `nodecode update' in a shell")
     (health-fact :update "update" (format nil "nothing waiting · update.mode ~a" (update-settings)))))
 
+(defun gateway-units-facts ()
+  "A fact for each home two or more gateway units serve: each unit runs
+the organism, one serves and the rest wait on its store, and an update's
+handoff races between them."
+  (loop for (home kept . extra) in (ignore-errors (nlk:gateway-unit-duplicates))
+        collect (health-fact :gateway-units "gateway units"
+                             (format nil "~d units serve ~a: ~a and ~{~a~^, ~}"
+                                     (1+ (length extra)) home (file-namestring kept)
+                                     (mapcar #'file-namestring extra))
+                             :tone :danger
+                             :remedy (format nil "keep ~a and take the extra away: ~{`~a`~^; ~}"
+                                             (file-namestring kept)
+                                             (mapcar #'nlk:unit-removal-command extra)))))
+
 (defun doctor-facts ()
   "HEALTH-FACTS and every look a doctor takes, in reading order."
   (remove nil (append (health-facts) (list (store-integrity-fact) (build-fact) (disk-fact))
+                      (gateway-units-facts)
                       (config-facts) (list (credential-fact) (update-fact)))))
 
 (defun health-facts-json (facts)

@@ -213,6 +213,75 @@ under *UNIT-DIRECTORY*, its enablement and its process FAKE's."
     (is (probe-file path) "off leaves it too")
     (is (not (member "disable" (unit-verbs fake) :test #'equal)))))
 
+(defun write-gateway-unit (label home)
+  "A unit nodecode wrote, called LABEL, serving HOME (a native namestring), in
+the unit folder: what another naming of the same home left there."
+  (write-temp-file
+   (merge-pathnames (format nil "~a.~a" label (if (eq nlk:*service-manager* :launchd) "plist" "service"))
+                    nlk:*unit-directory*)
+   (if (eq nlk:*service-manager* :launchd)
+       (format nil "<?xml version=\"1.0\" encoding=\"UTF-8\"?>~%<!-- nodecode gateway: ~a -->~%~
+                    <plist version=\"1.0\">~%<dict>~%  <key>Label</key><string>~a</string>~%~
+                    <key>EnvironmentVariables</key>~%  <dict>~%    ~
+                    <key>NODECODE_HOME</key><string>~a</string>~%  </dict>~%</dict>~%</plist>~%"
+               home label home)
+       (format nil "# nodecode gateway: ~a (moved here by hand)~%[Unit]~%Description=nodecode gateway~%~%~
+                    [Service]~%ExecStart=\"/opt/nodecode/current/nodecode\" gateway run~%~
+                    Environment=\"NODECODE_HOME=~a\"~%"
+               home home))))
+
+(defun unit-files ()
+  "The names of the unit files in the unit folder."
+  (sort (mapcar #'file-namestring (directory (merge-pathnames "*.*" nlk:*unit-directory*)))
+        #'string<))
+
+(deftest gateway-on-reuses-the-unit-that-already-serves-the-home (with-scripted-systemd (fake))
+  ;; One home, two unit names: a gateway run under a borrowed $HOME names its
+  ;; home by its path's digest where the account's own $HOME names it by its
+  ;; profile, and `gateway on' from there wrote a second unit beside the
+  ;; first. Both ran -- one serving, one waiting on the store -- and an
+  ;; update's handoff raced between them. A home's unit is the one that names
+  ;; the home, by true name, whatever the unit is called.
+  (let* ((home (string-right-trim "/" (uiop:native-namestring nlk:*home*)))
+         (link (string-right-trim "/" (namestring (temp-path "home-link"))))
+         (own (nlk:gateway-unit-name)))
+    (sb-posix:symlink home link)
+    (write-gateway-unit "nodecode-gateway-elsewhere" link)
+    (is (equal "nodecode-gateway-elsewhere.service" (nlk:gateway-unit-name)) "the home's gateway is the unit that serves it, named through a link")
+    (is (nlk:gateway-installed-p) "so the gateway reads as on")
+    (is (eq :ours (nlk:gateway-state-installed (nlk:gateway-on :auto t :program +test-binary+))) "a cell's keep-running finds it")
+    (nlk:gateway-on :program +test-binary+)
+    (is (equal '("nodecode-gateway-elsewhere.service") (unit-files)) "and the operator's `gateway on' writes no second unit beside it")
+    (is (search (format nil "ExecStart=\"~a\" gateway run" +test-binary+) (uiop:read-file-string (nlk:gateway-unit-path))) "it rewrites that one")
+    (is (member (list "systemctl" "--user" "enable" "--now" "nodecode-gateway-elsewhere.service") (fake-systemd-calls fake) :test #'equal) "and enables it")
+    (nlk:gateway-off)
+    (is (null (unit-files)) "off takes it away")
+    (is (equal own (nlk:gateway-unit-name)) "and the home's own name is back")))
+
+(deftest doctor-names-two-units-serving-one-home (with-scripted-systemd (fake))
+  (is (null (nle::gateway-units-facts)) "no unit: nothing to say")
+  (nlk:gateway-on :program +test-binary+)
+  (is (null (nle::gateway-units-facts)) "one unit: nothing to say")
+  (let ((own (nlk:gateway-unit-name)))
+    (write-gateway-unit "nodecode-gateway-elsewhere" (uiop:native-namestring nlk:*home*))
+    (is (equal own (nlk:gateway-unit-name)) "the home's own unit stays its gateway")
+    (is (= 1 (length (nle::gateway-units-facts))) "one fact for the one home served twice")
+    (is-present (fact (first (nle::gateway-units-facts))) "the doctor's fact"
+      (is (eq :danger (nle::health-fact-tone fact)) "two gateways race for one store")
+      (is (search own (nle::health-fact-detail fact)) "it names the unit kept")
+      (is (search "nodecode-gateway-elsewhere.service" (nle::health-fact-detail fact)) "and the extra")
+      (is (search "systemctl --user disable --now nodecode-gateway-elsewhere.service" (nle::health-fact-remedy fact)) "and how the extra goes"))
+    (is (find :gateway-units (nle::doctor-facts) :key #'nle::health-fact-key) "the doctor says it")
+    ;; The one to keep is the one serving: taking the other away costs nothing.
+    (let ((store (nlk::home-store-path nlk:*home*)))
+      (write-temp-file (nlk::lease-path-for-store store) "{\"pid\":31337,\"port\":42999}")
+      (with-lock-holder ((nlk::lock-path-for-store store))
+        (is (eql 31337 (nth-value 1 (nlk::store-death-verdict store))) "a process owns this home's store")
+        (setf (fake-unit-pid (alexandria:ensure-gethash "nodecode-gateway-elsewhere.service" (fake-systemd-units fake) (make-fake-unit))) 31337)
+        (is-present (fact (first (nle::gateway-units-facts))) "with the other unit running it"
+          (is (search "keep nodecode-gateway-elsewhere.service" (nle::health-fact-remedy fact)) "that one is kept")
+          (is (search (format nil "disable --now ~a" own) (nle::health-fact-remedy fact)) "and the home's own name is the extra"))))))
+
 (deftest gateway-off-goes-before-its-process-and-an-cell-never-undoes-it ()
   (with-scripted-systemd (fake)
     (nlk:gateway-on :program +test-binary+)
@@ -494,6 +563,17 @@ FAKE-LAUNCHD made from OPTIONS."
     (is (equal "nodecode-gateway-coder.plist" (file-namestring (nlk:gateway-unit-path coder))))
     (is (equal "nodecode-gateway-coder.log" (file-namestring (nlk:gateway-log-path coder))))
     (is (search "Library/Logs/nodecode/" (namestring (nlk:gateway-log-path))))))
+
+(deftest launchd-finds-the-agent-that-already-serves-the-home (with-scripted-launchd (fake))
+  (write-gateway-unit "nodecode-gateway-elsewhere" (uiop:native-namestring nlk:*home*))
+  (is (equal "nodecode-gateway-elsewhere" (nlk:gateway-unit-name)) "the agent that names the home is its gateway")
+  (is (equal "nodecode-gateway-elsewhere.plist" (file-namestring (nlk:gateway-unit-path))) "its file")
+  (is (nlk:gateway-installed-p) "so the gateway reads as on")
+  (write-gateway-unit "nodecode-gateway-other" (uiop:native-namestring nlk:*home*))
+  (is (equal "nodecode-gateway-elsewhere" (nlk:gateway-unit-name)) "a second agent beside it changes nothing")
+  (is-present (fact (first (nle::gateway-units-facts))) "but the doctor names it"
+    (is (search "nodecode-gateway-other" (nle::health-fact-detail fact)) "as the extra")
+    (is (search "launchctl bootout" (nle::health-fact-remedy fact)) "with launchctl's remedy")))
 
 (deftest launchd-agent-text-is-a-plist-naming-the-home (with-scripted-launchd (fake))
   (is-carrying (text (nlk:gateway-unit-text :manager :launchd :home #p"/tmp/h--x/"
