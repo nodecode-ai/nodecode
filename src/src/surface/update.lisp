@@ -156,7 +156,8 @@ here carries its number -- its nodecode.asd's :version -- else LABEL."
 (defun window-release ()
   "The release this binary's folder is, when the PATH of the shell it was
 typed in names that folder -- the installer's layout on Windows, whose PATH
-names the version's own folder (install.ps1) -- else NIL."
+named the version's own folder before install.ps1 named its launcher folder,
+bin\\, which runs whatever `current' names -- else NIL."
   (let ((runtime (nlk:runtime-directory)))
     (and runtime (installed-release-root) (path-names-directory-p runtime)
          (car (last (pathname-directory runtime))))))
@@ -230,7 +231,8 @@ against *RELEASE-DIRECTORY* and *RELEASE-URL*. => T, or a refusal: DOING it fail
   (multiple-value-bind (out err code)
       (run-bounded
        ;; No -NoModifyPath for install.ps1: its link moves the user PATH's
-       ;; entry to the version it links, which an elevated shell needs.
+       ;; entry to the launcher folder, bin\ -- or to the version it links,
+       ;; when no launcher answers -- which an elevated shell needs.
        (if (eq (nlk:platform) :windows)
            (list "powershell.exe" "-NoProfile" "-NonInteractive" "-ExecutionPolicy" "Bypass"
                  "-File" (uiop:native-namestring installer))

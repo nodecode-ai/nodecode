@@ -120,7 +120,11 @@
           (is (equal '("✓" "✗" "✗" " ") (mapcar #'nle::picker-row-mark (rest rows))))
           (is (= 5 (length rows)) "five lines")
           (is (notany (lambda (label) (equal "" label)) labels) "no blank lines")
-          (is (>= (nle::docked-dialog-frame-rows model) (length labels)) "the box is read whole"))))))
+          (is (>= (nle::docked-dialog-frame-rows model) (length labels)) "the box is read whole")
+          (let* ((plain (coerce (nle::frame-plain-rows model) 'list))
+                 (title (position-if (lambda (row) (search "Connection" row)) plain))
+                 (verdict (position-if (lambda (row) (search "Not private" row)) plain)))
+            (is (and title verdict (= 2 (- verdict title))) "the verdict sits one blank under the title, no empty rows between")))))))
 
 (deftest connection-measures-the-endpoint-the-gateway-names (with-temp-store ())
   ;; Asked 2026-10-27, a fresh shell on Claude Code read "Connection unchecked": its lane is

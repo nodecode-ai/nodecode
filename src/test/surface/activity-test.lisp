@@ -29,7 +29,9 @@
 
 (defun iso-ago (seconds)
   "An ISO-8601 UTC stamp SECONDS before now, in the shape NLK:ISO-NOW
-writes -- the fixture's way of saying `a turn that started 3m 12s ago'."
+writes -- the fixture's way of saying `a turn that started 3m 12s ago'. A test
+that reads a row's age or its day runs under WITH-CLOCK-AT-LOCAL-NOON, so no
+fixture crosses a midnight."
   (nlk:iso-time (- (nlk:unix-now) seconds)))
 
 (defun activity-sessions (frame)
@@ -146,7 +148,7 @@ SESSION-ID, as a list."
       (is (search "just now  Fix the flaky test" (session-row-text settled)) "its age stands before its name")
       (is (search "4 msgs" (session-row-text settled)) "and its messages at the right"))))
 
-(deftest a-parent-row-wears-the-dim-spinner-while-its-branch-runs ()
+(deftest a-parent-row-wears-the-dim-spinner-while-its-branch-runs (with-clock-at-local-noon)
   ;; A collapsed parent hides its branch whole, so the column read before its
   ;; label is where a running turn under it has to show: the same spinner,
   ;; one tone down, so the row that IS running and the row that merely holds
@@ -220,7 +222,7 @@ SESSION-ID, as a list."
       (sleep (/ (* 2 nle::*status-running-frame-ms*) 1000))
       (is (not (nth-value 2 (nle:update model (nlt:make-tick-msg)))) "a running row's spinner moves the frame"))))
 
-(deftest sessions-dialog-draws-the-running-session-live ()
+(deftest sessions-dialog-draws-the-running-session-live (with-clock-at-local-noon)
   (with-frame-model (model 100 30 :session-id "act-here")
     (with-stubbed-fdefinition (nle::sessions-preview-arm (&rest args))
       (flet ((row-for (id &aux (dialog model.dialog))

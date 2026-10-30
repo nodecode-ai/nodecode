@@ -227,7 +227,7 @@ as plain text, its trailing blanks trimmed."
     (setf (gethash "updated_at" entry) nil)
     (is (search "unknown  ╰ s-age" (session-row-text (nle::session-picker-row walk now))) "an absent clock is explicit, never now")))
 
-(deftest sessions-a-day-heads-its-sessions-and-the-folder-tab-keeps-its-own ()
+(deftest sessions-a-day-heads-its-sessions-and-the-folder-tab-keeps-its-own (with-clock-at-local-noon)
   ;; The list breaks at each day its sessions moved on, newest first: a
   ;; heading no key or pointer chooses, over that day's sessions. Under an
   ;; earlier day a row says the clock time, the heading having said the day;

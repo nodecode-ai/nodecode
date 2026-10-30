@@ -636,6 +636,21 @@ and the threads evaluating a snippet in place, which no registry holds."
               (- sp start))
           (- end start)))
 
+(defvar *runaway-climb* nil
+  "Inside a guarded evaluation, a one-element list whose car is true while a
+control-stack verdict raised on this thread has not yet seen the stack come
+back under the limit; NIL outside one.")
+
+;;; One verdict per climb. An unwind runs each UNWIND-PROTECT cleanup with the
+;;; stack pointer still where the verdict was signalled, the abandoned frames
+;;; below it until the handler is reached, so a probe landing in a cleanup
+;;; (the compilation unit's summary wraps every snippet) read the stack as past
+;;; the limit, walked a frame chain that no longer held the recursion, and
+;;; its unnamed verdict replaced the named one: 1 probe in ~600 under load
+;;; (T-394). After a verdict the next one waits for a probe to read the stack
+;;; back under the limit. A form that takes the verdict in its own
+;;; HANDLER-CASE and climbs again before any probe saw it shallow still gets
+;;; one at the hard mark, half way from the limit to the end of the stack.
 (defun eval-runaway-thread-probe ()
   "The interruption body for a thread evaluating a snippet in place: signal the
 verdict when there is one."
@@ -644,8 +659,14 @@ verdict when there is one."
   (when-let (verdict (ignore-errors
                       (bind (((used span) (control-stack-usage))
                              (limit (min (* 16 1024 1024) (floor span 2)))
+                             (climb *runaway-climb*)
                              (heap (sb-kernel:dynamic-usage)) (cap (sb-ext:dynamic-space-size)))
-                        (cond ((> used limit)
+                        (when (and climb (car climb) (<= used limit))
+                          (setf (car climb) nil))
+                        (cond ((> used (if (and climb (car climb))
+                                           (+ limit (floor (- span limit) 2))
+                                           limit))
+                               (when climb (setf (car climb) t))
                                (format nil "control stack runaway: ~:d KB of frames on a ~:d KB stack~@[, deepest in ~a~] — a recursion that does not bottom out, unwound before the guard page (an overflow inside an allocation there kills the whole image). Iterate, or bound the depth."
                                        (floor used 1024) (floor span 1024) (runaway-frame-name)))
                               ((> heap (* *eval-heap-soft-fraction* cap))
@@ -728,7 +749,10 @@ worker."
   "Run THUNK with this thread on the guarded list and the watcher running."
   ;; The list entry is removed on every exit, normal or not.
   (ensure-eval-guard)
-  (let ((self (bt2:current-thread)))
+  (let ((self (bt2:current-thread))
+        ;; Bound outside the UNWIND-PROTECT, so it still holds while a
+        ;; verdict's unwind runs the cleanups inside.
+        (*runaway-climb* (list nil)))
     (bt2:with-lock-held (*eval-guard-lock*)
       (push self *evaluating-threads*))
     (unwind-protect (funcall thunk)
@@ -1862,11 +1886,13 @@ given, is called with each piece as it arrives."
            (incf taken got))
   (values (get-output-stream-string out) (>= taken limit)))
 
-(defun sh (command &key directory)
+(defun sh (command &key directory timeout)
   "Run COMMAND — a string through the shell's -c (*SHELL*: bash where the
 machine has it, else /bin/sh; Git for Windows' sh.exe on Windows), a list as argv with no shell — and answer its output: stdout and stderr merged as they arrived, with a
 final [exit N] line when the status is not 0; the status is the second
-value."
+value. TIMEOUT, seconds, bounds the command: past it the whole process
+tree is killed and the answer is the output so far with a [timed out
+after N s] line."
   ;; Stdin is empty, so a program that reads it sees end of file rather than
   ;; waiting on a terminal nobody holds; a heredoc in the command string is
   ;; the shell's own way to feed it. The child runs in DIRECTORY, else the
@@ -1897,7 +1923,13 @@ value."
   ;; interpreter would be misread as a missing command. One name with the
   ;; capture, the search path and the stdin already right leaves nothing to
   ;; rediscover.
+  ;; TIMEOUT is the bound a model reaches for first -- (sh "..." :timeout
+  ;; 600) was 81 failed calls in three days of one operator's sessions
+  ;; (2026-10-26..29) while sh took no such key -- so it is a real bound,
+  ;; not an accepted-and-ignored key: a timer kills the tree, the read
+  ;; reaches end of file, and the answer says why it ended.
   (check-type command (or string cons))
+  (check-type timeout (or null (real (0))))
   (receipt-call "sh" command)
   ;; A unified diff is a mutation payload, never a shell command. Refuse it
   ;; before launch so a malformed tool route cannot execute diff markers via
@@ -1917,30 +1949,43 @@ value."
                            :error-output :output)))
       (when snippet (setf (exec-process-child-pid snippet) pid
                           (exec-process-stalled-ticks snippet) 0))
-      (with-cleanup ((when snippet (setf (exec-process-child-pid snippet) nil))
-                     (when (pid-live-p pid)
-                       ;; Descendants first: a killed shell's children reparent to init
-                       ;; and would otherwise outlive the call that started them (the
-                       ;; timeout/sbcl/tail tree).
-                       (kill-process-tree pid)
-                       (ignore-errors (wait-for-child pid process)))
-                     (ignore-errors (close output-stream)))
-        (bind (((captured cut) (slurp-bounded output-stream *sh-capture-limit* *sh-chunk*)))
-          ;; The tree goes before the wait: a child still writing into a pipe
-          ;; nobody reads would block there forever, and the wait with it.
-          (when (and cut (pid-live-p pid)) (kill-process-tree pid))
-          (bind ((output (if cut
-                             (format nil "~a~%[output cut at ~:d characters]"
-                                     captured *sh-capture-limit*)
-                             captured))
-                 (status (wait-for-child pid process)))
-          ;; The status on the evaluation, as the verdict its exit is shown
-          ;; with: a surface reads the field, never the [exit N] line.
-          (when snippet (setf (exec-process-shell-exit snippet) status))
-          (values (if (eql status 0)
-                      output
-                      (format nil "~a~&[exit ~a]" output status))
-                  status)))))))
+      (let* ((timed-out nil)
+             (timer (and timeout
+                         (sb-ext:make-timer (lambda ()
+                                              (when (pid-live-p pid)
+                                                (setf timed-out t)
+                                                (kill-process-tree pid)))
+                                            :thread t :name "sh timeout"))))
+        (when timer (sb-ext:schedule-timer timer timeout))
+        (with-cleanup ((when timer (ignore-errors (sb-ext:unschedule-timer timer)))
+                       (when snippet (setf (exec-process-child-pid snippet) nil))
+                       (when (pid-live-p pid)
+                         ;; Descendants first: a killed shell's children reparent to init
+                         ;; and would otherwise outlive the call that started them (the
+                         ;; timeout/sbcl/tail tree).
+                         (kill-process-tree pid)
+                         (ignore-errors (wait-for-child pid process)))
+                       (ignore-errors (close output-stream)))
+          (bind (((captured cut) (slurp-bounded output-stream *sh-capture-limit* *sh-chunk*)))
+            ;; The tree goes before the wait: a child still writing into a pipe
+            ;; nobody reads would block there forever, and the wait with it.
+            (when (and cut (pid-live-p pid)) (kill-process-tree pid))
+            (bind ((output (if cut
+                               (format nil "~a~%[output cut at ~:d characters]"
+                                       captured *sh-capture-limit*)
+                               captured))
+                   (status (wait-for-child pid process))
+                   (answer (if timed-out
+                               (format nil "~a~&[timed out after ~a s: the process tree was killed]"
+                                       output timeout)
+                               output)))
+            ;; The status on the evaluation, as the verdict its exit is shown
+            ;; with: a surface reads the field, never the [exit N] line.
+            (when snippet (setf (exec-process-shell-exit snippet) status))
+            (values (if (eql status 0)
+                        answer
+                        (format nil "~a~&[exit ~a]" answer status))
+                    status))))))))
 
 ;;; --- the strings side-channel and the file verbs -------------------------
 ;;; Literal text used to reach a file only by tunneling JSON -> Lisp string
@@ -1967,7 +2012,9 @@ exactly as the model sent it, JSON escaping only."
              (nlk:clip name 60)))
     (unless (hash-table-p strings)
       (error "this eval call carried no strings object; pass ~
-              strings {~s: \"...\"} beside the form" name))
+              strings {~s: \"...\"} beside the form, or put the text in the ~
+              form itself as raw text: #>END ends its line, then the text, ~
+              then a line starting with END" name))
     (multiple-value-bind (value presentp) (gethash name strings)
       (cond ((not presentp)
              (error "no strings entry named ~s in this call; it carries ~
@@ -2444,7 +2491,7 @@ nothing, which is no fence's to repeat."
  "eval"
  (list :description
        (concatenate 'string
-                    "Evaluate Common Lisp forms in the live image and return their printed values; only the last value prints in full. (sh \"ls -la\") runs a shell command and returns its output. (edit path ($ \"old\") ($ \"new\")) with strings {\"old\": \"<the text now in the file>\", \"new\": \"<its replacement>\"} replaces the one occurrence of old in the file; (write-file path ($ \"text\")) with strings {\"text\": \"<the whole file>\"} writes a whole file, parents created. $ takes an entry's name, never the text itself. (look path) shows you an image file. In a Lisp string a backslash only escapes the next character (\"\\n\" reads as n), so text dense with backslashes, double quotes or newlines goes in the strings object, whichever verb takes it; a shell command carrying a heredoc goes there whole: strings {\"script\": \"...\"} with (sh ($ \"script\")). A snippet's opening ;; line is its note, kept past eviction: write what you would resume from. When you use eval for work, begin the form with one concise leading ;; progress comment naming what you are about to do; this comment becomes the live activity label in channel cards and the TUI."
+                    "Evaluate Common Lisp forms in the live image and return their printed values; only the last value prints in full. (sh \"ls -la\") runs a shell command and returns its output. (edit path ($ \"old\") ($ \"new\")) with strings {\"old\": \"<the text now in the file>\", \"new\": \"<its replacement>\"} replaces the one occurrence of old in the file; (write-file path ($ \"text\")) with strings {\"text\": \"<the whole file>\"} writes a whole file, parents created. $ takes an entry's name, never the text itself. (look path) shows you an image file. In a Lisp string a backslash only escapes the next character (\"\\n\" reads as n), so text dense with backslashes, double quotes or newlines goes in the strings object, whichever verb takes it, or raw in the form itself: #>END ends its line, the text follows exactly as written, and a line starting with END closes it - (write-file \"a.py\" #>PY, the file's lines, PY); a shell command carrying a heredoc goes there whole: strings {\"script\": \"...\"} with (sh ($ \"script\")). A snippet's opening ;; line is its note, kept past eviction: write what you would resume from. When you use eval for work, begin the form with one concise leading ;; progress comment naming what you are about to do; this comment becomes the live activity label in channel cards and the TUI."
                     #+linux " A snippet's last form, when it only reads - no verb, file, process, socket, assignment or definition - is watched: it runs again after each later snippet and comes back as one line only when its value changes."
                     " (help :eval) has the rest.")
        :parameters

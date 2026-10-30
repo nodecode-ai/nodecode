@@ -337,6 +337,58 @@ them spells the message out."
     ("ERROR" result))
   (is-eval "*snippet-c*" ("UNBOUND-VARIABLE" "the first form never evaluated")))
 
+(deftest eval-raw-text-reads-exactly-what-is-written ()
+  ;; Quotes, backslashes, parens and a newline at the end: nothing escaped,
+  ;; nothing lost -- the file a model writes is the file on disk.
+  (is-eval (format nil "(string= #>T~%\"q\" \\ (~%T (coerce (list #\\\" #\\q #\\\" #\\Space #\\\\ #\\Space #\\( #\\Newline) 'string))")
+    (:= "T" "quotes, a backslash and an open paren read as themselves"))
+  (is-eval (format nil "(length #>E~%a\\nb~%E)")
+    (:= "5" "a backslash-n is two characters, then the line's newline")
+    (:absent "[reader" "and no escape warning: raw text is not a string literal")))
+
+(deftest eval-raw-text-ends-at-a-line-that-starts-with-its-tag ()
+  (is-eval (format nil "(equal (list #>END~%abc~%END 42) (list (format nil \"abc~~%\") 42))")
+    (:= "T" "what follows the closing tag on its line reads on"))
+  (is-eval (format nil "(equal (list #>END~%  abc~%  END) (list (format nil \"  abc~~%\")))")
+    (:= "T" "an indented closing line closes it, and the text keeps its own indentation"))
+  (is-eval (format nil "(equal (list #>END~%ENDING~%END) (list (format nil \"ENDING~~%\")))")
+    (:= "T" "a line that only begins with the tag's letters is text")))
+
+(deftest eval-raw-text-is-not-structure-for-completion ()
+  ;; A Python line with an open paren inside raw text must neither open a
+  ;; form nor take a closer; the snippet's own missing paren still lands by
+  ;; indentation.
+  (is-eval (format nil "(defparameter *raw-text-a*~%  (concatenate 'string #>PY~%def f(:~%PY~%    \"x\")")
+    ("*RAW-TEXT-A*" result))
+  (is-eval "(string= *raw-text-a* (format nil \"def f(:~%x\"))" (:= "T" "the raw text and the string after it, as written")))
+
+(deftest eval-raw-text-that-never-ends-runs-nothing ()
+  (is-eval (format nil "(defparameter *raw-text-b* 1)~%(list #>END~%abc")
+    ("raw text" result)
+    ("never ends" "the open raw text is named"))
+  (is-eval "(boundp '*raw-text-b*)" (:= "NIL" "nothing ran"))
+  (is-eval (format nil "(list #>~%abc)")
+    ("#> wants a tag" "a #> without a tag says what it wants")))
+
+(deftest eval-raw-text-reads-in-a-thread-whose-readtable-lacks-it ()
+  ;; The dumped binary's eval met `no dispatch function defined for #\>':
+  ;; its readtable never had it. A snippet reads raw text whatever readtable
+  ;; its thread was given.
+  (let ((*readtable* (copy-readtable nil)))
+    (is-eval (format nil "(length #>E~%ab~%E)") (:= "3" "raw text reads in a plain standard readtable"))))
+
+(deftest raw-text-loads-from-a-file ()
+  ;; The layer keeps the bytes a snippet was read from, and a launch loads
+  ;; them with LOAD: the image's readtable reads raw text, not only eval's.
+  (let ((path (uiop:tmpize-pathname (merge-pathnames "raw-text.lisp" (uiop:temporary-directory)))))
+    (unwind-protect
+         (progn
+           (with-open-file (out path :direction :output :if-exists :supersede)
+             (format out "(in-package #:nodecode.evolved)~%(defparameter *raw-text-c* #>END~%a \"b\" \\c~%END)~%"))
+           (load path)
+           (is (equal (format nil "a \"b\" \\c~%") (symbol-value (find-symbol "*RAW-TEXT-C*" '#:nodecode.evolved))) "loaded as written"))
+      (delete-file path))))
+
 (deftest eval-value-elides-as-a-tree-not-a-cut ()
   ;; A value past the limit prints under *PRINT-LEVEL*/*PRINT-LENGTH*
   ;; instead of being cut mid-token: the model reads a tree with an
@@ -593,9 +645,29 @@ be watched."
      "an unbound variable gets the same answer")))
 
 (deftest eval-tool-hints-the-nearest-defined-name ()
+  ;; A qualified miss in a package that exists answers that package's own
+  ;; exports, the names sharing text with the miss first.
   (is-eval "(uiop:run-prog \"x\")"
-    ("hint: nothing named RUN-PROG is defined; similar: " result)
-    ("RUN-PROGRAM (function)" result)))
+    ("hint: UIOP/DRIVER exports no RUN-PROG; its exported names: run-program" result)))
+
+(deftest eval-tool-hints-what-a-package-exports-for-a-verb-it-lacks ()
+  ;; `cron:list' was answered "LIST is COMMON-LISP:LIST -- reachable
+  ;; unqualified from here" 16 times in three days: true of every package,
+  ;; and no lead to the cron verb the form reached for.
+  (let ((package (make-package (string (gensym "HINT-PROBE-")) :use '(#:common-lisp))))
+    (unwind-protect
+         (flet ((verb (name &key (export t))
+                  (let ((symbol (intern name package)))
+                    (setf (fdefinition symbol) (lambda () nil))
+                    (when export (export symbol package)))))
+           (verb "LIST-JOBS") (verb "SHOW") (verb "HIDDEN" :export nil)
+           (let* ((name (package-name package))
+                  (listed (nle:eval-string (format nil "(~a:list)" name)))
+                  (hidden (nle:eval-string (format nil "(~a:hidden)" name))))
+             (is (search (format nil "hint: ~a exports no LIST; its exported names: list-jobs, show" name) listed) listed)
+             (is (not (search "COMMON-LISP:LIST" listed)) "a symbol the package already reaches is no lead")
+             (is (search (format nil "hint: ~a exports no HIDDEN (~a::HIDDEN is internal: function)" name name) hidden) hidden)))
+      (delete-package package))))
 
 (deftest eval-tool-hints-past-an-exact-name-that-is-not-a-function ()
   ;; SB-EXT:FILE-EXISTS is a condition class; a form that called
@@ -2564,6 +2636,52 @@ lane function, so nothing dials."
       (is (= 1 calls) "no retry and no candidate")
       (is (eq t (nle::probe-model "alt" "alt-model")) "a model that answers is OK"))))
 
+(defun refusal-hold-probes (verdicts rounds)
+  "The rounds of a ROUNDS-round turn that asked the selection, under the
+turn's refusal hold, when each ask answers the next of VERDICTS (T, a
+refusal; NIL, an answer; past the list, an answer)."
+  (let* ((selection (user-context))
+         (candidate (nle::context-with selection :provider-config
+                                       (stub-effective-provider-config "alt" "alt-model")))
+         (hold (nle::make-refusal-hold))
+         (context selection)
+         (probes '()))
+    (dotimes (round rounds (nreverse probes))
+      (setf context
+            (if (eq context selection)
+                (progn (push round probes)
+                       (if (pop verdicts)
+                           ;; CALL-PROVIDER's answer for a refused round: the
+                           ;; candidate's context, the selection to resume
+                           (nle::next-round-context
+                            candidate
+                            (list :resume-provider-config
+                                  (nle::compiled-turn-context-provider-config selection))
+                            hold)
+                           (nle::next-round-context selection nil hold)))
+                (nle::next-round-context context nil hold)))
+      (unless (member context (list selection candidate))
+        ;; the resumed selection is a fresh context over the same config
+        (setf context (if (eq (nle::compiled-turn-context-provider-config context)
+                              (nle::compiled-turn-context-provider-config selection))
+                          selection
+                          candidate))))))
+
+(deftest a-refused-selection-waits-on-its-candidate-doubling-to-the-cap ()
+  ;; After the Nth refusal in a row the candidate answers 1, 2, 4 ... rounds
+  ;; (at most *REFUSAL-HOLD-CAP*) before the selection is asked again; an
+  ;; answer ends the streak.
+  (is (equal '(0 2 5 10 11 13) (refusal-hold-probes '(t t t nil t nil) 14)))
+  (let ((probes (refusal-hold-probes (make-list 40 :initial-element t) 40)))
+    (is (equal '(0 2 5 10 19 28 37) probes) "the wait stops doubling at the cap")
+    ;; proofs/RefusalHold.lean: refused asks <= 4 + rounds/9 at cap 8, and the
+    ;; selection is asked at least once every cap+1 rounds
+    (is (<= (length probes) (+ 4 (floor 40 9))))
+    (is (every (lambda (a b) (<= (- b a) (1+ nle::*refusal-hold-cap*))) probes (rest probes))))
+  (is (equal '(0 1 2 3 4 5) (refusal-hold-probes '() 6)) "no refusal, no wait")
+  (let ((nle::*refusal-hold-cap* 0))
+    (is (equal '(0 1 2 3 4 5) (refusal-hold-probes '(t t t t t t) 6)) "a cap of 0 asks the selection every round, as before the hold")))
+
 (deftest a-failover-past-a-spent-budget-holds-for-the-turn ()
   ;; Only a refusal's round is the candidate's alone: a round the chain took
   ;; for a spent budget names no resume, and the next round stays on it.
@@ -3704,6 +3822,35 @@ thinking signed sig-N against PREFIX (none when NIL)."
       (with-adaptive-claude (:ladder '("low" "medium" "high"))
         (is (null (prefix ask)))
         (is (equal '("sig-2") (replayed ask stub (bound-round 2 nil) (bound-result 2))))))))
+
+(deftest anthropic-thinking-replays-only-behind-the-thinking-it-was-signed-after ()
+  ;; The API binds a block to the thinking ahead of it too: a round signed
+  ;; while an earlier round's thinking was shed must not replay once that
+  ;; thinking rides again (400 `created as the first thinking block after its
+  ;; prompt, but another one now precedes it').
+  (flet ((prefix (&rest messages)
+           (nth-value 2 (nle::anthropic-request-body (anthropic-context messages))))
+         (replayed (&rest messages)
+           (replayed-signatures (nle::anthropic-request-body (anthropic-context messages)))))
+    (let ((ask (nle::message "user" "count")))
+      (with-adaptive-claude ()
+        (let* ((shed (bound-round 1 "a prefix this request does not carry"))
+               (live (bound-round 1 (prefix ask)))
+               ;; round 2 signed while round 1's thinking was shed
+               (after-shed (bound-round 2 (prefix ask shed (bound-result 1))))
+               ;; round 2 signed behind round 1's thinking
+               (after-live (bound-round 2 (prefix ask live (bound-result 1)))))
+          (is (not (equal (prefix ask shed (bound-result 1))
+                          (prefix ask live (bound-result 1)))))
+          ;; each round replays in the context it was signed in
+          (is (equal '("sig-2") (replayed ask shed (bound-result 1) after-shed (bound-result 2))))
+          (is (equal '("sig-1" "sig-2") (replayed ask live (bound-result 1)
+                                                  after-live (bound-result 2))))
+          ;; round 1's thinking riding again sheds the round signed without it
+          (is (equal '("sig-1") (replayed ask live (bound-result 1)
+                                          after-shed (bound-result 2))))
+          ;; and round 1's thinking shed sheds the round signed behind it
+          (is (null (replayed ask shed (bound-result 1) after-live (bound-result 2)))))))))
 
 (deftest anthropic-thinking-never-replays-to-another-model ()
   ;; A refusal's fallback round (CALL-PROVIDER) is another model's: what one
@@ -7656,6 +7803,90 @@ and a context_over_200k no reader may trust: it names no size.")
     (is (equal "disabled" (gethash "type" thinking)))
     (is (null (nth-value 1 (gethash "output_config" body))))
     (is (= 0.7 (gethash "temperature" body)))))
+
+(defun adaptive-body-declaring (declared effort)
+  "An adaptive model's request at EFFORT, its endpoint having declared the
+thinking types DECLARED (a list, :UNDECLARED, or NIL for never asked)."
+  (nlk:bind ((nle::*models-catalog-path* nil) (nle::*model* "claude-adaptive-test")
+             (nle::*model-capability-overrides*
+               '(("claude-adaptive-test"
+                  . (:effort-levels ("low" "medium" "high" "xhigh" "max")))))
+             (nle::*temperature* 0.7) (nle::*reasoning-effort* effort)
+             (nle::*anthropic-thinking-types* (make-hash-table :test #'equal))
+             (context (anthropic-user-context))
+             (config (nle::compiled-turn-context-provider-config context)))
+    (when declared
+      (setf (gethash (cons (nle::anthropic-models-url (nle::effective-provider-config-endpoint config))
+                           "claude-adaptive-test")
+                     nle::*anthropic-thinking-types*)
+            declared))
+    (nle::anthropic-request-body context)))
+
+(deftest anthropic-off-is-the-spelling-the-model-declares ()
+  ;; Off is no one spelling: Sonnet 5.5 refuses "disabled" and takes
+  ;; "between_tools", Opus 5.5 refuses both because it always thinks, and
+  ;; either refusal is a 400 that fails the turn. What the endpoint's Models
+  ;; API declares picks; an endpoint that declares nothing keeps "disabled".
+  (flet ((off-type (declared effort)
+           (gethash "type" (gethash "thinking" (adaptive-body-declaring declared effort)))))
+    (let* ((body (adaptive-body-declaring '("adaptive" "between_tools") "off"))
+           (thinking (gethash "thinking" body)))
+      (is (equal "between_tools" (gethash "type" thinking)) "sonnet 5.5's off")
+      (is (null (nth-value 1 (gethash "display" thinking))) "between_tools refuses a display")
+      (is (null (nth-value 1 (gethash "output_config" body)))))
+    (is (equal "between_tools" (off-type '("adaptive" "between_tools") nil)) "an effort never set is off too")
+    (is (equal "disabled" (off-type '("adaptive" "between_tools" "disabled") "off")))
+    (is (equal "disabled" (off-type :undeclared "off")) "an endpoint that declares nothing keeps disabled")
+    (is (equal "disabled" (off-type nil "off")) "and so does one never asked")
+    (is (equal "adaptive" (off-type '("adaptive" "between_tools") "high")) "a rung thinks, whatever off is")
+    (let ((body (adaptive-body-declaring '("adaptive") "off")))
+      (is (equal "adaptive" (gethash "type" (gethash "thinking" body))) "a model that always thinks")
+      (is (equal "low" (gethash "effort" (gethash "output_config" body))) "spends its weakest rung")
+      (is (null (nth-value 1 (gethash "temperature" body))) "and samples as a thinking request does"))))
+
+(defun models-api-config (url)
+  "A config whose Messages endpoint sits beside URL's fixture server."
+  (nle::make-effective-provider-config
+   :provider "anthropic" :lane "anthropic" :model "claude-x" :api-key "k"
+   :endpoint (ppcre:regex-replace "/api\\.json$" url "/v1/messages")))
+
+(deftest anthropic-thinking-types-are-asked-once-of-the-models-api ()
+  ;; The fixture answers one request and closes, so a second read that
+  ;; dialed would hear nothing: the kept answer is what it reads.
+  (multiple-value-bind (url server)
+      (serve-catalog-once "{\"id\": \"claude-x\", \"capabilities\": {\"thinking\": {\"supported\": true, \"types\": {\"adaptive\": {\"supported\": true}, \"between_tools\": {\"supported\": true}, \"disabled\": {\"supported\": false}, \"enabled\": {\"supported\": false}}}}}")
+    (nlk:bind ((nle::*anthropic-thinking-types* (make-hash-table :test #'equal))
+               (nle::*provider-models-cache-path* "listing.json")
+               (config (models-api-config url)))
+      (flet ((declared () (sort (copy-list (nle::anthropic-thinking-types config :fetch t)) #'string<)))
+        (is (equal '("adaptive" "between_tools") (declared)))
+        (bt2:join-thread server)
+        (is (equal '("adaptive" "between_tools") (declared)) "kept, not asked again")
+        (is (equal "between_tools" (nle::anthropic-thinking-off config)))))))
+
+(deftest anthropic-thinking-types-keep-a-relay-answer-and-not-a-silence ()
+  ;; A relay serving no Models API answers with something else: that is its
+  ;; answer, kept, and off stays "disabled". A server nobody hears is no
+  ;; answer, and the next request asks again.
+  (multiple-value-bind (url server) (serve-catalog-once "<html>a relay's web page</html>")
+    (nlk:bind ((nle::*anthropic-thinking-types* (make-hash-table :test #'equal))
+               (nle::*provider-models-cache-path* "listing.json")
+               (config (models-api-config url)))
+      (is (null (nle::anthropic-thinking-types config :fetch t)))
+      (bt2:join-thread server)
+      (is (eq :undeclared (gethash (cons (nle::anthropic-models-url (nle::effective-provider-config-endpoint config)) "claude-x")
+                                   nle::*anthropic-thinking-types*)))
+      (is (equal "disabled" (nle::anthropic-thinking-off config)))
+      (setf nle::*anthropic-thinking-types* (make-hash-table :test #'equal))
+      (is (null (nle::anthropic-thinking-types config :fetch t)) "the closed port answers nothing")
+      (is (zerop (hash-table-count nle::*anthropic-thinking-types*)) "and nothing is kept"))))
+
+(deftest a-hermetic-anthropic-lane-asks-no-models-api ()
+  (nlk:bind ((nle::*anthropic-thinking-types* (make-hash-table :test #'equal))
+             (nle::*provider-models-cache-path* nil)
+             (config (models-api-config "http://127.0.0.1:9/api.json")))
+    (is (null (nle::anthropic-thinking-types config :fetch t)))
+    (is (zerop (hash-table-count nle::*anthropic-thinking-types*)))))
 
 (deftest anthropic-budget-thinking-survives-a-ladder-that-stops-at-high ()
   (nlk:bind ((nle::*models-catalog-path* nil) (nle::*model* "claude-budget-test")

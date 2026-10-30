@@ -198,7 +198,7 @@ with zipfile.ZipFile(archive) as z:
     if here != there:
         sys.exit("pack-windows: the zip's installer is not the tree's")
 
-    for required in ('nodecode.exe', 'libsqlite3.dll', 'libssl-3-x64.dll', 'libcrypto-3-x64.dll'):
+    for required in ('nodecode.exe', 'nodecode-launcher.exe', 'libsqlite3.dll', 'libssl-3-x64.dll', 'libcrypto-3-x64.dll'):
         if required not in entries or z.getinfo(entries[required]).file_size == 0:
             sys.exit('pack-windows: the zip carries no %s' % required)
     tests = [name for name in entries if '/test/' in name]

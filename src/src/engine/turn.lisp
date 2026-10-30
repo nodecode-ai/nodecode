@@ -11,8 +11,8 @@
 ;;;; we run them and recur with the enriched history. Session state is the
 ;;;; argument being folded through the recursion.
 ;;;;
-;;;; The provider dialects themselves live in provider.lisp behind the
-;;;; STREAM-PART waist, and the context engine — the log-to-provider-input
+;;;; The provider dialects themselves live in engine/providers/ behind
+;;;; provider.lisp's STREAM-PART waist, and the context engine — the log-to-provider-input
 ;;;; pipeline, eviction policy, and the pure request compile — lives in
 ;;;; context.lisp. This file owns turn policy folded over both layers: the
 ;;;; ambient-state freeze into a CONTEXT-REQUEST, the retry loop, overflow
@@ -96,7 +96,7 @@ Background evaluations. A form still running when yield_time_ms closes (default 
 
 sh. (sh \"cmd\") runs a string through bash -c where the machine has bash - /bin/sh otherwise, Git's sh.exe on Windows - in the session's folder ((sh \"cmd\" :directory \"dir\") elsewhere); a list is argv with no shell: (sh (list \"git\" \"commit\" \"-m\" ($ \"msg\"))). Stdin is empty, so a program that reads it sees end of file; a heredoc in the command feeds it. stdout and stderr arrive merged, with a final [exit N] line when the status is not 0; output past the capture limit is cut and says so. Any other child process reaches you only through Lisp streams - (sh ...), or :output :string or *standard-output* to run-program; this process's own file descriptors 0-2 go to a log neither you nor the operator sees, so never write to one, as (make-fd-stream 1) would.
 
-Literal text. strings {\"name\": \"...\"} beside the form, read inside it as ($ \"name\"), arrives exact, JSON escaping only; ($ \"name\") takes an entry's name, never the text itself. In a Lisp string a backslash only escapes the next character - \"\\n\" would read as n, \"\\|\" as | - so a snippet holding an escape the reader does not have is refused before anything runs. So text dense with backslashes, double quotes or newlines never tunnels through a Lisp string, nor through a shell heredoc written into the form: edit's old and new, file bodies, source, a note's or a prompt's body, and a whole shell command carrying a heredoc, (sh ($ \"script\")), all go in strings.
+Literal text. strings {\"name\": \"...\"} beside the form, read inside it as ($ \"name\"), arrives exact, JSON escaping only; ($ \"name\") takes an entry's name, never the text itself. In a Lisp string a backslash only escapes the next character - \"\\n\" would read as n, \"\\|\" as | - so a snippet holding an escape the reader does not have is refused before anything runs. So text dense with backslashes, double quotes or newlines never tunnels through a Lisp string, nor through a shell heredoc written into the form: edit's old and new, file bodies, source, a note's or a prompt's body, and a whole shell command carrying a heredoc, (sh ($ \"script\")), all go in strings - or into the form itself as raw text: #>END ends its line, the text is every line after it up to one that starts with END, read exactly with nothing escaped, and what follows END on that line reads on: (write-file \"a.py\" #>PY, the file's lines, then PY).
 
 Files. (edit path old new) replaces the one occurrence of old in the file at path: a miss names where the file and old diverge, several occurrences give the count - widen old until it names one place. (write-file path text) writes a whole file, parents created. A relative path resolves against the session's folder. On a Lisp file the receipt ends with the paren verdict - the form that never closes or the ) that closes nothing, named by line - and, for a file this image loads itself from, what the write made live: the definitions it changed are evaluated back into this image under the file's own package, so `live here: ...' is already running in this process and `not live until a relaunch: ...' is what only a relaunch carries. (patch name old new) changes one subform of a definition you kept: name, old and new are written unquoted, as they stand in the definition, and neither is evaluated; the one occurrence of old becomes new, and the result is evaluated and kept again - a fix costs its two subforms, never the block over.
 
@@ -114,7 +114,7 @@ Redefining a function you are standing on is the one exception to defining being
 (cells) reports what the folder loaded, started, overrides, collisions, and what failed; the notices block at the tail of your prompt says what its peripherals report right now, and (restart-cells) starts the peripherals again after a config change; (restart-cells \"folder\") one folder. (definition-text 'name) and (definition-location 'name) read the live definition - the layer's, else the shipped source. Lisp strings have no \\n escape - backslash-n reads as a literal n; build multi-line strings with (format nil ...~% ...) or real newlines, or send the text beside the form as a strings entry read by ($ \"name\").")
     (:persist "from the layer into the shipped source, and back out of the layer" . "The layer is staging; the shipped source is home. To make an evolved definition permanent, edit it into its shipped file - (definition-location 'name) names both residences; mind the package, a layer file opens with the package its snippet read in - NODECODE.EVOLVED unless the snippet said otherwise - while shipped files declare their own - prove the change with a lint and build and its own tests, the full suite only when the operator asks, then retire the layer copies in one toplevel form, a progn of the forgetting verbs; (cells) confirms nothing still overrides.
 
-Literal text has its own channel: pass strings {\"name\": \"...\"} beside the form and read each entry as ($ \"name\") - it arrives exact, JSON escaping only, so source and file bodies never tunnel through Lisp escapes or shell heredocs. (edit path old new) replaces the one occurrence of old in the file at path - a miss errors with the divergence point, a crowd with the count - and (write-file path text) writes a whole file, parents created. A write to a file this image loads itself from - the shipped source, the cells beside it, the operator's folder - evaluates the definitions it changed back into this image at once, under the file's own package, and the receipt names them: `live here: ...' is already running here, `not live until a relaunch: ...' is what only a relaunch carries (a structure or class, a package, a constant, a form that is not a definition). So the source edit IS the live change in this process; other processes still need a release rebuild.")
+Literal text has its own channel: pass strings {\"name\": \"...\"} beside the form and read each entry as ($ \"name\") - it arrives exact, JSON escaping only, so source and file bodies never tunnel through Lisp escapes or shell heredocs. Or keep the text in the form as raw text, nothing escaped: #>END ends its line, the text runs to a line that starts with END, and what follows END reads on. (edit path old new) replaces the one occurrence of old in the file at path - a miss errors with the divergence point, a crowd with the count - and (write-file path text) writes a whole file, parents created. A write to a file this image loads itself from - the shipped source, the cells beside it, the operator's folder - evaluates the definitions it changed back into this image at once, under the file's own package, and the receipt names them: `live here: ...' is already running here, `not live until a relaunch: ...' is what only a relaunch carries (a structure or class, a package, a constant, a form that is not a definition). So the source edit IS the live change in this process; other processes still need a release rebuild.")
     (:context "editable working context and lossless recall" . "(context) writes this session’s context.txt from your context as it stands and returns its path; a file holding an edit not yet taken is left as it is. Keep its first line. Each message of the retained history is a block under a [[m:NONCE ID ROLE]] line, ID its log position: keep the line and the block stays the message it was, native and cached; delete the block and the message leaves your context; edit its text and it reads as you wrote it (a tool block's first line is its call, the rest its result). The same edit without the file: every tool result ends with its seq, [seq 57], and (context :drop SPANS :keep IDS :note TEXT) names blocks by it - :drop what goes, t for every block or a list of seqs and (from . to) spans, :keep the seqs held back from the drop, :note your note at the end, alone when nothing else changes; it is taken as a file edit is, and the call returns what the next request will take. Text under a [[note]] line, above the first block, or added after a block's own text is your note, kept where you put it as your own words, never as the operator's or as an executed call. Write a removed block's header back, anywhere, and the original returns where it stood; recall rows name ids as :seq. Harness lines and the active request are outside the file and stay where they stand. The next model request takes the edit; context.receipt.txt says what it kept, changed, removed and added, or why it refused (refused bytes go to context.rejected.txt), and the file is written afresh. A file read rounds ago still edits: newer turns follow it; only another taken edit or a branch move refuses it. Forks inherit taken edits, never a file. Messages before the first change stay byte-identical, so the provider's cached prefix holds through them: a note added at the end costs only itself. Your context is a window over a lossless event log; history is evicted, and nobody summarizes it but you. Past a fill threshold every [seq] line says how full it is (context Nk of Mk): 60k, or half the window when that is smaller; at the eviction line you are warned once, and the request after that evicts unless you shrank it. A [history evicted: seq A-B ...] stub means those turns left the window, not the log, and it carries the notes you wrote in them; a [turn history evicted: ...] stub means rounds of this turn did. Before rounds of a turn leave, its older ones are thinned: each keeps its call, and a long result keeps its head and a [thinned from N characters; ...] line naming the recall that reads it whole. Nothing summarizes the rounds that leave: the stub lists what the evicted snippets noted - a snippet's leading ;; comment line is its note, kept with the seq of its result, which (recall-entry seq) reads whole - so write in that line what you would need to resume from; its watching: clause is what the snippets you watch last showed there. (recall-log :match \"text\") scans the current session's log and returns clipped rows tagged :seq and stamped :at (UTC wall time; tool results also carry :duration-ms, so timing is answerable from the log) - match is SQL LIKE (% and _ wildcards); narrow with :kinds, :before, :after, :limit, or reach another session with :session-id. (recall-entry seq) returns one entry's full body. Recall evicted details yourself rather than asking the operator to repeat them.")
     (:operator "the attached shell, models, the config" . "The operator watches you through an attached shell whose footer names this session's provider and model. (models) answers each configured provider with its model count, (models \"provider\") the ids - the same catalog the shell's /models picker shows, stale listings refreshed first. (select-model \"model\" :provider \"p\") is everything a picker pick means: it durably pins this session and makes the pick the default every session opened from now on starts on - a session already begun keeps the model its first turn ran - and every attached shell's footer follows; (select-model nil) clears the pin so the session takes the default again from its next turn. (select-effort \"medium\") is what a /think pick means: this session's reasoning effort, one rung of its target's own ladder, kept for every turn from the next on - the running turn keeps its own - and every footer follows; (select-effort nil) clears it back to the model's own; an off-ladder rung refuses and names the ladder. Control's Settings moves the default and pins no session. Dialogs are shell-local: you cannot open a picker in the operator's shell - land the fact and the shells follow. (config-get '(\"a\" \"b\")) reads the config at a path, as a keyword plist - a member named like a secret reads as \"[set]\", so a section you read is never written back whole; (config-set '(\"a\" \"b\") value) writes one - an object value merges its members in, anything else replaces the member, :remove takes the member out - keeping every comment and every other byte, and answers the diff it made. (nlk:list-sessions) lists the sessions the shell's /sessions shows, each a plist with its :id, :title, :cwd and :parent; (submit \"id\" \"text\") puts a prompt into any session, (recall-log :session-id \"id\") reads one's log.")
     (:models "which model answers what, and where to fetch it: this session's own model, a model of your own, and nodecode.ai's API (https://api.nodecode.ai/v1) - Cyber v1 for security work, Image v1 for an image, Decide v1 for a decision - with its key and the call" . "Models, and where each one is fetched.
@@ -838,6 +838,20 @@ named at its position, because SBCL's END-OF-FILE on it names nothing."
                                                 (setf line-start (1+ i) at-head t)
                                                 (incf i))
                                                (t (incf i)))))))
+                              ((and (eql next #\>) (raw-text-end text i))
+                               ;; #>TAG raw text: nothing inside it is
+                               ;; structure, and its lines open no
+                               ;; indentation -- the token ends after the
+                               ;; closing TAG, mid-line, where a ")" may
+                               ;; follow.
+                               (let ((end (raw-text-end text i)))
+                                 (when (eq end :never) (never-ends "#> raw text" i))
+                                 (head)
+                                 (loop for k from i below end
+                                       when (char= (char text k) #\Newline)
+                                         do (incf line) (setf line-start (1+ k)))
+                                 (setf i end at-head nil)
+                                 (code i)))
                               (t (head) (code (incf i))))))
                  (t (head) (code (incf i))))))
     (values (nreverse tokens) code-end depth escape)))
@@ -1019,7 +1033,7 @@ the two characters it says."
   (destructuring-bind (&optional escape position)
       (nth-value 3 (lex-form-structure text))
     (when escape
-      (format nil "[reader: \"\\~a\" at char ~d is inside a string literal, and in a Lisp string a backslash only escapes the next character - it reads as a plain ~a. A backslash the text must keep is written twice, \"\\\\~a\"; a line break is ~~% in (format nil \"...\") or a real newline; or send the text beside the form as a strings entry read by ($ \"name\")]"
+      (format nil "[reader: \"\\~a\" at char ~d is inside a string literal, and in a Lisp string a backslash only escapes the next character - it reads as a plain ~a. A backslash the text must keep is written twice, \"\\\\~a\"; a line break is ~~% in (format nil \"...\") or a real newline; or send the text beside the form as a strings entry read by ($ \"name\"), or write it raw in the form: #>END ends its line, then the text unescaped, then a line starting with END]"
               escape position escape escape))))
 
 (defun reader-lines (printed)
@@ -1041,6 +1055,38 @@ colons when internal."
       (format nil "~a~:[::~;:~]~a" (package-name package)
               (eq :external (nth-value 1 (find-symbol (symbol-name symbol) package)))
               (symbol-name symbol))))
+
+(defparameter *package-exports-hint-limit* 15
+  "The most exported names PACKAGE-EXPORTS-HINT lists.")
+
+(defun package-exports-hint (name package kind)
+  "One hint line for PACKAGE:NAME read where PACKAGE exports no NAME: the
+names PACKAGE does export that are defined (KIND, a symbol's meaning or
+NIL), those sharing text with NAME first, and NAME's own internal symbol
+when PACKAGE defines one."
+  (let* ((internal (multiple-value-bind (symbol status) (find-symbol name package)
+                     (and symbol (eq status :internal) (funcall kind symbol) symbol)))
+         (exports (let (found)
+                    (do-external-symbols (symbol package)
+                      (when (funcall kind symbol) (pushnew symbol found)))
+                    found))
+         (near (lambda (symbol)
+                 (let ((other (symbol-name symbol)))
+                   (or (search name other :test #'char-equal)
+                       (search other name :test #'char-equal)))))
+         (ranked (sort (copy-list exports)
+                       (lambda (a b)
+                         (let ((near-a (funcall near a)) (near-b (funcall near b)))
+                           (if (eq (not near-a) (not near-b))
+                               (string< (symbol-name a) (symbol-name b))
+                               near-a)))))
+         (shown (subseq ranked 0 (min *package-exports-hint-limit* (length ranked)))))
+    (format nil "hint: ~a exports no ~a~@[ (~a)~]; ~:[it exports nothing defined~;~:*its exported names: ~(~{~a~^, ~}~)~]~[~:;, and ~:*~d more~]"
+            (package-name package) name
+            (and internal (format nil "~a is internal: ~a"
+                                  (qualified-symbol-name internal) (funcall kind internal)))
+            (mapcar #'symbol-name shown)
+            (- (length ranked) (length shown)))))
 
 (defun condition-symbol-hint (condition)
   "One line locating the name a failing form reached for, or NIL when
@@ -1070,10 +1116,25 @@ very name it then fails to call, so mere presence proves nothing."
                           ((fboundp symbol) "function")
                           ((boundp symbol) "variable")
                           ((find-class symbol nil) "class")))))
-        (let* ((exact (loop for package in (list-all-packages)
+        (let* (;; PACKAGE:NAME where PACKAGE exists: the model guessed that
+               ;; package's verb. A symbol PACKAGE already reaches is no lead
+               ;; for it -- every package uses COMMON-LISP, and `cron:list'
+               ;; was answered "LIST is COMMON-LISP:LIST -- reachable
+               ;; unqualified", true and the wrong lead 16 times in three days
+               ;; (2026-10-26..29) -- so with no other lead the hint is what
+               ;; PACKAGE does export.
+               (target (let ((package (and (typep condition 'sb-int:simple-reader-package-error)
+                                           (find-package (second (simple-condition-format-arguments
+                                                                  condition))))))
+                         (and package
+                              (not (member package (list (find-package '#:common-lisp)
+                                                         (find-package '#:keyword))))
+                              package)))
+               (exact (loop for package in (list-all-packages)
                             for symbol = (find-symbol name package)
                             when (and symbol (eq (symbol-package symbol) package)
-                                      (kind symbol))
+                                      (kind symbol)
+                                      (not (and target (eq symbol (find-symbol name target)))))
                               collect symbol))
                (here (find-symbol name (find-package '#:nodecode.evolved)))
                ;; A class or variable of the exact name does not answer a
@@ -1095,6 +1156,7 @@ very name it then fails to call, so mere presence proves nothing."
                    (format nil "hint: ~a is ~{~a~^, ~}~:[~; — reachable unqualified from here~]~@[; similar: ~{~a~^, ~}~]"
                            name (described exact) (and here (member here exact))
                            (and similar (described similar))))
+                  (target (package-exports-hint name target #'kind))
                   (similar
                    (format nil "hint: nothing named ~a is defined; similar: ~{~a~^, ~}"
                            name (described similar)))
@@ -1740,7 +1802,106 @@ closes nothing does."
                (find-package designator))
           (error "no package named ~a; the snippet reads nothing" designator)))))
 
+;;; --- raw text ----------------------------------------------------------------
+;;; #>TAG ends its line; the text is every line after it up to one that starts,
+;;; past its indentation, with TAG -- read exactly, nothing escaped, the closing
+;;; line's TAG dropped and whatever follows it on that line read on:
+;;;
+;;;   (write-file "solver.py" #>PY
+;;;   import numpy as np
+;;;   s = "a\b"
+;;;   PY)
+;;;
+;;; A Lisp string escapes only \\ and \", so code that carries its own quotes
+;;; and backslashes had to leave the form for the call's strings object. A
+;;; local 40B model asked to write a solver that way sent the form and dropped
+;;; the strings 55 times in 212 calls, and broke a Lisp string 6 more (Flint,
+;;; circle packing, 2026-10-29): the file was missing from the call that named
+;;; it. Raw text keeps the file inside the form that uses it, in Lisp, through
+;;; the reader's own extension point. It is installed in the image's readtable,
+;;; so a layer file holding it loads as the snippet that wrote it read.
+
+(defun raw-tag-char-p (char)
+  "Whether CHAR may be part of a raw-text TAG: a letter, a digit, - or _."
+  (or (alphanumericp char) (char= char #\-) (char= char #\_)))
+
+(defun raw-text-end (text start)
+  "For #> at START in TEXT: the index just past the closing TAG, :NEVER when no
+line closes it, or NIL when what follows #> is not a TAG ending its line."
+  (let* ((eol (position #\Newline text :start start))
+         (tag (and eol (string-right-trim '(#\Space #\Tab #\Return) (subseq text (+ start 2) eol)))))
+    (when (and tag (plusp (length tag)) (every #'raw-tag-char-p tag))
+      (let ((line-start (1+ eol)) (n (length text)))
+        (loop while (< line-start n)
+              do (let* ((line-end (or (position #\Newline text :start line-start) n))
+                        (body (or (position-if-not (lambda (c) (member c '(#\Space #\Tab))) text
+                                                   :start line-start :end line-end)
+                                  line-end))
+                        (after (+ body (length tag))))
+                   (when (and (<= after line-end)
+                              (string= tag text :start2 body :end2 after)
+                              (or (= after line-end) (not (raw-tag-char-p (char text after)))))
+                     (return-from raw-text-end after))
+                   (setf line-start (1+ line-end))))
+        :never))))
+
+(defun read-raw-text (stream subchar argument)
+  "The #> reader: #>TAG ends its line, and the text runs to a line that starts
+with TAG; see RAW-TEXT-END."
+  (declare (ignore subchar argument))
+  (let ((tag (string-right-trim '(#\Space #\Tab #\Return)
+                                (with-output-to-string (out)
+                                  (loop for c = (read-char stream nil nil)
+                                        until (or (null c) (char= c #\Newline))
+                                        do (write-char c out))))))
+    (unless (and (plusp (length tag)) (every #'raw-tag-char-p tag))
+      (sb-int:simple-reader-error
+       stream "#> wants a tag that ends its line, letters, digits, - or _ (#>END, then the text, then a line starting with END); it read ~s" tag))
+    (let ((text (with-output-to-string (out)
+                  (loop
+                    (let ((lead (with-output-to-string (s)
+                                  (loop for c = (peek-char nil stream nil nil)
+                                        while (and c (member c '(#\Space #\Tab)))
+                                        do (write-char (read-char stream) s))))
+                          (matched 0))
+                      (loop for c = (peek-char nil stream nil nil)
+                            while (and c (< matched (length tag)) (char= c (char tag matched)))
+                            do (read-char stream) (incf matched))
+                      (let ((next (peek-char nil stream nil nil)))
+                        (when (and (= matched (length tag)) (or (null next) (not (raw-tag-char-p next))))
+                          (return))
+                        (write-string lead out)
+                        (write-string tag out :end matched)
+                        (loop for c = (read-char stream nil nil)
+                              do (cond ((null c)
+                                        (error 'end-of-file :stream stream))
+                                       (t (write-char c out)
+                                          (when (char= c #\Newline) (return)))))))))))
+      (if *read-suppress* nil text))))
+
+(defun raw-text-readtable (&optional (readtable *readtable*))
+  "READTABLE, made to read #>TAG raw text: changed in place once, or a copy
+when it refuses change, as the standard readtable does."
+  (cond ((get-dispatch-macro-character #\# #\> readtable) readtable)
+        ((ignore-errors (set-dispatch-macro-character #\# #\> 'read-raw-text readtable) t) readtable)
+        (t (let ((copy (copy-readtable readtable)))
+             (set-dispatch-macro-character #\# #\> 'read-raw-text copy)
+             copy))))
+
+(defun install-raw-text-reader ()
+  "Make the image's readtable read raw text, so every thread started after
+it and every LOAD of a layer file reads #> as a snippet does. MAIN calls it
+before the first thread exists: the dumped binary started without it when a
+load-time change was all there was, and the first raw text a model wrote met
+`no dispatch function defined for #\\>' (2026-10-29)."
+  (setf *readtable* (raw-text-readtable)))
+
+(install-raw-text-reader)
+
 (defun read-snippet-forms (text &aux (*read-eval* nil)
+                                     ;; whatever readtable this thread was
+                                     ;; given, raw text reads in it
+                                     (*readtable* (raw-text-readtable))
                                      (*package* *package*)
                                      (eof (list :eof))
                                      (position 0)
@@ -2391,13 +2552,60 @@ is the merged message CALL-PROVIDER returns, never these two."
                                                    (length reasoning))))))
     (context-with context :messages (append (coerce context.messages 'list) (list assistant nudge)))))
 
-(defun next-round-context (context metadata)
+(defparameter *refusal-hold-cap* 8
+  "The most rounds a refused selection waits on its candidate before it is
+asked again (REFUSAL-HOLD-ROUNDS); 0 asks it again on the very next round.")
+
+(defstruct (refusal-hold (:constructor make-refusal-hold ()))
+  "One turn's refusal backoff: STREAK, the selection's consecutive refused
+rounds; REMAINING, the rounds its candidate still answers before the
+selection is asked again; SELECTION, the config to go back to."
+  (streak 0 :type (integer 0))
+  (remaining 0 :type (integer 0))
+  (selection nil))
+
+(defvar *refusal-hold* nil
+  "The running turn's REFUSAL-HOLD, bound where the turn enters AGENT-LOOP;
+NIL outside a turn, where a refused round's next round is the selection's.")
+
+(defun refusal-hold-rounds (streak)
+  "How many rounds the candidate answers after the selection's STREAK-th
+refusal in a row: 1, 2, 4, ... up to *REFUSAL-HOLD-CAP*."
+  (min (expt 2 (min 30 (max 0 (1- streak)))) *refusal-hold-cap*))
+
+(defun next-round-context (context metadata &optional (hold *refusal-hold*))
   "The context the next round starts from: CONTEXT, the one this round ended
 with -- a failover holds for the turn -- unless a refusal sent this round to a
 candidate, which answered it alone (CALL-PROVIDER's :RESUME-PROVIDER-CONFIG
-in METADATA): then the selection's config again."
+in METADATA): then the selection's config again, once the turn's HOLD has
+let the candidate answer REFUSAL-HOLD-ROUNDS rounds more."
+  ;; A refusal is the selection's verdict on one request, but its classifier
+  ;; reads the same context again next round: across 925 rounds of turns that
+  ;; met one (2026-10-26..29), the round right after a refusal was refused 39%
+  ;; of the time, against 6% after an answer, and 20%, 15%, 12% two to four
+  ;; rounds on. Asking at once spent a whole request each time -- 86 refused
+  ;; requests, 13.4M input tokens, 26 minutes. Doubling the wait while the
+  ;; refusals go on bounds the waste; the cap bounds how long the operator's
+  ;; model is away (proofs/RefusalHold.lean).
   (let ((resume (getf metadata :resume-provider-config)))
-    (if resume (context-with context :provider-config resume) context)))
+    (cond
+      ((null hold)
+       (if resume (context-with context :provider-config resume) context))
+      ;; A held round ran on the candidate: count it off, and when the wait is
+      ;; over the selection is asked again. A refusal the candidate itself met
+      ;; meanwhile names the candidate as RESUME, never the selection.
+      ((plusp (refusal-hold-remaining hold))
+       (if (zerop (decf (refusal-hold-remaining hold)))
+           (context-with context :provider-config (refusal-hold-selection hold))
+           context))
+      (resume
+       (let ((rounds (refusal-hold-rounds (incf (refusal-hold-streak hold)))))
+         (setf (refusal-hold-selection hold) resume
+               (refusal-hold-remaining hold) rounds)
+         (if (plusp rounds) context (context-with context :provider-config resume))))
+      ;; The selection answered: its streak is over.
+      (t (setf (refusal-hold-streak hold) 0)
+         context))))
 
 (defun call-provider (context &key (on-part *turn-part-fn*))
   "Call the selected provider lane with turn retry policy folded on top.
@@ -3205,9 +3413,10 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
              nil)
             ;; A refusal is the selection's verdict on this one request, not
             ;; on the turn: with a chain configured, its first candidate
-            ;; answers this round and the next round is the selection's
-            ;; again. Without a fallback, a refusal would be terminal
-            ;; instead of trying the fallback.
+            ;; answers this round and the selection is asked again once the
+            ;; turn's refusal hold is over (NEXT-ROUND-CONTEXT). Without a
+            ;; fallback, a refusal would be terminal instead of trying the
+            ;; fallback.
             ((and (typep e 'provider-refused)
                   (null fallback-tried)
                   (try-fallback e))
@@ -4362,16 +4571,19 @@ outranks the default effort the same way while the turn's effective
                  ;; fact lands ahead of the first round's facts.
                  :defer t)))
             (multiple-value-bind (message steered handoff)
-                (agent-loop
-                 session
-                 :prefill prefill
-                 ;; A resumed turn continues its round progression:
-                 ;; each completed round left a durable assistant
-                 ;; closure, and the count is 0 for fresh turns.
-                 :round (if (and turn (nlk:store-open-p))
-                            (nlk:turn-assistant-round-count
-                             (nlk:durable-turn-turn-id turn))
-                            0))
+                ;; One refusal backoff per turn: the next turn asks the
+                ;; selection first, whatever this one met.
+                (let ((*refusal-hold* (make-refusal-hold)))
+                  (agent-loop
+                   session
+                   :prefill prefill
+                   ;; A resumed turn continues its round progression:
+                   ;; each completed round left a durable assistant
+                   ;; closure, and the count is 0 for fresh turns.
+                   :round (if (and turn (nlk:store-open-p))
+                              (nlk:turn-assistant-round-count
+                               (nlk:durable-turn-turn-id turn))
+                              0)))
               ;; Assistant messages are durable per provider round. A
               ;; parked steer ended the loop at a boundary it would
               ;; have continued past: the completion says so.
