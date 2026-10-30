@@ -4606,6 +4606,43 @@ open under the run's shut title, (:FOLD KEY) (OPEN-KEY), leaves it shut."
 receipt."
   (or (eq :tool-call (transcript-row-kind row)) (and (row-notice-summary row) t)))
 
+(defun receipt-call-id (row)
+  "The id of the call whose run left Mutate receipt ROW, or NIL: the load the
+organism announced names it."
+  (when-let (summary (row-notice-summary row))
+    (json-value summary :string "call_id")))
+
+(defun call-receipts (call rows &aux (id (and (eq :tool-call (transcript-row-kind call))
+                                              (transcript-row-tool-call-id call))))
+  "The Mutate receipts among ROWS that CALL's own run left, in their order."
+  (and id (remove-if-not (lambda (row) (equal id (receipt-call-id row))) rows)))
+
+(defun without-folded-receipts (rows)
+  "ROWS, a run's listed lines, without each receipt whose call ROWS lists:
+that call's own line says what it kept (RUN-TAIL-LLINE)."
+  ;; Listed apart, a call and its receipt were one step said twice, its comment
+  ;; grey and then the same comment teal, and the receipt could stand under a
+  ;; later call when it landed after it.
+  (remove-if (lambda (row)
+               (when-let (id (receipt-call-id row))
+                 (find-if (lambda (call) (and (eq :tool-call (transcript-row-kind call))
+                                              (equal id (transcript-row-tool-call-id call))))
+                          rows)))
+             rows))
+
+(defun kept-path-text (path)
+  "A kept file's PATH for a line: from home as `~/...', the way a person reads
+their own paths (NLK:HOME-ABBREVIATED)."
+  (nlk:one-line (nlk:home-abbreviated path)))
+
+(defun kept-files-text (receipts &aux (paths (remove-duplicates (remove nil (mapcar #'row-mutation-path receipts))
+                                                                :test #'equal)))
+  "What RECEIPTS kept, for a call's line: its one file, or how many files.
+NIL when they name none."
+  (cond ((null paths) nil)
+        ((rest paths) (format nil "~d files" (length paths)))
+        (t (kept-path-text (first paths)))))
+
 (nlk:define-side-table step-in (:weakness :key)
   "Weak memo: an lline -> STEPPED-IN's copy of it, one object while the source
 stands, so LLINE-RENDER's memo holds.")
@@ -4655,16 +4692,17 @@ burns amber and the frame's ember warms it."
   "A painted transcript row -> the running call whose listed line it is, so
 the frame's ember (EMBER-OVERLAY) finds that line on screen.")
 
-(defun run-tail-lline (row width)
+(defun run-tail-lline (row width &optional receipts)
   "A call or receipt ROW as one line under its folded run, on the column of
 the run title's words: no label, a call's words grey, amber while it runs
-here or in the background, and a Mutate's teal."
+here or in the background, and a Mutate's teal. A call that left RECEIPTS,
+the Mutates its run kept, is teal itself, what it kept after its words."
   ;; Two columns in from the title they read as a step off it.
   ;; A running call in grey would read as stopped; its amber is the
   ;; ground the ember warms (EMBER-OVERLAY).
   (memoized (tail-llines row)
     (width row.tool-name row.tool-args (length (or row.tool-args "")) row.tool-status row.tool-exit-code
-     row.metadata row.error-p (row-load-errors row) row.text row.text-rev)
+     row.metadata row.error-p (row-load-errors row) row.text row.text-rev (first receipts) (length receipts))
     ;; Opened, a run lists these lines where it showed Eval and Mutate cards
     ;; a receipt names its file after its comment, and a call
     ;; that changed files counts the lines.
@@ -4672,13 +4710,16 @@ here or in the background, and a Mutate's teal."
      (if-let (summary (row-notice-summary row))
        (let* ((comment (json-value summary :text "comment"))
               (path (json-value summary :text "path"))
-              (line (make-lline :text (nlk:one-line (or comment path (json-value summary :string "name")))
+              (line (make-lline :text (nlk:one-line (or comment (and path (kept-path-text path))
+                                                        (json-value summary :string "name")))
                                 :tone :success)))
          (when (and comment path)
-           (append-lline-run line (format nil " · ~a" (nlk:one-line path)) :tone :muted))
+           (append-lline-run line (format nil " · ~a" (kept-path-text path)) :tone :muted))
          line)
        (let ((line (make-lline :text (nlk:one-line (or (tool-summary-words row) (json-value row.tool-name :text) "…"))
-                               :tone (if (ember-call-p row) :tool :muted))))
+                               :tone (cond ((ember-call-p row) :tool) (receipts :success) (t :muted)))))
+         (when-let (kept (kept-files-text receipts))
+           (append-lline-run line (format nil " · ~a" kept) :tone :muted))
          (append-row-diff-stats line row)
          (append-status-text line (if (row-load-errors row) "error" row.tool-status)
                              (tool-failure-text row) (row-exit-document row))))
@@ -4957,10 +4998,10 @@ the state's live execs, shows what it has written under it."
              (when (or listing (and open (not process)))
                ;; An open recap shows its answer and its divider; its
                ;; question, which no one here asked, stays in the log.
-               (loop for member in (or listing group.members)
+               (loop for member in (without-folded-receipts (or listing group.members))
                      for body = (cond
                                   (listing
-                                   (cons (let ((line (run-tail-lline member width)))
+                                   (cons (let ((line (run-tail-lline member width (call-receipts member group.members))))
                                            ;; A click opens it, so the pointer accents
                                            ;; it as it does the title.
                                            (cond ((eq member *hover-row*) (disclosure-hover-lline line))
@@ -4983,7 +5024,7 @@ the state's live execs, shows what it has written under it."
                                           (listed-output member width backgrounds))))
                                   ((tool-group-p member) (list (tool-group-display-block member width backgrounds)))
                                   (mutation
-                                   (cons (make-lline :text (format nil "  ~a" (row-mutation-path member))
+                                   (cons (make-lline :text (format nil "  ~a" (kept-path-text (row-mutation-path member)))
                                                      :tone :muted)
                                          (when (detail-open-p member)
                                            (system-notice-llines (trim-block-text (transcript-row-text member)) nil))))
