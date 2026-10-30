@@ -18,6 +18,10 @@
 ;;;;   SN8. Repack preserves restorability and the interval/lock gates work.
 ;;;;   SN9. One batched process answers every tree exactly what a process
 ;;;;        per tree answered, and refuses rather than guess.
+;;;;   SN10. A new session's index starts as a copy of the newest index git
+;;;;         wrote for the workspace; a lock or a stray file never seeds one.
+;;;;   SN11. A deferred walk holds no prompt fact: the request it overlaps
+;;;;         goes out, and the round's next fact still settles the capture.
 ;;;;
 ;;;; Hosts without git run every test body against the degradation contract
 ;;;; instead of skipping — RUN-ALL has no skip concept, and the degraded
@@ -345,6 +349,29 @@ completed once BODY is done."
       (is (probe-file (%store-file store-a "index-session-a")))
       (is (probe-file (%store-file store-a "index-session-b"))))))
 
+(deftest a-new-session-index-starts-from-the-newest-one ()
+  ;; A new session -- /clear opens one -- does not walk the folder from an
+  ;; empty index: it starts from the newest index another session of the
+  ;; workspace left, so git rehashes only what changed since.
+  (with-git-workspace (store-a dir :session-id "seed-a")
+    (%write-file dir "a.txt" "one" "b.txt" "two")
+    (let* ((tree (nlk:capture-workspace-tree store-a))
+           (store-b (nlk:ensure-snapshot-store (namestring dir) "seed-b")))
+      (is (nlk::file-octets (%store-file store-b "index-seed-b")) "the new session has an index before its first walk")
+      (is (equalp (nlk::file-octets (%store-file store-a "index-seed-a")) (nlk::file-octets (%store-file store-b "index-seed-b"))) "a copy of the newest one")
+      (is (equal tree (nlk:capture-workspace-tree store-b)) "and it walks to the same tree"))))
+
+(deftest only-an-index-git-wrote-seeds-a-session ()
+  ;; A lock beside an index, even one that opens like an index, and a stray
+  ;; file under an index name never seed a session, however new.
+  (with-git-workspace (store-a dir :session-id "seed-a")
+    (%write-file dir "a.txt" "one")
+    (nlk:capture-workspace-tree store-a)
+    (write-temp-file (%store-file store-a "index-seed-a.lock") "DIRC, but a lock")
+    (write-temp-file (%store-file store-a "index-stray") "a stray file, not an index")
+    (let ((store-b (nlk:ensure-snapshot-store (namestring dir) "seed-b")))
+      (is (equalp (nlk::file-octets (%store-file store-a "index-seed-a")) (nlk::file-octets (%store-file store-b "index-seed-b"))) "seeded from the index git wrote"))))
+
 (deftest snapshot-unavailable-degrades-and-still-records-fact (with-temp-store (store))
   (with-snapshot-workspace (snapshot-store dir)
     (nlk:create-session :id "degraded" :cwd (namestring dir))
@@ -558,6 +585,30 @@ completed once BODY is done."
         (is (= 1 (length facts)) "one capture fact")
         (is (= 40 (length (or (getf (first facts) :tree-sha) ""))))
         (is (equal "c1" (getf (first facts) :tool-call-id)) "for its call"))
+      (is (zerop (hash-table-count nlk::*deferred-turn-facts*))))))
+
+(deftest a-prompt-fact-does-not-wait-for-the-deferred-walk (with-temp-store ())
+  ;; The deferred walk overlaps the turn's first provider request, and the
+  ;; prompt fact is written just before that request goes out: it lands
+  ;; while the walk still runs. The round's next fact settles the capture
+  ;; first, as before.
+  (with-captured-turn (store dir turn "overlap")
+    (let ((release nil))
+      (with-stubbed-fdefinition (nlk:capture-workspace-tree (store)
+                                 ;; The walk holds until released, five seconds at most.
+                                 (loop repeat 500 until release do (sleep 0.01))
+                                 (funcall original store))
+        (is (eq :deferred (nlk:checkpoint-capture-boundary turn :boundary-kind "user_message" :anchor-position 2 :defer t)))
+        (nlk:record-turn-context-prompt turn :text "a reminder")
+        (is (null (nlk:session-workspace-captures "overlap")) "the prompt fact landed while the walk ran")
+        (setf release t)
+        (nlk:record-tool-call turn "c1" "eval" "{}"))
+      (let* ((kinds (mapcar #'nlk:event-kind (session-events "overlap" :created nil)))
+             (prompt (position "turn.context.prompt" kinds :test #'equal))
+             (capture (position "session.workspace_captured" kinds :test #'equal))
+             (call (position "turn.tool_call_started" kinds :test #'equal)))
+        (is (and prompt capture call (< prompt capture call)) "the prompt, the capture it overlapped, then the round"))
+      (is (= 1 (length (nlk:session-workspace-captures "overlap"))) "one capture fact")
       (is (zerop (hash-table-count nlk::*deferred-turn-facts*))))))
 
 (deftest a-boundary-given-its-tree-anchors-without-a-walk (with-temp-store ())

@@ -14,7 +14,9 @@
 ;;;;
 ;;;; Contract:
 ;;;;   - one store per workspace, one index per session (index-<session-id>),
-;;;;     so concurrent sessions never contend on index.lock
+;;;;     so concurrent sessions never contend on index.lock; a new session's
+;;;;     index starts as a copy of the newest one (SEED-SESSION-INDEX), so
+;;;;     its first walk rehashes what changed, not the whole tree
 ;;;;   - every captured tree is anchored on the chained ref
 ;;;;     refs/nodecode/checkpoints; an unanchored write-tree is gc bait
 ;;;;   - gc.auto stays 0; REPACK-STORE is the only compactor and never prunes
@@ -253,6 +255,52 @@ namestring: a folder of the home named by the digest of that path."
            (values nil :workspace-too-large))
           (t (open-snapshot-store root (snapshot-git-dir canonical-root) session-id)))))))
 
+(defun git-index-file-p (path)
+  "True when PATH begins with DIRC, the signature git writes at the head of
+every index file."
+  (with-handlers ((error () nil))
+    (with-open-file (stream path :element-type '(unsigned-byte 8))
+      (let ((head (make-array 4 :element-type '(unsigned-byte 8) :initial-element 0)))
+        (and (= 4 (read-sequence head stream))
+             (equalp head #(68 73 82 67)))))))
+
+(defun newest-session-index (git-dir)
+  "The session index in GIT-DIR written last, or NIL: a file named
+index-<session-id> that git wrote, never the lock beside one."
+  (let ((newest nil) (written -1))
+    (dolist (path (with-handlers ((error () nil))
+                    (uiop:directory-files (uiop:ensure-directory-pathname git-dir)))
+                  newest)
+      (let ((name (file-namestring path))
+            (date (with-handlers ((error () nil)) (file-write-date path))))
+        (when (and (uiop:string-prefix-p "index-" name)
+                   (not (uiop:string-suffix-p name ".lock"))
+                   date
+                   (> date written)
+                   (git-index-file-p path))
+          (setf newest path written date))))))
+
+(defun seed-session-index (store)
+  "Start the index of STORE's session, when it has none yet, as a copy of the
+newest index another session of the workspace left. => that index, or NIL."
+  ;; Every index here stats the one work tree, so any is a valid start: `git
+  ;; add -A' then rehashes only the paths whose stat moved since it was
+  ;; written, where an empty index hashes every file again -- the wait a new
+  ;; session (/clear opens one) paid in a large folder before its first
+  ;; request. The copy is written whole under a name of its own and renamed
+  ;; into place, so no reader sees half an index.
+  (let ((index (snapshot-store-index-path store)))
+    (unless (probe-file index)
+      (when-let (source (newest-session-index (snapshot-store-git-dir store)))
+        (let ((seed (concatenate 'string (directory-namestring index) "seed-"
+                                 (subseq (file-namestring index) (length "index-")))))
+          (with-handlers ((error ()
+                            (ignore-errors (delete-file seed))
+                            nil))
+            (uiop:copy-file source seed)
+            (rename-file seed index)
+            source))))))
+
 (defun open-snapshot-store (root git-dir session-id)
   "The store over the workspace ROOT kept in GIT-DIR, with SESSION-ID's index,
 initializing GIT-DIR when absent: ENSURE-SNAPSHOT-STORE's last step, past its
@@ -281,6 +329,7 @@ refusals."
                                  ("index.version" "4")
                                  ("core.symlinks" "true"))
             do (run-snapshot-git store (list "config" key value) :with-work-tree nil)))
+    (seed-session-index store)
     (write-store-exclude store)
     ;; Ignore rules do not untrack storage captured by an earlier version.
     (when-let (storage (snapshot-storage-path store))
@@ -792,8 +841,10 @@ off the provider path; a held repack lock skips this one."
   ;; on a thread of its own while the round goes on to its provider request,
   ;; and the fact lands through DEFER-TURN-FACT — before the turn's next
   ;; durable fact, on the thread that appends it — stamped with this moment,
-  ;; when the capture began. The log reads exactly as it did when the walk
-  ;; held the round: the capture, then the round that followed it.
+  ;; when the capture began. The log reads as it did when the walk held the
+  ;; round: the capture, then the round that followed it. Only the prompt
+  ;; fact the request is sent under lands ahead of it: that fact is written
+  ;; before the request goes out, and does not wait for the walk.
   ;;
   ;; => plist (:checkpoint-id ... :tree-sha sha-or-nil :unavailable kw-or-nil),
   ;; :DEFERRED when the walk was handed off, or NIL when even the fact could not
