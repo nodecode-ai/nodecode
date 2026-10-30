@@ -160,6 +160,12 @@ footprint:
 feed-proof:
     @python3 src/tools/feed-proof.py ./nodecode
 
+# TARBALL is `just tarball's output; --from takes a tarball, a label or
+# stable (the default: what users run now), --keep the scratch.
+# Upgrade a running gateway of the last release onto TARBALL (~3 min).
+upgrade-proof tarball *args:
+    @python3 src/tools/upgrade-proof.py {{tarball}} {{args}}
+
 # A loopback Discord and a scripted model; --list names the scenarios,
 # --only NAME,... runs some.
 # Run the Discord cell end to end (a few minutes).
