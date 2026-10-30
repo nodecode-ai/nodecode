@@ -928,7 +928,7 @@ package no lane speaks.")
           (is-carrying (panel (format nil "~{~a~%~}" (nle::dialog-panel-rows model 60 nil)))
             "API key" "******" (:absent "sk-123")
             "Paste your acme-labs API key."
-            "enter save  esc back")
+            " enter  save   esc  back")
           ;; Enter saves and returns to the list, where the typed id reads
           ;; connected: Suggested, resting on it.
           (is (eq :provider (step-after model :enter)) "a saved key has no screen of its own")

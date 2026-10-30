@@ -1674,7 +1674,7 @@ between them, a search, an edit, a last thought and the answer."
       (let ((first-entry (nth 5 rows)))
         (is (eql 6 (search "one" first-entry)))
         (is (search "d1" first-entry) "the detail follows the label"))
-      (is (search "esc close  up/down navigate"
+      (is (search " esc  close   up/down  navigate"
                   (nth (- (length rows) 2) rows)))
       (is (string= "" (string-trim " " (car (last rows))))))))
 
@@ -1693,7 +1693,7 @@ between them, a search, an edit, a last thought and the answer."
       (let ((rows (nle::dialog-panel-rows model 60 nil)))
         (is (= (1- (panel)) (length rows)) "and paints all but its canvas gap row")
         (is (search "gamma" (nth 7 rows)) "the last row is the body's last")
-        (is (search "esc close" (nth 9 rows)) "the footer's hint right under it"))
+        (is (search " esc  close" (nth 9 rows)) "the footer's hint right under it"))
       (dialog-keys model #\a #\l #\p)
       (is (equal '("alpha") (visible-labels model.dialog)))
       (is (= (+ 1 4 3 3 1) (panel)) "a narrowing query leaves the panel as tall")
@@ -1890,7 +1890,7 @@ between them, a search, an edit, a last thought and the answer."
         ("rm -rf build" 1 "with the command as its muted context")
         ("[sudo] password for mike:" 3 "the prompt owns the header's third row")
         ("●●●●●●" 4 "the masked body follows it")
-        ("enter submit" 6 "and the footer hint sits on the middle footer row")))
+        (" enter  submit" 6 "and the footer hint sits on the middle footer row")))
     ;; The panel owns its whole background, so a tone carrying a bg of its
     ;; own must still sit on the surface (Zig shortcutPickerStyle).
     (let* ((nle::*color-profile* :truecolor)
@@ -1987,7 +1987,7 @@ between them, a search, an edit, a last thought and the answer."
      nil
      :on-detail (lambda (model value) (declare (ignore model value)) nil))
     (let ((rows (nle::dialog-panel-rows model 78 nil)))
-      (is (search "i details" (nth (- (length rows) 2) rows))))))
+      (is (search " i  details" (nth (- (length rows) 2) rows))))))
 
 (deftest dialog-panel-empty-body-carries-the-empty-label ()
   ;; Zig prints empty_label in the BODY and leaves the footer's key copy
@@ -1998,7 +1998,7 @@ between them, a search, an edit, a last thought and the answer."
                              :empty-label "No active extensions")
     (let ((rows (nle::dialog-panel-rows model 60 nil)))
       (is (search "No active extensions" (nth 5 rows)))
-      (is (search "esc close  up/down navigate  type search"
+      (is (search " esc  close   up/down  navigate   type  search"
                   (nth (- (length rows) 2) rows))))
     ;; A query that matches nothing keeps the same shape.
     (nle::open-picker-dialog model "Extensions"
@@ -3417,12 +3417,12 @@ nothing opens: the target, or NIL."
       (is (null model.dialog-fullscreen))
       (nle::open-picker-dialog model "Sessions" (picker-rows "one" "two") nil)
       (is (= (+ 1 4 2 3 1) (nle::docked-dialog-frame-rows model)) "docked, the panel fits its rows")
-      (is (search "up/down navigate  ctrl+f full screen" (hint-row)))
+      (is (search " up/down  navigate   ctrl+f  full screen" (hint-row)))
       (ctrl-f)
       (is (nle::chat-model-dialog-fullscreen model) "Ctrl+F flips the flag")
       (is (nle::chat-model-dialog model) "and the dialog stays open")
       (is (= 35 (nle::docked-dialog-frame-rows model)))
-      (is (search "ctrl+f restore" (hint-row)))
+      (is (search " ctrl+f  restore" (hint-row)))
       (is-values (panel above below) (nle::docked-dialog-frame-rows model)
         (above = 3) ((+ (1- panel) above below) = 40))
       (is-let* ((rows (nle::compose-frame model))
@@ -3440,7 +3440,7 @@ nothing opens: the target, or NIL."
        :header-rows 3
        :hint "enter submit  esc cancel")
       (is (= 35 (nle::docked-dialog-frame-rows model)))
-      (is (search "enter submit  esc cancel  ctrl+f restore" (hint-row)))
+      (is (search " enter  submit   esc  cancel   ctrl+f  restore" (hint-row)))
       (ctrl-f)
       (is-shape model (.dialog-fullscreen null) (nle::docked-dialog-frame-rows = 9))
       ;; Key-hint footers get the same trailing pair.
@@ -3723,9 +3723,9 @@ at in MODEL's last composed frame, or NIL."
 
 (deftest a-click-on-a-dialog-key-hint-is-that-key ()
   ;; The panel's key row names keys, and a click on one is that key, run as
-  ;; a typed one: ctrl+f flips the panel's height, esc closes -- a hint's
-  ;; words or a key-hint set's filled cap alike -- and a hint naming no
-  ;; single key (up/down) is no target.
+  ;; a typed one: ctrl+f flips the panel's height, esc closes -- a HINT's
+  ;; cap and words or a key-hint set's alike -- and a hint naming no single
+  ;; key (up/down) is no target.
   (with-frame-model (model 80 24 :session-id "hint-click")
     (flet ((target (needle)
              (multiple-value-bind (x y) (frame-cell-of model needle)
@@ -3733,17 +3733,18 @@ at in MODEL's last composed frame, or NIL."
       (nle::open-picker-dialog model "Hints" (picker-rows '("a" :value :a) '("b" :value :b))
                                (constantly nil))
       (nle::compose-frame model)
-      (is (equal '(:key . "esc") (target "esc close")))
+      (is (equal '(:key . "esc") (target " esc  close")))
+      (is (equal '(:key . "esc") (target "close")) "the cap's words are the key too")
       (is (null (target "up/down")) "a hint naming two keys is no target")
       (is (not (nle::chat-model-dialog-fullscreen model)))
-      (multiple-value-call #'click-at model (frame-cell-of model "ctrl+f full screen"))
+      (multiple-value-call #'click-at model (frame-cell-of model " ctrl+f  full screen"))
       (is (eq t (nle::chat-model-dialog-fullscreen model)) "ctrl+f's hint flips the panel's height")
       (is model.dialog "and the dialog stays open")
       (nle::compose-frame model)
-      (multiple-value-call #'click-at model (frame-cell-of model "ctrl+f restore"))
+      (multiple-value-call #'click-at model (frame-cell-of model " ctrl+f  restore"))
       (is (not (nle::chat-model-dialog-fullscreen model)) "and flips it back")
       (nle::compose-frame model)
-      (multiple-value-call #'click-at model (frame-cell-of model "esc close"))
+      (multiple-value-call #'click-at model (frame-cell-of model " esc  close"))
       (is (null model.dialog) "esc's hint closes the dialog")
       (nle::open-picker-dialog model "Caps" (picker-rows '("a" :value :a) '("b" :value :b))
                                (constantly nil)
@@ -3752,6 +3753,33 @@ at in MODEL's last composed frame, or NIL."
       (multiple-value-bind (x y) (frame-cell-of model " esc  close")
         (click-at model (+ x 1) y))
       (is (null model.dialog) "a key-hint set's cap is its key too"))))
+
+(deftest a-dialog-hint-paints-its-keys-as-caps ()
+  ;; A HINT string is key hints too: a run whose first word names keys
+  ;; paints that word as a filled cap and its words beside it, as a key-hint
+  ;; set does. /models' footer was plain words beside /sessions' caps. A run
+  ;; naming no key and a sentence stay words; `type' is a cap, as a sheet's.
+  (with-frame-model (model 140 24 :session-id "hint-caps")
+    (flet ((hint-row (&aux (rows (nle::dialog-panel-rows model 140 nil)))
+             (nth (- (length rows) 2) rows))
+           (open-with (hint)
+             (when model.dialog
+               (nle::picker-dialog-key model :escape))
+             (nle::open-picker-dialog model "Hints" (picker-rows "one") nil :hint hint)))
+      (open-with "enter select  ←→ main/auxiliary/decider/backup  ctrl+e new key  esc close  ↑↓ navigate")
+      ;; every run's key is a cap, the arrows' too
+      (is (search " enter  select   ←→  main/auxiliary/decider/backup   ctrl+e  new key   esc  close   ↑↓  navigate   ctrl+f  full screen"
+                  (hint-row)))
+      ;; keys a slash joins are one cap, and typing is one
+      (open-with "space pause/resume  del/ctrl+x delete  esc close  type search")
+      (is (search " space  pause/resume   del/ctrl+x  delete   esc  close   type  search   ctrl+f  full screen"
+                  (hint-row)))
+      ;; a run naming no key stays words, and so does a sentence
+      (open-with "esc close  /link on or /link off switches it")
+      (is (search " esc  close  /link on or /link off switches it   ctrl+f  full screen" (hint-row)))
+      (open-with "Enter returns the pick to the composer - Esc or Ctrl+R closes")
+      (is (search "Enter returns the pick to the composer - Esc or Ctrl+R closes   ctrl+f  full screen"
+                  (hint-row))))))
 
 (defmacro with-highlight-picker ((model highlighted session
                                  &key rest throttle (rows 2) (delivery :instant))

@@ -178,6 +178,21 @@ NIL for a label naming no single key: `↑↓', `up/down', `type', prose."
                  (string chord.code)
                  "")))))
 
+(defun hint-key-label-p (word)
+  "Whether WORD, a key hint's first word, is a cap's: one key HINT-KEY-PRESS
+knows, a run of arrow glyphs (`↑↓', `←→'), those joined by `/' (`up/down',
+`del/ctrl+x'), or `type', the letters a search reads -- the caps a sheet
+names too (PAINT-KEYS)."
+  ;; Broader than HINT-KEY-PRESS, which answers one key: a cap may name a
+  ;; pair, and only a cap naming one key is a click target.
+  (flet ((key-p (part)
+           (and (plusp (length part))
+                (or (every (lambda (char) (assoc (string char) +hint-arrow-keys+ :test #'string=))
+                           part)
+                    (and (hint-key-press part) t)))))
+    (or (equal word "type")
+        (every #'key-p (uiop:split-string (or word "") :separator "/")))))
+
 ;;; One row per action the lisp shells actually dispatch; the Zig action enum
 ;;; carries surfaces (tabs, dashboards) with no lisp backend, which stay
 ;;; absent rather than dead.
