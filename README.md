@@ -21,7 +21,7 @@
 <br>
 
 <picture>
-  <source media="(max-width: 767px)" srcset="resources/assets/readme/read-pdf-phone.gif">
+  <source media="(max-width: 699px), (min-width: 768px) and (max-width: 959px)" srcset="resources/assets/readme/read-pdf-phone.gif">
   <img alt="Nodecode in a terminal. Asked &quot;you can't read PDFs. teach yourself.&quot;, it defines read-pdf, the layer keeps it, and it reads invoices/0421.pdf: Globex owes $1,240.00, due Oct 24, unpaid." src="resources/assets/readme/read-pdf.gif" width="100%">
 </picture>
 
