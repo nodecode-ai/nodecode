@@ -1666,3 +1666,62 @@ except OSError:
               (is (= 2208988800 (evolved-fn "CELLS-PROBE-READER-EPOCH")) "the layer's read-time constant is live"))))
         (is (null *read-eval*) "layer loading keeps the caller restricted"))
       (is (= 1 (length (layer-cache-fasls cache "stamp-reader" "nl-reader-layer"))) "the trusted source compiled into the cache"))))
+
+#-win32
+(deftest cells-an-install-loads-this-builds-own-folder-wherever-its-link-leads ()
+  ;; Two builds booting one home take turns pointing its installs at their
+  ;; own trees (REFRESH-INSTALLED-CELLS), and ASDF reads a link again at every
+  ;; search -- a channel's LOAD-SYSTEM minutes after the boot. A build that
+  ;; read through the link loaded the other build's source against its own
+  ;; core: the channel kit's DEFPACKAGE clashed with the one loaded, and every
+  ;; channel was refused. The entry names the cell; the code is this build's.
+  (with-temp-trees ((scratch "own-build"))
+    (let* ((name "nl-own-build")
+           (old (merge-pathnames "old/src/cells/" scratch))
+           (new (merge-pathnames "new/src/cells/" scratch))
+           (home (merge-pathnames "home/" scratch))
+           (link (merge-pathnames name home)))
+      (dolist (tree (list old new))
+        (write-peripheral-folder tree name :exports '("build")
+                                           :forms (list (format nil "(defun build () ~s)"
+                                                                (if (eq tree old) :old :new)))))
+      (ensure-directories-exist (merge-pathnames "new/src/src/" scratch))
+      (ensure-directories-exist home)
+      (nlk:make-symlink (merge-pathnames (format nil "~a/" name) old) link)
+      (let ((mine (truename (merge-pathnames (format nil "~a/" name) new))))
+        (nlk:with-cleanup ((ignore-errors (asdf:clear-system name))
+                           (when (find-package (string-upcase name))
+                             (delete-package (string-upcase name))))
+          (with-saved-globals (nlk::*cells* nlk::*sections*
+                               (nlk::*source-root* (merge-pathnames "new/src/src/" scratch)))
+            (let ((asdf:*central-registry* asdf:*central-registry*)
+                  (asdf::*immutable-systems* asdf::*immutable-systems*))
+              (is-present (record (first (nlk:load-cells :root home))) "the install's record"
+                (is (eq :loaded (nlk:cell-state record)) (format nil "~a" (nlk:cell-failures record)))
+                (is (equal (namestring (merge-pathnames (format nil "~a/" name) home))
+                           (namestring (nlk:cell-path record))) "the record is the entry: presence still decides what starts"))
+              (is (eq :new (funcall (uiop:find-symbol* '#:build (string-upcase name)))) "this build's folder loaded, not the one the link leads to")
+              ;; the search a channel's start makes, after the boot
+              (is (equal mine (truename (asdf:system-source-directory (asdf:find-system name)))) "and ASDF finds the system there at every later search"))))))))
+
+(deftest cells-a-copy-another-build-made-is-read-from-this-builds-own-folder ()
+  ;; Where an install is a copy, a copy another build made is that build's
+  ;; code until this one makes it again: it is read from this build's own
+  ;; folder meanwhile. A copy this build made, a folder of the operator's
+  ;; own and a folder no build ships read where they stand.
+  (with-temp-trees ((scratch "own-copy"))
+    (let* ((old (write-shipped-tree (merge-pathnames "old/" scratch) '("nl-oc-a" "nl-oc-b")))
+           (new (write-shipped-tree (merge-pathnames "new/" scratch) '("nl-oc-a" "nl-oc-b")))
+           (home (merge-pathnames "home/" scratch))
+           (shipped (truename new)))
+      (flet ((in-home (name) (merge-pathnames (format nil "~a/" name) home))
+             (own (directory) (nlk::own-cell-directory directory shipped)))
+        (let ((nlk::*image-stamp* "old-build"))
+          (nlk::copy-install (merge-pathnames "nl-oc-a/" old) (in-home "nl-oc-a")))
+        (let ((nlk::*image-stamp* "this-build"))
+          (nlk::copy-install (merge-pathnames "nl-oc-b/" new) (in-home "nl-oc-b"))
+          (write-temp-file (merge-pathnames "mine/mine.asd" home) "(defsystem \"mine\")")
+          (is (equal (truename (merge-pathnames "nl-oc-a/" new)) (own (in-home "nl-oc-a"))) "another build's copy reads from this build's folder")
+          (is (equal (in-home "nl-oc-b") (own (in-home "nl-oc-b"))) "this build's copy stands")
+          (is (equal (in-home "mine") (own (in-home "mine"))) "the operator's folder stands")
+          (is (equal (in-home "nl-oc-b") (nlk::own-cell-directory (in-home "nl-oc-b") nil)) "and with nothing shipped, every entry stands"))))))
