@@ -1386,7 +1386,7 @@ page belongs to, for an import landing behind it."
      :context "Details"
      :subtitle (import-summary-line report)
      :kind :setup-details
-     :hint "enter or esc back  ↑↓ scroll"
+     :hint "enter/esc back  ↑↓ scroll"
      :on-cancel back)
     (let ((dialog (chat-model-dialog model)))
       (picker-seat-top dialog)

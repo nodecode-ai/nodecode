@@ -10058,33 +10058,44 @@ the band's tail, the transcript/composer gap, and the composer."
                                  width surface :mark *dialog-row-overflow-mark*)
                             (docked-panel-row
                              (fitted-hint-segs
-                              ;; A key-hint set's keys are filled caps, as a
-                              ;; sheet's are (PAINT-KEYS). A hint naming one
-                              ;; key is that key to click (HINT-KEY-PRESS), its
-                              ;; words lit under the pointer as a link's are.
+                              ;; Every hint's keys are filled caps, as a
+                              ;; sheet's are (PAINT-KEYS): a key-hint set's,
+                              ;; and a HINT's runs that name keys
+                              ;; (HINT-KEY-UNITS); a run naming none stays
+                              ;; words. A hint naming one key is that key to
+                              ;; click (HINT-KEY-PRESS), its words lit under
+                              ;; the pointer as a link's are.
                               (flet ((target (key)
                                        (and (hint-key-press key) (cons :key key)))
                                      (tone (target)
                                        (if (and target (equal target (chat-model-hover-target model)))
                                            :disclosure-hover
                                            :muted)))
-                                (if hints
-                                    (loop for (key . label) in (append hints `(("ctrl+f" . ,verb)))
-                                          for target = (target key)
-                                          collect (list (make-seg :text (format nil " ~a " key)
-                                                                  :tone (style-for-tone :key-chip)
-                                                                  :link target)
-                                                        (make-seg :text (format nil " ~a" label)
-                                                                  :tone (tone target) :link target)))
-                                    (loop for run in (ppcre:split "  +" (format nil "~a  ctrl+f ~a"
-                                                                                hint verb))
-                                          for target = (target (subseq run 0 (position #\Space run)))
-                                          collect (list (make-seg :text run :tone (tone target)
-                                                                  :link target)))))
+                                (loop for unit in (append (or hints (hint-key-units hint))
+                                                          `(("ctrl+f" . ,verb)))
+                                      collect (if (consp unit)
+                                                  (let ((target (target (car unit))))
+                                                    (list (make-seg :text (format nil " ~a " (car unit))
+                                                                    :tone (style-for-tone :key-chip)
+                                                                    :link target)
+                                                          (make-seg :text (format nil " ~a" (cdr unit))
+                                                                    :tone (tone target) :link target)))
+                                                  (list (make-seg :text unit :tone :muted)))))
                               (docked-panel-room width))
                              width surface :mark *dialog-row-overflow-mark*))
                             (docked-panel-row '() width surface))
                       0 (min footer 3))))))
+
+(defun hint-key-units (hint)
+  "HINT -- a dialog's footer copy, its runs two spaces apart -- as a key-hint
+set's units: (KEY . WORDS) for a run whose first word is a cap's
+(HINT-KEY-LABEL-P), the run itself for one naming no key (`/link off
+switches it', a sentence)."
+  (loop for run in (ppcre:split "  +" (nlk:trimmed (or hint "")))
+        for space = (position #\Space run)
+        collect (if (and space (hint-key-label-p (subseq run 0 space)))
+                    (cons (subseq run 0 space) (subseq run (1+ space)))
+                    run)))
 
 (defun fitted-hint-segs (units room &aux (used 0) (segs '()))
   "UNITS -- each one key hint's segments -- two columns apart, as many of them
@@ -11008,7 +11019,7 @@ and the dialog that requested them. The store remains the history authority.")
                         :search-placeholder "Type to search prompts…"
                         :empty-label (if (getf state :ready) "No prompts submitted yet" "Reading prompt history…")
                         :no-match-label "No prompts match this filter"
-                        :hint "Enter returns the pick to the composer - Esc or Ctrl+R closes")
+                        :hint "enter to composer  esc/ctrl+r close  ↑↓ navigate  type search")
     (setf (getf state :dialog) (chat-model-dialog model)
           (prompt-history-search (chat-model-dialog model))
           (list :rows rows :ready (getf state :ready) :query "" :at 0 :reading nil :seat nil))
