@@ -2365,10 +2365,14 @@ organism comes back under the unit `gateway off' stops, never beside it."
       (let ((command (sandbox-wrap-command (serve-command store-path))))
         (if (null command)
             (values nil "this image has no serve binary to exec")
-            ;; The candidate's log lands next to the database it fought for.
-            (nlk::spawn-detached
-             command
-             (pathname (format nil "~a.resurrect.log" (namestring store-path))))))))
+            ;; The candidate's log lands next to the database it fought for;
+            ;; a jailed one's stdout is the listener (CALL-WITH-SANDBOX-STDOUT).
+            (call-with-sandbox-stdout
+             (lambda (listener)
+               (nlk::spawn-detached
+                command
+                (pathname (format nil "~a.resurrect.log" (namestring store-path)))
+                :stdout listener)))))))
 
 ;;; --- the organism a shell fronts -------------------------------------------
 ;;; A shell never runs the organism in its own process: a collection the
@@ -2440,11 +2444,16 @@ is the argv itself outside a sandboxed shell."
          (word (format nil "~a=" +front-variable+))
          (exited (list nil)))
     (bind (((pid _ _ process pipe)
-            (spawn-program (session-argv (funcall wrap command))
-                           :environment (cons (format nil "~a~d" word (sb-posix:getpid))
-                                              (remove-if (lambda (entry) (uiop:string-prefix-p word entry))
-                                                         (sb-ext:posix-environ)))
-                           :output log :error-output :output :input :stream)))
+            ;; A jailed serve's stdout is the listener the jail is reached by
+            ;; (CALL-WITH-SANDBOX-STDOUT), and its stderr the log.
+            (call-with-sandbox-stdout
+             (lambda (listener)
+               (spawn-program (session-argv (funcall wrap command))
+                              :environment (cons (format nil "~a~d" word (sb-posix:getpid))
+                                                 (remove-if (lambda (entry) (uiop:string-prefix-p word entry))
+                                                            (sb-ext:posix-environ)))
+                              :output (or listener log) :error-output (if listener log :output)
+                              :input :stream)))))
       (nlk:note-boot-phase "organism-spawned" pid)
       (setf *front* (list :pipe pipe
                           :waiter (spawn "organism-front"
@@ -2468,8 +2477,7 @@ to let the store go -- bounded, so a wedged organism is left to end on its own."
       (ignore-errors (when why (write-line why pipe)) (finish-output pipe))
       (ignore-errors (close pipe)))
     (when wait
-      (nlk::%join-bounded (getf front :waiter) 10))
-    (stop-sandbox-bridge)))
+      (nlk::%join-bounded (getf front :waiter) 10))))
 
 (defvar *organism-notes-shown* '()
   "The organism.note texts this shell has put in its transcript: the

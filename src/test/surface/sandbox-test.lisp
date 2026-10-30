@@ -23,6 +23,9 @@
     (is (find "/opt/nc/nodecode" (nlk:json-value settings :array "filesystem" "denyWrite") :test #'string=) "the binary that runs the jail is not")
     (is (find "/h/.nodecode/secrets/" (nlk:json-value settings :array "filesystem" "denyWrite") :test #'string=) "nor the secrets")
     (is (find "/run/user/1000" (nlk:json-value settings :array "filesystem" "denyRead") :test #'string=) "the runtime directory's sockets are out of reach")
+    (is (find "/tmp" (nlk:json-value settings :array "filesystem" "denyRead") :test #'string=) "so is the host's /tmp: the jail gets an empty one of its own")
+    (is (not (find "/tmp" (nlk:json-value settings :array "filesystem" "allowWrite") :test #'string=)) "and never the host's to write")
+    (is (find "/h/.nodecode/sandbox/srt/" (nlk:json-value settings :array "filesystem" "denyWrite") :test #'string=) "srt's sockets and stand-ins are not the jail's to write")
     (is (null (nth-value 1 (nlk:json-value settings :any "network" "tlsTerminate"))) "no masked secret, no TLS termination")))
 
 (deftest sandbox-settings-mount-only-what-exists ()
@@ -47,20 +50,74 @@
     (is (find "pypi.org" (nlk:json-value settings :array "network" "allowedDomains") :test #'string=))
     (is (find "/srv/keys" (nlk:json-value settings :array "filesystem" "denyRead") :test #'string=))
     (is (find "/data" (nlk:json-value settings :array "filesystem" "allowWrite") :test #'string=))
-    (is (search "\"allowAllUnixSockets\":true" (nlk:encode-json-object settings)) "the bridge socket is allowed")))
+    (is (not (search "allowAllUnixSockets" (nlk:encode-json-object settings))) "seccomp's unix-socket block stays on: the jail makes no unix socket, so it reaches none of the host's")))
 
 (deftest sandbox-wrap-jails-the-serve-argv-whole ()
   (let ((argv (nle::sandbox-wrap '("/opt/nc/nodecode" "serve" "--store" "/h/a b/store.db")
                                  :srt "/opt/srt/srt" :settings "/h/.nodecode/sandbox/srt-settings.json"
-                                 :socket "/h/.nodecode/sandbox/run/gateway.sock" :port 41234
-                                 :run "/h/.nodecode/sandbox/run/")))
+                                 :port 41234 :run "/h/.nodecode/sandbox/run/"
+                                 :srt-temporary "/h/.nodecode/sandbox/srt/"
+                                 :jail-temporary "/h/.nodecode/sandbox/tmp/")))
     (is (equal '("env" "-u" "NODECODE_PRISTINE" "NODECODE_SANDBOXED=1" "NODECODE_GATEWAY_PORT=41234"
                  "XDG_RUNTIME_DIR=/h/.nodecode/sandbox/run" "XDG_CACHE_HOME=/h/.nodecode/sandbox/cache"
+                 "TMPDIR=/h/.nodecode/sandbox/srt" "CLAUDE_CODE_TMPDIR=/h/.nodecode/sandbox/tmp"
                  "/opt/srt/srt" "--settings" "/h/.nodecode/sandbox/srt-settings.json" "--" "sh" "-c")
-               (subseq argv 0 13)) "env, srt, its settings and the -- that keeps the words apart")
-    (is (equal '("/h/.nodecode/sandbox/run/gateway.sock" "41234" "/opt/nc/nodecode" "serve" "--store" "/h/a b/store.db")
-               (subseq argv 14)) "the socket and port as $0 $1, then the serve argv word for word")
-    (is (search "exec \"$@\"" (nth 13 argv)) "the script execs the serve")))
+               (subseq argv 0 15)) "env (srt's temporary directory out of /tmp, the jail's own), srt, its settings and the -- that keeps the words apart")
+    (is (equal '("41234" "/opt/nc/nodecode" "serve" "--store" "/h/a b/store.db")
+               (subseq argv 16)) "the port as $0, then the serve argv word for word")
+    (let ((script (nth 15 argv)))
+      (is (search "exec 3>&1 1>&2" script) "the listener handed in on stdout moves to descriptor 3")
+      (is (search "Seccomp:" script) "a jail without the seccomp filter stops before anything loads")
+      (is (search "socat ACCEPT-FD:3,fork TCP4:127.0.0.1:\"$0\"" script) "a socat accepts on it toward the gateway's port")
+      (is (not (search "UNIX-LISTEN" script)) "and makes no unix socket of its own")
+      (is (search "exec 3>&- \"$@\"" script) "the serve runs with the listener closed"))))
+
+#+linux
+(deftest sandbox-jail-script-stops-a-jail-without-seccomp ()
+  ;; Outside srt this process carries no seccomp filter, as a jail would not
+  ;; on an architecture srt has no helper for: the script stops there, before
+  ;; the serve runs. A runner that is itself under a filter skips the check.
+  (when (search (format nil "Seccomp:~c0" #\Tab) (uiop:read-file-string "/proc/self/status"))
+    (multiple-value-bind (output errors status)
+        (uiop:run-program (list "sh" "-c" nle::+sandbox-jail-script+ "41234" "sh" "-c" "echo the-serve-ran")
+                          :output :string :error-output :string :ignore-error-status t)
+      (is (eql 78 status) "the jail script exits 78")
+      (is (search "no seccomp filter" errors) "saying why, on the log")
+      (is (not (search "the-serve-ran" (concatenate 'string output errors))) "and the serve never runs"))))
+
+(defun sandbox-port-taken-p (port)
+  "Whether a listener holds the loopback PORT."
+  (handler-case (progn (nle::local-port port) nil)
+    (usocket:address-in-use-error () t)))
+
+(deftest sandbox-listener-is-the-jails-one-way-in ()
+  ;; The shell listens on the host's loopback and hands the socket to the
+  ;; jail as its stdout; what it answers is a descriptor a child can take.
+  (let* ((port (nle::local-port 0))
+         (socket (nle::sandbox-listener port)))
+    (unwind-protect
+         (progn
+           (is (integerp (sb-bsd-sockets:socket-file-descriptor socket)) "a descriptor")
+           (is (eql port (nth-value 1 (sb-bsd-sockets:socket-name socket))) "on the port the plan named")
+           (is (sandbox-port-taken-p port) "and listening: nothing else binds the port while it stands"))
+      (sb-bsd-sockets:socket-close socket))))
+
+(deftest sandbox-stdout-is-the-listener-only-in-a-sandboxed-shell ()
+  (let ((nle::*sandbox-plan* nil))
+    (is (eq :plain (nle::call-with-sandbox-stdout (lambda (listener) (if listener :listener :plain)))) "outside a sandboxed shell there is none"))
+  (let* ((port (nle::local-port 0))
+         (nle::*sandbox-plan* (list :port port))
+         (seen nil))
+    (nle::call-with-sandbox-stdout (lambda (listener)
+                                     (setf seen listener)
+                                     (is (sandbox-port-taken-p port) "while the function runs the listener holds the port")))
+    (is (integerp seen) "a sandboxed shell's serve gets a descriptor")
+    (is (eql port (nle::local-port port)) "and the shell's copy is closed once the function returns: the jail alone holds it")))
+
+(deftest sandbox-requires-a-socat-that-takes-a-descriptor ()
+  ;; The jail's one way in is a listening socket on its stdout: the socat
+  ;; inside must accept on a descriptor it is handed.
+  (is (eq (and (nlk::executable-on-path "socat") t) (and (nle::socat-accepts-a-descriptor-p) t)) "the socat on this machine takes ACCEPT-FD, or there is none"))
 
 (deftest sandbox-wrap-command-is-the-argv-itself-outside-a-sandbox ()
   (let ((nle::*sandbox-plan* nil))
@@ -110,7 +167,8 @@
 (deftest sandbox-settings-deny-writing-what-the-launcher-reads ()
   (let ((deny (nlk:json-value (sandbox-test-settings) :array "filesystem" "denyWrite"))
         (allow (nlk:json-value (sandbox-test-settings) :array "filesystem" "allowWrite")))
-    (dolist (path '("/h/.nodecode/config.jsonc" "/h/.nodecode/sandbox.jsonc" "/h/.nodecode/sandbox/jailed.json" "/h/.nodecode/secrets/"))
+    (dolist (path '("/h/.nodecode/config.jsonc" "/h/.nodecode/sandbox.jsonc" "/h/.nodecode/sandbox/jailed.json" "/h/.nodecode/secrets/"
+                    "/h/.nodecode/sandbox/srt/"))
       (is (find path deny :test #'string=) (format nil "~a is the launcher's, not the jail's" path)))
     (is (notany (lambda (path) (search ".cache/nodecode" path)) allow) "the machine's shared cache is not the jail's to write")))
 
