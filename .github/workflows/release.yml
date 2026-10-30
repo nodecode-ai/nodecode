@@ -72,6 +72,12 @@ jobs:
       # none of that.
       - name: Upgrade a running gateway of the last release onto it (upgrade-proof.py)
         run: python3 src/tools/upgrade-proof.py release-out/nodecode-${{ needs.check.outputs.label }}-x86_64-linux.tar.gz
+      # And once users run this build: a release it cannot take live must
+      # still end with its gateway serving that release, unit or not.
+      - name: Upgrade a running gateway of it onto a release it refuses live (upgrade-proof-refused.sh)
+        run: src/tools/upgrade-proof-refused.sh release-out/nodecode-${{ needs.check.outputs.label }}-x86_64-linux.tar.gz
+        env:
+          NODECODE_BUILD_HOME: /var/tmp/nodecode-ci-build
       - uses: actions/upload-artifact@v4
         with:
           name: release-x86_64-linux
