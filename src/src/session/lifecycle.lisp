@@ -959,7 +959,9 @@ writer's transaction the floor as that transaction sees it."
 ;;; here, on the thread that appends the turn's next durable fact, ahead of
 ;;; it. Every turn-fact recorder in this file settles first, so the log reads
 ;;; exactly as if the walk held the round: the capture, then the round
-;;; that followed it.
+;;; that followed it. The prompt fact alone does not (RECORD-TURN-FACT): it is
+;;; written just before the request the walk overlaps, and holding it would
+;;; hold that request for the whole walk.
 ;;; Settlement runs outside the recorder's store transaction — the thunk
 ;;; records its own fact in its own.
 
@@ -1227,9 +1229,15 @@ spend is the session's it hangs from.")
 
 (defun record-turn-fact (turn kind owner payload)
   "Append PAYLOAD as one non-terminal KIND fact of TURN under OWNER, TURN's
-deferred facts settled first and a terminal TURN refused."
+deferred facts settled first (a prompt fact excepted) and a terminal TURN
+refused."
   (check-type turn durable-turn)
-  (settle-turn-facts turn)
+  ;; A prompt fact is written just before the provider request it describes,
+  ;; the request a deferred workspace walk is there to overlap: it does not
+  ;; wait for that walk, and stands ahead of the capture fact. Every other
+  ;; fact of the turn settles first.
+  (unless (equal kind +kind-turn-context-prompt+)
+    (settle-turn-facts turn))
   (with-store-transaction (handle)
     (when (turn-terminal-p turn.turn-id)
       (error 'turn-already-terminal :turn-id turn.turn-id))
