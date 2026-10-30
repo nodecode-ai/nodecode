@@ -4964,6 +4964,14 @@ restore's.")
 runs (a release label, `generation N'). A test binds a recorder.")
 
 (defun exit-for-restart (to)
+  ;; A headless owner no unit runs is its own next launch: it lets the store
+  ;; go and execs `current' in place (SERVE-NEXT :RESTART). An exit there
+  ;; would leave nothing serving until a shell happened to start one.
+  (when (eq (restart-way) :exec)
+    (format t "~&restart: ~a runs now; running `current' again in place~%" to)
+    (finish-output)
+    (setf *stop-reason* (or *restart-reason* "a restart"))
+    (return-from exit-for-restart (serve-next :restart)))
   (format t "~&restart: ~a runs at the next launch; exiting for it~%" to)
   (finish-output)
   (setf *stop-reason* (or *restart-reason* "a restart"))

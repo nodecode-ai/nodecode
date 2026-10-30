@@ -307,6 +307,26 @@ carry one. => ((PLAN . ROOT) ...), the core first."
   "The release this image refused live and linked for its next launch, or
 NIL: the poller leaves it be rather than refuse it again at every look.")
 
+(defvar *refused-text* nil
+  "What the refusal of *REFUSED-RELEASE* said, for an update that asks for it
+again before the restart that runs it.")
+
+(defun restart-way ()
+  "How this organism starts again on `current' with no operator to reopen it:
+:UNIT when it serves `gateway run' under a unit nodecode wrote, which brings
+it back from an exit; :EXEC when it is a headless owner that can run its
+installed binary again in place (SERVE-NEXT :RESTART); NIL for a shell's
+organism, which that shell's next launch brings back, and for an image no
+installed binary started."
+  ;; A headless owner without a unit -- `gateway run' by hand, a serve a
+  ;; shell left behind -- has nobody to bring it back from an exit, so it
+  ;; execs `current' itself. Without that, a release it refused left it on the
+  ;; build before for good while `current' named the next one, and every
+  ;; shell of the new build attached to the old organism. Windows has no exec.
+  (cond ((and *gateway-run* (ignore-errors (nlk:gateway-installed-p))) :unit)
+        #-win32
+        ((and *serving* (not *fronted*) (nlk:organism-binary)) :exec)))
+
 ;;; dexador's Windows backend (WinHTTP) reads a whole body before it answers
 ;;; -- "This obviously isn't streaming", its own note -- and a feed never
 ;;; ends: every connection through it would time out. There the feed rides a
@@ -398,6 +418,16 @@ HOLD, VERSION is the operator's own pick and holds this home there."
       (when (string= to from)
         (return-from upgrade-organism
           (list :from from :to to :verdict :same :line "" :applied :current)))
+      ;; A release this image already refused waits for the launch that runs
+      ;; it. The release feed and the poller can both ask for it at once, and
+      ;; each passed CHECK-FOR-UPDATE's look before the other refused it: the
+      ;; look that counts is this one, under the lock, so the second ask is
+      ;; answered with the first refusal instead of converging again.
+      (when (and apply (not check) (equal to *refused-release*))
+        (return-from upgrade-organism
+          (list :from from :to to :verdict :refused :held nil
+                :line (or *refused-text* (format nil "~a runs at the next launch" to))
+                :applied :live)))
       (let* ((plans (release-plans-at (or (current-release-directory to) (stage-release to))))
              (verdict (plans-verdict plans))
              (line (format nil "~{~a: ~a~^; ~}"
@@ -426,10 +456,10 @@ HOLD, VERSION is the operator's own pick and holds this home there."
                (converge-between-turns plans to (eq verdict :restart) idle)
              (link-release to)
              (when refused (setf *refused-release* to))
-             ;; An exit brings this process back on `current' when it serves `gateway run'
-             ;; under a unit nodecode wrote.
-             (let* ((restarts (and (or held refused) *gateway-run*
-                                   (ignore-errors (nlk:gateway-installed-p))))
+             ;; The process starts again on `current' by itself where it can
+             ;; (RESTART-WAY): under its unit, or by exec when it serves
+             ;; headless with no unit.
+             (let* ((restarts (and (or held refused) (restart-way)))
                     (launch (if restarts
                                 "the gateway's restart, once no turn is running"
                                 "the next launch"))
@@ -446,6 +476,7 @@ HOLD, VERSION is the operator's own pick and holds this home there."
                                  (format nil "~a runs at ~a: no definition of it can go live here (~a)"
                                          to launch (held-text held)))))
                     (text (if displaced (format nil "~a; ~a" text (displaced-text displaced)) text)))
+               (when refused (setf *refused-text* text))
                (nlk:note-standing "update" (and (or held refused) text) :info)
                (ignore-errors
                 (nlk::record-upgrade +gateway-session-id+ :from from :to to
