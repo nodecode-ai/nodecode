@@ -4395,6 +4395,60 @@ recovery, a turn worker restarts from eval, the unwind stops.")
 
 (defun cell-selected-p (cell names) (or (null names) (member cell.name names :test #'string=)))
 
+;;; A start that fails is tried again while the gateway that tried it
+;;; serves: what refused may be gone a second later -- a network not up yet
+;;; at boot, a cell folder another build pointed elsewhere for a moment --
+;;; and a peripheral left down until the operator relaunches is a channel
+;;; that answers nobody. A config refusal waits for the operator: nothing but
+;;; an edit heals it, and RESTART-CELLS is the edit's own way back.
+(defparameter *cell-retry-seconds* '(1 2 4 8 16 32 60)
+  "The waits before each new try at a peripheral whose start failed, the
+last one repeated until it starts.")
+
+(defvar *cell-retries* (make-hash-table :test 'equal)
+  "The thread trying each folder's start again, by folder name.")
+
+(defvar *cell-retries-lock* (bt2:make-lock :name "cell-retries"))
+
+(defvar *cell-retrying* nil
+  "T while a retry runs a start: a refusal in the words already standing is
+not said again.")
+
+(defun retry-wanted-p (cell)
+  "Whether CELL is still a loaded peripheral, present, that refused its
+start: what a retry tries again."
+  (and cell
+       (eq cell.state :loaded)
+       cell.start
+       (not cell.started-p)
+       cell.refusal
+       (or (null cell.path) (probe-file cell.path))))
+
+(defun retry-cell-start (name &aux (handler *gateway-handler*))
+  "Try the folder NAME's start again on a thread of its own, after each wait
+of *CELL-RETRY-SECONDS* (the last repeated), until it starts or is no
+longer wanted (RETRY-WANTED-P), while the gateway that refused it serves.
+One thread per folder; none outside a serving gateway."
+  (when handler
+    (bt2:with-lock-held (*cell-retries-lock*)
+      (let ((running (gethash name *cell-retries*)))
+        (unless (and running (bt2:thread-alive-p running))
+          (setf (gethash name *cell-retries*)
+                (spawn (format nil "cell-retry ~a" name)
+                  (loop for waits = *cell-retry-seconds* then (or (rest waits) waits)
+                        do (sleep (first waits))
+                        while (and (eq handler *gateway-handler*)
+                                   (retry-wanted-p (nlk:find-cell name)))
+                        do (bt2:with-lock-held (*cells-lifecycle-lock*)
+                             (let ((*cell-retrying* t))
+                               (%start-cells (list name))))
+                        until (let ((cell (nlk:find-cell name)))
+                                (and cell cell.started-p))
+                        ;; started: what it brings reaches the shells, as START-CELLS says it
+                        finally (when (let ((cell (nlk:find-cell name))) (and cell cell.started-p))
+                                  (refresh-attached-command-catalogs)
+                                  (broadcast-model-changed))))))))))
+
 (defun %start-cells (names)
   (multiple-value-bind (config error-text) (read-shared-config)
     (notice (and error-text
@@ -4425,11 +4479,16 @@ recovery, a turn worker restarts from eval, the unwind stops.")
             (error (condition)
               ;; The record keeps the refusal in the words it was made in; the
               ;; board's line names the condition for whoever reads the log.
-              (setf cell.refusal (if (typep condition 'nlk:config-refusal)
-                                      (nlk:config-refusal-detail condition)
-                                      (princ-to-string condition)))
-              (notice (format nil "cell ~a not started: ~a" name condition)
-                      :level :error :key name))))))))
+              ;; A retry refused in the words already standing says nothing.
+              (let ((text (if (typep condition 'nlk:config-refusal)
+                              (nlk:config-refusal-detail condition)
+                              (princ-to-string condition))))
+                (unless (and *cell-retrying* (equal text cell.refusal))
+                  (notice (format nil "cell ~a not started: ~a" name condition)
+                          :level :error :key name))
+                (setf cell.refusal text))
+              (unless (typep condition 'nlk:config-refusal)
+                (retry-cell-start name)))))))))
 
 (defun %stop-cells (names)
   (dolist (cell (reverse (nlk:cells)))
