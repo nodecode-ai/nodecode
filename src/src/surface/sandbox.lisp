@@ -225,6 +225,18 @@ directory whose provider has a host to inject it toward."
     (cond ((plusp (length named)) (and (probe-file named) named))
           (t (nlk::executable-on-path "srt")))))
 
+(defun sandbox-ensure-launcher-files (home)
+  "Make HOME's sandbox.jsonc and config.jsonc, empty, when either is absent:
+the launcher reads both (the policy; the providers, hence the hosts a real
+key is injected toward), so the jail must never be the one to create them.
+srt write-denies an absent path by binding a placeholder over it, which the
+jailed organism could not read its config through. => the files made."
+  (loop for name in '("sandbox.jsonc" "config.jsonc")
+        for path = (merge-pathnames name (uiop:ensure-directory-pathname home))
+        unless (probe-file path)
+          do (nlk::write-file-atomically path (format nil "{}~%") :mode #o600 :directory-mode #o700)
+          and collect path))
+
 (defun sandbox-unsplit-keys (&optional (auth-path *auth-file-path*))
   "The provider ids auth.json still holds an API key for: keys a jail could
 only be given whole, so --sandbox asks for `nodecode secrets split' first."
@@ -410,13 +422,11 @@ when it cannot run (SANDBOX-REQUIREMENTS), else write the srt settings under
                (srt (srt-program))
                (run (merge-pathnames "sandbox/run/" (uiop:ensure-directory-pathname home)))
                (cache (merge-pathnames "sandbox/cache/" (uiop:ensure-directory-pathname home)))
-               (policy-file (merge-pathnames "sandbox.jsonc" (uiop:ensure-directory-pathname home)))
-               ;; An absent policy file would be the jail's to create, and the
-               ;; next launch would read it: it is made here, empty, and the
-               ;; jail sees it write-denied. The mark goes down before the
-               ;; settings that deny writing it.
-               (_ (progn (unless (probe-file policy-file)
-                           (nlk::write-file-atomically policy-file (format nil "{}~%") :mode #o600))
+               ;; An absent policy or config file would be the jail's to
+               ;; create, and the next launch would read it: each is made here,
+               ;; empty, and the jail sees it write-denied. The mark goes down
+               ;; before the settings that deny writing it.
+               (_ (progn (sandbox-ensure-launcher-files home)
                          (sandbox-mark home)))
                (settings (merge-pathnames +sandbox-settings-name+
                                           (merge-pathnames "sandbox/" (uiop:ensure-directory-pathname home))))

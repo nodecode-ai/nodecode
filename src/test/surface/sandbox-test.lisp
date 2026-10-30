@@ -85,6 +85,21 @@
       (is (search "no seccomp filter" errors) "saying why, on the log")
       (is (not (search "the-serve-ran" (concatenate 'string output errors))) "and the serve never runs"))))
 
+(deftest sandbox-launch-makes-the-files-the-launcher-reads ()
+  ;; A home with no config.jsonc: srt would cover the absent path with a
+  ;; placeholder, and the jailed organism died reading its config through it.
+  (let ((home (sandbox-test-home)))
+    (unwind-protect
+         (progn
+           (is (= 2 (length (nle::sandbox-ensure-launcher-files home))) "both made when absent")
+           (dolist (name '("sandbox.jsonc" "config.jsonc"))
+             (is (equal (format nil "{}~%") (uiop:read-file-string (merge-pathnames name home))) (format nil "~a is empty JSON" name)))
+           (with-open-file (o (merge-pathnames "config.jsonc" home) :direction :output :if-exists :supersede)
+             (write-line "{\"general\":{}}" o))
+           (is (null (nle::sandbox-ensure-launcher-files home)) "a second launch makes none")
+           (is (search "general" (uiop:read-file-string (merge-pathnames "config.jsonc" home))) "and never touches the operator's config"))
+      (uiop:delete-directory-tree home :validate t :if-does-not-exist :ignore))))
+
 (defun sandbox-port-taken-p (port)
   "Whether a listener holds the loopback PORT."
   (handler-case (progn (nle::local-port port) nil)
