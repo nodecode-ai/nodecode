@@ -4993,8 +4993,22 @@ symbol the test's own START-GATEWAY reference reads."
   (is (zerop (nle::await-free-store #p"/tmp/nodecode-no-store/history.db"
                                     :held-p (constantly nil) :pause 0))))
 
+(deftest keep-running-writes-no-unit-for-a-home-the-system-clears (with-scripted-systemd (fake))
+  ;; A script's scratch home under /tmp started a bot, and the unit written
+  ;; for it went on running `current' in a folder long gone.
+  (with-saved-globals ((nlk:*ephemeral* nil)
+                       (nlk::*temporary-roots* (list (uiop:pathname-parent-directory-pathname
+                                                      (uiop:ensure-directory-pathname nlk:*home*)))))
+    (is (nlk:temporary-home-p) "this home reads as one the system clears")
+    (with-stubbed-fdefinition (nlk:organism-binary () "/opt/nodecode/current/nodecode")
+      (is (null (nle:keep-running "the Fake bot")) "nothing is asked of the service manager"))
+    (is (not (nlk:gateway-installed-p)) "and no unit is written")
+    (is (null (fake-systemd-calls fake)) "systemctl is never called"))
+  (with-saved-globals ((nlk::*temporary-roots* '()))
+    (is (not (nlk:temporary-home-p)) "with no such folder above it, it is a home like any")))
+
 (deftest keep-running-turns-the-gateway-on-once-and-never-over-an-off (with-scripted-systemd (fake))
-  (with-saved-globals ((nlk:*ephemeral* t))
+  (with-saved-globals ((nlk:*ephemeral* t) (nlk::*temporary-roots* '()))
     (let ((said '()))
       (nle:hook :frame "keep-running-test"
                 (lambda (op next)

@@ -625,6 +625,26 @@ open — its units start at boot and outlive a logout — NIL when it does not,
 (defun gateway-off-path (&optional (home *home*))
   (merge-pathnames "gateway-off" (uiop:ensure-directory-pathname home)))
 
+(defvar *temporary-roots* :system
+  "The folders the system clears, whose homes no gateway comes up in at
+login: :SYSTEM for the temporary directory and, off Windows, /tmp; a list
+of folders otherwise. A test binds its own.")
+
+(defun temporary-home-p (&optional (home *home*))
+  "Whether HOME sits under a folder the system clears (*TEMPORARY-ROOTS*)."
+  ;; A unit written for such a home outlives it: a test's or a script's
+  ;; scratch home is gone at its cleanup or the next boot, and its unit goes
+  ;; on starting a gateway on the binary `current' names, at every login,
+  ;; in an empty folder. True names on both sides, so a link either way
+  ;; counts.
+  (flet ((real (path) (namestring (or (ignore-errors (truename path)) path))))
+    (let ((home (real (uiop:ensure-directory-pathname home))))
+      (some (lambda (root)
+              (uiop:string-prefix-p (real (uiop:ensure-directory-pathname root)) home))
+            (if (eq *temporary-roots* :system)
+                (list* (uiop:temporary-directory) #-win32 '("/tmp/") #+win32 '())
+                *temporary-roots*)))))
+
 (defun gateway-off-p (&optional (home *home*))
   "Whether the operator turned HOME's gateway off: then nothing but the
 operator's own `gateway on' turns it back on."

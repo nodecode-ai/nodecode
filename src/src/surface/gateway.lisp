@@ -797,12 +797,14 @@ while no shell is open."
   ;; (NLK:GATEWAY-ON :AUTO) and every shell is told: the organism a shell runs
   ;; now passes to the gateway when that shell closes, and comes up again at
   ;; every login. Nothing happens once the gateway is on, once the operator
-  ;; turned it off, in an ephemeral organism, or on a machine with no
-  ;; background gateway. A cell's call — the channel kit's when a bot
+  ;; turned it off, in an ephemeral organism, in a home under a folder the
+  ;; system clears (NLK:TEMPORARY-HOME-P: a scratch home's unit would outlive
+  ;; it), or on a machine with no background gateway. A cell's call — the channel kit's when a bot
   ;; starts, cron's when a job is scheduled — and it answers at once: the
   ;; operating system is asked on a thread of its own, never on a cell's
   ;; start. => the thread, or NIL.
   (unless (or nlk:*ephemeral*
+              (nlk:temporary-home-p)
               (null (nlk:gateway-unit-path))
               (nlk:gateway-installed-p)
               (nlk:gateway-off-p))
