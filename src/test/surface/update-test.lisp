@@ -276,6 +276,70 @@ src/src/a.lisp."
             (is (null (nle::check-for-update)))))
         (is (zerop asked) "the poller does not refuse it again")))))
 
+(deftest update-refused-release-restarts-a-headless-owner-with-no-unit (let ((exited '())))
+  ;; `gateway run' by hand, or a serve its shell left behind: no unit brings
+  ;; it back from an exit, so it runs `current' again in place. Left on the
+  ;; build before, every shell of the new build would attach to it.
+  (with-organism-tree ("tv6" (format nil "~a(defmethod upg-route-g ((x upg-no-such-class)) x)~%"
+                                     (upg-source 2 "a")))
+    (with-saved-globals ((nle::*gateway-run* t) (nle::*serving* t) (nle::*fronted* nil)
+                         (nle::*idle-poll-seconds* 0.05)
+                         (nle::*restart-wait* nil) (nle::*refused-release* nil)
+                         (nle::*restart-exit* (lambda (to) (push to exited))))
+      (with-stubbed-fdefinitions ((nlk:gateway-installed-p (&optional home) nil)
+                                  (nlk:organism-binary () "/opt/nodecode/current/nodecode")
+                                  (nlk:any-active-turn-p () nil)
+                                  (nle::start-release-feed () nil))
+        (let ((result (nle::upgrade-organism :version "tv6" :apply t)))
+          (is (eq :live (getf result :applied)))
+          (is (search "tv6 runs at the gateway's restart" (getf result :line)) "it says the restart, not the next launch"))
+        (is (eql 1 (funcall 'nodecode.evolved::upg-route-f)) "the image is as it was")
+        (is (bt2:threadp nle::*restart-wait*) "a restart waits for an idle moment")
+        (bt2:join-thread nle::*restart-wait*)
+        (is (equal '("tv6") exited) "and runs, for the new build")))))
+
+(deftest update-restart-way-names-who-brings-the-organism-back ()
+  (with-saved-globals ((nle::*gateway-run* t) (nle::*serving* t) (nle::*fronted* nil))
+    (with-stubbed-fdefinitions ((nlk:gateway-installed-p (&optional home) t)
+                                (nlk:organism-binary () "/opt/nodecode/current/nodecode"))
+      (is (eq :unit (nle::restart-way)) "under its unit, the unit")))
+  (with-saved-globals ((nle::*gateway-run* t) (nle::*serving* t) (nle::*fronted* nil))
+    (with-stubbed-fdefinitions ((nlk:gateway-installed-p (&optional home) nil)
+                                (nlk:organism-binary () "/opt/nodecode/current/nodecode"))
+      (is (eq #-win32 :exec #+win32 nil (nle::restart-way)) "by hand, itself")))
+  (with-saved-globals ((nle::*gateway-run* nil) (nle::*serving* t) (nle::*fronted* t))
+    (with-stubbed-fdefinitions ((nlk:gateway-installed-p (&optional home) nil)
+                                (nlk:organism-binary () "/opt/nodecode/current/nodecode"))
+      (is (null (nle::restart-way)) "a shell's organism waits for that shell's next launch")))
+  (with-saved-globals ((nle::*gateway-run* nil) (nle::*serving* t) (nle::*fronted* nil))
+    (with-stubbed-fdefinitions ((nlk:gateway-installed-p (&optional home) nil)
+                                (nlk:organism-binary () nil))
+      (is (null (nle::restart-way)) "an image no installed binary started cannot"))))
+
+(deftest update-exit-for-restart-execs-in-place-with-no-unit (let ((next '())))
+  (with-saved-globals ((nle::*stop-reason* nil) (nle::*restart-reason* "an update"))
+    (with-stubbed-fdefinitions ((nle::restart-way () :exec)
+                                (nle::serve-next (what) (push what next)))
+      (nle::exit-for-restart "tv7")
+      (is (equal '(:restart) next) "the serve loop lets the store go and execs `current'")
+      (is (equal "an update" nle::*stop-reason*) "the next boot says why"))))
+
+(deftest update-a-refused-release-asked-again-is-not-converged-again (let ((converged 0)))
+  ;; The release feed and the poller both look; each passed the poller's own
+  ;; look before either refused. The look under the lock answers the second.
+  (with-organism-tree ("tv8" (format nil "~a(defmethod upg-route-g ((x upg-no-such-class)) x)~%"
+                                     (upg-source 2 "a")))
+    (with-saved-globals ((nle::*refused-release* nil) (nle::*gateway-run* nil))
+      (with-stubbed-fdefinitions ((nle::start-release-feed () nil)
+                                  (nlk:any-active-turn-p () nil))
+        (is (search "refused it live" (getf (nle::upgrade-organism :version "tv8" :apply t :idle t) :line)) "the first ask is refused")
+        (with-stubbed-fdefinition (nle::converge-between-turns (&rest args) (incf converged)
+                                    (values 0 0 "again" nil))
+          (let ((result (nle::upgrade-organism :version "tv8" :apply t :idle t)))
+            (is (zerop converged) "no second converge")
+            (is (eq :live (getf result :applied)))
+            (is (search "refused it live" (getf result :line)) "the first refusal is the answer")))))))
+
 (deftest update-converge-shell-folds-the-new-tree (with-organism-tree ())
   (with-temp-trees ((new "shell-new"))
     (write-upgrade-tree new (list (cons "src/src/a.lisp" (upg-source 5 "a"))))
@@ -545,6 +609,59 @@ asks again after a pause -- and stops the moment the image has caught up."
                (answer "tv1" nil)))
     (is (equal (format nil "this home's organism: already at tv9~%this binary: tv1")
                (answer "tv1" t)))))
+
+(defun numbered-release-files (number)
+  "A release's files whose nodecode.asd says NUMBER, as a release's does."
+  (list (cons "src/src/a.lisp" *update-old-a*)
+        (cons "src/nodecode.asd"
+              (format nil "(defsystem \"upg\" :version \"~a\" :depends-on (\"uiop\") :components ((:file \"a\")))" number))))
+
+(deftest update-a-window-whose-path-predates-the-update-is-told-why ()
+  ;; Windows puts the version's own folder on the user PATH, and a window keeps
+  ;; the PATH it opened with: after `nodecode update' there, `nodecode' still
+  ;; finds the old folder and `--version' says the update never happened --
+  ;; "update doesn't work, no error". The answer names both releases, and the
+  ;; way to the new one.
+  (with-release-host (dist (list (cons "tv1" (numbered-release-files "9.0.1"))
+                                 (cons "tv2" (numbered-release-files "9.0.2"))))
+    (is (null (nle::current-label)) "nothing installed, nothing current")
+    (nle::stage-release "tv1")
+    (nle::link-release "tv1")
+    (nle::stage-release "tv2")
+    (nle::link-release "tv2")
+    (is (equal "tv2" (nle::current-label)))
+    (is (equal "9.0.2 (tv2)" (nle::release-name "tv2")))
+    (is (equal "no-such" (nle::release-name "no-such")) "a release not laid out here keeps its label")
+    (with-stubbed-fdefinition (nle::window-release () "tv1")
+      (is (equal "this window still runs 9.0.1 (tv1): its PATH is from before the update. Open a new terminal or tab to run 9.0.2 (tv2)"
+                 (nle::stale-window-text))))
+    (with-stubbed-fdefinition (nle::window-release () "tv2")
+      (is (null (nle::stale-window-text)) "a window that runs `current' is told nothing"))
+    (with-stubbed-fdefinition (nle::window-release () nil)
+      (is (null (nle::stale-window-text)) "nor one whose PATH names no version folder"))))
+
+(deftest update-path-names-a-folder-whatever-its-trailing-separator ()
+  (let ((sep (if (eq (nlk:platform) :windows) ";" ":")))
+    (is (nle::path-names-directory-p #p"/opt/nc/tv1/" (format nil "/usr/bin~a/opt/nc/tv1~a/bin" sep sep)))
+    (is (nle::path-names-directory-p #p"/opt/nc/tv1/" (format nil "/opt/nc/tv1/~a/bin" sep)))
+    (is (not (nle::path-names-directory-p #p"/opt/nc/tv1/" (format nil "/opt/nc/tv2~a/opt/nc/current" sep))))
+    (is (not (nle::path-names-directory-p #p"/opt/nc/tv1/" nil)))))
+
+(deftest update-locally-takes-the-release-current-names-as-it-lies (with-organism-tree ("tv2" (upg-source 2 "a")))
+  ;; A second `nodecode update' in a window that still runs the old release
+  ;; used to fetch and lay out the release `current' already named, and say
+  ;; "tv2 is current" -- which reads as nothing to do -- beside the classifier's
+  ;; line, which says nothing to a person whose next launch runs the build whole.
+  (with-stubbed-fdefinitions ((nle::organism-port () nil)
+                              (nle::window-release () nil))
+    (is (equal "updated to tv2: the next launch runs it" (nle::update-text '("tv2"))))
+    (is (equal "tv2" (nle::current-label)))
+    (with-stubbed-fdefinition (nle::stage-release (version) (error "~a was staged again" version))
+      (is (equal "tv2 is installed already: the next launch runs it" (nle::update-text '("tv2"))))
+      (with-stubbed-fdefinition (nle::window-release () "tv1")
+        (is (equal (format nil "tv2 is installed already~%~
+                                this window still runs tv1: its PATH is from before the update. Open a new terminal or tab to run tv2")
+                   (nle::update-text '("tv2"))))))))
 
 ;;; --- the note a new release says -------------------------------------------
 

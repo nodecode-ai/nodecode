@@ -691,6 +691,15 @@ completed. BODY runs with SID bound."
    (format nil "out~%err~%[exit 3]") 3 "the status is the second value")
   (a-clean-run-verbatim "printf hi" "hi" 0 "zero status"))
 
+(deftest sh-runs-bash-where-the-machine-has-it ()
+  ;; Ubuntu's /bin/sh is dash, which has no `time' keyword and no [[ ]]:
+  ;; three of four benchmark runs lost a call to `time: not found'.
+  #-win32
+  (when (probe-file "/bin/bash")
+    (is (search "bash" (uiop:native-namestring nlk:*shell*)))
+    (is (equal (format nil "yes~%") (nle:sh "[[ a == a ]] && echo yes")))
+    (is (eql 0 (nth-value 1 (nle:sh "time true"))) "time is the shell's own")))
+
 (deftest sh-runs-argv-without-a-shell ()
   (is (equal "a b" (nle:sh (list "printf" "%s" "a b"))) "argv is not re-split"))
 
@@ -706,6 +715,23 @@ completed. BODY runs with SID bound."
 (deftest sh-rides-the-eval-snippet ()
   (is (equal "\"hi\"" (nle:eval-string "(sh \"printf hi\")")))
   (is (search "[exit 1]" (nle:eval-string "(sh \"exit 1\")"))))
+
+(deftest sh-bounds-a-command-by-its-timeout ()
+  ;; (sh "..." :timeout 600) was the model's first reach 81 times in three
+  ;; days while sh took no such key: the bound is real, the tree dies with
+  ;; it, and the answer says why the output stops.
+  #-win32
+  (let ((marker "47.3")
+        (start (get-internal-real-time)))
+    (multiple-value-bind (output status)
+        (nle:sh (format nil "echo started; sleep ~a; echo never" marker) :timeout 0.5)
+      (is (search "started" output) "what ran before the bound is kept")
+      (is (search "[timed out after 0.5 s: the process tree was killed]" output) output)
+      (is (not (search "never" output)) "nothing past the bound ran")
+      (is (not (eql 0 status)) "a killed command is no success")
+      (is (< (/ (- (get-internal-real-time) start) internal-time-units-per-second) 10) "the call returned at the bound, not at the command's end"))
+    (is (equal "" (nle:sh (format nil "pgrep -x -f 'sleep ~a' || true" marker))) "no child outlives the bound"))
+  (is (equal "hi" (nle:sh "printf hi" :timeout 10)) "a command inside its bound answers as before"))
 
 (deftest sh-kills-its-child-when-the-evaluation-unwinds ()
   ;; eval-interrupt on a stuck (sh ...) must not leave the child running.
@@ -840,6 +866,50 @@ completed. BODY runs with SID bound."
         ("DEEP" "the verdict names the recursion")
         ("unwound before the guard page" "and says why it was stopped")))))
 
+(deftest a-runaway-verdict-holds-while-its-unwind-runs-cleanups ()
+  ;; An unwind runs each UNWIND-PROTECT cleanup with the stack pointer still
+  ;; where the verdict was signalled: the abandoned frames stay below it until
+  ;; the handler is reached. A probe landing in a cleanup there (the
+  ;; compilation unit's summary wraps every snippet) read the stack as past
+  ;; the limit, walked a frame chain that no longer holds the recursion, and
+  ;; its unnamed verdict replaced the named one. One verdict per climb: the
+  ;; next waits for the stack to come back under the limit, unless it climbs
+  ;; on to the hard mark.
+  (destructuring-bind (first in-cleanup held-climb past-hard shallow again)
+      (bt2:join-thread
+       (nlk:spawn "runaway-climb"
+         (let ((nle::*runaway-climb* (list nil)))
+           (multiple-value-bind (used span) (nle::control-stack-usage)
+             (declare (ignore used))
+             (let* ((limit (min (* 16 1024 1024) (floor span 2)))
+                    (hard (+ limit (floor (- span limit) 2)))
+                    (in-cleanup :unset))
+               (labels ((probe ()
+                          (handler-case (progn (nle::eval-runaway-thread-probe) :quiet)
+                            (nle::eval-runaway (e) (princ-to-string e))))
+                        (climb (mark)
+                          (if (> (nle::control-stack-usage) mark)
+                              (progn (nle::eval-runaway-thread-probe) 0)
+                              (1+ (climb mark))))
+                        (verdict (mark)
+                          (handler-case (progn (climb mark) :quiet)
+                            (nle::eval-runaway (e) (princ-to-string e)))))
+                 (list (handler-case (unwind-protect (climb limit)
+                                       (setf in-cleanup (probe)))
+                         (nle::eval-runaway (e) (princ-to-string e)))
+                       in-cleanup
+                       (verdict limit)
+                       (verdict hard)
+                       (probe)
+                       (verdict limit))))))))
+    (is (search "control stack runaway" first) "past the limit, the verdict")
+    (is (search "CLIMB" first) "naming the recursion")
+    (is (eq :quiet in-cleanup) "a probe inside its unwind's cleanup holds")
+    (is (eq :quiet held-climb) "and so does a second climb before the stack came back down")
+    (is (search "control stack runaway" past-hard) "unless it climbs on to the hard mark")
+    (is (eq :quiet shallow) "a shallow probe is quiet and clears the hold")
+    (is (search "control stack runaway" again) "so the next climb takes its verdict at the limit")))
+
 (deftest control-stack-usage-grows-with-depth (labels ((deep (n)
                                                          (if (zerop n)
                                                              (list (nle::control-stack-usage))
@@ -905,6 +975,23 @@ completed. BODY runs with SID bound."
          (receipt (nle:write-file path (format nil "one~%two~%"))))
     (is (search "2 lines" receipt) receipt)
     (is (equal (format nil "one~%two~%") (uiop:read-file-string path)))))
+
+(deftest write-file-names-a-missing-final-newline (with-temp-trees ((root "write-file-eol")))
+  ;; The receipt counts lines the way an editor does, so `one~%two` and
+  ;; `one~%two~%` both read "2 lines" while wc -l counts 1 and 2: the
+  ;; receipt says which one it wrote, so a read-back never looks like a lost
+  ;; character.
+  (flet ((receipt (name text)
+           (nle:write-file (namestring (merge-pathnames name root)) text)))
+    (let ((open (receipt "open.txt" (format nil "one~%two")))
+          (solo (receipt "solo.txt" "one"))
+          (closed (receipt "closed.txt" (format nil "one~%two~%")))
+          (empty (receipt "empty.txt" "")))
+      (is (search "2 lines, 7 characters (no trailing newline)" open) open)
+      (is (search "1 line, 3 characters (no trailing newline)" solo) solo)
+      (is (not (search "trailing newline" closed)) closed)
+      (is (not (search "trailing newline" empty)) "an empty file has no last line to leave open")
+      (is (equal (format nil "one~%two") (uiop:read-file-string (merge-pathnames "open.txt" root))) "the bytes stay as given"))))
 
 ;;; --- look: an image file, shown at the next round ------------------------
 ;;; The verb stages the file on the live turn under its own call id; the
@@ -992,8 +1079,8 @@ executing tool call of a current durable turn carrying that id."
         (is (search "image/png" (nle:look path)))))))
 
 (deftest look-refuses-once-this-turn-had-an-image-refused ()
-  ;; When the provider refuses the request that carries the turn's image,
-  ;; the images are withheld and the staging marked. A second look in the
+  ;; When the provider refuses a second request that carries the turn's
+  ;; images, they are withheld and the staging marked. A second look in the
   ;; same turn is refused with the reason instead of sent into the same
   ;; refusal — the turn is the horizon of that evidence, as it is of the
   ;; images themselves.

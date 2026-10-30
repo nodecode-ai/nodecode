@@ -49,7 +49,7 @@ of stacking."
 (defsystem "nodecode"
   :description "A self-modifying agent organism in SBCL: gateway, session, turn loop, and heredity."
   :license "MIT"
-  :version "0.1.2"
+  :version "0.1.5"
   ;; Dependency amendment seam.
   ;; A1 added: shasht (JSON codec) and two SBCL contribs.
   ;;
@@ -227,6 +227,12 @@ of stacking."
      ;; provider precedes turn: the stream-part waist, lane registry, and
      ;; frozen-config structs are the layer the turn loop folds policy over.
      (:file "engine/provider")
+     ;; engine/providers/ follows provider: one file per provider dialect, each written
+     ;; in DEFINE-PROVIDER-LANE and registered into the registry provider owns.
+     (:file "engine/providers/openai-completions")
+     (:file "engine/providers/anthropic")
+     (:file "engine/providers/google")
+     (:file "engine/providers/openai-responses")
      ;; meter precedes context and turn: the running turn as a value -- what
      ;; it spent, the budget it runs under, the spend line a tool result
      ;; carries -- is the record RUN binds and the loop folds, the line the
@@ -551,6 +557,7 @@ of stacking."
      (:file "surface/think-off-test")
      ;; Uses gateway-test's detached shell and the real organism.loaded fold.
      (:file "tui/mutation-collapse-test")
+     (:file "tui/edit-diff-test")
      (:file "tui/eval-error-test")
      (:file "tui/tool-hover-test")
      (:file "tui/collapse-scroll-test")

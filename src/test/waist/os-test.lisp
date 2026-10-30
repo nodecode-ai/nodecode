@@ -104,6 +104,17 @@
       (is (eql 0 (nlk:wait-for-child pid process)))
       (is (equal (format nil "out~%err~%") (uiop:read-file-string log)) "created, in order"))))
 
+(deftest a-spawn-whose-log-folder-is-missing-names-the-log (with-temp-workspace (dir))
+  ;; Opening the log fails with ENOENT, the errno a missing program gives:
+  ;; `nodecode rpc' on a home never made said `spawning setsid: No such file
+  ;; or directory', naming the one thing that was there.
+  (let* ((log (merge-pathnames "never-made/child.log" dir))
+         (said (handler-case (progn (nlk:spawn-program (nlk:shell-argv "true")
+                                                       :output log :error-output :output)
+                                    nil)
+                 (error (condition) (princ-to-string condition)))))
+    (is (and said (search (uiop:native-namestring log) said)) (format nil "named: ~a" said))))
+
 #-win32
 (deftest a-child-that-leaves-a-daemon-behind-is-answered-at-its-own-exit ()
   ;; A clipboard helper forks the owner that serves the selection, then

@@ -14,6 +14,9 @@ name: Release
 # and lists the release on GitHub under the tag. Nothing builds on the
 # machine that pushes the tag.
 #
+# The Linux tarball is handed over only once a gateway of the release users
+# run now, serving with no unit, has moved onto it (upgrade-proof.py).
+#
 # Run by hand (Actions > Release > Run workflow, from main) it is a
 # rehearsal: the same three builds, the archives handed over, the Windows
 # tar.zst packed, and every credential the publish uses tried -- no archive is
@@ -63,6 +66,24 @@ jobs:
         run: just tarball HEAD release-out
         env:
           NODECODE_BUILD_HOME: /var/tmp/nodecode-ci-build
+      # What users meet: a gateway of the release stable names now, started by
+      # hand with no unit, takes this build from a folder host while it serves,
+      # and a shell of this build runs turns on it. A fresh install proves
+      # none of that.
+      - name: Upgrade a running gateway of the last release onto it (upgrade-proof.py)
+        run: python3 src/tools/upgrade-proof.py release-out/nodecode-${{ needs.check.outputs.label }}-x86_64-linux.tar.gz
+      # And once users run this build: a release it cannot take live must
+      # still end with its gateway serving that release, unit or not.
+      - name: Upgrade a running gateway of it onto a release it refuses live (upgrade-proof-refused.sh)
+        run: src/tools/upgrade-proof-refused.sh release-out/nodecode-${{ needs.check.outputs.label }}-x86_64-linux.tar.gz
+        env:
+          NODECODE_BUILD_HOME: /var/tmp/nodecode-ci-build
+      # And a person's bot through all of it: a gateway of the release stable
+      # names now, its Discord bot answering, takes this build; then this
+      # build's gateway takes over from an old one while an old process points
+      # the home's cell links back into its release. The bot answers after each.
+      - name: Keep a Discord bot answering through the upgrade (upgrade-discord-proof.py)
+        run: python3 src/tools/upgrade-discord-proof.py release-out/nodecode-${{ needs.check.outputs.label }}-x86_64-linux.tar.gz
       - uses: actions/upload-artifact@v4
         with:
           name: release-x86_64-linux

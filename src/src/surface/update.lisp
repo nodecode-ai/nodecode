@@ -114,6 +114,64 @@ definitions past it, then the build's number with the new label."
 (defun release-version-directory (version)
   (merge-pathnames (format nil "~a/" version) *release-directory*))
 
+(defun current-label ()
+  "The release the installer's `current' names under *RELEASE-DIRECTORY* --
+what a launch through it runs -- or NIL when there is none."
+  ;; REAL-PATH, not TRUENAME: on Windows `current' is a junction, which
+  ;; TRUENAME leaves standing.
+  (when-let (folder (nlk::real-path (merge-pathnames "current/" *release-directory*)))
+    (car (last (pathname-directory folder)))))
+
+(defun current-release-directory (label)
+  "LABEL's folder when `current' names it and it is laid out -- the
+executable and its source tree -- for an update to take as it lies, else NIL."
+  ;; Staged again, the release would be fetched whole once more, and on
+  ;; Windows the installer refuses to replace a folder another window runs from.
+  (let ((directory (release-version-directory label)))
+    (and (equal label (current-label))
+         (probe-file (merge-pathnames (if (eq (nlk:platform) :windows) "nodecode.exe" "nodecode")
+                                      directory))
+         (probe-file (merge-pathnames "src/src/" directory))
+         directory)))
+
+(defun release-name (label)
+  "LABEL as a person reads it: `0.1.4 (d99362e73)' when the release laid out
+here carries its number -- its nodecode.asd's :version -- else LABEL."
+  (let ((number (ignore-errors
+                 (nth-value 1 (ppcre:scan-to-strings
+                               ":version\\s+\"([^\"]+)\""
+                               (uiop:read-file-string
+                                (merge-pathnames "src/nodecode.asd" (release-version-directory label))))))))
+    (if (and number (plusp (length number)))
+        (format nil "~a (~a)" (aref number 0) label)
+        label)))
+
+(defun path-names-directory-p (directory &optional (path (uiop:getenv "PATH")))
+  "Whether the PATH this process started with names DIRECTORY."
+  (let ((want (string-right-trim "/\\" (uiop:native-namestring directory)))
+        (same (if (eq (nlk:platform) :windows) #'string-equal #'string=)))
+    (some (lambda (entry) (funcall same (string-right-trim "/\\" entry) want))
+          (uiop:split-string (or path "") :separator (if (eq (nlk:platform) :windows) ";" ":")))))
+
+(defun window-release ()
+  "The release this binary's folder is, when the PATH of the shell it was
+typed in names that folder -- the installer's layout on Windows, whose PATH
+named the version's own folder before install.ps1 named its launcher folder,
+bin\\, which runs whatever `current' names -- else NIL."
+  (let ((runtime (nlk:runtime-directory)))
+    (and runtime (installed-release-root) (path-names-directory-p runtime)
+         (car (last (pathname-directory runtime))))))
+
+(defun stale-window-text (&aux (runs (window-release)) (current (current-label)))
+  "What `nodecode update' adds when the window it was typed in keeps running
+a release other than the one `current' names, else NIL."
+  ;; A window keeps the PATH it opened with: after an update moves the user
+  ;; PATH's entry, `nodecode' typed there still finds the old folder, and
+  ;; `--version' says the update never happened.
+  (when (and runs current (string/= runs current))
+    (format nil "this window still runs ~a: its PATH is from before the update. Open a new terminal or tab to run ~a"
+            (release-name runs) (release-name current))))
+
 ;;; --- the release host ------------------------------------------------------
 
 (defun release-host-p (url)
@@ -173,7 +231,8 @@ against *RELEASE-DIRECTORY* and *RELEASE-URL*. => T, or a refusal: DOING it fail
   (multiple-value-bind (out err code)
       (run-bounded
        ;; No -NoModifyPath for install.ps1: its link moves the user PATH's
-       ;; entry to the version it links, which an elevated shell needs.
+       ;; entry to the launcher folder, bin\ -- or to the version it links,
+       ;; when no launcher answers -- which an elevated shell needs.
        (if (eq (nlk:platform) :windows)
            (list "powershell.exe" "-NoProfile" "-NonInteractive" "-ExecutionPolicy" "Bypass"
                  "-File" (uiop:native-namestring installer))
@@ -248,6 +307,26 @@ carry one. => ((PLAN . ROOT) ...), the core first."
   "The release this image refused live and linked for its next launch, or
 NIL: the poller leaves it be rather than refuse it again at every look.")
 
+(defvar *refused-text* nil
+  "What the refusal of *REFUSED-RELEASE* said, for an update that asks for it
+again before the restart that runs it.")
+
+(defun restart-way ()
+  "How this organism starts again on `current' with no operator to reopen it:
+:UNIT when it serves `gateway run' under a unit nodecode wrote, which brings
+it back from an exit; :EXEC when it is a headless owner that can run its
+installed binary again in place (SERVE-NEXT :RESTART); NIL for a shell's
+organism, which that shell's next launch brings back, and for an image no
+installed binary started."
+  ;; A headless owner without a unit -- `gateway run' by hand, a serve a
+  ;; shell left behind -- has nobody to bring it back from an exit, so it
+  ;; execs `current' itself. Without that, a release it refused left it on the
+  ;; build before for good while `current' named the next one, and every
+  ;; shell of the new build attached to the old organism. Windows has no exec.
+  (cond ((and *gateway-run* (ignore-errors (nlk:gateway-installed-p))) :unit)
+        #-win32
+        ((and *serving* (not *fronted*) (nlk:organism-binary)) :exec)))
+
 ;;; dexador's Windows backend (WinHTTP) reads a whole body before it answers
 ;;; -- "This obviously isn't streaming", its own note -- and a feed never
 ;;; ends: every connection through it would time out. There the feed rides a
@@ -302,7 +381,7 @@ when set -- a mirror of the operator's own -- else *RELEASE-URL*."
 (defun update-answer-text (result &aux (to (getf result :to)) (line (getf result :line)))
   "RESULT (UPGRADE-ORGANISM's) as the sentence the verb prints."
   (ecase (getf result :applied)
-    (:current (format nil "already at ~a" to))
+    (:current (format nil "already at ~a" (release-name to)))
     (:checked (format nil "~a is staged, nothing runs it yet: ~a" to line))
     (:staged (format nil "~a is staged: ~a · `nodecode update' applies it" to line))
     ((:live :hot) line)))
@@ -339,7 +418,17 @@ HOLD, VERSION is the operator's own pick and holds this home there."
       (when (string= to from)
         (return-from upgrade-organism
           (list :from from :to to :verdict :same :line "" :applied :current)))
-      (let* ((plans (release-plans-at (stage-release to)))
+      ;; A release this image already refused waits for the launch that runs
+      ;; it. The release feed and the poller can both ask for it at once, and
+      ;; each passed CHECK-FOR-UPDATE's look before the other refused it: the
+      ;; look that counts is this one, under the lock, so the second ask is
+      ;; answered with the first refusal instead of converging again.
+      (when (and apply (not check) (equal to *refused-release*))
+        (return-from upgrade-organism
+          (list :from from :to to :verdict :refused :held nil
+                :line (or *refused-text* (format nil "~a runs at the next launch" to))
+                :applied :live)))
+      (let* ((plans (release-plans-at (or (current-release-directory to) (stage-release to))))
              (verdict (plans-verdict plans))
              (line (format nil "~{~a: ~a~^; ~}"
                            (loop for (plan) in plans for label in '("core" "cells")
@@ -367,10 +456,10 @@ HOLD, VERSION is the operator's own pick and holds this home there."
                (converge-between-turns plans to (eq verdict :restart) idle)
              (link-release to)
              (when refused (setf *refused-release* to))
-             ;; An exit brings this process back on `current' when it serves `gateway run'
-             ;; under a unit nodecode wrote.
-             (let* ((restarts (and (or held refused) *gateway-run*
-                                   (ignore-errors (nlk:gateway-installed-p))))
+             ;; The process starts again on `current' by itself where it can
+             ;; (RESTART-WAY): under its unit, or by exec when it serves
+             ;; headless with no unit.
+             (let* ((restarts (and (or held refused) (restart-way)))
                     (launch (if restarts
                                 "the gateway's restart, once no turn is running"
                                 "the next launch"))
@@ -387,6 +476,7 @@ HOLD, VERSION is the operator's own pick and holds this home there."
                                  (format nil "~a runs at ~a: no definition of it can go live here (~a)"
                                          to launch (held-text held)))))
                     (text (if displaced (format nil "~a; ~a" text (displaced-text displaced)) text)))
+               (when refused (setf *refused-text* text))
                (nlk:note-standing "update" (and (or held refused) text) :info)
                (ignore-errors
                 (nlk::record-upgrade +gateway-session-id+ :from from :to to
@@ -991,15 +1081,19 @@ can. => the line the shell shows, or NIL when there is nothing to say."
 
 ;;; --- the verb --------------------------------------------------------------
 
-(defun update-locally (version check &aux (result (upgrade-organism :version version :check t)))
+(defun update-locally (version check &aux (installed (current-label))
+                                          (result (upgrade-organism :version version :check t))
+                                          (to (getf result :to)))
   "`nodecode update' with no organism serving: stage, classify, link."
-  ;; The next launch runs the release.
+  ;; The next launch runs the release -- whole, so what the classifier made of
+  ;; it is no news here -- unless the window this was typed in keeps an older
+  ;; PATH, which UPDATE-TEXT says instead.
   (cond ((or check (eq :current (getf result :applied))) (update-answer-text result))
-        (t (link-release (getf result :to))
+        (t (link-release to)
            ;; the hold the organism's own update takes (UPGRADE-ORGANISM :HOLD)
-           (if version (hold-release (getf result :to)) (lift-hold))
-           (format nil "~a is current; no organism is running here, so the next launch runs it (~a)"
-                   (getf result :to) (getf result :line)))))
+           (if version (hold-release to) (lift-hold))
+           (format nil "~:[updated to ~a~;~a is installed already~]~:[: the next launch runs it~;~]"
+                   (equal installed to) (release-name to) (stale-window-text)))))
 
 (defun update-text (words)
   "`nodecode update [VERSION] [--check]': the organism serving this home
@@ -1023,12 +1117,18 @@ when one serves, else by staging and linking here for the next launch."
               ;; This answer is the organism's and `--version' the binary's, so a
               ;; checkout's ./nodecode, which never updates, read as a contradiction:
               ;; `already at ...' beside `nodecode ...'.
-              ;; When the two differ, each line says whose it is.
-              (if (and organism (not (equal organism binary)))
-                  (format nil "this home's organism: ~a~%this binary: ~a~:[~;, a checkout build (`just release' rebuilds it)~]"
-                          text binary (not *installed-build*))
-                  text))
-            (update-locally version check)))))
+              ;; When the two differ, each line says whose it is -- or, when
+              ;; this window's PATH predates the update, why.
+              (let ((stale (stale-window-text)))
+                (cond (stale (format nil "~a~%~a" text stale))
+                      ((and organism (not (equal organism binary)))
+                       (format nil "this home's organism: ~a~%this binary: ~a~:[~;, a checkout build (`just release' rebuilds it)~]"
+                               text binary (not *installed-build*)))
+                      (t text))))
+            (let ((text (update-locally version check)))
+              (if-let (stale (stale-window-text))
+                (format nil "~a~%~a" text stale)
+                text))))))
 
 ;;; --- the route -------------------------------------------------------------
 

@@ -277,14 +277,14 @@ or a named profile's, under the account's own $HOME (OWN-ACCOUNT-HOME-P)."
        (or (equal (namestring home) (namestring (uiop:ensure-directory-pathname (default-home))))
            (profile-named-p home))))
 
-(defun gateway-label (&optional (home *home*))
-  "What HOME's gateway is called to the service manager, before any suffix
-of the manager's own: nodecode-gateway for the account's default home,
-nodecode-gateway-NAME for its named profile (a profile name is already a
-unit name), and for any other home — a $NODECODE_HOME of the operator's
-own, or the default home of a $HOME that is not the account's — eight hex
-digits of its path's digest: two folders called the same are still two
-organisms, and no borrowed $HOME takes the account's own name."
+(defun gateway-own-label (&optional (home *home*))
+  "What HOME's gateway is called when no unit serves it yet, before any
+suffix of the manager's own: nodecode-gateway for the account's default
+home, nodecode-gateway-NAME for its named profile (a profile name is
+already a unit name), and for any other home — a $NODECODE_HOME of the
+operator's own, or the default home of a $HOME that is not the account's —
+eight hex digits of its path's digest: two folders called the same are
+still two organisms, and no borrowed $HOME takes the account's own name."
   (let ((home (uiop:ensure-directory-pathname home)))
     (cond ((not (account-named-home-p home))
            (format nil "nodecode-gateway-~a"
@@ -358,6 +358,134 @@ doubled too: ExecStart= expands variables, Environment= does not."
                                                         (concatenate 'string match match)
                                                         (concatenate 'string "\\" match)))
                                                   :simple-calls t)))
+
+;;; A home's own name hangs on the $HOME of the process asking: the same
+;;; profile is nodecode-gateway-NAME from the account's own $HOME and a
+;;; digest from a borrowed one. A `gateway on' asked from the other side
+;;; therefore found no unit and wrote a second one for the same home; both
+;;; ran, one serving and one waiting on the store, and an update's handoff
+;;; raced between them. So the unit that already names a home -- by true
+;;; name, through any link -- is that home's gateway, whatever it is called,
+;;; and only a home no unit serves gets its own name.
+
+(defun unit-file-path (label)
+  "Where a unit called LABEL lives in the unit folder."
+  (merge-pathnames (concatenate 'string label (case *service-manager*
+                                                (:systemd ".service")
+                                                (:launchd ".plist")
+                                                (t "")))
+                   *unit-directory*))
+
+(defun true-home-name (folder)
+  "FOLDER, a pathname or a native namestring, as a directory's true name
+when it exists, else as written."
+  (let ((path (uiop:ensure-directory-pathname
+               (if (pathnamep folder) folder (uiop:parse-native-namestring folder)))))
+    (namestring (or (ignore-errors (truename path)) path))))
+
+(defun unit-unquoted (word)
+  "WORD as UNIT-QUOTED wrote it, read back: its quotes off, `\\X' as X and
+`%%' as `%'."
+  (let ((bare (if (and (>= (length word) 2)
+                       (char= #\" (char word 0) (char word (1- (length word)))))
+                  (subseq word 1 (1- (length word)))
+                  word)))
+    (ppcre:regex-replace-all "\\\\(.)|%%" bare
+                             (lambda (match escaped)
+                               (declare (ignore match))
+                               (or escaped "%"))
+                             :simple-calls t)))
+
+(defun xml-unescaped (text)
+  "TEXT with the references XML-ESCAPED writes read back."
+  (ppcre:regex-replace-all "&(amp|lt|gt|quot);" text
+                           (lambda (match name)
+                             (declare (ignore match))
+                             (cdr (assoc name '(("amp" . "&") ("lt" . "<") ("gt" . ">") ("quot" . "\""))
+                                         :test #'string=)))
+                           :simple-calls t))
+
+(defun unit-file-home (path &aux (text (and path (ignore-errors (uiop:read-file-string path)))))
+  "The home the gateway unit file at PATH serves, by true name: its
+NODECODE_HOME, a systemd Environment= line or a plist's EnvironmentVariables
+entry, else the folder its marker names. NIL when it names none."
+  (let ((named
+          (and text
+               (or (loop for line in (lines text)
+                         for word = (and (uiop:string-prefix-p "Environment=" line)
+                                         (unit-unquoted (string-trim " " (subseq line 12))))
+                         when (and word (uiop:string-prefix-p "NODECODE_HOME=" word))
+                           return (subseq word 14))
+                   (ppcre:register-groups-bind (value)
+                       ("<key>NODECODE_HOME</key>\\s*<string>([^<]*)</string>" text)
+                     (xml-unescaped value))
+                   (loop for line in (lines text) repeat 2
+                         for at = (search +unit-marker+ line)
+                         when at
+                           return (string-trim " " (ppcre:regex-replace "\\s*-->\\s*$" (subseq line (+ at (length +unit-marker+))) "")))))))
+    (and (plusp (length named)) (true-home-name named))))
+
+(defun gateway-unit-files ()
+  "Every gateway unit file nodecode wrote in the unit folder, by name."
+  (and *unit-directory* (member *service-manager* '(:systemd :launchd))
+       (sort (remove-if-not (lambda (path) (eq :ours (unit-file-owner path)))
+                            (directory (unit-file-path "nodecode-gateway*") :resolve-symlinks nil))
+             #'string< :key #'file-namestring)))
+
+(defun gateway-units-serving (&optional (home *home*) &aux (true (true-home-name home)))
+  "The gateway unit files nodecode wrote that serve HOME, by name."
+  (remove-if-not (lambda (path) (equal true (unit-file-home path))) (gateway-unit-files)))
+
+(defun gateway-label (&optional (home *home*) &aux (own (gateway-own-label home)))
+  "What HOME's gateway is called to the service manager, before any suffix
+of the manager's own: its own name (GATEWAY-OWN-LABEL) when a unit has it or
+none serves HOME, else the name of the unit nodecode wrote that does."
+  ;; One look at the own name's file; the unit folder is read only when that
+  ;; is not there.
+  (or (and *unit-directory*
+           (not (probe-file (unit-file-path own)))
+           (when-let (serving (first (gateway-units-serving home)))
+             (pathname-name serving)))
+      own))
+
+(defun unit-serves-store-p (path home)
+  "Whether the systemd unit at PATH runs the process that owns HOME's store
+now. NIL where the service manager cannot say."
+  (and (eq *service-manager* :systemd)
+       (multiple-value-bind (verdict owner) (ignore-errors (store-death-verdict (home-store-path home)))
+         (and (eq verdict :live) owner
+              (multiple-value-bind (out err status)
+                  (ignore-errors (manager-run "show" (file-namestring path) "--property=MainPID"))
+                (declare (ignore err))
+                (let ((at (and (eql status 0) (stringp out) (search "MainPID=" out))))
+                  (and at (eql owner (parse-integer out :start (+ at 8) :junk-allowed t)))))))))
+
+(defun gateway-unit-duplicates ()
+  "Every home two or more gateway units nodecode wrote serve: a list (HOME
+KEPT . EXTRA) each, HOME its true name, KEPT the unit to keep -- the one
+whose process serves the store now, else the one this process names the
+home by (GATEWAY-OWN-LABEL), else the first -- and EXTRA the rest."
+  ;; Asks the service manager, once a unit, only when a home has two.
+  (let ((by-home (make-hash-table :test #'equal)))
+    (dolist (path (gateway-unit-files))
+      (when-let (home (unit-file-home path))
+        (setf (gethash home by-home) (append (gethash home by-home) (list path)))))
+    (sort (loop for home being the hash-keys of by-home using (hash-value paths)
+                when (rest paths)
+                  collect (let* ((name (file-namestring (unit-file-path (gateway-own-label (pathname home)))))
+                                 (kept (or (find-if (lambda (path) (unit-serves-store-p path home)) paths)
+                                           (find name paths :key #'file-namestring :test #'string=)
+                                           (first paths))))
+                            (list* home kept (remove kept paths))))
+          #'string< :key #'first)))
+
+(defun unit-removal-command (path &aux (label (pathname-name path)))
+  "The command that stops the gateway unit at PATH and takes it away."
+  (format nil "~a && rm ~a"
+          (if (eq *service-manager* :launchd)
+              (format nil "launchctl bootout ~a" (launchd-target label))
+              (format nil "systemctl --user disable --now ~a.service" label))
+          (uiop:escape-sh-token (uiop:native-namestring path))))
 
 (defun gateway-unit-text (&key (manager *service-manager*) (home *home*) (program (organism-binary))
                             (launcher (and (eq manager :launchd) (gateway-launcher-path)))
@@ -497,6 +625,26 @@ open — its units start at boot and outlive a logout — NIL when it does not,
 (defun gateway-off-path (&optional (home *home*))
   (merge-pathnames "gateway-off" (uiop:ensure-directory-pathname home)))
 
+(defvar *temporary-roots* :system
+  "The folders the system clears, whose homes no gateway comes up in at
+login: :SYSTEM for the temporary directory and, off Windows, /tmp; a list
+of folders otherwise. A test binds its own.")
+
+(defun temporary-home-p (&optional (home *home*))
+  "Whether HOME sits under a folder the system clears (*TEMPORARY-ROOTS*)."
+  ;; A unit written for such a home outlives it: a test's or a script's
+  ;; scratch home is gone at its cleanup or the next boot, and its unit goes
+  ;; on starting a gateway on the binary `current' names, at every login,
+  ;; in an empty folder. True names on both sides, so a link either way
+  ;; counts.
+  (flet ((real (path) (namestring (or (ignore-errors (truename path)) path))))
+    (let ((home (real (uiop:ensure-directory-pathname home))))
+      (some (lambda (root)
+              (uiop:string-prefix-p (real (uiop:ensure-directory-pathname root)) home))
+            (if (eq *temporary-roots* :system)
+                (list* (uiop:temporary-directory) #-win32 '("/tmp/") #+win32 '())
+                *temporary-roots*)))))
+
 (defun gateway-off-p (&optional (home *home*))
   "Whether the operator turned HOME's gateway off: then nothing but the
 operator's own `gateway on' turns it back on."
@@ -579,8 +727,9 @@ GATEWAY-STATE."
 (defun gateway-installed-p (&optional (home *home*))
   "Whether HOME's gateway is on: its unit file is there, and nodecode wrote
 it."
-  ;; One file read and no process spawned — what a reconnect lap, a launch and
-  ;; a cell's start ask.
+  ;; One file read -- the unit folder's too when the home's own name has no
+  ;; file (GATEWAY-LABEL) -- and no process spawned: what a reconnect lap, a
+  ;; launch and a cell's start ask.
   (eq :ours (unit-file-owner (gateway-unit-path home))))
 
 (defun gateway-process-p (pid)

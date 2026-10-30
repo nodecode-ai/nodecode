@@ -152,7 +152,7 @@ fact.")
 ;;; it (the 8,000-character eval ceiling, raised for that, turn.lisp
 ;;; *EVAL-RESULT-LIMIT*). And no round a relief finds standing replays its
 ;;; reasoning past it: a signed thinking block is bound to the window it was
-;;; signed in (provider.lisp ANTHROPIC-MESSAGES), every relief rewrites that
+;;; signed in (providers/anthropic.lisp ANTHROPIC-MESSAGES), every relief rewrites that
 ;;; window, and a request that drops every block signed before the rewrite and
 ;;; replays those signed after it is the shape the API was probed to accept.
 ;;; The log keeps every result and every thought whole; the cut is the

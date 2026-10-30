@@ -331,6 +331,98 @@ follows live when one is armed."
   (cons model.session-id
         (when followed (list (list followed :live-only t)))))
 
+;;; --- which session this shell is on, for programs outside it ---------------
+;;; A desktop restorer reopens each terminal tab on the conversation it held.
+;;; It finds the agent by its pid and asks the agent's own record: Claude Code
+;;; keeps ~/.claude/sessions/<pid>.json, Pi
+;;; $XDG_RUNTIME_DIR/pi-session-presence/<pid>.json. The gateway's map of
+;;; shells (ATTACHED-SHELLS) is readable only from inside the organism, and it
+;;; cannot tell a shell's own session from the one its preview lane follows, so
+;;; the shell, which knows, says it: $XDG_RUNTIME_DIR/nodecode/shells/<pid>.json,
+;;; written whenever its own session is set or switched -- every subscribe --
+;;; and removed when the shell ends. The runtime directory is the user's own
+;;; and emptied at every boot; a record a killed shell left behind names a pid
+;;; whose start time no longer matches, and the next shell sweeps it.
+
+(defvar *shell-presence-path* nil
+  "Where this process's terminal shell keeps its presence record while it
+runs (RUN-CHAT-GATEWAY), or NIL: not a shell, or no runtime directory.")
+
+(defun shell-presence-path (&optional (pid (sb-posix:getpid)))
+  "$XDG_RUNTIME_DIR/nodecode/shells/PID.json, or NIL when the environment
+names no absolute runtime directory."
+  #+win32 (declare (ignore pid))
+  #-win32 (let ((runtime (uiop:getenv "XDG_RUNTIME_DIR")))
+            (when (and runtime (plusp (length runtime)) (char= #\/ (char runtime 0)))
+              (format nil "~a/nodecode/shells/~d.json" (string-right-trim "/" runtime) pid))))
+
+(defun process-start-ticks (&optional (pid (sb-posix:getpid)))
+  "When PID started, in clock ticks since boot (/proc/PID/stat field 22), or
+NIL where there is no /proc: what tells this process from a later one given
+the same pid."
+  (ignore-errors
+   (let* ((stat (uiop:read-file-string (format nil "/proc/~d/stat" pid)))
+          ;; The command name may hold spaces and parens; the fields after
+          ;; its last paren start at field 3.
+          (fields (uiop:split-string (subseq stat (+ 2 (position #\) stat :from-end t)))
+                                     :separator " ")))
+     (parse-integer (nth 19 fields)))))
+
+(defun shell-resume-argv (session-id)
+  "The command that opens a shell on SESSION-ID in this home again."
+  (cond ((nlk:profile-named-p) (list "nodecode" "-p" (nlk:profile-name) "resume" session-id))
+        ((equal (namestring (nlk:home)) (namestring (nlk:default-home)))
+         (list "nodecode" "resume" session-id))
+        ;; A custom $NODECODE_HOME is no profile -p can name.
+        (t (list "env" (format nil "NODECODE_HOME=~a" (uiop:native-namestring (nlk:home)))
+                 "nodecode" "resume" session-id))))
+
+(defun sweep-shell-presence (path)
+  "Delete the records beside PATH whose shell is gone: a shell killed before
+its unwind leaves one."
+  #+win32 (declare (ignore path))
+  #-win32
+  (dolist (file (ignore-errors (uiop:directory-files (uiop:pathname-directory-pathname path) "*.json")))
+    (let ((pid (ignore-errors (parse-integer (pathname-name file)))))
+      (when (and pid (/= pid (sb-posix:getpid))
+                 (handler-case (progn (sb-posix:kill pid 0) nil)
+                   (sb-posix:syscall-error (condition)
+                     (= (sb-posix:syscall-errno condition) sb-posix:esrch))))
+        (ignore-errors (delete-file file))))))
+
+(defun note-shell-presence (session-id &aux (path *shell-presence-path*))
+  "Say SESSION-ID is this shell's own session, in its presence record. A
+session only the preview lane follows is never named here."
+  ;; The record costs the shell nothing: a runtime directory it cannot write
+  ;; is no reason to stop a subscribe.
+  (when (and path session-id)
+    (ignore-errors
+     (write-file-atomically
+      path
+      (encode-json-object
+       (json-object "version" 1
+                    "kind" "nodecode-shell"
+                    "pid" (sb-posix:getpid)
+                    "start_ticks" (or (process-start-ticks) :null)
+                    "session_id" session-id
+                    "profile" (nlk:profile-name)
+                    "home" (uiop:native-namestring (nlk:home))
+                    "cwd" (workspace-directory)
+                    "resume_argv" (coerce (shell-resume-argv session-id) 'vector)
+                    "updated_at" (nlk:unix-now)))
+      :mode #o600 :directory-mode #o700))))
+
+(defun open-shell-presence ()
+  "Make this process a shell that keeps a presence record, clearing the ones
+dead shells left. => the record's path, or NIL."
+  (when-let (path (shell-presence-path))
+    (sweep-shell-presence path)
+    (setf *shell-presence-path* path)))
+
+(defun close-shell-presence (&aux (path (shiftf *shell-presence-path* nil)))
+  "The shell ends: its record goes."
+  (when path (ignore-errors (delete-file path))))
+
 (defun preview-follow (model session-id)
   "Have the preview lane follow SESSION-ID live: a live-only subscription
 beside the attached one, so the frames the session publishes from here on
@@ -1629,6 +1721,7 @@ thread reads it and clears this place.")
                      (show-status model "Gateway resync required"))
                     ((not model.quiet-resync) (show-status model "History rewound; resyncing")))
               (send-subscribe model.ws (subscription-entries model))
+              (note-shell-presence model.session-id)
               (render-state model)))
            ((eq (gateway-frame-accepted-p model frame) :apply)
             ;; A live frame the pending start_turn produced admits it: the
@@ -2340,7 +2433,9 @@ the serve argv into the one spawned: the jail's (SANDBOX-WRAP-COMMAND), which
 is the argv itself outside a sandboxed shell."
   (let* ((command (or (serve-command store-path)
                       (error "this image names no nodecode binary to run the organism with")))
-         (log (stdio-log-path store-path))
+         ;; A home never used has no folder yet, and the log is the first
+         ;; thing put in it: without this, the spawn opening it fails.
+         (log (ensure-directories-exist (stdio-log-path store-path)))
          (from (or (nlk:file-bytes log) 0))
          (word (format nil "~a=" +front-variable+))
          (exited (list nil)))
@@ -2384,28 +2479,116 @@ organism's last note comes again with every attach while it is fresh.")
   "The other build this shell last said it attached to, so a reconnect to
 the same organism says nothing new.")
 
-(defun note-organism-build (program payload)
+(defvar *organism-restart-asked* nil
+  "The organism this shell asked to restart onto its own build, as (BUILD .
+STARTED-AT) off its identity route: one that comes back on that same build
+is said, never asked again.")
+
+(defun organism-build-stance (label)
+  "How this shell stands to the organism it attached to, LABEL the release
+label the connect ack names, NIL when it names none: :SAME; :ORGANISM-STALE
+when this shell runs the release the home's `current' names and the organism
+does not, so the organism is the one to move; :SHELL-STALE when the organism
+runs `current' and this shell does not, so the shell is the one to reopen;
+else :APART, neither of them on `current' (a checkout's shell, a home with no
+installed release)."
+  (let ((mine (effective-label)) (current (ignore-errors (current-label))))
+    (cond ((equal label mine) :same)
+          ((null current) :apart)
+          ((and (installed-release-root) (equal mine current)) :organism-stale)
+          ((equal label current) :shell-stale)
+          (t :apart))))
+
+(defun note-organism-build (program payload &optional model)
   "Say once, when the organism this shell attached to runs another build
-than the shell — an update landed and the gateway still runs the build it
-started with — which the two are, and how the gateway moves over."
+than the shell, which the two are and what moves them together: an organism
+behind the release the home installed last restarts onto it once no turn is
+in flight (ASK-ORGANISM-RESTART, with MODEL the shell's gateway model)."
   ;; PAYLOAD is the connect ack's. An ack carrying NO version is itself the
   ;; answer rather than nothing to say: the field arrives with the gateway
   ;; that knows to send it, so an organism that sends none predates that build
   ;; and is certainly older than this shell. Without this, a freshly installed
   ;; binary attached to a pre-upgrade organism would show no sign of the
   ;; mismatch.
+  ;;
+  ;; A shell carrying on against an older organism runs every turn on that
+  ;; build's code, which a newer shell's session can need and not find: an
+  ;; update that build refused live left it there, and each turn failed until
+  ;; it was restarted by hand. A notice was all a shell did about it.
   (let* ((version (and (hash-table-p payload) (gethash "version" payload)))
-         (build (if (stringp version) version :older)))
-    (unless (member build (list (effective-version) *organism-build-noted*) :test #'equal)
+         (build (if (stringp version) version :older))
+         (from (if (stringp version) version "an older build"))
+         (stance (organism-build-stance (and (stringp version) (version-label version))))
+         (moving (and model (eq stance :organism-stale))))
+    ;; The restart this shell asked for landed: said, and the ask is done.
+    (when (and (eq stance :same) *organism-restart-asked*)
+      (setf *organism-restart-asked* nil)
+      (post-shell-notice program (format nil "the organism restarted and now runs ~a, this shell's build"
+                                         (effective-version))
+                         :error-p nil))
+    ;; Once asked, every attach to that build asks again whether it restarted.
+    (unless (or (eq stance :same)
+                (and (member build (list (effective-version) *organism-build-noted*) :test #'equal)
+                     (not (and moving (equal from (car *organism-restart-asked*))))))
       (setf *organism-build-noted* build)
-      (post-shell-notice
-       program
-       (format nil "the organism this shell attached to runs ~:[build ~a; this shell is ~a~;a ~
-                    build older than this shell (~*~a) — it does not report its own~]~
-                    ~:[~; · `nodecode gateway restart' moves the gateway to this build~]"
-               (eq build :older) version (effective-version) (nlk:gateway-installed-p))
-       ;; It names something to do, so it stays until it is closed.
-       :error-p nil :stays t))))
+      (if moving
+          (spawn "organism-restart" (ask-organism-restart program model from))
+          (post-shell-notice
+           program
+           (if (eq stance :shell-stale)
+               (format nil "this shell runs ~a, older than the organism it attached to (~a), which is what this home installed last: quit and open nodecode again to run it"
+                       (effective-version) version)
+               (format nil "the organism this shell attached to runs ~:[build ~a; this shell is ~a~;a ~
+                            build older than this shell (~*~a) — it does not report its own~]~
+                            ~:[~; · `nodecode gateway restart' moves the gateway to this build~]"
+                       (eq build :older) version (effective-version) (nlk:gateway-installed-p)))
+           ;; It names something to do, so it stays until it is closed.
+           :error-p nil :stays t)))))
+
+(defun ask-organism-restart (program model from)
+  "Ask the organism MODEL attached to, running FROM, to restart onto this
+shell's build -- the release its home installed last -- once no turn is in
+flight, and say so on PROGRAM's shell; or say plainly why it cannot, that
+turns may fail on it meanwhile, and what moves it."
+  ;; Off the UI thread: three localhost calls, each bounded. The restart
+  ;; ends this shell's link, and the reconnector attaches it again to
+  ;; whatever serves next.
+  (let ((mine (effective-version)))
+    (flet ((say (control &rest args)
+             (post-shell-notice program (apply #'format nil control args) :error-p nil :stays t)))
+      (handler-case
+          (let* ((identity (gateway-model-http-call model :get "/api/gateway/identity" nil :read-timeout 5))
+                 (started (and (hash-table-p identity) (gethash "started_at" identity)))
+                 (service (gateway-model-http-call model :get "/api/gateway/service" nil :read-timeout 5))
+                 (runs (and (hash-table-p service) (gethash "runs" service)))
+                 (restart (and (hash-table-p service) (gethash "restart" service)))
+                 (fix (cond ((equal runs "unit") "`nodecode gateway restart' moves it")
+                            ((equal runs "shell") "quitting the shell that started it moves it")
+                            (t (format nil "stopping it~@[ (pid ~a)~] and opening nodecode again moves it"
+                                       (and (hash-table-p service) (gethash "pid" service)))))))
+            (cond ((equal (car *organism-restart-asked*) from)
+                   ;; Asked already: still waiting for idle, or back on the same build.
+                   (unless (equal (cdr *organism-restart-asked*) started)
+                     (setf *organism-restart-asked* (cons from started))
+                     (say "the organism restarted and still runs ~a, not this shell's ~a: what starts it names that build, and turns here may fail · ~a"
+                          from mine fix)))
+                  ((not (and (hash-table-p restart) (gethash "able" restart)))
+                   (say "the organism this shell attached to runs ~a, not this shell's ~a, and cannot restart itself~@[ (~a)~]: turns here may fail · ~a"
+                        from mine (and (hash-table-p restart) (gethash "text" restart)) fix))
+                  ((not (gethash "restart_idle" service))
+                   ;; A gateway that predates the idle hold would restart at
+                   ;; once, stopping the turns it runs for other sessions.
+                   (say "the organism this shell attached to runs ~a, older than this shell's ~a, and cannot wait for its turns to end before it restarts: turns here may fail · ~a, stopping any turn in flight"
+                        from mine fix))
+                  (t
+                   (gateway-model-http-call model :post "/api/gateway/restart"
+                                            (json-object "when" "idle") :read-timeout 5)
+                   (setf *organism-restart-asked* (cons from started))
+                   (say "the organism this shell attached to runs ~a; this shell runs ~a, what this home installed last: the organism restarts onto it once no turn is running, and this shell attaches again"
+                        from mine))))
+        (error (condition)
+          (say "the organism this shell attached to runs ~a, not this shell's ~a, and could not be asked to restart (~a): turns here may fail"
+               from mine condition))))))
 
 (defun post-shell-notice (prog text &key (error-p t) stays answer)
   "Say TEXT on PROG's shell from any thread (SURFACE-SYSTEM-NOTICE: a toast,
@@ -2713,7 +2896,7 @@ gateway."
   ;; (gateway.lisp ATTACH-LOOPBACK-GATEWAY-PEER) must not drift: this is the
   ;; whole of what attaching means.
   (nlk:note-boot-phase "connected")
-  (note-organism-build program build-payload)
+  (note-organism-build program build-payload model)
   ;; Read the session directory once, behind the paint: the /sessions
   ;; picker then has rows for the first keystroke instead of only the
   ;; reading copy. One in flight per shell — a reconnect the cache already
@@ -2726,7 +2909,8 @@ gateway."
   ;; or /sessions must not re-attach the boot session -- and the session
   ;; its preview lane follows. The subscribe is what proves the link:
   ;; its frames carry the replay that paints the transcript.
-  (send-subscribe link (subscription-entries model)))
+  (send-subscribe link (subscription-entries model))
+  (note-shell-presence model.session-id))
 
 (defun gateway-client (port token)
   "A WebSocket client of the gateway at PORT, TOKEN its bearer when there is one."
@@ -2763,6 +2947,9 @@ session the shell ended on, or NIL when it never attached."
   ;; STORE-PATH also names the store whose sidecar the ladder re-resolves
   ;; after a sustained outage.
   (engage-theme)
+  ;; Programs outside the organism read which session this shell is on
+  ;; from its presence record (NOTE-SHELL-PRESENCE).
+  (open-shell-presence)
   (let* ((pinned (and port t))
          (port (or port (live-published-endpoint store-path)))
          (token (gateway-configured-operator-token))
@@ -3192,7 +3379,8 @@ nodecode manually"
                         (dolist (thread (remove nil (list boot-thread takeover)))
                           (nlk::%join-bounded thread 5))
                         (stop-front :why (and quit "quit")
-                                    :wait (not nlk:*profile-switch-parked*)))
+                                    :wait (not nlk:*profile-switch-parked*))
+                        (close-shell-presence))
            (call-with-severed-stdio (stdio-log-path store-path)
              (lambda ()
                (call-with-tui-error-capture prog
@@ -6997,6 +7185,7 @@ resubscribe — the replay that answers rebuilds the transcript."
       (pin-transcript-bottom model)
       (render-state model))
     (send-subscribe model.ws (list session-id))
+    (note-shell-presence session-id)
     ;; The facts this shell held were the session it left: its pin, its
     ;; effort. The switch blanked them (INVALIDATE-GATEWAY-MODEL-FACTS) and
     ;; nothing else refetches for a switch -- the gateway broadcasts

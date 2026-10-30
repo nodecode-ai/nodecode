@@ -4,10 +4,10 @@
 ;;;;
 ;;;; Whole-tree workspace capture into a bare shadow repository at
 ;;;; <home>/snapshots/<key>/, KEY the digest of the workspace's canonical path,
-;;;; driven through the git CLI. The store sits outside every work tree: git
-;;;; reads a repository's config, hooks and attributes from its own folder,
-;;;; so a store inside the workspace is one a cloned repo could ship, and its
-;;;; core.fsmonitor or a filter driver would run at the first capture.
+;;;; driven through the git CLI. The store belongs to the configured home,
+;;;; not a repository a cloned workspace could ship with an fsmonitor hook
+;;;; or a filter driver. When that home is inside the workspace, the shared
+;;;; snapshot storage is excluded from capture.
 ;;;; Content addressing makes unchanged captures free (same tree sha) and
 ;;;; dedups blobs across sessions; the repack lane compacts loose objects
 ;;;; into packfile delta chains so history costs deltas, not copies.
@@ -191,6 +191,16 @@ SAVE-LISP-AND-DIE or fork."
   "The file NAME inside STORE's shadow git directory."
   (merge-pathnames name (uiop:ensure-directory-pathname (snapshot-store-git-dir store))))
 
+(defun snapshot-storage-path (store)
+  "The shared snapshot storage relative to STORE's workspace, or NIL outside it."
+  (let ((relative (uiop:subpathp
+                   (uiop:pathname-parent-directory-pathname
+                    (truename (snapshot-store-git-dir store)))
+                   (truename (snapshot-store-workspace store)))))
+    (when relative
+      (let ((path (uiop:unix-namestring relative)))
+        (if (zerop (length path)) "." path)))))
+
 (defun write-store-exclude (store)
   (with-output-file (stream (snapshot-store-file store "info/exclude"))
     ;; An undo must never roll back the event log that recorded it — hence
@@ -272,6 +282,11 @@ refusals."
                                  ("core.symlinks" "true"))
             do (run-snapshot-git store (list "config" key value) :with-work-tree nil)))
     (write-store-exclude store)
+    ;; Ignore rules do not untrack storage captured by an earlier version.
+    (when-let (storage (snapshot-storage-path store))
+      (bt2:with-lock-held ((capture-lock store))
+        (run-snapshot-git store (list "--literal-pathspecs" "rm" "-r" "-f" "--cached" "--quiet"
+                                      "--ignore-unmatch" "--" storage))))
     (values store nil)))
 
 ;;; --- capture and anchor --------------------------------------------------
@@ -327,7 +342,10 @@ absent, unreadable, or larger than +SNAPSHOT-INDEX-DIGEST-CAP+."
   ;; (CAPTURE-LOCK): a deferred capture still reading the tree and a completion
   ;; capture arriving behind it wait, never collide on index.lock.
   (bt2:with-lock-held ((capture-lock store))
-    (run-snapshot-git store (list "add" "-A" "--ignore-errors"))
+    (run-snapshot-git store
+                      (append (list "add" "-A" "--ignore-errors")
+                              (when-let (storage (snapshot-storage-path store))
+                                (list "--" "." (concatenate 'string ":(top,exclude,literal)" storage)))))
     (let* ((digest (index-digest store))
            (entry (and digest (index-trees store)))
            (tree (or (and (equal (car entry) digest) (cdr entry))

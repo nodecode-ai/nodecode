@@ -69,29 +69,53 @@ home and the store, and what a restart and a stop would do here."
                    :opt "store" store
                    :opt "store_bytes" (and store (store-bytes store))
                    "restart" (verb :restart)
+                   ;; A shell of a newer build asks its restart for the first
+                   ;; moment no turn is in flight; a gateway without this word
+                   ;; would restart at once, stopping every turn it runs.
+                   "restart_idle" t
                    "stop" (verb :stop)))))
 
-(defun lifecycle-http (verb &aux (mode (serving-mode (nlk:gateway-state))))
+(defvar *lifecycle-wait* nil
+  "The thread holding a stop or restart for the first moment no turn is in
+flight (LIFECYCLE-HTTP :IDLE), or NIL.")
+
+(defun lifecycle-http (verb &key idle &aux (mode (serving-mode (nlk:gateway-state))))
   "VERB (:RESTART or :STOP) this organism the way it runs, once the answer
-is out; refused, saying why, where it cannot be done from here."
+is out -- under IDLE, once no turn is in flight either; refused, saying why,
+where it cannot be done from here."
   (multiple-value-bind (text able) (lifecycle mode verb)
     (unless able
       (nlk::protocol-refuse :refused "~a" text))
-    ;; The process that answers is the one going away: the answer leaves
-    ;; first, and the page waits for the gateway to come back.
-    (spawn (format nil "gateway-~(~a~)" verb)
-      (sleep 0.3)
-      (cond ((member mode '(:serve :shell)) (serve-next verb))
-            ((eq verb :restart) (nlk:gateway-restart))
-            (t (nlk:gateway-off))))
-    (json-object "runs" (string-downcase mode) "text" text)))
+    (flet ((act ()
+             (cond ((member mode '(:serve :shell)) (serve-next verb))
+                   ((eq verb :restart) (nlk:gateway-restart))
+                   (t (nlk:gateway-off)))))
+      ;; The process that answers is the one going away: the answer leaves
+      ;; first, and the page waits for the gateway to come back. Held for
+      ;; idle, the first poll is that wait, and one hold serves every ask.
+      (if idle
+          (unless (and *lifecycle-wait* (bt2:thread-alive-p *lifecycle-wait*))
+            (setf *lifecycle-wait*
+                  (spawn (format nil "gateway-~(~a~)-idle" verb)
+                    (loop do (sleep *idle-poll-seconds*)
+                          while (ignore-errors (nlk:any-active-turn-p)))
+                    (act))))
+          (spawn (format nil "gateway-~(~a~)" verb)
+            (sleep 0.3)
+            (act))))
+    (json-object "runs" (string-downcase mode) "text" text :when idle "when" "idle")))
 
 (define-gateway-route handle-gateway-restart-http (env)
-  "POST /api/gateway/restart — this organism starts again on this build, with
-config.jsonc as it is now: its unit restarts it, a headless serve runs itself
-again; a shell's is refused, saying why."
+  "POST /api/gateway/restart — this organism starts again on what its home
+installed last, with config.jsonc as it is now: its unit restarts it, a
+headless serve runs itself again; one that cannot is refused, saying why. A
+body {\"when\": \"idle\"} holds it for the first moment no turn is in flight."
   (:route :post "/api/gateway/restart" "restart")
-  (lifecycle-http :restart))
+  ;; A caller from before the hold posts no body, or one that is not JSON:
+  ;; its restart is the one it always was, never a refusal.
+  (let ((request (ignore-errors (gateway-request-json env))))
+    (lifecycle-http :restart :idle (and (hash-table-p request)
+                                        (equal "idle" (gethash "when" request))))))
 
 (define-gateway-route handle-gateway-stop-http (env)
   "POST /api/gateway/stop — this organism stops: under its unit the gateway

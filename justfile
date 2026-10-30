@@ -160,6 +160,23 @@ footprint:
 feed-proof:
     @python3 src/tools/feed-proof.py ./nodecode
 
+# TARBALL is `just tarball's output; --from takes a tarball, a label or
+# stable (the default: what users run now), --keep the scratch.
+# Upgrade a running gateway of the last release onto TARBALL (~1 min).
+upgrade-proof tarball *args:
+    @python3 src/tools/upgrade-proof.py {{tarball}} {{args}}
+
+# Packs HEAD unless TARBALL is HEAD already packed, then packs the refused
+# release itself (one commit in the object store, no branch).
+# Upgrade a running gateway of HEAD onto a release it refuses live (~2 min).
+upgrade-proof-refused *tarball:
+    @src/tools/upgrade-proof-refused.sh {{tarball}}
+
+# A loopback Discord, a scripted model and two installed releases.
+# Keep a Discord bot answering through an upgrade onto TARBALL and a handoff (~3 min).
+upgrade-discord-proof tarball *args:
+    @python3 src/tools/upgrade-discord-proof.py {{tarball}} {{args}}
+
 # A loopback Discord and a scripted model; --list names the scenarios,
 # --only NAME,... runs some.
 # Run the Discord cell end to end (a few minutes).

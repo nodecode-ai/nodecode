@@ -521,6 +521,9 @@ their mark, then where the terms come from. No blank lines."
                         (connection-dialog-rows key check)
                         (constantly nil)
                         :kind :privacy
+                        ;; Nothing here searches or sums up, so the header is the title and one
+                        ;; blank: the verdict starts one row under the title, not three.
+                        :header-rows 2
                         :empty-label (cond ((eq check :checking) "Checking…")
                                            (key "Not checked yet")
                                            (t "No model chosen yet"))

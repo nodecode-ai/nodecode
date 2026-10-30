@@ -857,8 +857,11 @@ provider)."
 
 (defstruct (cell-folder (:copier nil) (:constructor %make-cell-folder))
   "One folder before it loads: its DIRECTORY, its NAME, and what its
-top-level .asd files declare — DECLARED-SYSTEMs, one per file, by name."
+top-level .asd files declare — DECLARED-SYSTEMs, one per file, by name.
+SOURCE is where its code is read from (OWN-CELL-DIRECTORY): DIRECTORY
+itself, but for an install of a folder this image ships."
   (directory nil)
+  (source nil)
   (name "" :type string)
   (systems '() :type list))
 
@@ -874,17 +877,57 @@ top-level .asd files declare — DECLARED-SYSTEMs, one per file, by name."
                                 (loop for declared in folder.systems append declared.depends-on))
                      :test #'string-equal))
 
-(defun make-cell-folder (directory)
-  "DIRECTORY as a CELL-FOLDER, its .asd files read as data."
+;;; The entry under the one folder says which cell is installed; the build
+;;; says which code. An install leads into whichever tree the last build to
+;;; boot the home pointed it at (REFRESH-INSTALLED-CELLS), and ASDF reads the
+;;; link again at every search: a channel's LOAD-SYSTEM at its start, minutes
+;;; after the boot. A process of another build booting the same home in
+;;; between -- a second unit, the gateway an update is replacing -- turned
+;;; that search into the other build's source compiled against this core: the
+;;; channel kit's DEFPACKAGE clashed with the one already loaded, and every
+;;; channel was refused until a restart. Read through this image's own folder,
+;;; a load never depends on where a link leads at that moment.
+(defun own-cell-directory (directory &optional (shipped-root (shipped-cells-directory)))
+  "The folder this image reads DIRECTORY's code from, DIRECTORY an entry of
+the one folder: this image's own shipped folder (SHIPPED-COUNTERPART) in
+place of an install of one -- a link wherever it leads now, a copy another
+build made -- else DIRECTORY itself."
+  ;; The rules are REFRESH-INSTALLED-CELLS', which points the same entries
+  ;; at the same folders: a link to the operator's own folder, to a folder
+  ;; this image does not ship or to nothing, a copy this image made and a
+  ;; folder of the operator's own read where they stand.
+  (let* ((directory (uiop:ensure-directory-pathname directory))
+         (parent (uiop:pathname-parent-directory-pathname directory))
+         (target (and shipped-root (symlink-target (merge-pathnames (folder-name directory) parent))))
+         (marker (and shipped-root (not target) (probe-file (merge-pathnames +installed-marker+ directory)))))
+    (or (cond (target
+               (shipped-counterpart (uiop:merge-pathnames*
+                                     (uiop:parse-native-namestring target :ensure-directory t)
+                                     parent)
+                                    shipped-root))
+              (marker
+               (let* ((lines (ignore-errors (marker-lines marker)))
+                      (from (first lines))
+                      (stamp (second lines)))
+                 (and (plusp (length from))
+                      (not (equal stamp *image-stamp*))
+                      (shipped-counterpart (uiop:parse-native-namestring from :ensure-directory t)
+                                           shipped-root)))))
+        directory)))
+
+(defun make-cell-folder (directory &aux (source (own-cell-directory directory)))
+  "DIRECTORY as a CELL-FOLDER, its .asd files read as data from where its
+code is read (OWN-CELL-DIRECTORY)."
   (%make-cell-folder
    :directory directory
+   :source source
    :name (folder-name directory)
    :systems (mapcar
              (lambda (name)
                ;; read, never loaded; a file that does not read is a bare record ASDF fails at load
                (if-let (form (ignore-errors
                               (read-defsystem-form
-                               (merge-pathnames (format nil "~a.asd" name) directory) name)))
+                               (merge-pathnames (format nil "~a.asd" name) source) name)))
                  (let* ((plist (cddr form))
                         (layer (eq (getf plist :class) 'layer))
                         (components (getf plist :components))
@@ -920,7 +963,7 @@ top-level .asd files declare — DECLARED-SYSTEMs, one per file, by name."
                                             odd)))))
                  (make-declared-system name)))
              ;; a primary system is named by its .asd file; sorted for a stable load
-             (sort (mapcar #'pathname-name (asd-files directory))
+             (sort (mapcar #'pathname-name (asd-files source))
                    #'string<))))
 
 (defun muffled-load (thunk &aux (*read-eval* t)
@@ -1594,7 +1637,9 @@ left (BEFORE for the first) against OWNERS. => the records, in load order."
   (when-let (translations (cell-output-translations folders))
     (asdf:initialize-output-translations translations))
   (ignore-errors (prune-stamp-cache *image-stamp* *peripheral-cache-directory*))
-  (dolist (folder folders) (pushnew folder.directory asdf:*central-registry* :test #'equal))
+  ;; Registered by where the code is read from, never by the entry: ASDF
+  ;; searches these again at every LOAD-SYSTEM (OWN-CELL-DIRECTORY).
+  (dolist (folder folders) (pushnew folder.source asdf:*central-registry* :test #'equal))
   ;; load order: peripherals before layers, by name, a folder after the siblings it :depends-on
   (let* ((folders (stable-sort (copy-list folders) #'string<
                                :key (lambda (folder)
@@ -1642,7 +1687,7 @@ left (BEFORE for the first) against OWNERS. => the records, in load order."
                          (remove-if-not
                           #'probe-file
                           (mapcar (lambda (file)
-                                    (merge-pathnames (format nil "~a.lisp" file) folder.directory))
+                                    (merge-pathnames (format nil "~a.lisp" file) folder.source))
                                   declared.files)))))
             (multiple-value-bind (handle paths)
                 (if (or scratch declared.problem)
@@ -1653,7 +1698,7 @@ left (BEFORE for the first) against OWNERS. => the records, in load order."
                      (unless (probe-file (merge-pathnames (format nil "~a/~a/" *image-stamp* folder.name)
                                                           *layer-cache-directory*))
                        (length declared.files))
-                     (mapcar #'cell-folder-directory
+                     (mapcar #'cell-folder-source
                              (remove-if (lambda (other)
                                           (some #'declared-system-layer
                                                 (cell-folder-systems other)))
@@ -1671,7 +1716,7 @@ left (BEFORE for the first) against OWNERS. => the records, in load order."
           ;; about to clear.
           (when (call-recording-failure
                  cell nil
-                 (lambda (&aux (bundle (merge-pathnames "vendor/bundle.lisp" folder.directory)))
+                 (lambda (&aux (bundle (merge-pathnames "vendor/bundle.lisp" folder.source)))
                    ;; ql:bundle-systems' contract: load bundle.lisp and every
                    ;; vendored system becomes findable. Peripherals carry their
                    ;; dependencies this way, so the operator's box needs no
@@ -1968,7 +2013,7 @@ before. NIL when neither applies."
                       (list (list (namestring shipped) (namestring fasl))))
                     (when *peripheral-cache-directory*
                       (loop for folder in folders
-                            for directory = (ignore-errors (truename folder.directory))
+                            for directory = (ignore-errors (truename folder.source))
                             when (and directory
                                       (notevery #'declared-system-layer folder.systems)
                                       (not (and shipped (uiop:subpathp directory shipped))))

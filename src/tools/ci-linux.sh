@@ -16,6 +16,11 @@
 #            keeps the SBCL build and quicklisp between runs. Never the release
 #            root (/var/tmp/nodecode-build): a publish on the same box must not
 #            share its caches with a CI run.
+#   upgrade  upgrade-discord-proof.py on that tarball: a gateway of the stable
+#            release, its Discord bot answering a loopback Discord, takes this
+#            build while it serves, then a gateway of this build takes the
+#            store over from an old one while an old process points the home's
+#            cell links back into its release; the bot must answer after each.
 #   suite    the core suite on that same SBCL and quicklisp, the shipped cells
 #            pulled into the checkout: compiled once, then run as CI_SHARDS
 #            (default 12) processes at once, shard I taking every test whose
@@ -172,6 +177,28 @@ if [ -n "$release_pid" ]; then
   fi
 fi
 
+# What a person's bot meets at an update. It needs this revision's tarball,
+# so it runs once the release build is done. A proof that cannot run (exit 2:
+# the stable release could not be fetched, say) is a warning, never a pass.
+step 'upgrade with a Discord bot (upgrade-discord-proof.py)'
+proof_rc=0
+tarball="$(ls "$out"/nodecode-"$(git rev-parse --short=9 HEAD)"-*-linux.tar.gz 2>/dev/null | head -1)"
+if [ -z "$tarball" ]; then
+  echo "ci-linux: no tarball of HEAD in $out for the upgrade proof" >&2
+  proof_rc=1
+else
+  set +e
+  python3 src/tools/upgrade-discord-proof.py "$tarball"
+  proof_rc=$?
+  set -e
+fi
+done_step upgrade
+end_group
+if [ "$proof_rc" = 2 ]; then
+  msg='the Discord upgrade proof could not run (exit 2); see its output above'
+  if [ -n "$gh_actions" ]; then echo "::warning title=upgrade proof::$msg"; else echo "ci-linux: $msg" >&2; fi
+fi
+
 printf '\nsuite: %s passed, %s failed (worst shard exit %s); log %s\n' "$passed" "$failed" "$rc" "$log"
 if [ "$failed" != 0 ]; then
   # Each FAIL line and the reasons indented under it.
@@ -183,6 +210,10 @@ fi
 printf 'time: %s, total %ss\n' "${times[*]}" "$((SECONDS - started))"
 if [ "$rc" != 0 ] || [ "$failed" != 0 ] || [ "$passed" = 0 ]; then
   [ "$passed" = 0 ] && tail -40 "$log"
+  exit 1
+fi
+if [ "$proof_rc" = 1 ]; then
+  echo 'ci-linux: the Discord bot did not keep answering through the upgrade (upgrade-discord-proof.py)' >&2
   exit 1
 fi
 echo 'ci-linux: green'

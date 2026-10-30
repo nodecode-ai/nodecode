@@ -491,7 +491,9 @@ Mutate receipt for each of PATHS."
   (nlk:json-object "workspace_diff"
     (nlk:json-object "files" (map 'vector (lambda (f) (apply #'nlk:make-json-object f)) files))))
 
-(defun edit-disclosure-state (&key failed (name "eval") (document t) second-file)
+(defun edit-disclosure-state (&key failed (name "eval") (document t) second-file (tail 0))
+  "An edit call's state; TAIL more added lines on each file's diff carry it
+past the head a shut file shows (*DIFF-PREVIEW-LINES*)."
   (let* ((args (nlk:json-object "form" (format nil ";; Update greeting~%(write-file path text)")))
          (state (nle::ingest-tool-call-fact nil "edit-call" name (shasht:write-json args nil) :turn-id "edit-turn")))
     (nle::ingest-tool-result-fact state "edit-call" name
@@ -499,18 +501,21 @@ Mutate receipt for each of PATHS."
       :turn-id "edit-turn" :error-p failed
       :metadata (when document
         (apply #'workspace-diff
-          (list "path" "greeting.txt" "added" 1 "removed" 1
-            "patch" (format nil "--- a/greeting.txt~%+++ b/greeting.txt~%@@ -1 +1 @@~%-hello old~%+hello new~%"))
+          (list "path" "greeting.txt" "added" (1+ tail) "removed" 1
+            "patch" (format nil "--- a/greeting.txt~%+++ b/greeting.txt~%@@ -1 +1,~d @@~%-hello old~%+hello new~%~{+greeting tail ~d~%~}"
+                            (1+ tail) (loop for k from 1 to tail collect k)))
           (when second-file
-            (list (list "path" "second-β.txt" "added" 1 "removed" 0
-              "patch" (format nil "--- /dev/null~%+++ b/second-β.txt~%@@ -0,0 +1 @@~%+second file tail~%")))))))))
+            (list (list "path" "second-β.txt" "added" (1+ tail) "removed" 0
+              "patch" (format nil "--- /dev/null~%+++ b/second-β.txt~%@@ -0,0 +1,~d @@~%+second file tail~%~{+second tail ~d~%~}"
+                              (1+ tail) (loop for k from 1 to tail collect k))))))))))
 
 (deftest edit-disclosure-uses-durable-diff-not-the-submitted-verb ()
   (dolist (mode '(:standard :developer))
     (let* ((nle::*tool-detail* mode) (nle::*expanded-tool-call* nil)
            (row (first (nle::transcript-rows (edit-disclosure-state))))
            (closed (nle::row-llines row 100)))
-      (is (equal (list (activity-label-text "Eval     Update greeting" "Eval · Update greeting") "   +1 -1 greeting.txt") (mapcar #'nle::lline-text closed)))
+      ;; Shut, a file shows its diff to *DIFF-PREVIEW-LINES*: a short one whole.
+      (is (equal (list (activity-label-text "Eval     Update greeting" "Eval · Update greeting") "   +1 -1 greeting.txt" "1 - hello old" "1 + hello new") (mapcar #'nle::lline-text closed)))
       (let ((spans (nle::lline-spans (second closed))))
         (is (subsetp '(:diff-added :diff-removed) (mapcar #'nle::mspan-tone spans)))
         (is (every (lambda (span) (equal '(:diff "edit-call" "greeting.txt") (nle::mspan-link span))) spans)))
@@ -547,25 +552,24 @@ Mutate receipt for each of PATHS."
 
 (deftest edit-disclosure-mouse-opens-direct-diff-and-closes ()
   (with-frame-model (model 100 40 :session-id "edit-disclosure-click" :tool-detail :standard
-                     :state (edit-disclosure-state))
-    ;; The live turn's run opens to the call; its line opens to the files
-    ;; it changed, brought into view.
-    (is (rows-carry-p "▸ Ran 1 command" (nle::compose-frame model)))
-    (is (rows-carry-p "Update greeting" (nle::compose-frame model)) "folded, the live run keeps its standing round listed")
-    (multiple-value-call #'click-at model (needle-cell "Ran 1 command" (nle::compose-frame model)))
-    (nle::scroll-transcript model :end)
-    (is (rows-carry-p "Update greeting +1 -1" (nle::compose-frame model)))
-    (click-at model 6 (frame-row-carrying model "Update greeting"))
-    (nle::scroll-transcript model :end)
-    (let ((y (frame-row-carrying model "+1 -1 greeting.txt")))
-      (click-at model (1+ (search "+1 -1" (aref (nle::frame-plain-rows model) (1- y)))) y)
-      (is (= y (frame-row-carrying model "+1 -1 greeting.txt")) "opening preserves the clicked file, even near the bottom")
-      (is (rows-carry-p "1 + hello new" (coerce (nle::chat-model-line-plain model) 'list)) "the diff, not a receipt, owns expanded content")
-      (nle::scroll-transcript model :line-down 4))
-    (is (rows-carry-p "1 + hello new" (nle::compose-frame model)) "scrolling reveals the diff below the anchored title")
-    (is (not (rows-carry-p "receipt-only-do-not-paint" (nle::compose-frame model))))
-    (let ((y (frame-row-carrying model "+1 -1 greeting.txt"))) (click-at model (1+ (search "+1 -1" (aref (nle::frame-plain-rows model) (1- y)))) y))
-    (is (not (rows-carry-p "1 + hello new" (nle::compose-frame model))))))
+                     :state (edit-disclosure-state :tail 20))
+    (flet ((transcript () (coerce (nle::chat-model-line-plain model) 'list)))
+      ;; The live turn's run names its edit and lists the call, the file it
+      ;; changed under it with its diff's head: no click to see an edit.
+      (is (rows-carry-p "▸ Edited 1 file +21 -1" (nle::compose-frame model)))
+      (is (rows-carry-p "Update greeting" (nle::compose-frame model)) "folded, the live run keeps its standing round listed")
+      (is (rows-carry-p "1 + hello new" (transcript)) "the diff, not a receipt, stands under the call")
+      (is (not (rows-carry-p "greeting tail 15" (transcript))) "past its head, the rest waits for a click")
+      (nle::scroll-transcript model :end)
+      (let ((y (frame-row-carrying model "+21 -1 greeting.txt")))
+        (click-at model (1+ (search "+21 -1" (aref (nle::frame-plain-rows model) (1- y)))) y)
+        (is (= y (frame-row-carrying model "+21 -1 greeting.txt")) "opening preserves the clicked file, even near the bottom")
+        (is (rows-carry-p "greeting tail 15" (transcript)) "opened, the whole diff"))
+      (is (not (rows-carry-p "receipt-only-do-not-paint" (nle::compose-frame model))))
+      (let ((y (frame-row-carrying model "+21 -1 greeting.txt")))
+        (click-at model (1+ (search "+21 -1" (aref (nle::frame-plain-rows model) (1- y)))) y))
+      (is (not (rows-carry-p "greeting tail 15" (transcript))) "closed, its head again")
+      (is (rows-carry-p "1 + hello new" (transcript))))))
 
 (deftest edit-disclosure-multifile-binary-and-bounded-documents ()
   (dolist (nle::*tool-detail* '(:standard :developer))
@@ -596,23 +600,25 @@ Mutate receipt for each of PATHS."
     (is (equal (activity-label-text "Eval     greeting.txt" "Eval · greeting.txt") (nle::lline-text (nle::tool-summary-lline row))))))
 
 (deftest edit-disclosure-files-toggle-independently-inside-completed-trail ()
-  (with-frame-model (model 120 50 :session-id "edit-files" :tool-detail :standard
-                     :state (nle::ingest-turn-terminal (edit-disclosure-state :second-file t)
+  ;; An ended turn's run stays shut, its edit listed with each file's diff
+  ;; to its head; a file's header opens the rest of that file alone.
+  (with-frame-model (model 120 90 :session-id "edit-files" :tool-detail :standard
+                     :state (nle::ingest-turn-terminal (edit-disclosure-state :second-file t :tail 20)
                                                        "completed" :turn-id "edit-turn"))
     (flet ((click (needle)
              (nlk:bind (((x y) (needle-cell needle (nle::compose-frame model))))
-               (click-at model x y))
-             (nle::scroll-transcript model :line-down 20)))
-      (is (rows-carry-p "▸ Ran 1 command" (nle::compose-frame model)) "an ended turn's run stands folded")
-      (click "Ran 1 command")
-      (click "Update greeting")
-      (click "+1 -1 greeting.txt")
-      (is (rows-carry-p "hello new" (coerce (nle::chat-model-line-plain model) 'list)))
-      (is (not (rows-carry-p "second file tail" (coerce (nle::chat-model-line-plain model) 'list))))
-      (click "+1 -0 second-β.txt")
-      (is (rows-carry-p "second file tail" (coerce (nle::chat-model-line-plain model) 'list)))
-      (is (not (rows-carry-p "hello new" (coerce (nle::chat-model-line-plain model) 'list))))
-      (click "+1 -0 second-β.txt")
-      (is (not (rows-carry-p "second file tail" (coerce (nle::chat-model-line-plain model) 'list))))
-      (is (rows-carry-p "+1 -1 greeting.txt" (nle::compose-frame model)) "closing one file keeps its call open, every file header with it")
-      (is (rows-carry-p "+1 -0 second-β.txt" (nle::compose-frame model))))))
+               (click-at model x y)))
+           (shown (needle) (rows-carry-p needle (coerce (nle::chat-model-line-plain model) 'list))))
+      (is (rows-carry-p "▸ Edited 2 files +42 -1" (nle::compose-frame model)) "an ended turn's run stands folded, named for its edits")
+      (is (and (shown "hello new") (shown "second file tail")) "both files' heads, unclicked")
+      (is (not (or (shown "greeting tail 15") (shown "second tail 15"))))
+      (click "+21 -1 greeting.txt")
+      (is (shown "greeting tail 15"))
+      (is (not (shown "second tail 15")))
+      (click "+21 -0 second-β.txt")
+      (is (shown "second tail 15"))
+      (is (not (shown "greeting tail 15")))
+      (click "+21 -0 second-β.txt")
+      (is (not (shown "second tail 15")))
+      (is (rows-carry-p "+21 -1 greeting.txt" (nle::compose-frame model)) "closing one file keeps every file header")
+      (is (rows-carry-p "+21 -0 second-β.txt" (nle::compose-frame model))))))
