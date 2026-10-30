@@ -172,6 +172,11 @@ upgrade-proof tarball *args:
 upgrade-proof-refused *tarball:
     @src/tools/upgrade-proof-refused.sh {{tarball}}
 
+# A loopback Discord, a scripted model and two installed releases.
+# Keep a Discord bot answering through an upgrade onto TARBALL and a handoff (~3 min).
+upgrade-discord-proof tarball *args:
+    @python3 src/tools/upgrade-discord-proof.py {{tarball}} {{args}}
+
 # A loopback Discord and a scripted model; --list names the scenarios,
 # --only NAME,... runs some.
 # Run the Discord cell end to end (a few minutes).

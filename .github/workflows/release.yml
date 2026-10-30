@@ -78,6 +78,12 @@ jobs:
         run: src/tools/upgrade-proof-refused.sh release-out/nodecode-${{ needs.check.outputs.label }}-x86_64-linux.tar.gz
         env:
           NODECODE_BUILD_HOME: /var/tmp/nodecode-ci-build
+      # And a person's bot through all of it: a gateway of the release stable
+      # names now, its Discord bot answering, takes this build; then this
+      # build's gateway takes over from an old one while an old process points
+      # the home's cell links back into its release. The bot answers after each.
+      - name: Keep a Discord bot answering through the upgrade (upgrade-discord-proof.py)
+        run: python3 src/tools/upgrade-discord-proof.py release-out/nodecode-${{ needs.check.outputs.label }}-x86_64-linux.tar.gz
       - uses: actions/upload-artifact@v4
         with:
           name: release-x86_64-linux
