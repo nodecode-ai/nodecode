@@ -219,11 +219,17 @@ if [ -n "$leak" ]; then
   printf '%s\n' "$leak" | head -5 >&2
   exit 1
 fi
-mkdir -p "$repo/$OUT"
-rm -rf "$repo/$OUT/$name"
-mv "$stage" "$repo/$OUT/$name"
+# OUT is under the checkout unless it names a folder from the root: CI keeps
+# its tarball in a scratch folder of its own.
+case "$OUT" in
+  /*) out_dir="$OUT" ;;
+  *) out_dir="$repo/$OUT" ;;
+esac
+mkdir -p "$out_dir"
+rm -rf "$out_dir/$name"
+mv "$stage" "$out_dir/$name"
 
-cd "$repo/$OUT"
+cd "$out_dir"
 rm -f "$name.tar.gz" "$name.tar.gz.sha256"
 # gzip, not zstd: measured 26 MB against 25 MB on this tree, and a bare
 # debian:trixie-slim has tar but no zstd -- a megabyte is not worth handing
