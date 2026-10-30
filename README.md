@@ -22,7 +22,7 @@
 
 <img alt="Nodecode in a terminal. Asked &quot;you can't read PDFs. teach yourself.&quot;, it defines read-pdf, the layer keeps it, and it reads invoices/0421.pdf: Globex owes $1,240.00, due Oct 24, unpaid." src="resources/assets/readme/read-pdf.gif" width="100%">
 
-<p align="center"><sub><i>you can't read PDFs. teach yourself.</i> It defines <code>read-pdf</code>, keeps it, and reads the invoice. A take from the launch trailer: the shell and every evaluation are real, the model's reply is scripted so the take repeats.</sub></p>
+<p align="center"><sub><i>you can't read PDFs. teach yourself.</i> It defines <code>read-pdf</code>, keeps it, and reads the invoice. The shell and every evaluation are real; the model's replies are scripted so the take repeats.</sub></p>
 
 Nodecode is an agent that rewrites itself. It runs as one process in SBCL, a Common Lisp system, and shells attach to it. The model has one tool: it evaluates Lisp in the running program and keeps what it defines.
 
