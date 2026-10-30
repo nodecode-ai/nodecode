@@ -262,6 +262,110 @@ OCTETS TRUNCATED-P); past DEADLINE, an internal-real-time, it signals."
   (:documentation "An HTTP exchange past its TIMEOUT: a deadline's timeout
 that is an error too, so a caller's handler for either takes it."))
 
+;;; --- the proxy a dial goes through ------------------------------------------
+;;; dexador reads HTTPS_PROXY once, when it loads, into DEX:*DEFAULT-PROXY*:
+;;; in a dumped binary that is the build machine's environment, never the
+;;; launch's. A process run behind a proxy -- a sandbox that leaves it no
+;;; network of its own but one proxy -- names it in its environment, so every
+;;; dial asks PROXY-FOR, which reads the environment at the call.
+
+(defun proxy-environment-value (&rest names)
+  "The first of the environment variables NAMES that is set and not blank,
+trimmed; NIL when none is."
+  (loop for name in names
+        for value = (string-trim '(#\Space #\Tab #\Newline #\Return) (or (uiop:getenv name) ""))
+        when (plusp (length value)) return value))
+
+(defun ipv4-octets (text)
+  "TEXT's four octets as a list when it is a dotted IPv4 literal, else NIL."
+  (let ((parts (uiop:split-string text :separator ".")))
+    (when (= 4 (length parts))
+      (loop for part in parts
+            for octet = (and (plusp (length part)) (<= (length part) 3)
+                             (every #'digit-char-p part) (parse-integer part))
+            unless (and octet (<= octet 255)) return nil
+            collect octet))))
+
+(defun ipv4-integer (octets)
+  "OCTETS, four of them, as one 32-bit integer."
+  (reduce (lambda (sum octet) (+ (* sum 256) octet)) octets :initial-value 0))
+
+(defun loopback-host-p (host)
+  "Whether HOST names this machine's loopback: no host at all, localhost or a
+name under it, 127.0.0.0/8, or ::1."
+  (let ((host (string-downcase (string-trim "[]" (or host "")))))
+    (or (zerop (length host))
+        (string= host "localhost")
+        (uiop:string-suffix-p host ".localhost")
+        (member host '("::1" "0:0:0:0:0:0:0:1") :test #'string=)
+        (eql 127 (first (ipv4-octets host))))))
+
+(defun no-proxy-entry-covers-p (entry host port)
+  "Whether ENTRY, one item of a NO_PROXY list, covers HOST (lower case, no
+brackets) at PORT: `*'; an IPv4 literal or CIDR; a bracketed or bare IPv6
+literal; or a name, which covers itself and every name under it, a leading
+dot or `*.' allowed. A `:PORT' after an IPv4 or a name, or after a
+bracketed IPv6 literal, limits the entry to that port."
+  (let* ((entry (string-downcase entry))
+         (colons (count #\: entry))
+         (bracket-end (and (plusp (length entry)) (char= #\[ (char entry 0)) (position #\] entry)))
+         (split (cond (bracket-end (and (< (1+ bracket-end) (length entry))
+                                        (char= #\: (char entry (1+ bracket-end)))
+                                        (1+ bracket-end)))
+                      ((= colons 1) (position #\: entry))))
+         (name (string-trim "[]" (if split (subseq entry 0 split) entry)))
+         (only-port (and split (parse-integer entry :start (1+ split) :junk-allowed t))))
+    (when (or (null only-port) (eql only-port port))
+      (let ((slash (position #\/ name)))
+        (cond ((string= name "*") t)
+              (slash
+               (let ((network (ipv4-octets (subseq name 0 slash)))
+                     (bits (parse-integer name :start (1+ slash) :junk-allowed t))
+                     (address (ipv4-octets host)))
+                 (when (and network address bits (<= 0 bits 32))
+                   (let ((shift (- 32 bits)))
+                     (= (ash (ipv4-integer network) (- shift))
+                        (ash (ipv4-integer address) (- shift)))))))
+              ((or (ipv4-octets name) (find #\: name)) (string= name host))
+              (t
+               (let ((name (string-left-trim "." (if (uiop:string-prefix-p "*." name)
+                                                    (subseq name 2)
+                                                    name))))
+                 (and (plusp (length name))
+                      (or (string= name host)
+                          (uiop:string-suffix-p host (concatenate 'string "." name)))))))))))
+
+(defun proxy-for (url &optional explicit)
+  "The proxy a dial to URL goes through: EXPLICIT when given; else none for
+a loopback host, or for a host the environment's NO_PROXY (no_proxy) list
+covers; else HTTPS_PROXY (https_proxy) for https and wss, HTTP_PROXY
+(http_proxy) for http and ws, then ALL_PROXY (all_proxy); NIL when none is
+set. The environment is read at every call."
+  (or explicit
+      (let* ((uri (ignore-errors (quri:uri url)))
+             (scheme (string-downcase (or (and uri (quri:uri-scheme uri)) "")))
+             (host (string-downcase (string-trim "[]" (or (and uri (quri:uri-host uri)) ""))))
+             (port (and uri (quri:uri-port uri)))
+             (exempt (proxy-environment-value "NO_PROXY" "no_proxy")))
+        (unless (or (loopback-host-p host)
+                    (and exempt
+                         (some (lambda (entry)
+                                 (let ((entry (string-trim '(#\Space #\Tab) entry)))
+                                   (and (plusp (length entry))
+                                        (no-proxy-entry-covers-p entry host port))))
+                               (uiop:split-string exempt :separator ","))))
+          (if (member scheme '("https" "wss") :test #'string=)
+              (proxy-environment-value "HTTPS_PROXY" "https_proxy" "ALL_PROXY" "all_proxy")
+              (proxy-environment-value "HTTP_PROXY" "http_proxy" "ALL_PROXY" "all_proxy"))))))
+
+(defun forget-build-proxy ()
+  "Drop the proxy dexador read from the build machine's environment: every
+dial in this image asks PROXY-FOR instead."
+  (setf dex:*default-proxy* nil))
+
+(forget-build-proxy)
+(pushnew 'forget-build-proxy sb-ext:*init-hooks*)
+
 (defun http (method url &key headers content (timeout 30) (connect-timeout (min 10 timeout))
                               max-bytes binary stream pool proxy)
   "One HTTP exchange that answers every status as a value. => (values BODY
@@ -295,7 +399,7 @@ STREAM, the body; past them it signals HTTP-TIMEOUT."
                   (dex:request url :method method :headers headers :content content
                                    :connect-timeout connect-timeout :read-timeout timeout
                                    :max-redirects 5 :use-connection-pool pool :keep-alive (and pool t)
-                                   :proxy (or proxy dex:*default-proxy*)
+                                   :proxy (proxy-for url proxy)
                                    :want-stream (or stream (and max-bytes t))
                                    :force-binary (or binary (and max-bytes t)))))
             (if max-bytes

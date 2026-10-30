@@ -64,8 +64,8 @@
 
 (defun provider-connected-p ()
   "Whether any provider resolves a credential from anywhere: a config entry
-carrying credentials, an auth.json entry, or the default lane's
-environment."
+carrying credentials, an auth.json entry, a key in a file of its own under
+secrets/, or the default lane's environment."
   ;; A default provider no lane serves answers T: that is an operator with a
   ;; config to fix (the first frame's refusal names the key), not a fresh box.
   (or (and (configured-provider-inventory) t)

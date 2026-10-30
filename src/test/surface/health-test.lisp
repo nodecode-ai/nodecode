@@ -38,6 +38,16 @@
     (is (eq :danger (nle::health-fact-tone fact)) "the landing screen shows :danger")
     (is (search "restart" (nle::health-fact-remedy fact)))))
 
+(deftest health-keeps-quiet-about-a-sandboxed-shells-floor
+    (with-saved-globals ((nlk:*pristine* nil) (nlk::*pristine-reason* nil) (nle::*sandboxed-shell* nil)))
+  ;; `nodecode --sandbox' keeps the shell on the binary alone by design and
+  ;; loads the folder in the jailed organism: no fault, so no :danger row on
+  ;; the landing screen and no setup issue.
+  (setf nlk:*pristine* t nle::*sandboxed-shell* t)
+  (is (null (health-fact-named :self)) "a sandboxed shell's floor is no fault")
+  (setf nle::*sandboxed-shell* nil)
+  (is (health-fact-named :self) "a plain pristine launch still says it"))
+
 (deftest health-says-when-no-model-is-pinned (with-saved-globals (nle::*model-config-refusal*))
   ;; A fresh image carries a baked default, so the footer always names SOME
   ;; model and an operator reads that as configured. It is not the same

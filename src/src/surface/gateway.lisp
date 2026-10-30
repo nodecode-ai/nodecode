@@ -4748,6 +4748,12 @@ the boot's pages back once the peripherals are up (a headless owner's boot)."
     (handler-case (local-port last)
       (usocket:socket-error () nil))))
 
+(defun gateway-port-from-environment ()
+  "The port NODECODE_GATEWAY_PORT names, 1 to 65535, or NIL: how a sandboxed
+shell tells the jailed gateway which loopback port its bridge serves."
+  (let ((port (ignore-errors (parse-integer (or (uiop:getenv "NODECODE_GATEWAY_PORT") "")))))
+    (and (integerp port) (< 0 port 65536) port)))
+
 (defun open-gateway-listener (&key (port *gateway-port*) operator-token
                       (workspace-captures
                        ;; An absent file, section or key, or an unreadable file, says nothing.
@@ -4784,7 +4790,9 @@ SERVE-GATEWAY."
         *gateway-connection-read-timeout*)
   ;; Port 0: bind 127.0.0.1:0, read the kernel's assignment, release — the
   ;; ephemeral allocator never hands out a port still bound or lingering.
-  (let ((bound (if (zerop port) (or (remembered-port) (local-port 0)) port)))
+  (let ((bound (if (zerop port)
+                   (or (gateway-port-from-environment) (remembered-port) (local-port 0))
+                   port)))
     (setf *gateway-handler*
           (clack:clackup (make-sync-app)
                          :port bound
