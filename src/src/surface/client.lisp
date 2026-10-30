@@ -2466,28 +2466,116 @@ organism's last note comes again with every attach while it is fresh.")
   "The other build this shell last said it attached to, so a reconnect to
 the same organism says nothing new.")
 
-(defun note-organism-build (program payload)
+(defvar *organism-restart-asked* nil
+  "The organism this shell asked to restart onto its own build, as (BUILD .
+STARTED-AT) off its identity route: one that comes back on that same build
+is said, never asked again.")
+
+(defun organism-build-stance (label)
+  "How this shell stands to the organism it attached to, LABEL the release
+label the connect ack names, NIL when it names none: :SAME; :ORGANISM-STALE
+when this shell runs the release the home's `current' names and the organism
+does not, so the organism is the one to move; :SHELL-STALE when the organism
+runs `current' and this shell does not, so the shell is the one to reopen;
+else :APART, neither of them on `current' (a checkout's shell, a home with no
+installed release)."
+  (let ((mine (effective-label)) (current (ignore-errors (current-label))))
+    (cond ((equal label mine) :same)
+          ((null current) :apart)
+          ((and (installed-release-root) (equal mine current)) :organism-stale)
+          ((equal label current) :shell-stale)
+          (t :apart))))
+
+(defun note-organism-build (program payload &optional model)
   "Say once, when the organism this shell attached to runs another build
-than the shell — an update landed and the gateway still runs the build it
-started with — which the two are, and how the gateway moves over."
+than the shell, which the two are and what moves them together: an organism
+behind the release the home installed last restarts onto it once no turn is
+in flight (ASK-ORGANISM-RESTART, with MODEL the shell's gateway model)."
   ;; PAYLOAD is the connect ack's. An ack carrying NO version is itself the
   ;; answer rather than nothing to say: the field arrives with the gateway
   ;; that knows to send it, so an organism that sends none predates that build
   ;; and is certainly older than this shell. Without this, a freshly installed
   ;; binary attached to a pre-upgrade organism would show no sign of the
   ;; mismatch.
+  ;;
+  ;; A shell carrying on against an older organism runs every turn on that
+  ;; build's code, which a newer shell's session can need and not find: an
+  ;; update that build refused live left it there, and each turn failed until
+  ;; it was restarted by hand. A notice was all a shell did about it.
   (let* ((version (and (hash-table-p payload) (gethash "version" payload)))
-         (build (if (stringp version) version :older)))
-    (unless (member build (list (effective-version) *organism-build-noted*) :test #'equal)
+         (build (if (stringp version) version :older))
+         (from (if (stringp version) version "an older build"))
+         (stance (organism-build-stance (and (stringp version) (version-label version))))
+         (moving (and model (eq stance :organism-stale))))
+    ;; The restart this shell asked for landed: said, and the ask is done.
+    (when (and (eq stance :same) *organism-restart-asked*)
+      (setf *organism-restart-asked* nil)
+      (post-shell-notice program (format nil "the organism restarted and now runs ~a, this shell's build"
+                                         (effective-version))
+                         :error-p nil))
+    ;; Once asked, every attach to that build asks again whether it restarted.
+    (unless (or (eq stance :same)
+                (and (member build (list (effective-version) *organism-build-noted*) :test #'equal)
+                     (not (and moving (equal from (car *organism-restart-asked*))))))
       (setf *organism-build-noted* build)
-      (post-shell-notice
-       program
-       (format nil "the organism this shell attached to runs ~:[build ~a; this shell is ~a~;a ~
-                    build older than this shell (~*~a) — it does not report its own~]~
-                    ~:[~; · `nodecode gateway restart' moves the gateway to this build~]"
-               (eq build :older) version (effective-version) (nlk:gateway-installed-p))
-       ;; It names something to do, so it stays until it is closed.
-       :error-p nil :stays t))))
+      (if moving
+          (spawn "organism-restart" (ask-organism-restart program model from))
+          (post-shell-notice
+           program
+           (if (eq stance :shell-stale)
+               (format nil "this shell runs ~a, older than the organism it attached to (~a), which is what this home installed last: quit and open nodecode again to run it"
+                       (effective-version) version)
+               (format nil "the organism this shell attached to runs ~:[build ~a; this shell is ~a~;a ~
+                            build older than this shell (~*~a) — it does not report its own~]~
+                            ~:[~; · `nodecode gateway restart' moves the gateway to this build~]"
+                       (eq build :older) version (effective-version) (nlk:gateway-installed-p)))
+           ;; It names something to do, so it stays until it is closed.
+           :error-p nil :stays t)))))
+
+(defun ask-organism-restart (program model from)
+  "Ask the organism MODEL attached to, running FROM, to restart onto this
+shell's build -- the release its home installed last -- once no turn is in
+flight, and say so on PROGRAM's shell; or say plainly why it cannot, that
+turns may fail on it meanwhile, and what moves it."
+  ;; Off the UI thread: three localhost calls, each bounded. The restart
+  ;; ends this shell's link, and the reconnector attaches it again to
+  ;; whatever serves next.
+  (let ((mine (effective-version)))
+    (flet ((say (control &rest args)
+             (post-shell-notice program (apply #'format nil control args) :error-p nil :stays t)))
+      (handler-case
+          (let* ((identity (gateway-model-http-call model :get "/api/gateway/identity" nil :read-timeout 5))
+                 (started (and (hash-table-p identity) (gethash "started_at" identity)))
+                 (service (gateway-model-http-call model :get "/api/gateway/service" nil :read-timeout 5))
+                 (runs (and (hash-table-p service) (gethash "runs" service)))
+                 (restart (and (hash-table-p service) (gethash "restart" service)))
+                 (fix (cond ((equal runs "unit") "`nodecode gateway restart' moves it")
+                            ((equal runs "shell") "quitting the shell that started it moves it")
+                            (t (format nil "stopping it~@[ (pid ~a)~] and opening nodecode again moves it"
+                                       (and (hash-table-p service) (gethash "pid" service)))))))
+            (cond ((equal (car *organism-restart-asked*) from)
+                   ;; Asked already: still waiting for idle, or back on the same build.
+                   (unless (equal (cdr *organism-restart-asked*) started)
+                     (setf *organism-restart-asked* (cons from started))
+                     (say "the organism restarted and still runs ~a, not this shell's ~a: what starts it names that build, and turns here may fail · ~a"
+                          from mine fix)))
+                  ((not (and (hash-table-p restart) (gethash "able" restart)))
+                   (say "the organism this shell attached to runs ~a, not this shell's ~a, and cannot restart itself~@[ (~a)~]: turns here may fail · ~a"
+                        from mine (and (hash-table-p restart) (gethash "text" restart)) fix))
+                  ((not (gethash "restart_idle" service))
+                   ;; A gateway that predates the idle hold would restart at
+                   ;; once, stopping the turns it runs for other sessions.
+                   (say "the organism this shell attached to runs ~a, older than this shell's ~a, and cannot wait for its turns to end before it restarts: turns here may fail · ~a, stopping any turn in flight"
+                        from mine fix))
+                  (t
+                   (gateway-model-http-call model :post "/api/gateway/restart"
+                                            (json-object "when" "idle") :read-timeout 5)
+                   (setf *organism-restart-asked* (cons from started))
+                   (say "the organism this shell attached to runs ~a; this shell runs ~a, what this home installed last: the organism restarts onto it once no turn is running, and this shell attaches again"
+                        from mine))))
+        (error (condition)
+          (say "the organism this shell attached to runs ~a, not this shell's ~a, and could not be asked to restart (~a): turns here may fail"
+               from mine condition))))))
 
 (defun post-shell-notice (prog text &key (error-p t) stays answer)
   "Say TEXT on PROG's shell from any thread (SURFACE-SYSTEM-NOTICE: a toast,
@@ -2795,7 +2883,7 @@ gateway."
   ;; (gateway.lisp ATTACH-LOOPBACK-GATEWAY-PEER) must not drift: this is the
   ;; whole of what attaching means.
   (nlk:note-boot-phase "connected")
-  (note-organism-build program build-payload)
+  (note-organism-build program build-payload model)
   ;; Read the session directory once, behind the paint: the /sessions
   ;; picker then has rows for the first keystroke instead of only the
   ;; reading copy. One in flight per shell — a reconnect the cache already

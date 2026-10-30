@@ -1270,6 +1270,131 @@ it is still open SECONDS later."
       (nle::note-organism-build nil (nlk:json-object "version" nle::*user-agent-version*))
       (is (= 2 (length said)) "and this shell's own build says nothing"))))
 
+(deftest a-shell-on-what-the-home-installed-last-moves-an-older-organism-onto-it
+    (let ((said '()) (asked '())))
+  ;; A shell of the release `current' names, attached to an organism that
+  ;; still runs the build before it -- an update it refused live, a gateway
+  ;; nobody restarted -- runs every turn on that older build's code. Said and
+  ;; left there, every turn failed until the organism was restarted by hand.
+  ;; The shell asks it to restart onto `current' once no turn is in flight,
+  ;; and says so; the organism's own build and a shell off `current' change
+  ;; nothing.
+  (with-stubbed-fdefinitions
+      ((nle::effective-label () "tnew")
+       (nle::current-label () "tnew")
+       (nle::installed-release-root () #p"/releases/")
+       (nle::ask-organism-restart (program model from) (push from asked) nil)
+       (nle::post-shell-notice (prog text &key error-p stays answer) (push text said) nil))
+    (let ((nle::*organism-build-noted* nil) (nle::*organism-restart-asked* nil))
+      (nle::note-organism-build nil (nlk:json-object "version" "0.1.4+told") :model)
+      (loop repeat 200 until asked do (sleep 0.01))
+      (is (equal '("0.1.4+told") asked) "an older organism is asked to move onto this shell's build")
+      (is (null said) "by the ask, which says so itself")
+      (nle::note-organism-build nil (nlk:json-object "version" "0.1.5+tnew") :model)
+      (sleep 0.05)
+      (is (equal '("0.1.4+told") asked) "an organism on this shell's release is never asked")
+      (is (null said) "nor said, whatever build number it carries")))
+  (setf said '() asked '())
+  (with-stubbed-fdefinitions
+      ((nle::effective-label () "told")
+       (nle::current-label () "tnew")
+       (nle::installed-release-root () #p"/releases/")
+       (nle::ask-organism-restart (program model from) (push from asked) nil)
+       (nle::post-shell-notice (prog text &key error-p stays answer) (push text said) nil))
+    (let ((nle::*organism-build-noted* nil) (nle::*organism-restart-asked* nil))
+      (nle::note-organism-build nil (nlk:json-object "version" "0.1.5+tnew") :model)
+      (sleep 0.05)
+      (is (null asked) "an organism on `current' is not moved by a shell that is not")
+      (is (search "quit and open nodecode again" (first said)) "the shell says it is the stale one, and what runs the new build"))))
+
+(deftest an-older-organism-is-asked-to-restart-once-idle-or-says-why-it-cannot
+    (let ((said '()) (calls '()) (service nil) (started 1)))
+  ;; The ask reads the organism's own word on its restart: one that can wait
+  ;; for its turns to end is asked to, once; one that cannot restart, or would
+  ;; restart at once and stop the turns it runs for others (a gateway from
+  ;; before the idle hold), is left running and the shell says plainly that
+  ;; turns may fail and what moves it. Back on the same build, it says that.
+  (with-stubbed-fdefinitions
+      ((nle::effective-version () "0.1.5+tnew")
+       (nle::gateway-model-http-call (model method path body &key raw stream read-timeout)
+        (push (list method path (and body (gethash "when" body))) calls)
+        (cond ((search "identity" path) (nlk:json-object "started_at" started))
+              ((search "service" path) service)
+              (t (nlk:json-object "when" "idle"))))
+       (nle::post-shell-notice (prog text &key error-p stays answer) (push text said) nil))
+    (let ((nle::*organism-restart-asked* nil))
+      (setf service (nlk:json-object "runs" "serve" "pid" 7 "restart_idle" t
+                                     "restart" (nlk:json-object "able" t "text" "runs itself again")))
+      (nle::ask-organism-restart nil :model "0.1.4+told")
+      (is (equal '(:post "/api/gateway/restart" "idle") (first calls)) "an organism that can wait is asked to restart once no turn is in flight")
+      (is (search "restarts onto it once no turn is running" (first said)) "and the shell says so")
+      (setf calls '() said '())
+      (nle::ask-organism-restart nil :model "0.1.4+told")
+      (is (notany (lambda (call) (eq :post (first call))) calls) "asked once, not again while it waits")
+      (is (null said) "and nothing new is said while it waits")
+      (setf started 2)
+      (nle::ask-organism-restart nil :model "0.1.4+told")
+      (is (search "restarted and still runs 0.1.4+told" (first said)) "an organism that came back on the same build is said, not asked again"))
+    (dolist (case (list (list (nlk:json-object "runs" "serve" "pid" 7 "restart_idle" t
+                                               "restart" (nlk:json-object "able" nil "text" "no binary"))
+                              "cannot restart itself (no binary)" "(pid 7)")
+                        (list (nlk:json-object "runs" "unit" "pid" 7
+                                               "restart" (nlk:json-object "able" t "text" "the unit"))
+                              "cannot wait for its turns to end" "`nodecode gateway restart'")))
+      (destructuring-bind (answer cause fix) case
+        (let ((nle::*organism-restart-asked* nil))
+          (setf service answer calls '() said '())
+          (nle::ask-organism-restart nil :model "0.1.4+told")
+          (is (notany (lambda (call) (eq :post (first call))) calls) "it is not asked")
+          (is (search cause (first said)) "the shell says why")
+          (is (search "turns here may fail" (first said)) "that turns may fail")
+          (is (search fix (first said)) "and what moves it"))))))
+
+(deftest a-restart-held-for-idle-waits-for-every-turn-to-end
+    (with-saved-globals ((nle::*idle-poll-seconds* 0.02) (nle::*lifecycle-wait* nil)))
+  ;; A newer shell's ask must not stop the turns the organism runs for its
+  ;; other sessions: the restart is held while any turn is in flight, one
+  ;; hold serves every ask, and the answer says it is held.
+  (let ((busy t) (done '()))
+    (with-stubbed-fdefinitions
+        ((nle::serving-mode (state) :serve)
+         (nlk:gateway-state (&rest args) nil)
+         (nle::lifecycle (mode verb) (values "runs itself again" t))
+         (nlk:any-active-turn-p (&rest args) busy)
+         (nle::serve-next (what) (push what done)))
+      (let ((answer (nle::lifecycle-http :restart :idle t)))
+        (is (equal "idle" (gethash "when" answer)) "the answer says the restart waits for idle")
+        (nle::lifecycle-http :restart :idle t)
+        (sleep 0.2)
+        (is (null done) "no restart while a turn is in flight")
+        (setf busy nil)
+        (loop repeat 200 until done do (sleep 0.01))
+        (sleep 0.1)
+        (is (equal '(:restart) done) "one restart the moment none is, for both asks")))))
+
+(deftest the-restart-route-reads-its-idle-hold-off-the-body (with-temp-gateway (port))
+  ;; The hold rides the route's body; a caller from before it posts none, or
+  ;; one that is not JSON, and its restart is the one it always was.
+  (with-saved-globals ((nle::*idle-poll-seconds* 0.02) (nle::*lifecycle-wait* nil))
+    (let ((done '()) (busy t))
+      (with-stubbed-fdefinitions
+          ((nle::lifecycle (mode verb) (values "runs itself again" t))
+           (nlk:any-active-turn-p (&rest args) busy)
+           (nle::serve-next (what) (push what done)))
+        (with-gateway-http (port :post "/api/gateway/restart" :body "{\"when\":\"idle\"}")
+          (is (= 200 status) "a restart held for idle is taken")
+          (is (equal "idle" (nlk:json-value body :string "when")) "and the answer says it waits"))
+        (sleep 0.5)
+        (is (null done) "held while a turn is in flight")
+        (let ((status (nth-value 1 (gateway-octets port :post "/api/gateway/restart" :type "text/plain" :content "now"))))
+          (is (= 200 status) "a body that is not JSON is no refusal"))
+        (loop repeat 200 until done do (sleep 0.01))
+        (is (equal '(:restart) done) "and restarts at once, as it always did")
+        ;; The held one goes too, once idle, before the stubs come off.
+        (setf busy nil)
+        (loop repeat 200 until (= 2 (length done)) do (sleep 0.01))
+        (is (= 2 (length done)) "the held restart lands the moment no turn runs")))))
+
 (deftest gateway-session-directory-routes (with-temp-gateway (port))
   ;; GET /sessions lists the directory with derived titles, laid out as the
   ;; session fork tree (a child right under its parent, one lane deeper, the
