@@ -1605,7 +1605,10 @@ thread reads it and clears this place.")
                                        (json-object "summary"
                                          (json-object "name" "Mutate" "path" path
                                                       "comment" (or (json-value payload :text "comment")
-                                                                    (file-namestring path)))))))))
+                                                                    (file-namestring path))
+                                                      ;; The call it came from, whose line
+                                                      ;; under a run says it (RUN-TAIL-LLINE).
+                                                      :opt "call_id" (json-value payload :text "call_id"))))))))
                 (render-state model))))
            ((string= kind "organism.cells")
             ;; The organism turned folders on (SWITCH-CELL-ON): this shell

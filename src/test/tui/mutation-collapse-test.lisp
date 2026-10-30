@@ -45,6 +45,46 @@
         (let ((nle::*expanded-tool-call* (car (last (nle::tool-group-members group)))))
           (is (rows-carry-p "receipt-2" (mutation-collapse-lines state)) "opening a mutation receipt also opens its parent"))))))
 
+(defun kept-receipt (state call-id path &key (comment "learn to read PDFs"))
+  "STATE with the live Mutate receipt the shell draws when CALL-ID's eval kept PATH."
+  (nle::ingest-system-notice state (format nil "[~a — this shell: loaded 1 definition]" (file-namestring path))
+    :turn-id "kept-turn" :retention :live-only
+    :metadata (nlk:json-object "summary" (nlk:json-object "name" "Mutate" "path" path "comment" comment
+                                                           "call_id" call-id))))
+
+(deftest a-call-that-kept-a-file-is-one-teal-line-in-its-own-place ()
+  ;; Without this, the README take said one step twice under its run: the
+  ;; eval's comment grey, then the same comment teal with the file it kept,
+  ;; and a receipt that landed after a later call of the same round stood
+  ;; under that later call.
+  (let* ((nle::*tool-detail* :standard)
+         (nle::*expanded-tool-call* nil)
+         (kept (namestring (merge-pathnames ".nodecode/cells/you/read-pdf.lisp" (user-homedir-pathname))))
+         (state (nle::ingest-message-fact nil "user" "you can't read PDFs. teach yourself." :turn-id "kept-turn")))
+    ;; Two calls of one provider round: the receipt of the first lands after
+    ;; the second is listed.
+    (flet ((call (state index id form)
+             (let ((args (eval-args form)))
+               (nle::ingest-tool-call-fact (nle::ingest-stream-tool state index "eval" args :turn-id "kept-turn")
+                                           id "eval" args :turn-id "kept-turn"))))
+      (setf state (call state 0 "kept-call" (format nil ";; learn to read PDFs~%(defun read-pdf ())"))
+            state (call state 1 "later-call" (format nil ";; try it on a paper~%(read-pdf)"))
+            state (kept-receipt state "kept-call" kept)))
+    (let ((call (find "kept-call" (nle::transcript-rows state) :key #'nle::transcript-row-tool-call-id :test #'equal)))
+      (is (eq :tool (nle::lline-tone (nle::run-tail-lline call 100 (nle::call-receipts call (nle::transcript-rows state))))) "amber while it runs, the ground the ember warms")
+      (setf state (nle::ingest-tool-result-fact state "kept-call" "eval" "READ-PDF" :turn-id "kept-turn")
+            state (nle::ingest-tool-result-fact state "later-call" "eval" "ok" :turn-id "kept-turn"))
+      (let ((lines (mutation-collapse-lines state)))
+        (is (rows-carry-p "Ran 2 commands, Mutated 1 time" lines))
+        (is (= 1 (count-if (lambda (line) (search "learn to read PDFs" line)) lines)) "the step said once")
+        (is (rows-carry-p "learn to read PDFs · ~/.nodecode/cells/you/read-pdf.lisp" lines) "what it kept after its words, from home")
+        (is (< (row-index-of "learn to read PDFs" lines :required t) (row-index-of "try it on a paper" lines :required t)) "on its own call's line, above the later call"))
+      (is (eq :success (nle::lline-tone (nle::run-tail-lline call 100 (nle::call-receipts call (nle::transcript-rows state))))) "teal once it ran")
+      (setf state (kept-receipt state "kept-call" (namestring (merge-pathnames "read-pdf-test.lisp" kept))))
+      (let ((lines (mutation-collapse-lines state)))
+        (is (= 1 (count-if (lambda (line) (search "learn to read PDFs" line)) lines)))
+        (is (rows-carry-p "learn to read PDFs · 2 files" lines) "two files kept, counted")))))
+
 (deftest mutation-count-wording-keeps-zero-singular-and-developer-policy ()
   (dolist (counts '((1 0 "Ran 1 command") (1 1 "Ran 1 command, Mutated 1 time")
                     (0 2 "Ran 0 commands, Mutated 2 times")))
@@ -125,10 +165,12 @@
         (feed-wire model (nlk:encode-unsequenced-frame "organism.loaded"
           (nlk:json-object "path" (namestring path) "definitions"
             (vector (nlk:json-object "operator" "DEFUN" "label" "mutation-owner-probe"))
-            "session_id" "mutation-session" "turn_id" "explicit-turn" "comment" "rewrite")))
+            "session_id" "mutation-session" "turn_id" "explicit-turn" "comment" "rewrite"
+            "call_id" "load-call")))
         (let ((row (car (last (nle::transcript-rows (nle::chat-model-state model))))))
           (is (equal "explicit-turn" (nle::transcript-row-turn-id row)))
           (is (equal (namestring path) (nlk:json-value (nle::row-notice-summary row) :string "path")))
+          (is (equal "load-call" (nlk:json-value (nle::row-notice-summary row) :string "call_id")) "the receipt names the call it came from")
           (is (eq :live-only (nle::transcript-row-retention row))))))))
 
 (deftest completed-work-summary-hover-changes-only-its-title-foreground ()
