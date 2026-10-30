@@ -429,6 +429,26 @@ order is the restore order whatever happens in between."
   (reduce (lambda (stub inner) `(with-stubbed-fdefinition ,stub ,inner)) stubs
           :from-end t :initial-value `(progn ,@body)))
 
+(defun local-noon-unix ()
+  "Noon today on this box's own clock, as Unix seconds."
+  (multiple-value-bind (second minute hour date month year) (get-decoded-time)
+    (declare (ignore second minute hour))
+    (- (encode-universal-time 0 0 12 date month year) nlk:+unix-epoch+)))
+
+(defmacro with-clock-at-local-noon (&body body)
+  "Run BODY with the wall clock (NLK:UNIX-NOW and NLK::ISO-NOW) stopped at
+noon today on this box's own clock."
+  ;; A fixture dated minutes or hours before now -- a session 10m old -- falls
+  ;; on yesterday when the suite runs just after local midnight, and /sessions
+  ;; then files it under Yesterday and says its clock time where `10m ago'
+  ;; stood. Under this clock every such fixture lands on today, whatever hour
+  ;; the suite runs at and in whatever zone.
+  (alexandria:with-gensyms (noon)
+    `(let ((,noon (local-noon-unix)))
+       (with-stubbed-fdefinitions ((nlk:unix-now () ,noon)
+                                   (nlk::iso-now () (nlk:iso-time ,noon)))
+         ,@body))))
+
 (defmacro with-provider-stub ((context &body stub) &body body)
   "Run BODY with CALL-PROVIDER answering STUB, restoring the real definition on
 unwind however BODY leaves."
