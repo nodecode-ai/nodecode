@@ -5096,6 +5096,55 @@ TO, REASON why: one wait at a time, and a later request rides the same one."
                   while (ignore-errors (nlk:any-active-turn-p)))
             (funcall *restart-exit* to)))))
 
+;;; --- the channels a live release starts again ------------------------------
+;;;
+;;; A live upgrade replaces definitions, not what a cell's start built from
+;;; them. The channel kit's start makes each channel's host and platform, and
+;;; they keep what the build before put in them: a 0.1.5 gateway that took
+;;; 0.1.6 live kept the Discord platform its old code made, with no thread
+;;; reader, and answered in the channel beside a thread another bot had
+;;; opened, until a restart. So once a release is live here the kit starts
+;;; again, at the first moment no turn is in flight: its stop hands the lanes
+;;; on and its start takes them back, as across a restart, on the release's
+;;; code. A gateway that exits for the release (RESTART-WHEN-IDLE) leaves its
+;;; channels to the boot that runs it, which starts every one anyway.
+
+(defparameter *channel-kit-folder* "nodecode-channel-kit"
+  "The cell folder whose start starts every channel.")
+
+(defvar *channel-restart-wait* nil
+  "The thread waiting for an idle moment to start the channels again, or NIL.")
+
+(defun restart-channels-when-idle (version)
+  "Start the channel kit again once no turn is in flight, when it runs here,
+release VERSION just live: one wait at a time, and a later release rides the
+same one. => the waiting thread, or NIL."
+  (let ((kit (nlk:find-cell *channel-kit-folder*)))
+    (when (and kit (nlk:cell-started-p kit)
+               (not (and *channel-restart-wait* (bt2:thread-alive-p *channel-restart-wait*))))
+      (setf *channel-restart-wait*
+            (spawn "channel-restart-wait"
+              (loop do (sleep *idle-poll-seconds*)
+                    while (ignore-errors (nlk:any-active-turn-p)))
+              (unless *restart-wait*
+                (restart-started-cell *channel-kit-folder* (format nil "~a is live" version))))))))
+
+(defun restart-started-cell (name why)
+  "Stop the folder NAME and start it again on the shared config as it reads
+now, when it is started -- RESTART-CELLS for one folder, leaving one that is
+off as it is -- and say WHY in the log. => whether it started again."
+  (when (bt2:with-lock-held (*cells-lifecycle-lock*)
+          (let ((cell (nlk:find-cell name)))
+            (when (and cell (nlk:cell-started-p cell))
+              (%stop-cells (list name))
+              (setf *shared-config-memo* nil)
+              (%start-cells (list name))
+              t)))
+    (format *error-output* "~&cells: ~a started again: ~a~%" name why)
+    (refresh-attached-command-catalogs)
+    (broadcast-model-changed)
+    t))
+
 (defun rollback (number &key (restart (and *gateway-handler* t)))
   "Restore the folder to generation NUMBER -- the operator's side, every row
 converged to its manifest (NLK:RESTORE-GENERATION), while the binary and its
