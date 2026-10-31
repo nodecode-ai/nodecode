@@ -505,7 +505,7 @@ no workspace, store unavailable)."
   ;; staging runs ADD -A, which must never touch a workspace's git state while
   ;; captures are off.
   (with-session-snapshot-store (store session-id)
-    (run-snapshot-git store (list "add" "-A"))
+    (stage-workspace store)
     store))
 
 (defun conflict-baseline-tree (captures parents head)

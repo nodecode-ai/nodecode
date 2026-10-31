@@ -23,6 +23,10 @@
 ;;;;   - restore is strictly per-path and hash-guarded: a path whose on-disk
 ;;;;     content differs from the session's last recorded write is a
 ;;;;     :foreign-write conflict, reported and left alone (never clobbered)
+;;;;   - a walk stages at most +SNAPSHOT-WALK-MAX-PATHS+ paths and
+;;;;     +SNAPSHOT-WALK-MAX-BYTES+ bytes: past either it is skipped whole,
+;;;;     never begun (:workspace-too-large), and a scratch or system folder
+;;;;     (/tmp, /usr, the folder of homes) is never a workspace at all
 ;;;;   - capture NEVER fails a turn: git missing or broken degrades to a
 ;;;;     durable SESSION.WORKSPACE_CAPTURED fact with a nil tree sha and an
 ;;;;     unavailable-reason
@@ -49,6 +53,15 @@
   "The empty tree, hardwired inside git itself (always resolvable, never
 stored).")
 (defparameter +snapshot-max-output-bytes+ (* 16 1024 1024))
+;;; A walk writes a blob for every path it stages before any tree exists, so
+;;; a folder the size of a disk fills the disk the home sits on: a 36 GB /tmp
+;;; staged 9.9 GB through walks the git bound cut short, one after another,
+;;; until the home's disk was full. CHECK-WALK-BOUND counts what a walk would
+;;; stage first; a walk past either bound is skipped whole, never begun.
+(defparameter +snapshot-walk-max-paths+ 200000
+  "The most paths one walk may stage: a large source tree is a tenth of it.")
+(defparameter +snapshot-walk-max-bytes+ (* 2 1024 1024 1024)
+  "The most bytes one walk may stage.")
 (defvar *git-program* "git"
   "Test seam: bind to a nonexistent path to force unavailability.")
 ;;; A TRUE GLOBAL (not a special): every
@@ -114,6 +127,9 @@ SAVE-LISP-AND-DIE or fork."
   (:report "git ~{~a~^ ~} exited ~a: ~a" arguments exit-status stderr))
 
 (define-condition snapshot-output-too-large (snapshot-error) ())
+
+(define-error snapshot-walk-too-large (snapshot-error) ()
+  (:report "~a" detail))
 
 (define-error invalid-tree-sha (snapshot-error) (value)
   (:report "not a tree sha: ~s" value))
@@ -229,6 +245,33 @@ namestring: a folder of the home named by the digest of that path."
   ;; canonical path, hence one store.
   (home (format nil "snapshots/~a/" (subseq (sha256-text workspace) 7 39))))
 
+(defparameter +system-directories+
+  '("/tmp/" "/var/tmp/" "/dev/shm/" "/private/tmp/" "/private/var/tmp/"
+    "/var/" "/usr/" "/etc/" "/opt/" "/srv/" "/mnt/" "/media/" "/boot/" "/run/"
+    "/proc/" "/sys/" "/dev/" "/home/" "/Users/" "/Volumes/" "/private/")
+  "Scratch space, system trees and the folders of every account, as canonical
+directory namestrings: never one workspace.")
+
+(defun system-directory-p (canonical-root)
+  "Whether CANONICAL-ROOT, a canonical directory namestring, is a folder no
+workspace can be: one of +SYSTEM-DIRECTORIES+, this process's temporary
+directory, the folder holding this account's home, or a system folder the
+environment names (SystemRoot, ProgramFiles, ProgramData on Windows)."
+  ;; Only the folder itself: a project inside /tmp is a workspace like any
+  ;; other, and the walk bound answers for its size.
+  (flet ((same (path)
+           (and path
+                (equal canonical-root
+                       (ignore-errors
+                        (namestring (uiop:ensure-directory-pathname (truename path))))))))
+    (or (member canonical-root +system-directories+ :test #'equal)
+        (same (uiop:temporary-directory))
+        (same (uiop:pathname-parent-directory-pathname (user-homedir-pathname)))
+        (let ((account (account-home)))
+          (and account (same (uiop:pathname-parent-directory-pathname account))))
+        (some #'same (mapcar #'uiop:getenv
+                             '("SystemRoot" "ProgramFiles" "ProgramFiles(x86)" "ProgramData"))))))
+
 (defun ensure-snapshot-store (workspace session-id)
   "Open (initializing when absent) the shadow store for WORKSPACE/SESSION-ID."
   ;; => (values SNAPSHOT-STORE-or-NIL unavailable-keyword-or-NIL). Never signals.
@@ -245,13 +288,15 @@ namestring: a folder of the home named by the digest of that path."
           ;; $HOME and a filesystem root are never a workspace to stage:
           ;; refused before any git runs, and recorded as the reason. The
           ;; account's home too, whatever $HOME this image was handed: a
-          ;; scratch $HOME does not make the real one a workspace.
+          ;; scratch $HOME does not make the real one a workspace. Nor is
+          ;; /tmp or a system folder (SYSTEM-DIRECTORY-P).
           ((or (null canonical-root)
                (equal canonical-root (canonical (user-homedir-pathname)))
                (let ((account (account-home)))
                  (and account (equal canonical-root (canonical account))))
                ;; no directory, or the filesystem root alone
-               (null (rest (pathname-directory canonical-root))))
+               (null (rest (pathname-directory canonical-root)))
+               (system-directory-p canonical-root))
            (values nil :workspace-too-large))
           (t (open-snapshot-store root (snapshot-git-dir canonical-root) session-id)))))))
 
@@ -380,6 +425,57 @@ absent, unreadable, or larger than +SNAPSHOT-INDEX-DIGEST-CAP+."
   (when-let (octets (file-octets (snapshot-store-index-path store) +snapshot-index-digest-cap+))
     (sha256-text octets)))
 
+(defun staging-pathspec (store)
+  "The pathspec a walk of STORE stages under: the whole tree, less the home's
+snapshot storage when that sits inside it; NIL when nothing is left out."
+  (when-let (storage (snapshot-storage-path store))
+    (list "--" "." (concatenate 'string ":(top,exclude,literal)" storage))))
+
+(defun entry-bytes (path)
+  "The size of PATH's own directory entry -- a symlink's, never its target's
+-- or 0 when it cannot be read."
+  ;; Never opened: a fifo in a scratch folder would block the reader.
+  (or (ignore-errors
+       (sb-posix:stat-size (#-win32 sb-posix:lstat #+win32 sb-posix:stat path)))
+      0))
+
+(defun check-walk-bound (store &aux (paths 0) (bytes 0))
+  "Signal SNAPSHOT-WALK-TOO-LARGE when one walk of STORE would stage more than
++SNAPSHOT-WALK-MAX-PATHS+ paths or +SNAPSHOT-WALK-MAX-BYTES+ bytes."
+  ;; What `add -A' writes a blob for: every untracked path and every tracked
+  ;; one whose content moved, through the walk's own ignore rules and
+  ;; exclusions. A warm index counts only what changed since its last walk; a
+  ;; new one counts the whole tree. Counting stops at the first bound passed,
+  ;; and a listing longer than RUN-SNAPSHOT-GIT reads is past it already.
+  (flet ((too-large (amount)
+           (error 'snapshot-walk-too-large
+                  :detail (format nil "~a holds more than ~a to stage; a walk stages ~
+                                       at most ~:d paths and ~:d bytes"
+                                  (snapshot-store-workspace store) amount
+                                  +snapshot-walk-max-paths+ +snapshot-walk-max-bytes+))))
+    (dolist (path (split-nul
+                   (handler-case
+                       (run-snapshot-git store (list* "ls-files" "-z" "--others" "--modified"
+                                                      "--exclude-standard" (staging-pathspec store)))
+                     (snapshot-output-too-large ()
+                       (too-large (format nil "~:d bytes of path names"
+                                          +snapshot-max-output-bytes+))))))
+      (unless (zerop (length path))
+        (incf paths)
+        (incf bytes (entry-bytes (concatenate 'string (snapshot-store-workspace store) path)))
+        (when (> paths +snapshot-walk-max-paths+)
+          (too-large (format nil "~:d paths" +snapshot-walk-max-paths+)))
+        (when (> bytes +snapshot-walk-max-bytes+)
+          (too-large (format nil "~:d bytes" +snapshot-walk-max-bytes+)))))))
+
+(defun stage-workspace (store)
+  "Stage STORE's workspace into its session's index: every walk's one `add
+-A', past the walk bound and without the home's snapshot storage."
+  ;; --ignore-errors: one unreadable path does not void the walk; a file the
+  ;; process may not read was never going to be restored by it either.
+  (check-walk-bound store)
+  (run-snapshot-git store (list* "add" "-A" "--ignore-errors" (staging-pathspec store))))
+
 (defun capture-workspace-tree (store)
   "Stage the whole workspace and return its tree sha."
   ;; An unchanged workspace
@@ -389,12 +485,10 @@ absent, unreadable, or larger than +SNAPSHOT-INDEX-DIGEST-CAP+."
   ;; --IGNORE-ERRORS stages what it can, and a file the process may not read was
   ;; never going to be restored by it either. One walk of an index at a time
   ;; (CAPTURE-LOCK): a deferred capture still reading the tree and a completion
-  ;; capture arriving behind it wait, never collide on index.lock.
+  ;; capture arriving behind it wait, never collide on index.lock. A walk past
+  ;; its bound signals SNAPSHOT-WALK-TOO-LARGE before anything is staged.
   (bt2:with-lock-held ((capture-lock store))
-    (run-snapshot-git store
-                      (append (list "add" "-A" "--ignore-errors")
-                              (when-let (storage (snapshot-storage-path store))
-                                (list "--" "." (concatenate 'string ":(top,exclude,literal)" storage)))))
+    (stage-workspace store)
     (let* ((digest (index-digest store))
            (entry (and digest (index-trees store)))
            (tree (or (and (equal (car entry) digest) (cdr entry))
@@ -472,6 +566,12 @@ ref did not exist at resolve time.")
         (let ((tree-sha (capture-workspace-tree store)))
           (anchor-tree store tree-sha message)
           (values tree-sha nil))
+      (snapshot-walk-too-large (condition)
+        ;; One line for the operator, then the memo answers for the window:
+        ;; the boundaries behind it neither count nor log again.
+        (warn "workspace capture skipped: ~a" condition)
+        (setf (capture-refusals store) (cons :workspace-too-large (get-universal-time)))
+        (values nil :workspace-too-large))
       (error ()
         (setf (capture-refusals store) (cons :capture-failed (get-universal-time)))
         (values nil :capture-failed)))))
@@ -571,6 +671,9 @@ lists in tree order; a path the tree does not hold adds nothing."
                        (mapcar (lambda (sha) (list sha marker)) shas)))
              (output
                (with-handlers ((error () nil))
+                 ;; The batch stages as well: past the walk bound it answers
+                 ;; nothing, and the caller's own staging refuses the same way.
+                 (check-walk-bound store)
                  (bind (((out _ status)
                          (run-bounded (shell-argv script)
                                       :seconds +snapshot-git-timeout-seconds+
@@ -603,7 +706,7 @@ lists in tree order; a path the tree does not hold adds nothing."
 
 (defun changed-paths (store tree-sha)
   "Worktree-vs-TREE-SHA differences, freshly staged."
-  (run-snapshot-git store (list "add" "-A"))
+  (stage-workspace store)
   (staged-changed-paths store tree-sha))
 
 ;;; --- workspace diff documents ---------------------------------------------

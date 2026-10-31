@@ -22,6 +22,11 @@
 ;;;;         wrote for the workspace; a lock or a stray file never seeds one.
 ;;;;   SN11. A deferred walk holds no prompt fact: the request it overlaps
 ;;;;         goes out, and the round's next fact still settles the capture.
+;;;;   SN12. /tmp, a system folder and the folder of homes are never a
+;;;;         workspace; a folder inside one is.
+;;;;   SN13. A walk past its path or byte bound stages nothing, logs one line
+;;;;         and is remembered for its window; ignored paths do not count,
+;;;;         and a warm index counts only what moved.
 ;;;;
 ;;;; Hosts without git run every test body against the degradation contract
 ;;;; instead of skipping — RUN-ALL has no skip concept, and the degraded
@@ -122,8 +127,9 @@ completed once BODY is done."
 
 (deftest a-capture-that-staged-nothing-writes-no-tree (with-git-workspace (store dir))
   ;; One index content is one tree: a capture whose staging left the index
-  ;; alone answers the tree already written for it, and the second git call
-  ;; of the pair is not made. The identity is the index's content and never
+  ;; alone answers the tree already written for it, and the write-tree call
+  ;; behind the staging is not made. The census of what the walk would stage
+  ;; (CHECK-WALK-BOUND) runs first, every walk. The identity is the index's content and never
   ;; its stat — git publishes an index by renaming index.lock over it, so
   ;; the inode can be the freed one, a one-for-one edit leaves the size
   ;; alone, and two captures fall inside one second.
@@ -137,14 +143,14 @@ completed once BODY is done."
   (let ((first-sha (nlk:capture-workspace-tree store)))
     (is (= 40 (length first-sha)) "the first capture writes a tree")
     (nlk:bind (((asked second-sha) (git-asked (nlk:capture-workspace-tree store))))
-      (is (equal '("add") asked)
-          (format nil "staging alone; no write-tree behind it: ~a" asked))
+      (is (equal '("ls-files" "add") asked)
+          (format nil "the census and the staging; no write-tree behind them: ~a" asked))
       (is (equal first-sha second-sha) "and the tree it answers is that tree"))
     ;; Same length, same second, and the index git writes may land on the
     ;; inode the last one freed: only the content tells these apart.
     (%write-file dir "a.txt" "two")
     (nlk:bind (((asked changed) (git-asked (nlk:capture-workspace-tree store))))
-      (is (equal '("add" "write-tree") asked)
+      (is (equal '("ls-files" "add" "write-tree") asked)
           (format nil "a staged change writes its tree: ~a" asked))
       (is (not (equal first-sha changed)) "which is a tree of its own"))))
 
@@ -664,3 +670,63 @@ completed once BODY is done."
                        ((post-3 document-3) (nlk:close-workspace-bracket store-3 pre-3)))
               (is (equal pre-3 post-3))
               (is (null document-3)))))))))
+
+;;; --- the walk bound ------------------------------------------------------
+;;; A walk writes a blob for every path it stages before any tree exists: a
+;;; turn in a 36 GB /tmp staged 9.9 GB into the home's snapshots and filled
+;;; its disk. A scratch or system folder is never a workspace, and a walk
+;;; past its bound is skipped before anything is staged.
+
+(defun %loose-objects (store)
+  "The loose objects in STORE's shadow git directory: the blobs walks wrote."
+  (remove-if-not (lambda (path) (= 2 (length (car (last (pathname-directory path))))))
+                 (directory (merge-pathnames "objects/*/*"
+                                             (uiop:ensure-directory-pathname
+                                              (nlk::snapshot-store-git-dir store))))))
+
+(deftest scratch-and-system-folders-are-never-a-workspace (with-temp-directory (inside "inside-scratch"))
+  (cond ((nlk:git-available-p)
+         (dolist (folder (list* (namestring (uiop:temporary-directory))
+                                (namestring (uiop:pathname-parent-directory-pathname
+                                             (user-homedir-pathname)))
+                                #-win32 (list "/tmp/" "/usr/") #+win32 '()))
+           (multiple-value-bind (store reason)
+               (nlk:ensure-snapshot-store folder "scratch-session")
+             (is (null store) "no store opens over a scratch or system folder")
+             (is (eq :workspace-too-large reason) "and the reason names it")))
+         (is (nlk:snapshot-store-p (nlk:ensure-snapshot-store (namestring inside) "inside-session")) "a folder inside one is still a workspace"))
+        (t (is (null (nlk:ensure-snapshot-store (namestring (uiop:temporary-directory)) "scratch-session"))))))
+
+(deftest a-walk-past-its-bound-stages-nothing (with-git-workspace (store dir :session-id "bounded"))
+  (clrhash nlk::*capture-refusals*)
+  (nlk:with-cleanup ((clrhash nlk::*capture-refusals*))
+    (let ((lines '()))
+      (handler-bind ((warning (lambda (condition)
+                                (push (princ-to-string condition) lines)
+                                (muffle-warning condition))))
+        (%write-file dir "a.txt" "one" "b.txt" "two" "c.txt" "three")
+        (let ((nlk::+snapshot-walk-max-paths+ 2))
+          (is (eq :workspace-too-large (nth-value 1 (nlk::capture-anchored-tree store "over"))) "three paths past a bound of two: skipped")
+          (is (eq :workspace-too-large (nth-value 1 (nlk::capture-anchored-tree store "again"))) "and remembered for its window"))
+        (is (= 1 (length lines)) "one log line for the skip, none for the remembered refusal")
+        (is (and lines (search (namestring dir) (first lines))) "the line names the folder")
+        (is (null (%loose-objects store)) "not one blob was written")
+        (clrhash nlk::*capture-refusals*)
+        (let ((nlk::+snapshot-walk-max-bytes+ 64))
+          (%write-file dir ".gitignore" "big.bin" "big.bin" (make-string 100 :initial-element #\x))
+          (is (= 40 (length (nlk:capture-workspace-tree store))) "ignored bytes are not staged, so they do not count")
+          (%write-file dir "new.bin" (make-string 40 :initial-element #\y))
+          (is (= 40 (length (nlk:capture-workspace-tree store))) "a warm index counts only what moved")
+          (%write-file dir "a.txt" (make-string 100 :initial-element #\z))
+          (is (eq :workspace-too-large (nth-value 1 (nlk::capture-anchored-tree store "grown"))) "one changed file past the byte bound: skipped"))))))
+
+(deftest a-boundary-past-the-walk-bound-says-why (with-temp-store ())
+  (with-captured-turn (store dir turn "bounded-turn")
+    (clrhash nlk::*capture-refusals*)
+    (nlk:with-cleanup ((clrhash nlk::*capture-refusals*))
+      (handler-bind ((warning #'muffle-warning))
+        (let* ((nlk::+snapshot-walk-max-paths+ 0)
+               (result (nlk:checkpoint-capture-boundary
+                        turn :boundary-kind "user_message" :anchor-position 1)))
+          (is (null (getf result :tree-sha)) "no tree was captured")
+          (is (eq :workspace-too-large (getf result :unavailable)) "and the boundary says why"))))))
