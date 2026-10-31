@@ -471,9 +471,17 @@ the whole frame.")
 (defun enable-mouse (stream mode)
   "SGR mouse tracking: :CELL-MOTION reports motion with a button held,
 :ALL-MOTION reports every motion."
+  ;; Button-event tracking (1002) goes first in both modes. Termux accepts
+  ;; any-event tracking (1003) and drops it, so 1003 alone left it untracked:
+  ;; in the alternate screen it sends a wheel turn as Up/Down, and the prompt
+  ;; walked its history while the transcript stood still (#89). A terminal
+  ;; that keeps one mouse mode -- xterm, tmux -- ends on the last one set.
   (when mode
-    (format stream "~C[?~Dh~C[?1006h" #\Escape (ecase mode (:cell-motion 1002) (:all-motion 1003))
-            #\Escape)))
+    (format stream "~C[?1002h" #\Escape)
+    (ecase mode
+      (:cell-motion)
+      (:all-motion (format stream "~C[?1003h" #\Escape)))
+    (format stream "~C[?1006h" #\Escape)))
 
 (define-escape disable-mouse ("[?1002l" "[?1003l" "[?1006l"))
 
