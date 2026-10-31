@@ -56,17 +56,17 @@ true: SEEN collects the connections that step was handed, TRIES counts them."
     (with-full-disk (full)
       (saying (said)
         (break-store-write)
-        (setf (nlk::store-retry-at store) 0)
+        (setf (nlk::store-break store :retry-at) 0)
         (is (signals-error nlk::store-broken (nlk::with-store-transaction (handle) handle)) "a write while the disk is still full is refused, saying why")
         (setf full nil
-              (nlk::store-retry-at store) 0)
+              (nlk::store-break store :retry-at) 0)
         (nlk::with-store-transaction (handle)
           (sqlite:execute-non-query handle "create table heal_probe (x)")
           (sqlite:execute-non-query handle "insert into heal_probe values (42)"))
         (is (eql 42 (nlk::with-store-handle (handle) (sqlite:execute-single handle "select x from heal_probe"))) "the first write once space is back reconnects and lands")
         (is (nlk:store-open-p) "the store serves again")
         (is (nlk::store-lease-mine-p (nlk::store-path store)) "the lease never left")
-        (is (null (nlk::store-broken store)) "nothing marks it broken any more"))
+        (is (null (nlk::store-break store :reason)) "nothing marks it broken any more"))
       (is (= 2 (length said)) "one line when it broke, one when it came back")
       (is (search "reconnected" (first said)) "the last line says it is back"))))
 
@@ -78,11 +78,11 @@ true: SEEN collects the connections that step was handed, TRIES counts them."
       (loop repeat 5
             do (signals-error nlk::store-not-open (nlk::with-store-transaction (handle) handle)))
       (is (= 1 tries) "a use inside the wait tries no reconnect")
-      (setf (nlk::store-retry-at store) 0)
+      (setf (nlk::store-break store :retry-at) 0)
       (signals-error nlk::store-not-open (nlk::with-store-transaction (handle) handle))
       (is (= 2 tries) "a use after the wait tries again")
-      (is (> (nlk::store-retry-delay store) 1/2) "each failed try waits longer")
-      (is (<= (nlk::store-retry-delay store) nlk::*store-retry-limit*) "and never longer than the limit"))))
+      (is (> (nlk::store-break store :delay) 1/2) "each failed try waits longer")
+      (is (<= (nlk::store-break store :delay) nlk::*store-retry-limit*) "and never longer than the limit"))))
 
 (deftest closing-a-broken-store-gives-its-lease-up (with-temp-store (store))
   (with-full-disk (full :tries tries)
@@ -93,6 +93,6 @@ true: SEEN collects the connections that step was handed, TRIES counts them."
     (is (not (probe-file (nlk::lease-path-for-store (nlk::store-path store)))) "and retracts the owner sidecar")
     (is (not (nlk::store-lease-held-p (nlk::store-path store))) "and frees the lock")
     (setf full nil
-          (nlk::store-retry-at store) 0)
+          (nlk::store-break store :retry-at) 0)
     (is (not (nlk::heal-store store)) "a closed store never reconnects")
     (is (= 1 tries) "no try after the close")))

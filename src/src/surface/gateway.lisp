@@ -804,7 +804,10 @@ while no shell is open."
   ;; operating system is asked on a thread of its own, never on a cell's
   ;; start. => the thread, or NIL.
   (unless (or nlk:*ephemeral*
-              (nlk:temporary-home-p)
+              ;; Two colons: the export is new, and the image of the release
+              ;; before this one reads this file, to take it live, before the
+              ;; new DEFPACKAGE has run.
+              (nlk::temporary-home-p)
               (null (nlk:gateway-unit-path))
               (nlk:gateway-installed-p)
               (nlk:gateway-off-p))
@@ -5043,6 +5046,25 @@ restore's.")
 (defvar *restart-exit* 'exit-for-restart
   "What ends this gateway for the next launch, a function of what that launch
 runs (a release label, `generation N'). A test binds a recorder.")
+
+;; Ahead of EXIT-FOR-RESTART, its first user: an image of the release before
+;; this one takes a release file by file in load order, and refuses a
+;; definition that names one only a later file gives.
+(defun restart-way ()
+  "How this organism starts again on `current' with no operator to reopen it:
+:UNIT when it serves `gateway run' under a unit nodecode wrote, which brings
+it back from an exit; :EXEC when it is a headless owner that can run its
+installed binary again in place (SERVE-NEXT :RESTART); NIL for a shell's
+organism, which that shell's next launch brings back, and for an image no
+installed binary started."
+  ;; A headless owner without a unit -- `gateway run' by hand, a serve a
+  ;; shell left behind -- has nobody to bring it back from an exit, so it
+  ;; execs `current' itself. Without that, a release it refused left it on the
+  ;; build before for good while `current' named the next one, and every
+  ;; shell of the new build attached to the old organism. Windows has no exec.
+  (cond ((and *gateway-run* (ignore-errors (nlk:gateway-installed-p))) :unit)
+        #-win32
+        ((and *serving* (not *fronted*) (nlk:organism-binary)) :exec)))
 
 (defun exit-for-restart (to)
   ;; A headless owner no unit runs is its own next launch: it lets the store
