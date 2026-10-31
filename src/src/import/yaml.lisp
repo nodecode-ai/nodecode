@@ -247,12 +247,15 @@ folded to blanks; `-' after the marker drops the final newline."
     ;; Trailing blank lines belong to chomping, not the text.
     (let* ((trimmed (reverse (member-if #'plusp (reverse lines) :key #'length)))
            (body (if folded
+                     ;; A line break between two text lines is one space; a blank
+                     ;; line is a newline, with no space on either side of it.
                      (with-output-to-string (out)
-                       (loop for piece in trimmed
-                             for first = t then nil
-                             do (cond ((string= piece "") (write-char #\Newline out))
-                                      (first (write-string piece out))
-                                      (t (write-char #\Space out) (write-string piece out)))))
+                       (let ((joined nil))
+                         (dolist (piece trimmed)
+                           (cond ((string= piece "") (write-char #\Newline out) (setf joined nil))
+                                 (t (when joined (write-char #\Space out))
+                                    (write-string piece out)
+                                    (setf joined t))))))
                      (format nil "~{~a~^~%~}" trimmed))))
       (ecase chomp
         (:strip body)
