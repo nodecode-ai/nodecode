@@ -4692,11 +4692,47 @@ burns amber and the frame's ember warms it."
   "A painted transcript row -> the running call whose listed line it is, so
 the frame's ember (EMBER-OVERLAY) finds that line on screen.")
 
+(defun elided-path-text (text budget &aux (separator (if (find #\/ text) #\/ #\\)))
+  "Path TEXT in BUDGET display columns where its folders can give way: its
+first segment, an …, then as many of its last segments as fit, down to the
+file's own name. TEXT itself when it fits or has no folder to drop."
+  ;; ~/.nodecode/cells/you/read-pdf.lisp -> ~/…/you/read-pdf.lisp -> ~/…/read-pdf.lisp
+  (let ((parts (uiop:split-string text :separator (string separator))))
+    (if (or (<= (text-display-width text) budget) (< (length parts) 3))
+        text
+        (flet ((elided (keep)
+                 (format nil "~a~c…~{~c~a~}" (first parts) separator
+                         (loop for part in (last parts keep) collect separator collect part))))
+          (or (loop for keep from (- (length parts) 2) downto 1
+                    for candidate = (elided keep)
+                    when (<= (text-display-width candidate) budget) return candidate)
+              (elided 1))))))
+
+(defun fitted-tail-lline (build words kept width)
+  "(BUILD WORDS KEPT), a listed row's line, cut to its first row at WIDTH so
+what follows WORDS stays whole: KEPT, the path a call kept, gives up its
+middle folders first, then WORDS shorten. => LINE."
+  ;; Cut at its end, a phone-wide row read `... kept in my layer · ~/…':
+  ;; the file it kept, gone; a running call lost its `running' the same way.
+  ;; Words cut under a dozen columns say nothing: there the line's end goes.
+  (let* ((line (funcall build words kept))
+         (room (lline-widths line width)))
+    (flet ((over () (- (text-display-width (lline-text line)) room)))
+      (when (and kept (plusp (over)))
+        (setf kept (elided-path-text kept (- (text-display-width kept) (over)))
+              line (funcall build words kept)))
+      (when (and words (plusp (over)))
+        (let ((keep (- (text-display-width words) (over))))
+          (when (>= keep 12)
+            (setf line (funcall build (clip-text-to-width words keep) kept)))))
+      (clip-lline line width))))
+
 (defun run-tail-lline (row width &optional receipts)
   "A call or receipt ROW as one line under its folded run, on the column of
 the run title's words: no label, a call's words grey, amber while it runs
 here or in the background, and a Mutate's teal. A call that left RECEIPTS,
-the Mutates its run kept, is teal itself, what it kept after its words."
+the Mutates its run kept, is teal itself, what it kept after its words.
+Too wide for its row, the line gives way inside, never its end (FITTED-TAIL-LLINE)."
   ;; Two columns in from the title they read as a step off it.
   ;; A running call in grey would read as stopped; its amber is the
   ;; ground the ember warms (EMBER-OVERLAY).
@@ -4706,24 +4742,29 @@ the Mutates its run kept, is teal itself, what it kept after its words."
     ;; Opened, a run lists these lines where it showed Eval and Mutate cards
     ;; a receipt names its file after its comment, and a call
     ;; that changed files counts the lines.
-    (clip-lline
-     (if-let (summary (row-notice-summary row))
-       (let* ((comment (json-value summary :text "comment"))
-              (path (json-value summary :text "path"))
-              (line (make-lline :text (nlk:one-line (or comment (and path (kept-path-text path))
-                                                        (json-value summary :string "name")))
-                                :tone :success)))
-         (when (and comment path)
-           (append-lline-run line (format nil " · ~a" (kept-path-text path)) :tone :muted))
-         line)
-       (let ((line (make-lline :text (nlk:one-line (or (tool-summary-words row) (json-value row.tool-name :text) "…"))
-                               :tone (cond ((ember-call-p row) :tool) (receipts :success) (t :muted)))))
-         (when-let (kept (kept-files-text receipts))
-           (append-lline-run line (format nil " · ~a" kept) :tone :muted))
-         (append-row-diff-stats line row)
-         (append-status-text line (if (row-load-errors row) "error" row.tool-status)
-                             (tool-failure-text row) (row-exit-document row))))
-     width)))
+    (if-let (summary (row-notice-summary row))
+      (let ((comment (json-value summary :text "comment"))
+            (path (json-value summary :text "path")))
+        (fitted-tail-lline
+         (lambda (words kept)
+           (let ((line (make-lline :text (or words kept (nlk:one-line (json-value summary :string "name")))
+                                   :tone :success)))
+             (when (and words kept)
+               (append-lline-run line (format nil " · ~a" kept) :tone :muted))
+             line))
+         (and comment (nlk:one-line comment)) (and path (kept-path-text path)) width))
+      (fitted-tail-lline
+       (lambda (words kept)
+         (let ((line (make-lline :text words
+                                 :tone (cond ((ember-call-p row) :tool) (receipts :success) (t :muted)))))
+           (when kept
+             (append-lline-run line (format nil " · ~a" kept) :tone :muted))
+           (append-row-diff-stats line row)
+           (append-status-text line (if (row-load-errors row) "error" row.tool-status)
+                               (tool-failure-text row) (row-exit-document row))
+           line))
+       (nlk:one-line (or (tool-summary-words row) (json-value row.tool-name :text) "…"))
+       (kept-files-text receipts) width))))
 
 (defun paragraph-start (text end &aux (line-end end))
   "Where the paragraph of TEXT that ends at END starts: the line after the
