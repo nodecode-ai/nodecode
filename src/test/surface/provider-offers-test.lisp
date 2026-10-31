@@ -236,6 +236,8 @@
          (cell (nlk::make-cell :name "nl-cell-go" :kind :peripheral
                                :start (lambda (config) config nil)))
          (nlk::*cells* (list cell))
+         ;; the boot's start pass under way (START-CELLS-BEHIND-THE-LISTENER)
+         (nlk::*cells-starting* :a-start-pass)
          (nle::*provider-offers*
            (cons (get-universal-time)
                  (list (nlk::make-offer :name "nl-cell-go" :git "https://example.org/c.git" :commit commit
@@ -245,6 +247,8 @@
       (is (equal (list (list :cell "nl-cell-go" :commit commit :provider "nl-go" :name "NL Go"
                              :sign-in "key" :description "Go" :installed t :starting t))
                  (nle::provider-offers)) "loaded, its start to come")
+      (let ((nlk::*cells-starting* nil))
+        (is (equal '(:installed t) (last (first (nle::provider-offers)) 2)) "no start pass under way, none to wait for"))
       (setf (nlk:cell-refusal cell) "no claude on PATH")
       (is (equal '(:installed t) (last (first (nle::provider-offers)) 2)) "a refused start is none to wait for")
       (setf (nlk:cell-refusal cell) nil

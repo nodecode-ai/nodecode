@@ -4539,6 +4539,9 @@ outranks the default effort the same way while the turn's effective
             (unless (or session-provider (default-model-configured-p))
               (error 'provider-config-error
                      :detail "no model is chosen yet: /setup connects a provider and picks one"))
+            ;; A provider a cell serves has no lane until the cells start,
+            ;; behind a cold boot's listener: the turn waits for them.
+            (await-cells-starting *provider*)
             ;; A session keeps the model and the effort it began on: its first
             ;; turn pins the pair it runs and the effort it runs at, so a pick
             ;; in another session, which moves the default, reaches only

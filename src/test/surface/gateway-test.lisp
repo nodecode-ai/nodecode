@@ -1636,6 +1636,57 @@ for a field left to the gateway, each under its own WHY."
                   (recovery (position-if #'recovery-p order)))
               (is (and cells recovery (< cells recovery)) "the turns were dispatched after the cells started"))))))))
 
+(deftest the-boot-start-pass-marks-the-cells-starting-until-it-ends ()
+  ;; From the listener's publication to the end of the start pass a provider
+  ;; a cell serves has no lane, and a turn on one waits rather than fails
+  ;; (AWAIT-CELLS-STARTING). The mark ends with the pass; a pass whose
+  ;; gateway stopped meanwhile starts no cell and leaves no mark behind.
+  (let ((seen :unset)
+        (done (bt2:make-semaphore :name "boot-done")))
+    (with-stubbed-fdefinitions ((nle::start-cells () (setf seen nlk::*cells-starting*))
+                                (nle::start-gateway-recovery (resumable) resumable)
+                                (nle::say-note (text) text)
+                                (nlk:take-restoring-marker ())
+                                (nle::boot-release ())
+                                (nlk:gateway-by-default-p () nil)
+                                (nle::hand-broken-layer ())
+                                (nle::hand-failed-self ()
+                                  (bt2:signal-semaphore done)))
+      (with-saved-globals ((nle::*gateway-handler* :boot-test-handler)
+                           nle::*replay-sent-semaphore*
+                           (nlk::*cells-starting* nil))
+        (nle::start-cells-behind-the-listener nil)
+        (is nlk::*cells-starting* "marked from the listener on")
+        (bt2:signal-semaphore nle::*replay-sent-semaphore*)
+        (is (bt2:wait-on-semaphore done :timeout 10) "the pass ran to its end")
+        (is (not (member seen '(nil :unset))) "marked while the cells start")
+        (is (null nlk::*cells-starting*) "and no longer once they have")
+        (setf seen :unset)
+        (nle::start-cells-behind-the-listener nil)
+        (setf nle::*gateway-handler* nil)
+        (bt2:signal-semaphore nle::*replay-sent-semaphore*)
+        (is (await (:tries 300 :rest 0.01) (null nlk::*cells-starting*)) "a stopped gateway's pass leaves no mark")
+        (is (eq :unset seen) "and started no cell")))))
+
+(deftest a-session-standing-by-has-its-empty-replay-counted-sent (with-temp-store (store))
+  ;; A new session's replay is one empty final chunk. Sent past
+  ;; SEND-REPLAY-CHUNK it never said so, and a cold launch into a new
+  ;; session started its cells only when the wait for it ran out, 3 s on.
+  (ensure-durable-session "gw-standing-by")
+  (with-saved-globals ((nle::*replay-sent-semaphore* (bt2:make-semaphore :name "replay-sent-test")))
+    (let ((socket (make-instance 'recording-peer-ws :require-masking nil)))
+      (nle::ensure-gw-peer-state socket)
+      (nle::enqueue-peer-frame socket (nle::make-gw-replay-job :session-id "gw-standing-by" :cursor 0)
+                               :session-id "gw-standing-by")
+      (is (bt2:wait-on-semaphore nle::*replay-sent-semaphore* :timeout 5) "the replay is counted sent")
+      (is-eventually (= 1 (length (recording-peer-ws-sent socket))) "one frame")
+      (let ((frame (first (recording-peer-ws-sent socket))))
+        (is (nlk:json-value (shasht:read-json (if (stringp frame)
+                                                  frame
+                                                  (sb-ext:octets-to-string frame :external-format :utf-8)))
+                            :boolean "payload" "replay_chunk_final") "the final chunk"))
+      (nle::stop-gw-peer socket))))
+
 ;;; --- the note a boot says when it is back -----------------------------------
 
 (deftest the-boot-note-carries-no-memory-or-title (with-temp-store ())
@@ -4938,6 +4989,27 @@ symbol the test's own START-GATEWAY reference reads."
               (is (await (:tries 300 :rest 0.01) (null nle::*gateway-handler*)) "the listener is torn down")
               (is (await (:tries 300 :rest 0.01)
                     (find "disturbed the gateway operator token" said :test #'search)) "and the reason said"))))))))
+
+(deftest the-gateway-list-refuses-no-provider-while-the-cells-start (with-temp-gateway (port))
+  ;; A cell's lane exists once it starts: while the cells start, a pin on
+  ;; claude-code read `provider claude-code is not one this box knows' on a
+  ;; cold launch's landing screen. No provider is refused before they have.
+  (with-saved-globals ((nle::*provider-models-cache-path* nil) (nle::*models-catalog-path* nil))
+    (with-temp-file (nle::*shared-config-path*
+                     :setf t
+                     :contents "{\"general\": {\"default_model\": {\"provider\": \"nl-no-lane\", \"model\": \"m\"}}}")
+      (let ((said :unread))
+        (flet ((read-refusal ()
+                 (setf said :unread)
+                 (with-gateway-http (port :get "/api/gateway/models" :status 200)
+                   (let ((entry (find "nl-no-lane" (coerce (nlk:json-value body :array "providers") 'list)
+                                      :key (lambda (provider) (gethash "id" provider)) :test #'equal)))
+                     (setf said (and entry (list (gethash "refusal" entry))))))
+                 said))
+          (with-saved-globals ((nlk::*cells-starting* :a-start-pass))
+            (is (equal '(nil) (read-refusal)) "listed, refused nothing while the cells start"))
+          (with-saved-globals ((nlk::*cells-starting* nil))
+            (is (stringp (first (read-refusal))) "refused once they have")))))))
 
 ;;; --- accepted sockets never wait on Nagle ----------------------------------
 

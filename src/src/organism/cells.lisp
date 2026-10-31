@@ -186,6 +186,24 @@ is NIL. => the entry, or NIL when cleared."
   "The record for folder NAME, or NIL."
   (find name *cells* :key #'cell-name :test #'string=))
 
+(defvar *cells-starting* nil
+  "True while a serving gateway's cells are still to start: from its
+listener's publication to the end of its start pass
+(START-CELLS-BEHIND-THE-LISTENER). A provider a cell serves has no lane
+before then, so what asks for one meanwhile waits rather than refuses.")
+
+(defun cell-start-pending-p (cell)
+  "Whether CELL is a loaded peripheral, present, that the start pass under
+way (*CELLS-STARTING*) has still to start, and that refused none."
+  (and *cells-starting*
+       cell
+       (eq (cell-state cell) :loaded)
+       (cell-start cell)
+       (not (cell-started-p cell))
+       (not (cell-refusal cell))
+       (or (null (cell-path cell)) (probe-file (cell-path cell)))
+       t))
+
 (defun system-cell (system)
   "The record of the folder that declares SYSTEM, or NIL: how a cell names
 its own folder to RESTART-CELLS, whatever name it was installed under."

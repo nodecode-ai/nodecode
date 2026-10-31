@@ -663,7 +663,7 @@ waits for that start rather than asking for what the started cell answers."
                                   ;; as a key to paste (tryingET, 2026-10-30)
                                   (and installed
                                        (list* :installed t
-                                              (and (cell-start-pending-p (nlk:find-cell name))
+                                              (and (nlk::cell-start-pending-p (nlk:find-cell name))
                                                    (list :starting t))))))))
 
 (defun offered-provider-name (id &aux (memo (or *provider-offers*
