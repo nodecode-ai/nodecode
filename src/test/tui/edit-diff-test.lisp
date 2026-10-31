@@ -98,3 +98,76 @@ changed greet.py by HUNK, then its answer."
              (open (edit-diff-lines state)))
         (is (rows-carry-p "40 + l40" open) "opened, the whole diff")
         (is (not (rows-carry-p "… +" open)))))))
+
+(defun edit-call-fact (state note paths &key (turn-id "edits-turn") (call t) (result t))
+  "STATE after an Eval noted NOTE: its call when CALL, then its result when
+RESULT, whose snapshot changed each of PATHS by one line."
+  (when call
+    (setf state (nle::ingest-tool-call-fact state note "eval"
+                                            (format nil "{\"form\":\";; ~a\\n(sh \\\"true\\\")\"}" note)
+                                            :turn-id turn-id)))
+  (when result
+    (setf state (nle::ingest-tool-result-fact
+                 state note "eval" "ok" :turn-id turn-id
+                 :metadata (and paths
+                                (nlk:json-object
+                                 "workspace_diff"
+                                 (nlk:json-object "files" (map 'vector (lambda (path)
+                                                                         (snapshot-diff-file path '(" l1" "-l2" "+TWO" " l3")))
+                                                               paths)))))))
+  state)
+
+(defun edit-calls-state (calls &key (turn-id "edits-turn") (settled t))
+  "A turn whose CALLS run in order, each (NOTE . PATHS) for EDIT-CALL-FACT;
+then, when SETTLED, its answer and its end."
+  (let ((state (nle::ingest-message-fact nil "user" "change things" :turn-id turn-id)))
+    (loop for (note . paths) in calls
+          do (setf state (edit-call-fact state note paths :turn-id turn-id)))
+    (when settled
+      (setf state (nle::ingest-message-fact state "assistant" "done" :turn-id turn-id)
+            state (nle::ingest-turn-terminal state "completed" :turn-id turn-id)))
+    state))
+
+(deftest a-newer-edit-takes-the-place-of-the-diffs-before-it ()
+  ;; Every call that changed files kept its diffs under the run, so a turn of
+  ;; N edits stood N diff renders tall. The run's newest call that changed
+  ;; files holds them now, every file it changed; an earlier one folds into
+  ;; the count like a command, and its line still opens its own.
+  (let* ((nle::*tool-detail* :standard)
+         (state (edit-calls-state '(("retry" "app/webhooks.py") ("readme" "README.md")
+                                    ("release" "pyproject.toml" "app/__init__.py") ("check"))))
+         (lines (edit-diff-lines state)))
+    (is (rows-carry-p "Ran 1 command, edited 4 files +4 -4" lines) "the title still counts every edit")
+    (is (rows-carry-p "release +2 -2" lines) "the newest edit's own line")
+    (is (rows-carry-p "+1 -1 pyproject.toml" lines) "its first file")
+    (is (rows-carry-p "+1 -1 app/__init__.py" lines) "and its second: a call keeps all its diffs")
+    (is (= 2 (count-if (lambda (line) (search "2 + TWO" line)) lines)) "both files' diffs, nobody else's")
+    (is (notany (lambda (needle) (rows-carry-p needle lines)) '("webhooks.py" "README.md" "retry" "readme")) "the earlier edits fold, diffs and lines")
+    (is (not (rows-carry-p "check" lines)) "a call that changed nothing stays folded")
+    (let* ((group (find-if #'nle::tool-group-p (mapcar #'nle::display-block-row (nle:project-state state :width 100))))
+           (retry (find "retry" (nle::tool-group-members group) :key #'nle::transcript-row-tool-call-id :test #'equal))
+           (open (let ((nle::*expanded-tool-call* (nle::tool-group-key group))) (edit-diff-lines state)))
+           (opened (let ((nle::*expanded-tool-call* (nle::tool-row-expand-key retry))) (edit-diff-lines state))))
+      ;; Opened, the run lists every call; the diffs stand under the newest edit alone.
+      (is (every (lambda (needle) (rows-carry-p needle open)) '("retry +1 -1" "readme +1 -1" "release +2 -2" "check")) "every call listed")
+      (is (not (rows-carry-p "webhooks.py" open)) "an earlier edit lists its line, not its diffs")
+      (is (rows-carry-p "+1 -1 app/__init__.py" open) "the newest edit's diffs")
+      ;; An earlier edit's line opens its own diffs; the newest's stay.
+      (is (rows-carry-p "+1 -1 app/webhooks.py" opened) "an edit clicked open shows its diffs")
+      (is (rows-carry-p "+1 -1 app/__init__.py" opened) "beside the newest's"))))
+
+(deftest a-live-run-hands-the-diffs-to-each-newer-edit ()
+  ;; Live, the diffs move as edits land: an edit's stand under it while the
+  ;; next call runs, a later call that changed files takes their place, and a
+  ;; call that changed nothing leaves them where they are.
+  (let* ((nle::*tool-detail* :standard)
+         (state (edit-call-fact (edit-calls-state '(("retry" "app/webhooks.py")) :settled nil) "readme" nil :result nil)))
+    (is (rows-carry-p "+1 -1 app/webhooks.py" (edit-diff-lines state)) "the last edit's diffs while the next call runs")
+    (setf state (edit-call-fact state "readme" '("README.md") :call nil))
+    (let ((lines (edit-diff-lines state)))
+      (is (rows-carry-p "+1 -1 README.md" lines) "the newer edit's diffs")
+      (is (not (rows-carry-p "webhooks.py" lines)) "in the place of the older one's"))
+    (setf state (edit-call-fact state "check" nil))
+    (let ((lines (edit-diff-lines state)))
+      (is (rows-carry-p "+1 -1 README.md" lines) "a call that changed nothing leaves them")
+      (is (not (rows-carry-p "webhooks.py" lines)) "and brings nothing back"))))
