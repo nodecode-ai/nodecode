@@ -234,13 +234,18 @@ deeper than INDENT, their common indent stripped, joined by newlines or
 folded to blanks; `-' after the marker drops the final newline."
   (let* ((folded (char= (char header 0) #\>))
          (chomp (cond ((find #\- header) :strip) ((find #\+ header) :keep) (t :clip)))
-         (lines (loop with block-indent = nil for number from (1+ line.number) to (length p.raw)
+         ;; An indentation indicator (`|2') fixes the block's indent that many
+         ;; columns past its parent's, so a first line that is itself indented
+         ;; keeps that indent as text.
+         (explicit (nlk:when-let (digit (find-if #'digit-char-p header))
+                     (+ indent (digit-char-p digit))))
+         (lines (loop with block-indent = explicit for number from (1+ line.number) to (length p.raw)
                       for text = (aref p.raw (1- number))
                       for blank = (zerop (length (string-trim '(#\Space #\Tab) text)))
                       for this-indent = (or (position #\Space text :test-not #'char=) (length text))
                       while (or blank (> this-indent indent))
                       do (unless (or blank block-indent) (setf block-indent this-indent))
-                      collect (if blank "" (subseq text (min block-indent (length text)))))))
+                      collect (if blank "" (subseq text (min block-indent this-indent))))))
     ;; Skip the meaningful lines the block consumed.
     (loop while (and (ypeek p) (<= (yline-number (ypeek p)) (+ line.number (length lines))))
           do (ynext p))
