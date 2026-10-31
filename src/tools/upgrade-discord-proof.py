@@ -18,7 +18,12 @@ on 127.0.0.1 (discord-qa.py's), with every shipped cell on:
   2. The release host's stable pointer moves to CANDIDATE. The gateway takes
      it live, restarts itself onto it, or -- when PREVIOUS cannot, which
      upgrade-proof.py gates -- is restarted by hand, as its person would.
-     (a) Once CANDIDATE serves, the bot answers.
+     (a) Once CANDIDATE serves, the bot connects again on it -- a release
+     taken live starts the channels again once no turn runs, so none keeps
+     what the build before built (a 0.1.5 gateway that took 0.1.6 live kept
+     a Discord platform with no thread reader) -- and answers: in the flat
+     channel, and in the thread another bot named in the same ask opened
+     first, which Discord refuses it a second of.
   3. The handoff the incident had: a gateway of PREVIOUS holds the store, a
      gateway of CANDIDATE boots and waits for it, a process of PREVIOUS points
      the home's shipped-cell links back into its own release, and the old
@@ -146,6 +151,39 @@ def ask(dc, model, n, timeout=120):
         qa.answer_in(dc, qa.FLAT, marker, after=message["id"], timeout=timeout)
         return True, f"answered in {time.monotonic() - began:.1f}s"
     except qa.Failure as failure:
+        return False, str(failure)
+
+
+PEER = "1100000000000000041"  # another bot in the guild, played here
+
+
+def ask_where_a_peer_threaded(dc, model, n, timeout=120):
+    """Mike @mentions the bot and another in #general, and the other opened the
+    ask's thread first => (answered in that thread, detail). Discord refuses
+    the bot a second thread off the ask (160004); the answer goes in the one
+    that stands."""
+    key, marker = f"qa-peer{n}", f"PEER-{n}-OK"
+    model.script(key, text=f"{marker} in the thread.")
+    with dc.cv:
+        message = dc.post(qa.GENERAL, qa.user("mike"), f"<@{qa.BOT}> <@{PEER}> {key} answer in the thread",
+                          mentions=[qa.user("bot"),
+                                    {"id": PEER, "username": "peer", "global_name": "Peer", "bot": True}])
+        sent = dict(message)
+        # Opened as the stand-in opens one off a message: the thread takes its id.
+        thread = {"id": message["id"], "type": 11, "name": key, "parent_id": qa.GENERAL,
+                  "guild_id": qa.GUILD, "owner_id": PEER, "message_count": 0,
+                  "thread_metadata": {"archived": False, "locked": False, "auto_archive_duration": 1440}}
+        dc.channels[thread["id"]] = thread
+        message["thread"] = dict(thread)
+    dc.gateway_message(sent)
+    dc.dispatch("THREAD_CREATE", dict(thread, newly_created=True))
+    began = time.monotonic()
+    try:
+        qa.answer_in(dc, thread["id"], marker, timeout=timeout)
+        return True, f"answered in that thread in {time.monotonic() - began:.1f}s"
+    except qa.Failure as failure:
+        if any(marker in m["content"] for m in dc.bot_messages(qa.GENERAL, message["id"])):
+            return False, "answered in #general, beside the thread the other bot opened"
         return False, str(failure)
 
 
@@ -283,17 +321,24 @@ def main():
             if seen is None:
                 failures.append(f"(a) a gateway started on `current' never served {candidate}")
         if seen is not None:
-            # A restart, in place or by hand, reconnects the bot; a release
-            # taken live keeps the connection it had.
-            if seen.get("started_at") != started:
-                try:
-                    reconnected(dc, connects)
-                except qa.Failure:
-                    pass
+            # Every way a release lands starts the channels on its code: a
+            # restart, in place or by hand, starts them anew, and a release
+            # taken live starts them again once no turn runs.
+            how = "in place" if seen.get("started_at") == started else "restarted"
+            if reconnected(dc, connects):
+                run.note(f"(a) the bot connected again on {candidate} ({how})")
+            else:
+                failures.append(f"(a) {candidate} serves ({how}), but the bot kept the connection {previous} "
+                                f"made: its channels run what the build before built")
             answered, detail = ask(dc, model, 2)
             run.note(f"(a) {candidate} serves (pid {seen['pid']}); links into {run.links()}; bot {detail}")
             if not answered:
                 failures.append(f"(a) once {candidate} served, the bot did not answer: {detail}")
+            threaded, detail = ask_where_a_peer_threaded(dc, model, 4)
+            run.note(f"(a) an ask whose thread another bot opened first: {detail}")
+            if not threaded:
+                failures.append(f"(a) once {candidate} served, the bot did not answer in the thread another "
+                                f"bot opened off the ask: {detail}")
 
         # 3. The handoff: an old gateway holds the store while a new one boots
         # and waits, and an old process points the links back at its release.
@@ -347,8 +392,8 @@ def main():
             for failure in failures:
                 say("FAIL: " + failure)
             return 1
-        say(f"PASS: {previous} -> {candidate}: the bot answered after the update and after the handoff, "
-            f"one organism serves, no channel was refused")
+        say(f"PASS: {previous} -> {candidate}: the bot connected again on the update and answered, in the "
+            f"thread another bot opened too, and after the handoff; one organism serves, no channel was refused")
         return 0
     finally:
         up.stop_all(root)

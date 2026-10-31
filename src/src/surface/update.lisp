@@ -466,9 +466,9 @@ HOLD, VERSION is the operator's own pick and holds this home there."
                 (nlk::record-upgrade +gateway-session-id+ :from from :to to
                                      :mode (if refused "restart" "hot") :line line
                                      :held (if refused (list (cons "refused live" refused)) held)))
-               ;; A shell folds what went live here; nothing did, and the
-               ;; release is said at the boot that runs it. The model words
-               ;; it off this lock.
+               ;; A shell folds what went live here, and the channels start
+               ;; again on it once idle; nothing did, and the release is said
+               ;; at the boot that runs it. The model words it off this lock.
                (unless refused
                  (announce-upgraded (cdr (first plans)) to text)
                  (when-let (note (ignore-errors (take-release from)))
@@ -1028,11 +1028,15 @@ the host has no list for LABEL."
 ;;; --- the frame to shells, and a shell's fold -------------------------------
 
 (defun announce-upgraded (root version line)
-  "Every attached shell is told the organism's image now
-reads itself from ROOT at VERSION: one organism.upgraded frame; each folds
-it by converging its own image on the same tree (CONVERGE-SHELL)."
-  ;; => how
-  ;; many were told.
+  "The release VERSION, live in this image from ROOT, reaches what still runs
+the build before it: every attached shell is told -- one organism.upgraded
+frame, each folding it by converging its own image on the same tree
+(CONVERGE-SHELL) -- and the channels start again once no turn is in flight
+(RESTART-CHANNELS-WHEN-IDLE)."
+  ;; => how many shells were told. The channels ride here, not in
+  ;; UPGRADE-ORGANISM: an image of the release before calls this past its own
+  ;; converge, and the definition it finds is the release's.
+  (ignore-errors (restart-channels-when-idle version))
   (or (ignore-errors
        (nth-value 1
                   (broadcast-organism
