@@ -186,6 +186,24 @@ is NIL. => the entry, or NIL when cleared."
   "The record for folder NAME, or NIL."
   (find name *cells* :key #'cell-name :test #'string=))
 
+(defvar *cells-starting* nil
+  "True while a serving gateway's cells are still to start: from its
+listener's publication to the end of its start pass
+(START-CELLS-BEHIND-THE-LISTENER). A provider a cell serves has no lane
+before then, so what asks for one meanwhile waits rather than refuses.")
+
+(defun cell-start-pending-p (cell)
+  "Whether CELL is a loaded peripheral, present, that the start pass under
+way (*CELLS-STARTING*) has still to start, and that refused none."
+  (and *cells-starting*
+       cell
+       (eq (cell-state cell) :loaded)
+       (cell-start cell)
+       (not (cell-started-p cell))
+       (not (cell-refusal cell))
+       (or (null (cell-path cell)) (probe-file (cell-path cell)))
+       t))
+
 (defun system-cell (system)
   "The record of the folder that declares SYSTEM, or NIL: how a cell names
 its own folder to RESTART-CELLS, whatever name it was installed under."
@@ -929,6 +947,27 @@ made: its DIRECTORY, but for an install of a folder this image ships."
 code is read (OWN-CELL-DIRECTORY), which it keeps (CELL-FOLDER-SOURCE)."
   (setf (gethash folder *cell-folder-sources*) source)
   folder)
+
+(defun cell-served-providers (cell &aux (path (cell-path cell)))
+  "The providers CELL's folder says it serves: its .asd's serves lines."
+  (let* ((folder (and path (ignore-errors (make-cell-folder path))))
+         (primary (and folder (first (cell-folder-systems folder)))))
+    (loop for serves in (and primary (declared-system-serves primary))
+          for provider = (cdr (assoc "provider" serves :test #'string=))
+          when (and (stringp provider) (plusp (length provider)))
+            collect provider)))
+
+(defun starting-cells-serving (provider)
+  "The cells still to start (CELL-START-PENDING-P) whose folders say they
+serve PROVIDER: what a lane for PROVIDER waits on while the start pass is
+under way."
+  ;; Read only in a boot's first seconds, and only for what its cells serve:
+  ;; a provider no cell serves is refused at once, as it always was.
+  (and *cells-starting*
+       (remove-if-not (lambda (cell)
+                        (and (cell-start-pending-p cell)
+                             (member provider (cell-served-providers cell) :test #'string-equal)))
+                      *cells*)))
 
 (defun read-cell-folder (directory source)
   "DIRECTORY as a CELL-FOLDER, its .asd files read as data from SOURCE."

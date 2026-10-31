@@ -1926,6 +1926,25 @@ its own) — or NIL when it resolves a lane and an endpoint."
   (handler-case (progn (if *endpoint* (find-provider-lane provider) (provider-endpoint provider)) nil)
     (provider-config-error (condition) (provider-error-detail condition))))
 
+(defparameter *cells-starting-wait-seconds* 60
+  "The longest AWAIT-CELLS-STARTING waits for the cells still to start.")
+
+(defun await-cells-starting (provider &aux (deadline (+ (get-internal-real-time)
+                                                         (* *cells-starting-wait-seconds*
+                                                            internal-time-units-per-second))))
+  "While PROVIDER resolves no lane (SELECTION-REFUSAL) and a cell that serves
+it is still to start (NLK::STARTING-CELLS-SERVING), wait for that start, at
+most *CELLS-STARTING-WAIT-SECONDS*. => T when it waited."
+  ;; A cold boot starts its cells behind its listener: a prompt sent in its
+  ;; first moments on claude-code/... failed at once, `provider claude-code is
+  ;; not one this box knows' (a home on claude-code alone, 2026-10-31).
+  (let ((cells (nlk::starting-cells-serving provider)))
+    (when (and cells (ignore-errors (selection-refusal provider)))
+      (loop while (and (some #'nlk::cell-start-pending-p cells)
+                       (< (get-internal-real-time) deadline))
+            do (sleep 0.05))
+      t)))
+
 (defun provider-base-url (provider)
   "The base PROVIDER's endpoint composes from and its listing is fetched
 against: the configured entry's base_url, else the models.dev catalog's api

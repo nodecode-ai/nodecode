@@ -412,10 +412,14 @@ diagnostic it was dropped with -- as the one frame left to send."
               ((functionp item) (funcall item state))
               ((not (gw-replay-job-p item))
                (gw-peer-send-text state item))
-              ;; A session standing by with no fork behind it has nothing to say.
+              ;; A session standing by with no fork behind it has nothing to say:
+              ;; one empty final chunk, which is a replay sent all the same. Sent
+              ;; past SEND-REPLAY-CHUNK, it never said so, and a cold launch into
+              ;; a new session started its cells only when the wait for that
+              ;; ran out, 3 s on (START-CELLS-BEHIND-THE-LISTENER).
               ((and (zerop (gw-replay-job-cursor item))
                     (null (nlk:session-lineage (gw-replay-job-session-id item))))
-               (gw-peer-send-text state (replay-job-frame item #() 0 t)))
+               (send-replay-chunk state item '() 0 t))
               (t
                (let* ((session-id (gw-replay-job-session-id item))
                       (visible-set (nth-value 0 (nlk:session-visible-turn-set session-id))))
@@ -2729,7 +2733,9 @@ reads, since a cell's lanes and inventory hooks run here only."
                                                                          (and pinned (list pinned))
                                                                          :test #'string-equal))
                                                        #'string-lessp)
-                                       for refusal = (ignore-errors (selection-refusal id))
+                                       ;; none yet for one a cell still to start serves
+                                       for refusal = (and (not (nlk::starting-cells-serving id))
+                                                          (ignore-errors (selection-refusal id)))
                                        collect (json-object
                                                 "id" id
                                                 "connected" (and (member id connected :test #'string-equal) t)
@@ -2751,7 +2757,8 @@ reads, since a cell's lanes and inventory hooks run here only."
                                                       "name" (getf offer :name)
                                                       "sign_in" (getf offer :sign-in)
                                                       "description" (getf offer :description)
-                                                      :opt "installed" (getf offer :installed)))
+                                                      :opt "installed" (getf offer :installed)
+                                                      :opt "starting" (getf offer :starting)))
                                        (ignore-errors (provider-offers)))))))
 
 ;;; --- slash commands ---------------------------------------------------------
@@ -4914,54 +4921,67 @@ back after them (NLK:TRIM-MEMORY)."
   (nlk:note-boot-phase "cells-start")
   (let ((handler *gateway-handler*)
         (sent (setf *replay-sent-semaphore* (bt2:make-semaphore :name "replay-sent"))))
+    ;; Until the pass below ends, a provider a cell serves has no lane: a
+    ;; turn on one waits for it, and no list refuses it (NLK::*CELLS-STARTING*):
+    ;; this pass's mark.
+    (setf nlk::*cells-starting* sent)
     (spawn "start-cells"
-      (bt2:wait-on-semaphore sent :timeout 3)
-      (when (eq handler *gateway-handler*)
-        ;; One note, in the model's words, on a thread of its own: the shell
-        ;; hears it once the model answers, not once every peripheral is up,
-        ;; and a channel host that starts after it reads it at its start
-        ;; (ORGANISM-NOTE).
-        (spawn "boot-note"
-          ;; a restore the last launch made is recorded here, marker taken, and said with the rest
-          (say-note (format nil "~{~a~^~%~%~}"
-                            (remove nil (list (ignore-errors (nlk:take-restoring-marker))
-                                              back (ignore-errors (boot-release)))))))
-        (let ((materialized *gateway-operator-token*))
-          (start-cells)
-          (nlk:note-boot-phase "cells-started")
-          ;; The background gateway is on by default, a user service, as
-          ;; Hermes' setup offers first: a home nodecode names comes up at
-          ;; every login from its first boot, until the operator turns it
-          ;; off -- /settings, `nodecode gateway off'.
-          (when (nlk:gateway-by-default-p)
-            (keep-running "your sessions"))
-          ;; The same gateway's token moved under the cells; one stopped
-          ;; meanwhile took its token with it, and is no fault of theirs.
-          (when (and (eq handler *gateway-handler*)
-                     (not (equal *gateway-operator-token* materialized)))
-            (ignore-errors (stop-gateway))
-            (error "cell startup disturbed the gateway operator token")))
-        ;; The turns this boot picks up, and the prompts stranded behind
-        ;; finished ones, run once the cells are up: a lane, tool or channel a
-        ;; cell brings exists only after its START-CELL, and a turn pinned to
-        ;; one (claude-code/...) resumed ahead of it failed as a config error
-        ;; 2 s into its boot. Their sessions stay durably active
-        ;; meanwhile (ACTIVE-TURN-P), so a prompt landing first queues behind.
-        (with-handlers ((error (condition)
-                          (warn "the turns this boot picks up were not dispatched: ~a"
-                                condition)))
-          (start-gateway-recovery resumable))
-        (nlk:note-boot-phase "recovery-done")
-        ;; Behind the peripherals: a definition being mended may call what
-        ;; one of them makes as it starts (an MCP server's tools).
-        (with-handlers ((error (condition)
-                          (warn "the layer's files this boot did not load were not handed on: ~a"
-                                condition)))
-          (hand-broken-layer))
-        (with-handlers ((error (condition)
-                          (warn "the floor this boot stands on was not handed on: ~a" condition)))
-          (hand-failed-self))
-        (when trim (nlk:trim-memory))))))
+      (unwind-protect
+          (progn
+            (bt2:wait-on-semaphore sent :timeout 3)
+            (when (eq handler *gateway-handler*)
+              ;; One note, in the model's words, on a thread of its own: the shell
+              ;; hears it once the model answers, not once every peripheral is up,
+              ;; and a channel host that starts after it reads it at its start
+              ;; (ORGANISM-NOTE).
+              (spawn "boot-note"
+                ;; a restore the last launch made is recorded here, marker taken, and said with the rest
+                (say-note (format nil "~{~a~^~%~%~}"
+                                  (remove nil (list (ignore-errors (nlk:take-restoring-marker))
+                                                    back (ignore-errors (boot-release)))))))
+              (let ((materialized *gateway-operator-token*))
+                (start-cells)
+                ;; the pass is over: a turn waiting on a cell's lane goes on
+                (when (eq nlk::*cells-starting* sent)
+                  (setf nlk::*cells-starting* nil))
+                (nlk:note-boot-phase "cells-started")
+                ;; The background gateway is on by default, a user service, as
+                ;; Hermes' setup offers first: a home nodecode names comes up at
+                ;; every login from its first boot, until the operator turns it
+                ;; off -- /settings, `nodecode gateway off'.
+                (when (nlk:gateway-by-default-p)
+                  (keep-running "your sessions"))
+                ;; The same gateway's token moved under the cells; one stopped
+                ;; meanwhile took its token with it, and is no fault of theirs.
+                (when (and (eq handler *gateway-handler*)
+                           (not (equal *gateway-operator-token* materialized)))
+                  (ignore-errors (stop-gateway))
+                  (error "cell startup disturbed the gateway operator token")))
+              ;; The turns this boot picks up, and the prompts stranded behind
+              ;; finished ones, run once the cells are up: a lane, tool or channel a
+              ;; cell brings exists only after its START-CELL, and a turn pinned to
+              ;; one (claude-code/...) resumed ahead of it failed as a config error
+              ;; 2 s into its boot. Their sessions stay durably active
+              ;; meanwhile (ACTIVE-TURN-P), so a prompt landing first queues behind.
+              (with-handlers ((error (condition)
+                                (warn "the turns this boot picks up were not dispatched: ~a"
+                                      condition)))
+                (start-gateway-recovery resumable))
+              (nlk:note-boot-phase "recovery-done")
+              ;; Behind the peripherals: a definition being mended may call what
+              ;; one of them makes as it starts (an MCP server's tools).
+              (with-handlers ((error (condition)
+                                (warn "the layer's files this boot did not load were not handed on: ~a"
+                                      condition)))
+                (hand-broken-layer))
+              (with-handlers ((error (condition)
+                                (warn "the floor this boot stands on was not handed on: ~a" condition)))
+                (hand-failed-self))
+              (when trim (nlk:trim-memory))))
+        ;; however the pass ends -- a gateway stopped meanwhile starts
+        ;; none -- its mark goes with it, and a later pass's stays
+        (when (eq nlk::*cells-starting* sent)
+          (setf nlk::*cells-starting* nil))))))
 
 (defun stop-gateway ()
   "Stop the running gateway, if any, and retract the published endpoint."

@@ -226,6 +226,157 @@
           (is (= 0 installs) "nothing installed again")
           (is (eq :api-key (nle::connect-dialog-step dialog)) "straight to its key"))))))
 
+(deftest an-installed-folder-whose-cell-waits-for-its-start-is-offered-starting ()
+  ;; A cold boot reads /models seconds before its cells start, behind the
+  ;; listener: an installed folder's provider answers nothing yet, and its
+  ;; offer says the cell is still to start, so a pick waits for the start
+  ;; rather than asking for a key -- Claude Code's asked for one (tryingET,
+  ;; 2026-10-30). Started, or refused, it says nothing of the kind.
+  (let* ((commit (make-string 40 :initial-element #\b))
+         (cell (nlk::make-cell :name "nl-cell-go" :kind :peripheral
+                               :start (lambda (config) config nil)))
+         (nlk::*cells* (list cell))
+         ;; the boot's start pass under way (START-CELLS-BEHIND-THE-LISTENER)
+         (nlk::*cells-starting* :a-start-pass)
+         (nle::*provider-offers*
+           (cons (get-universal-time)
+                 (list (nlk::make-offer :name "nl-cell-go" :git "https://example.org/c.git" :commit commit
+                                        :description "Go" :index "hub"
+                                        :serves (nlk::serves-entries (list '(:provider "nl-go" :name "NL Go"))))))))
+    (with-stubbed-fdefinition (nle::connected-provider-ids () '())
+      (is (equal (list (list :cell "nl-cell-go" :commit commit :provider "nl-go" :name "NL Go"
+                             :sign-in "key" :description "Go" :installed t :starting t))
+                 (nle::provider-offers)) "loaded, its start to come")
+      (let ((nlk::*cells-starting* nil))
+        (is (equal '(:installed t) (last (first (nle::provider-offers)) 2)) "no start pass under way, none to wait for"))
+      (setf (nlk:cell-refusal cell) "no claude on PATH")
+      (is (equal '(:installed t) (last (first (nle::provider-offers)) 2)) "a refused start is none to wait for")
+      (setf (nlk:cell-refusal cell) nil
+            (nlk:cell-started-p cell) t)
+      (is (equal '(:installed t) (last (first (nle::provider-offers)) 2)) "started"))))
+
+(deftest a-cell-still-to-start-is-what-the-providers-its-folder-serves-wait-on ()
+  ;; What a turn and the list wait on in a boot's first seconds is read off
+  ;; the folder itself, its .asd's serves lines: only the provider a cell
+  ;; still to start serves waits, and only until that cell has started.
+  (with-temp-trees ((root "starting-serves"))
+    (let ((folder (merge-pathnames "nl-hub-go/" root)))
+      (write-temp-file (merge-pathnames "nl-hub-go.asd" folder) +go-asd+)
+      (let* ((cell (nlk::make-cell :name "nl-hub-go" :path folder :kind :peripheral
+                                   :start (lambda (config) config nil)))
+             (nlk::*cells* (list cell))
+             (nlk::*cells-starting* :a-start-pass))
+        (is (equal '("nl-go") (nlk::cell-served-providers cell)) "what its .asd says it serves")
+        (is (equal (list cell) (nlk::starting-cells-serving "nl-go")) "its start to come")
+        (is (null (nlk::starting-cells-serving "nl-other")) "a provider it does not serve")
+        (let ((nlk::*cells-starting* nil))
+          (is (null (nlk::starting-cells-serving "nl-go")) "no start pass under way"))
+        (setf (nlk:cell-started-p cell) t)
+        (is (null (nlk::starting-cells-serving "nl-go")) "started")))))
+
+(deftest the-gateway-list-says-which-folder-in-already-is-still-to-start (with-temp-gateway (port))
+  ;; A shell reads the offers off its organism's list: one whose cell is
+  ;; still to start says so, and the shell's facts keep it.
+  (with-saved-globals ((nle::*provider-models-cache-path* nil) (nle::*models-catalog-path* nil))
+    (with-stubbed-fdefinition (nle::provider-offers ()
+                                (list (append (go-offer :provider "nl-claude" :cell "nl-cell-claude")
+                                              (list :installed t :starting t))
+                                      (go-offer)))
+      (with-gateway-http (port :get "/api/gateway/models" :status 200)
+        (let ((offers (nlk:json-value body :array "offers")))
+          (is (eq t (gethash "starting" (aref offers 0))) "the one still to start")
+          (is (not (nth-value 1 (gethash "starting" (aref offers 1)))) "and only that one"))
+        (is (equal '(t nil) (mapcar (lambda (offer) (getf offer :starting))
+                                    (getf (nle::gateway-models-facts body) :offers))) "the shell's facts keep it")))))
+
+(deftest connect-list-says-a-folder-in-already-is-still-starting ()
+  ;; Not among the connected yet, and why: its cell is starting.
+  (with-model-listings (:catalog "{
+  \"nl-go\": {\"name\": \"NL Go\", \"npm\": \"@ai-sdk/openai-compatible\", \"api\": \"https://nl-go.test/v1\", \"models\": {\"g\": {\"tool_call\": true}}}
+}")
+    (with-stubbed-fdefinition (nle::picker-provider-offers ()
+                                (list (append (go-offer) (list :installed t :starting t))
+                                      (append (go-offer :provider "nl-codex" :cell "nl-cell-codex"
+                                                        :sign-in "/nl-codex login")
+                                              (list :installed t :starting t))))
+      (let ((rows (nle::connect-picker-rows)))
+        (is (equal "1 model  starting"
+                   (nle::picker-row-detail (find "NL Go" rows :key #'nle::picker-row-label :test #'equal))))
+        (is (equal "starting"
+                   (nle::picker-row-detail (find "NL Codex" rows :key #'nle::picker-row-label :test #'equal))))))))
+
+(deftest connect-a-folder-whose-cell-is-starting-waits-for-it-then-goes-on-to-its-models ()
+  ;; Enter on Claude Code's row before the organism's cells started asked
+  ;; for an API key, which its login -- the claude CLI's -- never takes
+  ;; (tryingET, 2026-10-30). The wizard waits on the start, its clock
+  ;; counting, and once the gateway's list reads the provider connected the
+  ;; pick goes on to its models, with no key asked.
+  (let* ((reads 0) (picked '()) (seen nil)
+         (offer (append (go-offer :provider "nl-claude" :cell "nl-cell-claude")
+                        (list :installed t :starting t))))
+    (with-stubbed-fdefinitions ((nle::install-offered-cell (model offer)
+                                  (error "~a installed again for ~a" offer model))
+                                (nle::picker-connected-provider-ids ()
+                                  (if (< reads 2) '() '("nl-claude")))
+                                (nle::picker-provider-offers ()
+                                  (if (< reads 2) (list offer) '())))
+      (let ((nle::*connect-start-poll-seconds* 0))
+        (with-frame-model (model 100 30 :session-id "offer-starting")
+          (nle::open-connect-dialog
+           model (lambda ()
+                   (list (nle::make-picker-row :label "NL Claude"
+                                               :value (list :provider "nl-claude" :install offer))))
+           (nlk:lambda-ignoring (model provider-id secret done) nil)
+           (lambda (model &optional provider) model (push provider picked)))
+          (with-stubbed-fdefinition (nle::fetch-gateway-models (m)
+                                      (incf reads)
+                                      (when (= reads 1)
+                                        (let ((frame (nle::compose-frame m)))
+                                          (setf seen (list (nle::connect-dialog-step (nle::chat-model-dialog m))
+                                                           (rows-carry-p "Starting nl-cell-claude, the cell that serves this provider." frame)
+                                                           (rows-carry-p "starting…" frame)))))
+                                      nil)
+            (dialog-keys model :enter))
+          (is (equal '(:starting t t) seen) "the wizard waits on the start, its clock counting")
+          (is (= 2 reads) "read again while the cell was starting")
+          (is (equal '("nl-claude") picked) "once it answers, the pick goes on to its models")
+          (is (null model.dialog) "with no key asked"))))))
+
+(deftest connect-a-folder-whose-cell-started-without-answering-goes-on-as-it-asks ()
+  ;; Up, and its provider still not answering -- a key folder with no key
+  ;; yet -- the wizard goes on as the provider asks: its key step. Ctrl+E
+  ;; asks for a key at once, whatever the cell is doing.
+  (let ((offer (append (go-offer) (list :installed t :starting t))) (reads 0))
+    (with-stubbed-fdefinitions ((nle::picker-connected-provider-ids () '())
+                                (nle::picker-provider-offers () (list (append (go-offer) (list :installed t))))
+                                (nle::fetch-gateway-models (model) model (incf reads) nil))
+      (let ((nle::*connect-start-poll-seconds* 0))
+        (with-frame-model (model 100 30 :session-id "offer-started-quiet")
+          (let ((dialog (open-offer-wizard model offer)))
+            (dialog-keys model :enter)
+            (is (eq :api-key (nle::connect-dialog-step dialog)) "its key, once its cell is up")
+            (is (= 1 reads))))
+        (with-frame-model (model 100 30 :session-id "offer-starting-key")
+          (let ((dialog (open-offer-wizard model offer)))
+            (setf reads 0)
+            (nle::connect-dialog-key model dialog #\e :ctrl t)
+            (is (eq :api-key (nle::connect-dialog-step dialog)) "Ctrl+E: a key now")
+            (is (= 0 reads) "no wait")))))))
+
+(deftest connect-steps-that-wait-on-the-organism-take-no-enter-and-esc-goes-back ()
+  ;; A key's check, a folder's install, its cell's start, its sign-in: the
+  ;; organism answers, and Enter meanwhile moves nothing -- on the sign-in
+  ;; step it fell through the Enter dispatch's ECASE. Esc goes back to the list.
+  (dolist (step '(:checking :installing :signing-in :starting))
+    (with-frame-model (model 100 30 :session-id (format nil "wait-~(~a~)" step))
+      (let ((dialog (open-offer-wizard model (go-offer))))
+        (nle::connect-enter-step dialog step)
+        (dialog-keys model :enter)
+        (is (eq step (nle::connect-dialog-step dialog)) (format nil "Enter on ~(~a~)" step))
+        (unless (eq step :checking)
+          (dialog-keys model :escape)
+          (is (eq :provider (nle::connect-dialog-step dialog)) (format nil "Esc on ~(~a~)" step)))))))
+
 (deftest sign-in-facts-read-the-page-and-the-device-code ()
   ;; What the sign-in panel shows of a folder's answer: its first page that
   ;; is not the loopback the browser comes back to, and the device code --

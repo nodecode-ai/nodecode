@@ -62,14 +62,24 @@
   ;; question is asked over, or what the applies landed, the rest folded in.
   (report nil))
 
-(defun provider-connected-p ()
+(defun provider-connected-p (&aux (provider (if (credential-env "NODECODE_PROVIDER")
+                                                *provider*
+                                                (or (shared-model-pin) *provider*))))
   "Whether any provider resolves a credential from anywhere: a config entry
-carrying credentials, an auth.json entry, or the default lane's
-environment."
-  ;; A default provider no lane serves answers T: that is an operator with a
-  ;; config to fix (the first frame's refusal names the key), not a fresh box.
+carrying credentials, an auth.json entry, or the default provider's
+environment -- the default the shared config pins, under a NODECODE_PROVIDER
+override, which a shell's *PROVIDER* does not hold: nothing seeds a shell's."
+  ;; A default provider no lane here serves answers T: a cell's -- Claude
+  ;; Code's, whose lane runs in the organism and never in a shell -- or an
+  ;; operator with a config to fix (the first frame's refusal names the key);
+  ;; neither is a fresh box. A shell asked about its image's own default,
+  ;; openai-completions, so a home on claude-code alone opened the walk at
+  ;; every launch, where Enter on Claude Code's row before the organism's
+  ;; cells started asked for a key (tryingET, 2026-10-30).
   (or (and (configured-provider-inventory) t)
-      (handler-case (not (eq :none (provider-auth-state *provider*))) (error () t))))
+      (handler-case (or (null (configured-provider-lane provider))
+                        (not (eq :none (provider-auth-state provider))))
+        (error () t))))
 
 (defun setup-required-p ()
   "Whether first launch needs a provider or a saved default model."
