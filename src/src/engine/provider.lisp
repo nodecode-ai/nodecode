@@ -1932,16 +1932,18 @@ its own) — or NIL when it resolves a lane and an endpoint."
 (defun await-cells-starting (provider &aux (deadline (+ (get-internal-real-time)
                                                          (* *cells-starting-wait-seconds*
                                                             internal-time-units-per-second))))
-  "While the cells are still to start (NLK::*CELLS-STARTING*) and PROVIDER
-resolves no lane yet (SELECTION-REFUSAL), wait for them, at most
-*CELLS-STARTING-WAIT-SECONDS*: one of them may serve it. => T when it waited."
+  "While PROVIDER resolves no lane (SELECTION-REFUSAL) and a cell that serves
+it is still to start (NLK::STARTING-CELLS-SERVING), wait for that start, at
+most *CELLS-STARTING-WAIT-SECONDS*. => T when it waited."
   ;; A cold boot starts its cells behind its listener: a prompt sent in its
   ;; first moments on claude-code/... failed at once, `provider claude-code is
   ;; not one this box knows' (a home on claude-code alone, 2026-10-31).
-  (when (and nlk::*cells-starting* (ignore-errors (selection-refusal provider)))
-    (loop while (and nlk::*cells-starting* (< (get-internal-real-time) deadline))
-          do (sleep 0.05))
-    t))
+  (let ((cells (nlk::starting-cells-serving provider)))
+    (when (and cells (ignore-errors (selection-refusal provider)))
+      (loop while (and (some #'nlk::cell-start-pending-p cells)
+                       (< (get-internal-real-time) deadline))
+            do (sleep 0.05))
+      t)))
 
 (defun provider-base-url (provider)
   "The base PROVIDER's endpoint composes from and its listing is fetched

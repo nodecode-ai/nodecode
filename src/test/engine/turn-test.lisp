@@ -8928,24 +8928,30 @@ thinking types DECLARED (a list, :UNDECLARED, or NIL for never asked)."
       (is (= 3 (length (session-events "replay" :type 'nlk:tool-result-event))))
       (is (null (nle::claim-turn-replays)) "claimed once"))))
 
-(deftest a-turn-waits-for-the-cells-still-to-start-when-its-provider-has-no-lane ()
+(deftest a-turn-waits-for-the-start-of-the-cell-that-serves-its-provider ()
   ;; A cold boot starts its cells behind its listener: a prompt sent in its
   ;; first moments on claude-code/... failed at once, `provider claude-code
-  ;; is not one this box knows'. It waits for the cells, one of which may
-  ;; serve it, and no longer than *CELLS-STARTING-WAIT-SECONDS*.
-  (with-saved-globals ((nlk::*cells-starting* :a-start-pass))
-    (with-stubbed-fdefinition (nle::selection-refusal (provider)
-                                (and (equal provider "nl-cell-lane") nlk::*cells-starting* "no lane yet"))
-      (is (null (nle::await-cells-starting "nl-lane-here")) "a provider with a lane waits for nothing")
-      (let ((start (get-internal-real-time))
-            (ender (bt2:make-thread (lambda () (sleep 0.3) (setf nlk::*cells-starting* nil))
-                                    :name "cells-started")))
-        (is (eq t (nle::await-cells-starting "nl-cell-lane")) "a provider a cell may serve waits")
-        (is (>= (- (get-internal-real-time) start) (* 0.25 internal-time-units-per-second)) "until the cells have started")
-        (bt2:join-thread ender))
-      (is (null (nle::await-cells-starting "nl-cell-lane")) "no start pass under way, no wait")
-      (setf nlk::*cells-starting* :a-stuck-pass)
-      (let ((nle::*cells-starting-wait-seconds* 0.2)
-            (start (get-internal-real-time)))
-        (is (eq t (nle::await-cells-starting "nl-cell-lane")))
-        (is (< (- (get-internal-real-time) start) (* 2 internal-time-units-per-second)) "never past its bound")))))
+  ;; is not one this box knows'. It waits for the start of the cell that
+  ;; serves its provider, no longer than *CELLS-STARTING-WAIT-SECONDS*; a
+  ;; provider no cell still to start serves waits for nothing.
+  (let* ((cell (nlk::make-cell :name "nl-cell" :kind :peripheral :start (lambda (config) config nil)))
+         (nlk::*cells* (list cell)))
+    (with-saved-globals ((nlk::*cells-starting* :a-start-pass))
+      (with-stubbed-fdefinitions ((nlk::cell-served-providers (served) (and (eq served cell) '("nl-cell-lane")))
+                                  (nle::selection-refusal (provider) provider
+                                    (and (not (nlk:cell-started-p cell)) "no lane yet")))
+        (is (null (nle::await-cells-starting "nl-lane-elsewhere")) "a provider no cell still to start serves waits for nothing")
+        (let ((start (get-internal-real-time))
+              (starter (bt2:make-thread (lambda () (sleep 0.3) (setf (nlk:cell-started-p cell) t))
+                                        :name "cell-started")))
+          (is (eq t (nle::await-cells-starting "nl-cell-lane")) "its cell's provider waits")
+          (is (>= (- (get-internal-real-time) start) (* 0.25 internal-time-units-per-second)) "until that cell has started")
+          (bt2:join-thread starter))
+        (is (null (nle::await-cells-starting "nl-cell-lane")) "started, none to wait for")
+        (setf (nlk:cell-started-p cell) nil)
+        (let ((nle::*cells-starting-wait-seconds* 0.2)
+              (start (get-internal-real-time)))
+          (is (eq t (nle::await-cells-starting "nl-cell-lane")))
+          (is (< (- (get-internal-real-time) start) (* 2 internal-time-units-per-second)) "never past its bound"))
+        (setf nlk::*cells-starting* nil)
+        (is (null (nle::await-cells-starting "nl-cell-lane")) "no start pass under way, no wait")))))

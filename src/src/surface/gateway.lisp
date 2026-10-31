@@ -2733,8 +2733,8 @@ reads, since a cell's lanes and inventory hooks run here only."
                                                                          (and pinned (list pinned))
                                                                          :test #'string-equal))
                                                        #'string-lessp)
-                                       ;; none yet while the cells start: one may serve it
-                                       for refusal = (and (not nlk::*cells-starting*)
+                                       ;; none yet for one a cell still to start serves
+                                       for refusal = (and (not (nlk::starting-cells-serving id))
                                                           (ignore-errors (selection-refusal id)))
                                        collect (json-object
                                                 "id" id

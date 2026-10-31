@@ -4990,10 +4990,12 @@ symbol the test's own START-GATEWAY reference reads."
               (is (await (:tries 300 :rest 0.01)
                     (find "disturbed the gateway operator token" said :test #'search)) "and the reason said"))))))))
 
-(deftest the-gateway-list-refuses-no-provider-while-the-cells-start (with-temp-gateway (port))
-  ;; A cell's lane exists once it starts: while the cells start, a pin on
+(deftest the-gateway-list-refuses-no-provider-a-cell-still-to-start-serves (with-temp-gateway (port))
+  ;; A cell's lane exists once it starts: while it starts, a pin on
   ;; claude-code read `provider claude-code is not one this box knows' on a
-  ;; cold launch's landing screen. No provider is refused before they have.
+  ;; cold launch's landing screen. The refusal waits for that cell's start;
+  ;; a provider no cell still to start serves is refused at once
+  ;; (THE-MODELS-ROUTE-ANSWERS-THE-PICKERS-OWN-LIST).
   (with-saved-globals ((nle::*provider-models-cache-path* nil) (nle::*models-catalog-path* nil))
     (with-temp-file (nle::*shared-config-path*
                      :setf t
@@ -5006,10 +5008,12 @@ symbol the test's own START-GATEWAY reference reads."
                                       :key (lambda (provider) (gethash "id" provider)) :test #'equal)))
                      (setf said (and entry (list (gethash "refusal" entry))))))
                  said))
-          (with-saved-globals ((nlk::*cells-starting* :a-start-pass))
-            (is (equal '(nil) (read-refusal)) "listed, refused nothing while the cells start"))
-          (with-saved-globals ((nlk::*cells-starting* nil))
-            (is (stringp (first (read-refusal))) "refused once they have")))))))
+          (let ((starting t))
+            (with-stubbed-fdefinition (nlk::starting-cells-serving (provider)
+                                        (and starting (equal provider "nl-no-lane") (list :its-cell)))
+              (is (equal '(nil) (read-refusal)) "listed, refused nothing while the cell that serves it starts")
+              (setf starting nil)
+              (is (stringp (first (read-refusal))) "refused once it has"))))))))
 
 ;;; --- accepted sockets never wait on Nagle ----------------------------------
 

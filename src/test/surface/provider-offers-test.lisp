@@ -255,6 +255,25 @@
             (nlk:cell-started-p cell) t)
       (is (equal '(:installed t) (last (first (nle::provider-offers)) 2)) "started"))))
 
+(deftest a-cell-still-to-start-is-what-the-providers-its-folder-serves-wait-on ()
+  ;; What a turn and the list wait on in a boot's first seconds is read off
+  ;; the folder itself, its .asd's serves lines: only the provider a cell
+  ;; still to start serves waits, and only until that cell has started.
+  (with-temp-trees ((root "starting-serves"))
+    (let ((folder (merge-pathnames "nl-hub-go/" root)))
+      (write-temp-file (merge-pathnames "nl-hub-go.asd" folder) +go-asd+)
+      (let* ((cell (nlk::make-cell :name "nl-hub-go" :path folder :kind :peripheral
+                                   :start (lambda (config) config nil)))
+             (nlk::*cells* (list cell))
+             (nlk::*cells-starting* :a-start-pass))
+        (is (equal '("nl-go") (nlk::cell-served-providers cell)) "what its .asd says it serves")
+        (is (equal (list cell) (nlk::starting-cells-serving "nl-go")) "its start to come")
+        (is (null (nlk::starting-cells-serving "nl-other")) "a provider it does not serve")
+        (let ((nlk::*cells-starting* nil))
+          (is (null (nlk::starting-cells-serving "nl-go")) "no start pass under way"))
+        (setf (nlk:cell-started-p cell) t)
+        (is (null (nlk::starting-cells-serving "nl-go")) "started")))))
+
 (deftest the-gateway-list-says-which-folder-in-already-is-still-to-start (with-temp-gateway (port))
   ;; A shell reads the offers off its organism's list: one whose cell is
   ;; still to start says so, and the shell's facts keep it.
