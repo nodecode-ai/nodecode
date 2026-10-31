@@ -311,22 +311,6 @@ NIL: the poller leaves it be rather than refuse it again at every look.")
   "What the refusal of *REFUSED-RELEASE* said, for an update that asks for it
 again before the restart that runs it.")
 
-(defun restart-way ()
-  "How this organism starts again on `current' with no operator to reopen it:
-:UNIT when it serves `gateway run' under a unit nodecode wrote, which brings
-it back from an exit; :EXEC when it is a headless owner that can run its
-installed binary again in place (SERVE-NEXT :RESTART); NIL for a shell's
-organism, which that shell's next launch brings back, and for an image no
-installed binary started."
-  ;; A headless owner without a unit -- `gateway run' by hand, a serve a
-  ;; shell left behind -- has nobody to bring it back from an exit, so it
-  ;; execs `current' itself. Without that, a release it refused left it on the
-  ;; build before for good while `current' named the next one, and every
-  ;; shell of the new build attached to the old organism. Windows has no exec.
-  (cond ((and *gateway-run* (ignore-errors (nlk:gateway-installed-p))) :unit)
-        #-win32
-        ((and *serving* (not *fronted*) (nlk:organism-binary)) :exec)))
-
 ;;; dexador's Windows backend (WinHTTP) reads a whole body before it answers
 ;;; -- "This obviously isn't streaming", its own note -- and a feed never
 ;;; ends: every connection through it would time out. There the feed rides a
