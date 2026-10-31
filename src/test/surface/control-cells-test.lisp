@@ -81,6 +81,18 @@
             "a name alone restarts the peripheral")
   (is (= 1 (switch-runs top)) "once"))
 
+(deftest control-cells-an-uninstalled-cells-command-says-how-to-turn-it-on
+    (with-switch-fixture (port base top))
+  (let ((answer (nle:slash (format nil "/~a" top))))
+    (is (search (format nil "the ~a cell ships with this release but is not installed" top) answer)
+        "a shipped folder not installed is named")
+    (is (search (format nil "`nodecode add nc://~a'" top) answer) "with the way to turn it on"))
+  (is (equal "unknown command /nl-sw-nope; /help lists them" (nle:slash "/nl-sw-nope"))
+      "a name nothing ships is unknown, as before")
+  (is-route (port :post "/api/gateway/cells" :body (switch-body top t)) 200 "on")
+  (is (equal (format nil "unknown command /~a; /help lists them" base) (nle:slash (format nil "/~a" base)))
+      "an installed folder that registers no such command is no hint"))
+
 (deftest control-cells-on-tells-every-shell-to-load-what-it-turned-on
     (with-switch-fixture (port base top))
   ;; A shell in another process loads the folders the organism turned on, as

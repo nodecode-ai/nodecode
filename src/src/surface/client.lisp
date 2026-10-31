@@ -4676,9 +4676,9 @@ MODEL's transport."
         ;; A token no builtin claims may be a cell's command, which runs
         ;; at the gateway with its verbatim argument tail.
         (let ((entry (find-gateway-command name)))
-          (values (if entry
-                      (run-gateway-command model entry args)
-                      (format nil "unknown command /~a" name))
+          (values (cond (entry (run-gateway-command model entry args))
+                        ((uninstalled-cell-text name))
+                        (t (format nil "unknown command /~a" name)))
                   nil)))))))
 
 (defun evict-args (args)
@@ -7011,6 +7011,19 @@ or `time', each round's prompt from the log."
                          (multiple-value-call #'context-dialog breakdown window summary tone
                            (context-rounds session-id)))))))))))
 
+;;; A shipped cell is the operator's to turn on, so its command is no command
+;;; until it is: /qa on a home that never installed the qa cell. Said bare,
+;;; that read as a broken cell rather than an absent one.
+(defun uninstalled-cell-text (name &aux (missing (ignore-errors (nlk:missing-shipped-cells))))
+  "Why /NAME runs nothing when a cell this release ships under that name --
+its nodecode- prefix optional, as `nodecode add' reads it -- is not installed
+here: the sentence saying how to turn it on. NIL otherwise."
+  (when-let (offer (or (nlk:find-offer name missing)
+                       (nlk:find-offer (format nil "nodecode-~a" name) missing)))
+    (format nil "unknown command /~a: the ~a cell ships with this release but is not installed · ~
+                 /cells turns it on, or `nodecode add nc://~a'"
+            name (cell-label (nlk:offer-name offer)) (cell-label (nlk:offer-name offer)))))
+
 (defun slash (line &key (session-id nlk:*scribe-session-id*))
   "Run one slash command LINE — \"/models grok-4.6\", \"/think high\",
 \"/help\" — without a shell, against SESSION-ID (by default the session
@@ -7032,7 +7045,8 @@ for a caller that draws one."
       (error "not a slash command: ~s" line))
     (let ((entry (or (find-builtin-slash-command name) (find-registered-command name))))
       (cond
-        ((null entry) (format nil "unknown command /~a; /help lists them" name))
+        ((null entry) (or (uninstalled-cell-text name)
+                          (format nil "unknown command /~a; /help lists them" name)))
         (entry.headless (funcall entry.headless args session-id))
         (t (format nil "/~a needs an interactive shell" entry.name))))))
 
