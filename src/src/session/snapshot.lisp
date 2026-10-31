@@ -567,10 +567,14 @@ ref did not exist at resolve time.")
           (anchor-tree store tree-sha message)
           (values tree-sha nil))
       (snapshot-walk-too-large (condition)
-        ;; One line for the operator, then the memo answers for the window:
-        ;; the boundaries behind it neither count nor log again.
-        (warn "workspace capture skipped: ~a" condition)
+        ;; Remembered, so the boundaries behind it inside the window neither
+        ;; count nor log again; then one line for the operator. The line is
+        ;; written, never signalled: a deferred walk's thread is joined, and
+        ;; a thread that signalled a warning joins as an abnormal exit.
         (setf (capture-refusals store) (cons :workspace-too-large (get-universal-time)))
+        (ignore-errors
+         (format *error-output* "~&WARNING: workspace capture skipped: ~a~%" condition)
+         (force-output *error-output*))
         (values nil :workspace-too-large))
       (error ()
         (setf (capture-refusals store) (cons :capture-failed (get-universal-time)))
