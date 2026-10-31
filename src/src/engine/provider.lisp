@@ -2097,6 +2097,18 @@ own, while that target admits it, else the default (*REASONING-EFFORT*)."
            (member status '(408 409 425 429))
            (and (integerp status) (>= status 500)))))
 
+(defun relearned-request (condition config)
+  "What CONDITION taught CONFIG's lane about asking its model, a phrase, once
+the lane kept the lesson: the same round sent again is then another request.
+NIL when the failure taught nothing."
+  ;; A refusal is the request's verdict, and the same request meets it again
+  ;; (RETRYABLE-PROVIDER-ERROR-P), except when it names what the request asked
+  ;; for in a dialect the endpoint could not declare beforehand: then it is
+  ;; that declaration, and the request is rebuilt by it.
+  (let ((lane (find-lane-by-name config.lane nil)))
+    (case (and lane (provider-lane-family lane))
+      (:anthropic (anthropic-learn-thinking-refusal condition config)))))
+
 (defparameter +transport-failures+
   '((sb-sys:deadline-timeout "timeout") (usocket:timeout-error "timeout")
     (usocket:connection-refused-error "connection refused")

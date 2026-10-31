@@ -648,6 +648,11 @@ member it declares" refusal))))
 ;;; function name. This file dispatches the :TOOL point; the gateway
 ;;; dispatches :FRAME.
 
+(defparameter +max-relearnings+ 2
+  "How many refusals one round may learn from before one stands: a lesson
+strikes a spelling, and the most a lane has to strike is two (Anthropic's
+thinking off, \"disabled\" and then \"between_tools\").")
+
 (defparameter +max-overflow-recoveries+ 8
   "How many rejection-driven eviction steps one provider call may take
 before the overflow error stands. Each step drops the oldest retained
@@ -2656,6 +2661,9 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
          ;; Whether this round's images were already withheld: the
          ;; withholding runs once, and a second failure is the lane's.
          (images-withheld-p nil)
+         ;; How many times a refusal taught the lane how to ask this round
+         ;; (RESEND-RELEARNED).
+         (relearnings 0)
          (cadence (make-stream-cadence))
          ;; Accumulates streamed text, thinking, and in-flight tool-call
          ;; fragments so a cancel that unwinds mid-stream can still carry
@@ -3080,6 +3088,25 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                                     cap estimate
                                     (or (effective-context-budget config) 0)
                                     +min-usable-output-tokens+))))))
+             (resend-relearned (e)
+               ;; A refusal that names what the request asked of the model
+               ;; is the lane's lesson, not the round's verdict
+               ;; (RELEARNED-REQUEST): the lane keeps it, and the round goes
+               ;; again at once, rebuilt the way the model takes. Sealed and
+               ;; journaled as a retry with no wait, as a withholding is.
+               ;; => T when the round goes again.
+               (let ((lesson (and (< relearnings +max-relearnings+)
+                                  (relearned-request e config))))
+                 (when lesson
+                   (incf relearnings)
+                   (seal-streamed-attempt (provider-error-detail e) "rerun")
+                   (announce-retry e :request 0
+                                   (format nil "~a, after: ~a" lesson
+                                           (provider-said (provider-error-detail e)))
+                                   nil nil nil)
+                   (incf provider-attempt)
+                   (void-partial-stream)
+                   t)))
              (withhold-images-and-retarget (e)
                ;; The other recovery step: the request carried images and
                ;; failed, so the round is re-sent without them, a note
@@ -3363,6 +3390,9 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                                     context)))))))
         (provider-error (e)
           (cond
+            ;; A refusal that says how the request should have asked goes
+            ;; first: the images arm would read it as theirs.
+            ((resend-relearned e) nil)
             ;; A request that carried images is re-sent without them first:
             ;; a configuration that names no wire is not the images' fault,
             ;; nor an address nothing listens on, nor a second failure of the

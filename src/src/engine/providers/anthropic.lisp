@@ -255,17 +255,20 @@ signed."
 ;;; take {"type": "disabled"}; Claude Sonnet 5.5 refuses it and takes
 ;;; {"type": "between_tools"}; Claude Opus 5.5, like the Fable and Mythos
 ;;; models, refuses both, because it always thinks. A spelling the model
-;;; refuses is a 400 that fails the turn. Anthropic's Models API declares what
-;;; each model takes (capabilities.thinking.types, a type false exactly when a
-;;; request sending it gets that 400), so the lane asks it, once per endpoint
-;;; and model, and only for a request that turns thinking off. An endpoint
-;;; that declares nothing, a relay serving no Models API, keeps "disabled",
-;;; the spelling every model took before these.
+;;; refuses is a 400. Anthropic's Models API declares what each model takes
+;;; (capabilities.thinking.types, a type false exactly when a request sending
+;;; it gets that 400), so the lane asks it, once per endpoint and model, and
+;;; only for a request that turns thinking off. An endpoint that declares
+;;; nothing -- a relay serving no Models API, Claude Code's login among them --
+;;; is sent "disabled", the spelling every model took before these, and its
+;;; 400 is the declaration instead: the refusal names what the model takes,
+;;; that is kept as if the endpoint had declared it, and the round goes again
+;;; (ANTHROPIC-LEARN-THINKING-REFUSAL).
 
 (defvar *anthropic-thinking-types* (make-hash-table :test #'equal :synchronized t)
   "(MODELS-URL . MODEL) -> the thinking types the endpoint at MODELS-URL
-declares MODEL takes, a list of type names, or :UNDECLARED when its answer
-declared none.")
+declares MODEL takes, or a refusal from it named, a list of type names, or
+:UNDECLARED when its answer declared none.")
 
 (defun anthropic-thinking-effort-p (effort)
   "True when EFFORT asks for thinking: a rung, and not off. An effort never
@@ -322,6 +325,53 @@ it declares none or was never asked. FETCH asks it when no answer is kept."
   (let ((types (anthropic-thinking-types config)))
     (cond ((or (null types) (member "disabled" types :test #'string=)) "disabled")
           ((member "between_tools" types :test #'string=) "between_tools"))))
+
+(defparameter *anthropic-thinking-type-names* '("adaptive" "between_tools" "disabled" "enabled")
+  "Every thinking type the Messages API names: what a model is taken to
+accept before its endpoint, or a refusal from it, says otherwise.")
+
+(defun anthropic-thinking-types-named (text)
+  "The thinking types TEXT names, in either way a refusal spells one:
+\"thinking.type.NAME\" or {\"type\": \"NAME\"}."
+  (let ((names '()))
+    (ppcre:do-register-groups (name) ("(?:thinking\\.type\\.|\"type\"\\s*:\\s*\")([a-z_]+)" text)
+      (when (member name *anthropic-thinking-type-names* :test #'string=)
+        (pushnew name names :test #'string=)))
+    (nreverse names)))
+
+(defun anthropic-learn-thinking-refusal (condition config)
+  "When CONDITION is CONFIG's model refusing the spelling its request took
+thinking off with, keep what the refusal says the model takes and answer what
+the next request does instead, a phrase; NIL for any other failure, and for a
+request that thinks."
+  ;; The words differ by model, and each names the refused spelling. Opus 5.5
+  ;; and Fable 5.1: `"thinking.type.disabled" is not supported for this
+  ;; model. Use "thinking.type.adaptive" and "output_config.effort"'.
+  ;; Sonnet 5.5: `send "thinking": {"type": "between_tools"} instead of
+  ;; {"type": "disabled"}'. A type named beside the refused one is what to
+  ;; send instead, so Opus goes to its weakest rung at once rather than
+  ;; through a between_tools refusal; a refusal naming nothing else only
+  ;; strikes its own spelling. An adaptive model always takes adaptive.
+  (let* ((sent (and (anthropic-adaptive-p config.effort-levels)
+                    (not (anthropic-thinking-effort-p config.reasoning-effort))
+                    (anthropic-thinking-off config)))
+         (url (anthropic-models-url config.endpoint))
+         (named (and sent url (eql 400 (provider-error-status condition))
+                     (anthropic-thinking-types-named
+                      (provider-said (provider-error-detail condition))))))
+    (when (member sent named :test #'string=)
+      (let ((instead (remove sent named :test #'string=)))
+        (setf (gethash (cons url config.model) *anthropic-thinking-types*)
+              (adjoin "adaptive"
+                      (or instead
+                          (remove sent (or (anthropic-thinking-types config) *anthropic-thinking-type-names*)
+                                  :test #'string=))
+                      :test #'string=)))
+      (let ((off (anthropic-thinking-off config)))
+        (cond ((equal off sent) nil)
+              (off (format nil "this model turns thinking off with ~a" off))
+              (t (format nil "this model always thinks, so it runs at effort ~a"
+                         (anthropic-lowest-effort config.effort-levels))))))))
 
 (defun anthropic-lowest-effort (levels)
   "The weakest rung LEVELS names above off, or NIL."
