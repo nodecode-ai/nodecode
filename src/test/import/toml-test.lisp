@@ -67,4 +67,12 @@ id = 2
               (refusal-text nik:import-error (nik:read-toml (format nil "good = 1~%broken~%")))))
   (is (search "set twice"
               (refusal-text nik:import-error (nik:read-toml (format nil "a = 1~%a = 2~%")))))
-  (is (zerop (hash-table-count (nik:read-toml "")))))
+  (is (zerop (hash-table-count (nik:read-toml ""))))
+  (dolist (escape '("\\u+041" "\\u-001" "\\ud800" "\\U00110000"))
+    (is (search "line 1"
+                (refusal-text nik:import-error
+                              (nik:read-toml (format nil "a = \"~a\"" escape))))
+        (format nil "~a is a refusal naming its line" escape)))
+  (is (equal (format nil "~c~c~c" (code-char #xe9) (code-char #x1f600) #\A)
+             (nlk:json-value (nik:read-toml "a = \"\\u00e9\\U0001F600\\u0041\"") :string "a"))
+      "a well-formed escape still reads"))

@@ -83,8 +83,13 @@ array and an inline table's members may do."
             (end (+ in.pos width)))
        (unless (<= end (length in.text))
          (toml-fail in "a truncated \\~a escape" ch))
-       (let ((code (handler-case (parse-integer in.text :start in.pos :end end :radix 16)
-                     (error () (toml-fail in "a \\~a escape that is not hex" ch)))))
+       ;; Hex digits only (PARSE-INTEGER would take a sign), and a Unicode scalar
+       ;; value: not a surrogate, not past #x10FFFF.
+       (let ((code (and (every (lambda (c) (digit-char-p c 16)) (subseq in.text in.pos end))
+                        (parse-integer in.text :start in.pos :end end :radix 16))))
+         (unless code (toml-fail in "a \\~a escape that is not hex" ch))
+         (unless (and (< code char-code-limit) (not (<= #xd800 code #xdfff)))
+           (toml-fail in "a \\~a escape that is not a Unicode scalar value" ch))
          (setf in.pos end)
          (code-char code))))
     (t (toml-fail in "\\~a is not an escape" ch))))
