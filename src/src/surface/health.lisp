@@ -334,7 +334,7 @@ notice, else how the config has it look."
   "A fact for each home two or more gateway units serve: each unit runs
 the organism, one serves and the rest wait on its store, and an update's
 handoff races between them."
-  (loop for (home kept . extra) in (ignore-errors (nlk:gateway-unit-duplicates))
+  (loop for (home kept . extra) in (ignore-errors (nlk::gateway-unit-duplicates)) ; two colons: see KEEP-RUNNING
         collect (health-fact :gateway-units "gateway units"
                              (format nil "~d units serve ~a: ~a and ~{~a~^, ~}"
                                      (1+ (length extra)) home (file-namestring kept)
@@ -342,7 +342,7 @@ handoff races between them."
                              :tone :danger
                              :remedy (format nil "keep ~a and take the extra away: ~{`~a`~^; ~}"
                                              (file-namestring kept)
-                                             (mapcar #'nlk:unit-removal-command extra)))))
+                                             (mapcar #'nlk::unit-removal-command extra)))))
 
 (defun doctor-facts ()
   "HEALTH-FACTS and every look a doctor takes, in reading order."

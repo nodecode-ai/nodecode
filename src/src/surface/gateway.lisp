@@ -804,7 +804,10 @@ while no shell is open."
   ;; operating system is asked on a thread of its own, never on a cell's
   ;; start. => the thread, or NIL.
   (unless (or nlk:*ephemeral*
-              (nlk:temporary-home-p)
+              ;; Two colons: the export is new, and the image of the release
+              ;; before this one reads this file, to take it live, before the
+              ;; new DEFPACKAGE has run.
+              (nlk::temporary-home-p)
               (null (nlk:gateway-unit-path))
               (nlk:gateway-installed-p)
               (nlk:gateway-off-p))

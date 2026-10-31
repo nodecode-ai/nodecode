@@ -857,11 +857,8 @@ provider)."
 
 (defstruct (cell-folder (:copier nil) (:constructor %make-cell-folder))
   "One folder before it loads: its DIRECTORY, its NAME, and what its
-top-level .asd files declare — DECLARED-SYSTEMs, one per file, by name.
-SOURCE is where its code is read from (OWN-CELL-DIRECTORY): DIRECTORY
-itself, but for an install of a folder this image ships."
+top-level .asd files declare — DECLARED-SYSTEMs, one per file, by name."
   (directory nil)
-  (source nil)
   (name "" :type string)
   (systems '() :type list))
 
@@ -915,12 +912,28 @@ build made -- else DIRECTORY itself."
                                            shipped-root)))))
         directory)))
 
-(defun make-cell-folder (directory &aux (source (own-cell-directory directory)))
+;; Beside the folder, not a slot of it: a slot changes CELL-FOLDER's layout,
+;; which an image of the release before this one takes only at a restart, and
+;; a gateway run with no unit never makes one.
+(defvar *cell-folder-sources* (make-hash-table :test 'eq :weakness :key :synchronized t)
+  "Each CELL-FOLDER -> where its code is read from, as MAKE-CELL-FOLDER found it.")
+
+(defun cell-folder-source (folder)
+  "Where FOLDER's code is read from (OWN-CELL-DIRECTORY), fixed when it was
+made: its DIRECTORY, but for an install of a folder this image ships."
+  (gethash folder *cell-folder-sources* (cell-folder-directory folder)))
+
+(defun make-cell-folder (directory &aux (source (own-cell-directory directory))
+                                        (folder (read-cell-folder directory source)))
   "DIRECTORY as a CELL-FOLDER, its .asd files read as data from where its
-code is read (OWN-CELL-DIRECTORY)."
+code is read (OWN-CELL-DIRECTORY), which it keeps (CELL-FOLDER-SOURCE)."
+  (setf (gethash folder *cell-folder-sources*) source)
+  folder)
+
+(defun read-cell-folder (directory source)
+  "DIRECTORY as a CELL-FOLDER, its .asd files read as data from SOURCE."
   (%make-cell-folder
    :directory directory
-   :source source
    :name (folder-name directory)
    :systems (mapcar
              (lambda (name)
@@ -1639,7 +1652,7 @@ left (BEFORE for the first) against OWNERS. => the records, in load order."
   (ignore-errors (prune-stamp-cache *image-stamp* *peripheral-cache-directory*))
   ;; Registered by where the code is read from, never by the entry: ASDF
   ;; searches these again at every LOAD-SYSTEM (OWN-CELL-DIRECTORY).
-  (dolist (folder folders) (pushnew folder.source asdf:*central-registry* :test #'equal))
+  (dolist (folder folders) (pushnew (cell-folder-source folder) asdf:*central-registry* :test #'equal))
   ;; load order: peripherals before layers, by name, a folder after the siblings it :depends-on
   (let* ((folders (stable-sort (copy-list folders) #'string<
                                :key (lambda (folder)
@@ -1687,7 +1700,7 @@ left (BEFORE for the first) against OWNERS. => the records, in load order."
                          (remove-if-not
                           #'probe-file
                           (mapcar (lambda (file)
-                                    (merge-pathnames (format nil "~a.lisp" file) folder.source))
+                                    (merge-pathnames (format nil "~a.lisp" file) (cell-folder-source folder)))
                                   declared.files)))))
             (multiple-value-bind (handle paths)
                 (if (or scratch declared.problem)
@@ -1716,7 +1729,7 @@ left (BEFORE for the first) against OWNERS. => the records, in load order."
           ;; about to clear.
           (when (call-recording-failure
                  cell nil
-                 (lambda (&aux (bundle (merge-pathnames "vendor/bundle.lisp" folder.source)))
+                 (lambda (&aux (bundle (merge-pathnames "vendor/bundle.lisp" (cell-folder-source folder))))
                    ;; ql:bundle-systems' contract: load bundle.lisp and every
                    ;; vendored system becomes findable. Peripherals carry their
                    ;; dependencies this way, so the operator's box needs no
@@ -2013,7 +2026,7 @@ before. NIL when neither applies."
                       (list (list (namestring shipped) (namestring fasl))))
                     (when *peripheral-cache-directory*
                       (loop for folder in folders
-                            for directory = (ignore-errors (truename folder.source))
+                            for directory = (ignore-errors (truename (cell-folder-source folder)))
                             when (and directory
                                       (notevery #'declared-system-layer folder.systems)
                                       (not (and shipped (uiop:subpathp directory shipped))))

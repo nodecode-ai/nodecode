@@ -76,8 +76,12 @@ snapshot, never a copy of a file being written. => TO."
   (:documentation "Signalled when a read or write is attempted with no handle."))
 
 (define-error store-broken (store-not-open) (reason)
-  (:report "the store cannot write right now (~a); it reconnects by itself once writes go through again"
-           reason)
+  ;; A report function, not a format string: a string's REASON stands for the
+  ;; slot's reader, and an image of the release before this one, taking the
+  ;; release live, refuses a form that names a reader only the form defines.
+  (:report (lambda (condition stream)
+             (format stream "the store cannot write right now (~a); it reconnects by itself once writes go through again"
+                     (slot-value condition 'reason))))
   (:documentation "Signalled in place of STORE-NOT-OPEN while a store that a failed write broke
 waits for its next reconnect (HEAL-STORE)."))
 
@@ -143,17 +147,7 @@ durable that never was."))
   ;; drains it). A slot, not a global, so the memory lives and dies with the
   ;; store it mirrors: a reopened store starts empty by construction. Its own
   ;; lock (SB-EXT:WITH-LOCKED-HASH-TABLE) guards it and the rings inside.
-  (committed (make-hash-table :test #'equal) :type hash-table)
-  ;; Why the connection was dropped while the lease is still held -- a write
-  ;; failed and so did its ROLLBACK (BREAK-STORE) -- or NIL while it serves.
-  ;; A broken store reconnects on its next use (REQUIRE-OPEN-STORE), never
-  ;; before RETRY-AT, an INTERNAL-REAL-TIME; each failed try doubles
-  ;; RETRY-DELAY, in seconds, up to *STORE-RETRY-LIMIT*. BROKEN-AT is when it
-  ;; broke, for the line that says it is back.
-  (broken nil :type (or null string))
-  (broken-at 0 :type integer)
-  (retry-at 0 :type integer)
-  (retry-delay 0 :type real))
+  (committed (make-hash-table :test #'equal) :type hash-table))
 
 (defvar *store* nil
   "The image's durable store, or NIL. OPEN-STORE sets it; CLOSE-STORE clears it.")
@@ -180,9 +174,10 @@ durable that never was."))
   "Return STORE's handle, or signal STORE-NOT-OPEN -- STORE-BROKEN while a
 failed write has it waiting to reconnect (HEAL-STORE)."
   (unless (or (store-open-p store) (heal-store store))
-    (if (and store store.broken)
-        (error 'store-broken :reason store.broken)
-        (error 'store-not-open)))
+    (let ((reason (and store (store-break store :reason))))
+      (if reason
+          (error 'store-broken :reason reason)
+          (error 'store-not-open))))
   store.handle)
 
 ;;; --- serialization ------------------------------------------------------
@@ -450,6 +445,25 @@ column values: cl-sqlite's EXECUTE-TO-LIST, in one guarded access."
 (defparameter *store-retry-limit* 30
   "The longest wait, in seconds, between a broken store's reconnect tries.")
 
+;; Beside the store, not in it: a slot changes the store record's layout, which
+;; an image of the release before this one takes only at a restart, and a
+;; gateway run with no unit never makes one. Weak on the store, so a break dies
+;; with its store and a reopened store starts with none.
+(defvar *store-breaks* (make-hash-table :test 'eq :weakness :key :synchronized t)
+  "Each store a failed write broke -> its break, a plist: :REASON, why the
+connection was dropped while the lease is still held (a write failed and so
+did its ROLLBACK: BREAK-STORE); :AT, when it broke, for the line that says it
+is back; :RETRY-AT, the INTERNAL-REAL-TIME before which it tries no
+reconnect; :DELAY, the seconds each failed try doubles, up to
+*STORE-RETRY-LIMIT*. No entry while the store serves.")
+
+(defun store-break (store key &optional default)
+  "KEY of STORE's break (*STORE-BREAKS*), or DEFAULT while it has none."
+  (getf (gethash store *store-breaks*) key default))
+
+(defun (setf store-break) (value store key)
+  (setf (getf (gethash store *store-breaks*) key) value))
+
 (defun connect-store-handle (path)
   "A fresh connection to the database at PATH with the schema applied, or NIL
 -- the half-made connection closed, never leaked -- when either step fails."
@@ -464,29 +478,29 @@ column values: cl-sqlite's EXECUTE-TO-LIST, in one guarded access."
 (defun heal-store (&optional (store *store*))
   "Reconnect STORE when a failed write broke it and its next try is due:
 true once it has a connection again."
-  (and store store.broken store.lock-fd
+  (and store (store-break store :reason) store.lock-fd
        (= store.owner-pid (sb-posix:getpid))
-       (>= (get-internal-real-time) store.retry-at)
+       (>= (get-internal-real-time) (store-break store :retry-at 0))
        (bt2:with-recursive-lock-held (*store-lock*)
          (cond (store.handle t)             ; another thread healed it meanwhile
-               ((not (and store.broken store.lock-fd)) nil)
+               ((not (and (store-break store :reason) store.lock-fd)) nil)
                (t (let ((fresh (connect-store-handle store.path))
                         (now (get-internal-real-time)))
                     (cond (fresh
-                           (let ((reason store.broken))
-                             (setf store.handle fresh
-                                   store.broken nil
-                                   store.retry-at 0
-                                   store.retry-delay 0)
+                           (let ((reason (store-break store :reason))
+                                 (broken-at (store-break store :at 0)))
+                             (setf store.handle fresh)
+                             (remhash store *store-breaks*)
                              (say-store "store: reconnected ~,1f s after a write failed (~a); writes go through again"
-                                        (float (/ (- now store.broken-at) internal-time-units-per-second))
+                                        (float (/ (- now broken-at) internal-time-units-per-second))
                                         reason))
                            t)
                           (t
-                           (setf store.retry-delay (min *store-retry-limit*
-                                                        (max 1/2 (* 2 store.retry-delay)))
-                                 store.retry-at (+ now (round (* store.retry-delay
-                                                                 internal-time-units-per-second))))
+                           (let ((delay (min *store-retry-limit*
+                                             (max 1/2 (* 2 (store-break store :delay 0))))))
+                             (setf (store-break store :delay) delay
+                                   (store-break store :retry-at)
+                                   (+ now (round (* delay internal-time-units-per-second)))))
                            nil))))))))
 
 (defun break-store (store reason)
@@ -496,13 +510,14 @@ lease, and try at once to reconnect (HEAL-STORE)."
     (bt2:with-recursive-lock-held (*store-lock*)
       (ignore-errors (sqlite:disconnect store.handle))
       (setf store.handle nil
-            store.broken (or (ignore-errors (princ-to-string reason)) "a write failed")
-            store.broken-at (get-internal-real-time)
-            store.retry-at 0
-            store.retry-delay 0)
+            (gethash store *store-breaks*)
+            (list :reason (or (ignore-errors (princ-to-string reason)) "a write failed")
+                  :at (get-internal-real-time)
+                  :retry-at 0
+                  :delay 0))
       (unless (heal-store store)
         (say-store "store: a write failed and so did its rollback (~a); the connection is dropped, the lease kept, and the next use reconnects"
-                   store.broken)))))
+                   (store-break store :reason))))))
 
 (defun say-store (control &rest arguments)
   "Warn CONTROL with ARGUMENTS for the log -- a line lost, never a write failed
