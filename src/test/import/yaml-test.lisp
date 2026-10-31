@@ -42,6 +42,15 @@ custom_providers:
   api_key: \"with \\\"quotes\\\"\"
 args: [\"-y\", \"@scope/pkg\", plain]
 inline: {a: 1, b: two}
+wrapped: [
+  1,
+  \"two, 2\",
+  3
+]
+wrapped_map: {
+  k: v,
+  n: 5}
+after_wrapped: 4
 note: |
   first line
   second line
@@ -68,6 +77,9 @@ folded: >-
       (is (equal "with \"quotes\"" (nlk:json-value (aref custom 1) :string "api_key"))))
     (is-shape config ("args" equalp #("-y" "@scope/pkg" "plain") "a flow sequence")
       ((:integer "inline" "a") eql 1 "a flow mapping") ((:string "inline" "b") "two")
+      ("wrapped" equalp #(1 "two, 2" 3) "a flow sequence over several lines")
+      ((:integer "wrapped_map" "n") eql 5 "a flow mapping over several lines")
+      ((:integer "after_wrapped") eql 4 "the key after a wrapped flow collection still reads")
       ("note" (format nil "first line~%second line~%") "a literal block")
       ("folded" "one two" "a folded block, stripped")))
   (is (zerop (hash-table-count (nik:read-yaml ""))) "an empty document is an empty object")
