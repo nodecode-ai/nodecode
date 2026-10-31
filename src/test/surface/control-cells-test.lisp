@@ -90,7 +90,7 @@
   (is (equal "unknown command /nl-sw-nope; /help lists them" (nle:slash "/nl-sw-nope"))
       "a name nothing ships is unknown, as before")
   (is-route (port :post "/api/gateway/cells" :body (switch-body top t)) 200 "on")
-  (is (equal (format nil "unknown command /~a; /help lists them" base) (nle:slash (format nil "/~a" base)))
+  (is (equal (format nil "unknown command /~(~a~); /help lists them" base) (nle:slash (format nil "/~a" base)))
       "an installed folder that registers no such command is no hint"))
 
 (deftest control-cells-on-tells-every-shell-to-load-what-it-turned-on

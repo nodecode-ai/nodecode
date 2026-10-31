@@ -6695,8 +6695,9 @@ or `time', each round's prompt from the log."
   "Why /NAME runs nothing when a cell this release ships under that name --
 its nodecode- prefix optional, as `nodecode add' reads it -- is not installed
 here: the sentence saying how to turn it on. NIL otherwise."
-  (when-let (offer (or (nlk:find-offer name missing)
-                       (nlk:find-offer (format nil "nodecode-~a" name) missing)))
+  (when-let (offer (flet ((offer (wanted) (find wanted missing :key #'nlk:offer-name :test #'string-equal)))
+                       ;; A slash name arrives downcased; a folder name may not be.
+                       (or (offer name) (offer (format nil "nodecode-~a" name)))))
     (format nil "unknown command /~a: the ~a cell ships with this release but is not installed · ~
                  /cells turns it on, or `nodecode add nc://~a'"
             name (cell-label (nlk:offer-name offer)) (cell-label (nlk:offer-name offer)))))
