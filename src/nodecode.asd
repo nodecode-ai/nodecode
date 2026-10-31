@@ -445,6 +445,7 @@ of stacking."
      (:file "waist/textrules-test")
      (:file "waist/text-test")
      (:file "store/store-test")
+     (:file "store/store-heal-test")
      (:file "store/reader-test")
      (:file "store/events-test")
      (:file "store/state-test")
