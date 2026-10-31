@@ -154,6 +154,24 @@ answers what the command answers."
     (with-stubbed-fdefinition (nle::default-model-configured-p () t)
       (is (null (nle::setup-required-p)) "a saved usable model suppresses first launch"))))
 
+(deftest setup-first-launch-not-required-for-a-default-only-the-organism-serves ()
+  ;; A home on claude-code alone: no key anywhere, its pin on a provider whose
+  ;; lane a cell registers in the organism and never in a shell, whose
+  ;; *PROVIDER* nothing seeds. Asked about that, the image's own default,
+  ;; every launch opened the walk, where Enter on Claude Code's row before the
+  ;; organism's cells started asked for a key (tryingET, 2026-10-30).
+  (with-setup-box ()
+    (let ((nle::*provider* "openai-completions")
+          (nle::*provider-lanes* (remove "claude-code" nle::*provider-lanes*
+                                         :key #'nle::provider-lane-name :test #'equal)))
+      (nle::persist-shared-model-pin "default_model" "claude-code" "claude-opus-5-5")
+      (is (nle::provider-connected-p) "a provider only the organism serves is its business")
+      (is (null (nle::setup-required-p)) "no walk at launch")
+      ;; a pin a lane here serves, with no key, is still the walk's
+      (nle::persist-shared-model-pin "default_model" "acme-labs" "one")
+      (is (null (nle::provider-connected-p)) "a lane here and no key")
+      (is (eq t (nle::setup-required-p)) "the walk opens"))))
+
 (deftest setup-wizard-walks-provider-model-and-effort (with-setup-box ())
   ;; The walk is the provider, the model and its reasoning effort, and ends on
   ;; its last page; a cell is turned on in /cells and set up in /settings,

@@ -2751,7 +2751,8 @@ reads, since a cell's lanes and inventory hooks run here only."
                                                       "name" (getf offer :name)
                                                       "sign_in" (getf offer :sign-in)
                                                       "description" (getf offer :description)
-                                                      :opt "installed" (getf offer :installed)))
+                                                      :opt "installed" (getf offer :installed)
+                                                      :opt "starting" (getf offer :starting)))
                                        (ignore-errors (provider-offers)))))))
 
 ;;; --- slash commands ---------------------------------------------------------
@@ -4448,6 +4449,18 @@ start: what a retry tries again."
        (not cell.started-p)
        cell.refusal
        (or (null cell.path) (probe-file cell.path))))
+
+(defun cell-start-pending-p (cell)
+  "Whether CELL is a loaded peripheral, present, that waits for its start and
+refused none: one the next start pass (%START-CELLS) starts -- a cold boot's,
+behind the listener (START-CELLS-BEHIND-THE-LISTENER)."
+  (and cell
+       (eq cell.state :loaded)
+       cell.start
+       (not cell.started-p)
+       (not cell.refusal)
+       (or (null cell.path) (probe-file cell.path))
+       t))
 
 (defun retry-cell-start (name &aux (handler *gateway-handler*))
   "Try the folder NAME's start again on a thread of its own, after each wait

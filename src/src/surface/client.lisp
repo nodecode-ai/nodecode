@@ -3539,8 +3539,10 @@ models -- so a shell never builds the list itself.")
                                        :provider (gethash "provider" offer) :name (gethash "name" offer)
                                        :sign-in (or (gethash "sign_in" offer) "key")
                                        :description (gethash "description" offer))
-                                 ;; in already, its provider not answering yet
-                                 (and (eq t (gethash "installed" offer)) (list :installed t))))
+                                 ;; in already, its provider not answering yet,
+                                 ;; and whether its cell is still to start
+                                 (and (eq t (gethash "installed" offer)) (list :installed t))
+                                 (and (eq t (gethash "starting" offer)) (list :starting t))))
           ;; A gateway older than the providers field sends none: what it
           ;; has keys for is unknown here, not none.
           :unreported (not (nth-value 1 (gethash "providers" body))))))
@@ -5220,9 +5222,17 @@ the list on both shells)."
                                 (and (string-equal id (provider row))
                                      (not (getf (picker-row-value row) :install))))
                               rows)))
+          ;; ... save that its cell is still starting, which is why it is
+          ;; not among the connected yet
           (if held
-              (setf (picker-row-value held) (list* :install offer (picker-row-value held)))
+              (progn
+                (setf (picker-row-value held) (list* :install offer (picker-row-value held)))
+                (when (getf offer :starting)
+                  (setf (picker-row-detail held)
+                        (let ((detail (picker-row-detail held)))
+                          (format nil "~@[~a  ~]starting" (and (plusp (length detail)) detail))))))
               (push (make-picker-row :label (getf offer :name)
+                                     :detail (if (getf offer :starting) "starting" "")
                                      :value (list :provider id :install offer))
                     rows))))
       (let* ((sorted (stable-sort (sort rows #'string-lessp :key #'provider)

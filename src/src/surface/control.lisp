@@ -623,7 +623,9 @@ TEXT) plists in the folders' order; HOW is the folder's word, `key' or the
 command line that signs in. A folder this image cannot install (OFFER-MISSING)
 is not offered. One installed whose provider does not answer yet (a sign-in
 left unfinished) is offered still, its plist ending :INSTALLED T, so the list
-keeps it and picking it goes straight to the sign-in."
+keeps it and picking it goes straight to the sign-in -- and :STARTING T after
+that while its cell waits for its start (CELL-START-PENDING-P), so picking it
+waits for that start rather than asking for what the started cell answers."
   ;; The first ask reads; a later one past +PROVIDER-OFFERS-SECONDS+ answers
   ;; what it has and rereads off its thread, so /models never waits on the hub.
   (cond ((null memo) (setf memo (read-provider-offers)))
@@ -656,7 +658,13 @@ keeps it and picking it goes straight to the sign-in."
                                         :name (or (cdr (assoc "name" serves :test #'string=)) provider)
                                         :sign-in (or (cdr (assoc "sign_in" serves :test #'string=)) "key")
                                         :description (nlk:offer-description entry))
-                                  (and installed (list :installed t))))))
+                                  ;; a cold boot reads this list seconds before
+                                  ;; its cells start: Claude Code's then read
+                                  ;; as a key to paste (tryingET, 2026-10-30)
+                                  (and installed
+                                       (list* :installed t
+                                              (and (cell-start-pending-p (nlk:find-cell name))
+                                                   (list :starting t))))))))
 
 (defun offered-provider-name (id &aux (memo (or *provider-offers*
                                                 (progn (ignore-errors (provider-offers))
