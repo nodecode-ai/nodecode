@@ -198,6 +198,76 @@ src/src/a.lisp."
       (is (eq :hot (getf (nle::upgrade-organism :version "tv3" :apply t) :applied)))))
   (is (= 1 started) "the reader is started as the release goes live"))
 
+(defun upg-channel-kit (log &key (started t))
+  "A stand-in for the channel kit, started when STARTED: each stop and start
+it runs pushes :STOPPED or :STARTED onto (CAR LOG)."
+  (flet ((stop () (push :stopped (car log))))
+    (nlk::make-cell :name "nodecode-channel-kit" :kind :peripheral
+                    :start (lambda (config)
+                             (declare (ignore config))
+                             (push :started (car log))
+                             #'stop)
+                    :stop (and started #'stop)
+                    :started-p started)))
+
+(deftest update-live-release-starts-the-channels-again-once-idle (let ((log (list nil)) (busy t)))
+  ;; A live release replaces definitions, not the channels the build before
+  ;; it started: a 0.1.5 gateway that took 0.1.6 live kept the Discord
+  ;; platform its old code made, with no thread reader, and answered in the
+  ;; channel beside a thread another bot had opened. The kit starts again on
+  ;; the release's code, at the first moment no turn is in flight.
+  (with-organism-tree ("tv8" (upg-source 2 "a"))
+    (with-saved-globals ((nle::*idle-poll-seconds* 0.05)
+                         (nlk::*cells* (list (upg-channel-kit log))))
+      (with-stubbed-fdefinitions ((nlk:any-active-turn-p () busy)
+                                  (nle::start-release-feed () nil))
+        (is (eq :hot (getf (nle::upgrade-organism :version "tv8" :apply t) :applied)))
+        (sleep 0.3)
+        (is (null (car log)) "not while a turn is in flight")
+        (setf busy nil)
+        (is (await (:timeout 3) (equal '(:started :stopped) (car log))) "then once: stopped, and started on the release's code")
+        (is (nlk:cell-started-p (first nlk::*cells*)) "and running")
+        (sleep 0.2)))))
+
+(deftest update-announce-starts-the-channels-again (let ((log (list nil))))
+  ;; The image of the release before calls this past its own converge, and
+  ;; finds the release's definition: a gateway that takes this release live
+  ;; from a build without it starts its channels again as well.
+  (with-saved-globals ((nle::*idle-poll-seconds* 0.05)
+                       (nlk::*cells* (list (upg-channel-kit log))))
+    (with-stubbed-fdefinition (nlk:any-active-turn-p () nil)
+      (nle::announce-upgraded (uiop:getcwd) "tv9" "core: probe")
+      (is (await (:timeout 3) (equal '(:started :stopped) (car log))) "the kit stops and starts again")
+      (sleep 0.2))))
+
+(deftest update-live-release-leaves-channels-that-are-off-off (let ((log (list nil))))
+  (with-organism-tree ("tv8" (upg-source 2 "a"))
+    (with-saved-globals ((nle::*idle-poll-seconds* 0.05)
+                         (nlk::*cells* (list (upg-channel-kit log :started nil))))
+      (with-stubbed-fdefinitions ((nlk:any-active-turn-p () nil)
+                                  (nle::start-release-feed () nil))
+        (is (eq :hot (getf (nle::upgrade-organism :version "tv8" :apply t) :applied)))
+        (sleep 0.3)
+        (is (null (car log)) "a kit that is off stays off")
+        (is (not (nlk:cell-started-p (first nlk::*cells*))))))))
+
+(deftest update-held-release-leaves-the-channels-to-the-restart (let ((log (list nil)) (exited '())))
+  ;; A gateway that exits for the release starts every channel at the boot
+  ;; that runs it: none start again on the way out.
+  (with-organism-tree ("tv4" (upg-source 2 "a b"))
+    (with-saved-globals ((nle::*gateway-run* t) (nle::*idle-poll-seconds* 0.05)
+                         (nle::*restart-wait* nil)
+                         (nle::*restart-exit* (lambda (to) (push to exited)))
+                         (nlk::*cells* (list (upg-channel-kit log))))
+      (with-stubbed-fdefinitions ((nlk:gateway-installed-p (&optional home) t)
+                                  (nlk:any-active-turn-p () nil)
+                                  (nle::start-release-feed () nil))
+        (is (eq :live (getf (nle::upgrade-organism :version "tv4" :apply t) :applied)))
+        (bt2:join-thread nle::*restart-wait*)
+        (sleep 0.3)
+        (is (equal '("tv4") exited) "the gateway exits for the release")
+        (is (null (car log)) "and its channels wait for the boot that runs it")))))
+
 (deftest update-route-upgrades-the-live-image-when-the-release-holds-boot-state ()
   ;; A release that holds boot state still reaches the live image: every
   ;; definition a live image can take goes live now -- no restart, no idle
