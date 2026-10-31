@@ -384,6 +384,24 @@ connection open sends them."
                         (dotimes (i length) (read-char stream))
                         status))))))
 
+(deftest files-route-reads-off-an-upload-however-it-is-refused ()
+  ;; A folder this process may not write refuses the temp before a byte of
+  ;; the body is read, and its error is no FOLDER-REFUSED; one it may write
+  ;; but not read refuses the listing once the body is read whole. Either way
+  ;; the next request on the connection is a request of its own.
+  (with-files-route-folder (port proj away)
+    (let ((src (uiop:native-namestring (merge-pathnames "src/" proj))))
+      (sb-posix:chmod src #o555)
+      (nlk:with-cleanup ((sb-posix:chmod src #o755))
+        (is (equal '(400 200) (files-route-over-one-connection port '("?path=src&name=x.txt" "refused") '("?name=after.txt" "taken")))
+            "a write the folder refused leaves no body behind"))
+      (sb-posix:chmod src #o333)
+      (nlk:with-cleanup ((sb-posix:chmod src #o755))
+        (is (equal '(403 200) (files-route-over-one-connection port '("?path=src&name=y.txt" "written") '("?name=later.txt" "taken")))
+            "a body read whole is not read again")))
+    (is (equal "taken" (uiop:read-file-string (merge-pathnames "after.txt" proj))))
+    (is (equal "written" (uiop:read-file-string (merge-pathnames "src/y.txt" proj))))))
+
 (deftest files-route-refuses-every-way-out-of-the-folder (with-files-route-folder (port proj away))
   (let ((body (sb-ext:string-to-octets "x")))
     (is-each (files-route-refusal port)
