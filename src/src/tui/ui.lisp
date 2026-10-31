@@ -4671,6 +4671,15 @@ shut or open."
   (or (detail-open-p key)
       (and (consp open) (eq :diff (first open)) (equal (second open) key))))
 
+(defun run-diff-call (members)
+  "The call among a run's MEMBERS whose diffs the run shows unasked: the
+newest whose snapshot saw files change, with every file it changed. NIL
+when none did."
+  ;; Each call that changed files showed its diffs, so a turn of N edits
+  ;; stood N diff renders tall. A newer edit takes the place of the one
+  ;; before it, whose line still opens its own (RUN-MEMBER-OPEN-P).
+  (find-if #'row-edited-p members :from-end t))
+
 (defun clip-lline (line width)
   "LINE cut to its first row at WIDTH, its spans with it. => LINE."
   (let ((end (length (setf line.text (clip-text-to-width line.text (lline-widths line width))))))
@@ -4935,6 +4944,8 @@ the state's live execs, shows what it has written under it."
          (process (eq :process (first group.key)))
          (mutation (eq :mutation (first group.key)))
          (disclosure (or process mutation))
+         ;; The call whose diffs the run shows unasked (RUN-DIFF-CALL).
+         (diff-call (and process (run-diff-call group.members)))
          ;; A run lists its trail a line each (LISTING), the one view live
          ;; and opened: the Eval, Think and Mutate cards it opened to were the
          ;; view before it.
@@ -4942,14 +4953,14 @@ the state's live execs, shows what it has written under it."
                         ;; A call clicked open under the shut title stays
                         ;; listed there past its round, until a click
                         ;; closes it.
-                        ;; So does a call that changed files: what an edit
-                        ;; changed is the turn's work, and shut away behind
-                        ;; `Ran 2 commands' it read as commands run.
-                        ((and process (some (lambda (row) (or (run-member-open-p row) (row-edited-p row)))
-                                            group.members))
+                        ;; So does the run's newest call that changed files:
+                        ;; what an edit changed is the turn's work, and shut
+                        ;; away behind `Ran 2 commands' it read as commands
+                        ;; run. An earlier edit gives it the place.
+                        ((and process (or diff-call (some #'run-member-open-p group.members)))
                          (remove-if-not (lambda (row) (or (member row group.tail :test #'eq)
                                                           (run-member-open-p row)
-                                                          (row-edited-p row)))
+                                                          (eq row diff-call)))
                                         group.members))
                         (t group.tail)))
          ;; A disclosure's state rides the gutter: ▸ shut, ▾ open.
@@ -5058,9 +5069,11 @@ the state's live execs, shows what it has written under it."
                                           (fork-tree-llines member width)
                                           (cond ((run-member-open-p member)
                                                  (mapcar #'stepped-in (without-note member (rest (row-body-llines member width)))))
-                                                ;; Shut, a call that changed files
-                                                ;; still shows them, each diff's head.
-                                                ((row-edited-p member)
+                                                ;; The run's newest call that changed
+                                                ;; files shows them, each diff's head,
+                                                ;; shut or open; an earlier one's line
+                                                ;; opens its own.
+                                                ((eq member diff-call)
                                                  (mapcar #'stepped-in (workspace-diff-llines member))))
                                           (listed-output member width backgrounds))))
                                   ((tool-group-p member) (list (tool-group-display-block member width backgrounds)))
@@ -5126,7 +5139,7 @@ the state's live execs, shows what it has written under it."
                                     :refs refs
                                     :lines lines
                                     :plain-lines plains)))))
-      ;; A shut run listing only settled calls that changed files shows the
+      ;; A shut run listing only the settled call whose diffs it shows has the
       ;; same lines until the pointer or the accordion moves: those two ride
       ;; its memo, NIL for a run listing nothing so they never wake it.
       (if (or open (some (lambda (row) (or (member row group.tail :test #'eq) (run-member-open-p row)))
