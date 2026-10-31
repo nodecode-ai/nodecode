@@ -1,6 +1,6 @@
 {
   "git": "https://github.com/nodecode-ai/cells",
-  "commit": "6ec677f2c2126743dfee57b45319d0390e3d29ee",
+  "commit": "498455bd20a69b67c25d97606685f811f4f3161c",
   "cells": {
     "board": "tools/nodecode-board",
     "channels/discord": "rooms/nodecode-channel-discord",
