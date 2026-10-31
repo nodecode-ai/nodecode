@@ -1621,6 +1621,11 @@ them compiled."
         (let ((*compile-lock-held* (or *compile-lock-held* (and lock t))))
           (funcall thunk))))))
 
+(defvar *layer-file-loading* nil
+  "While a layer file loads in this process: (CELL-NAME FILE-NAME . STARTED),
+STARTED its internal real time, else NIL. Read from other threads: a shell
+whose own boot has not served names the file it is waiting on.")
+
 (defun load-layer-system (cell folder entry)
   "Load the layer system ENTRY -- (DECLARED SCRATCH PATHS FASL-PATHS HANDLE), as
 LOAD-CELL-FOLDERS started it -- of FOLDER into CELL, one file at a time."
@@ -1641,8 +1646,12 @@ LOAD-CELL-FOLDERS started it -- of FOLDER into CELL, one file at a time."
                 (multiple-value-bind (reason names)
                     (muffled-load
                      (lambda ()
-                       (load-layer-file path (append (remove path (mapcar #'car waiting)) later)
-                                        provides promised)))
+                       ;; said while it loads, so a stall is named as it happens
+                       (setf *layer-file-loading* (list* cell.name (file-namestring path) started))
+                       (unwind-protect
+                            (load-layer-file path (append (remove path (mapcar #'car waiting)) later)
+                                             provides promised)
+                         (setf *layer-file-loading* nil))))
                   (cond ((eq reason :wait) (setf wait (cons path names)))
                         (reason
                          (setf cell.skipped
