@@ -69,12 +69,14 @@ event type at 0, bKeyDown at 4, wRepeatCount at 8, uChar at 14."
   (is-table (sequence) (null (search (csi sequence) out))
     ("2J" "no screen erase") ("3J" "no scrollback erase") ("H" "no cursor home")
     ("?1049h" "the alternate screen is the first frame's to enter"))
-  (is (search (csi "?2004h") out) "bracketed paste on"))
+  (is (search (csi "?2004h") out) "bracketed paste on")
+  (is (search (csi "?2031h") out) "colour-scheme reports on"))
 
 (deftest epilogue-shows-the-cursor-last (let* ((out (written #'nlt:exit-modes))
                                                (show (search (csi "?25h") out))))
   (is (listp (dec-private-modes out)) "the epilogue is modes only")
   (is (search (csi "?2004l") out) "bracketed paste off")
+  (is (search (csi "?2031l") out) "colour-scheme reports off")
   (is (and show (= (+ show (length (csi "?25h"))) (length out))) "cursor shown last"))
 
 (deftest every-mode-the-prelude-sets-the-epilogue-clears ()

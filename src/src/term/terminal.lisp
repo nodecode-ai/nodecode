@@ -535,13 +535,17 @@ environment cannot say for sure (ssh forwards TERM but strips COLORTERM).")
   "Ask the terminal the colour of its own background (OSC 11): what a theme
 that leaves the canvas to the terminal stands on.")
 
-(define-escape (enter-modes :flush t) ("[?25l" "[?2004h")
+(define-escape (enter-modes :flush t) ("[?25l" "[?2004h" "[?2031h")
   ;; Modes only: nothing here erases or positions. The alternate screen and
-  ;; mouse tracking are the view-state's, switched by the frames.
-  "The modes a session runs under: cursor hidden, bracketed paste.")
+  ;; mouse tracking are the view-state's, switched by the frames. A terminal
+  ;; that does not know 2031 ignores it, as DECSET does any mode it lacks.
+  "The modes a session runs under: cursor hidden, bracketed paste, and the
+colour-scheme report (DEC 2031): a terminal that follows the desktop between
+light and dark says when it turns, and the shell asks its background again.")
 
-(define-escape (exit-modes :flush t) ("[?2004l" "[?25h")
-  "Undo ENTER-MODES in reverse: bracketed paste off, the cursor shown last.")
+(define-escape (exit-modes :flush t) ("[?2031l" "[?2004l" "[?25h")
+  "Undo ENTER-MODES in reverse: the colour-scheme report and bracketed paste
+off, the cursor shown last.")
 
 (defun apply-terminal-transitions (previous current stream &aux (was (or previous (make-view '()))))
   "Write to STREAM the mode changes between view-states PREVIOUS (NIL for
