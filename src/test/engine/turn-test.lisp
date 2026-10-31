@@ -7888,6 +7888,114 @@ thinking types DECLARED (a list, :UNDECLARED, or NIL for never asked)."
     (is (null (nle::anthropic-thinking-types config :fetch t)))
     (is (zerop (hash-table-count nle::*anthropic-thinking-types*)))))
 
+;;; What an endpoint serving no Models API says when thinking goes off the way
+;;; the model refuses -- Claude Code's login, word for word (2026-10-31): the
+;;; 400 is the only declaration there is.
+(defparameter *opus-refuses-off*
+  "\"thinking.type.disabled\" is not supported for this model. Use \"thinking.type.adaptive\" and \"output_config.effort\" to control thinking behavior.")
+
+(defparameter *sonnet-refuses-disabled*
+  "To turn thinking off on this model, send \"thinking\": {\"type\": \"between_tools\"} instead of {\"type\": \"disabled\"}. The model does not think before responding. The short updates it writes between tool calls come back as thinking blocks.")
+
+(defparameter *between-tools-refused*
+  "\"thinking.type.between_tools\" is not supported for this model.")
+
+(defun anthropic-refusal-body (message)
+  "An Anthropic 400 body whose error says MESSAGE."
+  (nlk:encode-json-object
+   (json-obj "type" "error"
+             "error" (json-obj "type" "invalid_request_error" "message" message))))
+
+(defun anthropic-refusal (message &key (status 400))
+  "The provider error an Anthropic endpoint's STATUS saying MESSAGE becomes."
+  (make-condition 'nle::provider-error :status status :scope :request
+                                       :detail (anthropic-refusal-body message)))
+
+(deftest an-anthropic-off-refusal-is-the-endpoints-declaration ()
+  ;; An endpoint serving no Models API declares nothing, so thinking off went
+  ;; as "disabled", and Opus 5.5 refused it on every turn. The refusal is the
+  ;; declaration: what it names is kept, and the next request asks that way.
+  (nlk:bind ((nle::*models-catalog-path* nil) (nle::*model* "claude-adaptive-test")
+             (nle::*model-capability-overrides*
+               '(("claude-adaptive-test"
+                  . (:effort-levels ("low" "medium" "high" "xhigh" "max")))))
+             (nle::*temperature* 0.7) (nle::*reasoning-effort* nil)
+             (nle::*anthropic-thinking-types* (make-hash-table :test #'equal))
+             (context (anthropic-user-context))
+             (config (nle::compiled-turn-context-provider-config context)))
+    (flet ((learn (message &rest keys)
+             (nle::anthropic-learn-thinking-refusal (apply #'anthropic-refusal message keys) config))
+           (sends ()
+             (gethash "type" (gethash "thinking" (nle::anthropic-request-body context)))))
+      (is (equal "disabled" (sends)) "declared nothing, so disabled goes")
+      (is (null (learn "max_tokens: 64001 > 64000, which is the maximum allowed")) "a refusal of something else teaches nothing")
+      (is (null (learn *opus-refuses-off* :status 500)) "nor does a failure that is no refusal")
+      (is (zerop (hash-table-count nle::*anthropic-thinking-types*)))
+      (is (equal "this model always thinks, so it runs at effort low" (learn *opus-refuses-off*)) "Opus 5.5 names adaptive: its weakest rung at once")
+      (let ((body (nle::anthropic-request-body context)))
+        (is (equal "adaptive" (gethash "type" (gethash "thinking" body))))
+        (is (equal "low" (gethash "effort" (gethash "output_config" body)))))
+      (is (null (learn *opus-refuses-off*)) "a refusal of what no longer goes teaches nothing")
+      (clrhash nle::*anthropic-thinking-types*)
+      (is (equal "this model turns thinking off with between_tools" (learn *sonnet-refuses-disabled*)) "Sonnet 5.5 names between_tools")
+      (is (equal "between_tools" (sends)))
+      (is (equal "this model always thinks, so it runs at effort low" (learn *between-tools-refused*)) "and a model refusing that too always thinks")
+      (clrhash nle::*anthropic-thinking-types*)
+      (is (equal "this model turns thinking off with between_tools"
+                 (learn "\"thinking.type.disabled\" is not supported for this model.")) "a refusal naming nothing else strikes its own spelling alone")))
+  (nlk:bind ((nle::*models-catalog-path* nil) (nle::*model* "claude-adaptive-test")
+             (nle::*model-capability-overrides*
+               '(("claude-adaptive-test"
+                  . (:effort-levels ("low" "medium" "high" "xhigh" "max")))))
+             (nle::*reasoning-effort* "high")
+             (nle::*anthropic-thinking-types* (make-hash-table :test #'equal))
+             (config (nle::compiled-turn-context-provider-config (anthropic-user-context))))
+    (is (null (nle::anthropic-learn-thinking-refusal (anthropic-refusal *opus-refuses-off*) config)) "a request that thinks turned nothing off")))
+
+(defun posted-json (args)
+  "The JSON body a stubbed DEX:POST was handed in ARGS, decoded."
+  (let ((content (getf args :content)))
+    (nlk:decode-json (if (stringp content)
+                         content
+                         (sb-ext:octets-to-string content :external-format :utf-8)))))
+
+(deftest call-provider-asks-again-the-way-an-off-refusal-says (with-session-store ("off-refusal"))
+  ;; The whole lane over Claude Code's case: thinking off goes as "disabled",
+  ;; the model's 400 names how it takes it, and the round goes again at once,
+  ;; one durable retry saying what was learned. The next round asks that way
+  ;; from the start.
+  (with-durable-turn (turn "off-refusal" :command-id "off-refusal-cmd" :input "x"
+                           :current t :retry-delay 0)
+    (nlk:bind ((nle::*models-catalog-path* nil) (nle::*model* "claude-adaptive-test")
+               (nle::*model-capability-overrides*
+                 '(("claude-adaptive-test"
+                    . (:effort-levels ("low" "medium" "high" "xhigh" "max")))))
+               (nle::*reasoning-effort* nil)
+               (nle::*anthropic-thinking-types* (make-hash-table :test #'equal))
+               (nle::*provider-models-cache-path* nil)
+               (sent '()))
+      (with-stubbed-fdefinition (dex:post (endpoint &rest args)
+                                 (let ((type (gethash "type" (gethash "thinking" (posted-json args)))))
+                                   (push type sent)
+                                   (if (equal "disabled" type)
+                                       (error 'dex:http-request-failed
+                                              :body (anthropic-refusal-body *opus-refuses-off*)
+                                              :status 400 :headers (make-hash-table :test #'equal)
+                                              :uri (quri:uri endpoint) :method :post)
+                                       (values (make-anthropic-stream) 200))))
+        (is (equal "the answer" (gethash "content" (nle::call-provider (anthropic-user-context)))))
+        (is (equal '("disabled" "adaptive") (reverse sent)) "refused once, then asked the way it said")
+        (is (equal "the answer" (gethash "content" (nle::call-provider (anthropic-user-context)))))
+        (is (equal '("disabled" "adaptive" "adaptive") (reverse sent)) "the next round asks that way at once"))
+      (let ((retries (remove-if-not (lambda (event) (typep event 'nlk:provider-retry-event))
+                                    (nle::collect-session-events "off-refusal"))))
+        (is (= 1 (length retries)) "the lesson is one durable retry")
+        (is (= 400 (nlk:provider-retry-event-status (first retries))))
+        (is (equal (format nil "this model always thinks, so it runs at effort low, after: ~a"
+                           *opus-refuses-off*)
+                   (nlk::provider-retry-event-detail (first retries))) "what was learned, then the provider's own words")
+        (is (zerop (nlk::provider-retry-event-delay-seconds (first retries))) "with no wait")))))
+
 (deftest anthropic-budget-thinking-survives-a-ladder-that-stops-at-high ()
   (nlk:bind ((nle::*models-catalog-path* nil) (nle::*model* "claude-budget-test")
              (nle::*model-capability-overrides*
