@@ -75,6 +75,12 @@ snapshot, never a copy of a file being written. => TO."
   (:report "store is not open")
   (:documentation "Signalled when a read or write is attempted with no handle."))
 
+(define-error store-broken (store-not-open) (reason)
+  (:report "the store cannot write right now (~a); it reconnects by itself once writes go through again"
+           reason)
+  (:documentation "Signalled in place of STORE-NOT-OPEN while a store that a failed write broke
+waits for its next reconnect (HEAL-STORE)."))
+
 (define-error store-in-use (store-error)
     (path (owner-pid :initform nil) (owner-port :initform nil))
   (:report "store ~a is already owned by ~:[another live process~;process ~:*~a~]~@[ (gateway on port ~a)~]"
@@ -137,7 +143,17 @@ durable that never was."))
   ;; drains it). A slot, not a global, so the memory lives and dies with the
   ;; store it mirrors: a reopened store starts empty by construction. Its own
   ;; lock (SB-EXT:WITH-LOCKED-HASH-TABLE) guards it and the rings inside.
-  (committed (make-hash-table :test #'equal) :type hash-table))
+  (committed (make-hash-table :test #'equal) :type hash-table)
+  ;; Why the connection was dropped while the lease is still held -- a write
+  ;; failed and so did its ROLLBACK (BREAK-STORE) -- or NIL while it serves.
+  ;; A broken store reconnects on its next use (REQUIRE-OPEN-STORE), never
+  ;; before RETRY-AT, an INTERNAL-REAL-TIME; each failed try doubles
+  ;; RETRY-DELAY, in seconds, up to *STORE-RETRY-LIMIT*. BROKEN-AT is when it
+  ;; broke, for the line that says it is back.
+  (broken nil :type (or null string))
+  (broken-at 0 :type integer)
+  (retry-at 0 :type integer)
+  (retry-delay 0 :type real))
 
 (defvar *store* nil
   "The image's durable store, or NIL. OPEN-STORE sets it; CLOSE-STORE clears it.")
@@ -161,9 +177,12 @@ durable that never was."))
        (= store.owner-pid (sb-posix:getpid))))
 
 (defun require-open-store (&optional (store *store*))
-  "Return STORE's handle, or signal STORE-NOT-OPEN."
-  (unless (store-open-p store)
-    (error 'store-not-open))
+  "Return STORE's handle, or signal STORE-NOT-OPEN -- STORE-BROKEN while a
+failed write has it waiting to reconnect (HEAL-STORE)."
+  (unless (or (store-open-p store) (heal-store store))
+    (if (and store store.broken)
+        (error 'store-broken :reason store.broken)
+        (error 'store-not-open)))
   store.handle)
 
 ;;; --- serialization ------------------------------------------------------
@@ -271,25 +290,14 @@ lock."
       (sqlite:execute-non-query handle "begin immediate")
       (multiple-value-prog1
           (with-cleanup ((unless settled
-                           (ignore-errors (sqlite:execute-non-query handle "rollback"))))
+                           (roll-back handle nil)))
             (handler-case
                 (multiple-value-prog1 (funcall function handle)
                   (sqlite:execute-non-query handle "commit")
                   (setf settled t))
               (error (condition)
                 (setf settled t)
-                (handler-case (sqlite:execute-non-query handle "rollback")
-                  ;; a failed ROLLBACK can wedge every later BEGIN: reconnect, else close outright
-                  (error ()
-                    (let ((store *store*))
-                      (when (and store store.handle)
-                        (ignore-errors (sqlite:disconnect store.handle))
-                        (setf store.handle nil)
-                        (with-handlers ((error ()
-                                          (close-store store)))
-                          (let ((fresh (sqlite:connect store.path)))
-                            (apply-schema fresh)
-                            (setf store.handle fresh)))))))
+                (roll-back handle condition)
                 (error condition))))
         (dolist (deferred (reverse *after-commit*))
           (funcall deferred))))))
@@ -425,6 +433,88 @@ column values: cl-sqlite's EXECUTE-TO-LIST, in one guarded access."
     (funcall hook handle))
   (dolist (statement *schema*)
     (sqlite:execute-non-query handle statement)))
+
+;;; --- a broken connection heals ------------------------------------------
+;;;
+;;; A write whose ROLLBACK fails too leaves its connection unusable -- every
+;;; later BEGIN would be refused -- and the usual cause passes: a full disk, a
+;;; write into a mapped file the filesystem could not back. So the store drops
+;;; that connection and keeps the rest: the lease above all, so no standby
+;;; takes the database while this process still runs as its owner, and
+;;; *STORE*, so the next use reconnects (REQUIRE-OPEN-STORE) and the outage
+;;; lasts as long as its cause. It once reconnected a single time and, that
+;;; failing too, closed outright: the lease went to a standby, and this
+;;; process refused every write with STORE-NOT-OPEN until it was restarted.
+;;; Only CLOSE-STORE, a deliberate close, gives the lease up.
+
+(defparameter *store-retry-limit* 30
+  "The longest wait, in seconds, between a broken store's reconnect tries.")
+
+(defun connect-store-handle (path)
+  "A fresh connection to the database at PATH with the schema applied, or NIL
+-- the half-made connection closed, never leaked -- when either step fails."
+  (let ((fresh nil))
+    (handler-case (progn (setf fresh (sqlite:connect path))
+                         (apply-schema fresh)
+                         fresh)
+      (error ()
+        (when fresh (ignore-errors (sqlite:disconnect fresh)))
+        nil))))
+
+(defun heal-store (&optional (store *store*))
+  "Reconnect STORE when a failed write broke it and its next try is due:
+true once it has a connection again."
+  (and store store.broken store.lock-fd
+       (= store.owner-pid (sb-posix:getpid))
+       (>= (get-internal-real-time) store.retry-at)
+       (bt2:with-recursive-lock-held (*store-lock*)
+         (cond (store.handle t)             ; another thread healed it meanwhile
+               ((not (and store.broken store.lock-fd)) nil)
+               (t (let ((fresh (connect-store-handle store.path))
+                        (now (get-internal-real-time)))
+                    (cond (fresh
+                           (let ((reason store.broken))
+                             (setf store.handle fresh
+                                   store.broken nil
+                                   store.retry-at 0
+                                   store.retry-delay 0)
+                             (say-store "store: reconnected ~,1f s after a write failed (~a); writes go through again"
+                                        (float (/ (- now store.broken-at) internal-time-units-per-second))
+                                        reason))
+                           t)
+                          (t
+                           (setf store.retry-delay (min *store-retry-limit*
+                                                        (max 1/2 (* 2 store.retry-delay)))
+                                 store.retry-at (+ now (round (* store.retry-delay
+                                                                 internal-time-units-per-second))))
+                           nil))))))))
+
+(defun break-store (store reason)
+  "Drop STORE's connection, which a failed ROLLBACK left unusable, keeping its
+lease, and try at once to reconnect (HEAL-STORE)."
+  (when (and store store.handle (= store.owner-pid (sb-posix:getpid)))
+    (bt2:with-recursive-lock-held (*store-lock*)
+      (ignore-errors (sqlite:disconnect store.handle))
+      (setf store.handle nil
+            store.broken (or (ignore-errors (princ-to-string reason)) "a write failed")
+            store.broken-at (get-internal-real-time)
+            store.retry-at 0
+            store.retry-delay 0)
+      (unless (heal-store store)
+        (say-store "store: a write failed and so did its rollback (~a); the connection is dropped, the lease kept, and the next use reconnects"
+                   store.broken)))))
+
+(defun say-store (control &rest arguments)
+  "Warn CONTROL with ARGUMENTS for the log -- a line lost, never a write failed
+anew, when the log sits on the very disk that is full."
+  (ignore-errors (apply #'warn control arguments)))
+
+(defun roll-back (handle reason)
+  "Roll HANDLE's open transaction back; when the ROLLBACK fails too, the
+connection is unusable and BREAK-STORE drops it, REASON the failure that
+ended the transaction (the ROLLBACK's own when NIL)."
+  (handler-case (sqlite:execute-non-query handle "rollback")
+    (error (failure) (break-store *store* (or reason failure)))))
 
 ;;; --- lifecycle ----------------------------------------------------------
 
