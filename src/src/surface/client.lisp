@@ -2342,6 +2342,21 @@ is coming back, and NIL once SECONDS pass first."
           when (>= (get-internal-real-time) deadline) return nil
           do (sleep pause))))
 
+(defun still-starting-text (seconds loading log)
+  "What a shell says when its own boot has not served after SECONDS: the
+layer file LOADING names -- (CELL FILE . STARTED), NLK::*LAYER-FILE-LOADING*
+-- while one loads, else the organism's LOG."
+  ;; A layer file whose initform waits (a network call, a sleep) is what a
+  ;; launch this slow is made of, and it stalls every launch until forgotten.
+  (if loading
+      (destructuring-bind (cell file . started) loading
+        (format nil "nodecode is still starting (~d s): ~a/~a has been loading for ~d s ~
+                     -- a layer file that waits stalls every launch"
+                seconds cell file (round (since-ms started) 1000)))
+      (format nil "nodecode is still starting (~d s): the organism has not served yet; ~
+                   its log is ~a"
+              seconds (home-abbreviated (uiop:native-namestring log)))))
+
 (defun spawn-resurrection-candidate (store-path)
   "Launch one detached headless serve candidate for STORE-PATH — one
 NLK::SPAWN-DETACHED of the resurrection command, logged beside the store —
@@ -2994,6 +3009,7 @@ session the shell ended on, or NIL when it never attached."
               with ensure-reported = nil
               with unresolved-since = nil
               with unresolved-reported = nil
+              with starting-reported = nil
               ;; An attach ends the outage: the next one walks the ladder from its start.
               with reset-outage = (lambda ()
                                     (setf delay *sync-backoff-base-seconds* failures 0
@@ -3060,20 +3076,35 @@ session the shell ended on, or NIL when it never attached."
                          ;; being waited on, and keep watching. A boot
                          ;; that died has said so in its own line, and
                          ;; this one would only ask who serves.
+                         ;; A boot of this shell's own that is still on its
+                         ;; way is no missing owner: it is said as what it
+                         ;; waits on -- the layer file loading now, else the
+                         ;; organism's log -- and the failure stays for a
+                         ;; boot that ended without one serving.
                          (setf unresolved-since (or unresolved-since (get-internal-real-time)))
-                         (when (and (not unresolved-reported)
-                                    (not (and boot *organism-boot-failure*))
+                         (when (and (not (and boot *organism-boot-failure*))
                                     (> (since-ms unresolved-since)
                                        (* 1000
                                           (if boot
                                               *sync-failure-after-seconds*
                                               5))))
-                           (setf unresolved-reported t)
-                           (report-transport-error
-                            program :failed "store ~a advertises no gateway ~
-                                          endpoint; still watching its ~
-                                          sidecar — is an owner serving?"
-                            (namestring store-path)))
+                           (cond ((or (and boot-thread (bt2:thread-alive-p boot-thread))
+                                      (and takeover (bt2:thread-alive-p takeover)))
+                                  (unless starting-reported
+                                    (setf starting-reported t)
+                                    (post-shell-notice
+                                     program
+                                     (still-starting-text (round (since-ms unresolved-since) 1000)
+                                                          nlk::*layer-file-loading*
+                                                          (stdio-log-path store-path))
+                                     :error-p nil)))
+                                 ((not unresolved-reported)
+                                  (setf unresolved-reported t)
+                                  (report-transport-error
+                                   program :failed "store ~a advertises no gateway ~
+                                                 endpoint; still watching its ~
+                                                 sidecar — is an owner serving?"
+                                   (namestring store-path)))))
                          ;; The organism publishes from a process of its
                          ;; own, which signals nothing here: a short lap
                          ;; dials within moments of the port landing.
@@ -3082,6 +3113,7 @@ session the shell ended on, or NIL when it never attached."
                        (nlk:note-boot-phase "endpoint-seen" published)
                        (setf unresolved-since nil
                              unresolved-reported nil
+                             starting-reported nil
                              port published
                              token (or token
                                        (gateway-configured-operator-token))

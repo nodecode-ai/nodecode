@@ -552,6 +552,7 @@ of stacking."
      (:file "tui/timestamps-test")
      (:file "surface/gateway-test")
      (:file "surface/gateway-return-test")
+     (:file "surface/still-starting-test")
      (:file "surface/think-off-test")
      ;; Uses gateway-test's detached shell and the real organism.loaded fold.
      (:file "tui/mutation-collapse-test")
