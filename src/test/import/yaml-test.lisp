@@ -71,7 +71,13 @@ folded: >-
       ("note" (format nil "first line~%second line~%") "a literal block")
       ("folded" "one two" "a folded block, stripped")))
   (is (zerop (hash-table-count (nik:read-yaml ""))) "an empty document is an empty object")
-  (is (search "anchors" (refusal-text nik:import-error (nik:read-yaml "a: &x 1")))))
+  (is (search "anchors" (refusal-text nik:import-error (nik:read-yaml "a: &x 1"))))
+  ;; One document, opened by a `---' and closed by a `...', is read; a second is
+  ;; refused by name, not merged into the first.
+  (is (eql 1 (gethash "a" (nik:read-yaml (format nil "---~%a: 1~%...~%")))))
+  (dolist (text (list (format nil "a: 1~%---~%b: 2") (format nil "a: 1~%...~%b: 2")))
+    (is (search "more than one document" (refusal-text nik:import-error (nik:read-yaml text)))
+        (format nil "~s is refused as a second document" text))))
 
 (deftest import-yaml-loses-only-the-section-it-cannot-read ()
   ;; An operator's config.yaml was refused ENTIRE over one wrapped line in a
