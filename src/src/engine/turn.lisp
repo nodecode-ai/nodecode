@@ -2842,10 +2842,8 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                ;; config refuses — never the verdict of the model it took
                ;; over from, which is the fallback fact's reason.
                (when (and fallback-tried (null (getf (first fallback-tried) :reason)))
-                 (setf (first fallback-tried)
-                       (list* :provider (getf (first fallback-tried) :provider)
-                              :model (getf (first fallback-tried) :model)
-                              (verdict-of e)))))
+                 ;; past its :provider P :model M, the entry's tail is the verdict
+                 (setf (cddddr (first fallback-tried)) (verdict-of e))))
              (amend-terminal-failover-note (e)
                ;; The honest terminal copy: when a chain was walked and every
                ;; candidate failed, the failure that stands lists every model
@@ -2862,19 +2860,11 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
              (next-candidate (chain)
                ;; The first entry of CHAIN this round has not run on: not
                ;; the model it runs on now, not the selection, not one tried.
-               (find-if
-                (lambda (entry)
-                  (let ((pair (list (getf entry :provider)
-                                    (getf entry :model))))
-                    (and (not (equal pair (list config.provider config.model)))
-                         (not (equal pair (list selection-provider
-                                                selection-model)))
-                         (not (member pair fallback-tried
-                                      :key (lambda (tried)
-                                             (list (getf tried :provider)
-                                                   (getf tried :model)))
-                                      :test #'equal)))))
-                chain))
+               (flet ((pair (entry) (list (getf entry :provider) (getf entry :model))))
+                 (let ((ran (list* (list config.provider config.model)
+                                   (list selection-provider selection-model)
+                                   (mapcar #'pair fallback-tried))))
+                   (find-if (lambda (entry) (not (member (pair entry) ran :test #'equal))) chain))))
              (try-fallback (e)
                ;; One chain step: re-aim the round at the next configured
                ;; candidate this turn has not tried — resolved through the
@@ -2991,17 +2981,25 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                    ;; The step recorded a floor: the stub lists it as the
                    ;; block the next round's will, so the retry is that
                    ;; round's prefix.
-                   (let ((floors (and context.session-id
-                                      (nlk:retained-history-floors context.session-id))))
-                     (setf context
-                           (context-with
-                            context
-                            :messages (messages-with-visible-images
-                                       (messages-at-boundary turns boundary floors)
-                                       context.visible-images)
-                            :boundary boundary :history-turns turns
-                            :floors floors)))
-                   t)))
+                   (retarget turns boundary (and context.session-id
+                                                 (nlk:retained-history-floors context.session-id))
+                             context.visible-images))))
+             (retarget (turns boundary floors images)
+               ;; The context re-aimed at TURNS from BOUNDARY with IMAGES: => T.
+               (setf context (context-with context :messages (messages-with-visible-images
+                                                              (messages-at-boundary turns boundary floors)
+                                                              images)
+                                                   :boundary boundary :history-turns turns
+                                                   :floors floors :visible-images images))
+               t)
+             (rerun-at-once (e detail)
+               ;; The failed attempt sealed and journaled as a retry with no
+               ;; wait and no ladder climbed, DETAIL naming why: => T.
+               (seal-streamed-attempt (provider-error-detail e) "rerun")
+               (announce-retry e :request 0 detail nil nil nil)
+               (incf provider-attempt)
+               (void-partial-stream)
+               t)
              (pre-call-govern ()
                ;; Admission is deliberately soft: known pressure gets a
                ;; bounded number of existing durable eviction steps, while an
@@ -3079,14 +3077,8 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                                   (relearned-request e config))))
                  (when lesson
                    (incf relearnings)
-                   (seal-streamed-attempt (provider-error-detail e) "rerun")
-                   (announce-retry e :request 0
-                                   (format nil "~a, after: ~a" lesson
-                                           (provider-said (provider-error-detail e)))
-                                   nil nil nil)
-                   (incf provider-attempt)
-                   (void-partial-stream)
-                   t)))
+                   (rerun-at-once e (format nil "~a, after: ~a" lesson
+                                            (provider-said (provider-error-detail e)))))))
              (withhold-images-and-retarget (e)
                ;; The other recovery step: the request carried images and
                ;; failed, so the round is re-sent without them, a note
@@ -3121,24 +3113,10 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                        (withhold-turn-images
                         turn-id
                         (lambda (n) (withheld-images-note e n :latched t))))
-                     (seal-streamed-attempt (provider-error-detail e) "rerun")
-                     (announce-retry e :request 0
-                                     (format nil "~d image~:p withheld after: ~a"
-                                             count (provider-error-detail e))
-                                     nil nil nil)
-                     (incf provider-attempt)
-                     (void-partial-stream)
-                     (setf context
-                           (context-with
-                            context
-                            :visible-images groups
-                            :messages (messages-with-visible-images
-                                       (messages-at-boundary
-                                        context.history-turns
-                                        context.history-boundary
-                                        context.history-floors)
-                                       groups)))
-                     t)))))
+                     (rerun-at-once e (format nil "~d image~:p withheld after: ~a"
+                                              count (provider-error-detail e)))
+                     (retarget context.history-turns context.history-boundary
+                               context.history-floors groups))))))
      (loop
       (handler-case
           ;; The attempt runs as the identity it targets: a failure names the
@@ -3159,44 +3137,29 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                 ;; inside the macro unschedules it on every retry path.
                 (nlk:collect-during-wait
                   (handler-bind ((nlk:turn-cancelled-condition
-                                   (lambda (condition)
-                                     (let ((text (get-output-stream-string
-                                                  partial))
-                                           (thinking (get-output-stream-string
-                                                      partial-reasoning)))
-                                       ;; A cancel mid-continuation closes
-                                       ;; the round with the seal in front
-                                       ;; of what streamed since, the same
-                                       ;; merge a finished continuation
-                                       ;; gets, and says where the join is.
-                                       (when (continuing-p)
-                                         (let ((prefix (seal-prefix)))
-                                           (setf (nlk:turn-cancelled-condition-partial-continued-from
-                                                  condition)
-                                                 (list :reasoning (length prefix)
-                                                       :content (length sealed-text))
-                                                 thinking (concatenate 'string prefix thinking)
-                                                 text (concatenate 'string sealed-text text))))
-                                       (when (plusp (length text))
-                                         (setf (nlk:turn-cancelled-condition-partial-text
-                                                condition)
-                                               text))
-                                       (when (plusp (length thinking))
-                                         (setf (nlk:turn-cancelled-condition-partial-reasoning
-                                                condition)
-                                               thinking))
-                                       (when partial-calls
-                                         (setf (nlk:turn-cancelled-condition-partial-tool-calls
-                                                condition)
-                                               (mapcar #'cdr
-                                                       (sort (copy-list partial-calls)
-                                                             #'< :key #'car))))
-                                       (setf (nlk:turn-cancelled-condition-partial-usage
-                                              condition)
-                                             (cut-round-usage-estimate
-                                              context config cadence
-                                              response-model response-effort
-                                              text thinking partial-calls))))))
+                                   (lambda (c &aux (text (get-output-stream-string partial))
+                                                   (thinking (get-output-stream-string partial-reasoning)))
+                                     ;; A cancel mid-continuation closes
+                                     ;; the round with the seal in front
+                                     ;; of what streamed since, the same
+                                     ;; merge a finished continuation
+                                     ;; gets, and says where the join is.
+                                     (when (continuing-p)
+                                       (let ((prefix (seal-prefix)))
+                                         (setf (nlk:turn-cancelled-condition-partial-continued-from c)
+                                               (list :reasoning (length prefix) :content (length sealed-text))
+                                               thinking (concatenate 'string prefix thinking)
+                                               text (concatenate 'string sealed-text text))))
+                                     (when (plusp (length text))
+                                       (setf (nlk:turn-cancelled-condition-partial-text c) text))
+                                     (when (plusp (length thinking))
+                                       (setf (nlk:turn-cancelled-condition-partial-reasoning c) thinking))
+                                     (when partial-calls
+                                       (setf (nlk:turn-cancelled-condition-partial-tool-calls c)
+                                             (mapcar #'cdr (sort (copy-list partial-calls) #'< :key #'car))))
+                                     (setf (nlk:turn-cancelled-condition-partial-usage c)
+                                           (cut-round-usage-estimate context config cadence response-model
+                                                                     response-effort text thinking partial-calls)))))
                     ;; One fold per lane: a round with no observer IS the
                     ;; blocking call. OBSERVER is NIL when nothing wants parts.
                     (setf cadence.sent-ms (elapsed-ms 0)
@@ -3230,16 +3193,11 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                 ;; dispatch it to. Its id and the head of its arguments are
                 ;; the diagnosis.
                 (when-let (nameless (nameless-tool-call message))
-                  (let ((arguments (or (json-value nameless :string
-                                                   "function" "arguments")
-                                       "")))
-                    (error 'provider-malformed-tool-call
-                           :detail (format nil "provider returned a tool ~
-                                                  call with no name (id ~a, ~
-                                                  arguments ~a)"
-                                           (gethash "id" nameless)
-                                           (subseq arguments
-                                                   0 (min 80 (length arguments)))))))
+                  (error 'provider-malformed-tool-call
+                         :detail (format nil "provider returned a tool call with no name (id ~a, arguments ~a)"
+                                         (gethash "id" nameless)
+                                         (nlk:clip (or (json-value nameless :string "function" "arguments") "")
+                                                   80 :ellipsis ""))))
                 ;; Window evidence and the measured prompt from every round
                 ;; the server actually processed: the usage total is a PROVEN
                 ;; context-window floor, and the prompt as the server's own
@@ -3274,17 +3232,10 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                   (setf length-cut-recovered-p t
                         cut-recovered t)
                   (when *current-durable-turn*
-                    (apply #'record-round-usage
-                           *current-durable-turn*
-                           :model model-id
-                           :provider provider-id
-                           :response-model response-model
-                           :reasoning-effort
-                           (or response-effort
-                               config.reasoning-effort)
-                           :finish-reason finish-reason
-                           :voided t
-                           (provider-usage-fact-args usage))
+                    (apply #'record-round-usage *current-durable-turn*
+                           :model model-id :provider provider-id :response-model response-model
+                           :reasoning-effort (or response-effort config.reasoning-effort)
+                           :finish-reason finish-reason :voided t (provider-usage-fact-args usage))
                     (notify-turn-facts-committed))
                   ;; The cut message is sealed into the transcript like any
                   ;; other voided attempt (the provider's own usage already
