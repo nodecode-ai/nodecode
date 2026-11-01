@@ -856,7 +856,15 @@ restarts it) and advance the model cursor."
              (let* ((output process.output)
                     (base process.base-offset)
                     (start-offset (max cursor base))
-                    (bytes (subseq output (min (- start-offset base) (fill-pointer output)))))
+                    (stop process.stopped)
+                    ;; A stopped form's output ends where it stood at the
+                    ;; stop: the compiler's report of the abort, printed on
+                    ;; the way out, is not what it wrote (EXEC-EXIT-TAIL keeps
+                    ;; the same rule for the card).
+                    (end (if (and stop (eq :exited process.status) (eql 130 process.exit-code))
+                             (max 0 (min (- (getf stop :end) base) (fill-pointer output)))
+                             (fill-pointer output)))
+                    (bytes (subseq output (min (- start-offset base) end) end)))
                (unless (= start-offset process.model-cursor)
                  (setf process.model-sanitizer
                        (make-text-sanitizer)))
@@ -1307,10 +1315,14 @@ running evaluation's live preview, which the model's next look at it reads
         (append (list :id id
                       :status (getf snapshot :status)
                       :output (getf snapshot :output))
-                ;; A running one's (sh ...) child is mid-command: what it wrote
-                ;; since the last look, the only word of it before its exit.
-                (when-let (shell (and (eq :running (getf snapshot :status))
-                                      (getf snapshot :shell-output)))
+                ;; What its (sh ...) child wrote: while it runs, what came
+                ;; since the last look, the only word of it before its exit;
+                ;; once someone stopped it, its last lines, which the stop
+                ;; would otherwise leave to its card alone.
+                (when-let (shell (cond ((eq :running (getf snapshot :status))
+                                        (getf snapshot :shell-output))
+                                       ((eql 130 (getf snapshot :exit-code))
+                                        (exec-stop-shell-tail process))))
                   (list :shell-output shell))
                 (when (eq :exited (getf snapshot :status))
                   (list* :value process.eval-value :exit-code (getf snapshot :exit-code)
@@ -1371,7 +1383,8 @@ for a job someone stopped, who stopped it, its lines being in its box.
 advances); while it runs, :SHELL-OUTPUT, what its (sh ...) child wrote since
 the last look (the newest 4 KiB of it at most), when it wrote anything; plus
 :VALUE and :EXIT-CODE once exited -- and :SHELL-EXIT, the status of the last
-(sh ...) it ran, when it ran one."
+(sh ...) it ran, when it ran one; once someone stopped it, :SHELL-OUTPUT is the
+last lines its (sh ...) child had written."
   (receipt-call "eval-status" id)
   (let ((process (find-background-eval (exec-registry-instance) id)))
     (note-background-read (eval-snapshot-plist (exec-registry-instance) id) process)))
@@ -1528,14 +1541,39 @@ The caller holds the registry lock."
   (bt2:with-lock-held ((exec-registry-lock (exec-registry-instance)))
     (exec-stop-document-locked process)))
 
+(defun exec-stop-shell-tail (process)
+  "What PROCESS's (sh ...) child had written when someone stopped it, as the
+model reads the stop: the last lines its card keeps (EXEC-EXIT-TAIL), under a
+line saying earlier ones were cut when they were -- or NIL when nobody stopped
+PROCESS or its form ran no (sh ...) that wrote anything."
+  ;; Without it a stop answered the model the compiler's report of the abort
+  ;; and nothing else: an agent that stopped a `nodecode add' hung for hours
+  ;; on a hub read learned nothing of where it stood (2026-11-01), the
+  ;; child's lines being the card's alone.
+  (bt2:with-lock-held ((exec-registry-lock (exec-registry-instance)))
+    (when (and process.stopped (plusp (length process.preview)))
+      (multiple-value-bind (tail cut) (exec-exit-tail process)
+        (when (plusp (length tail))
+          (if cut (format nil "[earlier output cut]~%~a" tail) tail))))))
+
+(defun call-exec-process (call-id)
+  "The evaluation CALL-ID ran, while the registry still holds it, or NIL."
+  (and (plusp (length call-id))
+       (do-registry (process (exec-registry-instance))
+         thereis (and (equal call-id process.tool-call-id) process))))
+
+(defun call-stop-shell-tail (call-id)
+  "EXEC-STOP-SHELL-TAIL of the evaluation CALL-ID ran: what its (sh ...) child
+had written when the call was stopped, or NIL."
+  (when-let (process (call-exec-process call-id))
+    (exec-stop-shell-tail process)))
+
 (defun call-stop-document (turn call-id &optional started)
   "How CALL-ID, a call of TURN cut before it answered, was stopped: its
 evaluation's stop when one ran for it, else the cause of TURN's cancel, the
 call having run since STARTED (internal real time) when it began at all.
 NIL for a call no stop cut."
-  (or (when-let (process (and (plusp (length call-id))
-                              (do-registry (process (exec-registry-instance))
-                                thereis (and (equal call-id process.tool-call-id) process))))
+  (or (when-let (process (call-exec-process call-id))
         (exec-stop-document process))
       (when (nlk:turn-cancellation-requested-p turn)
         (multiple-value-bind (reason operator-p) (nlk:turn-cancel-cause turn)
@@ -1733,11 +1771,14 @@ yield-and-background lifecycle."
                                  (value (or process.eval-value ""))
                                  (exit-code (or (getf snapshot :exit-code) 0))
                                  (stop (and (= 130 exit-code) (exec-stop-document process)))
+                                 ;; a stopped command's last lines come first,
+                                 ;; as a terminal shows them above the stop
+                                 (shell (and stop (exec-stop-shell-tail process)))
                                  (text (truncate-eval-result
                                         (cond ((= 1 exit-code)
                                                (concatenate 'string (reader-lines output) value))
-                                              ((string= output "") value)
-                                              (t (format nil "~a~&~a" output value))))))
+                                              ((string= output "") (format nil "~@[~a~&~]~a" shell value))
+                                              (t (format nil "~@[~a~&~]~a~&~a" shell output value))))))
                             (when (hash-table-p process.eval-metadata)
                               (setf *tool-result-metadata* process.eval-metadata))
                             ;; A stopped call did not fail: its card says who
