@@ -12548,6 +12548,12 @@ it could not do, and why."
         (path "Nothing here opens files — drag across the path to copy it")
         (t "No browser to open links here — drag across one to copy it")))
 
+(defun open-target-or-say (model uri &aux (outcome (open-target uri)))
+  "Open URI (OPEN-TARGET), or say in MODEL's status why it did not open."
+  (unless (eq t outcome)
+    (show-status model (open-refusal-hint uri outcome))
+    (render-state model)))
+
 (defun render-disclosure-at-cursor (model owner line y)
   "Reproject a toggled disclosure without moving its clicked owner at Y."
   (let* ((refs (chat-model-line-rows model))
@@ -12689,51 +12695,39 @@ selection copies to the clipboard through the program's own writer."
               (setf (chat-model-expanded-tool-call model)
                     (if (and run (not (tool-group-open-p group current))) (list :fold key) key))
               (render-disclosure-at-cursor model row line y)))
-           ;; A tab's chip on the open panel shows its tab; a key's hint is
-           ;; that key, handed back for UPDATE to run as a typed one.
-           ((and (consp uri) (eq :dialog-tab (car uri))
-                 (equal uri (frame-target-at-position model x y)))
-            (picker-tab-pick model (cdr uri)))
-           ((and (consp uri) (eq :key (car uri))
-                 (equal uri (frame-target-at-position model x y)))
-            (hint-key-press (cdr uri)))
-           ;; A composer dropdown row is chosen as Enter chooses the
-           ;; highlighted one: it takes the highlight, then Enter goes.
-           ((and (consp uri) (eq :suggestion (car uri))
-                 (equal uri (frame-target-at-position model x y)))
-            (setf (chat-model-slash-selection model) (cdr uri))
-            (nlt:make-key-press-msg :code :enter))
            ((equal uri (frame-target-at-position model x y))
-            (if (and (consp uri) (eq :command (car uri)))
-                (let* ((dialog (chat-model-dialog model))
-                       (kind (and (picker-dialog-p dialog) (picker-dialog-kind dialog))))
-                  ;; Every footer command toggles its canonical picker kind,
-                  ;; not a whitelist of options. A repeat click cancels even
-                  ;; with a query; it never selects or reruns the opener.
-                  (if (and kind (string-equal (cdr uri) (picker-dialog-command kind)))
-                      (dismiss-dialog model (picker-dialog-on-cancel dialog))
-                      (multiple-value-bind (notice cmd) (execute-slash-command model (cdr uri) "")
-                        (when notice (show-status model notice))
-                        (when cmd (error "Footer command unexpectedly returned a program command"))))
-                  (render-state model))
-                (let ((outcome (open-target uri)))
-                  (unless (eq t outcome)
-                    (show-status model (open-refusal-hint uri outcome))
-                    (render-state model)))))
-           ((and (equal uri '(:home . :mark))
-                 (equal uri (home-command-at-position model line column)))
-            (click-mark model))
+            (case (and (consp uri) (car uri))
+              ;; A tab's chip on the open panel shows its tab; a key's hint is
+              ;; that key, handed back for UPDATE to run as a typed one.
+              (:dialog-tab (picker-tab-pick model (cdr uri)))
+              (:key (hint-key-press (cdr uri)))
+              ;; A composer dropdown row is chosen as Enter chooses the
+              ;; highlighted one: it takes the highlight, then Enter goes.
+              (:suggestion (setf (chat-model-slash-selection model) (cdr uri))
+               (nlt:make-key-press-msg :code :enter))
+              (:command
+               (let* ((dialog (chat-model-dialog model))
+                      (kind (and (picker-dialog-p dialog) (picker-dialog-kind dialog))))
+                 ;; Every footer command toggles its canonical picker kind,
+                 ;; not a whitelist of options. A repeat click cancels even
+                 ;; with a query; it never selects or reruns the opener.
+                 (if (and kind (string-equal (cdr uri) (picker-dialog-command kind)))
+                     (dismiss-dialog model (picker-dialog-on-cancel dialog))
+                     (multiple-value-bind (notice cmd) (execute-slash-command model (cdr uri) "")
+                       (when notice (show-status model notice))
+                       (when cmd (error "Footer command unexpectedly returned a program command"))))
+                 (render-state model)))
+              (t (open-target-or-say model uri))))
            ((and (consp uri) (eq :home (car uri))
                  (equal uri (home-command-at-position model line column)))
-            (multiple-value-bind (notice cmd) (execute-slash-command model (cdr uri) "")
-              (when notice (show-status model notice))
-              (render-state model)
-              (when cmd (error "Home view command unexpectedly returned a program command"))))
+            (if (eq :mark (cdr uri))
+                (click-mark model)
+                (multiple-value-bind (notice cmd) (execute-slash-command model (cdr uri) "")
+                  (when notice (show-status model notice))
+                  (render-state model)
+                  (when cmd (error "Home view command unexpectedly returned a program command")))))
            ((and line (equal uri (link-at-position model line column)))
-            (let ((outcome (open-target uri)))
-              (unless (eq t outcome)
-                (show-status model (open-refusal-hint uri outcome))
-                (render-state model))))))))
+            (open-target-or-say model uri))))))
     ;; An open dialog confirms on release: a press on its panel only armed
     ;; the anchor, so a click with no drag between it and this release
     ;; replays Enter on the row under the pointer (the Zig
@@ -13150,9 +13144,7 @@ from the ones COLLECT-DURING-WAIT hid inside provider wait."
                               t)
                              ;; The ember, the fades and the glints are the
                              ;; frame's paint: the rows stand.
-                             ((ember-moved-p model) t)
-                             ((fade-moved-p model) t)
-                             ((glint-rows model) t))))
+                             ((or (ember-moved-p model) (fade-moved-p model) (glint-rows model)) t))))
          (setf quiet (not (or landed dragged expired flushed ticked painted))))))
 
     ;; Hand the key to the editor. The viewport deliberately gets no
@@ -13287,7 +13279,7 @@ other part is muted."
                (tone (cond (past :danger) (near :warn) (t :muted)))
                (hit (and cached (plusp cached) (format-cache-hit-percent input cached))))
           (remove nil
-                  (list
+                  (list*
                    (when (plusp used)
                      (cons (if window
                                (format nil "~a/~a"
@@ -13301,16 +13293,13 @@ other part is muted."
                                (format nil "evicts at ~a"
                                        (format-token-count (* window *context-eviction-trigger-ratio*))))
                            tone))
-                   (when-let (text (if (eq detail :developer)
-                                       (format nil "↑ ~a~@[ (cache ~a)~]" (format-token-count input) hit)
-                                       (and hit (format nil "cache ~a" hit))))
-                     (cons text :muted))
-                   (when (eq detail :developer)
-                     (cons (format nil "↓ ~a~@[ (reasoning ~a)~]" (format-token-count output)
-                                   (and reasoning (plusp reasoning) (format-token-count reasoning)))
-                           :muted))
-                   (when (and (eq detail :developer) cost-known)
-                     (cons (format nil "$~,3f" (or cost 0.0)) :muted)))))))))
+                   (if (eq detail :developer)
+                       (list (cons (format nil "↑ ~a~@[ (cache ~a)~]" (format-token-count input) hit) :muted)
+                             (cons (format nil "↓ ~a~@[ (reasoning ~a)~]" (format-token-count output)
+                                           (and reasoning (plusp reasoning) (format-token-count reasoning)))
+                                   :muted)
+                             (and cost-known (cons (format nil "$~,3f" (or cost 0.0)) :muted)))
+                       (list (and hit (cons (format nil "cache ~a" hit) :muted)))))))))))
 
 (defun clip-text-to-width (text max-width)
   "TEXT clipped to at most MAX-WIDTH display columns, an … marking the cut."
@@ -13456,6 +13445,15 @@ Segments are the one authority for text, color, clipping and target ranges."
   "(text-width bg palette profile bar-p hot) the band-row cache was built
 under; any drift flushes it wholesale.")
 
+(defun row-words-span (y plain &rest more)
+  "(Y X0 X1 . MORE) for frame row Y whose style-free text PLAIN has words:
+the cells from X0 below X1 they span, past the band's two-column inset; NIL
+for no PLAIN or a blank one."
+  (when-let (start (and plain (position #\Space plain :test-not #'char=)))
+    (list* y (+ 2 (text-display-width (subseq plain 0 start)))
+           (+ 2 (text-display-width (string-right-trim " " plain)))
+           more)))
+
 (defun transcript-band-rows (model width text-width bg)
   "The transcript band: each viewport row inset 2 columns from the left,
 padded to TEXT-WIDTH, then one blank column and the scroll rail's cell in
@@ -13501,23 +13499,14 @@ the frame's last column, WIDTH - 1."
           (loop for line in lines
                 for y from 3
                 for call = (ember-line line)
-                for plain = (and call (plain-frame-row line))
-                for start = (and plain (position #\Space plain :test-not #'char=))
-                when start
-                  collect (list y (+ 2 (text-display-width (subseq plain 0 start)))
-                                (+ 2 (text-display-width (string-right-trim " " plain)))
-                                call))
+                when (row-words-span y (and call (plain-frame-row line)) call) collect it)
           ;; And where the rows of a place still fading stand, for its light.
           (fade-rows model)
           (loop for line in lines
                 for y from 3
                 for (fade . item) = (and (plusp (length line)) (fade-line line))
-                for plain = (and fade (not (fade-settled-p fade)) (plain-frame-row line))
-                for start = (and plain (position #\Space plain :test-not #'char=))
-                when start
-                  collect (list y (+ 2 (text-display-width (subseq plain 0 start)))
-                                (+ 2 (text-display-width (string-right-trim " " plain)))
-                                fade item))
+                when (row-words-span y (and fade (not (fade-settled-p fade)) (plain-frame-row line)) fade item)
+                  collect it)
           ;; And where the chips a glint still crosses stand.
           (glint-rows model)
           (loop with now = (get-internal-real-time)
@@ -14667,20 +14656,15 @@ shine, on what an answer found. Truecolor only: quantized, the band jumps."
                                                           (round (* 100 heat)))
                                                nil :truecolor))))))))
 
-(defun frame-overlay (model &aux (fade (fade-overlay model))
-                                 (ember (ember-overlay model))
-                                 (glint (glint-overlay model))
-                                 (hint (status-hint-overlay model))
-                                 (toasts (toasts-overlay model))
-                                 (wash (selection-overlay model))
-                                 (timestamp (message-timestamp-overlay model))
-                                 (sheet (sheet-overlay model)))
+(defun frame-overlay (model &aux (overlays (remove nil (mapcar (lambda (overlay) (funcall overlay model))
+                                                               '(fade-overlay ember-overlay glint-overlay
+                                                                 status-hint-overlay toasts-overlay selection-overlay
+                                                                 message-timestamp-overlay sheet-overlay)))))
   "The frame's overlays: the fading places' light, the running lines' ember,
 the arriving chips' glints, verb hint, toasts, then the drag selection wash,
 the message timestamps, and an open sheet's window over them all."
-  (let ((overlays (remove nil (list fade ember glint hint toasts wash timestamp sheet))))
-    (when overlays
-      (lambda (buffer) (dolist (overlay overlays) (funcall overlay buffer))))))
+  (when overlays
+    (lambda (buffer) (dolist (overlay overlays) (funcall overlay buffer)))))
 
 (defun shell-view (model)
   "The composed frame as the tui view — the named body VIEW delegates to,
