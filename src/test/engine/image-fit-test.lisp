@@ -8,7 +8,8 @@
 ;;;;       tRNS and Adam7 among them, to the samples an independent encoder
 ;;;;       wrote; what the writer writes reads back as its own pixels, under
 ;;;;       the checksums an independent encoder computes.
-;;;;   F2. Baseline JPEG decodes red first and gray as one channel; the EXIF
+;;;;   F2. JPEG, baseline or progressive, decodes red first and gray as one
+;;;;       channel; the EXIF
 ;;;;       orientation is read in either byte order, and all eight turn the
 ;;;;       pixels upright.
 ;;;;   F3. The shrink is by area, alpha premultiplied, the shape kept.
@@ -75,14 +76,15 @@
 ;;; The JPEGs and the GIF are PIL's: two flat halves, red and blue, 16 x 8, at
 ;;; quality 95 with colour unsubsampled; the gray one 60 and 200; the EXIF
 ;;; ones carry orientation 6 in Intel byte order and 8 in Motorola's; the
-;;; progressive one is what cl-jpeg does not read. The GIF is 3000 x 2.
+;;; progressive one is what cl-jpeg could not read. The arithmetic-coded
+;;; one, ImageMagick's, flat red, is a form no codec here reads.
 (defparameter *fit-images*
   '((jpeg-colour "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAIBAQEBAQIBAQECAgICAgQDAgICAgUEBAMEBgUGBgYFBgYGBwkIBgcJBwYGCAsICQoKCgoKBggLDAsKDAkKCgr/2wBDAQICAgICAgUDAwUKBwYHCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgr/wAARCAAIABADAREAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD5nr+dz/ZA+a6/6GD/AAvP/9k=")
     (jpeg-gray "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAIBAQEBAQIBAQECAgICAgQDAgICAgUEBAMEBgUGBgYFBgYGBwkIBgcJBwYGCAsICQoKCgoKBggLDAsKDAkKCgr/wAALCAAIABABAREA/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/9oACAEBAAA/APzvr+jCv//Z")
     (jpeg-exif-6-intel "/9j/4AAQSkZJRgABAQAAAQABAAD/4QAiRXhpZgAATU0AKgAAAAgAAQESAAMAAAABAAYAAAAAAAD/2wBDAAIBAQEBAQIBAQECAgICAgQDAgICAgUEBAMEBgUGBgYFBgYGBwkIBgcJBwYGCAsICQoKCgoKBggLDAsKDAkKCgr/2wBDAQICAgICAgUDAwUKBwYHCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgr/wAARCAAIABADAREAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD5nr+dz/ZA+a6/6GD/AAvP/9k=")
     (jpeg-progressive "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAIBAQEBAQIBAQECAgICAgQDAgICAgUEBAMEBgUGBgYFBgYGBwkIBgcJBwYGCAsICQoKCgoKBggLDAsKDAkKCgr/2wBDAQICAgICAgUDAwUKBwYHCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgr/wgARCAAIABADAREAAhEBAxEB/8QAFAABAAAAAAAAAAAAAAAAAAAAB//EABYBAQEBAAAAAAAAAAAAAAAAAAgHCf/aAAwDAQACEAMQAAABM52yDXQwL//EABQQAQAAAAAAAAAAAAAAAAAAABD/2gAIAQEAAQUCP//EABQRAQAAAAAAAAAAAAAAAAAAABD/2gAIAQMBAT8BP//EABQRAQAAAAAAAAAAAAAAAAAAABD/2gAIAQIBAT8BP//EABQQAQAAAAAAAAAAAAAAAAAAABD/2gAIAQEABj8CP//EABQQAQAAAAAAAAAAAAAAAAAAABD/2gAIAQEAAT8hP//aAAwDAQACAAMAAAAQA//EABQRAQAAAAAAAAAAAAAAAAAAABD/2gAIAQMBAT8QP//EABQRAQAAAAAAAAAAAAAAAAAAABD/2gAIAQIBAT8QP//EABQQAQAAAAAAAAAAAAAAAAAAABD/2gAIAQEAAT8QP//Z")
     (jpeg-exif-8-motorola "/9j/4QAiRXhpZgAATU0AKgAAAAgAAQESAAMAAAABAAgAAAAAAAD/4AAQSkZJRgABAQAAAQABAAD/2wBDAAIBAQEBAQIBAQECAgICAgQDAgICAgUEBAMEBgUGBgYFBgYGBwkIBgcJBwYGCAsICQoKCgoKBggLDAsKDAkKCgr/2wBDAQICAgICAgUDAwUKBwYHCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgr/wAARCAAIABADAREAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD5nr+dz/ZA+a6/6GD/AAvP/9k=")
-    (gif-3000x2 "R0lGODdhuAsCAIAAAAAAAAAAACwAAAAAuAsCAAAIfgABCBxIsKDBgwgTKlzIsKHDhxAjSpxIsaLFixgzatzIsaPHjyBDihxJsqTJkyhTqlzJsqXLlzBjypxJs6bNmzhz6tzJs6fPn0CDCh1KtKjRo0iTKl3KtKnTp1CjSp1KtarVq1izat3KtavXr2DDih1LtqzZs2jTql3Ltm3BgAA7"))
+    (jpeg-arithmetic "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/yQARCAAIABADAREAAhEBAxEB/8wACgAQEAUBEBEF/9oADAMBAAIRAxEAPwD/AM/wDqQM1Aj/2Q=="))
   "Image files by name, base64.")
 
 (defun fit-fixture (name)
@@ -168,8 +170,12 @@
     (is (= 1 (nle::pixels-channels gray)))
     (is (near '(60) (pixel-at gray 2 3)))
     (is (near '(200) (pixel-at gray 13 4))))
+  (let ((progressive (nle::jpeg-pixels (fit-fixture 'jpeg-progressive))))
+    (is-shape progressive (nle::pixels-width 16) (nle::pixels-height 8) (nle::pixels-channels 3))
+    (is (near '(230 30 30) (pixel-at progressive 2 3)) "a progressive JPEG decodes too: red")
+    (is (near '(30 30 230) (pixel-at progressive 13 4)) "and blue"))
   (is (search "does not decode here"
-              (refusal-text nle::image-unfit (nle::jpeg-pixels (fit-fixture 'jpeg-progressive))))))
+              (refusal-text nle::image-unfit (nle::jpeg-pixels (fit-fixture 'jpeg-arithmetic))))))
 
 (deftest jpeg-orientation-is-read-in-either-byte-order ()
   (is (= 6 (nle::jpeg-orientation (fit-fixture 'jpeg-exif-6-intel))))
@@ -256,15 +262,15 @@
   (is (search "open no PNG, JPEG, GIF or WebP" (refusal-text nle::image-unfit (nle::fit-image (octets 1 2 3 4))))))
 
 (deftest fit-image-sends-what-it-cannot-open-whole-or-through-a-transcoder ()
-  (let ((gif (fit-fixture 'gif-3000x2))
-        (progressive (fit-fixture 'jpeg-progressive)))
+  (let* ((arithmetic (fit-fixture 'jpeg-arithmetic))
+         ;; the same, its frame header claiming 9000 wide
+         (wide (replace (copy-seq arithmetic) (octets #x23 #x28)
+                        :start1 (+ 7 (search (octets #xFF #xC9) arithmetic)))))
     (let ((nlt:*png-transcoders* '()))
-      (is-values (bytes media-type width height) (nle::fit-image gif)
-        (bytes eq gif "within what a provider takes whole") (media-type "image/gif") (width 3000) (height 2))
-      (is-values (bytes media-type) (nle::fit-image progressive :max-side 8)
-        (bytes eq progressive "a JPEG cl-jpeg does not read") (media-type "image/jpeg"))
+      (is-values (bytes media-type width height) (nle::fit-image arithmetic :max-side 8)
+        (bytes eq arithmetic "within what a provider takes whole") (media-type "image/jpeg") (width 16) (height 8))
       ;; 9000 wide, past what a provider takes whole.
-      (let ((reason (refusal-text nle::image-unfit (nle::fit-image (replace (copy-seq gif) (octets #x28 #x23) :start1 6)))))
+      (let ((reason (refusal-text nle::image-unfit (nle::fit-image wide))))
         (is (search "no ImageMagick, ffmpeg or sips here opens it" reason) reason)))
     ;; With a transcoder, the PNG it writes is what is fitted: here one that
     ;; answers any file with a 16 x 8 picture.
@@ -272,7 +278,7 @@
       (nlk:with-cleanup ((ignore-errors (delete-file picture)))
         (alexandria:write-byte-vector-into-file (nle::pixels-png (flat-pixels 16 8)) picture)
         (let ((nlt:*png-transcoders* `(("cp" ,picture :target))))
-          (is-values (bytes media-type width height) (nle::fit-image gif :max-side 8)
+          (is-values (bytes media-type width height) (nle::fit-image arithmetic :max-side 8)
             (media-type "image/png") (width 8) (height 4)
             ((multiple-value-list (nlt:image-dimensions bytes)) '(8 4))))))))
 

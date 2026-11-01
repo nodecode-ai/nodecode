@@ -9,13 +9,14 @@
 ;;;; smaller, so a photo goes as a JPEG and a screenshot as a PNG; when
 ;;;; neither fits, JPEG at lower qualities, then a quarter smaller a side. An
 ;;;; image within both goes as its own bytes. PNG is read and written here,
-;;;; JPEG through cl-jpeg, WebP in webp.lisp; a GIF or a progressive JPEG
-;;;; goes through whichever transcoder the box has (nlt:*PNG-TRANSCODERS*)
-;;;; and then through the PNG reader, and with none installed it goes as
-;;;; itself when it is within what a provider takes whole. No codec is a
-;;;; program the box must have: PNG, baseline JPEG and WebP, what
-;;;; screenshots, cameras and browsers write, fit on every platform the
-;;;; binary runs on.
+;;;; JPEG written through cl-jpeg and read in jpeg.lisp, WebP read in
+;;;; webp.lisp, a GIF's first frame in gif.lisp. The rare file none of them
+;;;; reads -- an arithmetic-coded or 12-bit JPEG -- goes through whichever
+;;;; transcoder the box has (nlt:*PNG-TRANSCODERS*) and then through the PNG
+;;;; reader, and with none installed it goes as itself when it is within
+;;;; what a provider takes whole. No codec is a program the box must have:
+;;;; PNG, JPEG, GIF and WebP, what screenshots, cameras and browsers write,
+;;;; fit on every platform the binary runs on.
 
 (in-package #:nodecode.evolved)
 
@@ -304,10 +305,9 @@ filter's type byte, then its bytes under that filter."
     (png-chunk out "IEND" (make-array 0 :element-type '(unsigned-byte 8)))))
 
 ;;; --- JPEG ----------------------------------------------------------------------
-;;; Through cl-jpeg, which reads and writes baseline JPEG: what every camera
-;;; and screenshot tool writes. Its samples run blue, green, red; a pixel here
-;;; runs red first. A progressive or arithmetic-coded JPEG it refuses goes
-;;; through a transcoder (IMAGE-PIXELS).
+;;; Written through cl-jpeg, as baseline JPEG, whose samples run blue, green,
+;;; red where a pixel here runs red first. Read in jpeg.lisp (JPEG-PIXELS),
+;;; baseline and progressive alike, to the pixels libjpeg gives.
 
 (defparameter +jpeg-luminance+
   #(16 11 10 16 24 40 51 61 12 12 14 19 26 58 60 55 14 13 16 24 40 57 69 56
@@ -343,17 +343,6 @@ luminance and chrominance, or with GRAY luminance alone."
   (loop for at of-type fixnum from 0 below (- (length data) 2) by channels
         do (rotatef (aref data at) (aref data (+ at 2))))
   data)
-
-(defun jpeg-pixels (octets)
-  "The baseline JPEG OCTETS decoded to gray or RGB PIXELS, as stored: its
-EXIF orientation is the caller's (JPEG-ORIENTATION)."
-  (multiple-value-bind (buffer height width ncomp)
-      (handler-case (flexi-streams:with-input-from-sequence (in octets) (jpeg:decode-stream in))
-        (error (e) (error 'image-unfit :reason (format nil "the JPEG does not decode here: ~a" e))))
-    (case ncomp
-      (1 (%make-pixels width height 1 (coerce buffer 'octets)))
-      (3 (%make-pixels width height 3 (swap-red-blue (coerce buffer 'octets) 3)))
-      (t (error 'image-unfit :reason (format nil "a JPEG of ~d components is not one this reads" ncomp))))))
 
 ;;; Colour goes at full resolution, 4:4:4: cl-jpeg halves chroma by taking
 ;;; every other sample, which aliases colour detail, and a provider charges
@@ -523,7 +512,7 @@ of each times its next weight, the weights of each summing to 1."
 ;;; --- decoding, whatever the format ---------------------------------------------
 
 (defparameter *image-decoders* '(("image/png" . png-pixels) ("image/jpeg" . jpeg-pixels)
-                                 ("image/webp" . webp-pixels))
+                                 ("image/webp" . webp-pixels) ("image/gif" . gif-pixels))
   "Media type -> the function that decodes such bytes to PIXELS here, as they
 are stored, signalling IMAGE-UNFIT on bytes it cannot read. A type with no
 entry, or bytes its entry refuses, goes through a transcoder.")
@@ -541,9 +530,9 @@ PIXELS; NIL when none of them makes a PNG of them."
         (png-pixels (alexandria:read-file-into-byte-vector target))))))
 
 (defun image-pixels (octets media-type)
-  "OCTETS, an image of MEDIA-TYPE, decoded to PIXELS as stored: PNG and
-baseline JPEG here, anything else through a transcoder. Signals
-IMAGE-UNFIT, saying why, when nothing opens it."
+  "OCTETS, an image of MEDIA-TYPE, decoded to PIXELS as stored: by its
+entry in *IMAGE-DECODERS*, else through a transcoder. Signals IMAGE-UNFIT,
+saying why, when nothing opens it."
   (multiple-value-bind (width height) (nlt:image-dimensions octets)
     (when (and width height (> (* width height) *image-max-pixels*))
       (error 'image-unfit

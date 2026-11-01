@@ -77,8 +77,10 @@ which carries the height before the width."
       (cond ((/= #xFF (aref bytes index)) (return nil))
             ;; A run of #xFF before the marker byte is fill, not a segment.
             ((= #xFF marker) (incf index))
-            ;; SOF0, SOF1, SOF2 — baseline, extended, progressive.
-            ((<= #xC0 marker #xC2)
+            ;; Every start of frame, SOF0 to SOF15 but DHT (C4), JPG (C8)
+            ;; and DAC (CC): baseline, extended and progressive, and the
+            ;; lossless, hierarchical and arithmetic-coded forms.
+            ((and (<= #xC0 marker #xCF) (not (member marker '(#xC4 #xC8 #xCC))))
              (return (values (%unsigned bytes (+ index 7) 2)
                              (%unsigned bytes (+ index 5) 2))))
             ;; The restart markers, SOI, EOI and TEM stand alone: no length.
