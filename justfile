@@ -158,6 +158,12 @@ bloat:
 # Resident memory ceilings in MB: at boot, at any turn of 40 past the fifth,
 # growth over the last ten, and after a quiet minute. Lower them as the shell
 # gets lighter; raise one only with the reason in the commit.
+# Fail when this checkout costs more than BASE where a person waits: the TUI's
+# keys and paging, the gateway's start, streamed turns (src/tools/perf/).
+# Measure this checkout against BASE.
+perf base="origin/main":
+    @python3 src/tools/perf-gate.py {{base}}
+
 footprint_ceilings := "--max-boot-mb 95 --max-turn-mb 105 --max-growth-mb 15 --max-idle-mb 46"
 
 # A scratch home with every shipped cell, a mock provider, the shell in tmux.
