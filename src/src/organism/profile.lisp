@@ -443,17 +443,14 @@ into HOME, and answer the member's name when there was one to take out."
                 for how = (cond (link (make-symlink link destination) :carried)
                                 ((installer-put-p name cells)
                                  (copy-tree-preserving entry destination) :carried)
-                                ((and (eq clone :settings) (knowledge-folder-p entry))
-                                 ;; Windows, where MAKE-SYMLINK answers NIL, copies
-                                 (if (make-symlink (truename entry) destination)
-                                     :shared
-                                     (progn (copy-tree-preserving entry destination) :carried)))
                                 ((and (eq clone :settings)
-                                      (intersection pinned (folder-served-providers entry)
-                                                    :test #'string-equal))
-                                 ;; Linked like a knowledge folder: the operator's
-                                 ;; code, one copy both homes read, so an edit
-                                 ;; reaches both; Windows copies.
+                                      (or (knowledge-folder-p entry)
+                                          ;; Linked like a knowledge folder: the operator's
+                                          ;; code, one copy both homes read, so an edit
+                                          ;; reaches both.
+                                          (intersection pinned (folder-served-providers entry)
+                                                        :test #'string-equal)))
+                                 ;; Windows, where MAKE-SYMLINK answers NIL, copies
                                  (if (make-symlink (truename entry) destination)
                                      :shared
                                      (progn (copy-tree-preserving entry destination) :carried)))
