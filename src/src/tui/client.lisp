@@ -276,13 +276,12 @@ discarded. REFUSED: the prompt promoted before the gateway read
 the withdrawal — the hold ends, the text goes back out of the composer
 while it is still exactly what the peel wrote, and a hint says why."
   (when held
-    (if (string= status "accepted")
-        (when-let (images (nlk::content-image-attachments (json-value response :any "images")))
-          (setf model.pending-images (append model.pending-images images)))
-        (progn
-          (release-held-prompt model)
-          (when (equal (editor-value model.editor) (getf held :text)) (editor-reset model.editor))
-          (show-status model "That prompt already started")))))
+    (cond ((string= status "accepted")
+           (when-let (images (nlk::content-image-attachments (json-value response :any "images")))
+             (setf model.pending-images (append model.pending-images images))))
+          (t (release-held-prompt model)
+             (when (equal (editor-value model.editor) (getf held :text)) (editor-reset model.editor))
+             (show-status model "That prompt already started")))))
 
 (defun send-navigate-checkpoint (ws session-id &key target-turn-id
                                                     boundary
@@ -735,7 +734,7 @@ so a streamed item and its durable fact are one row, never two."
     (values
      (stamp-unpositioned-rows
       (cond
-       ;; A fact whose fold is its declaration's (ui.lisp DEFINE-FOLD) folds
+       ;; A fact whose fold is its declaration's (tui/transcript/ingest.lisp DEFINE-FOLD) folds
        ;; through it, as the typed instance its kind declares -- hydrated from
        ;; the payload and the metadata as a stored row is -- so the keys, the
        ;; types and the defaults are the declaration's and never a copy.
@@ -814,9 +813,7 @@ so a streamed item and its durable fact are one row, never two."
           ;; withdrawal — this shell's own peel included — and the row
           ;; leaves with it.
           (setf st (prune-pending-steer-rows
-                    st
-                    (loop for prompt across pending
-                          collect (json-value prompt :string "prompt_id"))))
+                    st (map 'list (lambda (prompt) (json-value prompt :string "prompt_id")) pending)))
           (loop for prompt across pending
                 do (setf st (ingest-pending-input-fact
                              st (or (json-value prompt :string "content") "")
@@ -949,7 +946,7 @@ so a streamed item and its durable fact are one row, never two."
         (setf verdict (list :lifecycle (intern (string-upcase (subseq kind 5)) :keyword)
                             :steered (and (equal kind "turn.completed")
                                           (json-value payload :boolean "steered"))))
-        ;; The declared fold settles the turn (ui.lisp INGEST-TURN-TERMINAL): a
+        ;; The declared fold settles the turn (tui/transcript/ingest.lisp INGEST-TURN-TERMINAL): a
         ;; completion a parked steer cut short rests on `steered' while the
         ;; lifecycle verdict stays completed.
         (apply-event st (gateway-fact-event kind payload event (or turn-id (gethash "turn_id" st))))
@@ -1079,15 +1076,13 @@ attached session's, the one this shell's stop acts on."
     ;; gesture, never to the submit flow the pending-command guard below
     ;; tracks, and a submission parked at the same moment must not swallow it.
     (when (string= command "interrupt_exec")
-      (if (string= status "accepted")
-          (show-status model "Interrupt requested")
-          (progn
+      (cond ((string= status "accepted") (show-status model "Interrupt requested"))
             ;; The receipt names no exec, so a refusal clears every mark.
-            (dolist (row (state-background-rows model.state))
-              (setf (bg-row-stopping row) nil))
-            (show-status model (format nil "Interrupt refused: ~a"
-                                       (result-refusal payload "the exec is gone"))
-                         :error-p t)))
+            (t (dolist (row (state-background-rows model.state))
+                 (setf (bg-row-stopping row) nil))
+               (show-status model (format nil "Interrupt refused: ~a"
+                                          (result-refusal payload "the exec is gone"))
+                            :error-p t)))
       (return-from gateway-command-result nil))
     (when (or (null model.pending-command-id)
               (equal model.pending-command-id command-id)
@@ -1141,12 +1136,16 @@ attached session's, the one this shell's stop acts on."
         model.pending-correlation-id nil
         model.pending-prompt nil))
 
+(defun command-turn-id (frame command-id
+                        &aux (metadata (json-value frame :object "event" "metadata")))
+  "The turn stream FRAME admits for COMMAND-ID: the turn it names, or T when it
+names none; NIL when FRAME answers no such command."
+  (and command-id (equal command-id (json-value metadata :any "command_id"))
+       (or (gethash "turn_id" frame) (gethash "turn_id" metadata) t)))
+
 (defun replay-command-turn-id (payload command-id)
-  (and command-id
-       (loop for frame across (json-array payload "accumulated_frames")
-             for metadata = (json-value frame :object "event" "metadata")
-             when (equal command-id (json-value metadata :any "command_id"))
-               return (or (gethash "turn_id" frame) (gethash "turn_id" metadata) t))))
+  (loop for frame across (json-array payload "accumulated_frames")
+          thereis (command-turn-id frame command-id)))
 
 (defun note-resumed-watermark (model frame)
   "A resumed frame opens a fresh per-peer sequence epoch: REPLACE the
@@ -1379,4 +1378,3 @@ is then called with those two."
       (when sent
         (release-held-prompt model)))))
 
-;;; --- checkpoint listing prefetch ------------------------------------------

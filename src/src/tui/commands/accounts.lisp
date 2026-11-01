@@ -4,6 +4,7 @@
 
 (in-package #:nodecode.evolved)
 
+;;; --- /usage ------------------------------------------------------------------
 ;;; On a shell /usage is a dialog: a tab per range, each filled by its own read
 ;;; of the gateway's usage (the store is the gateway's), off the loop, the one
 ;;; asked for first; Tab moves between them, Enter on a session opens it. A
@@ -303,4 +304,3 @@ start on: POST /api/gateway/sessions/<id>/effort (SET-SESSION-EFFORT)."
             (with-slash-notice ("reasoning control")
               (apply-effort model value)))))))))
 
-;;; --- the gateway's cell commands -----------------------------------------

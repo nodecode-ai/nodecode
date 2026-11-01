@@ -4,6 +4,7 @@
 
 (in-package #:nodecode.evolved)
 
+;;; --- view method --------------------------------------------------------
 
 (defun image-payload-base64 (payload)
   "The base64 PNG PAYLOAD stands for: its own body when PAYLOAD is an
@@ -634,20 +635,15 @@ shine, on what an answer found. Truecolor only: quantized, the band jumps."
                                                           (round (* 100 heat)))
                                                nil :truecolor))))))))
 
-(defun frame-overlay (model &aux (fade (fade-overlay model))
-                                 (ember (ember-overlay model))
-                                 (glint (glint-overlay model))
-                                 (hint (status-hint-overlay model))
-                                 (toasts (toasts-overlay model))
-                                 (wash (selection-overlay model))
-                                 (timestamp (message-timestamp-overlay model))
-                                 (sheet (sheet-overlay model)))
+(defun frame-overlay (model &aux (overlays (remove nil (mapcar (lambda (overlay) (funcall overlay model))
+                                                               '(fade-overlay ember-overlay glint-overlay
+                                                                 status-hint-overlay toasts-overlay selection-overlay
+                                                                 message-timestamp-overlay sheet-overlay)))))
   "The frame's overlays: the fading places' light, the running lines' ember,
 the arriving chips' glints, verb hint, toasts, then the drag selection wash,
 the message timestamps, and an open sheet's window over them all."
-  (let ((overlays (remove nil (list fade ember glint hint toasts wash timestamp sheet))))
-    (when overlays
-      (lambda (buffer) (dolist (overlay overlays) (funcall overlay buffer))))))
+  (when overlays
+    (lambda (buffer) (dolist (overlay overlays) (funcall overlay buffer)))))
 
 (defun shell-view (model)
   "The composed frame as the tui view — the named body VIEW delegates to,
@@ -697,4 +693,3 @@ so a mutation (or a test) can redefine and faithfully restore the shell."
 (defmethod view ((model chat-model))
   (shell-view model))
 
-;;; --- operator warnings as system notices --------------------------------

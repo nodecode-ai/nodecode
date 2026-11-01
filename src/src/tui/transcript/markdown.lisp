@@ -4,6 +4,7 @@
 
 (in-package #:nodecode.evolved)
 
+;;; --- markdown classification (Zig render_plan.zig subset) ------------------
 ;;; Fences, headings, thematic breaks, list markers, blockquotes, and the
 ;;; inline pass (code/strong/emphasis/strike). A list's marker bytes stay in
 ;;; the text, in the keyword tone; the other blocks draw what their markers
@@ -736,4 +737,3 @@ reasoning bodies."
              (and cp-line (loop for i below cp-line sum (1+ (length (aref lines i)))))
              cp-count))))
 
-;;; --- layout: logical lines to painted rows ---------------------------------

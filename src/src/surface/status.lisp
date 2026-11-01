@@ -59,7 +59,9 @@
                             (one-line (usage-field fact "detail") :cap 120 :ellipsis "…")
                             (and (usage-field fact "remedy")
                                  (one-line (usage-field fact "remedy") :cap 70 :ellipsis "…")))
-                    :tone (tone (usage-field fact "tone")) :action (fact-action fact))))
+                    :tone (tone (usage-field fact "tone")) :action (fact-action fact)))
+             (today (label detail)
+               (row label detail :action '(:command "usage" "today"))))
       (section "Needs attention" "known runtime facts · no diagnostic probes")
       (cond
         ((null snapshot) (row "Runtime" "Reading the gateway…"))
@@ -137,22 +139,19 @@
         (t
          (let* ((totals (usage-field usage "totals")) (cost (usage-field totals "cost_usd"))
                 (unpriced (let ((n (usage-field totals "unpriced"))) (and (realp n) (plusp n) n))))
-           (row "Estimated spend"
-                (format nil "~a~@[ · ~d unpriced calls~]"
-                        (if (realp cost)
-                            (format nil "~:[~;at least ~]~a" unpriced (usd-text cost))
-                            "unavailable")
-                        unpriced)
-                :action '(:command "usage" "today"))
-           (row "Calls / turns / failed"
-                (format nil "~{~a~^ / ~}"
-                        (loop for key in '("calls" "turns" "failed_turns")
-                              collect (or (usage-field totals key) "unavailable")))
-                :action '(:command "usage" "today"))
-           (row "Cache / TTFT p50 / p90"
-                (format nil "~a / ~a / ~a" (share-text (usage-field totals "cached_share"))
-                        (ms-text (usage-field usage "wait_p50_ms")) (ms-text (usage-field usage "wait_p90_ms")))
-                :action '(:command "usage" "today")))))
+           (today "Estimated spend"
+                  (format nil "~a~@[ · ~d unpriced calls~]"
+                          (if (realp cost)
+                              (format nil "~:[~;at least ~]~a" unpriced (usd-text cost))
+                              "unavailable")
+                          unpriced))
+           (today "Calls / turns / failed"
+                  (format nil "~{~a~^ / ~}"
+                          (loop for key in '("calls" "turns" "failed_turns")
+                                collect (or (usage-field totals key) "unavailable"))))
+           (today "Cache / TTFT p50 / p90"
+                  (format nil "~a / ~a / ~a" (share-text (usage-field totals "cached_share"))
+                          (ms-text (usage-field usage "wait_p50_ms")) (ms-text (usage-field usage "wait_p90_ms")))))))
       (row "Refresh snapshots" "Enter · activity and notices update from the runtime stream" :action :refresh)
       (nreverse rows))))
 

@@ -5,7 +5,7 @@
 ;;;;
 ;;;; A shell folds the sync stream itself (APPLY-GATEWAY-EVENT, tui/client.lisp).
 ;;;; A browser cannot: the fold is Lisp, and a tool card's words come from
-;;;; reading the snippet it ran (activity.lisp). So a subscription entry carrying
+;;;; reading the snippet it ran (tool-summary.lisp). So a subscription entry carrying
 ;;;; "rows": true has the fold done here, by the same reducer over the same
 ;;;; frames. An in-process peer (ATTACH-LOOPBACK-GATEWAY-PEER) subscribes to the
 ;;;; session in the client's place and folds every frame the gateway would have

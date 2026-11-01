@@ -4,6 +4,7 @@
 
 (in-package #:nodecode.evolved)
 
+;;; --- the group pass ----------------------------------------------------------
 ;;; Routine calls fold. A run of calls that only read, search, list, fetch,
 ;;; recall, check or wait — ROW-ACTIVITY says so — becomes one TOOL-GROUP
 ;;; that renders as one line, `Read 4 files, Searched 'tool-row''; while
@@ -745,16 +746,7 @@ the state's live execs, shows what it has written under it."
                                                          "Thinking…")
                                                         (t "Thought"))
                                             :tone :muted :role role :gutter-tone :muted)))
-                     (when (and edited files (not running))
-                       (loop for row in edited
-                             sum (loop for file across (json-array row.metadata "workspace_diff" "files")
-                                       sum (or (json-value file :integer "added") 0))
-                               into added
-                             sum (loop for file across (json-array row.metadata "workspace_diff" "files")
-                                       sum (or (json-value file :integer "removed") 0))
-                               into removed
-                             finally (append-lline-run line (format nil " +~d" added) :tone :diff-added)
-                                     (append-lline-run line (format nil " -~d" removed) :tone :diff-removed)))
+                     (unless running (apply #'append-row-diff-stats line edited))
                      line))
                   ;; A reflection's recap as its one quiet line: `Reflection recap', and
                   ;; while it is closed the first words of its answer, cut to WIDTH so the
@@ -1043,4 +1035,3 @@ at WIDTH to LINES lines, or NIL for the first row."
 
 ;;;; C2 additions to ui.lisp --- the live program adapter
 
-;;; --- TUI model and generics ---------------------------------------------

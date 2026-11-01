@@ -121,7 +121,7 @@
     ;; itself (PICKER-ROW-PAINT): one lift over the panel surface, derived
     ;; from it below, as the toast's grounds are.
     (:panel-lift ,(vstyle :bg '(78 82 91)))
-    ;; The sheet in the middle of the frame (settings.lisp): its ground, the
+    ;; The sheet in the middle of the frame (settings-sheet.lisp): its ground, the
     ;; darker rail of sections beside it, the lift under the chosen setting,
     ;; and its options -- the one held, the one held and set, the one held
     ;; under the cursor -- with the amber that says a change waits for a
@@ -550,7 +550,7 @@ SGR sequence for STYLE; plain (but still pictured) under :none."
 ;;; --- the display authority -----------------------------------------------
 ;;; One string carries both lanes to the renderer: the content a row says and
 ;;; the SGR/OSC control this file writes around it. The renderer's parser
-;;; (src/term/cells.lisp PARSE-STYLED-STRING) cannot tell a content ESC
+;;; (src/term/screen.lisp PARSE-STYLED-STRING) cannot tell a content ESC
 ;;; from ours: it honours a content SGR as style, swallows any other CSI/OSC
 ;;; as zero cells, an unterminated one eats the rest of the frame, and a C1
 ;;; byte (U+0080-U+009F) it emits raw is a live CSI/OSC to the terminal.
@@ -769,7 +769,7 @@ band's outer inset.")
 
 (defparameter *status-mark-interrupted* "×")
 ;;; One mark per kind of verb the live bar names: every activity family
-;;; (activity.lisp), the model's own :THINKING and :STREAMING, and :DEFAULT —
+;;; (tool-summary.lisp), the model's own :THINKING and :STREAMING, and :DEFAULT —
 ;;; the pulse a tool without words of its own keeps, and the one the /sessions
 ;;; rows and setup's loading rows wear. Two cells, the top three dot rows, so
 ;;; the bar's text never moves; every frame lasts *STATUS-RUNNING-FRAME-MS*,

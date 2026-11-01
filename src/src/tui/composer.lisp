@@ -4,6 +4,7 @@
 
 (in-package #:nodecode.evolved)
 
+;;; --- keyboard list surfaces ------------------------------------------------
 ;;; The three primitives every keyboard-driven list or field surface below
 ;;; shares — the composer's two dropdown lanes, the docked picker, and the
 ;;; /models wizard. Each surface keeps its own bindings and its own refusal
@@ -482,19 +483,16 @@ whole dropdown rect). NIL while no lane matches or the window has no room."
                for target = (cons :suggestion (+ top row))
                collect (dropdown-panel-row
                         (append
-                         (list (make-seg :text (if (and (null surface) selected) "> " "  ")
-                                         :tone :user-block :link target)
-                               (make-seg :text (composer-suggestion-text entry)
-                                         :tone :syntax-command :link target))
+                         (list (seg (if (and (null surface) selected) "> " "  ") :user-block :link target)
+                               (seg (composer-suggestion-text entry) :syntax-command :link target))
                          (when (plusp (length alias))
-                           (list (make-seg :text (format nil " (~a)" alias) :tone :muted :link target)))
+                           (list (seg (format nil " (~a)" alias) :muted :link target)))
                          ;; Two columns past the window's widest label, the
                          ;; docked rows' separator: at one, the widest row's
                          ;; alias would run into its description, `/tree
                          ;; (/checkpoints) Browse'.
-                         (list (make-seg :text (format nil "~va" gap "") :tone :user-block :link target)
-                               (make-seg :text (composer-suggestion-detail entry)
-                                         :tone (if selected :user-block :muted) :link target)))
+                         (list (seg (format nil "~va" gap "") :user-block :link target)
+                               (seg (composer-suggestion-detail entry) (if selected :user-block :muted) :link target)))
                         width bg surface
                         ;; The chord this command also answers to, parked
                         ;; at the row's right edge — past the description,
@@ -520,12 +518,9 @@ marker with the content stashed for submit-time expansion when large."
     (if (or (> (length normalized) *paste-collapse-max-chars*)
             (> (1+ (count #\Newline normalized)) *paste-collapse-max-lines*))
         (let ((id (incf (chat-model-paste-counter model))))
-          (editor-insert
-           (chat-model-editor model)
-           (format nil "[Paste #~d] " id))
+          (editor-insert (chat-model-editor model) (format nil "[Paste #~d] " id))
           (push (cons id normalized) (chat-model-pastes model)))
-        (editor-insert
-         (chat-model-editor model) normalized))
+        (editor-insert (chat-model-editor model) normalized))
     t))
 
 (defun expand-composer-pastes (model prompt)
@@ -686,4 +681,3 @@ machine => (values MEDIA-TYPE BASE64), else NIL."
           (when media-type
             (return (values media-type (cl-base64:usb8-array-to-base64-string octets)))))))))
 
-;;; --- the docked dialog panel -------------------------------------------------

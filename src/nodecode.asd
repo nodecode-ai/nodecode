@@ -18,7 +18,7 @@
 ;;; --- the version this system declares -----------------------------------------
 ;;; The version carries the commit, not just the base: a checkout has git to
 ;;; ask — the short HEAD of the tree this file is loaded from — and a packed
-;;; build is stamped with the revision it was cut from. src/tools/pack.sh
+;;; build is stamped with the revision it was cut from. src/tools/release/pack.sh
 ;;; builds a `git archive' of a revision in a throwaway tree with no .git and
 ;;; sets NODECODE_BUILD_COMMIT, which outranks git precisely because git cannot
 ;;; answer there. One rule, so the form every reader reaches for —
@@ -259,17 +259,17 @@ of stacking."
      ;; image-fit precedes turn: every picture the turn stages is first
      ;; brought within what a provider takes -- decoded, shrunk and
      ;; re-encoded here.
-     (:file "engine/image-fit")
+     (:file "engine/image/image-fit")
      ;; webp follows image-fit: it decodes to the PIXELS image-fit shrinks,
      ;; named in *IMAGE-DECODERS* there for image/webp.
-     (:file "engine/webp")
+     (:file "engine/image/webp")
      ;; jpeg follows image-fit: it reads every JPEG to the PIXELS image-fit
      ;; shrinks, cl-jpeg's baseline and the progressive form cl-jpeg cannot,
      ;; named in *IMAGE-DECODERS* there for image/jpeg.
-     (:file "engine/jpeg")
+     (:file "engine/image/jpeg")
      ;; gif follows image-fit: it reads a GIF's first frame to the PIXELS
      ;; image-fit shrinks, named in *IMAGE-DECODERS* there for image/gif.
-     (:file "engine/gif")
+     (:file "engine/image/gif")
      (:file "engine/turn")
      ;; shell precedes exec: the grammar of what (sh ...) runs — a command
      ;; string as its simple commands, each with words, redirects and the
@@ -283,14 +283,14 @@ of stacking."
      ;; activity follows exec: the words a tool call's transcript card, the
      ;; live bar and the roster say, read from the snippet and the receipts its
      ;; verbs stamp; ui, client and agents consume it.
-     (:file "engine/activity")
+     (:file "engine/tool-summary")
      ;; term: the terminal core — the message vocabulary and model protocol,
      ;; the width table, the cell painter, the tty and its modes, the byte
      ;; decoder, kitty graphics, the renderer, the program loop. It precedes
      ;; tui: theme measures through its width table and ui runs its loop.
      (:file "term/message")
      (:file "term/width")
-     (:file "term/cells")
+     (:file "term/screen")
      (:file "term/terminal")
      (:file "term/input")
      (:file "term/image")
@@ -339,7 +339,7 @@ of stacking."
      ;; declares about itself, beside the folder loader -- and its load
      ;; position is here, after gateway: the declaration composes
      ;; REGISTER-COMMAND and UNREGISTER-EXTENSION, which gateway owns.
-     (:file "organism/cell")
+     (:file "organism/cell-dsl")
      ;; activity: which sessions are running a turn right now, projected for
      ;; the shells -- it folds the frames PUBLISH-EVENT lets out.
      (:file "surface/activity")
@@ -394,7 +394,7 @@ of stacking."
      ;; dialog in the middle of the frame paints and calls with.
      (:file "tui/sheet")
      ;; The TUI's quick config knobs use the same typed config route as the page.
-     (:file "tui/settings")
+     (:file "tui/settings-sheet")
      ;; /generations: the history of the self, a sheet over the generations
      ;; routes (gateway.lisp), and the way back to a change in it.
      (:file "tui/generations")
@@ -405,7 +405,7 @@ of stacking."
      (:file "surface/control")
      ;; /cells: every cell on a sheet over the cells routes (control.lisp),
      ;; the chosen one laid open beside the list.
-     (:file "tui/cells")
+     (:file "tui/cells-sheet")
      ;; status composes those readers; the shell and headless format one projection.
      (:file "surface/status")
      ;; account login is a CLI child over the HTTP account-link contract and canonical config/key writers.
@@ -422,19 +422,19 @@ of stacking."
      ;; the seam that owns it -- the config and auth writers, the scribe --
      ;; then the verbs: /import and POST /api/import, which SERVE-GATEWAY
      ;; registers as it serves.
-     (:file "import/conditions")
+     (:file "import/errors")
      (:file "import/seams")
      (:file "import/yaml")
      (:file "import/toml")
      (:file "import/catalog")
      (:file "import/shape")
      (:file "import/home")
-     (:file "import/sessions")
+     (:file "import/transcripts")
      (:file "import/tally")
      (:file "import/takeover")
      (:file "import/plan")
      (:file "import/source")
-     (:file "import/verbs"))))
+     (:file "import/api"))))
   :in-order-to ((test-op (test-op "nodecode/test"))))
 
 ;;; DEFSYSTEM stores :version literally — a form there is refused as an
@@ -473,7 +473,7 @@ of stacking."
   ;; the dump carries warm dispatch caches instead of billing the
   ;; operator's first launch for them. Bin-only: the developer image and
   ;; the test image never load it.
-  :components ((:file "src/warm"))
+  :components ((:file "src/organism/warm"))
   :entry-point "nodecode.evolved::main")
 
 (defsystem "nodecode/test"
@@ -488,7 +488,7 @@ of stacking."
     ((:file "support")
      ;; The cell lanes' shared runner and helpers (DEFINE-TEST-SLICE), one
      ;; copy for every cell test system that depends on this one.
-     (:file "../tools/test-slice")
+     (:file "../tools/check/test-slice")
      ;; json-test first: the decoded-wire-value waist is what every later
      ;; suite's payload assertions read through.
      (:file "waist/json-test")
@@ -516,13 +516,13 @@ of stacking."
      (:file "session/move-test")
      ;; standby-test follows identity-test: it drives the same session
      ;; fixtures, and asserts what a minted-but-unspoken id did NOT write.
-     (:file "session/standby-test")
+     (:file "store/standby-test")
      (:file "session/lifecycle-test")
      (:file "session/session-admit-test")
      (:file "organism/evolve-test")
      (:file "organism/cells-test")
      (:file "organism/notice-log-test")
-     (:file "organism/cell-test")
+     (:file "organism/cell-dsl-test")
      (:file "organism/upgrade-test")
      (:file "organism/profile-test")
      (:file "organism/background-test")
@@ -577,11 +577,11 @@ of stacking."
      (:file "engine/working-context-test")
      ;; activity-test follows turn-test: its receipt proof drives the same
      ;; tool-call seam through turn-test's wire helpers.
-     (:file "engine/activity-test")
+     (:file "engine/tool-summary-test")
      (:file "session/snapshot-test")
      (:file "term/input-test")
      (:file "term/terminal-test")
-     (:file "term/cells-test")
+     (:file "term/screen-test")
      (:file "term/image-test")
      (:file "term/program-test")
      (:file "tui/theme-test")
@@ -660,9 +660,9 @@ of stacking."
      (:file "surface/provider-offers-test")
      (:file "surface/settings-test")
      ;; Quick TUI settings gates reuse the canonical route's isolated fixture.
-     (:file "tui/settings-test")
+     (:file "tui/settings-sheet-test")
      (:file "tui/generations-test")
-     (:file "tui/cells-test")
+     (:file "tui/cells-sheet-test")
      (:file "surface/backup-test")
      (:file "session/checkpoint-test")
      ;; exec-test drives the same WS fixtures plus the store fixtures, so it
@@ -670,16 +670,16 @@ of stacking."
      (:file "engine/exec-test")
      ;; image-fit-test follows exec-test: it shows LOOK a file the way
      ;; exec-test's fixtures do.
-     (:file "engine/image-fit-test")
+     (:file "engine/image/image-fit-test")
      ;; webp-test follows image-fit-test: it shrinks a WebP through FIT-IMAGE.
-     (:file "engine/webp-test")
+     (:file "engine/image/webp-test")
      ;; jpeg-test and gif-test follow image-fit-test: each shrinks its
      ;; format through FIT-IMAGE.
-     (:file "engine/jpeg-test")
-     (:file "engine/gif-test")
+     (:file "engine/image/jpeg-test")
+     (:file "engine/image/gif-test")
      ;; background-steer-test follows exec-test: it drives the drained
      ;; registry beside it, turn-test's wire helpers and the provider stub.
-     (:file "engine/background-steer-test")
+     (:file "organism/background-steer-test")
      ;; band-test follows exec-test: the surface gates reuse its golden
      ;; frames and octet helpers plus ui-test's frame-model fixture.
      (:file "tui/band-test")

@@ -4,6 +4,7 @@
 
 (in-package #:nodecode.evolved)
 
+;;; --- the running sessions ----------------------------------------------------
 ;;; Which sessions have a turn in flight right now, and since when: the
 ;;; gateway's organism.activity frames (activity.lisp) -- the whole map each
 ;;; time it changes, and once more as this shell subscribes -- folded into a
@@ -192,8 +193,7 @@ It names the day and is never chosen; a rule runs from it to the edge."
                            (nth-value 1 (local-date (encode-universal-time 0 0 12 date month year)))))))
          (row (make-picker-row :label label :heading t)))
     (setf (picker-row-paint row)
-          (lambda (selected room)
-            (declare (ignore selected))
+          (lambda-ignoring (selected room)
             (list (make-seg :text " " :tone :muted)
                   (make-seg :text label :tone :muted :bold t)
                   (make-seg :text " " :tone :muted)
@@ -309,9 +309,7 @@ narrow for the name to keep a reading's width."
         (let* ((right-width (lane-width right))
                (title-width (max 8 (- room lead (after right))))
                (left (append
-                      (list (if selected
-                                (make-seg :text "▌" :tone :dialog-accent)
-                                (make-seg :text " " :tone plain))
+                      (list (selection-edge-seg selected plain)
                             (make-seg :text " " :tone plain)
                             (make-seg :text (if (plusp (length mark)) mark " ") :tone mark-tone)
                             (make-seg :text " " :tone plain)
@@ -829,10 +827,7 @@ position the page behind it ends under, NIL when this one starts the session."
   ;; it wait. 128 is the first page only; a rested highlight reads the
   ;; pages behind it (SESSIONS-PREVIEW-OLDER), and the replay an Enter
   ;; starts reads the rest.
-  (let ((page (session-control-call model :get
-                                    (if before
-                                        (format nil "history?limit=128&before=~d" before)
-                                        "history?limit=128")
+  (let ((page (session-control-call model :get (format nil "history?limit=128~@[&before=~d~]" before)
                                     :session-id session-id)))
     (cons (gethash "frames" page)
           (and (gethash "has_more" page) (gethash "next_before" page)))))
@@ -968,9 +963,8 @@ repaint when ENTRY is still the preview. => T when that moved the screen."
       (t
        (let* ((older (frames-events (car page)))
               (events (getf paging :events))
-              (all (make-array (+ (length older) (length events)) :adjustable t :fill-pointer t)))
-         (replace all older)
-         (replace all events :start1 (length older))
+              (all (make-array (+ (length older) (length events)) :adjustable t :fill-pointer t
+                               :initial-contents (concatenate 'vector older events))))
          (setf (cdr entry) (preview-carry-slots (cdr entry) (fold-events all)
                                                 (eq :landed (getf paging :header)))
                (getf paging :events) all
@@ -1233,9 +1227,8 @@ the gateway."
         (setf (getf state :staged) query
               (getf state :staged-at) (get-internal-real-time)))
       (cond
-        ((equal (getf state :staged) (getf state :rows-query)) nil)
-        ((equal (getf state :staged) (getf state :fired)) nil)
-        ((< (since-ms (getf state :staged-at)) (* 1000 *session-search-rest*))
+        ((or (member (getf state :staged) (list (getf state :rows-query) (getf state :fired)) :test #'equal)
+             (< (since-ms (getf state :staged-at)) (* 1000 *session-search-rest*)))
          nil)
         ((zerop (length query))
          (let ((fold (getf state :fold)))

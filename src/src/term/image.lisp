@@ -130,7 +130,7 @@ the header does not carry it."
 ;;; An animation is its first frame: one PNG is wanted, and ImageMagick
 ;;; writes a numbered file per frame unless one is picked, ffmpeg refuses
 ;;; to. None of them is told to turn the picture upright: an EXIF
-;;; orientation is the reader's to apply (engine/image-fit.lisp FIT-IMAGE),
+;;; orientation is the reader's to apply (engine/image/image-fit.lisp FIT-IMAGE),
 ;;; once.
 (defparameter *png-transcoders*
   '(("magick" :first-frame :target)

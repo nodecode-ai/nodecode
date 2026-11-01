@@ -4,6 +4,7 @@
 
 (in-package #:nodecode.evolved)
 
+;;; --- slash-command execution ----------------------------------------------
 ;;; One execution authority (slash.lisp owns the catalog and parser; ui.lisp
 ;;; owns the dropdown and the submit seam). Every shell is a GATEWAY-CHAT-MODEL
 ;;; -- the owner's own included -- so the gateway-backed commands go through
@@ -116,9 +117,12 @@ models -- so a shell never builds the list itself.")
 (defun gateway-models-facts (body)
   "BODY, a GET /api/gateway/models answer, as *GATEWAY-MODELS* holds it;
 :UNREPORTED when the answer carries no providers field at all."
-  (flet ((ids (key)
+  (flet ((ids (key &optional pairs)
+           ;; The ids whose provider holds KEY; with PAIRS, (ID . VALUE) where VALUE is a string.
            (loop for provider across (or (gethash "providers" body) #())
-                 when (gethash key provider) collect (gethash "id" provider))))
+                 for value = (gethash key provider)
+                 when (if pairs (stringp value) value)
+                   collect (if pairs (cons (gethash "id" provider) value) (gethash "id" provider)))))
     (list :rows (build-models-catalog-picker-rows
                  (append
                   (loop for row across (or (gethash "models" body) #())
@@ -133,14 +137,10 @@ models -- so a shell never builds the list itself.")
           :listable (ids "listable")
           :local (ids "local")
           ;; (ID . NAME) for each provider its folder names (OFFERED-PROVIDER-NAME)
-          :names (loop for provider across (or (gethash "providers" body) #())
-                       for name = (gethash "name" provider)
-                       when (stringp name) collect (cons (gethash "id" provider) name))
+          :names (ids "name" t)
           ;; (ID . WHY) for each provider no turn can run on there, WHY the
           ;; gateway's words (PROVIDER-TURN-REFUSAL reads them).
-          :refusals (loop for provider across (or (gethash "providers" body) #())
-                          for why = (gethash "refusal" provider)
-                          when (stringp why) collect (cons (gethash "id" provider) why))
+          :refusals (ids "refusal" t)
           ;; Each provider a folder not installed there serves, which picking
           ;; installs (PROVIDER-OFFERS' plists).
           :offers (loop for offer across (or (gethash "offers" body) #())
@@ -696,8 +696,7 @@ signed in to nodecode.ai -- the row that signs it in (MODELS-SIGN-IN-ROWS).
                   rows))
             (picker-search-handlers dialog)
             ;; a result step's edit keys reach the query too: they rebuild nothing
-            (lambda (dialog query)
-              (declare (ignore query))
+            (lambda-ignoring (dialog query)
               (when (and (eq :provider (connect-dialog-step dialog))
                          (not (eq searching (querying))))
                 (setf (picker-dialog-rows dialog) (funcall (connect-dialog-provider-rows dialog)))))))
@@ -1620,4 +1619,3 @@ GATEWAY-HTTP-SESSION-REQUEST takes them."
                                     model.http-token :raw raw :stream stream
                                     :read-timeout read-timeout)))
 
-;;; --- HTTP control senders ---------------------------------------------------

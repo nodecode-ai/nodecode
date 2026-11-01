@@ -4,6 +4,7 @@
 
 (in-package #:nodecode.evolved)
 
+;;; --- rendering ----------------------------------------------------------
 
 (defun note-turn-activity (model verb kind &optional (now (get-internal-real-time)))
   "Stamp VERB, of KIND, as what MODEL's running turn is on — the live bar's
@@ -48,8 +49,7 @@ summed — or NIL when no tokens exist."
   ;;
   ;; The text is USAGE-METER-TEXT, the one spelling of a turn's counts, so the
   ;; bar and /context can never disagree about the numbers.
-  (when text
-    (make-seg :text text :tone :muted :dim t)))
+  (when text (seg text :muted :dim t)))
 
 (defun live-usage-meter-segs (model)
   "Developer's live token meter, plus context-pressure warnings in either viewport."
@@ -78,9 +78,8 @@ summed — or NIL when no tokens exist."
         (append (and meter (list meter))
                 (when (and percent (>= percent 75)) ; Zig ctx warn 75, danger 90
                   (let ((danger (>= percent 90)))
-                    (list (make-seg :text " · ")
-                          (make-seg :text (format nil "ctx ~d%" percent)
-                                    :tone (if danger :danger :muted) :dim (not danger))))))))))
+                    (list (seg " · ")
+                          (seg (format nil "ctx ~d%" percent) (if danger :danger :muted) :dim (not danger))))))))))
 
 (defun model-names-provider-p (provider model-id &aux (end (length provider)))
   "Whether MODEL-ID starts with PROVIDER's name and a separator --
@@ -147,10 +146,6 @@ nothing."
                          (split-lines reason))
                  width)))
 
-(defmacro seg (text &optional tone &rest options)
-  "A MAKE-SEG of TEXT in TONE, OPTIONS its other keys: the positional spelling
-for the many bars and rows that paint one run of text in one tone."
-  `(make-seg :text ,text :tone ,tone ,@options))
 
 (defun run-lift (model over &aux (block (find-if (lambda (row) (and (tool-group-p row) (live-run-rows row)))
                                                  (seventh (chat-model-projection-cache model))
@@ -210,16 +205,12 @@ attaching to it would paint it."
                  (values (status-mark elapsed-ms (second activity)) (first activity) nil)
                  (values (status-mark elapsed-ms :wait) "waiting on the model"
                          (and activity (- elapsed-ms activity-ms)))))
-           (quiet-segs (quiet-ms)
-             (and quiet-ms
-                  (list (make-seg :text (format nil " · quiet ~a" (format-turn-elapsed quiet-ms))
-                                  :tone :muted))))
-           (elapsed-segs (elapsed-ms)
+           (elapsed-segs (elapsed-ms &optional (label ""))
              ;; After the verb: the bar's first word is what the turn is
              ;; doing, and `11:05' at its head read as a time of day.
+             ;; LABEL names a quiet's elapse: ` · quiet 4.0s'.
              (and elapsed-ms
-                  (list (make-seg :text (format nil " · ~a" (format-turn-elapsed elapsed-ms))
-                                  :tone :muted))))
+                  (list (seg (format nil " · ~a~a" label (format-turn-elapsed elapsed-ms)) :muted))))
            (bar-segs (mark mark-tone head head-tone &rest tails)
              ;; The mark in the gutter where ▸ and ■ stand, set flush against
              ;; the one space before the label lane, since a spinner frame is
@@ -227,12 +218,11 @@ attaching to it would paint it."
              ;; reads as the next line of the trail. Its mark sat in the label
              ;; lane and its words on the content rail, nine cells apart.
              (apply #'append
-                    (list (make-seg :text (make-string (max 0 (- (nth-value 2 (body-gutter :disclosure))
-                                                                 1 (text-display-width mark)))
-                                                       :initial-element #\Space))
-                          (make-seg :text mark :tone mark-tone)
-                          (make-seg :text " "))
-                    (list (make-seg :text head :tone head-tone))
+                    (list (seg (make-string (max 0 (- (nth-value 2 (body-gutter :disclosure)) 1 (text-display-width mark)))
+                                            :initial-element #\Space))
+                          (seg mark mark-tone)
+                          (seg " "))
+                    (list (seg head head-tone))
                     tails))
            (retry-segs (retry verb-seg elapsed-ms &rest tails)
              ;; A retry in the tool amber, mark and head, then who answered it,
@@ -244,20 +234,16 @@ attaching to it would paint it."
                (let ((status (getf retry :status)))
                  (apply #'bar-segs (status-mark elapsed-ms :wait) :tool "" :foreground
                         (list (funcall verb-seg head :tool))
-                        (and source (list (make-seg :text " · " :tone :muted)
-                                          (make-seg :text source :tone :foreground)))
+                        (and source (list (seg " · " :muted) (seg source :foreground)))
                         (append tails
                                 (list (and status (or (= status 429) (>= status 500))
-                                           (list (make-seg :text " · " :tone :muted)
-                                                 (hover-seg model "/models to switch"
-                                                            (cons :command "models"))))))))))
+                                           (list (seg " · " :muted)
+                                                 (hover-seg model "/models to switch" (cons :command "models"))))))))))
            (stop-key (segs)
              ;; Esc, the fixed stop key, as a filled cap three columns after
              ;; the bar's own words. Whole or not at all: a bar too narrow
              ;; for it keeps its own words.
-             (let ((key (list (make-seg :text "   ")
-                              (make-seg :text " esc " :tone :key-chip)
-                              (make-seg :text " stop" :tone :muted))))
+             (let ((key (list (seg "   ") (seg " esc " :key-chip) (seg " stop" :muted))))
                (if (<= (+ (segs-display-width segs) (segs-display-width key)) width)
                    (append segs key)
                    segs)))
@@ -301,8 +287,7 @@ attaching to it would paint it."
                      (retry (bar-retry model))
                      (words (if stopping "stopping…" verb))
                      (verb-seg (lambda (text tone)
-                                 (make-seg :text text :tone tone :link :status-hint
-                                           :underline (eq :status-hint (chat-model-hover-target model)))))
+                                 (seg text tone :link :status-hint :underline (eq :status-hint (chat-model-hover-target model)))))
                      (elapsed (elapsed-segs (and started elapsed-ms))))
                 (bar-row
                  ;; Esc stops the turn only while no dialog holds the keys:
@@ -313,7 +298,7 @@ attaching to it would paint it."
                               (retry-segs retry verb-seg elapsed-ms elapsed (live-usage-meter-segs model))
                               (bar-segs mark :foreground "" :foreground
                                         (cons (funcall verb-seg words :foreground) elapsed)
-                                        (quiet-segs (and (not stopping) quiet))
+                                        (elapsed-segs (and (not stopping) quiet) "quiet ")
                                         (live-usage-meter-segs model))))))))))))
 
 ;;; --- the background-process band ---------------------------------------------
@@ -336,8 +321,7 @@ attaching to it would paint it."
   ;; (SEGS-TEXT) — clipped to WIDTH first, so both lanes see the same cut —
   ;; instead of being re-concatenated beside them, so it cannot become a
   ;; second authority on what the row says.
-  (let ((segs (clip-segs (cons (make-seg :text lead) segs) width
-                          :mark "…")))
+  (let ((segs (clip-segs (cons (seg lead) segs) width :mark "…")))
     (values (render-row '() segs bg width)
             (segs-text segs))))
 
@@ -374,14 +358,12 @@ clock is)."
               (cond ((bg-row-stopping row)
                      (list (make-seg :text "  stopping…" :tone :muted :dim t)))
                     ((band-row-stoppable-p row)
-                     (list (make-seg :text "  ")
-                           (seg "✕" (if stop-hovered :danger :muted) :dim (not stop-hovered)))))))))
+                     (list (seg "  ") (seg "✕" (if stop-hovered :danger :muted) :dim (not stop-hovered)))))))))
 (defun band-first-row (row segs room width bg stop-hovered)
   "An exec's first band row: the lead, the mark, SEGS -- the command -- padded
 to ROOM columns, then BAND-ROW-TAIL-SEGS. => (values PAINTED PLAIN)."
   (chrome-row +band-lead+
-              (append (list (seg (background-band-mark row (get-internal-real-time)) :muted)
-                            (make-seg :text " "))
+              (append (list (seg (background-band-mark row (get-internal-real-time)) :muted) (seg " "))
                       segs
                       (list (seg (format nil "~va" (max 0 (- room (segs-display-width segs))) "")))
                       (band-row-tail-segs row stop-hovered width))
@@ -442,9 +424,8 @@ when EXPANDABLE. => (values PAINTED-LIST PLAIN-LIST), NIL before any output."
              ;; The gutter undimmed muted -- the zig marker_style -- the body dim.
              (multiple-value-bind (line plain)
                  (chrome-row (make-string (if gutter column (+ column 2)) :initial-element #\Space)
-                             (append (and gutter (list (make-seg :text gutter :tone :muted)))
-                                     (list (make-seg :text (take-display-prefix text (max 1 (- width column 2)))
-                                                     :tone :muted :dim t)))
+                             (append (and gutter (list (seg gutter :muted)))
+                                     (list (seg (take-display-prefix text (max 1 (- width column 2))) :muted :dim t)))
                              bg width)
                (push line painted)
                (push plain plains))
@@ -761,4 +742,3 @@ gone, the home screen stands; T when it did, so the `a' is spent."
            t)
           (t (editor-insert editor "b") nil))))
 
-;;; --- the fact block -------------------------------------------------------

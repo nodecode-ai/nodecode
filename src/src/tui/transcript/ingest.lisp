@@ -4,6 +4,7 @@
 
 (in-package #:nodecode.evolved)
 
+;;; --- ingest: streaming --------------------------------------------------
 
 (defun end-thinking (row)
   "Stop ROW's thinking clock: a :REASONING row that opened on a live delta
@@ -1011,4 +1012,3 @@ arrives wrapped in blank lines or padding spaces must not out-pad the block
 padding policy that owns the transcript's vertical rhythm."
   (nlk:trimmed (or text "")))
 
-;;; --- display policy: logical lines ----------------------------------------

@@ -383,14 +383,14 @@ renderer, the program loop.")
    #:sh #:$ #:edit #:write-file #:look
    ;; --- what a tool call did (turn.lisp): the record a verb stamps on the
    ;; result fact of the call it runs under — a cell's verb names itself
-   ;; to the transcript this way (activity.lisp) — and whether it failed,
+   ;; to the transcript this way (tool-summary.lisp) — and whether it failed,
    ;; the mark a tool's own verdict or a hook's veto puts on that fact ---
    #:receipt #:failure
    ;; --- what a call did, in words: the classifier the transcript and a
    ;; channel card both read — a title (`Read src/x.lisp'), the live verb a
    ;; bar or card shows (`reading src/x.lisp'), the entries a group counts,
    ;; whether a call is routine enough to fold into a run, and the one
-   ;; compact token count (activity.lisp) ---
+   ;; compact token count (tool-summary.lisp) ---
    #:tool-arguments-activity #:tool-activity-verb #:activity-title
    #:format-token-count
    ;; --- what a turn ran on and spent, in the finish divider's words: a
@@ -411,7 +411,7 @@ renderer, the program loop.")
    #:image-media-type #:*image-max-bytes* #:display-fact
    ;; --- around-hooks, inherited from the kernel (hook.lisp) ---
    #:*hooks* #:hook #:define-hook #:unhook #:observer
-   ;; --- one cell, declared (organism/cell.lisp): the composition DSL
+   ;; --- one cell, declared (organism/cell-dsl.lisp): the composition DSL
    ;; over the primitives, and the generic registration scope under it that
    ;; makes a stop complete, idempotent and free after a failed start ---
    #:define-cell #:starting #:on-stop

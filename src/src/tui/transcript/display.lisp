@@ -4,6 +4,7 @@
 
 (in-package #:nodecode.evolved)
 
+;;; --- display policy: logical lines ----------------------------------------
 ;;; Row semantics to renderable rows in two steps, mirroring the Zig layers:
 ;;; a row becomes LOGICAL LINES (text + styled spans + gutter role), and the
 ;;; layout pass wraps each logical line at the frame width through the one
@@ -322,7 +323,7 @@ else."
 
 (defun span-target-uri (target)
   "The URI for a fact's TARGET — (:PATH . STRING) or (:URL . STRING), the
-shape activity.lisp hands a title — or NIL."
+shape tool-summary.lisp hands a title — or NIL."
   ;; A fact names its own address, so a path here is taken at its word; only
   ;; prose has to look like one first.
   (when (consp target)
@@ -421,4 +422,3 @@ there."
            (path-shaped-p (subseq text pos end))
            end))))
 
-;;; --- markdown classification (Zig render_plan.zig subset) ------------------

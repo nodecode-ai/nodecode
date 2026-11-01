@@ -1673,8 +1673,7 @@ THUNK-VALUE...)."
   ;; The copy is a keyed table, since EVAL-FORM-PRINTED reads and writes it
   ;; by key; the seed is compared by identity afterwards, so a snippet that
   ;; wrote nothing captures nothing.
-  (bind ((key (or (and *current-durable-turn* (nlk:durable-turn-session-id *current-durable-turn*))
-                  "local"))
+  (bind ((key (or (eval-session-id) "local"))
          (seed-history (bt2:with-lock-held (*snippet-settle-lock*) (snippet-history key)))
          (*snippet-histories* (alexandria:plist-hash-table (list key seed-history) :test #'equal))
          (answers (multiple-value-list (funcall thunk)))

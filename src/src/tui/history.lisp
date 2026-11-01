@@ -4,6 +4,7 @@
 
 (in-package #:nodecode.evolved)
 
+;;; --- help dialog -------------------------------------------------------------
 ;;; The Zig help_dialog.zig distilled onto the picker: the slash-command
 ;;; catalog (label + description) followed by the keybind listing, each
 ;;; keybind row showing the currently configured chord from the resolved
@@ -325,4 +326,3 @@ and the dialog that requested them. The store remains the history authority.")
                   #'install-prompt-history-rows))))
   nil)
 
-;;; --- mouse suite -------------------------------------------------------------

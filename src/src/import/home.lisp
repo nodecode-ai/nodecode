@@ -28,7 +28,7 @@
 ;;;;                     own separator lines; a MEMORY.md of links is the
 ;;;;                     home's hot index instead
 ;;;;   a use ledger      usage.jsonl and sightings.jsonl, line by line
-;;;;   a conversation    sessions.lisp, given the roots
+;;;;   a conversation    transcripts.lisp, given the roots
 ;;;;
 ;;;; and the bounds, because this runs on a first frame: a depth, a file
 ;;;; count, a byte cap per file, and the directories nobody's settings live

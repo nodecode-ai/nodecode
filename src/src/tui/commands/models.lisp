@@ -4,18 +4,13 @@
 
 (in-package #:nodecode.evolved)
 
+;;; --- HTTP control senders ---------------------------------------------------
 ;;; Thin typed callers over the gateway's request-reply control ops; each
 ;;; returns the decoded JSON object (GATEWAY-HTTP-ERROR on refusal). A dialog
 ;;; or slash surface composes these; nothing here renders. Every one takes the
 ;;; MODEL its caller already holds and rides GATEWAY-MODEL-HTTP-CALL, so the
 ;;; port/token pair is named once, in that function, and never plumbed by
 ;;; hand at a call site.
-
-(defun gateway-sentence (model path body)
-  "POST BODY, an object, to PATH for MODEL => the sentence the organism
-answered, or why it refused."
-  (handler-case (answer-text (gateway-model-http-call model :post path body))
-    (gateway-http-error (refusal) (gateway-http-error-detail refusal))))
 
 (defun session-control-call (model method op &key body (session-id model.session-id))
   "One control call under a session's path: METHOD on
@@ -45,7 +40,7 @@ is named — with BODY (a JSON object, or NIL)."
 ;;; verbatim.
 
 ;;; --- /models ---------------------------------------------------------------
-;;; The wizard state machine lives in ui.lisp (CONNECT-DIALOG); this op
+;;; The wizard state machine lives in tui/dialog.lisp (CONNECT-DIALOG); this op
 ;;; injects the transport-facing halves: the provider rows, the credential
 ;;; sink (SAVE-PROVIDER-API-KEY into the shared auth.json — client-side on
 ;;; both shells, exactly like the Zig persistConnectDialogApiKey), and what
@@ -218,17 +213,16 @@ the list on both shells)."
                               rows)))
           ;; ... save that its cell is still starting, which is why it is
           ;; not among the connected yet
-          (if held
-              (progn
-                (setf (picker-row-value held) (list* :install offer (picker-row-value held)))
-                (when (getf offer :starting)
-                  (setf (picker-row-detail held)
-                        (let ((detail (picker-row-detail held)))
-                          (format nil "~@[~a  ~]starting" (and (plusp (length detail)) detail))))))
-              (push (make-picker-row :label (getf offer :name)
-                                     :detail (if (getf offer :starting) "starting" "")
-                                     :value (list :provider id :install offer))
-                    rows))))
+          (cond (held
+                 (setf (picker-row-value held) (list* :install offer (picker-row-value held)))
+                 (when (getf offer :starting)
+                   (setf (picker-row-detail held)
+                         (let ((detail (picker-row-detail held)))
+                           (format nil "~@[~a  ~]starting" (and (plusp (length detail)) detail))))))
+                (t (push (make-picker-row :label (getf offer :name)
+                                          :detail (if (getf offer :starting) "starting" "")
+                                          :value (list :provider id :install offer))
+                         rows)))))
       (let* ((sorted (stable-sort (sort rows #'string-lessp :key #'provider)
                                   (lambda (a b &aux (at (pin a)) (bt (pin b)))
                                     (cond ((and at bt) (< at bt))
@@ -642,8 +636,7 @@ dialog took the screen meanwhile."
                                                                (list (json-object "provider" (first tokens)
                                                                                   "model" (second tokens))))
                                                        'vector))))
-          :then (lambda (model picked)
-                  (declare (ignore picked))
+          :then (lambda-ignoring (model picked)
                   (reopen-models-backup-tab model nil))))
         (:test
          (show-status model "Testing backups…")
@@ -716,4 +709,3 @@ the local models above them, on TAB: main, aux or decider (+MODELS-TABS+)."
     (start-provider-models-refresh model))
   (values nil nil))
 
-;;; --- /usage ------------------------------------------------------------------

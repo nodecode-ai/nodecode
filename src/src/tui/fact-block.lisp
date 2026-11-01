@@ -4,6 +4,7 @@
 
 (in-package #:nodecode.evolved)
 
+;;; --- the fact block -------------------------------------------------------
 ;;;
 ;;; What the landing screen is for is orientation, and the facts worth
 ;;; orienting by are the ones nothing else on the screen carries: which home
@@ -220,42 +221,34 @@ absolute-row placement."
                (blank ()
                  (push "" lines)
                  (push "" plains))
-               (emit (&rest segs)
-                 (emit-at (max 0 (floor (- width (segs-display-width segs)) 2)) segs)))
+               (centred (columns) (max 0 (floor (- width columns) 2)))
+               (emit (segs &optional command) (emit-at (centred (segs-display-width segs)) segs command)))
           (dotimes (i top-pad) (blank))
           (loop with heat = (mark-glow-heat model)
                 for line in +home-mark+
                 for row from 0
-                for segs = (mark-line-segs line row heat)
-                do (emit-at (max 0 (floor (- width (segs-display-width segs)) 2)) segs :mark))
+                do (emit (mark-line-segs line row heat) :mark))
           ;; The semantic tag belongs directly under the logo. Commit metadata
           ;; remains in `nodecode --version`; both read the same build identity.
-          (emit (make-seg :text (format nil "v~a" (subseq *user-agent-version* 0
-                                                         (position #\+ *user-agent-version*)))
-                          :tone :muted))
+          (emit (list (seg (format nil "v~a" (subseq *user-agent-version* 0 (position #\+ *user-agent-version*)))
+                           :muted)))
           (blank)
           ;; The shell's tip (HOME-TIP), the one thing to type in it brighter
           ;; than the words around it.
           (destructuring-bind (before typed after) (home-tip model)
-            (emit (make-seg :text "Tip " :tone :tool)
-                  (make-seg :text before :tone :muted)
-                  (make-seg :text typed :tone :chrome)
-                  (make-seg :text after :tone :muted)))
+            (emit (list (seg "Tip " :tool) (seg before :muted) (seg typed :chrome) (seg after :muted))))
           ;; The fact block centres as one block, not line by line: a
           ;; column of labels only reads as a column when every row shares
           ;; one left edge.
           (when meta
             (blank)
-            (let ((pad (max 0 (floor (- width
-                                        +home-meta-label-width+
-                                        (loop for row in meta
-                                              maximize (text-display-width (second row))))
-                                     2))))
+            (let ((pad (centred (+ +home-meta-label-width+
+                                   (loop for row in meta maximize (text-display-width (second row)))))))
               (loop for (label value tone command) in meta
                     do (emit-at pad
-                                (list (make-seg :text (format nil "~va" +home-meta-label-width+ (or label ""))
-                                                :tone (if (eq tone :danger) :danger :muted))
-                                      (make-seg :text value :tone tone))
+                                (list (seg (format nil "~va" +home-meta-label-width+ (or label ""))
+                                           (if (eq tone :danger) :danger :muted))
+                                      (seg value tone))
                                 command)))))
       ;; Fill the band exactly: bottom-anchored full content is
       ;; top-anchored content, and rows land on their Zig absolute rows.
@@ -719,4 +712,3 @@ follow-bottom pin from where the window landed."
   (forget-band-window-hold (chat-model-band model))
   (band-window-goto-bottom (chat-model-band model)))
 
-;;; --- keyboard list surfaces ------------------------------------------------

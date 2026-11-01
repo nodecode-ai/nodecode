@@ -4,6 +4,7 @@
 
 (in-package #:nodecode.evolved)
 
+;;; --- /tree files preview + restore confirm stage --------------------------
 ;;; The Zig checkpoint chrome: the selected /tree row lazily fetches and
 ;;; shows its changed files ("3 file changes: a.zig, b.zig, c.zig, +2
 ;;; more"), and picking a user-prompt row interposes the two-option
@@ -184,11 +185,9 @@ else NIL."
 (defun metro-span-ms (entry)
   "Listing ENTRY's span in milliseconds, its STARTED_AT to its ENDED_AT; NIL
 while it has no end (an absent end is no zero)."
-  (let ((start (json-value entry :string "started_at"))
-        (end (json-value entry :string "ended_at")))
-    (let ((from (and start (iso-8601-ms start)))
-          (to (and end (iso-8601-ms end))))
-      (and from to (max 0 (- to from))))))
+  (let ((from (when-let (start (json-value entry :string "started_at")) (iso-8601-ms start)))
+        (to (when-let (end (json-value entry :string "ended_at")) (iso-8601-ms end))))
+    (and from to (max 0 (- to from)))))
 
 (defun metro-ask-key (node)
   "The opening of NODE's ask a retry repeats: its first 22 characters."
@@ -240,11 +239,10 @@ again after). A recap whose turn the listing does not carry stays a node.
     ;; puts the head on its turn, the one the operator reads it under.
     (dolist (entry entries)
       (when (and (checkpoint-turn-entry-p entry) (metro-recap-p entry))
-        (let ((node (gethash (up entry) by-id)))
-          (when node
-            (setf (getf node :recaps) (append (getf node :recaps) (list entry)))
-            (when (eq t (gethash "is_head" entry))
-              (setf (getf node :head-p) t)))))))
+        (when-let (node (gethash (up entry) by-id))
+          (setf (getf node :recaps) (append (getf node :recaps) (list entry)))
+          (when (eq t (gethash "is_head" entry))
+            (setf (getf node :head-p) t))))))
   (let ((nodes (stable-sort (nreverse nodes) #'< :key (lambda (node) (getf node :position)))))
     ;; A cancelled ask whose parent was asked the same again later says so.
     (dolist (node nodes)
@@ -287,15 +285,13 @@ ended above the row it starts on."
              (setf (gethash id holder) line)))
   (setf lines (nreverse lines))
   (dolist (line lines)
-    (let ((ids (setf (metro-line-nodes line) (reverse (metro-line-nodes line)))))
-      (when ids
-        (setf (metro-line-start line) (gethash (first ids) index)
-              (metro-line-end line) (gethash (car (last ids)) index)))))
+    (when-let (ids (setf (metro-line-nodes line) (reverse (metro-line-nodes line))))
+      (setf (metro-line-start line) (gethash (first ids) index)
+            (metro-line-end line) (gethash (car (last ids)) index))))
   ;; The rail a line left runs on down to the row the line starts on.
   (dolist (line (rest lines))
-    (let ((up (and (metro-line-from line) (gethash (metro-line-from line) holder))))
-      (when up
-        (setf (metro-line-end up) (max (metro-line-end up) (metro-line-start line))))))
+    (when-let (up (and (metro-line-from line) (gethash (metro-line-from line) holder)))
+      (setf (metro-line-end up) (max (metro-line-end up) (metro-line-start line)))))
   (let ((ends (make-array 1 :adjustable t :fill-pointer 1
                             :initial-element (metro-line-end main))))
     (dolist (line (rest lines))
@@ -356,10 +352,13 @@ under row I instead: the rails running on below it. HEAD is the head's id."
 
 (defun metro-label-text (node)
   "NODE's words on a row: its ask's excerpt, or a cron fire's job and minute."
-  (let ((cron (getf node :cron)))
-    (if cron
-        (format nil "cron ~a · fired ~a" (car cron) (cdr cron))
-        (checkpoint-row-excerpt (gethash "prompt" (getf node :entry))))))
+  (if-let (cron (getf node :cron))
+    (format nil "cron ~a · fired ~a" (car cron) (cdr cron))
+    (checkpoint-row-excerpt (gethash "prompt" (getf node :entry)))))
+
+(defun selection-edge-seg (selected plain)
+  "A picker row's left edge: the accent bar on the SELECTED row, a PLAIN blank on the rest."
+  (if selected (make-seg :text "▌" :tone :dialog-accent) (make-seg :text " " :tone plain)))
 
 (defun metro-row (left label suffix words columns room selected)
   "One painted /tree row ROOM wide: LEFT, then LABEL -- SUFFIX after it, the
@@ -411,9 +410,7 @@ selected row carries ROW's files chrome after the ask."
            (steers (getf node :steers))
            (cron (getf node :cron))
            (left (append
-                  (list (if selected
-                            (make-seg :text "▌" :tone :dialog-accent)
-                            (make-seg :text " " :tone plain))
+                  (list (selection-edge-seg selected plain)
                         (make-seg :text " " :tone plain)
                         (make-seg :text (if (and clock (or selected (not repeat))) clock "     ")
                                   :tone (if selected :system quiet))
@@ -465,9 +462,7 @@ asked to do, and flush right how long the call ran."
   (lambda (selected room)
     (let* ((plain (if selected :system :muted))
            (span (metro-span-ms entry))
-           (left (append (list (if selected
-                                   (make-seg :text "▌" :tone :dialog-accent)
-                                   (make-seg :text " " :tone plain))
+           (left (append (list (selection-edge-seg selected plain)
                                (make-seg :text "        " :tone plain))
                          (metro-cell-segs cells)
                          (list (make-seg :text " " :tone plain)
@@ -486,13 +481,11 @@ asked to do, and flush right how long the call ran."
 pass over it -- of the rails running on (CELLS), a pen, and what the recap
 said, or when it ran while the listing carries no words of it."
   (let* ((said (or (json-value entry :text "answer")
-                   (metro-clock (let ((start (json-value entry :string "started_at")))
-                                  (and start (iso-8601-ms start))))
+                   (metro-clock (when-let (start (json-value entry :string "started_at")) (iso-8601-ms start)))
                    ""))
          (row (make-picker-row :label (format nil "recap ~a" said) :heading t)))
     (setf (picker-row-paint row)
-          (lambda (selected room)
-            (declare (ignore selected))
+          (lambda-ignoring (selected room)
             (values (clip-segs (append (list (make-seg :text "         " :tone :muted))
                                        (metro-cell-segs cells)
                                        (list (make-seg :text " " :tone :muted)
@@ -550,10 +543,9 @@ with the head's line where the move leaves it -- the turn tagged `here'
 line `leaves head', each it puts on `joins head', the head it lands on `HEAD'
 -- then a blank and the move in a sentence, two rows, so every option draws as
 many rows. => painted rows, ROOM wide; NIL for a turn the graph does not hold."
-  (let* ((nodes (getf state :nodes))
-         (by-id (getf state :by-id))
-         (node (gethash (getf value :turn-id) by-id)))
-    (when node
+  (let ((nodes (getf state :nodes))
+        (by-id (getf state :by-id)))
+    (when-let (node (gethash (getf value :turn-id) by-id))
       (let* ((continue (eq (getf option :move) :continue))
              (head (if continue (getf node :id) (getf node :parent)))
              (chain (metro-chain by-id head))
@@ -930,4 +922,3 @@ the search's, not the fold's. => T when the fold moved."
           ((< diff 60) "just now")
           (t (format nil "~a ago" (nlk:duration-text diff :coarse t))))))
 
-;;; --- the running sessions ----------------------------------------------------

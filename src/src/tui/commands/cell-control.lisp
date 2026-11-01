@@ -4,6 +4,7 @@
 
 (in-package #:nodecode.evolved)
 
+;;; --- the gateway's cell commands -----------------------------------------
 ;;; A shell runs its builtins in its own image and a cell's command where
 ;;; the cell runs: it reads the catalog the gateway serves (GET
 ;;; /api/gateway/slash, whose builtins SET-GATEWAY-COMMANDS drops) and runs one
@@ -163,4 +164,3 @@ nothing."
           return (open-answer-dialog model answer :line line :under under
                                                   :selection selection :label label)))
 
-;;; --- headless slash execution ---------------------------------------------

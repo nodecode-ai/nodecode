@@ -4,6 +4,7 @@
 
 (in-package #:nodecode.evolved)
 
+;;; --- workspace diff documents (tool_result workspace_diff metadata) ---------
 ;;; The line-diff document over a tool call's workspace bracket. The producer
 ;;; (snapshot.lisp WORKSPACE-DIFF-DOCUMENT) diffs the call's pre/post capture
 ;;; trees and ships bounded per-file unified patches in the result's display
@@ -178,11 +179,12 @@ rows dim muted."
                                                        :diff-added-word
                                                        :diff-removed-word)))))))))
 
-(defun append-row-diff-stats (lline row &aux (files (json-array row.metadata "workspace_diff" "files")))
-  "The Zig \" +N -M\" header stats over the lines every file call ROW changed
-added and removed, onto LLINE -- nothing for a call that changed none."
-  (when (plusp (length files))
-    (loop for file across files
+(defun append-row-diff-stats (lline &rest rows &aux (files (loop for row in rows
+                                                                  append (coerce (json-array row.metadata "workspace_diff" "files") 'list))))
+  "The Zig \" +N -M\" header stats over the lines every file the calls ROWS changed
+added and removed, onto LLINE -- nothing when they changed none."
+  (when files
+    (loop for file in files
           sum (or (json-value file :integer "added") 0) into added
           sum (or (json-value file :integer "removed") 0) into removed
           finally (append-lline-run lline (format nil " +~d" added) :tone :diff-added)
@@ -209,8 +211,7 @@ of it while the header (KEY) is clicked open, else its first
          (hidden (- (length entries) (length shown))))
     (append (mapcar (lambda (entry) (diff-body-lline entry gutter)) shown)
             (when (plusp hidden)
-              (let ((more (make-lline :text (make-string (if (plusp gutter) (+ gutter 3) 2)
-                                                         :initial-element #\Space)
+              (let ((more (make-lline :text (spaces (if (plusp gutter) (+ gutter 3) 2))
                                       :tone :muted :role :tool-cont)))
                 (append-lline-run more (format nil "… +~d line~:p" hidden) :tone :muted)
                 (dolist (span (lline-spans more)) (setf (mspan-link span) key))
@@ -232,8 +233,7 @@ its diff and opening its own full diff (FILE-DIFF-LLINES)."
                             ;; so every path starts on it, under the words of the
                             ;; call that wrote it.
                             (hang (- *transcript-detail-column* (nth-value 2 (body-gutter :prose))))
-                            (header (make-lline :text (make-string (max 0 (- hang (length added) (length removed) 2))
-                                                                   :initial-element #\Space)
+                            (header (make-lline :text (spaces (- hang (length added) (length removed) 2))
                                                 :tone :muted :hang hang)))
                        (append-lline-run header added :tone :diff-added)
                        (append-lline-run header (format nil " ~a" removed) :tone :diff-removed)
@@ -298,7 +298,7 @@ produced it for a fact that carries bytes and no path."
 
 (defun image-card-title-lline (image row)
   "The card's title, in the shape every other tool card's has: the :IMAGE
-family's own verb (activity.lisp *ACTIVITY-FAMILIES* — `Viewed', `Viewing'
+family's own verb (tool-summary.lisp *ACTIVITY-FAMILIES* — `Viewed', `Viewing'
 while the call runs) over the image's name, then the status word a card ends
 with when it is not simply complete."
   ;; The whole path this is the name of lives in the caption under the
@@ -679,8 +679,7 @@ mark: its metadata says `bare'."
                     ;; off the canvas, so the band would read as blank rows.
                     (let* ((hang (- *transcript-detail-column* (nth-value 2 (body-gutter :prose))))
                            (line (make-lline :text "" :tone :system :hang hang))
-                           (gap (make-string (max 1 (- hang (text-display-width label)))
-                                             :initial-element #\Space)))
+                           (gap (spaces (max 1 (- hang (text-display-width label))))))
                       (append-lline-run line label :bold t)
                       (append-lline-run line gap)
                       (list (append-lline-run line (nlk:one-line text))))
@@ -895,4 +894,3 @@ sessionsDialogPreview substitution at the render-plan seam)."
       (cdr preview)
       (chat-model-state model)))
 
-;;; --- the group pass ----------------------------------------------------------

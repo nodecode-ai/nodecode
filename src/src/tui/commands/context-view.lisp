@@ -4,6 +4,7 @@
 
 (in-package #:nodecode.evolved)
 
+;;; --- /context as a picture --------------------------------------------------
 ;;; A shell paints /context as a docked picker: the window as a grid of
 ;;; cells, each part of the prompt in its own tone, the free room and the
 ;;; stretch past the eviction line under them, and the parts as the list
@@ -678,4 +679,3 @@ resubscribe — the replay that answers rebuilds the transcript."
                             :direction direction)
   nil)
 
-;;; --- /tree files preview + restore confirm stage --------------------------

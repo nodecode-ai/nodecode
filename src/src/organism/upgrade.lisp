@@ -165,7 +165,8 @@ lowercase strings, and the .asd files that did not read."
 
 (defun hold-reason (entry old-body new-text &aux (key (first entry))
                                                  (operator (getf key :operator))
-                                                 (package (fourth entry)))
+                                                 (package (fourth entry))
+                                                 (new-body (subseq new-text (second entry) (third entry))))
   "Why ENTRY, a definition of NEW-TEXT whose previous text was OLD-BODY (NIL
 when new), cannot go live in this image -- or NIL when it can."
   (cond ((not (packagep package))
@@ -173,15 +174,11 @@ when new), cannot go live in this image -- or NIL when it can."
         ((null old-body) nil)
         ((member (getf key :name) *upgrade-hold-names* :test #'string=)
          "the store's schema is applied at open, not at eval")
-        ((and (string= operator "DEFPACKAGE")
-              (defpackage-export-only-change-p
-               old-body (subseq new-text (second entry) (third entry)) package))
+        ((and (string= operator "DEFPACKAGE") (defpackage-export-only-change-p old-body new-body package))
          nil)
         ((cdr (assoc operator *upgrade-hold-reasons* :test #'string=)))
         ((and (string= operator "DEFGENERIC")
-              (not (equal (form-lambda-list old-body package)
-                          (form-lambda-list (subseq new-text (second entry) (third entry))
-                                            package))))
+              (not (equal (form-lambda-list old-body package) (form-lambda-list new-body package))))
          "a generic's lambda list moved under its methods")))
 
 (defun inline-names (texts &aux (names '()))
@@ -246,18 +243,17 @@ image, evaluating nothing."
              (inline (inline-names (loop for file in new-files collect (gethash file texts)))))
         (dolist (file new-files)
           (let* ((new-text (gethash file texts))
-                 (old-text (gethash file old-texts)))
+                 (old-text (gethash file old-texts))
+                 (same (and old-text (string= old-text new-text))))
             (if (member (file-package-name new-text) absent :test #'string=)
-                (unless (and old-text (string= old-text new-text))
-                  (push file unloaded))
+                (unless same (push file unloaded))
             (handler-case
                 (multiple-value-bind (entries lost residue after)
-                    (if (and old-text (string= old-text new-text))
+                    (if same
                         (values nil nil nil (toplevel-definitions new-text :read-eval t))
                         (definition-changes old-text new-text))
                   (setf (gethash file definitions) after)
-                  (unless (and old-text (string= old-text new-text))
-                    (if old-text (incf changed) (incf added)))
+                  (unless same (if old-text (incf changed) (incf added)))
                   (setf gone (append gone lost))
                   (when residue
                     (push (cons file "changes outside any definition are boot state") held))

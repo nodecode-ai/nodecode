@@ -4,9 +4,15 @@
 
 (in-package #:nodecode.evolved)
 
+;;; --- TUI model and generics ---------------------------------------------
 ;;; view and update are the terminal core's CLOS generics (term/message.lisp),
 ;;; so the organism can redefine how it presents itself and how it interprets
 ;;; input.
+
+(defmacro seg (text &optional tone &rest options)
+  "A MAKE-SEG of TEXT in TONE, OPTIONS its other keys: the positional spelling
+for the many bars and rows that paint one run of text in one tone."
+  `(make-seg :text ,text :tone ,tone ,@options))
 
 (defclass chat-model ()
   ((session-id :initarg :session-id :reader chat-model-session-id)
@@ -460,9 +466,8 @@ rows are no projection, and a row list with no entry here pins none."
   "The first content row past SPAN's prompt block: past the blank row after
 it — the unowned separator or the next block's canvas pad — which a pin's own
 canvas gap stands for."
-  (let ((next (and (< end window.count)
-                   (first (band-window-range window end (1+ end))))))
-    (+ end (if (and next (zerop (length (string-trim " " (plain-frame-row next))))) 1 0))))
+  (let ((next (and (< end window.count) (first (band-window-range window end (1+ end))))))
+    (+ end (if (and next (blank-band-row-p next)) 1 0))))
 
 (defun band-window-prompt-header (window span)
   "The prompt header's START, pinned ROWS, SPACER and omitted body rows."
@@ -674,8 +679,7 @@ an open dialog's docked panel."
   "Initialize terminal widgets without choosing the model's state owner."
   ;; Read real terminal dimensions so the alt-screen layout fills the window.
   (multiple-value-bind (term-w term-h) (nlt:terminal-size)
-    (setf (chat-model-term-width model) term-w)
-    (setf (chat-model-term-height model) term-h)
+    (setf (chat-model-term-width model) term-w (chat-model-term-height model) term-h)
     ;; The composer is the Zig box: text rows inside a filled rectangle,
     ;; no prompt glyph, the "Ready" placeholder (render_plan.zig
     ;; composer_ready_placeholder). The box grows with its content to the
@@ -820,12 +824,9 @@ bounded."
             (entries (acons key (alexandria:remove-from-plist result :failures) kept)))
        ;; Readably, an SBCL base-string prints as #A((29) BASE-CHAR . "...")
        ;; — twice the bytes and a syntax only this implementation reads.
-       (let ((*print-length* nil) (*print-level* nil)
-             (*print-circle* nil) (*print-pretty* nil)
-             (*print-readably* nil))
-         (nlk:write-file-atomically
-          path (prin1-to-string (subseq entries 0 (min (length entries)
-                                                        *composer-catalog-cache-workspaces*)))))))))
+       (nlk:write-file-atomically
+        path (write-to-string (subseq entries 0 (min (length entries) *composer-catalog-cache-workspaces*))
+                              :escape t :length nil :level nil :circle nil :pretty nil :readably nil))))))
 
 (defun install-composer-catalogs (model result)
   "Install a walk's RESULT — its plist — into MODEL: an answer takes its list
@@ -980,4 +981,3 @@ CATALOGS owns what an answered lane and a failed one each take)."
             (list (nlt:terminal-io-cmd #'nlt:request-truecolor)))
           (list (read-command-catalog-cmd model))))
 
-;;; --- rendering ----------------------------------------------------------

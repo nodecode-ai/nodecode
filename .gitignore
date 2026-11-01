@@ -106,7 +106,7 @@ testing/
 *.pid
 
 # every shipped cell: its source is nodecode-ai/cells, laid down here by
-# src/tools/pull-cells.sh at the pin in src/cells/bundle.json
+# src/tools/build/pull-cells.sh at the pin in src/cells/bundle.json
 /src/cells/*/
 
 # Internal notes and agent rules are kept outside the repository; a checkout

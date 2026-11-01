@@ -4,6 +4,7 @@
 
 (in-package #:nodecode.evolved)
 
+;;; --- the /models wizard -----------------------------------------------------
 ;;; src/tui/model/models_dialog.zig distilled onto the dialog slot: a
 ;;; four-step flow (provider list -> optional custom id -> API key -> a
 ;;; failure's result) with the runtime.zig handleConnectDialogKey key ladder.
@@ -115,15 +116,15 @@ slots the panel already reads."
           dialog.hint (or (getf spec :walk-hint) dialog.hint)))
   ;; The key step asks for the provider's key by name (`Paste your Google API
   ;; key.'), so the name no longer sits under the field.
-  (when (eq step :api-key)
-    (setf dialog.subtitle (format nil dialog.subtitle (connect-provider-name dialog)
-                                  (connect-dialog-key-page dialog))))
   ;; The address step asks for its blank by name, over the field that bears
-  ;; the name.
-  (when (eq step :address)
-    (let ((blank (first (connect-dialog-blanks dialog))))
-      (setf dialog.subtitle (format nil dialog.subtitle (connect-provider-name dialog) blank)
-            dialog.input-label blank)))
+  ;; the name. The check says how long it waits.
+  (when (eq step :address) (setf dialog.input-label (first (connect-dialog-blanks dialog))))
+  (when (member step '(:api-key :address :checking))
+    (setf dialog.subtitle (format nil dialog.subtitle (connect-provider-name dialog)
+                                  (ecase step
+                                    (:api-key (connect-dialog-key-page dialog))
+                                    (:address dialog.input-label)
+                                    (:checking *provider-models-fetch-timeout-seconds*)))))
   ;; The check says how long it waits and counts up to it, as the import's
   ;; does: a static `checking...' would read as a hang. The tick repaints
   ;; when the tenth shown moves.
@@ -135,9 +136,6 @@ slots the panel already reads."
                                 (declare (ignore model))
                                 (unless (equal now shown)
                                   (setf shown now))))))
-  (when (eq step :checking)
-    (setf dialog.subtitle (format nil dialog.subtitle (connect-provider-name dialog)
-                                  *provider-models-fetch-timeout-seconds*)))
   ;; The two text steps are the picker's input mode (a step with no
   ;; :INPUT-LABEL leaves it): the id step reopens on the id a failed save
   ;; returned from, under its rule line; the key step starts empty, under
@@ -186,7 +184,21 @@ while its cell starts, `waiting for the sign-in… 1.3s' on the sign-in step."
         (connect-dialog-retry dialog) nil
         (connect-dialog-blanks dialog) '()
         (connect-dialog-blank-values dialog) '()
+        (connect-dialog-result-message dialog) ""
         dialog.input ""))
+
+(defun connect-restart (dialog)
+  "Drop what DIALOG gathered and stand it on the provider list again."
+  (connect-clear-credential dialog)
+  (connect-enter-step dialog :provider))
+
+(defun connect-pick (model dialog choice &aux (on-success (connect-dialog-on-success dialog)))
+  "Close DIALOG on CHOICE, handed to its ON-SUCCESS."
+  (dismiss-dialog model (and on-success (lambda (model) (funcall on-success model choice)))))
+
+(defun connect-on-step-p (model dialog step)
+  "Whether DIALOG is still MODEL's open dialog, on STEP."
+  (and (eq dialog (chat-model-dialog model)) (eq step (connect-dialog-step dialog))))
 
 (defun connect-ask-blanks-or-key (dialog &aux (id (connect-dialog-provider-id dialog)))
   "Move DIALOG on to its provider's key, through an address step for each
@@ -205,14 +217,13 @@ the one it dials (CATALOG-ADDRESS-TEMPLATE)."
 provider's id, a provider's key. Any other row moves nothing."
   (when (or (getf value :custom) (getf value :provider))
     (connect-clear-credential dialog)
-    (if (getf value :custom)
-        (setf (connect-dialog-custom-p dialog) t)
-        (setf (connect-dialog-provider-id dialog) (getf value :provider)
-              (connect-dialog-provider-label dialog) (picker-row-label row)
-              (connect-dialog-key-page dialog) (getf value :key-page)))
-    (if (getf value :custom)
-        (connect-enter-step dialog :custom-provider)
-        (connect-ask-blanks-or-key dialog))))
+    (cond ((getf value :custom)
+           (setf (connect-dialog-custom-p dialog) t)
+           (connect-enter-step dialog :custom-provider))
+          (t (setf (connect-dialog-provider-id dialog) (getf value :provider)
+                   (connect-dialog-provider-label dialog) (picker-row-label row)
+                   (connect-dialog-key-page dialog) (getf value :key-page))
+             (connect-ask-blanks-or-key dialog)))))
 
 (defun connect-install (model dialog row &key key &aux (value (picker-row-value row))
                                                      (offer (getf value :install))
@@ -251,9 +262,7 @@ moved."
                                     (and (equal id (getf now :provider))
                                          (getf now :connected)))
                                   dialog.rows)))
-                (let ((on-success (connect-dialog-on-success dialog)))
-                  (dismiss-dialog model (and on-success
-                                             (lambda (model) (funcall on-success model id))))))
+                (connect-pick model dialog id))
                (t (connect-ask-key dialog row)))))
     (if (getf offer :installed)
         ;; in already, its provider not answering yet -- a sign-in Esc left
@@ -269,17 +278,14 @@ moved."
                     (lambda () (install-offered-cell model offer))
                     (lambda (model answer)
                       ;; Esc, or another dialog, moved the wizard on: the answer moves nothing
-                      (if (not (and (eq dialog (chat-model-dialog model))
-                                    (eq :installing (connect-dialog-step dialog))))
+                      (if (not (connect-on-step-p model dialog :installing))
                           :quiet
                           (let ((refused (or (off-loop-failure answer) (getf answer :refused))))
-                            (if refused
-                                (progn
-                                  (connect-clear-credential dialog)
-                                  (connect-enter-step dialog :provider)
-                                  (show-status model (format nil "~a was not installed: ~a" (getf offer :cell) refused)
-                                               :error-p t))
-                                (go-on model (getf answer :commands)))
+                            (cond (refused
+                                   (connect-restart dialog)
+                                   (show-status model (format nil "~a was not installed: ~a" (getf offer :cell) refused)
+                                                :error-p t))
+                                  (t (go-on model (getf answer :commands))))
                             (render-state model))))))))
   t)
 
@@ -290,12 +296,8 @@ operator to, and the device code it asks for there when it names one: =>
   ;; The code is the word after `code' that reads as one -- a digit in it, or
   ;; capitals around a dash: `enter the code ABCD-1234' or `NFGT-NHBJ', never
   ;; `send /openai-codex code ADDRESS' nor `Kimi Code sign-in'.
-  (let ((words (loop with start = nil
-                     for i from 0 to (length text)
-                     for blank = (or (= i (length text))
-                                     (member (char text i) '(#\Space #\Tab #\Newline #\Return)))
-                     if (and blank start) collect (subseq text start i) and do (setf start nil)
-                     else if (and (not blank) (null start)) do (setf start i))))
+  (let ((words (remove "" (uiop:split-string text :separator '(#\Space #\Tab #\Newline #\Return))
+                       :test #'string=)))
     (values (let ((url (find-if (lambda (word &aux (host (search "://" word)))
                                   ;; a loopback address is where the browser
                                   ;; comes back to, never where to sign in
@@ -328,7 +330,7 @@ answers yet.")
   "How long CONNECT-AWAIT-START waits between two reads of whether the cell
 has started.")
 
-(defun connect-await-start (model dialog cell then &aux (id (connect-dialog-provider-id dialog)))
+(defun connect-await-start (model dialog cell then)
   "Wait on DIALOG while CELL, the folder serving its provider, in already,
 starts in the organism, whose cold boot starts its cells seconds after its
 first list is read (START-CELLS-BEHIND-THE-LISTENER): once the gateway's list
@@ -339,86 +341,61 @@ back to the list (CONNECT-BACK)."
   ;; Enter on Claude Code's row in those seconds asked for an API key, which
   ;; its login -- the claude CLI's -- never takes (tryingET, 2026-10-30), and
   ;; a folder that signs in with a command of its own would have run one its
-  ;; cell had not registered yet. Each read lands on the loop, which decides
-  ;; whether to read again: the worker never looks at the dialog.
-  (labels ((ours (model) (and (eq dialog (chat-model-dialog model))
-                              (eq :starting (connect-dialog-step dialog))))
-           (wait (model)
-             (off-loop model
-                       (lambda ()
-                         (sleep *connect-start-poll-seconds*)
-                         (fetch-gateway-models model)
-                         (cond ((member id (picker-connected-provider-ids) :test #'string-equal)
-                                :connected)
-                               ((find-if (lambda (offer)
-                                           (and (string-equal id (getf offer :provider))
-                                                (getf offer :starting)))
-                                         (picker-provider-offers))
-                                :starting)
-                               (t :started)))
-                       (lambda (model state)
-                         (cond ((not (ours model)) :quiet)
-                               ((eq state :connected)
-                                (let ((on-success (connect-dialog-on-success dialog)))
-                                  (dismiss-dialog model (and on-success
-                                                             (lambda (model) (funcall on-success model id)))))
-                                (render-state model))
-                               ;; up, and its provider not answering: on as it asks
-                               ((eq state :started)
-                                (funcall then model)
-                                (render-state model))
-                               ;; still starting, or a read that failed: read again
-                               (t (wait model) :quiet))))))
-    (connect-enter-step dialog :starting)
-    (setf dialog.subtitle (format nil dialog.subtitle cell))
-    (wait model)))
+  ;; cell had not registered yet.
+  (connect-enter-step dialog :starting)
+  (setf dialog.subtitle (format nil dialog.subtitle cell))
+  (connect-wait model dialog :starting *connect-start-poll-seconds* then))
 
-(defun connect-sign-in (model dialog how &aux (id (connect-dialog-provider-id dialog)))
+(defun connect-wait (model dialog step seconds &optional then &aux (id (connect-dialog-provider-id dialog)))
+  "Read every SECONDS, while DIALOG stays on STEP, whether its provider answers,
+and pick it once it does; with THEN, call it on the model once the cell is up."
+  ;; Each read lands on the loop, which decides whether to read again: the
+  ;; worker never looks at the dialog.
+  (off-loop model
+            (lambda ()
+              (sleep seconds)
+              (fetch-gateway-models model)
+              (cond ((member id (picker-connected-provider-ids) :test #'string-equal) :connected)
+                    ((or (null then)
+                         (find-if (lambda (offer)
+                                    (and (string-equal id (getf offer :provider)) (getf offer :starting)))
+                                  (picker-provider-offers)))
+                     :waiting)
+                    (t :started)))
+            (lambda (model state)
+              (cond ((not (connect-on-step-p model dialog step)) :quiet)
+                    ;; still starting, or a read that failed: read again
+                    ((eq state :waiting) (connect-wait model dialog step seconds then) :quiet)
+                    ;; up, and its provider not answering: on as it asks
+                    (t (if (eq state :connected) (connect-pick model dialog id) (funcall then model))
+                       (render-state model))))))
+
+(defun connect-sign-in (model dialog how)
   "Run HOW, the command a folder just installed signs in with, and wait on
 DIALOG for its provider to answer: what the command said -- the address to
 open, a device code -- stands in the panel, and once the gateway's list reads
 the provider connected the pick goes on to its models, as Enter on a
 connected provider does. Esc goes back to the list (CONNECT-BACK), the
 folder's sign-in still waiting without it."
-  ;; Each read lands on the loop, which decides whether to read again: the
-  ;; worker never looks at the dialog.
-  (labels ((ours (model) (and (eq dialog (chat-model-dialog model))
-                              (eq :signing-in (connect-dialog-step dialog))))
-           (wait (model)
-             (off-loop model
-                       (lambda ()
-                         (sleep *connect-sign-in-poll-seconds*)
-                         (fetch-gateway-models model)
-                         (and (member id (picker-connected-provider-ids) :test #'string-equal) t))
-                       (lambda (model connected)
-                         (cond ((not (ours model)) :quiet)
-                               ((eq t connected)
-                                (let ((on-success (connect-dialog-on-success dialog)))
-                                  (dismiss-dialog model (and on-success
-                                                             (lambda (model) (funcall on-success model id)))))
-                                (render-state model))
-                               (t (wait model) :quiet))))))
-    (connect-enter-step dialog :signing-in)
-    (setf dialog.subtitle (format nil dialog.subtitle (connect-provider-name dialog)))
-    (off-loop model
-              (lambda () (json-value (gateway-slash-answer model how) :string "text"))
-              (lambda (model text &aux (failure (off-loop-failure text))
-                                       (url (and (not failure) (sign-in-facts text))))
-                (cond ((not (ours model)) :quiet)
-                      ;; no page to sign in at: the command said why not --
-                      ;; over the list, as a refused install says it
-                      ((null url)
-                       (setf (connect-dialog-result-message dialog) "")
-                       (connect-clear-credential dialog)
-                       (connect-enter-step dialog :provider)
-                       (show-status model (if failure (format nil "~a: ~a" how failure) (or text how))
-                                    :error-p t)
-                       (render-state model))
-                      (t (setf (connect-dialog-result-message dialog) text)
-                         ;; the page opens where there is a browser to open it
-                         (ignore-errors (open-target url))
-                         (wait model)
-                         (render-state model)))))))
+  (connect-enter-step dialog :signing-in)
+  (setf dialog.subtitle (format nil dialog.subtitle (connect-provider-name dialog)))
+  (off-loop model
+            (lambda () (json-value (gateway-slash-answer model how) :string "text"))
+            (lambda (model text &aux (failure (off-loop-failure text))
+                                     (url (and (not failure) (sign-in-facts text))))
+              (cond ((not (connect-on-step-p model dialog :signing-in)) :quiet)
+                    ;; no page to sign in at: the command said why not --
+                    ;; over the list, as a refused install says it
+                    ((null url)
+                     (connect-restart dialog)
+                     (show-status model (if failure (format nil "~a: ~a" how failure) (or text how))
+                                  :error-p t)
+                     (render-state model))
+                    (t (setf (connect-dialog-result-message dialog) text)
+                       ;; the page opens where there is a browser to open it
+                       (ignore-errors (open-target url))
+                       (connect-wait model dialog :signing-in *connect-sign-in-poll-seconds*)
+                       (render-state model))))))
 
 (defun connect-back (model dialog)
   "One step back (the Zig backConnectDialog): from the provider step the
@@ -433,32 +410,23 @@ checked."
   (ecase (connect-dialog-step dialog)
     (:provider (dismiss-dialog model dialog.on-cancel))
     ((:custom-provider :address :api-key)
-     (connect-clear-credential dialog)
-     (connect-enter-step dialog :provider)
+     (connect-restart dialog)
      (when (eq :model-providers (picker-dialog-kind dialog))
        (install-frequent-models model dialog
                                 (json-object "models" (gethash dialog *models-frequent-by-dialog* #())))))
     ;; the answer, when it lands, finds the dialog moved on and takes nothing
     (:checking (connect-enter-step dialog :api-key))
     ;; the install goes on in the organism, or the cell's start; its answer
-    ;; finds the list
-    ((:installing :starting)
-     (connect-clear-credential dialog)
-     (connect-enter-step dialog :provider))
-    ;; the folder's sign-in goes on waiting; the list takes nothing from it
-    (:signing-in
-     (setf (connect-dialog-result-message dialog) "")
-     (connect-clear-credential dialog)
-     (connect-enter-step dialog :provider))
+    ;; finds the list; the folder's sign-in goes on waiting, the list taking
+    ;; nothing from it
+    ((:installing :starting :signing-in) (connect-restart dialog))
     (:result
      (setf (connect-dialog-result-message dialog) "")
-     (cond
-       ;; nothing listened where the key was checked: another key would meet
-       ;; the same stopped server, so Esc goes back to the providers
-       ((connect-dialog-retry dialog)
-        (connect-clear-credential dialog)
-        (connect-enter-step dialog :provider))
-       (t (connect-enter-step dialog (if (connect-dialog-custom-p dialog) :custom-provider :api-key)))))))
+     ;; nothing listened where the key was checked: another key would meet
+     ;; the same stopped server, so Esc goes back to the providers
+     (if (connect-dialog-retry dialog)
+         (connect-restart dialog)
+         (connect-enter-step dialog (if (connect-dialog-custom-p dialog) :custom-provider :api-key))))))
 
 (defun connect-dialog-key (model dialog key &key ctrl alt &aux (step (connect-dialog-step dialog)))
   "The keys the /models wizard takes away from the shared picker ladder
@@ -488,11 +456,8 @@ showing for one to mean anything else."
        (:provider
         (let* ((row (selected-of (picker-visible-rows dialog)
                                  (connect-dialog-selection dialog)))
-               (value (and row (picker-row-value row)))
-               (on-success (connect-dialog-on-success dialog)))
-          (flet ((pick (choice)
-                   (dismiss-dialog model (and on-success
-                                              (lambda (model) (funcall on-success model choice))))))
+               (value (and row (picker-row-value row))))
+          (flet ((pick (choice) (connect-pick model dialog choice)))
             (cond ((getf value :model) (pick (getf value :model)))
                   ;; A provider a folder not installed here serves: the
                   ;; folder first, then what the provider asks for.
@@ -535,8 +500,7 @@ showing for one to mean anything else."
           ;; notice over the list, rebuilt so the provider reads
           ;; connected, Suggested, and selected.
           (flet ((done (model message error-p)
-                   (when (and (eq dialog (chat-model-dialog model))
-                              (eq :checking (connect-dialog-step dialog)))
+                   (when (connect-on-step-p model dialog :checking)
                      (cond (error-p
                             (setf (connect-dialog-result-message dialog) (or message ""))
                             (connect-enter-step dialog :result)
@@ -547,11 +511,10 @@ showing for one to mean anything else."
                                     dialog.hint "enter check again  esc other provider")))
                            (t
                             (show-status model message)
-                            (connect-clear-credential dialog)
                             (setf dialog.rows (funcall (connect-dialog-provider-rows dialog))
                                   dialog.search "")
                             (picker-seat-top dialog)
-                            (connect-enter-step dialog :provider)
+                            (connect-restart dialog)
                             ;; The answer lands off the loop, where no key's
                             ;; update repaints the band the notice joins.
                             (when (chat-model-band model)
@@ -614,4 +577,3 @@ showing for one to mean anything else."
 ;;; panel above (COMPOSER-DROPDOWN-PANEL-ROWS): one Zig row shape for every
 ;;; completion lane.
 
-;;; --- help dialog -------------------------------------------------------------

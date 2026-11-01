@@ -4,7 +4,7 @@ serving the home does it.
 
 The waiters each send POST /api/gateway/cells {name, on} and hold a wall
 clock on the answer: `nodecode add' (ADD-TEXT, src/src/surface/control.lisp),
-the /cells sheet (src/src/tui/cells.lisp), the /models picker's pick
+the /cells sheet (src/src/tui/cells-sheet.lisp), the /models picker's pick
 (src/src/tui/commands/models.lisp) and `nodecode gateway setup'
 (src/src/tui/entry.lisp). The work, on the owner (SWITCH-CELL-ON): the hub's two
 indexes read (10 s each), then every folder of the closure installed

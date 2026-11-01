@@ -4,6 +4,7 @@
 
 (in-package #:nodecode.evolved)
 
+;;; --- headless slash execution ---------------------------------------------
 ;;; The same catalog, run without a shell: a channel cell answering a
 ;;; Telegram or Discord `/models', a cron job, an eval snippet. One primitive
 ;;; over the canonical surfaces the two shells already call (SELECT-MODEL,
@@ -119,15 +120,14 @@ move is conversation-only."
 (defun headless-undo (args session-id)
   (declare (ignore args))
   (require-headless-session session-id "undo")
-  (let ((head (nlk:session-head-turn-id session-id)))
-    (if (null head)
-        "nothing to undo"
-        (let* ((parent (gethash head (nlk:session-composed-parents session-id)))
-               (prompt (turn-started-input-of head))
-               ;; The prompt as one line of at most 120 characters.
-               (flat (nlk:trimmed (substitute #\Space #\Newline (or prompt head)))))
-          (headless-head-move session-id parent "user_message" "rewind")
-          (format nil "rewound to before: ~a" (clip flat 120))))))
+  (if-let (head (nlk:session-head-turn-id session-id))
+    (let* ((parent (gethash head (nlk:session-composed-parents session-id)))
+           (prompt (turn-started-input-of head))
+           ;; The prompt as one line of at most 120 characters.
+           (flat (nlk:trimmed (substitute #\Space #\Newline (or prompt head)))))
+      (headless-head-move session-id parent "user_message" "rewind")
+      (format nil "rewound to before: ~a" (clip flat 120)))
+    "nothing to undo"))
 
 (defun headless-redo (args session-id)
   (declare (ignore args))
@@ -354,4 +354,3 @@ operator feels — or, for `reset', a fresh attribution window."
      "gc attribution window reset")
     (t "Usage: /gc [reset]")))
 
-;;; --- /context as a picture --------------------------------------------------

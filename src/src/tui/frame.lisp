@@ -4,6 +4,7 @@
 
 (in-package #:nodecode.evolved)
 
+;;; --- update method ------------------------------------------------------
 
 (defmethod update :around ((model chat-model) msg &aux (nlk:*attribution-label* (type-of msg)))
   "Attribution seam: every message pass — reduce plus any paint, local and
@@ -398,9 +399,7 @@ from the ones COLLECT-DURING-WAIT hid inside provider wait."
                               t)
                              ;; The ember, the fades and the glints are the
                              ;; frame's paint: the rows stand.
-                             ((ember-moved-p model) t)
-                             ((fade-moved-p model) t)
-                             ((glint-rows model) t))))
+                             ((or (ember-moved-p model) (fade-moved-p model) (glint-rows model)) t))))
          (setf quiet (not (or landed dragged expired flushed ticked painted))))))
 
     ;; Hand the key to the editor. The viewport deliberately gets no
@@ -535,7 +534,7 @@ other part is muted."
                (tone (cond (past :danger) (near :warn) (t :muted)))
                (hit (and cached (plusp cached) (format-cache-hit-percent input cached))))
           (remove nil
-                  (list
+                  (list*
                    (when (plusp used)
                      (cons (if window
                                (format nil "~a/~a"
@@ -549,16 +548,13 @@ other part is muted."
                                (format nil "evicts at ~a"
                                        (format-token-count (* window *context-eviction-trigger-ratio*))))
                            tone))
-                   (when-let (text (if (eq detail :developer)
-                                       (format nil "↑ ~a~@[ (cache ~a)~]" (format-token-count input) hit)
-                                       (and hit (format nil "cache ~a" hit))))
-                     (cons text :muted))
-                   (when (eq detail :developer)
-                     (cons (format nil "↓ ~a~@[ (reasoning ~a)~]" (format-token-count output)
-                                   (and reasoning (plusp reasoning) (format-token-count reasoning)))
-                           :muted))
-                   (when (and (eq detail :developer) cost-known)
-                     (cons (format nil "$~,3f" (or cost 0.0)) :muted)))))))))
+                   (if (eq detail :developer)
+                       (list (cons (format nil "↑ ~a~@[ (cache ~a)~]" (format-token-count input) hit) :muted)
+                             (cons (format nil "↓ ~a~@[ (reasoning ~a)~]" (format-token-count output)
+                                           (and reasoning (plusp reasoning) (format-token-count reasoning)))
+                                   :muted)
+                             (and cost-known (cons (format nil "$~,3f" (or cost 0.0)) :muted)))
+                       (list (and hit (cons (format nil "cache ~a" hit) :muted)))))))))))
 
 (defun clip-text-to-width (text max-width)
   "TEXT clipped to at most MAX-WIDTH display columns, an … marking the cut."
@@ -704,6 +700,15 @@ Segments are the one authority for text, color, clipping and target ranges."
   "(text-width bg palette profile bar-p hot) the band-row cache was built
 under; any drift flushes it wholesale.")
 
+(defun row-words-span (y plain &rest more)
+  "(Y X0 X1 . MORE) for frame row Y whose style-free text PLAIN has words:
+the cells from X0 below X1 they span, past the band's two-column inset; NIL
+for no PLAIN or a blank one."
+  (when-let (start (and plain (position #\Space plain :test-not #'char=)))
+    (list* y (+ 2 (text-display-width (subseq plain 0 start)))
+           (+ 2 (text-display-width (string-right-trim " " plain)))
+           more)))
+
 (defun transcript-band-rows (model width text-width bg)
   "The transcript band: each viewport row inset 2 columns from the left,
 padded to TEXT-WIDTH, then one blank column and the scroll rail's cell in
@@ -749,23 +754,14 @@ the frame's last column, WIDTH - 1."
           (loop for line in lines
                 for y from 3
                 for call = (ember-line line)
-                for plain = (and call (plain-frame-row line))
-                for start = (and plain (position #\Space plain :test-not #'char=))
-                when start
-                  collect (list y (+ 2 (text-display-width (subseq plain 0 start)))
-                                (+ 2 (text-display-width (string-right-trim " " plain)))
-                                call))
+                when (row-words-span y (and call (plain-frame-row line)) call) collect it)
           ;; And where the rows of a place still fading stand, for its light.
           (fade-rows model)
           (loop for line in lines
                 for y from 3
                 for (fade . item) = (and (plusp (length line)) (fade-line line))
-                for plain = (and fade (not (fade-settled-p fade)) (plain-frame-row line))
-                for start = (and plain (position #\Space plain :test-not #'char=))
-                when start
-                  collect (list y (+ 2 (text-display-width (subseq plain 0 start)))
-                                (+ 2 (text-display-width (string-right-trim " " plain)))
-                                fade item))
+                when (row-words-span y (and fade (not (fade-settled-p fade)) (plain-frame-row line)) fade item)
+                  collect it)
           ;; And where the chips a glint still crosses stand.
           (glint-rows model)
           (loop with now = (get-internal-real-time)
@@ -1284,4 +1280,3 @@ footer, and the final blank; short windows end with two blank rows."
             (chat-model-toast-layout model) (place-toasts model width toast-floor))
       rows)))
 
-;;; --- view method --------------------------------------------------------

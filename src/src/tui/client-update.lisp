@@ -4,6 +4,7 @@
 
 (in-package #:nodecode.evolved)
 
+;;; --- checkpoint listing prefetch ------------------------------------------
 ;;; The Esc-Esc checkpoint gesture spends its first half arming: the operator
 ;;; has announced intent, and the 500 ms window before the second press is
 ;;; dead time the shell used to spend blocked on the listing round trip with
@@ -45,17 +46,16 @@ thread reads it and clears this place.")
     ((typep msg 'gw-projection-msg)
      (let* ((frame (gw-projection-msg-frame msg))
             (payload frame.payload)
-            (kind (gethash "type" payload)))
+            (kind (gethash "type" payload))
+            (frame-session (sync-message-session-id frame)))
        ;; Refine the span label the UPDATE :around bound: the payload kind
        ;; names which projection pass a worst span was, and the string is
        ;; already decoded — no consing on the stream path.
        (when kind (setf nlk:*attribution-label* kind))
        (cond
-         ((and (sync-message-session-id frame)
-               (not (string= (sync-message-session-id frame)
-                             model.session-id))
-               (equal (sync-message-session-id frame)
-                      model.preview-session-id))
+         ((and frame-session
+               (not (string= frame-session model.session-id))
+               (equal frame-session model.preview-session-id))
           ;; The followed session's own stream: into the preview lane,
           ;; never the live state or its watermarks.
           (let ((preview model.transcript-preview))
@@ -83,9 +83,7 @@ thread reads it and clears this place.")
                 ((string= kind "session_resync_required")
                  (setf model.transcript-preview nil)
                  (sessions-preview-arm model (car preview)))))))
-         ((or (null (sync-message-session-id frame))
-              (string= (sync-message-session-id frame)
-                       model.session-id))
+         ((or (null frame-session) (string= frame-session model.session-id))
           (cond
            ((string= kind "session_stream_resumed")
             ;; A replay folds out of sight and is put in place at its last
@@ -212,15 +210,13 @@ thread reads it and clears this place.")
                           :verify (and painted paint)))))
               (when (and line (or (not (stringp origin)) (string= origin model.session-id)))
                 (let* ((text (format nil "[~a — this shell: ~a]" (file-namestring path) line))
-                       (turn-id (json-value payload :string "turn_id")))
+                       (turn-id (json-value payload :string "turn_id"))
+                       (call-id (json-value payload :text "call_id")))
                   ;; A load on this shell can fail even though the organism's
                   ;; eval succeeded. Keep that live-only failure in its call,
                   ;; without rewriting the durable tool result or splitting
                   ;; Standard's completed work trail with a diagnostic card.
-                  (unless (and held
-                               (ingest-tool-load-error model.state
-                                                      (json-value payload :text "call_id")
-                                                      turn-id text))
+                  (unless (and held (ingest-tool-load-error model.state call-id turn-id text))
                     (setf model.state
                           (ingest-system-notice
                            model.state text :turn-id turn-id
@@ -232,7 +228,7 @@ thread reads it and clears this place.")
                                                                     (file-namestring path))
                                                       ;; The call it came from, whose line
                                                       ;; under a run says it (RUN-TAIL-LLINE).
-                                                      :opt "call_id" (json-value payload :text "call_id"))))))))
+                                                      :opt "call_id" call-id)))))))
                 (render-state model))))
            ((string= kind "organism.cells")
             ;; The organism turned folders on (SWITCH-CELL-ON): this shell
@@ -346,16 +342,10 @@ thread reads it and clears this place.")
             ;; A live frame the pending start_turn produced admits it: the
             ;; turn it names, or T when it names none.
             ;; The stream frame is under "frame", or PAYLOAD itself when it carries none.
-            (let* ((stream-frame (json-value (or (json-value payload :any "frame") payload)
-                                             :object))
-                   (metadata (json-value stream-frame :object "event" "metadata"))
-                   (command-id model.pending-command-id))
-              (when (and command-id metadata
-                         (equal command-id (gethash "command_id" metadata)))
-                (resolve-pending-admission
-                 model (or (gethash "turn_id" stream-frame)
-                           (gethash "turn_id" metadata)
-                           t))))
+            (when-let (turn-id (command-turn-id
+                                (json-value (or (json-value payload :any "frame") payload) :object)
+                                model.pending-command-id))
+              (resolve-pending-admission model turn-id))
             (multiple-value-bind (state verdict)
                 (apply-gateway-event model.state payload)
               (setf model.state state
@@ -407,34 +397,7 @@ thread reads it and clears this place.")
             ;; is coming to flush it.
             (if (live-chrome-animating-p model)
                 (setf model.transcript-dirty t)
-                (render-state model)))))
-         ((equal frame.session-id model.preview-session-id)
-          ;; The followed session's own stream: into the preview lane,
-          ;; never the live state or its watermarks.
-          (let ((preview model.transcript-preview))
-            (when (and preview (equal (car preview) frame.session-id))
-              (cond
-                ;; The live reducer, whose verdict feeds the bar under the dialog.
-                ((member kind '("session_stream_event" "item_delta") :test #'string=)
-                 (multiple-value-bind (state verdict)
-                     (apply-gateway-event (cdr preview) payload)
-                   (setf (cdr preview) state)
-                   (let ((verb (getf verdict :activity)))
-                     (when (or verb (getf verdict :lifecycle))
-                       (setf model.preview-activity
-                             (and verb (list verb (getf verdict :kind)
-                                             (iso-8601-ms (nlk::iso-now)))))))
-                   ;; A found-block pin outranks the live follow: the
-                   ;; operator asked to read that block, and a stream frame
-                   ;; moves the session, never the promise.
-                   (unless (transcript-pin-p model (car preview))
-                     (pin-transcript-bottom model))
-                   (if (live-chrome-animating-p model)
-                       (setf model.transcript-dirty t)
-                       (render-state model))))
-                ((string= kind "session_resync_required")
-                 (setf model.transcript-preview nil)
-                 (sessions-preview-arm model (car preview)))))))))
+                (render-state model)))))))
      (when (gw-projection-msg-release msg)
        (funcall (gw-projection-msg-release msg))))
     ((typep msg 'gw-connection-msg)
@@ -548,8 +511,7 @@ thread reads it and clears this place.")
         (let ((now (get-internal-real-time))
               (last model.last-escape-at))
           (cond
-            ((and last (< (- now last)
-                          (truncate internal-time-units-per-second 2)))
+            ((and last (< (since-ms last now) 500))
              (setf model.last-escape-at nil)
              (when-let (notice (slash-tree-op model))
                (show-status model notice))
@@ -1004,12 +966,10 @@ organism comes back under the unit `gateway off' stops, never beside it."
       (if (nlk:gateway-start)
           (values (nlk:gateway-start-argv) :systemd)
           (values nil "the service manager would not start the gateway"))
-      (let ((command (serve-command store-path)))
-        (if (null command)
-            (values nil "this image has no serve binary to exec")
-            ;; The candidate's log lands next to the database it fought for.
-            (nlk::spawn-detached
-             command
-             (pathname (format nil "~a.resurrect.log" (namestring store-path))))))))
+      (if-let (command (serve-command store-path))
+        ;; The candidate's log lands next to the database it fought for.
+        (nlk::spawn-detached
+         command
+         (pathname (format nil "~a.resurrect.log" (namestring store-path))))
+        (values nil "this image has no serve binary to exec"))))
 
-;;; --- the organism a shell fronts -------------------------------------------

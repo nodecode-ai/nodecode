@@ -3,7 +3,7 @@
 ;;;; SPDX-License-Identifier: MIT
 ;;;;
 ;;;; The organism's own update, in its own process. The
-;;;; installer (src/tools/install.sh, shipped beside the binary) owns the
+;;;; installer (src/tools/install/install.sh, shipped beside the binary) owns the
 ;;;; layout: <release-directory>/<version>/ beside a `current' link. What
 ;;;; runs here is the policy around it:
 ;;;;
@@ -73,9 +73,9 @@ automatic updates its default (UPDATE-SETTINGS).")
           (name (if (eq (nlk:platform) :windows) "install.ps1" "install.sh")))
       (and runtime
            (or (probe-file (merge-pathnames name runtime))
-               (probe-file (merge-pathnames (format nil "src/tools/~a" name) runtime)))))
+               (probe-file (merge-pathnames (format nil "src/tools/install/~a" name) runtime)))))
   "The installer this build carries: install.sh (install.ps1 on Windows)
-beside the binary in a release, under src/tools/ in a checkout. NIL when
+beside the binary in a release, under src/tools/install/ in a checkout. NIL when
 neither is there.")
 
 (defun release-platform ()

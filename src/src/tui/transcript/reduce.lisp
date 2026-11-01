@@ -240,4 +240,3 @@ onto — newest first, or OLDEST first where the pairing rule needs it."
                 (row-turn-matches-p row turn-id))))
     (find-if #'match (gethash "tail_rows" state '()) :from-end (not oldest))))
 
-;;; --- ingest: streaming --------------------------------------------------

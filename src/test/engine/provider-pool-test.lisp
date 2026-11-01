@@ -72,7 +72,7 @@ ON-LIVE on the underlying stream only while it is open, as dexador's own does."
     (is (= 0 (nodecode.evolved::pooled-connection-count endpoint)))))
 
 ;;; --- a body sent as a delta ---------------------------------------------------
-;;; To an endpoint whose answers carry X-Body-Delta (src/tools/body-relay.py),
+;;; To an endpoint whose answers carry X-Body-Delta (src/tools/probes/body-relay.py),
 ;;; a body goes as a delta against the one its session sent there before;
 ;;; a relay that no longer holds that base answers 412 and gets the body
 ;;; again, against nothing.

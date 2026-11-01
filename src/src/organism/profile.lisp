@@ -413,11 +413,8 @@ into HOME, and answer the member's name when there was one to take out."
                          ;; Copied: everything else, a `:all' fork of the shared rows, and
                          ;; Windows, where MAKE-SYMLINK answers NIL and the manifest then
                          ;; says the entry was carried rather than shared.
-                         (folder
-                          (copy-tree-preserving path copy)
-                          (push entry carried))
-                         ((probe-file path)
-                          (uiop:copy-file path copy)
+                         ((or folder (probe-file path))
+                          (if folder (copy-tree-preserving path copy) (uiop:copy-file path copy))
                           (push entry carried)))))
           ;; A knowledge cell is shared: linked, one folder for both homes,
           ;; written under its folder lock (scribe.lisp).
@@ -443,17 +440,14 @@ into HOME, and answer the member's name when there was one to take out."
                 for how = (cond (link (make-symlink link destination) :carried)
                                 ((installer-put-p name cells)
                                  (copy-tree-preserving entry destination) :carried)
-                                ((and (eq clone :settings) (knowledge-folder-p entry))
-                                 ;; Windows, where MAKE-SYMLINK answers NIL, copies
-                                 (if (make-symlink (truename entry) destination)
-                                     :shared
-                                     (progn (copy-tree-preserving entry destination) :carried)))
                                 ((and (eq clone :settings)
-                                      (intersection pinned (folder-served-providers entry)
-                                                    :test #'string-equal))
-                                 ;; Linked like a knowledge folder: the operator's
-                                 ;; code, one copy both homes read, so an edit
-                                 ;; reaches both; Windows copies.
+                                      (or (knowledge-folder-p entry)
+                                          ;; Linked like a knowledge folder: the operator's
+                                          ;; code, one copy both homes read, so an edit
+                                          ;; reaches both.
+                                          (intersection pinned (folder-served-providers entry)
+                                                        :test #'string-equal)))
+                                 ;; Windows, where MAKE-SYMLINK answers NIL, copies
                                  (if (make-symlink (truename entry) destination)
                                      :shared
                                      (progn (copy-tree-preserving entry destination) :carried)))
@@ -910,13 +904,13 @@ for the one a bare launch takes, the description."
                          (blank (flag "--blank"))
                          (from (option "--from"))
                          (description (option "--description"))
-                         (name (last-positional "NAME")))
+                         (name (last-positional "NAME"))
+                         (clone (cond (all :all) (blank :blank) (t :settings))))
                     (when (and all blank)
                       (usage-fail verb "--blank and --clone-all ask for opposite homes."))
-                    (let ((clone (cond (all :all) (blank :blank) (t :settings))))
-                      (profile-created-text
-                       name (profile-create name :clone clone :from from :description description)
-                       clone from))))
+                    (profile-created-text
+                     name (profile-create name :clone clone :from from :description description)
+                     clone from)))
         ("delete" (let* ((yes (flag "--yes"))
                          (name (last-positional "NAME")))
                     ;; Refused before anything is asked: a question about a
@@ -936,14 +930,14 @@ for the one a bare launch takes, the description."
                     (format nil "exported ~a to ~a~:[~;, its store and keys with it: keep it where you keep passwords~]"
                             name (profile-export name path :whole whole) whole)))
         ("import" (let* ((name (option "--name"))
-                         (path (last-positional "PATH")))
-                    (let ((name (profile-import path :name name)))
-                      (format nil "imported ~a from ~a; `nodecode -p ~a' runs it" name path name))))
+                         (path (last-positional "PATH"))
+                         (imported (profile-import path :name name)))
+                    (format nil "imported ~a from ~a; `nodecode -p ~a' runs it" imported path imported)))
         ("install" (let* ((name (option "--name"))
-                          (url (last-positional "URL")))
-                     (let ((name (profile-install url :name name)))
-                       (format nil "installed ~a from ~a; `nodecode -p ~a' runs it, `profile update ~a' pulls it"
-                               name url name name))))
+                          (url (last-positional "URL"))
+                          (installed (profile-install url :name name)))
+                     (format nil "installed ~a from ~a; `nodecode -p ~a' runs it, `profile update ~a' pulls it"
+                             installed url installed installed)))
         ("update" (let ((name (last-positional "NAME")))
                     (format nil "~a: ~a" name (profile-update name))))
         (t (error "the profile verb ~a has no branch in PROFILE-COMMAND" verb))))))
