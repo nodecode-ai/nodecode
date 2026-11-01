@@ -40,7 +40,8 @@ under GitHub Actions the table also goes to the job summary.
 Trees and their compiled code are kept under PERF_HOME (default
 /var/tmp/nodecode-perf): a base is extracted once per commit (git archive)
 and compiled once, so a second run against the same base pays only the
-measuring. SBCL is `sbcl' on PATH; PERF_SBCL_USERINIT, when set, is its
+measuring. A base no run used for 7 days goes, and so does compiled code
+whose source directory is gone. SBCL is `sbcl' on PATH; PERF_SBCL_USERINIT, when set, is its
 --userinit (CI's quicklisp).
 """
 
@@ -81,7 +82,10 @@ def base_tree(rev):
     except subprocess.CalledProcessError:
         raise CannotMeasure("no revision %s in %s" % (rev, REPO))
     path = os.path.join(PERF_HOME, "trees", sha)
-    if not os.path.exists(os.path.join(path, ".ready")):
+    ready = os.path.join(path, ".ready")
+    if os.path.exists(ready):
+        os.utime(ready)
+    else:
         shutil.rmtree(path, ignore_errors=True)
         os.makedirs(path)
         archive = subprocess.Popen(["git", "archive", sha], cwd=REPO, stdout=subprocess.PIPE)
@@ -91,6 +95,27 @@ def base_tree(rev):
         cells(path)
         open(os.path.join(path, ".ready"), "w").close()
     return sha, path
+
+
+def prune(days=7):
+    """Drop base trees no run used for DAYS, and compiled code whose source is gone."""
+    cutoff = time.time() - days * 86400
+    trees = os.path.join(PERF_HOME, "trees")
+    for name in os.listdir(trees) if os.path.isdir(trees) else []:
+        path = os.path.join(trees, name)
+        ready = os.path.join(path, ".ready")
+        if os.path.getmtime(ready if os.path.exists(ready) else path) < cutoff:
+            shutil.rmtree(path, ignore_errors=True)
+    # The fasl cache mirrors each source path (asdf's default translation):
+    # a mirror whose source directory no longer exists is never loaded again.
+    cache = os.path.join(PERF_HOME, "cache", "common-lisp")
+    for impl in os.listdir(cache) if os.path.isdir(cache) else []:
+        top = os.path.join(cache, impl)
+        for dirpath, dirnames, _ in os.walk(top):
+            source = "/" + os.path.relpath(dirpath, top) if dirpath != top else "/"
+            if not os.path.isdir(source):
+                shutil.rmtree(dirpath, ignore_errors=True)
+                dirnames[:] = []
 
 
 def cells(tree):
@@ -244,6 +269,7 @@ def main():
     args = parser.parse_args()
     workloads = [w for w in args.workloads.split(",") if w]
     os.makedirs(PERF_HOME, exist_ok=True)
+    prune()
     scratch = tempfile.mkdtemp(prefix="run-", dir=PERF_HOME)
     try:
         base_sha, base_path = base_tree(args.base)
