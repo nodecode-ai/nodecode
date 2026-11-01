@@ -129,7 +129,7 @@
                             :session nil
                             :help-detail
                             "Spend at catalog prices, model calls, the cache share and what it saved, first-token waits and failed turns across every session, then spend by day, the models, the costliest sessions and the folders. On a shell, a dialog: Tab moves between today, 7 days, 30 days and all (seven days unless named), Enter on a session opens it; on a channel or the web page, the same as text")
-        ;; What the footer's account badge opens (surface/client.lisp SLASH-ACCOUNT-OP). No
+        ;; What the footer's account badge opens (tui/commands/accounts.lisp SLASH-ACCOUNT-OP). No
         ;; headless arm: a room or a page would be shown this home's balance.
         (make-slash-command "account"
                             "Your nodecode.ai account: the plan's requests left and the API credit"
@@ -271,7 +271,7 @@ Zig evict_usage_hint (src/tui/model/slash_commands.zig) and the turn form
 
 ;;; --- the gateway's cell commands -----------------------------------------
 ;;; A cell's command runs where the cell runs: in the gateway's image,
-;;; which a shell reads the commands of (client.lisp GATEWAY-COMMAND-ENTRIES)
+;;; which a shell reads the commands of (tui/commands/cell-control.lisp GATEWAY-COMMAND-ENTRIES)
 ;;; and runs one at (RUN-GATEWAY-COMMAND). They parse, suggest, ghost and list
 ;;; in /help exactly like builtins, and never shadow one: the builtin catalog
 ;;; is consulted first, and a command named like a builtin or its alias is
@@ -361,7 +361,7 @@ flags --help / -h); the Zig rejection line otherwise."
        (append *slash-commands* *gateway-commands*)))))
 
 ;;; --- execution seam --------------------------------------------------------
-;;; /help renders through the help dialog (ui.lisp OPEN-HELP-DIALOG): the
+;;; /help renders through the help dialog (tui/history.lisp OPEN-HELP-DIALOG): the
 ;;; catalog plus the resolved keybind listing, searchable. The old notice-lane
 ;;; text body is gone — one help surface, not two.
 
@@ -435,7 +435,7 @@ key: a peripheral's refusal, a channel's state), or the empty-folder note."
 
 ;;; --- /context rendering -----------------------------------------------------
 ;;; Pure formatting over the usage accumulators the shells fold from the
-;;; provider stream (ui.lisp INGEST-TURN-USAGE) and the window belief: one
+;;; provider stream (tui/transcript/ingest.lisp INGEST-TURN-USAGE) and the window belief: one
 ;;; readout for the two shells and the headless surface, beside /gc.
 
 (defun render-context-report (&key label session-id usage session-usage

@@ -10,7 +10,7 @@
 ;;;; where this port narrows a mechanism, the docstring says so.
 ;;;;
 ;;;; Everything here is pure: no I/O beyond reading environment variables in
-;;;; DETECT-COLOR-PROFILE. The mutable display policy in ui.lisp consumes this
+;;;; DETECT-COLOR-PROFILE. The mutable display policy in transcript/ consumes this
 ;;;; module; a mutation restyling the organism edits the palette or the policy,
 ;;;; not the log.
 
@@ -95,7 +95,7 @@
     (:system-block ,(vstyle :fg '(178 184 196) :bg '(35 39 48))
      (:secondary :foreground) (:background-inset :background-surface))
     (:diagnostic-block ,(vstyle :fg '(255 126 126) :bg '(76 42 41)) (:error-color))
-    ;; A toast (ui.lisp TOAST): the ground one step lighter than the panel
+    ;; A toast (tui/view.lisp TOAST): the ground one step lighter than the panel
     ;; surface, so it stands off the canvas and the composer and user block
     ;; it floats over, and one step more under the pointer. An error's text
     ;; is the danger red on either. Both grounds are derived from the
@@ -207,7 +207,7 @@
     ;; A fact that wants a look before it is a problem: the header's
     ;; occupancy nearing the eviction line, /status's attention rows.
     (:warn ,(vstyle :fg '(253 186 116)) (:info :accent1))
-    ;; /context's grid (client.lisp +CONTEXT-PARTS+): a part's cells and its
+    ;; /context's grid (tui/commands/context-view.lisp +CONTEXT-PARTS+): a part's cells and its
     ;; chip, the free cells, the free cells past the eviction line, and the
     ;; other parts' under one part's view. The history part paints in
     ;; :thought.

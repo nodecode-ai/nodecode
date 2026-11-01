@@ -3,7 +3,7 @@
 ;;;; row says.
 ;;;; SPDX-License-Identifier: MIT
 ;;;;
-;;;; /settings and /generations are sheets (ui.lisp SHEET-DIALOG). Each paints
+;;;; /settings and /generations are sheets (tui/dialog.lisp SHEET-DIALOG). Each paints
 ;;;; its window cell by cell on a canvas as its own layout says it, names the
 ;;;; cells a click acts on as it paints them, and runs its calls off the loop
 ;;;; with what they are doing, then what they did, on its key row.
