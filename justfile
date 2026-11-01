@@ -45,13 +45,14 @@ test:
         --eval '(asdf:test-system :nodecode)'
 
 # Parens, layout, and IS prose on a line of its own; with no FILES, every
-# .lisp and .asd under src/.
+# .lisp and .asd under src/ but the cells pulled into src/cells/, which are
+# no revision of this repository (CI's lint and `loc' leave them out too).
 # Check Lisp structure.
 lint *files:
     @set -euo pipefail; \
       files="{{files}}"; \
       if [ -z "$files" ]; then \
-        files="$(find src -name '.*' -prune -o \( -name '*.lisp' -o -name '*.asd' \) -print | LC_ALL=C sort | tr '\n' ' ')"; \
+        files="$(find src -path 'src/cells/*' -prune -o -name '.*' -prune -o \( -name '*.lisp' -o -name '*.asd' \) -print | LC_ALL=C sort | tr '\n' ' ')"; \
       fi; \
       sbcl --script src/tools/lint-structure.lisp $files
 
