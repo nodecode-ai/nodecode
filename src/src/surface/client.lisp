@@ -7382,11 +7382,9 @@ else NIL."
 (defun metro-span-ms (entry)
   "Listing ENTRY's span in milliseconds, its STARTED_AT to its ENDED_AT; NIL
 while it has no end (an absent end is no zero)."
-  (let ((start (json-value entry :string "started_at"))
-        (end (json-value entry :string "ended_at")))
-    (let ((from (and start (iso-8601-ms start)))
-          (to (and end (iso-8601-ms end))))
-      (and from to (max 0 (- to from))))))
+  (let ((from (when-let (start (json-value entry :string "started_at")) (iso-8601-ms start)))
+        (to (when-let (end (json-value entry :string "ended_at")) (iso-8601-ms end))))
+    (and from to (max 0 (- to from)))))
 
 (defun metro-ask-key (node)
   "The opening of NODE's ask a retry repeats: its first 22 characters."
@@ -7680,8 +7678,7 @@ asked to do, and flush right how long the call ran."
 pass over it -- of the rails running on (CELLS), a pen, and what the recap
 said, or when it ran while the listing carries no words of it."
   (let* ((said (or (json-value entry :text "answer")
-                   (metro-clock (let ((start (json-value entry :string "started_at")))
-                                  (and start (iso-8601-ms start))))
+                   (metro-clock (when-let (start (json-value entry :string "started_at")) (iso-8601-ms start)))
                    ""))
          (row (make-picker-row :label (format nil "recap ~a" said) :heading t)))
     (setf (picker-row-paint row)
@@ -7743,10 +7740,9 @@ with the head's line where the move leaves it -- the turn tagged `here'
 line `leaves head', each it puts on `joins head', the head it lands on `HEAD'
 -- then a blank and the move in a sentence, two rows, so every option draws as
 many rows. => painted rows, ROOM wide; NIL for a turn the graph does not hold."
-  (let* ((nodes (getf state :nodes))
-         (by-id (getf state :by-id))
-         (node (gethash (getf value :turn-id) by-id)))
-    (when node
+  (let ((nodes (getf state :nodes))
+        (by-id (getf state :by-id)))
+    (when-let (node (gethash (getf value :turn-id) by-id))
       (let* ((continue (eq (getf option :move) :continue))
              (head (if continue (getf node :id) (getf node :parent)))
              (chain (metro-chain by-id head))
