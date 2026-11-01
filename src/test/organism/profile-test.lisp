@@ -120,6 +120,38 @@ exist to prevent."
       ;; the operator's own folder still stays home
       (is (null (uiop:directory-exists-p (merge-pathnames "cells/own/" home)))))))
 
+(deftest a-settings-clone-carries-the-folder-a-pinned-provider-needs ()
+  ;; The operator's own folder stays home, but for one serving a provider
+  ;; the copied config pins: the clone's config names that provider too, and
+  ;; without the folder its first turn is refused. Every pin counts, and a
+  ;; folder serving a provider nothing pins still stays.
+  (write-temp-file (merge-pathnames "cells/my-lane/my-lane.asd" nlk:*home*)
+                   "(defsystem \"my-lane\" :properties ((:serves (:provider \"my-lane\"))))")
+  (write-temp-file (merge-pathnames "cells/judge/judge.asd" nlk:*home*)
+                   "(defsystem \"judge\" :properties ((:serves (:provider \"judge\"))))")
+  (write-temp-file (merge-pathnames "cells/spare/spare.asd" nlk:*home*)
+                   "(defsystem \"spare\" :properties ((:serves (:provider \"spare\"))))")
+  (write-temp-file (merge-pathnames "config.jsonc" nlk:*home*)
+                   "{ // pins
+  \"general\": { \"default_model\": { \"provider\": \"my-lane\", \"model\": \"m\" },
+               \"decider_model\": { \"provider\": \"judge\", \"model\": \"d\" } } }")
+  (is (equal '("my-lane" "judge")
+             (nlk::config-pinned-providers (merge-pathnames "config.jsonc" nlk:*home*))))
+  (let* ((home (nlk:profile-create "coder"))
+         (cells (merge-pathnames "cells/" home))
+         (rode (sort (remove-if-not (lambda (entry) (uiop:string-prefix-p "cells/" entry))
+                                    (nlk::manifest-list home "shared"))
+                     #'string<)))
+    (is (probe-file (merge-pathnames "my-lane/my-lane.asd" cells)) "the default model's folder rides")
+    (is (nlk:symlink-target (merge-pathnames "my-lane" cells)) "linked: one folder for both homes")
+    (is (probe-file (merge-pathnames "judge/judge.asd" cells)) "and the decider's")
+    (is (null (uiop:directory-exists-p (merge-pathnames "spare/" cells))) "a provider nothing pins stays")
+    (is (equal '("cells/judge" "cells/my-lane") rode) "and the manifest names them shared")
+    (is (nlk:profile-delete "coder"))
+    (is (probe-file (merge-pathnames "cells/my-lane/my-lane.asd" nlk:*home*)) "deleting the clone keeps the operator's folder"))
+  (let ((home (nlk:profile-create "empty" :clone :blank)))
+    (is (null (uiop:directory-exists-p (merge-pathnames "cells/my-lane/" home))) "a blank home takes none")))
+
 (deftest profile-wrapper-is-written-and-removed-with-the-profile (with-temp-trees ((bin "bin")))
   (setf nlk:*wrapper-directory* bin)
   (with-stubbed-fdefinition (nlk::organism-binary () "/opt/nodecode/nodecode")
