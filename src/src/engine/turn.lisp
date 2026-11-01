@@ -3246,8 +3246,9 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                 ;; A server that detects the loop itself stops the generation
                 ;; and says so -- vLLM's repetition detection answers
                 ;; finish_reason "repetition" -- and what it kept is the loop
-                ;; cut short: the guard's failure, on a guarded model.
-                (when (and loop-guard (equal finish-reason "repetition"))
+                ;; cut short: the guard's failure at any level, since the
+                ;; verdict is the server's, not the guard's heuristics.
+                (when (equal finish-reason "repetition")
                   (error 'provider-reasoning-loop
                          :detail "the model looped: the server stopped it for repetition"))
                 ;; A tool call with no name fails the attempt before the

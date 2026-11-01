@@ -174,7 +174,14 @@ them, counting into CALLS and keeping each request body, in order, in BODIES."
       (with-scripted-attempts (calls bodies) ((looping-reasoning-stream) (make-sse-stream (chunk-json "substance")))
         ;; providers.quiet.loop_guard "off" holds DeepSeek unguarded
         (is (equal "LOOPED" (gethash "content" (nle::call-provider (user-context)))))
-        (is (= 1 calls))))))
+        (is (= 1 calls)))
+      ;; A server's own repetition stop is its verdict, not the guard's: it
+      ;; fails the attempt whatever the level.
+      (with-scripted-attempts (calls bodies)
+          ((make-sse-stream (chunk-json "partial answer" :finish-reason "repetition"))
+           (make-sse-stream (chunk-json "substance")))
+        (is (equal "substance" (gethash "content" (nle::call-provider (user-context)))))
+        (is (= 2 calls))))))
 
 (deftest a-loop-past-the-rerun-ceiling-is-re-run-never-continued ()
   ;; A ceiling of 0 puts every cut attempt past it: a truncation there is
