@@ -383,20 +383,20 @@ renderer, the program loop.")
    #:sh #:$ #:edit #:write-file #:look
    ;; --- what a tool call did (turn.lisp): the record a verb stamps on the
    ;; result fact of the call it runs under — a cell's verb names itself
-   ;; to the transcript this way (activity.lisp) — and whether it failed,
+   ;; to the transcript this way (tool-summary.lisp) — and whether it failed,
    ;; the mark a tool's own verdict or a hook's veto puts on that fact ---
    #:receipt #:failure
    ;; --- what a call did, in words: the classifier the transcript and a
    ;; channel card both read — a title (`Read src/x.lisp'), the live verb a
    ;; bar or card shows (`reading src/x.lisp'), the entries a group counts,
    ;; whether a call is routine enough to fold into a run, and the one
-   ;; compact token count (activity.lisp) ---
+   ;; compact token count (tool-summary.lisp) ---
    #:tool-arguments-activity #:tool-activity-verb #:activity-title
    #:format-token-count
    ;; --- what a turn ran on and spent, in the finish divider's words: a
    ;; usage accumulator's sum (NIL stays unknown), its identity and token
    ;; meter, the prompt its newest round put in the window, and the window
-   ;; a model has (ui.lisp, provider.lisp) — the TUI and a channel card read
+   ;; a model has (tui/transcript/ingest.lisp, provider.lisp) — the TUI and a channel card read
    ;; one line ---
    #:organism-note #:usage-plus #:usage-identity-text #:usage-meter-text
    #:context-occupancy-tokens #:model-context-tokens
@@ -411,7 +411,7 @@ renderer, the program loop.")
    #:image-media-type #:*image-max-bytes* #:display-fact
    ;; --- around-hooks, inherited from the kernel (hook.lisp) ---
    #:*hooks* #:hook #:define-hook #:unhook #:observer
-   ;; --- one cell, declared (organism/cell.lisp): the composition DSL
+   ;; --- one cell, declared (organism/cell-dsl.lisp): the composition DSL
    ;; over the primitives, and the generic registration scope under it that
    ;; makes a stop complete, idempotent and free after a failed start ---
    #:define-cell #:starting #:on-stop
@@ -454,11 +454,11 @@ renderer, the program loop.")
    ;; host with, a failure answered as a value ---
    #:http-fetch
    ;; --- the model-facing selection verbs: the catalog the shell's /models
-   ;; picker shows (client.lisp), everything a pick means, everything a
+   ;; picker shows (tui/commands/models.lisp), everything a pick means, everything a
    ;; /think pick means, and the target a session's next turn binds
    ;; (gateway.lisp) ---
    #:models #:select-model #:select-effort #:gateway-target
-   ;; --- the headless slash surface (client.lisp): one command line run
+   ;; --- the headless slash surface (tui/commands/headless.lisp): one command line run
    ;; without a shell against a session, and the catalog it can run — what
    ;; a channel publishes as its menu, a cron job or an eval snippet calls --
    ;; and the one reading of a typed line as a command (slash.lisp) ---

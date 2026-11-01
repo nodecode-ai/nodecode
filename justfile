@@ -30,7 +30,7 @@ default:
 # Does nothing when every pinned cell is already in place.
 # Fetch the shipped cells pinned in src/cells/bundle.json.
 cells-pull:
-    @src/tools/pull-cells.sh
+    @src/tools/build/pull-cells.sh
 
 # Compile the organism.
 build: cells-pull
@@ -55,7 +55,7 @@ lint *files:
       if [ -z "$files" ]; then \
         files="$(find src -path 'src/cells/*' -prune -o -name '.*' -prune -o \( -name '*.lisp' -o -name '*.asd' \) -print | LC_ALL=C sort | tr '\n' ' ')"; \
       fi; \
-      sbcl --script src/tools/lint-structure.lisp $files
+      sbcl --script src/tools/check/lint-structure.lisp $files
 
 # Hold HEAD's Common Lisp code lines (tokei) to this ceiling. Lower it when
 # the code shrinks; raise it only with the reason in the commit. Cells pulled
@@ -100,11 +100,11 @@ check: lint loc build test
 # Lean, at the version proofs/lean-toolchain pins, checks each proofs/*.lean
 # with warnings as errors, so a `sorry' fails; then every theorem must rest on
 # no axiom beyond propext, Classical.choice and Quot.sound, so an `axiom' of
-# the file's own or a native_decide fails too (src/tools/proofs.sh). A new
+# the file's own or a native_decide fails too (src/tools/check/proofs.sh). A new
 # file is checked once it is there; CI runs this on every change.
 # Check every Lean proof under proofs/ (needs elan).
 proofs:
-    @src/tools/proofs.sh
+    @src/tools/check/proofs.sh
 
 # Each hot path -- a keystroke, a page and a streamed word in a long
 # conversation, a turn appended to a long session, the wire fold, a session's
@@ -144,12 +144,12 @@ release: cells-pull
         { printf 'release: the dump left no executable ./nodecode\n' >&2; exit 1; }; \
       printf 'just release complete: ./nodecode\n'; \
       if [ "$(uname -s)" = Darwin ]; then \
-        cc -O2 -Wall -o nodecode-launcher src/tools/launcher.c; \
+        cc -O2 -Wall -o nodecode-launcher src/tools/build/launcher.c; \
         codesign --force --sign - --identifier ai.nodecode.launcher nodecode-launcher; \
       fi; \
       if [ -z "${NODECODE_BUILD_COMMIT:-}" ]; then \
         rm -rf src/fasl; \
-        src/tools/compile-cells.sh ./nodecode src/cells src/fasl || \
+        src/tools/build/compile-cells.sh ./nodecode src/cells src/fasl || \
           printf 'release: a shipped cell did not compile; a launch compiles what is missing\n' >&2; \
         ./nodecode warm; \
       fi
@@ -158,7 +158,7 @@ release: cells-pull
 # box (x86_64-linux, arm64-darwin): SBCL cannot cross-compile.
 # Pack a committed revision as a tarball that runs without SBCL.
 tarball rev="HEAD" out="dist":
-    @src/tools/pack.sh {{rev}} {{out}}
+    @src/tools/release/pack.sh {{rev}} {{out}}
 
 # Structural duplicates under src/, ranked by what collapsing each cluster
 # would reclaim.
@@ -167,7 +167,7 @@ bloat:
     @set -euo pipefail; cd src && {{sbcl}} \
         --eval '(push (truename ".") asdf:*central-registry*)' \
         --eval '(asdf:load-system :nodecode)' \
-        --load tools/bloat.lisp \
+        --load tools/check/bloat.lisp \
         --eval '(princ (nodecode.bloat:report))'
 
 # --- proofs against the built ./nodecode (CI runs the first three) -----------
@@ -180,54 +180,54 @@ footprint_ceilings := "--max-boot-mb 95 --max-turn-mb 105 --max-growth-mb 15 --m
 # A scratch home with every shipped cell, a mock provider, the shell in tmux.
 # Hold the shell to the memory ceilings (~3 min, Linux).
 footprint:
-    @python3 src/tools/footprint.py ./nodecode --turns 40 {{footprint_ceilings}}
+    @python3 src/tools/check/footprint.py ./nodecode --turns 40 {{footprint_ceilings}}
 
 # The gateway must leave a release feed that goes silent without closing,
 # and act on the next label.
 # Prove a silent release feed is left (~90 s).
 feed-proof:
-    @python3 src/tools/feed-proof.py ./nodecode
+    @python3 src/tools/check/feed-proof.py ./nodecode
 
 # TARBALL is `just tarball's output; --from takes a tarball, a label or
 # stable (the default: what users run now), --keep the scratch.
 # Upgrade a running gateway of the last release onto TARBALL (~1 min).
 upgrade-proof tarball *args:
-    @python3 src/tools/upgrade-proof.py {{tarball}} {{args}}
+    @python3 src/tools/qa/upgrade-proof.py {{tarball}} {{args}}
 
 # Packs HEAD unless TARBALL is HEAD already packed, then packs the refused
 # release itself (one commit in the object store, no branch).
 # Upgrade a running gateway of HEAD onto a release it refuses live (~2 min).
 upgrade-proof-refused *tarball:
-    @src/tools/upgrade-proof-refused.sh {{tarball}}
+    @src/tools/qa/upgrade-proof-refused.sh {{tarball}}
 
 # A loopback Discord, a scripted model and two installed releases.
 # Keep a Discord bot answering through an upgrade onto TARBALL and a handoff (~3 min).
 upgrade-discord-proof tarball *args:
-    @python3 src/tools/upgrade-discord-proof.py {{tarball}} {{args}}
+    @python3 src/tools/qa/upgrade-discord-proof.py {{tarball}} {{args}}
 
 # A loopback Discord and a scripted model; --list names the scenarios,
 # --only NAME,... runs some.
 # Run the Discord cell end to end (a few minutes).
 discord-qa *args:
-    @python3 src/tools/discord-qa.py ./nodecode {{args}}
+    @python3 src/tools/qa/discord-qa.py ./nodecode {{args}}
 
 # A loopback Telegram Bot API and the same scripted model; --list names the
 # scenarios, --only NAME,... runs some.
 # Run the Telegram cell end to end (a few minutes).
 telegram-qa *args:
-    @python3 src/tools/telegram-qa.py ./nodecode {{args}}
+    @python3 src/tools/qa/telegram-qa.py ./nodecode {{args}}
 
 # A loopback Slack -- the Web API and the Socket Mode link -- and the same
 # scripted model; --list names the scenarios, --only NAME,... runs some.
 # Run the Slack cell end to end (about a minute).
 slack-qa *args:
-    @python3 src/tools/slack-qa.py ./nodecode {{args}}
+    @python3 src/tools/qa/slack-qa.py ./nodecode {{args}}
 
 # Watched through the rows a browser reads; --sessions N for more, --serve
 # keeps the gateway up.
 # Load background evaluations (~30 s).
 exec-stress *args:
-    @python3 src/tools/exec-stress.py ./nodecode {{args}}
+    @python3 src/tools/check/exec-stress.py ./nodecode {{args}}
 
 # --- cells --------------------------------------------------------------------
 
