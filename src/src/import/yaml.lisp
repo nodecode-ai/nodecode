@@ -275,10 +275,24 @@ folded to blanks; `-' after the marker drops the final newline."
         (ppcre:regex-replace-all "(?s)\\\\(?:u[0-9A-Fa-f]{4}|.)" inner #'unescape
                                  :simple-calls t))))
 
-(defun split-flow (inner)
-  "INNER split on the commas outside quotes, each piece trimmed, empties dropped."
-  (remove "" (mapcar (lambda (piece) (string-trim '(#\Space #\Tab) piece))
-                     (ppcre:all-matches-as-strings "(?:[^,'\"]+|'[^']*'?|\"[^\"]*\"?)+" inner))
+(defun split-flow (inner &aux (pieces '()) (depth 0) (start 0) (at 0) (n (length inner)))
+  "INNER split on the commas outside quotes and outside a nested [..] or {..},
+each piece trimmed, empties dropped."
+  (loop while (< at n)
+        do (case (char inner at)
+             (#\' (setf at (or (position #\' inner :start (1+ at)) n)))
+             (#\" (incf at)
+                  (loop while (and (< at n) (char/= (char inner at) #\"))
+                        do (when (char= (char inner at) #\\) (incf at))
+                           (incf at)))
+             ((#\[ #\{) (incf depth))
+             ((#\] #\}) (when (plusp depth) (decf depth)))
+             (#\, (when (zerop depth)
+                   (push (subseq inner start at) pieces)
+                   (setf start (1+ at)))))
+           (incf at))
+  (push (subseq inner start) pieces)
+  (remove "" (mapcar (lambda (piece) (string-trim '(#\Space #\Tab) piece)) (nreverse pieces))
           :test #'string=))
 
 (defun parse-scalar (text)
