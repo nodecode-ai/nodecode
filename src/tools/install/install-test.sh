@@ -6,6 +6,12 @@
 # user manager and of the release host.
 set -eu
 
+# The installer finds the active units under $XDG_CONFIG_HOME, else $HOME/.config.
+# A caller's XDG_CONFIG_HOME would point it at the caller's own units instead
+# of the fake home below: the refresh then hands their gateway's home to the
+# fake binary and the check on NODECODE_HOME fails.
+unset XDG_CONFIG_HOME
+
 root="$(mktemp -d)"
 trap 'rm -rf "$root"' EXIT INT TERM
 
