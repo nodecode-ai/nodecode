@@ -2464,11 +2464,12 @@ wrote under MAX-AGE seconds ago is that copy, unread."
              (when source
                (incf asked)
                (let ((kept (home (format nil "hub/~a.json" (short-digest source 16)))))
-                 (flet ((offers (text) (read-hub-index text :shipped shipped :index index)))
+                 (labels ((offers (text) (read-hub-index text :shipped shipped :index index))
+                          (cached () (ignore-errors (offers (alexandria:read-file-into-byte-vector kept)))))
                    (or
                     (and max-age (probe-file kept)
                          (< (- (get-universal-time) (file-write-date kept)) max-age)
-                         (ignore-errors (offers (alexandria:read-file-into-byte-vector kept))))
+                         (cached))
                     (handler-case
                         (bind (((body status _ truncated)
                                 ;; one that cannot be reached is named, as its status and its size are
@@ -2484,9 +2485,7 @@ wrote under MAX-AGE seconds ago is that copy, unread."
                           (prog1 (offers body)
                             (write-file-atomically kept body)))
                       (error (condition)
-                        (if-let (copy (and (probe-file kept)
-                                           (ignore-errors
-                                            (offers (alexandria:read-file-into-byte-vector kept)))))
+                        (if-let (copy (and (probe-file kept) (cached)))
                           (progn (push (princ-to-string condition) stale) copy)
                           (progn (push condition failed) '()))))))))))
       (let* ((own (entries url "hub"))
@@ -2704,8 +2703,7 @@ installer's. => TARGET."
           (write-line entry.git out)
           (write-line entry.commit out)
           (when entry.path (write-line entry.path out)))
-        (sb-posix:rename (string-right-trim "/\\" (uiop:native-namestring source))
-                         (string-right-trim "/\\" (uiop:native-namestring target)))))
+        (sb-posix:rename (native-path source) (native-path target))))
     target))
 
 (defun hub-pin (name &optional (root *cells-directory*))
@@ -2774,23 +2772,22 @@ INSTALL signals. => NIL."
          (home (uiop:pathname-parent-directory-pathname (uiop:ensure-directory-pathname root)))
          (staging (merge-pathnames ".cell-staging/" home))
          (aside (merge-pathnames (format nil "~a.before/" name) staging)))
-    (flet ((native (directory) (string-right-trim "/\\" (uiop:native-namestring directory))))
-      (when (probe-file aside) (remove-tree aside))
-      (ensure-directories-exist staging)
-      (sb-posix:rename (native target) (native aside))
-      (handler-bind ((error (lambda (condition)
-                              (declare (ignore condition))
-                              ;; what INSTALL left goes -- a link alone, never the
-                              ;; folder it leads to -- then the clone comes back
-                              (ignore-errors
-                               (cond #-win32 ((symlink-target (merge-pathnames name root))
-                                              (sb-posix:unlink (native target)))
-                                     ((probe-file target) (remove-tree target))))
-                              (sb-posix:rename (native aside) (native target)))))
-        (funcall install target))
-      (remove-tree aside)
-      (ignore-errors (uiop:delete-empty-directory staging))
-      nil)))
+    (when (probe-file aside) (remove-tree aside))
+    (ensure-directories-exist staging)
+    (sb-posix:rename (native-path target) (native-path aside))
+    (handler-bind ((error (lambda (condition)
+                            (declare (ignore condition))
+                            ;; what INSTALL left goes -- a link alone, never the
+                            ;; folder it leads to -- then the clone comes back
+                            (ignore-errors
+                             (cond #-win32 ((symlink-target (merge-pathnames name root))
+                                            (sb-posix:unlink (native-path target)))
+                                   ((probe-file target) (remove-tree target))))
+                            (sb-posix:rename (native-path aside) (native-path target)))))
+      (funcall install target))
+    (remove-tree aside)
+    (ignore-errors (uiop:delete-empty-directory staging))
+    nil))
 
 (defun install-cell (name &key (root *cells-directory*) (offers (shipped-cells)))
   "Put the offered folder NAME under ROOT: a shipped one as a symlink to where
