@@ -1301,6 +1301,10 @@ turn."
   (and *current-durable-turn*
        (nlk:durable-turn-session-id *current-durable-turn*)))
 
+(defun eval-turn-id ()
+  "The id of the turn whose snippet is being evaluated, or NIL outside a turn."
+  (and *current-durable-turn* (nlk:durable-turn-turn-id *current-durable-turn*)))
+
 ;;; --- the note a snippet opens with ------------------------------------------
 ;;; PRO-LONG (2607.20064) logs, per action, the agent's plan beside the action
 ;;; and its outcome, and the agent parses that log back; its ablation shows
@@ -3057,8 +3061,7 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                ;; or limit on the live part because no ladder is being
                ;; climbed. => T when images were withheld, NIL when the
                ;; request carried none.
-               (let* ((turn-id (and *current-durable-turn*
-                                    (nlk:durable-turn-turn-id *current-durable-turn*)))
+               (let* ((turn-id (eval-turn-id))
                       (latched (plusp (turn-image-refusals turn-id))))
                  (multiple-value-bind (groups count)
                      (withhold-image-groups
@@ -3859,6 +3862,10 @@ message."
 
 (defvar *turn-images-lock* (bt2:make-lock :name "turn-images"))
 
+(defmacro with-turn-images-held ((turn-id &optional none) &body body)
+  "BODY under the attachments lock when TURN-ID names a turn, else NONE."
+  `(if ,turn-id (bt2:with-lock-held (*turn-images-lock*) ,@body) ,none))
+
 (defvar *turn-images* (make-hash-table :test #'equal)
   "TURN-ID -> its attachments as (ANCHOR . IMAGES) groups in the order each
 anchor's first image arrived: ANCHOR NIL for the turn's inputs, a tool call
@@ -3868,10 +3875,9 @@ oldest first.")
 (defun turn-images (turn-id)
   "TURN-ID's staged attachments: the (ANCHOR . IMAGES) groups, oldest group
 first, each group's images oldest first."
-  (when turn-id
-    (bt2:with-lock-held (*turn-images-lock*)
-      (loop for (anchor . images) in (gethash turn-id *turn-images*)
-            collect (cons anchor (copy-list images))))))
+  (with-turn-images-held (turn-id)
+    (loop for (anchor . images) in (gethash turn-id *turn-images*)
+          collect (cons anchor (copy-list images)))))
 
 (defun fitted-attachment (image)
   "IMAGE, a (MEDIA-TYPE . BASE64) attachment, as a provider takes it
@@ -3905,24 +3911,21 @@ a paste, a room's attachment and a LOOK reach the model by this one door."
 (defun forget-turn-images (turn-id)
   "Drop TURN-ID's attachments. Their horizon is the turn, so the entry dies
 with it rather than holding megabytes of base64 for the life of the image."
-  (when turn-id
-    (bt2:with-lock-held (*turn-images-lock*)
-      (remhash turn-id *turn-images*)
-      (remhash turn-id *turn-image-refusals*))))
+  (with-turn-images-held (turn-id)
+    (remhash turn-id *turn-images*)
+    (remhash turn-id *turn-image-refusals*)))
 
 (defun withhold-turn-images (turn-id note-fn)
   "Replace TURN-ID's staged images with their notes, group by group
 (context.lisp WITHHOLD-IMAGE-GROUPS): the rounds after a provider refused
 them carry the note where each image was and never the refused bytes
 again. => the images withheld, zero when none were staged."
-  (if (null turn-id)
-      0
-      (bt2:with-lock-held (*turn-images-lock*)
-        (multiple-value-bind (groups count)
-            (withhold-image-groups (gethash turn-id *turn-images*) note-fn)
-          (when (plusp count)
-            (setf (gethash turn-id *turn-images*) groups))
-          count))))
+  (with-turn-images-held (turn-id 0)
+    (multiple-value-bind (groups count)
+        (withhold-image-groups (gethash turn-id *turn-images*) note-fn)
+      (when (plusp count)
+        (setf (gethash turn-id *turn-images*) groups))
+      count)))
 
 (defvar *turn-image-refusals* (make-hash-table :test #'equal)
   "TURN-ID -> how many requests carrying that turn's images a provider failed,
@@ -3932,27 +3935,22 @@ second for the rest of the turn.")
 (defun turn-image-refusals (turn-id)
   "How many requests carrying TURN-ID's images have failed this turn; zero
 with no turn."
-  (if (null turn-id)
-      0
-      (bt2:with-lock-held (*turn-images-lock*)
-        (gethash turn-id *turn-image-refusals* 0))))
+  (with-turn-images-held (turn-id 0)
+    (gethash turn-id *turn-image-refusals* 0)))
 
 (defun count-turn-image-refusal (turn-id)
   "Count one more failed request that carried TURN-ID's images. => the new
 count, zero with no turn."
-  (if (null turn-id)
-      0
-      (bt2:with-lock-held (*turn-images-lock*)
-        (incf (gethash turn-id *turn-image-refusals* 0)))))
+  (with-turn-images-held (turn-id 0)
+    (incf (gethash turn-id *turn-image-refusals* 0))))
 
 (defun turn-images-withheld-p (turn-id)
   "True once a provider has refused TURN-ID's images this turn — the mark
 WITHHOLD-TURN-IMAGES leaves, read by LOOK to refuse the next image with
 the reason rather than send it into the same refusal."
-  (when turn-id
-    (bt2:with-lock-held (*turn-images-lock*)
-      (loop for (nil . images) in (gethash turn-id *turn-images*)
-            thereis (and (find :withheld images :key #'car) t)))))
+  (with-turn-images-held (turn-id)
+    (loop for (nil . images) in (gethash turn-id *turn-images*)
+          thereis (and (find :withheld images :key #'car) t))))
 
 ;;; --- the prompt a turn runs under -------------------------------------------
 ;;; The conversation's pinned prompt (context.lisp, the prompt a conversation
@@ -4050,8 +4048,7 @@ is pure."
        ;; The live turn's attachments are ambient state too, and this is the
        ;; seam that freezes ambient state: the engine reads the frozen groups.
        :visible-images
-       (turn-images (and *current-durable-turn*
-                         (nlk:durable-turn-turn-id *current-durable-turn*)))))))
+       (turn-images (eval-turn-id))))))
 
 (defparameter +context-warning+
   "[context ~a of ~a, past the ~d% line: the next request evicts your oldest history unless it shrinks first. (context :drop SPANS :keep IDS :note TEXT) shrinks it in one call, and the note keeps what you still need. One warning until it shrinks.]"
@@ -4244,8 +4241,7 @@ for it: it is recorded and its calls run exactly as a provider's would be.
 Background work that exited since the last boundary is read first, in a
 round of the harness's own (READ-TURN-EXITS): before the provider is asked,
 and where a terminal answer would end the turn."
-   (when *current-durable-turn*
-     (nlk:ensure-turn-not-cancelled *current-durable-turn*))
+   (nlk:ensure-turn-not-cancelled *current-durable-turn*)
    ;; The boundary before a provider round: the turn's start, or the tool
    ;; batch just run. An exit that landed meanwhile is read first, so the
    ;; provider is asked with its value in hand.
@@ -4356,8 +4352,7 @@ and where a terminal answer would end the turn."
               (provider-usage-fact-args usage)))
            (notify-turn-facts-committed))
          ;; The cancel is honored only after the round durably closed.
-         (when *current-durable-turn*
-           (nlk:ensure-turn-not-cancelled *current-durable-turn*))
+         (nlk:ensure-turn-not-cancelled *current-durable-turn*)
          (let ((calls (message-tool-calls message)))
            (cond
              (calls

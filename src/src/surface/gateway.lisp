@@ -780,8 +780,7 @@ organism.loaded arm, NLK:LOAD-SOURCE :ONLY)."
                                                              "label" (cdr pair)))
                                               definitions)
                            :opt "session_id" (eval-session-id)
-                           :opt "turn_id" (and *current-durable-turn*
-                                               (nlk:durable-turn-turn-id *current-durable-turn*))
+                           :opt "turn_id" (eval-turn-id)
                            :opt "call_id" *executing-tool-call-id*
                            :opt "comment" *snippet-note*))))
 
