@@ -43,10 +43,12 @@ carries it, handed to MODEL the way the loop thread hands it."
 (deftest a-live-only-subscription-streams-without-a-replay (with-temp-gateway (port))
   ;; The preview lane's follow at the gateway: the entry joins the
   ;; session's live stream and gets no replay and no band snapshot; the
-  ;; attached entry beside it is served as ever.
+  ;; attached entry beside it is served as ever. The turn starts once the
+  ;; gateway holds the follow: what went out before, no replay brings back.
   (seed-user-inputs "s-att" '("attached history"))
   (seed-user-inputs "ag-follow" '("followed history"))
-  (is-let* ((frames (frames-while (ws port :subscribe '("s-att" ("ag-follow" :live-only t)))
+  (is-let* ((frames (frames-while (ws port :subscribe '("s-att" ("ag-follow" :live-only t))
+                                           :await-subscription t)
                       (nlk:admit-turn "ag-follow" "ag-follow-cmd" "live prompt")
                       (nle::publish-turn-facts "ag-follow" 0)))
             (resumed (frames-of-type frames "session_stream_resumed"))

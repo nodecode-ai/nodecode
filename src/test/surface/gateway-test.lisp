@@ -92,12 +92,13 @@ initializes its terminal widgets."
     (is (not (bt2:thread-alive-p handler-thread)))))
 
 (defun ws-collect-frames (url &key (timeout 2) send-commands subscribe pid headers
-                                   (token "test-token"))
+                                   (token "test-token") await-subscription)
   "Open a WS client to URL, its upgrade carrying HEADERS and its connect TOKEN,
 subscribe it to SUBSCRIBE (SUBSCRIBE-COMMAND's list, PID its pid) and call
-SEND-COMMANDS with it when given, collect every frame until no frame arrives
-within TIMEOUT seconds, and return the list of parsed JSON hash-tables in
-arrival order."
+SEND-COMMANDS with it when given -- with AWAIT-SUBSCRIPTION, once the gateway
+holds the subscription -- collect every frame until no frame arrives within
+TIMEOUT seconds, and return the list of parsed JSON hash-tables in arrival
+order."
   (let ((inbox (sb-concurrency:make-mailbox :name "frames"))
         (ws (wsd:make-client url :additional-headers headers))
         (commands-sent nil))
@@ -115,8 +116,18 @@ arrival order."
                                          "test-client" "test" "test" "linux" "test-instance"
                                          :operator-token token)))
                           ((string= type "gateway_connect_ack")
-                           (setf commands-sent t)
                            (when subscribe (send-command ws (subscribe-command subscribe :pid pid)))
+                           (unless (and subscribe await-subscription)
+                             (setf commands-sent t)
+                             (when send-commands (funcall send-commands ws))))
+                          ;; The running-session map closes every subscribe
+                          ;; (SEND-SESSION-ACTIVITY-SNAPSHOT), the peer by then on
+                          ;; each of its sessions. A body that publishes in-process
+                          ;; right after the send can beat the gateway to the
+                          ;; subscribe: its facts go out to no one, and a live-only
+                          ;; entry has no replay to bring them back.
+                          ((equal "organism.activity" (frame-type parsed))
+                           (setf commands-sent t)
                            (when send-commands (funcall send-commands ws))))))
                 (sb-concurrency:send-message inbox parsed))))
     ;; Start the connection in a thread so we can drive it from here.
@@ -129,12 +140,14 @@ arrival order."
       (ignore-errors (bt2:join-thread conn-thread))
       (nconc frames (sb-concurrency:receive-pending-messages inbox)))))
 
-(defmacro frames-while ((ws port &key (timeout 2) subscribe pid) &body body)
+(defmacro frames-while ((ws port &key (timeout 2) subscribe pid await-subscription)
+                        &body body)
   "Every frame one client of PORT's gateway sees while BODY, with WS bound
 to the client, drives it after the handshake — WS-COLLECT-FRAMES with the
-URL and the sender's lambda spelled once."
+URL and the sender's lambda spelled once. A BODY that publishes in-process
+rather than on WS asks AWAIT-SUBSCRIPTION, or it races the subscribe."
   `(ws-collect-frames (format nil "ws://127.0.0.1:~d/gateway" ,port) :timeout ,timeout
-                      :subscribe ,subscribe :pid ,pid
+                      :subscribe ,subscribe :pid ,pid :await-subscription ,await-subscription
                       :send-commands (lambda (,ws) (declare (ignorable ,ws)) ,@body)))
 
 (defun feed-wire (model wire)
