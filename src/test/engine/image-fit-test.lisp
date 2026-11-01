@@ -9,9 +9,8 @@
 ;;;;       wrote; what the writer writes reads back as its own pixels, under
 ;;;;       the checksums an independent encoder computes.
 ;;;;   F2. JPEG, baseline or progressive, decodes red first and gray as one
-;;;;       channel; the EXIF
-;;;;       orientation is read in either byte order, and all eight turn the
-;;;;       pixels upright.
+;;;;       channel; the EXIF orientation is read in either byte order, and
+;;;;       all eight turn the pixels upright.
 ;;;;   F3. The shrink is by area, alpha premultiplied, the shape kept.
 ;;;;   F4. FIT-IMAGE sends an image within both ceilings as itself; past the
 ;;;;       side a photo as JPEG and a flat picture as PNG, upright; past the
