@@ -8200,19 +8200,16 @@ whole dropdown rect). NIL while no lane matches or the window has no room."
                for target = (cons :suggestion (+ top row))
                collect (dropdown-panel-row
                         (append
-                         (list (make-seg :text (if (and (null surface) selected) "> " "  ")
-                                         :tone :user-block :link target)
-                               (make-seg :text (composer-suggestion-text entry)
-                                         :tone :syntax-command :link target))
+                         (list (seg (if (and (null surface) selected) "> " "  ") :user-block :link target)
+                               (seg (composer-suggestion-text entry) :syntax-command :link target))
                          (when (plusp (length alias))
-                           (list (make-seg :text (format nil " (~a)" alias) :tone :muted :link target)))
+                           (list (seg (format nil " (~a)" alias) :muted :link target)))
                          ;; Two columns past the window's widest label, the
                          ;; docked rows' separator: at one, the widest row's
                          ;; alias would run into its description, `/tree
                          ;; (/checkpoints) Browse'.
-                         (list (make-seg :text (format nil "~va" gap "") :tone :user-block :link target)
-                               (make-seg :text (composer-suggestion-detail entry)
-                                         :tone (if selected :user-block :muted) :link target)))
+                         (list (seg (format nil "~va" gap "") :user-block :link target)
+                               (seg (composer-suggestion-detail entry) (if selected :user-block :muted) :link target)))
                         width bg surface
                         ;; The chord this command also answers to, parked
                         ;; at the row's right edge — past the description,
@@ -8238,12 +8235,9 @@ marker with the content stashed for submit-time expansion when large."
     (if (or (> (length normalized) *paste-collapse-max-chars*)
             (> (1+ (count #\Newline normalized)) *paste-collapse-max-lines*))
         (let ((id (incf (chat-model-paste-counter model))))
-          (editor-insert
-           (chat-model-editor model)
-           (format nil "[Paste #~d] " id))
+          (editor-insert (chat-model-editor model) (format nil "[Paste #~d] " id))
           (push (cons id normalized) (chat-model-pastes model)))
-        (editor-insert
-         (chat-model-editor model) normalized))
+        (editor-insert (chat-model-editor model) normalized))
     t))
 
 (defun expand-composer-pastes (model prompt)
@@ -8847,14 +8841,10 @@ live-follow case — previews keep ticking while the selection moves)."
           (on-highlight dialog.on-highlight)
           (now (get-internal-real-time)))
       (when (and row on-highlight
-                 (or (>= (- now dialog.pending-highlight-since)
-                         (* *picker-highlight-rest*
-                            internal-time-units-per-second))
-                     (>= (- now dialog.last-highlight-at)
-                         (* *picker-highlight-throttle*
-                            internal-time-units-per-second))))
-        (setf dialog.pending-highlight nil dialog.last-highlight-at now)
-        (setf nlk:*attribution-label* 'picker-highlight-flush)
+                 (or (>= (since-ms dialog.pending-highlight-since now) (* 1000 *picker-highlight-rest*))
+                     (>= (since-ms dialog.last-highlight-at now) (* 1000 *picker-highlight-throttle*))))
+        (setf dialog.pending-highlight nil dialog.last-highlight-at now
+              nlk:*attribution-label* 'picker-highlight-flush)
         (funcall on-highlight model row)
         t))))
 
@@ -9071,20 +9061,15 @@ best answer first."
   (when (equal (picker-filtered-rows dialog) search)
     (return-from picker-visible-rows rows))
   (memoized (picker-visible-memo dialog) (rows search tab)
-    (let ((shown (if tab
-                     (remove-if-not (lambda (row)
-                                      (let ((match (getf (nth (picker-dialog-tab dialog)
-                                                              (picker-dialog-tabs dialog)) :match)))
-                                        (if match (funcall match row tab) (equal row.key tab))))
-                                    rows)
-                     rows)))
+    (let* ((match (getf (nth (picker-dialog-tab dialog) (picker-dialog-tabs dialog)) :match))
+           (shown (if tab
+                      (remove-if-not (lambda (row) (if match (funcall match row tab) (equal row.key tab))) rows)
+                      rows)))
       (if (zerop (length search))
           shown
           (mapcar #'cdr (stable-sort (loop for row in shown
                                            for score = (and (not row.heading)
-                                                            (search-score
-                                                             search
-                                                             (list row.label row.key row.detail)))
+                                                            (search-score search (list row.label row.key row.detail)))
                                            when score collect (cons score row))
                                      #'> :key #'car))))))
 
@@ -9106,8 +9091,7 @@ heading, which is never chosen. => the seated index."
 
 (defun picker-highlighted-value (dialog)
   "The value of the visible row DIALOG's selection points at, or NIL."
-  (let ((row (selected-of (picker-visible-rows dialog) dialog.selection)))
-    (and row (picker-row-value row))))
+  (when-let (row (selected-of (picker-visible-rows dialog) dialog.selection)) row.value))
 
 (defun picker-seat-top (dialog)
   "Seat DIALOG's highlight on its first row that is no heading, the window
@@ -9581,30 +9565,20 @@ trailing field muted, two spaces between columns."
          (key-width (if columns (first columns) (segs-display-width key-segs)))
          (label-width (if columns (second columns) (segs-display-width label-segs)))
          (mark-width (if columns (third columns) (text-display-width row.mark)))
-         (segs (append
-                (when marker
-                  (list (make-seg :text (if selected "> " "  ") :tone primary)))
-                (when (plusp mark-width)
-                  (list (make-seg :text row.mark :tone row.mark-tone)
-                        (make-seg :text (make-string
-                                         (+ 1 (max 0 (- mark-width (text-display-width row.mark))))
-                                         :initial-element #\Space) :tone primary)))
-                (when (plusp key-width)
-                  (append key-segs
-                          (list (make-seg :text (make-string (+ 2 (max 0 (- key-width (segs-display-width key-segs))))
-                                                            :initial-element #\Space) :tone primary))))
-                label-segs
-                (when (plusp (length detail))
-                  (list (make-seg :text (concatenate 'string
-                                         (make-string (+ 2 (max 0 (- label-width (segs-display-width label-segs))))
-                                                      :initial-element #\Space)
-                                         detail) :tone :muted)))))
+         (segs (flet ((pad (gap want have) (make-string (+ gap (max 0 (- want have))) :initial-element #\Space)))
+                 (append
+                  (when marker (list (seg (if selected "> " "  ") primary)))
+                  (when (plusp mark-width)
+                    (list (seg row.mark row.mark-tone) (seg (pad 1 mark-width (text-display-width row.mark)) primary)))
+                  (when (plusp key-width)
+                    (append key-segs (list (seg (pad 2 key-width (segs-display-width key-segs)) primary))))
+                  label-segs
+                  (when (plusp (length detail))
+                    (list (seg (concatenate 'string (pad 2 label-width (segs-display-width label-segs)) detail)
+                               :muted))))))
          (left (and selected room (plusp (length row.path)) (- room (segs-display-width segs) 2))))
     (if (and left (>= left 8))
-        (append segs (list (make-seg :text (concatenate 'string "  "
-                                                        (clipped-path (home-abbreviated row.path)
-                                                                      left))
-                                     :tone :muted)))
+        (append segs (list (seg (concatenate 'string "  " (clipped-path (home-abbreviated row.path) left)) :muted)))
         segs)))
 
 ;;; The two panel reads that are still derived. Everything else the chrome
@@ -9739,10 +9713,9 @@ one shows it (PICKER-TAB-PICK)."
         for index from 0
         for on = (= index (picker-dialog-tab dialog))
         for text = (format nil "~a~@[  ~:d~]" (getf tab :label) (getf tab :count))
-        when (plusp index) collect (make-seg :text "  " :tone :muted)
-        collect (make-seg :text (if (and on none) (format nil "[~a]" text) (format nil " ~a " text))
-                          :tone (style-for-tone (if on :sheet-chip-on :sheet-chip))
-                          :link (cons :dialog-tab index))))
+        when (plusp index) collect (seg "  " :muted)
+        collect (seg (if (and on none) (format nil "[~a]" text) (format nil " ~a " text))
+                     (style-for-tone (if on :sheet-chip-on :sheet-chip)) :link (cons :dialog-tab index))))
 
 (defun docked-dialog-header-rows (dialog width surface count)
   "The panel header, truncated to COUNT rows: the tab row at column 0, a
@@ -9763,14 +9736,12 @@ dialog's SUMMARY-ROWS from there -- a blank."
          (rows (append
                 (list (docked-panel-row
                        (append (when (or (not tabs) (plusp (length dialog.title)))
-                                 (list (make-seg :text (format nil " ~a ~:[~; ~]" dialog.title tabs)
-                                                 :tone title-tone :bold bold)))
+                                 (list (seg (format nil " ~a ~:[~; ~]" dialog.title tabs) title-tone :bold bold)))
                                (docked-dialog-tab-segs dialog)
                                (when (and (not tabs) (plusp (length dialog.context)))
-                                 (list (make-seg :text dialog.context :tone :muted))))
+                                 (list (seg dialog.context :muted))))
                        width surface :col 0
-                       :right (when (and tabs (plusp (length context)))
-                                (list (make-seg :text context :tone :muted))))
+                       :right (when (and tabs (plusp (length context))) (list (seg context :muted))))
                       (docked-panel-row '() width surface))
                 (or (loop for segs in dialog.summary-rows
                           collect (docked-panel-row segs width surface :mark *dialog-row-overflow-mark*))
@@ -9868,8 +9839,7 @@ is the bottom one's, an empty or missing tone the panel's SURFACE."
                           for pair = (first pairs)
                           for run = (or (position pair pairs :test-not #'equal) (length pairs))
                           while pairs
-                          collect (make-seg :text (make-string run :initial-element #\▀)
-                                            :tone (vstyle :fg (car pair) :bg (cdr pair))))))))
+                          collect (seg (make-string run :initial-element #\▀) (vstyle :fg (car pair) :bg (cdr pair))))))))
 
 (defun picture-segs (picture surface &aux (rows (getf picture :rows)))
   "PICTURE's lines as segment lists on a panel of SURFACE: in its palette's
@@ -9954,13 +9924,12 @@ result breaks to, a blank, the muted context -- or NIL for a list body."
                          (if url
                              ;; a blank row ahead of each part, so the clock,
                              ;; the page, the address and the code stand apart
-                             (loop for part in (list (list (list (make-seg :text (format nil "Sign in at ~a" (sign-in-page-label url))
-                                                                           :tone :foreground :link url)))
+                             (loop for part in (list (list (list (seg (format nil "Sign in at ~a" (sign-in-page-label url))
+                                                                      :foreground :link url)))
                                                      (when (find-if (lambda (c) (member c '(#\? #\#))) url)
                                                        (loop for piece in (wrapped-lines url room)
-                                                             collect (list (make-seg :text piece :tone :muted :link url))))
-                                                     (and code (list (list (make-seg :text (format nil "Code ~a" code)
-                                                                                     :tone :foreground :bold t)))))
+                                                             collect (list (seg piece :muted :link url))))
+                                                     (and code (list (list (seg (format nil "Code ~a" code) :foreground :bold t)))))
                                    when part nconc (cons '() part))
                              (loop for line in (split-lines (connect-dialog-result-message dialog))
                                    nconc (wrapped-lines line room))))
@@ -10045,10 +10014,9 @@ row (DOCKED-PANEL-ROW's LEAD): a picture beside it."
                                                  (if thumb-height
                                                      (let ((kept (clip-segs segs lane :mark *dialog-row-overflow-mark*)))
                                                        (append kept
-                                                               (list (make-seg :text (make-string (max 0 (- lane (segs-display-width kept)))
-                                                                                                  :initial-element #\Space)
-                                                                               :tone :muted)
-                                                                     (make-seg :text " " :tone (if surface (vstyle :bg surface) :muted)))))
+                                                               (list (seg (make-string (max 0 (- lane (segs-display-width kept))) :initial-element #\Space)
+                                                                          :muted)
+                                                                     (seg " " (if surface (vstyle :bg surface) :muted)))))
                                                      segs)
                                                  width surface
                                                  :col 0
@@ -10131,8 +10099,8 @@ the band's tail, the transcript/composer gap, and the composer."
                             ;; label, or a HINT's two-space-separated runs.
                             (if said
                                 (docked-panel-row
-                                 (list (make-seg :text (substitute #\Space #\Newline (composer-status-text said))
-                                                 :tone (if (composer-status-error-p said) :danger :muted)))
+                                 (list (seg (substitute #\Space #\Newline (composer-status-text said))
+                                            (if (composer-status-error-p said) :danger :muted)))
                                  width surface :mark *dialog-row-overflow-mark*)
                             (docked-panel-row
                              (fitted-hint-segs
@@ -10153,12 +10121,9 @@ the band's tail, the transcript/composer gap, and the composer."
                                                           `(("ctrl+f" . ,verb)))
                                       collect (if (consp unit)
                                                   (let ((target (target (car unit))))
-                                                    (list (make-seg :text (format nil " ~a " (car unit))
-                                                                    :tone (style-for-tone :key-chip)
-                                                                    :link target)
-                                                          (make-seg :text (format nil " ~a" (cdr unit))
-                                                                    :tone (tone target) :link target)))
-                                                  (list (make-seg :text unit :tone :muted)))))
+                                                    (list (seg (format nil " ~a " (car unit)) (style-for-tone :key-chip) :link target)
+                                                          (seg (format nil " ~a" (cdr unit)) (tone target) :link target)))
+                                                  (list (seg unit :muted)))))
                               (docked-panel-room width))
                              width surface :mark *dialog-row-overflow-mark*))
                             (docked-panel-row '() width surface))
@@ -10183,12 +10148,9 @@ so the hints that do not fit drop from its end."
   ;; sentence -- and the row's own cut mark says where it stops.
   (dolist (unit units)
     (let ((width (+ (segs-display-width unit) (if segs 2 0))))
-      (when (and segs (> (+ used width) room))
-        (return))
-      (when segs
-        (push (make-seg :text "  " :tone :muted) segs))
-      (dolist (seg unit)
-        (push seg segs))
+      (when (and segs (> (+ used width) room)) (return))
+      (when segs (push (seg "  " :muted) segs))
+      (setf segs (revappend unit segs))
       (incf used width)))
   (nreverse segs))
 
@@ -10416,15 +10378,15 @@ slots the panel already reads."
           dialog.hint (or (getf spec :walk-hint) dialog.hint)))
   ;; The key step asks for the provider's key by name (`Paste your Google API
   ;; key.'), so the name no longer sits under the field.
-  (when (eq step :api-key)
-    (setf dialog.subtitle (format nil dialog.subtitle (connect-provider-name dialog)
-                                  (connect-dialog-key-page dialog))))
   ;; The address step asks for its blank by name, over the field that bears
-  ;; the name.
-  (when (eq step :address)
-    (let ((blank (first (connect-dialog-blanks dialog))))
-      (setf dialog.subtitle (format nil dialog.subtitle (connect-provider-name dialog) blank)
-            dialog.input-label blank)))
+  ;; the name. The check says how long it waits.
+  (when (eq step :address) (setf dialog.input-label (first (connect-dialog-blanks dialog))))
+  (when (member step '(:api-key :address :checking))
+    (setf dialog.subtitle (format nil dialog.subtitle (connect-provider-name dialog)
+                                  (ecase step
+                                    (:api-key (connect-dialog-key-page dialog))
+                                    (:address dialog.input-label)
+                                    (:checking *provider-models-fetch-timeout-seconds*)))))
   ;; The check says how long it waits and counts up to it, as the import's
   ;; does: a static `checking...' would read as a hang. The tick repaints
   ;; when the tenth shown moves.
@@ -10436,9 +10398,6 @@ slots the panel already reads."
                                 (declare (ignore model))
                                 (unless (equal now shown)
                                   (setf shown now))))))
-  (when (eq step :checking)
-    (setf dialog.subtitle (format nil dialog.subtitle (connect-provider-name dialog)
-                                  *provider-models-fetch-timeout-seconds*)))
   ;; The two text steps are the picker's input mode (a step with no
   ;; :INPUT-LABEL leaves it): the id step reopens on the id a failed save
   ;; returned from, under its rule line; the key step starts empty, under
@@ -10520,14 +10479,13 @@ the one it dials (CATALOG-ADDRESS-TEMPLATE)."
 provider's id, a provider's key. Any other row moves nothing."
   (when (or (getf value :custom) (getf value :provider))
     (connect-clear-credential dialog)
-    (if (getf value :custom)
-        (setf (connect-dialog-custom-p dialog) t)
-        (setf (connect-dialog-provider-id dialog) (getf value :provider)
-              (connect-dialog-provider-label dialog) (picker-row-label row)
-              (connect-dialog-key-page dialog) (getf value :key-page)))
-    (if (getf value :custom)
-        (connect-enter-step dialog :custom-provider)
-        (connect-ask-blanks-or-key dialog))))
+    (cond ((getf value :custom)
+           (setf (connect-dialog-custom-p dialog) t)
+           (connect-enter-step dialog :custom-provider))
+          (t (setf (connect-dialog-provider-id dialog) (getf value :provider)
+                   (connect-dialog-provider-label dialog) (picker-row-label row)
+                   (connect-dialog-key-page dialog) (getf value :key-page))
+             (connect-ask-blanks-or-key dialog)))))
 
 (defun connect-install (model dialog row &key key &aux (value (picker-row-value row))
                                                      (offer (getf value :install))
@@ -10585,12 +10543,11 @@ moved."
                       (if (not (connect-on-step-p model dialog :installing))
                           :quiet
                           (let ((refused (or (off-loop-failure answer) (getf answer :refused))))
-                            (if refused
-                                (progn
-                                  (connect-restart dialog)
-                                  (show-status model (format nil "~a was not installed: ~a" (getf offer :cell) refused)
-                                               :error-p t))
-                                (go-on model (getf answer :commands)))
+                            (cond (refused
+                                   (connect-restart dialog)
+                                   (show-status model (format nil "~a was not installed: ~a" (getf offer :cell) refused)
+                                                :error-p t))
+                                  (t (go-on model (getf answer :commands))))
                             (render-state model))))))))
   t)
 
