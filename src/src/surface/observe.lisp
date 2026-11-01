@@ -933,10 +933,8 @@ and the costliest sessions."
                                 (price-tier rates (if (plusp band) (1+ (nth (1- band) sizes)) 0))
                                 :input-tokens input :cached-input-tokens cached
                                 :cache-write-tokens write)))
-        (loop for (day . row) in (getf spend :days)
-              do (setf (gethash day days) (usage-sum-of row)))
-        (loop for (folder . row) in (getf spend :folders)
-              do (setf (gethash folder folders) (usage-sum-of row)))
+        (loop for (table . key) in (list (cons days :days) (cons folders :folders))
+              do (loop for (name . row) in (getf spend key) do (setf (gethash name table) (usage-sum-of row))))
         (multiple-value-bind (ends started) (usage-turns since)
           (loop for (folder turns failures ms) in ends
                 for sum = (sum-of folders folder)
