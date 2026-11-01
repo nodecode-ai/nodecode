@@ -93,6 +93,33 @@ exist to prevent."
         (is (equal "coder" (nlk:profile-record-source (nlk:find-profile "twin")))))
       (is (signals-error nlk:profile-error (nlk:profile-create "other" :from "nobody"))))))
 
+(deftest a-clone-carries-the-cells-the-hub-installed ()
+  ;; Peas, 2026-11-01: `nodecode profile create insight' cloned a home whose
+  ;; config.jsonc runs on claude-code, and left behind nodecode-claude-code,
+  ;; a hub clone (`nodecode add nc://claude-code') carrying a .hub marker and
+  ;; no .shipped one, so the new profile's first turn failed `provider
+  ;; claude-code is not one this box knows'. A hub clone is the installer's
+  ;; as much as a shipped copy is (INSTALLER-PUT-P): it comes along, marker
+  ;; and all, so an update still knows its pin. The operator's own folder
+  ;; still stays home, as before.
+  (profile-test-seed-every-entry nlk:*home*)
+  (let ((hub (merge-pathnames "cells/nodecode-claude-code/" nlk:*home*))
+        (pin (format nil "https://github.com/nodecode-ai/cells~%38148e7~%providers/nodecode-claude-code~%")))
+    (write-temp-file (merge-pathnames "nodecode-claude-code.asd" hub) "(defsystem \"nodecode-claude-code\")")
+    (write-temp-file (merge-pathnames nlk::+hub-marker+ hub) pin)
+    (let* ((home (nlk:profile-create "insight"))
+           (copy (merge-pathnames "cells/nodecode-claude-code/" home)))
+      (is (probe-file (merge-pathnames "nodecode-claude-code.asd" copy)) "the hub clone is carried")
+      (is (null (nlk:symlink-target copy)) "as a copy of its own, not a link into the source home")
+      ;; with its pin, so an update still knows where it came from
+      (is (equal pin (uiop:read-file-string (merge-pathnames nlk::+hub-marker+ copy))))
+      (is (equal '("https://github.com/nodecode-ai/cells" "38148e7" "providers/nodecode-claude-code")
+                 (nlk::hub-pin "nodecode-claude-code" (merge-pathnames "cells/" home))))
+      (is (find "cells/nodecode-claude-code" (gethash "carried" (nlk::read-manifest home))
+                :test #'equal))
+      ;; the operator's own folder still stays home
+      (is (null (uiop:directory-exists-p (merge-pathnames "cells/own/" home)))))))
+
 (deftest profile-wrapper-is-written-and-removed-with-the-profile (with-temp-trees ((bin "bin")))
   (setf nlk:*wrapper-directory* bin)
   (with-stubbed-fdefinition (nlk::organism-binary () "/opt/nodecode/nodecode")

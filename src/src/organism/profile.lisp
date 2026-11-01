@@ -325,7 +325,8 @@ into HOME, and answer the member's name when there was one to take out."
   ;; CLONE says what it starts with, and :SETTINGS is the default because a
   ;; second profile almost always wants the first one's abilities:
   ;; config.jsonc (without its channels — DROP-CLONED-CHANNELS), SOUL.md,
-  ;; themes and the installed peripherals, plus the rows +HOME-ENTRIES+ marks
+  ;; themes and the installed peripherals (shipped and hub cells alike, so
+  ;; the copied config's providers come along), plus the rows +HOME-ENTRIES+ marks
   ;; SHARED — secrets/ and auth.json — and the knowledge cells, which are LINKED
   ;; rather than copied: they belong to the operator and to the project, not
   ;; to a home, so the new profile reads the one copy and the two homes'
@@ -404,13 +405,20 @@ into HOME, and answer the member's name when there was one to take out."
                           (push entry carried)))))
           ;; A knowledge cell is shared: linked, one folder for both homes,
           ;; written under its folder lock (scribe.lisp).
+          ;; Whatever the installer put there is carried: a shipped link as a
+          ;; link, and a copy with its marker -- a shipped copy, or a hub clone
+          ;; (`nodecode add nc://claude-code') -- as a copy, marker and all
+          ;; (INSTALLER-PUT-P). A hub clone left behind is a provider or a
+          ;; tool the copied config.jsonc still names: a profile cloned from a
+          ;; home on claude-code answered its first turn `provider claude-code
+          ;; is not one this box knows'.
           (loop with cells = (merge-pathnames "cells/" source)
                 for entry in (and (uiop:directory-exists-p cells) (uiop:subdirectories cells))
                 for name = (car (last (pathname-directory entry)))
                 for destination = (merge-pathnames (format nil "cells/~a/" name) staging)
                 for link = (symlink-target entry)
                 for how = (cond (link (make-symlink link destination) :carried)
-                                ((probe-file (merge-pathnames +installed-marker+ entry))
+                                ((installer-put-p name cells)
                                  (copy-tree-preserving entry destination) :carried)
                                 ((and (eq clone :settings) (knowledge-folder-p entry))
                                  ;; Windows, where MAKE-SYMLINK answers NIL, copies
