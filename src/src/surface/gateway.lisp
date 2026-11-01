@@ -4166,8 +4166,7 @@ the longest directory's (a path ending in /) that URI lies under."
                            (dispatch-command ws msg subscription-ref accepted-scopes)
                            (let ((frame (nlk:decode-sync-message msg)))
                              (unless (eq :gateway-connect frame.type)
-                               (error 'nlk:protocol-error :code :connect_required
-                                      :message "gateway_connect must complete before commands"))
+                               (nlk::protocol-refuse :connect_required "gateway_connect must complete before commands"))
                              (setf accepted-scopes
                                    (nlk::validate-gateway-connect
                                     frame.payload nonce
