@@ -619,7 +619,8 @@ state to give back, so nothing is deferred."
 ;; The default performer, so a command line, a channel lane and the model's
 ;; eval all reach the exec through the one call shape that owns it. A TUI
 ;; shell rebinds this for the length of its run: it has a terminal to
-;; restore and a store to close first (client.lisp, ui.lisp).
+;; restore and a store to close first (tui/entry.lisp
+;; CALL-WITH-PROFILE-SWITCH).
 (setf *profile-switch-performer* #'exec-profile-switch)
 
 ;;; --- the boot entry --------------------------------------------------------

@@ -506,7 +506,7 @@ next prompt.")
 ;;; The first frame then takes that screen for
 ;;; this shell rather than entering the alternate screen again, which clears
 ;;; it and would leave a blank terminal for as long as the paint takes. Set
-;;; once, by the launch that knows it is a successor (ui.lisp,
+;;; once, by the launch that knows it is a successor (tui/entry.lisp,
 ;;; *HANDOVER-LAUNCH*).
 (defvar *inherit-screen* nil
   "T in an image painting a screen it inherited: a switch handed this

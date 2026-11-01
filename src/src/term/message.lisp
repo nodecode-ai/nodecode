@@ -44,7 +44,7 @@
   ;; may spend a bounded moment here to put the answer in that frame instead
   ;; of a placeholder the next frame replaces. Bounded is the whole contract:
   ;; the wait is short enough to be invisible and must never be a peer's
-  ;; latency (a launcher's hand-over, ui.lisp DECIDE-FOLDER-BEHIND-THE-FRAME,
+  ;; latency (a launcher's hand-over, tui/entry.lisp DECIDE-FOLDER-BEHIND-THE-FRAME,
   ;; waits on the frame this precedes). The term layer knows nothing about
   ;; what is being awaited.
   (:documentation "A bounded settle a model may take before this process

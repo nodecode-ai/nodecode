@@ -234,7 +234,7 @@ first pass: a shorter log replays whole about as fast.")
 
 (defparameter +replay-seed-kinds+ (list nlk::+kind-turn-usage+)
   "The kinds a first pass carries from before its turns: the facts the
-shell's fold sums across the whole session (ui.lisp INGEST-TURN-USAGE),
+shell's fold sums across the whole session (tui/transcript/ingest.lisp INGEST-TURN-USAGE),
 which its header reads beside the title the session's first prompt names
 (SESSION-DISPLAY-TITLE), the one other fact it carries.")
 
@@ -760,7 +760,7 @@ attached peer, through the :FRAME point like every live frame."
   "NLK:SOURCE-LOADED while this gateway serves — START-GATEWAY advises the
 seam with this: every attached shell is sent one
 organism.loaded frame naming PATH and DEFINITIONS ((OPERATOR . LABEL)
-...), and evaluates them from its own copy of the file (client.lisp's
+...), and evaluates them from its own copy of the file (tui/client-update.lisp's
 organism.loaded arm, NLK:LOAD-SOURCE :ONLY)."
   ;; Only the names cross the wire. Rides the :FRAME point like a notice,
   ;; session-less, on the calling thread: the image is one, so the frame
@@ -1109,7 +1109,7 @@ item_delta wire shape."
 ;;; so far, which the live deltas behind it append to.
 ;;;
 ;;; Retention: live-only. A row leaves when the fact that seats it is
-;;; published -- the pairing a shell's fold makes (ui.lisp INGEST-MESSAGE-FACT,
+;;; published -- the pairing a shell's fold makes (tui/transcript/ingest.lisp INGEST-MESSAGE-FACT,
 ;;; INGEST-TOOL-CALL-FACT, INGEST-ATTEMPT-VOIDED-FACT) -- and every row with
 ;;; the turn's end.
 
@@ -1137,7 +1137,7 @@ attempt, each of its calls, and the turn's end.")
 
 (defun stream-partial-delta (partial turn-id delta)
   "Fold one item_delta's DELTA, of TURN-ID, into PARTIAL as a shell's fold
-does (client.lisp APPLY-GATEWAY-EVENT): text and thinking onto the newest
+does (tui/client.lisp APPLY-GATEWAY-EVENT): text and thinking onto the newest
 row when it is of their kind, a call's fragments onto its stream index's."
   (unless (equal turn-id partial.turn-id)
     (setf partial.turn-id turn-id partial.rows '() partial.reset nil))
@@ -4742,7 +4742,7 @@ USOCKET:ADDRESS-IN-USE-ERROR."
 ;;; closed the gateway's own local WS peer at every 20s of idle, forcing a
 ;;; reconnect + full-session replay cycle that promoted ~15MB/min of floating
 ;;; garbage (the 328MB-RSS incident). The WS client now pings inside that window
-;;; (*sync-keepalive-seconds*, client.lisp), so this value is a backstop that
+;;; (*sync-keepalive-seconds*, tui/client-update.lisp), so this value is a backstop that
 ;;; reaps genuinely dead peers and idle HTTP keep-alive connections, not the
 ;;; liveness mechanism. It must stay comfortably above the ping cadence.
 (defparameter *gateway-connection-read-timeout* 75
@@ -5030,7 +5030,7 @@ back after them (NLK:TRIM-MEMORY)."
           *gateway-operator-token* nil))
   t)
 
-;;; The headless serve entry lives in client.lisp (SERVE-ORGANISM-CANDIDATE):
+;;; The headless serve entry lives in tui/client-session.lisp (SERVE-ORGANISM-CANDIDATE):
 ;;; it shares the ownership boot spine with the foreground entry and adds
 ;;; election etiquette (probe first, lose quietly on STORE-IN-USE), which the
 ;;; old START-GATEWAY-ORGANISM here lacked — that entry served without the
@@ -5049,7 +5049,7 @@ back after them (NLK:TRIM-MEMORY)."
 ;;; to, so it exits once no turn is in flight and the unit -- systemd's
 ;;; Restart=always, launchd's KeepAlive through the launcher -- starts it
 ;;; again on `current'; a shell fronting its organism re-fronts a fresh one
-;;; the same way (client.lisp, the reconnect ladder).
+;;; the same way (tui/client-update.lisp, the reconnect ladder).
 
 (defparameter *idle-poll-seconds* 5
   "How often a restart waiting for an idle moment asks whether a turn is in
