@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """upgrade-proof.py -- a running gateway of the last release lands on the next one.
 
-Usage: upgrade-proof.py CANDIDATE [--from PREVIOUS] [--host URL] [--budget SECONDS] [--keep]
+Usage: upgrade-proof.py CANDIDATE [--from PREVIOUS] [--host URL] [--budget SECONDS]
+                        [--expect-restart] [--keep]
 
 CANDIDATE is the release tarball under proof, nodecode-<label>-<arch>-<os>.tar.gz
 (pack.sh's output), its .sha256 beside it or made here. PREVIOUS is the build a
@@ -24,7 +25,9 @@ and a scratch account (no unit, no service manager it can reach):
   4. (a) Within the budget the gateway serving the store reports CANDIDATE's
      label (/api/gateway/identity): it took the release live, or restarted
      itself onto `current'. A gateway that refused the release and stays on
-     PREVIOUS fails here.
+     PREVIOUS fails here. Under --expect-restart only the restart passes --
+     its build, not only its label, is CANDIDATE's: the proof of a release
+     PREVIOUS cannot take live, which proves nothing when it goes live.
      (b) A shell of CANDIDATE (`nodecode rpc') attaches and a turn on each
      provider completes.
      (c) One organism serves the home: no second gateway is left beside it.
@@ -406,6 +409,8 @@ def main():
     parser.add_argument("--host", default="https://nodecode.ai/dl", help="where a label is fetched")
     parser.add_argument("--budget", type=float, default=180.0,
                         help="seconds from the pointer's move for the gateway to report the candidate")
+    parser.add_argument("--expect-restart", action="store_true",
+                        help="pass only when the gateway restarts onto the candidate, never takes it live")
     parser.add_argument("--keep", action="store_true", help="keep the scratch directory")
     args = parser.parse_args()
 
@@ -507,14 +512,21 @@ def main():
                               f"gateway pid {seen['pid']} reports {seen['version']} (build {seen['build']}); "
                               f"current -> {current}" + "".join(f"\n          notice: {n}" for n in fresh))
                 last = state
-            if seen is not None and label_of(seen["version"]) == candidate:
+            # A gateway that holds the release for its restart may name it
+            # before it runs it: under --expect-restart only its build counts.
+            if seen is not None and label_of(seen["version"]) == candidate and \
+                    (not args.expect_restart or label_of(seen["build"]) == candidate):
                 landed = True
                 break
 
         # 4. What a user meets.
         timeline.note(f"shipped-cell links point into {cell_releases(home, releases)}")
         failures = []
-        if not landed:
+        if not landed and args.expect_restart and seen is not None and label_of(seen["version"]) == candidate:
+            failures.append(f"(a) {args.budget:.0f}s after the pointer moved the gateway reports {candidate} "
+                            f"on build {seen['build']}: it took the release live or never restarted onto it, "
+                            f"and this proof needs a release {previous} refuses live, served after a restart")
+        elif not landed:
             failures.append(f"(a) {args.budget:.0f}s after the pointer moved the gateway still reports "
                             f"{seen and seen['version']}, not {candidate}")
         if not turns(binary, organism_env, work, provider, timeline, "candidate shell:"):
@@ -531,7 +543,8 @@ def main():
             for failure in failures:
                 say("FAIL: " + failure)
             return 1
-        say(f"PASS: {previous} -> {candidate}: the running gateway reports the candidate, "
+        say(f"PASS: {previous} -> {candidate}: the running gateway reports the candidate "
+            f"(build {label_of(seen['build'])}), "
             f"a candidate shell's turns complete, one organism serves")
         return 0
     finally:
