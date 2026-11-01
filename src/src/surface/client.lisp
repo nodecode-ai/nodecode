@@ -3663,8 +3663,9 @@ folder's own among them: => (:COMMANDS ENTRIES), or (:REFUSED WHY)."
   (handler-case
       (progn (gateway-model-http-call model :post "/api/gateway/cells"
                                       (json-object "name" (getf offer :cell) "on" t
-                                                   :opt "commit" (getf offer :commit))
-                                      :read-timeout 300)
+                                                   :opt "commit" (getf offer :commit)
+                                                   "seconds" nlk:*cell-switch-seconds*)
+                                      :read-timeout nlk:*cell-switch-seconds*)
              ;; the folder is in: a reread that fails leaves the lists in hand
              (ignore-errors (fetch-gateway-models model))
              (list :commands (ignore-errors (gateway-command-entries model))))

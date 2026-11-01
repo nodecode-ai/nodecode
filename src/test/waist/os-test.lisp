@@ -536,3 +536,90 @@ process's own, or NIL."
     (setf heard '())
     (ignore-errors (nlk:with-named-wait (7 "a wait that throws") (error "cut short")))
     (is (equal '(("a wait that throws" 7) (nil nil)) (reverse heard)) "it ends when its body throws")))
+
+(deftest wait-seconds-holds-to-adddeadlines-lean-traces ()
+  ;; proofs/AddDeadlines.lean decides what WAIT-SECONDS gives each step of a
+  ;; run under one deadline (givenTrace) and where the run ends (cut): the
+  ;; real WAIT-SECONDS walks the same runs here on a clock of the test's own,
+  ;; each step taking what it is given or its own time, the less, and the
+  ;; step given nothing signals instead of starting. The owner's deadline for
+  ;; a waiter's seconds is the proof's DEADLINE too.
+  (flet ((walk (seconds wants &aux (units internal-time-units-per-second)
+                                   (deadline (nlk::make-wait-deadline (* seconds units) seconds)) (now 0) (given '()))
+           (dolist (want wants (values (reverse given) (/ now units) nil))
+             (destructuring-bind (bound took) want
+               (handler-case (let ((seconds (nlk:wait-seconds bound :deadline deadline :now now)))
+                               (push seconds given)
+                               (incf now (* units (min seconds took))))
+                 (nlk:wait-deadline-passed ()
+                   (return (values (reverse (cons 0 given)) (/ now units) t))))))))
+    ;; trace100, trace100_ends: the indexes, a download cut at its own 20 s,
+    ;; the lock held elsewhere past the deadline, and a clone that never starts
+    (multiple-value-bind (given end signalled) (walk 100 '((10 3) (10 4) (20 25) (nil 1000) (600 5)))
+      (is (equal '(10 10 20 73 0) given))
+      (is (= 100 end))
+      (is signalled "the clone, given nothing, signals instead of starting"))
+    ;; deadline600, trace570, trace570_ends: add's 600 s leave the work 570,
+    ;; and the fetch that would hang is given what is left of them
+    (is (= 570 (nlk:cell-switch-deadline 600)))
+    (multiple-value-bind (given end signalled)
+        (walk (nlk:cell-switch-deadline 600) '((10 1) (10 1) (20 20) (nil 0) (600 1) (600 100000) (600 590)))
+      (is (equal '(10 10 20 548 548 547 0) given))
+      (is (= 570 end))
+      (is signalled))
+    ;; margins
+    (is (equal '(570 30 6 1) (mapcar #'nlk:cell-switch-deadline '(600 60 12 1))))
+    ;; with no deadline every step keeps its own bound, and the lock has none
+    (is (= 600 (nlk:wait-seconds 600 :deadline nil)))
+    (is (null (nlk:wait-seconds nil :deadline nil)))))
+
+(deftest a-wait-deadline-holds-the-sooner-of-two-and-clips-what-runs-under-it ()
+  ;; A deadline inside another ends no later than the outer one; a child of
+  ;; RUN-BOUNDED under it is killed when it runs out, and none starts once it
+  ;; has passed.
+  (nlk:with-wait-deadline (1)
+    (let ((outer nlk:*wait-deadline*))
+      (nlk:with-wait-deadline (60)
+        (is (eq outer nlk:*wait-deadline*) "a later deadline inside leaves the sooner one"))
+      (nlk:with-wait-deadline (nil)
+        (is (eq outer nlk:*wait-deadline*)))))
+  #-win32
+  (let ((started (get-internal-real-time)))
+    (is (eq :timeout (nth-value 2 (nlk:with-wait-deadline (1)
+                                    (nlk:run-bounded '("sleep" "30") :seconds 30)))))
+    ;; the child is given what is left of the deadline, not its own 30 s
+    (is (< (/ (- (get-internal-real-time) started) internal-time-units-per-second) 3)))
+  ;; a child is not started past the deadline
+  (is (search "ran out"
+              (refusal-text nlk:wait-deadline-passed
+                (nlk:with-wait-deadline (1/100)
+                  (sleep 0.05)
+                  (nlk:run-bounded '("true"))))))
+  ;; The time is said to have run out in the step it cut short: a named
+  ;; wait, or a wait for a lock that names itself.
+  #-win32
+  (let ((text (refusal-text nlk:wait-deadline-passed
+                (nlk:with-wait-deadline (1/2)
+                  (nlk:with-named-wait (30 "sleeping in a test")
+                    (nlk:run-bounded '("sleep" "30") :seconds 30))
+                  (nlk:run-bounded '("true"))))))
+    (is (search "ran out while sleeping in a test" text) text))
+  (let ((lock (bt2:make-lock :name "a test's lock"))
+        (held (bt2:make-semaphore))
+        (done (bt2:make-semaphore)))
+    (bt2:make-thread (lambda ()
+                       (bt2:with-lock-held (lock)
+                         (bt2:signal-semaphore held)
+                         (bt2:wait-on-semaphore done :timeout 5)))
+                     :name "holds a test's lock")
+    (bt2:wait-on-semaphore held)
+    (unwind-protect
+         (is (equal "the time ran out while waiting on a test's lock"
+                    (nlk:wait-deadline-reason
+                     (signals-error nlk:wait-deadline-passed
+                       (nlk:with-wait-deadline (1/5)
+                         (nlk:call-with-lock-in-time lock (constantly t) "waiting on a test's lock"))))))
+      (bt2:signal-semaphore done)))
+  ;; a step no wait named is said as none
+  (is (null (nlk:wait-deadline-reason (make-condition 'nlk:wait-deadline-passed :seconds 1))))
+  (is (equal "cut short" (nlk:wait-deadline-reason (make-condition 'simple-error :format-control "cut short")))))

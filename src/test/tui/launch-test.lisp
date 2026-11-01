@@ -430,7 +430,7 @@ call made so far, oldest first, as (METHOD PATH BODY-JSON)."
     (is (null (or (search "good-token" said) (search "good-token" text))) "the token is never echoed")
     (flet ((made (method path &optional body)
              (member (list method path body) calls :test #'equal)))
-      (is (made :post "/api/gateway/cells" "{\"name\":\"nodecode-channel-discord\",\"on\":true}") "the cell is switched on")
+      (is (made :post "/api/gateway/cells" "{\"name\":\"nodecode-channel-discord\",\"on\":true,\"seconds\":600}") "the cell is switched on")
       (is (made :post "/api/gateway/config" "{\"path\":[\"channels\",\"discord\"],\"secret\":\"good-token\"}") "the second paste is kept by the organism, by reference")
       (is (made :post "/api/gateway/config" "{\"path\":[\"channels\",\"discord\",\"allowed_channels\"],\"value\":[\"222\"]}") "a number picks the id the token's choices offered")
       (is (< (position '(:post "/api/gateway/config" "{\"path\":[\"channels\",\"discord\",\"allowed_channels\"],\"value\":[\"222\"]}")

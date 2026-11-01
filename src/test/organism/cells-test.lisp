@@ -1861,3 +1861,61 @@ except OSError:
     (sleep 0.2)
     (is (= 1 (symbol-value tries)) "no gateway, no retry")
     (nle::stop-cells)))
+
+#-win32
+(defun write-hanging-git (bin &aux (script (merge-pathnames "git" bin)) (pids (merge-pathnames "pids/" bin)))
+  "A git at BIN/git that hangs on a fetch or a clone, its pid written under
+BIN/pids/ first, and is the real git for anything else. => its native path."
+  (ensure-directories-exist pids)
+  (write-temp-file script
+                   (format nil "#!/bin/sh~%case \" $* \" in~%  *\" fetch \"*|*\" clone \"*) : > '~a'\"$$\"; exec sleep 120;;~%esac~%exec '~a' \"$@\"~%"
+                           (uiop:native-namestring pids)
+                           (string-trim '(#\Newline) (uiop:run-program '("sh" "-c" "command -v git")
+                                                                        :output :string))))
+  (sb-posix:chmod (uiop:native-namestring script) #o755)
+  (uiop:native-namestring script))
+
+#-win32
+(defun hanging-git-alive (bin)
+  "The pids of BIN/git's hung runs that still live."
+  (loop for file in (uiop:directory-files (merge-pathnames "pids/" bin))
+        for pid = (parse-integer (pathname-name file) :junk-allowed t)
+        when (and pid (nlk:pid-live-p pid)) collect pid))
+
+#-win32
+(deftest cells-hub-install-ends-by-its-deadline-whatever-git-does ()
+  ;; proofs/AddDeadlines.lean's `within': a hub install under one deadline
+  ;; ends by it, whatever its steps would take. Here git hangs on every fetch
+  ;; and clone: the kept copy's fetch is given what is left, the clone
+  ;; nothing, and the install signals by the deadline, its runs killed, its
+  ;; staging gone and nothing installed. The kept copy's lock, held by
+  ;; another install, is waited on for what is left of the deadline, where
+  ;; main waited for as long as that install took.
+  (with-temp-trees ((remote "hub-late-remote") (home "hub-late-home") (bin "hub-late-bin"))
+    (let ((root (merge-pathnames "cells/" home)))
+      (multiple-value-bind (git commit)
+          (hub-fixture-repository remote "nl-hub-late"
+                                  (lambda (folder)
+                                    (write-peripheral-folder (merge-pathnames "cells/" folder) "nl-hub-l1")))
+        (let ((entry (hub-offer "nl-hub-l1" git commit :path "cells/nl-hub-l1")))
+          (flet ((late (seconds &aux (started (get-internal-real-time)))
+                   (let ((text (refusal-text error (nlk:with-wait-deadline (seconds) (hub-install entry root)))))
+                     (values (/ (- (get-internal-real-time) started) internal-time-units-per-second) text))))
+            (with-saved-globals ((nlk::*git-program* (write-hanging-git bin)))
+              (multiple-value-bind (took text) (late 2)
+                (is (<= 2 took 7/2) (format nil "the install ended at its deadline: ~,1f s" took))
+                (is (search "ran out while fetching nl-hub-l1 from" text) text))
+              (is (null (hanging-git-alive bin)) "its hung runs are killed")
+              (is (not (nlk:installed-cell-p "nl-hub-l1" root)))
+              (is (null (probe-file (merge-pathnames ".cell-staging/" home))) "its staging goes"))
+            (let* ((held (bt2:make-semaphore))
+                   (holder (bt2:make-thread (lambda ()
+                                              (bt2:with-lock-held (nlk::*hub-repository-lock*)
+                                                (bt2:signal-semaphore held)
+                                                (sleep 4)))
+                                            :name "another install's fetch")))
+              (bt2:wait-on-semaphore held)
+              (multiple-value-bind (took text) (late 1)
+                (is (< took 2) (format nil "the lock was waited on for what was left: ~,1f s" took))
+                (is (search "ran out while waiting for another cell's fetch to finish" text) text))
+              (bt2:join-thread holder))))))))
