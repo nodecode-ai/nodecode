@@ -44,6 +44,15 @@ args: [\"-y\", \"@scope/pkg\", plain]
 inline: {a: 1, b: two}
 nested: {m: {k: 3}, z: 1}
 nested_seq: [1, [2, 3], \"a,b\"]
+wrapped: [
+  1,
+  \"two, 2\",
+  3
+]
+wrapped_map: {
+  k: v,
+  n: 5}
+after_wrapped: 4
 note: |
   first line
   second line
@@ -77,6 +86,9 @@ paragraphs: >
       ((:integer "inline" "a") eql 1 "a flow mapping") ((:string "inline" "b") "two")
       ((:integer "nested" "m" "k") eql 3 "a flow mapping inside a flow mapping")
       ("nested_seq" equalp #(1 #(2 3) "a,b") "a flow sequence inside a flow sequence")
+      ("wrapped" equalp #(1 "two, 2" 3) "a flow sequence over several lines")
+      ((:integer "wrapped_map" "n") eql 5 "a flow mapping over several lines")
+      ((:integer "after_wrapped") eql 4 "the key after a wrapped flow collection still reads")
       ("note" (format nil "first line~%second line~%") "a literal block")
       ("folded" "one two" "a folded block, stripped")
       ("paragraphs" (format nil "first line~%second~%") "a blank line is a newline, with no space after it")))

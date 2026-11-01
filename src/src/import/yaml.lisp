@@ -156,16 +156,31 @@ lines and what it reads back:
   ;;       pirate to sail the digital seas! Yo ho ho!'
   ;;
   ;; so an OPEN quote folds until the line that closes it, and a quote already
-  ;; closed on its line is left exactly as it was. Flow scalars are not
-  ;; claimed: they have their own continuation rules and this reader does not
-  ;; read them.
+  ;; closed on its line is left exactly as it was. A flow collection has its
+  ;; own rule, below: it runs until its brackets close.
   ;; QUOTED-OPEN-P: TEXT opens a quote that nothing in it closes (`''' and `\\\"' do not).
   (flet ((quoted-open-p (text)
            (and (quoted-p text)
                 (not (ppcre:scan "(?s)\\A(?:'(?>(?:[^']|'')*)'|\"(?>(?:[^\"\\\\]|\\\\.)*)\")"
                                  text)))))
-    (if (or (flow-p text) (and (quoted-p text) (not (quoted-open-p text))))
-        text
+    (cond
+      ;; A flow collection written over several lines folds on until its
+      ;; brackets close. Only lines deeper than the key belong to it (or a
+      ;; closing bracket on the key's own column), so a bracket never closed
+      ;; costs its own section, not the document.
+      ((flow-p text)
+       (let ((joined text))
+         (loop for next = (ypeek p)
+               while (and next
+                          (or (> next.indent indent)
+                              (and (= next.indent indent) (find (char next.text 0) "]}")))
+                          (flow-open-p joined))
+               do (setf joined (format nil "~a ~a" joined next.text))
+                  (ynext p))
+         joined))
+      ((and (quoted-p text) (not (quoted-open-p text)))
+        text)
+      (t
         (let ((open (quoted-open-p text))
               (joined text))
           ;; An open quote decides, not the indentation: fold on until the line that
@@ -175,7 +190,7 @@ lines and what it reads back:
                 while (and next (if open (quoted-open-p joined) (> next.indent indent)))
                 do (setf joined (format nil "~a ~a" joined next.text))
                    (ynext p))
-          joined))))
+          joined)))))
 
 (defun parse-value (p line indent rest)
   "The value after `key:' on LINE: REST when it says one, else the block
@@ -224,6 +239,20 @@ that follows deeper — or a sequence at the same column, PyYAML's habit."
 
 (defun flow-p (text)
   (and (plusp (length text)) (member (char text 0) '(#\[ #\{))))
+
+(defun flow-open-p (text &aux (depth 0) (at 0) (n (length text)))
+  "Whether TEXT, a flow collection, leaves a [ or { unclosed outside quotes."
+  (loop while (< at n)
+        do (case (char text at)
+             (#\' (setf at (or (position #\' text :start (1+ at)) n)))
+             (#\" (incf at)
+                  (loop while (and (< at n) (char/= (char text at) #\"))
+                        do (when (char= (char text at) #\\) (incf at))
+                           (incf at)))
+             ((#\[ #\{) (incf depth))
+             ((#\] #\}) (decf depth)))
+           (incf at))
+  (plusp depth))
 
 (defun block-scalar-p (text)
   (ppcre:scan "\\A[|>][-+0-9]*\\z" text))
