@@ -1129,8 +1129,7 @@ the marks, Esc leaves them as they were."
 (defun settings-key (model settings key &key ctrl alt shift)
   "Every key the shell's chords leave the open sheet."
   (let ((setting (settings-current settings))
-        (stacked settings.stacked)
-        (typed (and (characterp key) (not ctrl) (not alt))))
+        (stacked settings.stacked))
     (cond
       (settings.edit (settings-edit-key model settings key ctrl alt))
       (settings.ids (settings-ids-key model settings key))
@@ -1141,15 +1140,9 @@ the marks, Esc leaves them as they were."
            (setf settings.said nil settings.armed nil)))
       ;; Typing searches every setting; Space is a key of its own unless a
       ;; query is going and the result under it takes no Space.
-      ((or (and typed (graphic-char-p key) (char/= key #\Space))
-           (and typed (eql key #\Space) (plusp (length settings.query))
-                (not (member (and setting setting.kind) '(:toggle :choice))))
-           (and (plusp (length settings.query))
-                (or (eq key :backspace)
-                    (and ctrl (characterp key) (member key '(#\u #\w) :test #'char-equal)))))
-       (when-let (query (edit-text-field settings.query key :ctrl ctrl :alt alt
-                                                            :max *max-dialog-search-chars*))
-         (settings-search settings query)))
+      ((sheet-type-query settings.query key ctrl alt (lambda (query) (settings-search settings query))
+                         :space (and (plusp (length settings.query))
+                                     (not (member (and setting setting.kind) '(:toggle :choice))))))
       ((eq key :escape)
        (cond ((plusp (length settings.query)) (settings-search settings ""))
              ((eq settings.focus :pane) (setf settings.focus :rail settings.said nil))
@@ -1759,12 +1752,7 @@ options on its row while the pane holds them. => the caret's cell, or NIL."
            (part (nth settings.section-at settings.sections))
            (cursor nil))
       (canvas-put canvas 3 title-row "Settings" (sheet-ink :title :ground rail :bold t))
-      (canvas-fill canvas (1- px) title-row (+ pw 2) 1 (sheet-ink nil :ground field))
-      (if (plusp (length settings.query))
-          (setf cursor (cons (canvas-put canvas px title-row (clip-tail settings.query (1- pw))
-                                         (sheet-ink :composer :ground field))
-                             title-row))
-          (canvas-put canvas px title-row "Search every setting" (sheet-ink :muted :ground field)))
+      (setf cursor (paint-search-field canvas px title-row pw settings.query "Search every setting" field))
       (paint-rail settings canvas content-top (- (+ top inner) content-top 1) rail-width rail pane)
       (let ((head (pane-head settings part pw (cond ((>= rows 18) 2) ((>= rows 12) 1) (t 0)))))
         (multiple-value-bind (lines focus-line)
