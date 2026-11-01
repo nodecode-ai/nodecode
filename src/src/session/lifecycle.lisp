@@ -119,7 +119,7 @@ when the operator asked from a surface."
   (cancellation-signal-retract-p (turn-signal turn)))
 
 (defun ensure-turn-not-cancelled (turn)
-  (when (turn-cancellation-requested-p turn)
+  (when (and turn (turn-cancellation-requested-p turn))
     (error 'turn-cancelled-condition
            :turn-id (durable-turn-turn-id turn)
            :reason (cancellation-signal-reason (turn-signal turn)))))

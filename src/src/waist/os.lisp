@@ -1511,6 +1511,11 @@ waits poll (WAIT-UNTIL-FD-USABLE, SERVE-EVENT), but usocket's WAIT-FOR-INPUT
 selects, and Hunchentoot's accept loop waits on the gateway's listener with
 it: a listener numbered past this would be written outside its fd_set.")
 
+#-win32
+(define-routines
+  ("getrlimit" %getrlimit int (resource int) (limits (* (sb-alien:unsigned 64))))
+  ("setrlimit" %setrlimit int (resource int) (limits (* (sb-alien:unsigned 64)))))
+
 (defun file-limit (&optional soft)
   "This process's open-file limits as (values SOFT HARD), after asking for
 SOFT as the soft one when given; NIL on Windows, or where the system refuses
@@ -1522,22 +1527,12 @@ to say."
   (let ((limits (sb-alien:make-alien (sb-alien:unsigned 64) 2))
         (resource #+linux 7 #-linux 8))
     (unwind-protect
-         (flet ((get-limits ()
-                  (zerop (sb-alien:alien-funcall
-                          (sb-alien:extern-alien "getrlimit"
-                                                 (function sb-alien:int sb-alien:int
-                                                           (* (sb-alien:unsigned 64))))
-                          resource limits))))
-           (when (get-limits)
-             (when soft
-               (setf (sb-alien:deref limits 0) soft)
-               (sb-alien:alien-funcall
-                (sb-alien:extern-alien "setrlimit"
-                                       (function sb-alien:int sb-alien:int
-                                                 (* (sb-alien:unsigned 64))))
-                resource limits)
-               (get-limits))
-             (values (sb-alien:deref limits 0) (sb-alien:deref limits 1))))
+         (when (zerop (%getrlimit resource limits))
+           (when soft
+             (setf (sb-alien:deref limits 0) soft)
+             (%setrlimit resource limits)
+             (%getrlimit resource limits))
+           (values (sb-alien:deref limits 0) (sb-alien:deref limits 1)))
       (sb-alien:free-alien limits)))
   #+win32 (progn soft nil))
 

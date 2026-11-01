@@ -38,7 +38,7 @@
 ;;; asks for lands on the next one, where a 60 Hz ceiling left a drag or a
 ;;; wheel on every other refresh of a 120 Hz screen. A frame costs about
 ;;; 1.5 ms on a 200x50 window. What animates without input -- a streaming
-;;; turn, the spinner -- keeps the shell's own frame clock (ui.lisp,
+;;; turn, the spinner -- keeps the shell's own frame clock (tui/model.lisp,
 ;;; *FRAME-CLOCK-PERIOD-SECONDS*), so a turn paints no more often than it did.
 (defparameter *frame-period-seconds* 1/120
   "Maximum physical terminal paint rate for the program loop: 120 frames a second.")

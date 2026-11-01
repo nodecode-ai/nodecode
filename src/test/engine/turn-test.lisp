@@ -4198,7 +4198,7 @@ every one of them."
   ;; reports exactly that. The form every reader reaches for must not be a
   ;; bare `0.0.1': without it, the installed build would report `nodecode 0.0.1'
   ;; while the same revision built from the checkout would report the commit
-  ;; suffix. src/tools/pack.sh stamps the revision it was handed; nodecode.asd
+  ;; suffix. src/tools/release/pack.sh stamps the revision it was handed; nodecode.asd
   ;; holds the one rule, read here through the system definition itself
   ;; (LOAD-ASD binds ASDF-USER, which is where NODECODE-VERSION lands).
   (let ((version (asdf:component-version (asdf:find-system "nodecode"))))

@@ -247,9 +247,9 @@ wrote, what it cost, and its flags."
                                                                  switch.to-model)
                                                     "reason" switch.reason))
                   "flags" (coerce flags 'vector)))))
-    (flet ((total (key &optional (objects (loop for turn in turn-objects
-                                                append (coerce (gethash "calls" turn) 'list))))
-             (sum-known (mapcar (lambda (object) (gethash key object)) objects))))
+    (labels ((across (key) (loop for turn in turn-objects append (coerce (gethash key turn) 'list)))
+             (total (key &optional (objects (across "calls")))
+               (sum-known (mapcar (lambda (object) (gethash key object)) objects))))
       (json-object
        "session_id" session-id
        "turns" (coerce turn-objects 'vector)
@@ -268,8 +268,7 @@ wrote, what it cost, and its flags."
         :opt "reasoning" (total "reasoning")
         :opt "wait_ms" (total "wait_ms")
         :opt "stream_ms" (total "stream_ms")
-        :opt "step_ms" (total "ms" (loop for turn in turn-objects
-                                         append (coerce (gethash "steps" turn) 'list)))
+        :opt "step_ms" (total "ms" (across "steps"))
         :opt "usual_wait_ms" usual-wait
         :opt "peak_prompt" (and calls
                                 (loop for call in calls
@@ -421,6 +420,21 @@ recency, and ASKED-WHERE owns the exclusions."
                                 scope nlk::+kind-turn-usage+))
                   :row (and scope "events") :literal t))))
 
+(defun log-trigger (name kinds sql &optional (guard ""))
+  "The schema entry of trigger NAME: SQL run after a fact of KINDS, one kind or a list, is logged, GUARD narrowing it."
+  (list "trigger" name (format nil "create trigger ~a
+            after insert on events when new.kind ~:[= '~a'~;in (~{'~a'~^, ~})~]~a
+            begin ~a; end" name (listp kinds) kinds guard sql)))
+
+(defun model-history-refill (name column event)
+  "The schema entry of trigger NAME: on EVENT, the history of the row's COLUMN dropped and filled again."
+  (list "trigger" name (format nil "create trigger ~a
+            ~a
+            begin
+              delete from model_history where ~a = new.~:*~a;
+              ~a;
+            end" name event column (model-history-fill-sql (format nil "~a = new.~:*~a" column)))))
+
 (defparameter *model-history-schema*
   (list
    (list "table" "model_history"
@@ -432,44 +446,45 @@ recency, and ASKED-WHERE owns the exclusions."
          "create index model_history_by_turn on model_history (turn_id)")
    (list "index" "model_history_by_session"
          "create index model_history_by_session on model_history (session_id)")
-   (list "trigger" "model_history_follows_usage"
-         (format nil "create trigger model_history_follows_usage
-            after insert on events when new.kind = '~a'
-            begin ~a; end"
-                 nlk::+kind-turn-usage+ (model-history-fill-sql "log_position = new.log_position")))
-   (list "trigger" "model_history_follows_completion"
-         (format nil "create trigger model_history_follows_completion
-            after insert on events when new.kind = '~a'
-            begin
-              delete from model_history where turn_id = new.turn_id;
-              ~a;
-            end"
-                 nlk::+kind-turn-completed+ (model-history-fill-sql "turn_id = new.turn_id")))
-   (list "trigger" "model_history_follows_source"
-         (format nil "create trigger model_history_follows_source
-            after update of source on session_directory when new.source is not old.source
-            begin
-              delete from model_history where session_id = new.session_id;
-              ~a;
-            end"
-                 (model-history-fill-sql "session_id = new.session_id"))))
+   (log-trigger "model_history_follows_usage" nlk::+kind-turn-usage+
+                (model-history-fill-sql "log_position = new.log_position"))
+   (model-history-refill "model_history_follows_completion" "turn_id"
+                         (format nil "after insert on events when new.kind = '~a'" nlk::+kind-turn-completed+))
+   (model-history-refill "model_history_follows_source" "session_id"
+                         "after update of source on session_directory when new.source is not old.source"))
   "Rebuildable persisted-history, never authority. Triggers keep it inside the
 fact's transaction, including late reflection/source facts and rollback.")
+
+(defun projection-current-p (handle schema)
+  "True when every entry of SCHEMA stands in HANDLE's store as SCHEMA says it."
+  (every (lambda (entry)
+           (destructuring-bind (type name sql) entry
+             (equalp sql (sqlite:execute-single
+                          handle "select sql from sqlite_master where type = ? and name = ?"
+                          type name))))
+         schema))
+
+(defun drop-stale-projection (handle schema)
+  "Drop SCHEMA's entries, the last first, unless every one stands as SCHEMA says it."
+  (unless (projection-current-p handle schema)
+    (dolist (entry (reverse schema))
+      (sqlite:execute-non-query handle (format nil "drop ~a if exists ~a" (first entry) (second entry))))))
+
+(defun install-projection (handle schema)
+  "Create SCHEMA's entries unless its first, a table, stands: true when it did."
+  ;; DROP-STALE-PROJECTION ran first in the same transaction, so the entries
+  ;; stand all together or not at all.
+  (unless (sqlite:execute-single handle "select 1 from sqlite_master where type = ? and name = ?"
+                                 (first (first schema)) (second (first schema)))
+    (dolist (entry schema)
+      (sqlite:execute-non-query handle (third entry)))
+    t))
 
 (defun prepare-model-history (handle)
   "Discard a stale model projection shape before its schema is applied."
   ;; EXECUTE-SINGLE finalizes before DDL. Compare every trigger, not just the
   ;; table: IF NOT EXISTS would preserve stale eligibility or recency policy.
-  (unless (every (lambda (entry)
-                   (destructuring-bind (type name sql) entry
-                     (equalp sql (sqlite:execute-single
-                                  handle "select sql from sqlite_master where type = ? and name = ?"
-                                  type name))))
-                 *model-history-schema*)
-    (dolist (entry *model-history-schema*)
-      (when (string= "trigger" (first entry))
-        (sqlite:execute-non-query handle (format nil "drop trigger if exists ~a" (second entry)))))
-    (sqlite:execute-non-query handle "drop table if exists model_history"))
+  (drop-stale-projection handle *model-history-schema*)
   ;; The displaced full-usage covering index has no remaining reader.
   (sqlite:execute-non-query handle "drop index if exists events_usage_by_model"))
 
@@ -479,10 +494,7 @@ fact's transaction, including late reflection/source facts and rollback.")
     ;; Recheck after the kernel schema: replacing events/the directory also
     ;; drops their triggers, so a surviving derived table must be rebuilt.
     (prepare-model-history handle)
-    (unless (sqlite:execute-single handle
-                                   "select 1 from sqlite_master where type = 'table' and name = 'model_history'")
-      (dolist (entry *model-history-schema*)
-        (sqlite:execute-non-query handle (third entry)))
+    (when (install-projection handle *model-history-schema*)
       (sqlite:execute-non-query handle (model-history-fill-sql)))))
 
 (pushnew 'prepare-model-history nlk::*schema-prepare-hooks*)
@@ -607,56 +619,31 @@ each request's wait for its first token and the time it spent writing."
          "create index request_timings_by_wait on request_timings (ttft) where ttft is not null")
    (list "index" "request_timings_by_model"
          "create index request_timings_by_model on request_timings (model, provider, ttft, streamed)")
-   (list "trigger" "usage_rollup_follows_the_log"
-         (format nil "create trigger usage_rollup_follows_the_log
-            after insert on events when new.kind = '~a'
-            begin ~a; end"
-                 nlk::+kind-turn-usage+
-                 (usage-rollup-fill-sql "(select new.occurred_at occurred_at, new.session_id session_id,
-                                                 new.payload payload)")))
-   (list "trigger" "request_timings_follow_the_log"
-         (format nil "create trigger request_timings_follow_the_log
-            after insert on events when new.kind = '~a'
-            begin ~a; end"
-                 nlk::+kind-provider-request+
-                 (request-timings-fill-sql "log_position = new.log_position")))
+   (log-trigger "usage_rollup_follows_the_log" nlk::+kind-turn-usage+
+                (usage-rollup-fill-sql "(select new.occurred_at occurred_at, new.session_id session_id,
+                                                 new.payload payload)"))
+   (log-trigger "request_timings_follow_the_log" nlk::+kind-provider-request+
+                (request-timings-fill-sql "log_position = new.log_position"))
    ;; Each turn's start and end, and whether it was a reflection: what the
    ;; folder table's turns, failures and time and the totals' counts read.
    (list "table" "turn_spans"
          "create table turn_spans (
             turn_id text primary key, session_id, started_at, ended_at, kind,
             reflection integer not null default 0) without rowid")
-   (list "trigger" "turn_spans_follow_starts"
-         (format nil "create trigger turn_spans_follow_starts
-            after insert on events when new.kind = '~a' and new.turn_id is not null
-            begin ~a; end"
-                 nlk::+kind-turn-started+
-                 (turn-starts-fill-sql "(select new.turn_id turn_id, new.session_id session_id,
-                                                new.occurred_at occurred_at)")))
-   (list "trigger" "turn_spans_follow_ends"
-         (format nil "create trigger turn_spans_follow_ends
-            after insert on events when new.kind in (~{'~a'~^, ~}) and new.turn_id is not null
-            begin ~a; end"
-                 +turn-end-kinds+
-                 (turn-ends-fill-sql "(select new.turn_id turn_id, new.session_id session_id,
+   (log-trigger "turn_spans_follow_starts" nlk::+kind-turn-started+
+                (turn-starts-fill-sql "(select new.turn_id turn_id, new.session_id session_id,
+                                                new.occurred_at occurred_at)")
+                " and new.turn_id is not null")
+   (log-trigger "turn_spans_follow_ends" +turn-end-kinds+
+                (turn-ends-fill-sql "(select new.turn_id turn_id, new.session_id session_id,
                                               new.occurred_at occurred_at, new.kind kind,
-                                              new.payload payload)"))))
+                                              new.payload payload)")
+                " and new.turn_id is not null"))
   "The usage projection.")
-
-(defun projection-current-p (handle schema)
-  "True when every entry of SCHEMA stands in HANDLE's store as SCHEMA says it."
-  (every (lambda (entry)
-           (destructuring-bind (type name sql) entry
-             (equalp sql (sqlite:execute-single
-                          handle "select sql from sqlite_master where type = ? and name = ?"
-                          type name))))
-         schema))
 
 (defun prepare-usage-rounds (handle)
   "Discard a usage projection of another shape before the schema is applied."
-  (unless (projection-current-p handle *usage-rounds-schema*)
-    (dolist (entry (reverse *usage-rounds-schema*))
-      (sqlite:execute-non-query handle (format nil "drop ~a if exists ~a" (first entry) (second entry))))))
+  (drop-stale-projection handle *usage-rounds-schema*))
 
 (defun tier-sizes-of (pairs &optional (prices (make-hash-table :test #'equal)))
   "Every tier size the prices of PAIRS, (MODEL PROVIDER) lists, name,
@@ -684,10 +671,7 @@ ascending; PRICES memoizes MODEL-PRICE by (MODEL . PROVIDER)."
     ;; Rechecked after the kernel schema, as OPEN-MODEL-HISTORY is: a
     ;; replaced events table took the triggers with it.
     (prepare-usage-rounds handle)
-    (unless (sqlite:execute-single handle
-                                   "select 1 from sqlite_master where type = 'table' and name = 'usage_rollup'")
-      (dolist (entry *usage-rounds-schema*)
-        (sqlite:execute-non-query handle (third entry)))
+    (when (install-projection handle *usage-rounds-schema*)
       (derive-usage-rollup handle (tier-sizes-of
                                    (nlk::sql-rows handle (format nil "select distinct ~{~a~^, ~} from events
                                                                        where kind = '~a'"
@@ -945,10 +929,8 @@ and the costliest sessions."
                                 (price-tier rates (if (plusp band) (1+ (nth (1- band) sizes)) 0))
                                 :input-tokens input :cached-input-tokens cached
                                 :cache-write-tokens write)))
-        (loop for (day . row) in (getf spend :days)
-              do (setf (gethash day days) (usage-sum-of row)))
-        (loop for (folder . row) in (getf spend :folders)
-              do (setf (gethash folder folders) (usage-sum-of row)))
+        (loop for (table . key) in (list (cons days :days) (cons folders :folders))
+              do (loop for (name . row) in (getf spend key) do (setf (gethash name table) (usage-sum-of row))))
         (multiple-value-bind (ends started) (usage-turns since)
           (loop for (folder turns failures ms) in ends
                 for sum = (sum-of folders folder)

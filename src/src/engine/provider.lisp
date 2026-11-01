@@ -3654,7 +3654,7 @@ PROVIDER-FAILURE-REASON; SECONDS, how long it took."
 ;;; The Zig connect dialog is client-side: it lists the models.dev providers
 ;;; the gateway catalog carries and saves an entered API key into the SHARED
 ;;; ~/.nodecode/auth.json (auth/root.zig writeApiKeyAuthFile: api_keys.<id>
-;;; = {"provider": id, "key": key}). The catalog half is client.lisp's
+;;; = {"provider": id, "key": key}). The catalog half is tui/commands/models.lisp's
 ;;; (CONNECT-PICKER-ROWS over MODELS-CATALOG-TABLE); the two credential
 ;;; halves live here because this file owns the credential chain and the
 ;;; auth-file shape.
@@ -4338,7 +4338,7 @@ path (dexador request: (format nil \"~A://~A\" scheme authority))."
 ;;; A conversation's next request repeats the one before it but for what the
 ;;; round added. Without this, over a slow, distant link that repeat would be
 ;;; most of the first token's wait. A relay beside the server
-;;; (src/tools/body-relay.py) keeps the bodies it forwarded by SHA-256 and
+;;; (src/tools/probes/body-relay.py) keeps the bodies it forwarded by SHA-256 and
 ;;; says so on every response (X-Body-Delta); to an endpoint that said so, a
 ;;; body goes as a delta (NLK:ENCODE-DELTA, the request_bodies encoding)
 ;;; against the one its session sent before. Every body still arrives whole
@@ -4513,8 +4513,7 @@ stands behind it."
                      :deadline (and (plusp seconds)
                                     (+ (get-internal-real-time)
                                        (round (* seconds internal-time-units-per-second))))))
-             (turn-id (and *current-durable-turn*
-                           (nlk:durable-turn-turn-id *current-durable-turn*)))
+             (turn-id (eval-turn-id))
              (*attempt-watch* watch))
         (when turn-id (setf (gethash turn-id *attempt-watches*) watch))
         (unwind-protect (funcall thunk)
@@ -4757,8 +4756,7 @@ functions below."
     (note-phase "connect pooled=~d ~a"
                 (pooled-connection-count endpoint) (provider-connection-key endpoint)))
   (let ((seconds config.request-timeout)
-        (session (and *current-durable-turn*
-                      (nlk:durable-turn-session-id *current-durable-turn*))))
+        (session (eval-session-id)))
     (multiple-value-bind (stream status response-headers)
         (with-idle-cut (seconds)
             (with-read-deadline (seconds)
@@ -4866,8 +4864,7 @@ functions below."
                            (incf count)
                            (unless first (setf first frame))))
                     (loop
-                      (when *current-durable-turn*
-                        (nlk:ensure-turn-not-cancelled *current-durable-turn*))
+                      (nlk:ensure-turn-not-cancelled *current-durable-turn*)
                       ;; A watched wait cut between lines -- a keep-alive
                       ;; keeps every read short -- ends here.
                       (when-let (cut (attempt-cut-condition :scope :stream))

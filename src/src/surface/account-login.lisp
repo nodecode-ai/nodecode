@@ -21,22 +21,29 @@ the balance); the mode decides what the sign-in asks of the person and what the 
 
 ;;; --- the claim: nodecode login and nodecode machine link -----------------------
 
-(defun account-login-request (method path body poll timeout)
-  "One bounded exchange with the account machine-link API; no POST retries."
+(defun account-exchange (method url bearer timeout max-bytes &key body json (host "nodecode.ai"))
+  "One bounded exchange with nodecode.ai at URL, BEARER its authorization, JSON a content-type
+header, BODY the JSON it sends: (values REPLY STATUS), REPLY NIL when it is no JSON; no POST
+retries. HOST is the name a timeout says did not answer."
   (handler-case
       (bind (((bytes status _ truncated)
               (sb-sys:with-deadline (:seconds timeout)
-                (nlk:http method (concatenate 'string "https://nodecode.ai" path)
+                (nlk:http method url
                           :content (and body (shasht:write-json body nil))
                           :headers (with-user-agent
-                                    (append '(("content-type" . "application/json"))
-                                            (when poll (list (cons "authorization" (format nil "Bearer ~a" poll))))))
-                          :timeout timeout :max-bytes 8192 :binary t))))
-        (let ((reply (and (not truncated) (ignore-errors (nlk:decode-json bytes)))))
-          (unless (hash-table-p reply)
-            (error "nodecode.ai answered with an invalid account-link response (HTTP ~d)." status))
-          (values reply status)))
-    (sb-sys:deadline-timeout () (error "nodecode.ai did not answer within ~ds." timeout))))
+                                    (append (and json '(("content-type" . "application/json")))
+                                            (when bearer (list (cons "authorization" (format nil "Bearer ~a" bearer))))))
+                          :timeout timeout :max-bytes max-bytes :binary t))))
+        (values (and (not truncated) (ignore-errors (nlk:decode-json bytes))) status))
+    (sb-sys:deadline-timeout () (error "~a did not answer within ~ds." host timeout))))
+
+(defun account-login-request (method path body poll timeout)
+  "One bounded exchange with the account machine-link API; no POST retries."
+  (multiple-value-bind (reply status)
+      (account-exchange method (concatenate 'string "https://nodecode.ai" path) poll timeout 8192 :body body :json t)
+    (unless (hash-table-p reply)
+      (error "nodecode.ai answered with an invalid account-link response (HTTP ~d)." status))
+    (values reply status)))
 
 (defun account-login-save (reply)
   "Validate the grant, save its key once, and wire its provider without changing the model."
@@ -217,14 +224,7 @@ linked. A refusal signals, naming it."
 
 (defun account-usage-request (url key timeout)
   "One bounded GET of the gate's usage with KEY: (values REPLY STATUS), REPLY NIL when it is no JSON."
-  (handler-case
-      (bind (((bytes status _ truncated)
-              (sb-sys:with-deadline (:seconds timeout)
-                (nlk:http :get url
-                          :headers (with-user-agent (list (cons "authorization" (format nil "Bearer ~a" key))))
-                          :timeout timeout :max-bytes 16384 :binary t))))
-        (values (and (not truncated) (ignore-errors (nlk:decode-json bytes))) status))
-    (sb-sys:deadline-timeout () (error "api.nodecode.ai did not answer within ~ds." timeout))))
+  (account-exchange :get url key timeout 16384 :host "api.nodecode.ai"))
 
 (defun account-usage-read (key base &key (request #'account-usage-request))
   "The account's usage as the gate at BASE answers it for KEY, or an error saying why not."
@@ -258,16 +258,19 @@ linked. A refusal signals, naming it."
         (format nil "~,1fk" (/ (floor n 100) 10))
         (format nil "~:d" n))))
 
-(defun account-day (iso &aux (date (and (stringp iso) (>= (length iso) 10) (subseq iso 0 10))))
+(defun account-ymd (iso)
+  "(YEAR MONTH DAY) of the day an ISO timestamp names, or NIL for anything else."
+  (and (stringp iso)
+       (ppcre:register-groups-bind ((#'parse-integer year month day)) ("^(\\d{4})-(\\d{2})-(\\d{2})" iso)
+         (list year month day))))
+
+(defun account-day (iso)
   "The day an ISO timestamp names, as Nov 3; NIL for anything else."
-  (when-let (parts (and date (ppcre:register-groups-bind ((#'parse-integer year month day))
-                                 ("^(\\d{4})-(\\d{2})-(\\d{2})$" date)
-                               (list year month day))))
-    (destructuring-bind (year month day) parts
-      (declare (ignore year))
-      (when (<= 1 month 12)
-        (format nil "~a ~d" (nth (1- month) '("Jan" "Feb" "Mar" "Apr" "May" "Jun" "Jul" "Aug" "Sep" "Oct" "Nov" "Dec"))
-                day)))))
+  (destructuring-bind (&optional year month day) (account-ymd iso)
+    (declare (ignore year))
+    (when (and month (<= 1 month 12))
+      (format nil "~a ~d" (nth (1- month) '("Jan" "Feb" "Mar" "Apr" "May" "Jun" "Jul" "Aug" "Sep" "Oct" "Nov" "Dec"))
+              day))))
 
 (defun account-plan-tone (left requests)
   "How a plan with LEFT of REQUESTS reads: SUCCESS, TOOL under a tenth left, DANGER at none."
@@ -379,43 +382,41 @@ machine has a display, ask after it on a thread of its own -- and answer *ACCOUN
 A sign-in already waiting is answered again, not claimed twice."
   (unless (member mode +account-modes+ :test #'equal)
     (error "/login signs in for subscription or api, not ~s." mode))
-  (if (eq :waiting (getf *account-login* :state))
-      *account-login*
-      (progn
-        (account-login-preflight)
-        (let* ((claim (account-claim nil mode request))
-               (url (getf claim :confirm))
-               (opened (eq t (ignore-errors (funcall open url))))
-               (login (list :state :waiting :mode mode :url url :code (getf claim :code)
-                            :opened opened :text nil :at (get-universal-time))))
-          (setf *account-login* login)
-          (spawn "nodecode-account-login"
-            (handler-case
-                (let* ((reply (account-await claim :request request :again "/login"))
-                       (name (json-value reply :string "name")))
-                  (account-login-save reply)
-                  (setf *account-usage* nil)
-                  (let* ((lead (let ((id (account-default-model reply)))
-                                 ;; the model a turn runs on from now: a refused pick sets none
-                                 (and id (ignore-errors
-                                          (select-default-model :provider (json-value reply :string "provider")
-                                                                :model id))
-                                      id)))
-                         (state (account-usage :max-age 0))
-                         (meter (when-let (usage (getf state :usage))
-                                  (multiple-value-bind (label value) (account-meter usage)
-                                    (format nil "~a ~a" label value))))
-                         (text (format nil "Signed in to nodecode.ai~@[ on ~a~]~@[ · ~a~]~@[ · default model ~a~]"
-                                       name meter lead)))
-                    (setf *account-login* (list* :state :signed-in :text text
-                                                 (alexandria:remove-from-plist login :state :text)))
-                    (notice text)))
-              (error (condition)
-                (let ((text (format nil "nodecode.ai sign-in: ~a" condition)))
-                  (setf *account-login* (list* :state :failed :text text
-                                               (alexandria:remove-from-plist login :state :text)))
-                  (notice text :level :warning)))))
-          login))))
+  (cond ((eq :waiting (getf *account-login* :state)) *account-login*)
+        (t (account-login-preflight)
+         (let* ((claim (account-claim nil mode request))
+                (url (getf claim :confirm))
+                (opened (eq t (ignore-errors (funcall open url))))
+                (login (list :state :waiting :mode mode :url url :code (getf claim :code)
+                             :opened opened :text nil :at (get-universal-time))))
+           (setf *account-login* login)
+           (spawn "nodecode-account-login"
+             (handler-case
+                 (let* ((reply (account-await claim :request request :again "/login"))
+                        (name (json-value reply :string "name")))
+                   (account-login-save reply)
+                   (setf *account-usage* nil)
+                   (let* ((lead (let ((id (account-default-model reply)))
+                                  ;; the model a turn runs on from now: a refused pick sets none
+                                  (and id (ignore-errors
+                                           (select-default-model :provider (json-value reply :string "provider")
+                                                                 :model id))
+                                       id)))
+                          (state (account-usage :max-age 0))
+                          (meter (when-let (usage (getf state :usage))
+                                   (multiple-value-bind (label value) (account-meter usage)
+                                     (format nil "~a ~a" label value))))
+                          (text (format nil "Signed in to nodecode.ai~@[ on ~a~]~@[ · ~a~]~@[ · default model ~a~]"
+                                        name meter lead)))
+                     (setf *account-login* (list* :state :signed-in :text text
+                                                  (alexandria:remove-from-plist login :state :text)))
+                     (notice text)))
+               (error (condition)
+                 (let ((text (format nil "nodecode.ai sign-in: ~a" condition)))
+                   (setf *account-login* (list* :state :failed :text text
+                                                (alexandria:remove-from-plist login :state :text)))
+                   (notice text :level :warning)))))
+           login))))
 
 (defun account-json (&aux (state (account-usage)) (usage (getf state :usage)) (login *account-login*))
   "The account's read model a shell and the web page draw: whether this home is signed in, the
@@ -516,13 +517,9 @@ meter's tone, both a link to /account; NIL when this home is not signed in to no
 
 (defun account-days-left (iso)
   "Whole days from now until the day ISO names begins, never below 0; NIL for anything else."
-  (when-let (parts (and (stringp iso)
-                        (ppcre:register-groups-bind ((#'parse-integer year month day))
-                            ("^(\\d{4})-(\\d{2})-(\\d{2})" iso)
-                          (list year month day))))
-    (destructuring-bind (year month day) parts
-      (when-let (start (ignore-errors (encode-universal-time 0 0 0 day month year 0)))
-        (max 0 (ceiling (- start (get-universal-time)) 86400))))))
+  (when-let (start (ignore-errors (destructuring-bind (year month day) (account-ymd iso)
+                                    (encode-universal-time 0 0 0 day month year 0))))
+    (max 0 (ceiling (- start (get-universal-time)) 86400))))
 
 (defun account-bar-segs (share cells tone ground)
   "SHARE (0..1) of CELLS bar cells filled in TONE, the rest a quiet step off GROUND's colour."
@@ -543,6 +540,7 @@ slab's far edge."
          (credit-lit (equal pays "balance")))
     (flet ((s (text &optional (tone :muted) bold link) (make-seg :text text :tone tone :bold bold :link link))
            (ground (lit) (if lit :toast-hover :toast))
+           (only (left) (list left nil))
            (badge (lit) (if lit
                             (list (account-chip-seg "● PAYING" :success))
                             (list (make-seg :text "standby" :tone :muted)))))
@@ -562,37 +560,30 @@ slab's far edge."
                                (if (or plan-lit (plusp left))
                                    (badge plan-lit)
                                    (list (account-chip-seg "USED UP" :danger))))
-                         (list (list (s (account-count left) :foreground t) (s " requests left" :foreground)
-                                     (s (format nil "   of ~a" (account-count requests))))
-                               nil)
-                         (list (append (account-bar-segs share 26 tone (ground plan-lit))
-                                       (list (s (format nil "  ~d%" (round (* 100 share))))))
-                               nil)
-                         (list (append (list (s (format nil "~@[ends ~a~]~@[ · ~a~]" (account-day ends)
+                         (only (list (s (account-count left) :foreground t) (s " requests left" :foreground)
+                                     (s (format nil "   of ~a" (account-count requests)))))
+                         (only (append (account-bar-segs share 26 tone (ground plan-lit))
+                                       (list (s (format nil "  ~d%" (round (* 100 share)))))))
+                         (only (append (list (s (format nil "~@[ends ~a~]~@[ · ~a~]" (account-day ends)
                                                         (and days (format nil "~d day~:p" days)))))
                                        (when threads
                                          (list (s "     threads ")
                                                (s (make-string running :initial-element #\●) :success)
                                                (s (make-string (- threads running) :initial-element #\○))
-                                               (s (format nil " ~d of ~d" running threads)))))
-                               nil)))
-                 (list (list (list (s "No plan" :foreground t)) nil)
-                       (list (list (s "subscribe at nodecode.ai/pricing" :muted nil "https://nodecode.ai/pricing"))
-                             nil))))
+                                               (s (format nil " ~d of ~d" running threads))))))))
+                 (list (only (list (s "No plan" :foreground t)))
+                       (only (list (s "subscribe at nodecode.ai/pricing" :muted nil "https://nodecode.ai/pricing"))))))
        (list (ground credit-lit)
              (list (list (list (s "API credit" :foreground t)) (badge credit-lit))
-                   (list (list (if money
+                   (only (list (if money
                                    (s (format nil "~{~a~^, ~}" (mapcar #'account-money money)) :foreground t)
-                                   (s "none")))
-                         nil)
-                   (list (list (s (cond (credit-lit "pays for each request")
+                                   (s "none"))))
+                   (only (list (s (cond (credit-lit "pays for each request")
                                         (plan "pays when the plan runs out")
-                                        (t "pays once there is some"))))
-                         nil)
+                                        (t "pays once there is some")))))
                    ;; A click opens the page it names (DOCKED-PANEL-ROW keeps the link).
-                   (list (list (s "top up at nodecode.ai/account/top-up" :muted nil
-                                  "https://nodecode.ai/account/top-up"))
-                         nil)))))))
+                   (only (list (s "top up at nodecode.ai/account/top-up" :muted nil
+                                  "https://nodecode.ai/account/top-up")))))))))
 
 (defun account-slab-line (line width ground &key (pad 2))
   "LINE, a slab's (LEFT RIGHT), laid WIDTH columns wide on GROUND: PAD columns of pad each side,

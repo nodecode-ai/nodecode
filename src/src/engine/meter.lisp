@@ -164,7 +164,7 @@ round said something the operator reads."
       ;; each count lands on the LIVE-TURN slot of its PROVIDER-USAGE name
       (dolist (slot '(input-tokens cached-input-tokens output-tokens reasoning-tokens))
         (incf (slot-value live slot) (or (slot-value usage slot) 0)))
-      ;; The footer's rule (ui.lisp CONTEXT-OCCUPANCY-TOKENS): cache
+      ;; The footer's rule (tui/transcript/ingest.lisp CONTEXT-OCCUPANCY-TOKENS): cache
       ;; writes are prompt tokens too, reported disjoint from input.
       (when-let (prompt (remove nil (list usage.input-tokens usage.cached-input-tokens
                                           usage.cache-write-tokens)))
