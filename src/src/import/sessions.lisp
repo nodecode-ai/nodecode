@@ -58,12 +58,7 @@ enough to be one), or an ISO-8601 string. NIL for anything else."
 parts (multimodal, or a tool round) joined over its text members; nothing
 for the rest."
   (labels ((parts-text (parts)
-             (let ((texts (loop for part across parts
-                                for text = (cond ((stringp part) part)
-                                                 ((hash-table-p part)
-                                                  (text-of (object-index part)
-                                                           "text" "content" "input_text")))
-                                when text collect text)))
+             (let ((texts (texts-of parts "text" "content" "input_text")))
                (and texts (format nil "~{~a~^~%~}" texts)))))
     (cond ((stringp content)
            (let ((trimmed (nlk:trimmed content)))

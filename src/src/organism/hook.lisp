@@ -168,9 +168,8 @@ registration."
     (when say
       (let ((said (ignore-errors (note-hook-failure name key condition) t)))
         (sb-ext:with-locked-hash-table (*hook-failures*)
-          (let ((entry (gethash id *hook-failures*)))
-            (when entry
-              (setf (second entry) (and said :said)))))))))
+          (when-let (entry (gethash id *hook-failures*))
+            (setf (second entry) (and said :said))))))))
 
 (defun forget-hook-failure (name key)
   "Clear NAME's hook KEY's failures, and the board's word on them."
