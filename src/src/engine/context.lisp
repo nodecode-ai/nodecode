@@ -236,54 +236,66 @@ message below UNREASONED-BEFORE."
   ;; on both the synthetic flush and the stored-message copy): a journaled
   ;; call whose arguments do not parse as JSON is the same replay poison as an
   ;; unpaired result, just rejected by the template engine instead of the API.
+  ;;
+  ;; proofs/WirePairing.lean models this fold and proves the wire it builds
+  ;; well-formed for every log: a result recorded twice, a result landing
+  ;; after a later message, an id a later message reuses, an id a message
+  ;; carries twice, a call fact journaled while a call is open -- each folds
+  ;; to a wire a provider accepts, and context-test.lisp pins the proof's
+  ;; decided traces on this function.
   (let ((result '())
         (pending-calls '())
+        ;; Every wire id this fold issued: a journaled id already on the
+        ;; wire is minted anew, so no two calls share an id.
         (issued-call-ids (make-hash-table :test #'equal))
-        ;; (CALL-ID . TOOL-NAME) of every issued call still awaiting its
-        ;; tool message, newest first.
+        ;; (WIRE-ID TOOL-NAME JOURNALED-ID POSITION) of every issued call
+        ;; still awaiting its tool message, oldest first.
         (open-calls '())
         (stored-tool-calls-p nil)
-        ;; Each call fact's position by call id: what an unanswered call's
-        ;; answer is named by (MESSAGE-SOURCE).
+        ;; Each call fact's position by journaled id: what an unanswered
+        ;; call's answer is named by (MESSAGE-SOURCE).
         (call-positions (make-hash-table :test #'equal))
         ;; Reminders met while a call stood open, newest first, each with its
         ;; fact's position: each follows the tool messages that close it,
         ;; never splits a call from them.
-        (held-reminders '())
-        ;; Ids this fold named for calls journaled with an empty one, oldest
-        ;; first: what the empty-id results that follow answer, in order.
-        (blank-call-ids '()))
+        (held-reminders '()))
     (labels ((emit (msg source)
                (setf (message-source msg) source)
                (push msg result))
-             (named-call-id (call-id position k)
-               ;; A call journaled with an empty id -- a provider that sent
-               ;; none, before the lane minted one (GH #32) -- would replay as
-               ;; "", and a strict endpoint refuses the whole history: the
-               ;; session bricked for good. It folds named by its fact's
-               ;; position, the same name on every fold, so a cached prefix
-               ;; holds; its result, journaled under "" too, answers it in order.
-               (if (and (stringp call-id) (plusp (length call-id)))
+             (wire-call-id (call-id position k)
+               ;; The journaled id, unless it is blank -- a provider that sent
+               ;; none, before the lane minted one (GH #32) -- or already on
+               ;; the wire: a strict endpoint refuses a history with an empty
+               ;; or a repeated id, the session bricked for good. Then the
+               ;; call folds named by its message's position and its index
+               ;; in it, the same name on every fold, so a cached prefix holds.
+               (if (and (stringp call-id) (plusp (length call-id))
+                        (not (gethash call-id issued-call-ids)))
                    call-id
-                   (let ((named (format nil "call-~a-~d" position k)))
-                     (setf blank-call-ids (append blank-call-ids (list named))
-                           (gethash named call-positions) position)
-                     named)))
-             (note-issued (call-id tool-name)
-               (when (stringp call-id)
-                 (unless (shiftf (gethash call-id issued-call-ids) t)
-                   (push (cons call-id (if (stringp tool-name) tool-name "unknown"))
-                         open-calls))))
+                   (format nil "call-~a-~d" position k)))
+             (issue-call (call-id tool-name position k)
+               ;; Issue the K-th call of the message at POSITION: its wire
+               ;; id, the call open until the result journaled under CALL-ID
+               ;; answers it.
+               (let ((wire (wire-call-id call-id position k)))
+                 (setf (gethash wire issued-call-ids) t
+                       open-calls (append open-calls
+                                          (list (list wire
+                                                      (if (stringp tool-name) tool-name "unknown")
+                                                      (if (stringp call-id) call-id "")
+                                                      position))))
+                 wire))
              (close-open-calls ()
                ;; Every issued call answers before the next message: a
                ;; call with no recorded result answers that it has none.
                (flush-pending-calls)
-               (dolist (open (reverse open-calls))
-                 (emit (message "tool" +orphan-tool-result+
-                                :name (cdr open) :tool-call-id (car open))
-                       (format nil "~ao" (gethash (car open) call-positions (car open)))))
+               (dolist (open open-calls)
+                 (destructuring-bind (wire tool-name key position) open
+                   (emit (message "tool" +orphan-tool-result+
+                                  :name tool-name :tool-call-id wire)
+                         (format nil "~ao" (gethash key call-positions position)))))
                (setf open-calls '()
-                     blank-call-ids '())
+                     stored-tool-calls-p nil)
                (release-reminders))
              (release-reminders ()
                (loop for (text . position) in (reverse held-reminders)
@@ -291,20 +303,22 @@ message below UNREASONED-BEFORE."
                (setf held-reminders '()))
              (flush-pending-calls ()
                (when (and pending-calls (not stored-tool-calls-p))
-                 (emit (message
-                        "assistant" :null
-                        :tool-calls
-                        (map 'vector
-                             (lambda (event &aux (call-id (named-call-id
-                                                           (nlk:tool-call-event-call-id event)
-                                                           (nlk:event-log-position event) 0))
-                                                 (tool-name (nlk:tool-call-event-tool-name event)))
-                               (note-issued call-id tool-name)
-                               (chat-tool-call-object call-id tool-name
-                                                      (wire-safe-tool-arguments
-                                                       (nlk:tool-call-event-arguments event))))
-                             (reverse pending-calls)))
-                       (format nil "~dc" (nlk:event-log-position (car (last pending-calls))))))
+                 (let* ((calls (reverse pending-calls))
+                        (position (nlk:event-log-position (first calls)))
+                        (k -1))
+                   (emit (message
+                          "assistant" :null
+                          :tool-calls
+                          (map 'vector
+                               (lambda (event &aux (tool-name (nlk:tool-call-event-tool-name event)))
+                                 (chat-tool-call-object
+                                  (issue-call (nlk:tool-call-event-call-id event)
+                                              tool-name position (incf k))
+                                  tool-name
+                                  (wire-safe-tool-arguments
+                                   (nlk:tool-call-event-arguments event))))
+                               calls))
+                         (format nil "~dc" position))))
                ;; Stored assistant wire messages already contain these calls.
                (setf pending-calls '())))
       (dolist (event events)
@@ -316,22 +330,20 @@ message below UNREASONED-BEFORE."
              (emit (message "user" (nlk::message-event-content event)) event.log-position)))
           (nlk::assistant-message
            (close-open-calls)
-           (setf stored-tool-calls-p nil)
            (let* ((stored-msg (json-value (nlk::message-event-payload event)
                                           :object "message"))
                   (msg (if stored-msg
                            (let* ((copy (copy-json-value stored-msg))
-                                  (calls (gethash "tool_calls" copy)))
+                                  (calls (gethash "tool_calls" copy))
+                                  (k -1))
                              (setf stored-tool-calls-p (vectorp calls))
                              (loop for call across (if (vectorp calls) calls #())
-                                   for k from 0
                                    for function = (json-value call :object "function")
                                    when (hash-table-p call)
-                                     do (note-issued
-                                         (setf (gethash "id" call)
-                                               (named-call-id (gethash "id" call)
-                                                              event.log-position k))
-                                         (json-value call :string "function" "name"))
+                                     do (setf (gethash "id" call)
+                                              (issue-call (gethash "id" call)
+                                                          (json-value call :string "function" "name")
+                                                          event.log-position (incf k)))
                                    ;; the fold's own copy is made wire-safe in place
                                    when function
                                      do (setf (gethash "arguments" function)
@@ -345,7 +357,12 @@ message below UNREASONED-BEFORE."
              (emit msg event.log-position)))
           (nlk:tool-call-event
            (setf (gethash (nlk:tool-call-event-call-id event) call-positions) event.log-position)
-           (push event pending-calls))
+           ;; A call fact journaled while an issued call stands open is work
+           ;; nested inside that call (EXECUTE-TOOL-CALL from a EVAL form):
+           ;; it folds as nothing, under a synthetic message as under a
+           ;; stored one.
+           (unless open-calls
+             (push event pending-calls)))
           ;; A prompt change stands where it was noticed, as the harness's
           ;; own message: the turn's opening one, or behind the round a
           ;; resumed turn had reached (TURN-PROMPT).
@@ -360,13 +377,15 @@ message below UNREASONED-BEFORE."
            ;; material: folded, it would pair the run call's tool_use id twice.
            (unless (background-shell-exit-fact-p event)
              (flush-pending-calls)
-             (let ((call-id (let ((journaled (nlk:tool-result-event-call-id event)))
-                              (if (and (equal journaled "") blank-call-ids)
-                                  (pop blank-call-ids)
-                                  journaled))))
-               (when (gethash call-id issued-call-ids)
-                 (setf open-calls (remove call-id open-calls
-                                          :key #'car :test #'equal :count 1))
+             ;; A result answers the oldest open call recorded under its id.
+             ;; One with no open call -- nested work, a result recorded
+             ;; twice, one landing after a later message -- folds as
+             ;; nothing: the wire has no call for it to answer.
+             (let* ((journaled (nlk:tool-result-event-call-id event))
+                    (open (find (if (stringp journaled) journaled "") open-calls
+                                :key #'third :test #'equal)))
+               (when open
+                 (setf open-calls (remove open open-calls :test #'eq :count 1))
                  ;; The model's copy: the result, then the spend line its
                  ;; metadata carries -- the bytes the round that recorded
                  ;; it sent (meter.lisp TOOL-RESULT-TEXT) -- or, once its
@@ -380,9 +399,9 @@ message below UNREASONED-BEFORE."
                                        text (nlk::tool-result-event-metadata event)
                                        :seq event.log-position)))
                                 :name (nlk:tool-result-event-tool-name event)
-                                :tool-call-id call-id)
-                       event.log-position)
-                 (unless open-calls (release-reminders))))))))
+                                :tool-call-id (first open))
+                       event.log-position)))
+             (unless open-calls (release-reminders))))))
       ;; A fold that ends on an open call is not a cut point: the result
       ;; may still record, and a cached prefix closing the call would then
       ;; drop the real result as unpaired on the next tail fold.
