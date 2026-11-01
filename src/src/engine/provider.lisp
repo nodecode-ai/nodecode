@@ -4507,8 +4507,7 @@ stands behind it."
                      :deadline (and (plusp seconds)
                                     (+ (get-internal-real-time)
                                        (round (* seconds internal-time-units-per-second))))))
-             (turn-id (and *current-durable-turn*
-                           (nlk:durable-turn-turn-id *current-durable-turn*)))
+             (turn-id (eval-turn-id))
              (*attempt-watch* watch))
         (when turn-id (setf (gethash turn-id *attempt-watches*) watch))
         (unwind-protect (funcall thunk)
@@ -4751,8 +4750,7 @@ functions below."
     (note-phase "connect pooled=~d ~a"
                 (pooled-connection-count endpoint) (provider-connection-key endpoint)))
   (let ((seconds config.request-timeout)
-        (session (and *current-durable-turn*
-                      (nlk:durable-turn-session-id *current-durable-turn*))))
+        (session (eval-session-id)))
     (multiple-value-bind (stream status response-headers)
         (with-idle-cut (seconds)
             (with-read-deadline (seconds)
@@ -4860,8 +4858,7 @@ functions below."
                            (incf count)
                            (unless first (setf first frame))))
                     (loop
-                      (when *current-durable-turn*
-                        (nlk:ensure-turn-not-cancelled *current-durable-turn*))
+                      (nlk:ensure-turn-not-cancelled *current-durable-turn*)
                       ;; A watched wait cut between lines -- a keep-alive
                       ;; keeps every read short -- ends here.
                       (when-let (cut (attempt-cut-condition :scope :stream))

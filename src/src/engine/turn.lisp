@@ -606,18 +606,13 @@ member it declares" refusal))))
                                                   ((string-equal type "null") (null value))
                                                   (t t))))
                                collect (list key type)))))
-        (when missing
-          (refuse "missing_required_argument"
-                  (coerce missing 'vector)
-                  (keys arguments)
-                  (format nil "provide required key~:[s~;~]: ~{~a~^, ~}"
-                          (= 1 (length missing)) missing)))
-        (when bad
-          (refuse "argument_type_mismatch"
-                  (coerce bad 'vector)
-                  (keys arguments)
-                  (format nil "correct argument type~:[s~;~]: ~{~{~a requires ~a~}~^, ~}"
-                          (= 1 (length bad)) bad)))
+        (loop for (code items control) in `(("missing_required_argument" ,missing
+                                              "provide required key~:[s~;~]: ~{~a~^, ~}")
+                                             ("argument_type_mismatch" ,bad
+                                              "correct argument type~:[s~;~]: ~{~{~a requires ~a~}~^, ~}"))
+              when items
+                do (refuse code (coerce items 'vector) (keys arguments)
+                           (format nil control (= 1 (length items)) items)))
         (values arguments nil)))))
 
 (defun tools-payload (&optional (tools *tools*))
@@ -815,10 +810,8 @@ named at its position, because SBCL's END-OF-FILE on it names nothing."
                   ;; completion drops, never a refusal — the text cannot
                   ;; read with it, and the tree without it is the
                   ;; model's own.
-                  (if (zerop depth)
-                      (push (list :orphan i line) tokens)
-                      (progn (push (list :close i) tokens)
-                             (decf depth)))
+                  (cond ((zerop depth) (push (list :orphan i line) tokens))
+                        (t (push (list :close i) tokens) (decf depth)))
                   (code (incf i)))
                  (#\" (head) (skip-delimited "string" i #\"))
                  (#\| (head) (skip-delimited "|symbol|" i #\|))
@@ -838,10 +831,7 @@ named at its position, because SBCL's END-OF-FILE on it names nothing."
                                                 (incf i 2)
                                                 (when (zerop (decf depth)) (return)))
                                                ((equal pair "#|") (incf i 2) (incf depth))
-                                               ((char= (char text i) #\Newline)
-                                                (incf line)
-                                                (setf line-start (1+ i) at-head t)
-                                                (incf i))
+                                               ((char= (char text i) #\Newline) (newline) (incf i))
                                                (t (incf i)))))))
                               ((and (eql next #\>) (raw-text-end text i))
                                ;; #>TAG raw text: nothing inside it is
@@ -933,24 +923,18 @@ unchanged, and so is dropping a \")\" that closes nothing."
                 (not (find #\Newline text :end (min code-end (length text)))))
            (values nil (one-line-completion-refusal text missing tokens)))
           (t
-           (let* ((count (length tokens))
+           (let* ((depth 0)
                   ;; The written depth after each token, and its suffix
                   ;; minimum: how many closers may have been inserted before
                   ;; token I without a later ")" of the model's finding
                   ;; nothing to close.
-                  (after (make-array count))
-                  (bound (make-array count))
-                  (depth 0))
-             (loop for token in tokens for i from 0
-                   do (case (first token)
-                        (:open (incf depth))
-                        (:close (decf depth)))
-                      (setf (aref after i) depth))
-             (loop for i from (1- count) downto 0
-                   do (setf (aref bound i)
-                            (if (= i (1- count))
-                                (aref after i)
-                                (min (aref after i) (aref bound (1+ i))))))
+                  (after (loop for (kind) in tokens
+                               do (case kind (:open (incf depth)) (:close (decf depth)))
+                               collect depth))
+                  (bound (coerce (reverse (loop for written in (reverse after)
+                                                for least = written then (min least written)
+                                                collect least))
+                                 'vector)))
              (let ((open '())
                    (inserted 0)
                    (sites '()))
@@ -959,8 +943,7 @@ unchanged, and so is dropping a \")\" that closes nothing."
                           (:open (push token open))
                           (:close (pop open))
                           (:head
-                           (destructuring-bind (pos line column previous-end previous-line) (rest token)
-                             (declare (ignore pos line))
+                           (destructuring-bind (column previous-end previous-line) (cdddr token)
                              (when (and open (plusp previous-end))
                                (bind ((wanted (loop for entry in open
                                                     while (>= (fourth entry) column)
@@ -986,10 +969,8 @@ unchanged, and so is dropping a \")\" that closes nothing."
                         ;; inserted at the sites, orphans skipped.
                         (with-output-to-string (out)
                           (let ((cursor 0)
-                                (edits (sort (append (mapcar (lambda (site) (list (first site) :insert (second site)))
-                                                             sites)
-                                                     (mapcar (lambda (orphan) (list (first orphan) :drop 1))
-                                                             orphans))
+                                (edits (sort (append (loop for (pos n) in sites collect (list pos :insert n))
+                                                     (loop for (pos) in orphans collect (list pos :drop 1)))
                                              #'< :key #'first)))
                             (dolist (edit edits)
                               (destructuring-bind (pos kind n) edit
@@ -1320,6 +1301,10 @@ turn."
   (and *current-durable-turn*
        (nlk:durable-turn-session-id *current-durable-turn*)))
 
+(defun eval-turn-id ()
+  "The id of the turn whose snippet is being evaluated, or NIL outside a turn."
+  (and *current-durable-turn* (nlk:durable-turn-turn-id *current-durable-turn*)))
+
 ;;; --- the note a snippet opens with ------------------------------------------
 ;;; PRO-LONG (2607.20064) logs, per action, the agent's plan beside the action
 ;;; and its outcome, and the agent parses that log back; its ablation shows
@@ -1541,9 +1526,7 @@ form binds are no calls; anything the walk does not know is refused."
              (walk (x)
                (when (minusp (decf budget))
                  (return-from replay-safe-form-p nil))
-               (typecase x
-                 (cons (and (ignore-errors (list-length x)) (call x)))
-                 (t t)))
+               (or (atom x) (and (ignore-errors (list-length x)) (call x))))
              (bindings (list)
                (and (listp list)
                     (every (lambda (binding)
@@ -1581,8 +1564,7 @@ form binds are no calls; anything the walk does not know is refused."
                  (handler-case (and (walk (second x)) (clauses (cddr x) :handler)))
                  (t (cond ((and (consp head) (eq 'lambda (car head)))
                            (and (lambda-body (cdr head)) (forms (cdr x))))
-                          ((and (symbolp head) (operator-p head)) (forms (cdr x)))
-                          (t nil))))))
+                          ((and (symbolp head) (operator-p head)) (forms (cdr x))))))))
       (walk form))))
 
 (defun replay-safe-snippet-p (arguments)
@@ -1609,7 +1591,7 @@ it printed whole inside *WATCH-SIZE* and readably: a value worth watching."
   "OBJECT printed for a change line, as a watched value prints."
   (values (watch-value-text object)))
 
-(defun watch-changes (old new &optional path)
+(defun watch-changes (old new &optional path whole)
   "What changed from OLD to NEW, one entry per place: two lists of one
 length are held place by place, a place named by its index path [i j], and
 an element too long to show whole is opened the same way; two lists of
@@ -1617,26 +1599,21 @@ different lengths say what came (+) and what went (-); anything else reads
 old -> new."
   (let ((at (and path (format nil "[~{~d~^ ~}] " (reverse path)))))
     (cond ((equal old new) nil)
-          ((not (and (alexandria:proper-list-p old) (alexandria:proper-list-p new)))
+          ((or whole (not (and (alexandria:proper-list-p old) (alexandria:proper-list-p new))))
            (list (format nil "~@[~a~]~a -> ~a" at (watch-print old) (watch-print new))))
           ((= (length old) (length new))
            (loop for a in old
                  for b in new
                  for i from 0
                  unless (equal a b)
-                   append (if (and (consp a) (consp b)
-                                   (> (length (watch-print a)) *watch-width*))
-                              (watch-changes a b (cons i path))
-                              (watch-changes-at a b (cons i path)))))
+                   append (watch-changes a b (cons i path)
+                                         (not (and (consp a) (consp b)
+                                                   (> (length (watch-print a)) *watch-width*))))))
           (t (let ((came (remove-if (lambda (x) (member x old :test #'equal)) new))
                    (went (remove-if (lambda (x) (member x new :test #'equal)) old)))
                (list (format nil "~@[~a~]~@[+~a~]~:[~; ~]~@[-~a~]"
                              at (and came (watch-print came)) (and came went)
                              (and went (watch-print went)))))))))
-
-(defun watch-changes-at (old new path)
-  "The one entry of a place PATH that went from OLD to NEW."
-  (list (format nil "[~{~d~^ ~}] ~a -> ~a" (reverse path) (watch-print old) (watch-print new))))
 
 (defun watch-change-text (watch text object)
   "How WATCH changing to TEXT, OBJECT printed, reads on its line, never cut
@@ -1656,11 +1633,6 @@ whole, `now ...'."
   "WATCH's form as its lines name it."
   (nlk:one-line watch.text :cap 60 :ellipsis "…"))
 
-(defun watch-session ()
-  "The session the evaluating snippet belongs to, whose snippets it watches, or
-NIL outside one: a driver's own forms and a slash op watch nothing."
-  (and *current-durable-turn* (nlk:durable-turn-session-id *current-durable-turn*)))
-
 (defun watched-text (text entry value started &optional acted)
   "TEXT, a snippet's result, followed by what its session's watched snippets say.
 ENTRY is the snippet's last form and its text as read, VALUE its value and
@@ -1670,7 +1642,7 @@ watched from now on and says so -- the model's reader is most often a
 definition and its call, in one snippet -- and a snippet that reached outside,
 before that form or in it, first runs the watched snippets again, each that
 changed or closed adding its line."
-  (let ((session (watch-session)))
+  (let ((session (eval-session-id)))
     (if (null session)
         text
         (bind (((shown whole)
@@ -1877,11 +1849,9 @@ with TAG; see RAW-TEXT-END."
                           (return))
                         (write-string lead out)
                         (write-string tag out :end matched)
-                        (loop for c = (read-char stream nil nil)
-                              do (cond ((null c)
-                                        (error 'end-of-file :stream stream))
-                                       (t (write-char c out)
-                                          (when (char= c #\Newline) (return)))))))))))
+                        (loop for c = (read-char stream)
+                              do (write-char c out)
+                              until (char= c #\Newline))))))))
       (if *read-suppress* nil text))))
 
 (defun raw-text-readtable (&optional (readtable *readtable*))
@@ -1995,11 +1965,7 @@ is still on the stack. Declines, so the snippet's own arm still answers."
                     (lambda (frame)
                       (when-let (name (ignore-errors (sb-debug::frame-call frame)))
                         (return-from found
-                          (let ((text (let ((*print-pretty* nil))
-                                        (princ-to-string name))))
-                            (if (> (length text) 90)
-                                (format nil "~a..." (subseq text 0 90))
-                                text)))))
+                          (nlk:clip (let ((*print-pretty* nil)) (princ-to-string name)) 90))))
                     :count 3)
                    nil))))))
 
@@ -2101,10 +2067,7 @@ a snippet is not atomic, and the model must know exactly where it stopped."
   (if (<= count 1)
       (format nil "ERROR: ~a" message)
       (flet ((preview (text)
-               (let ((line (subseq text 0 (or (position #\Newline text) (length text)))))
-                 (if (> (length line) 60)
-                     (format nil "~a..." (subseq line 0 60))
-                     line))))
+               (nlk:clip (subseq text 0 (or (position #\Newline text) (length text))) 60)))
         (format nil "ERROR in form ~d of ~d (~{~a~^; ~}): ~a" index count
                 (append (when (> index 1)
                           (list (format nil "form~:[s 1-~d~;~* 1~] evaluated and stand~:[~;s~]: ~{~a~^, ~}"
@@ -2199,9 +2162,7 @@ asked — that is the property that makes this substrate worth choosing."
               (*trace-output* stream)
               ;; The ambient scribe session: the layer write below names it
               ;; in its commit and keys its durable fact off it.
-              (nlk:*scribe-session-id*
-                (and *current-durable-turn*
-                     (nlk:durable-turn-session-id *current-durable-turn*)))
+              (nlk:*scribe-session-id* (eval-session-id))
               ;; The REPL's history variables, this session's: * ** *** the
               ;; last values of its last three finished snippets, / // /// the
               ;; lists of their values. Dynamic bindings, so a gateway
@@ -2701,19 +2662,12 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                         (write-string (or part.text "") partial))
                        (:reasoning-delta (write-string (or part.text "") partial-reasoning))
                        ((:tool-input-start :tool-input-delta :tool-call)
-                        (let ((entry (assoc (or part.index 0)
-                                            partial-calls)))
-                          (unless entry
-                            (setf entry (cons (or part.index 0)
-                                              (list :id nil :name nil
-                                                    :arguments "")))
-                            (push entry partial-calls))
-                          (let ((buf (cdr entry)))
-                            (when (stringp part.id) (setf (getf buf :id) part.id))
-                            (when (stringp part.tool-name) (setf (getf buf :name) part.tool-name))
-                            (when (stringp part.arguments)
-                              (setf (getf buf :arguments)
-                                    part.arguments))))))
+                        (let ((buf (cdr (or (assoc (or part.index 0) partial-calls)
+                                            (car (push (list (or part.index 0) :id nil :name nil :arguments "")
+                                                       partial-calls))))))
+                          (loop for (key value) on (list :id part.id :name part.tool-name :arguments part.arguments)
+                                  by #'cddr
+                                when (stringp value) do (setf (getf buf key) value)))))
                      (when on-part (funcall on-part part))
                      (when loop-guard (loop-guard-observe loop-guard part))))
          (config context.provider-config))
@@ -2740,6 +2694,9 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                (if (continuing-p)
                    (continuation-context context sealed-reasoning sealed-text)
                    context))
+             (seal-prefix ()
+               ;; the sealed reasoning as a continued round's reasoning opens: on its own line
+               (if (plusp (length sealed-reasoning)) (format nil "~a~%" sealed-reasoning) ""))
              (merge-continuation (message)
                ;; The winning attempt's message, with the seal restored in
                ;; front of what it streamed: reasoning joined on a newline
@@ -2751,9 +2708,7 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                ;; nothing was continued.
                (if (not (continuing-p))
                    (values message nil)
-                   (let ((reasoning-prefix (if (plusp (length sealed-reasoning))
-                                               (format nil "~a~%" sealed-reasoning)
-                                               ""))
+                   (let ((reasoning-prefix (seal-prefix))
                          (reasoning (gethash "reasoning_content" message))
                          (content (gethash "content" message)))
                      (setf (gethash "reasoning_content" message)
@@ -2823,6 +2778,17 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                            thinking)))
                (when (plusp (length text))
                  (setf sealed-text (concatenate 'string sealed-text text))))
+             (scaled-estimate (&aux (config context.provider-config))
+               ;; the round's estimate, scaled by what this model's counts taught
+               (round (* (compiled-context-estimated-tokens context)
+                         (context-estimate-ratio config.provider config.model))))
+             (record-fallback (to-provider to-model reason &rest more)
+               (when *current-durable-turn*
+                 (apply #'nlk:record-provider-fallback *current-durable-turn*
+                        :from-provider config.provider :from-model config.model
+                        :to-provider to-provider :to-model to-model :reason reason
+                        :attempt provider-attempt more)
+                 (notify-turn-facts-committed)))
              (verdict-of (e)
                ;; What failure E said of its model: the failover label, the
                ;; HTTP status, and the provider's own words on one line.
@@ -2837,10 +2803,8 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                ;; config refuses — never the verdict of the model it took
                ;; over from, which is the fallback fact's reason.
                (when (and fallback-tried (null (getf (first fallback-tried) :reason)))
-                 (setf (first fallback-tried)
-                       (list* :provider (getf (first fallback-tried) :provider)
-                              :model (getf (first fallback-tried) :model)
-                              (verdict-of e)))))
+                 ;; past its :provider P :model M, the entry's tail is the verdict
+                 (setf (cddddr (first fallback-tried)) (verdict-of e))))
              (amend-terminal-failover-note (e)
                ;; The honest terminal copy: when a chain was walked and every
                ;; candidate failed, the failure that stands lists every model
@@ -2857,19 +2821,11 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
              (next-candidate (chain)
                ;; The first entry of CHAIN this round has not run on: not
                ;; the model it runs on now, not the selection, not one tried.
-               (find-if
-                (lambda (entry)
-                  (let ((pair (list (getf entry :provider)
-                                    (getf entry :model))))
-                    (and (not (equal pair (list config.provider config.model)))
-                         (not (equal pair (list selection-provider
-                                                selection-model)))
-                         (not (member pair fallback-tried
-                                      :key (lambda (tried)
-                                             (list (getf tried :provider)
-                                                   (getf tried :model)))
-                                      :test #'equal)))))
-                chain))
+               (flet ((pair (entry) (list (getf entry :provider) (getf entry :model))))
+                 (let ((ran (list* (list config.provider config.model)
+                                   (list selection-provider selection-model)
+                                   (mapcar #'pair fallback-tried))))
+                   (find-if (lambda (entry) (not (member (pair entry) ran :test #'equal))) chain))))
              (try-fallback (e)
                ;; One chain step: re-aim the round at the next configured
                ;; candidate this turn has not tried — resolved through the
@@ -2905,18 +2861,8 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                            ;; refused attempt's first token, and the
                            ;; candidate's TTFT came out negative.
                            (void-partial-stream)
-                           (when *current-durable-turn*
-                             (nlk:record-provider-fallback
-                              *current-durable-turn*
-                              :from-provider current-provider
-                              :from-model current-model
-                              :to-provider provider
-                              :to-model model
-                              :reason reason
-                              :status (provider-error-status e)
-                              :attempt provider-attempt
-                              :detail (provider-error-detail e))
-                             (notify-turn-facts-committed))
+                           (record-fallback provider model reason :status (provider-error-status e)
+                                            :detail (provider-error-detail e))
                            (setf config candidate
                                  context (context-with context
                                                        :provider-config candidate)
@@ -2942,17 +2888,7 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                          (setf (getf (first fallback-tried) :reason) "unresolved"
                                (getf (first fallback-tried) :said)
                                (nlk:one-line (princ-to-string refusal)))
-                         (when *current-durable-turn*
-                           (nlk:record-provider-fallback
-                            *current-durable-turn*
-                            :from-provider current-provider
-                            :from-model current-model
-                            :to-provider provider
-                            :to-model model
-                            :reason "unresolved"
-                            :attempt provider-attempt
-                            :detail (princ-to-string refusal))
-                           (notify-turn-facts-committed))
+                         (record-fallback provider model "unresolved" :detail (princ-to-string refusal))
                          (try-fallback e)))))))
              (announce-retry (e scope delay detail attempt limit continuation)
                ;; One retry, announced twice over. The durable fact carries
@@ -3006,17 +2942,25 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                    ;; The step recorded a floor: the stub lists it as the
                    ;; block the next round's will, so the retry is that
                    ;; round's prefix.
-                   (let ((floors (and context.session-id
-                                      (nlk:retained-history-floors context.session-id))))
-                     (setf context
-                           (context-with
-                            context
-                            :messages (messages-with-visible-images
-                                       (messages-at-boundary turns boundary floors)
-                                       context.visible-images)
-                            :boundary boundary :history-turns turns
-                            :floors floors)))
-                   t)))
+                   (retarget turns boundary (and context.session-id
+                                                 (nlk:retained-history-floors context.session-id))
+                             context.visible-images))))
+             (retarget (turns boundary floors images)
+               ;; The context re-aimed at TURNS from BOUNDARY with IMAGES: => T.
+               (setf context (context-with context :messages (messages-with-visible-images
+                                                              (messages-at-boundary turns boundary floors)
+                                                              images)
+                                                   :boundary boundary :history-turns turns
+                                                   :floors floors :visible-images images))
+               t)
+             (rerun-at-once (e detail)
+               ;; The failed attempt sealed and journaled as a retry with no
+               ;; wait and no ladder climbed, DETAIL naming why: => T.
+               (seal-streamed-attempt (provider-error-detail e) "rerun")
+               (announce-retry e :request 0 detail nil nil nil)
+               (incf provider-attempt)
+               (void-partial-stream)
+               t)
              (pre-call-govern ()
                ;; Admission is deliberately soft: known pressure gets a
                ;; bounded number of existing durable eviction steps, while an
@@ -3025,15 +2969,9 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                ;; its estimate both changed.
                (let ((steps 0))
                  (loop
-                   (let* ((config context.provider-config)
-                          (provider-id config.provider)
-                          (model-id config.model)
-                          (estimate (round (* (compiled-context-estimated-tokens context)
-                                              (context-estimate-ratio provider-id
-                                                                      model-id))))
+                   (let* ((estimate (scaled-estimate))
                           (decision (context-pressure-decision
-                                     estimate
-                                     (effective-context-budget config))))
+                                     estimate (effective-context-budget context.provider-config))))
                      (case (getf decision :status)
                        (:unknown
                         (note-phase "context-pressure status=unknown estimate=~d" estimate)
@@ -3076,12 +3014,7 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                    (effective-max-output-tokens context)
                  (when (and shrunk-p (integerp cap)
                             (< cap +min-usable-output-tokens+))
-                   (let* ((config context.provider-config)
-                          (provider-id config.provider)
-                          (model-id config.model)
-                          (estimate (round (* (compiled-context-estimated-tokens context)
-                                              (context-estimate-ratio provider-id
-                                                                      model-id)))))
+                   (let ((config context.provider-config) (estimate (scaled-estimate)))
                      (note-phase
                       "output-room status=refused cap=~d estimate=~d budget=~a"
                       cap estimate (effective-context-budget config))
@@ -3105,14 +3038,8 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                                   (relearned-request e config))))
                  (when lesson
                    (incf relearnings)
-                   (seal-streamed-attempt (provider-error-detail e) "rerun")
-                   (announce-retry e :request 0
-                                   (format nil "~a, after: ~a" lesson
-                                           (provider-said (provider-error-detail e)))
-                                   nil nil nil)
-                   (incf provider-attempt)
-                   (void-partial-stream)
-                   t)))
+                   (rerun-at-once e (format nil "~a, after: ~a" lesson
+                                            (provider-said (provider-error-detail e)))))))
              (withhold-images-and-retarget (e)
                ;; The other recovery step: the request carried images and
                ;; failed, so the round is re-sent without them, a note
@@ -3134,8 +3061,7 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                ;; or limit on the live part because no ladder is being
                ;; climbed. => T when images were withheld, NIL when the
                ;; request carried none.
-               (let* ((turn-id (and *current-durable-turn*
-                                    (nlk:durable-turn-turn-id *current-durable-turn*)))
+               (let* ((turn-id (eval-turn-id))
                       (latched (plusp (turn-image-refusals turn-id))))
                  (multiple-value-bind (groups count)
                      (withhold-image-groups
@@ -3147,24 +3073,10 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                        (withhold-turn-images
                         turn-id
                         (lambda (n) (withheld-images-note e n :latched t))))
-                     (seal-streamed-attempt (provider-error-detail e) "rerun")
-                     (announce-retry e :request 0
-                                     (format nil "~d image~:p withheld after: ~a"
-                                             count (provider-error-detail e))
-                                     nil nil nil)
-                     (incf provider-attempt)
-                     (void-partial-stream)
-                     (setf context
-                           (context-with
-                            context
-                            :visible-images groups
-                            :messages (messages-with-visible-images
-                                       (messages-at-boundary
-                                        context.history-turns
-                                        context.history-boundary
-                                        context.history-floors)
-                                       groups)))
-                     t)))))
+                     (rerun-at-once e (format nil "~d image~:p withheld after: ~a"
+                                              count (provider-error-detail e)))
+                     (retarget context.history-turns context.history-boundary
+                               context.history-floors groups))))))
      (loop
       (handler-case
           ;; The attempt runs as the identity it targets: a failure names the
@@ -3185,46 +3097,29 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                 ;; inside the macro unschedules it on every retry path.
                 (nlk:collect-during-wait
                   (handler-bind ((nlk:turn-cancelled-condition
-                                   (lambda (condition)
-                                     (let ((text (get-output-stream-string
-                                                  partial))
-                                           (thinking (get-output-stream-string
-                                                      partial-reasoning)))
-                                       ;; A cancel mid-continuation closes
-                                       ;; the round with the seal in front
-                                       ;; of what streamed since, the same
-                                       ;; merge a finished continuation
-                                       ;; gets, and says where the join is.
-                                       (when (continuing-p)
-                                         (let ((prefix (if (plusp (length sealed-reasoning))
-                                                           (format nil "~a~%" sealed-reasoning)
-                                                           "")))
-                                           (setf (nlk:turn-cancelled-condition-partial-continued-from
-                                                  condition)
-                                                 (list :reasoning (length prefix)
-                                                       :content (length sealed-text))
-                                                 thinking (concatenate 'string prefix thinking)
-                                                 text (concatenate 'string sealed-text text))))
-                                       (when (plusp (length text))
-                                         (setf (nlk:turn-cancelled-condition-partial-text
-                                                condition)
-                                               text))
-                                       (when (plusp (length thinking))
-                                         (setf (nlk:turn-cancelled-condition-partial-reasoning
-                                                condition)
-                                               thinking))
-                                       (when partial-calls
-                                         (setf (nlk:turn-cancelled-condition-partial-tool-calls
-                                                condition)
-                                               (mapcar #'cdr
-                                                       (sort (copy-list partial-calls)
-                                                             #'< :key #'car))))
-                                       (setf (nlk:turn-cancelled-condition-partial-usage
-                                              condition)
-                                             (cut-round-usage-estimate
-                                              context config cadence
-                                              response-model response-effort
-                                              text thinking partial-calls))))))
+                                   (lambda (c &aux (text (get-output-stream-string partial))
+                                                   (thinking (get-output-stream-string partial-reasoning)))
+                                     ;; A cancel mid-continuation closes
+                                     ;; the round with the seal in front
+                                     ;; of what streamed since, the same
+                                     ;; merge a finished continuation
+                                     ;; gets, and says where the join is.
+                                     (when (continuing-p)
+                                       (let ((prefix (seal-prefix)))
+                                         (setf (nlk:turn-cancelled-condition-partial-continued-from c)
+                                               (list :reasoning (length prefix) :content (length sealed-text))
+                                               thinking (concatenate 'string prefix thinking)
+                                               text (concatenate 'string sealed-text text))))
+                                     (when (plusp (length text))
+                                       (setf (nlk:turn-cancelled-condition-partial-text c) text))
+                                     (when (plusp (length thinking))
+                                       (setf (nlk:turn-cancelled-condition-partial-reasoning c) thinking))
+                                     (when partial-calls
+                                       (setf (nlk:turn-cancelled-condition-partial-tool-calls c)
+                                             (mapcar #'cdr (sort (copy-list partial-calls) #'< :key #'car))))
+                                     (setf (nlk:turn-cancelled-condition-partial-usage c)
+                                           (cut-round-usage-estimate context config cadence response-model
+                                                                     response-effort text thinking partial-calls)))))
                     ;; One fold per lane: a round with no observer IS the
                     ;; blocking call. OBSERVER is NIL when nothing wants parts.
                     (setf cadence.sent-ms (elapsed-ms 0)
@@ -3258,16 +3153,11 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                 ;; dispatch it to. Its id and the head of its arguments are
                 ;; the diagnosis.
                 (when-let (nameless (nameless-tool-call message))
-                  (let ((arguments (or (json-value nameless :string
-                                                   "function" "arguments")
-                                       "")))
-                    (error 'provider-malformed-tool-call
-                           :detail (format nil "provider returned a tool ~
-                                                  call with no name (id ~a, ~
-                                                  arguments ~a)"
-                                           (gethash "id" nameless)
-                                           (subseq arguments
-                                                   0 (min 80 (length arguments)))))))
+                  (error 'provider-malformed-tool-call
+                         :detail (format nil "provider returned a tool call with no name (id ~a, arguments ~a)"
+                                         (gethash "id" nameless)
+                                         (nlk:clip (or (json-value nameless :string "function" "arguments") "")
+                                                   80 :ellipsis ""))))
                 ;; Window evidence and the measured prompt from every round
                 ;; the server actually processed: the usage total is a PROVEN
                 ;; context-window floor, and the prompt as the server's own
@@ -3302,17 +3192,10 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                   (setf length-cut-recovered-p t
                         cut-recovered t)
                   (when *current-durable-turn*
-                    (apply #'record-round-usage
-                           *current-durable-turn*
-                           :model model-id
-                           :provider provider-id
-                           :response-model response-model
-                           :reasoning-effort
-                           (or response-effort
-                               config.reasoning-effort)
-                           :finish-reason finish-reason
-                           :voided t
-                           (provider-usage-fact-args usage))
+                    (apply #'record-round-usage *current-durable-turn*
+                           :model model-id :provider provider-id :response-model response-model
+                           :reasoning-effort (or response-effort config.reasoning-effort)
+                           :finish-reason finish-reason :voided t (provider-usage-fact-args usage))
                     (notify-turn-facts-committed))
                   ;; The cut message is sealed into the transcript like any
                   ;; other voided attempt (the provider's own usage already
@@ -3429,13 +3312,8 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
              ;; over its window, and our calibrated estimate of it bounds
              ;; the window from above (estimate-grade — a later proven
              ;; floor beats it).
-             (let ((provider-id config.provider) (model-id config.model))
-               (when (nlk:store-open-p)
-                 (nlk:observe-context-window-ceiling
-                  provider-id model-id
-                  (max 1 (round (* (compiled-context-estimated-tokens context)
-                                   (context-estimate-ratio provider-id
-                                                           model-id)))))))
+             (when (nlk:store-open-p)
+               (nlk:observe-context-window-ceiling config.provider config.model (max 1 (scaled-estimate))))
              ;; One shared recovery step (terminal turn, else live-turn
              ;; rounds); nothing evictable means the rejection stands.
              ;; Step until it fits, not once: with an unknown window the
@@ -3984,6 +3862,10 @@ message."
 
 (defvar *turn-images-lock* (bt2:make-lock :name "turn-images"))
 
+(defmacro with-turn-images-held ((turn-id &optional none) &body body)
+  "BODY under the attachments lock when TURN-ID names a turn, else NONE."
+  `(if ,turn-id (bt2:with-lock-held (*turn-images-lock*) ,@body) ,none))
+
 (defvar *turn-images* (make-hash-table :test #'equal)
   "TURN-ID -> its attachments as (ANCHOR . IMAGES) groups in the order each
 anchor's first image arrived: ANCHOR NIL for the turn's inputs, a tool call
@@ -3993,10 +3875,9 @@ oldest first.")
 (defun turn-images (turn-id)
   "TURN-ID's staged attachments: the (ANCHOR . IMAGES) groups, oldest group
 first, each group's images oldest first."
-  (when turn-id
-    (bt2:with-lock-held (*turn-images-lock*)
-      (loop for (anchor . images) in (gethash turn-id *turn-images*)
-            collect (cons anchor (copy-list images))))))
+  (with-turn-images-held (turn-id)
+    (loop for (anchor . images) in (gethash turn-id *turn-images*)
+          collect (cons anchor (copy-list images)))))
 
 (defun fitted-attachment (image)
   "IMAGE, a (MEDIA-TYPE . BASE64) attachment, as a provider takes it
@@ -4030,24 +3911,21 @@ a paste, a room's attachment and a LOOK reach the model by this one door."
 (defun forget-turn-images (turn-id)
   "Drop TURN-ID's attachments. Their horizon is the turn, so the entry dies
 with it rather than holding megabytes of base64 for the life of the image."
-  (when turn-id
-    (bt2:with-lock-held (*turn-images-lock*)
-      (remhash turn-id *turn-images*)
-      (remhash turn-id *turn-image-refusals*))))
+  (with-turn-images-held (turn-id)
+    (remhash turn-id *turn-images*)
+    (remhash turn-id *turn-image-refusals*)))
 
 (defun withhold-turn-images (turn-id note-fn)
   "Replace TURN-ID's staged images with their notes, group by group
 (context.lisp WITHHOLD-IMAGE-GROUPS): the rounds after a provider refused
 them carry the note where each image was and never the refused bytes
 again. => the images withheld, zero when none were staged."
-  (if (null turn-id)
-      0
-      (bt2:with-lock-held (*turn-images-lock*)
-        (multiple-value-bind (groups count)
-            (withhold-image-groups (gethash turn-id *turn-images*) note-fn)
-          (when (plusp count)
-            (setf (gethash turn-id *turn-images*) groups))
-          count))))
+  (with-turn-images-held (turn-id 0)
+    (multiple-value-bind (groups count)
+        (withhold-image-groups (gethash turn-id *turn-images*) note-fn)
+      (when (plusp count)
+        (setf (gethash turn-id *turn-images*) groups))
+      count)))
 
 (defvar *turn-image-refusals* (make-hash-table :test #'equal)
   "TURN-ID -> how many requests carrying that turn's images a provider failed,
@@ -4057,27 +3935,22 @@ second for the rest of the turn.")
 (defun turn-image-refusals (turn-id)
   "How many requests carrying TURN-ID's images have failed this turn; zero
 with no turn."
-  (if (null turn-id)
-      0
-      (bt2:with-lock-held (*turn-images-lock*)
-        (gethash turn-id *turn-image-refusals* 0))))
+  (with-turn-images-held (turn-id 0)
+    (gethash turn-id *turn-image-refusals* 0)))
 
 (defun count-turn-image-refusal (turn-id)
   "Count one more failed request that carried TURN-ID's images. => the new
 count, zero with no turn."
-  (if (null turn-id)
-      0
-      (bt2:with-lock-held (*turn-images-lock*)
-        (incf (gethash turn-id *turn-image-refusals* 0)))))
+  (with-turn-images-held (turn-id 0)
+    (incf (gethash turn-id *turn-image-refusals* 0))))
 
 (defun turn-images-withheld-p (turn-id)
   "True once a provider has refused TURN-ID's images this turn — the mark
 WITHHOLD-TURN-IMAGES leaves, read by LOOK to refuse the next image with
 the reason rather than send it into the same refusal."
-  (when turn-id
-    (bt2:with-lock-held (*turn-images-lock*)
-      (loop for (nil . images) in (gethash turn-id *turn-images*)
-            thereis (and (find :withheld images :key #'car) t)))))
+  (with-turn-images-held (turn-id)
+    (loop for (nil . images) in (gethash turn-id *turn-images*)
+          thereis (and (find :withheld images :key #'car) t))))
 
 ;;; --- the prompt a turn runs under -------------------------------------------
 ;;; The conversation's pinned prompt (context.lisp, the prompt a conversation
@@ -4175,8 +4048,7 @@ is pure."
        ;; The live turn's attachments are ambient state too, and this is the
        ;; seam that freezes ambient state: the engine reads the frozen groups.
        :visible-images
-       (turn-images (and *current-durable-turn*
-                         (nlk:durable-turn-turn-id *current-durable-turn*)))))))
+       (turn-images (eval-turn-id))))))
 
 (defparameter +context-warning+
   "[context ~a of ~a, past the ~d% line: the next request evicts your oldest history unless it shrinks first. (context :drop SPANS :keep IDS :note TEXT) shrinks it in one call, and the note keeps what you still need. One warning until it shrinks.]"
@@ -4369,8 +4241,7 @@ for it: it is recorded and its calls run exactly as a provider's would be.
 Background work that exited since the last boundary is read first, in a
 round of the harness's own (READ-TURN-EXITS): before the provider is asked,
 and where a terminal answer would end the turn."
-   (when *current-durable-turn*
-     (nlk:ensure-turn-not-cancelled *current-durable-turn*))
+   (nlk:ensure-turn-not-cancelled *current-durable-turn*)
    ;; The boundary before a provider round: the turn's start, or the tool
    ;; batch just run. An exit that landed meanwhile is read first, so the
    ;; provider is asked with its value in hand.
@@ -4481,8 +4352,7 @@ and where a terminal answer would end the turn."
               (provider-usage-fact-args usage)))
            (notify-turn-facts-committed))
          ;; The cancel is honored only after the round durably closed.
-         (when *current-durable-turn*
-           (nlk:ensure-turn-not-cancelled *current-durable-turn*))
+         (nlk:ensure-turn-not-cancelled *current-durable-turn*)
          (let ((calls (message-tool-calls message)))
            (cond
              (calls
@@ -4566,8 +4436,10 @@ outranks the default effort the same way while the turn's effective
       (if (nlk:store-open-p)
           (nlk:session-model-selection (session-id session))
           (values nil nil))
-   (let* ((session-effort (nlk:session-model-effort (session-id session)))
+   (let* ((sid (session-id session))
+         (session-effort (nlk:session-model-effort sid))
          (turn nil)
+         (turn-id nil)
          (*current-durable-turn* nil)
          ;; Round zero's previous request is the turn before's (CALL-PROVIDER).
          (*previous-request-json* nil)
@@ -4582,7 +4454,7 @@ outranks the default effort the same way while the turn's effective
          (*reasoning-effort*
            (effective-effort session-effort *provider* *model*)))
     (with-cleanup ((when turn
-                     (forget-turn-images (nlk:durable-turn-turn-id turn))
+                     (forget-turn-images turn-id)
                      ;; With the log open the working set is the next hydration's to
                      ;; rebuild, so it does not outlive the turn that folded it; the
                      ;; latch goes after it, so no turn admitted meanwhile loses its fold.
@@ -4590,14 +4462,12 @@ outranks the default effort the same way while the turn's effective
                        (forget session))) (finish-turn session))
       (admit session input)
       (setf turn (or admitted-turn
-                     (nlk:admit-turn
-                      (session-id session)
-                      (or command-id (nlk::make-durable-id "command"))
-                      input :invocation invocation))
+                     (nlk:admit-turn sid (or command-id (nlk::make-durable-id "command"))
+                                     input :invocation invocation))
+            turn-id (nlk:durable-turn-turn-id turn)
             *current-durable-turn* turn)
-      (attach-turn-images (nlk:durable-turn-turn-id turn) images)
-      (setf *live-turn* (open-live-turn (session-id session)
-                                        (nlk:durable-turn-turn-id turn)))
+      (attach-turn-images turn-id images)
+      (setf *live-turn* (open-live-turn sid turn-id))
       (handler-case
           (progn
             ;; A home that chose no model has only the target the image was
@@ -4615,7 +4485,7 @@ outranks the default effort the same way while the turn's effective
             ;; in another session, which moves the default, reaches only
             ;; sessions not yet begun (SELECT-SESSION-MODEL, SET-SESSION-EFFORT).
             (unless (or (and session-provider session-model) (not (nlk:store-open-p)))
-              (nlk:record-session-model-selection (session-id session)
+              (nlk:record-session-model-selection sid
                                                   :provider *provider* :model *model*
                                                   :effort (or session-effort *reasoning-effort*)))
             ;; The user_message workspace checkpoint: both admission
@@ -4629,15 +4499,11 @@ outranks the default effort the same way while the turn's effective
             ;; pre-crash run; re-stamping would leave duplicates whose
             ;; predecessor resolution is ambiguous for undo.
             (when nlk::*workspace-capture-enabled*
-              (unless (nlk:turn-boundary-captured-p
-                       (session-id session)
-                       (nlk:durable-turn-turn-id turn)
-                       "user_message")
+              (unless (nlk:turn-boundary-captured-p sid turn-id "user_message")
                 (nlk:checkpoint-capture-boundary
                  turn
                  :boundary-kind "user_message"
-                 :anchor-position (nlk:session-log-cursor
-                                   (session-id session))
+                 :anchor-position (nlk:session-log-cursor sid)
                  ;; The walk overlaps the first provider request; the
                  ;; fact lands ahead of the first round's facts.
                  :defer t)))
@@ -4652,8 +4518,7 @@ outranks the default effort the same way while the turn's effective
                    ;; each completed round left a durable assistant
                    ;; closure, and the count is 0 for fresh turns.
                    :round (if (and turn (nlk:store-open-p))
-                              (nlk:turn-assistant-round-count
-                               (nlk:durable-turn-turn-id turn))
+                              (nlk:turn-assistant-round-count turn-id)
                               0)))
               ;; Assistant messages are durable per provider round. A
               ;; parked steer ended the loop at a boundary it would
@@ -4667,10 +4532,7 @@ outranks the default effort the same way while the turn's effective
                                  ;; so every consumer knows that word is
                                  ;; not the ask's answer.
                                  :background-pending
-                                 (and handoff
-                                      (turn-background-pending
-                                       (session-id session)
-                                       (nlk:durable-turn-turn-id turn))))
+                                 (and handoff (turn-background-pending sid turn-id)))
               (notify-turn-facts-committed)
               ;; The assistant-boundary checkpoint is the only fence
               ;; that catches writes by tool-spawned threads after the
@@ -4678,8 +4540,7 @@ outranks the default effort the same way while the turn's effective
               (nlk:checkpoint-capture-boundary
                turn
                :boundary-kind "assistant_message"
-               :anchor-position (nlk:session-log-cursor
-                                 (session-id session)))
+               :anchor-position (nlk:session-log-cursor sid))
               (values (message-content message) message session)))
         (nlk:turn-cancelled-condition (condition)
           (when (turn-still-open-p turn)
@@ -4694,59 +4555,35 @@ outranks the default effort the same way while the turn's effective
             ;; keeps what the user watched arrive and replay stays
             ;; well-formed (each persisted call closes with an
             ;; interrupted result).
-            (let ((streamed (nlk:turn-cancelled-condition-partial-text
-                             condition))
-                  (thinking (nlk:turn-cancelled-condition-partial-reasoning
-                             condition))
-                  (calls (nlk:turn-cancelled-condition-partial-tool-calls
-                          condition)))
-              (when (or (and (stringp streamed) (plusp (length streamed)))
-                        (and (stringp thinking) (plusp (length thinking)))
-                        calls)
-                (ignore-errors
-                  (let ((message
-                          (json-object
-                           "role" "assistant"
-                           "content" (if (and (stringp streamed)
-                                              (plusp (length streamed)))
-                                         streamed
-                                         "")
-                           :when (and (stringp thinking)
-                                      (plusp (length thinking)))
-                           "reasoning_content" thinking
-                           :when calls "tool_calls"
-                           (map 'vector
-                                (lambda (buf)
-                                  (chat-tool-call-object
-                                   (or (getf buf :id) "")
-                                   (or (getf buf :name) "")
-                                   (or (getf buf :arguments) "")))
-                                calls))))
+            (flet ((text (value) (and (stringp value) (plusp (length value)) value)))
+              (let ((streamed (text (nlk:turn-cancelled-condition-partial-text condition)))
+                    (thinking (text (nlk:turn-cancelled-condition-partial-reasoning condition)))
+                    (calls (loop for buf in (nlk:turn-cancelled-condition-partial-tool-calls condition)
+                                 collect (list (or (getf buf :id) "") (getf buf :name)
+                                               (or (getf buf :arguments) "")))))
+                (when (or streamed thinking calls)
+                  (ignore-errors
                     (nlk:record-assistant-message
-                     turn message
-                     :continued-from
-                     (nlk:turn-cancelled-condition-partial-continued-from
-                      condition))
-                    (dolist (buf calls)
-                      (nlk:record-tool-call
-                       turn (or (getf buf :id) "")
-                       (or (getf buf :name) "unknown")
-                       (or (getf buf :arguments) ""))
-                      (nlk:record-tool-result
-                       turn (or (getf buf :id) "")
-                       (or (getf buf :name) "unknown")
-                       "interrupted by user"
-                       :metadata (when-let (stop (call-stop-document turn (or (getf buf :id) "")))
-                                   (json-object "stopped" stop)))))))
-              ;; The cut round's usage, estimated: the server never
-              ;; reported, but the spend was real and the resting
-              ;; divider must still name the model, the effort and the
-              ;; cost the way a completed turn's does.
-              (when-let (cut (nlk:turn-cancelled-condition-partial-usage
-                              condition))
-                (ignore-errors
-                  (apply #'record-round-usage turn
-                         :estimated t cut))))
+                     turn (json-object "role" "assistant" "content" (or streamed "")
+                                       :when thinking "reasoning_content" thinking
+                                       :when calls "tool_calls"
+                                       (map 'vector (lambda (call)
+                                                      (destructuring-bind (id name arguments) call
+                                                        (chat-tool-call-object id (or name "") arguments)))
+                                            calls))
+                     :continued-from (nlk:turn-cancelled-condition-partial-continued-from condition))
+                    (loop for (id name arguments) in calls
+                          do (nlk:record-tool-call turn id (or name "unknown") arguments)
+                             (nlk:record-tool-result
+                              turn id (or name "unknown") "interrupted by user"
+                              :metadata (when-let (stop (call-stop-document turn id))
+                                          (json-object "stopped" stop))))))))
+            ;; The cut round's usage, estimated: the server never
+            ;; reported, but the spend was real and the resting
+            ;; divider must still name the model, the effort and the
+            ;; cost the way a completed turn's does.
+            (when-let (cut (nlk:turn-cancelled-condition-partial-usage condition))
+              (ignore-errors (apply #'record-round-usage turn :estimated t cut)))
             (nlk:cancel-turn turn (nlk::turn-cancelled-condition-reason condition))
             (notify-turn-facts-committed))
           (error condition))

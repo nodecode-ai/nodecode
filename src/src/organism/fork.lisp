@@ -335,17 +335,20 @@ name of any other tool it called."
   "FORK as fork answers it, its turn having ended as KIND; one whose turn
 never started, as it stands."
   (let ((child (getf fork :session))
-        (turn (getf fork :turn)))
-    (if (getf fork :status)
-        (list :task (getf fork :task) :session child :status (getf fork :status)
-              :answer (getf fork :answer) :ran '())
-        (list :task (getf fork :task) :session child
-              :status (cond ((eq kind :timeout) :timeout)
-                            ((equal kind "turn.completed") :completed)
-                            ((equal kind "turn.failed") :failed)
-                            (t :cancelled))
-              :answer (or (turn-answer child turn) (fork-ending child turn))
-              :ran (fork-ran child turn)))))
+        (turn (getf fork :turn))
+        (status (getf fork :status)))
+    (list :task (getf fork :task) :session child
+          :status (or status (fork-turn-status kind))
+          :answer (if status (getf fork :answer) (or (turn-answer child turn) (fork-ending child turn)))
+          :ran (unless status (fork-ran child turn)))))
+
+(defun fork-turn-status (kind)
+  "KIND, the kind of the event a fork's turn ended on, or :TIMEOUT, as the
+fork's status: :timeout, :completed, :failed or :cancelled."
+  (cond ((eq kind :timeout) :timeout)
+        ((equal kind "turn.completed") :completed)
+        ((equal kind "turn.failed") :failed)
+        (t :cancelled)))
 
 ;;; --- live progress: how a call's forks stand, for the shells it shows in ---
 ;;; A fork works in a session of its own, so the parent's transcript holds only
@@ -424,10 +427,7 @@ ended -> its FORK-CALL.")
                                 ms)))))
     (json-object "n" n
                  "label" (clip (trimmed (or (first (lines (trimmed (or (getf fork :task) "")))) "")) 60 :ellipsis "…")
-                 "status" (cond ((null kind) "running")
-                                ((equal kind "turn.completed") "completed")
-                                ((equal kind "turn.failed") "failed")
-                                (t "cancelled"))
+                 "status" (if kind (string-downcase (fork-turn-status kind)) "running")
                  "calls" (length ran)
                  :opt "note" (and ran (fork-progress-note (car (last ran))))
                  :opt "ms" ended
@@ -1070,10 +1070,9 @@ place, HELD (FORK-SWAP). => the :RACE report."
          (tried (loop for row in fit
                       for answer in (rest answers)
                       collect (if (eql 1 (getf answer :score))
-                                  (let ((function (fork-version-function (getf row :form) keep)))
-                                    (if function
-                                        (list* :function function row)
-                                        (list* :out "it passed the check, and does not compile clean in this image" row)))
+                                  (if-let (function (fork-version-function (getf row :form) keep))
+                                    (list* :function function row)
+                                    (list* :out "it passed the check, and does not compile clean in this image" row))
                                   (list* :out (fork-answer-words answer) row))))
          (passing (loop for row in tried unless (getf row :out) collect (getf row :label)))
          (entrants (append (and standing-passed (list (list :label "what stands" :standing t)))
@@ -1108,10 +1107,9 @@ place, HELD (FORK-SWAP). => the :RACE report."
 
 (defun fork-newest-generation ()
   "The newest generation this home sealed, or a refusal when it sealed none."
-  (let ((numbers (mapcar #'manifest-number (manifests))))
-    (if numbers
-        (reduce #'max numbers)
-        (fork-fail "this home has sealed no generation to try a version in"))))
+  (if-let (numbers (mapcar #'manifest-number (manifests)))
+    (reduce #'max numbers)
+    (fork-fail "this home has sealed no generation to try a version in")))
 
 ;;; --- the verb --------------------------------------------------------------------
 
@@ -1154,7 +1152,6 @@ NEW) pair, with :CHECK), racing the versions of a name the forks write
   "Advice on NLE:TURN-BUDGET, which a session's owner advises for its own
 sessions: a fork's turn runs under the seconds its call gave; every other turn
 is NEXT's. FORK-TASKS puts it on before a fork's turn can open."
-  (let ((waiting (gethash (getf turn :session-id) *fork-waiting*)))
-    (if waiting
-        (list :seconds (getf waiting :seconds))
-        (funcall next turn))))
+  (if-let (waiting (gethash (getf turn :session-id) *fork-waiting*))
+    (list :seconds (getf waiting :seconds))
+    (funcall next turn)))

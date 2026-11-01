@@ -276,13 +276,12 @@ discarded. REFUSED: the prompt promoted before the gateway read
 the withdrawal — the hold ends, the text goes back out of the composer
 while it is still exactly what the peel wrote, and a hint says why."
   (when held
-    (if (string= status "accepted")
-        (when-let (images (nlk::content-image-attachments (json-value response :any "images")))
-          (setf model.pending-images (append model.pending-images images)))
-        (progn
-          (release-held-prompt model)
-          (when (equal (editor-value model.editor) (getf held :text)) (editor-reset model.editor))
-          (show-status model "That prompt already started")))))
+    (cond ((string= status "accepted")
+           (when-let (images (nlk::content-image-attachments (json-value response :any "images")))
+             (setf model.pending-images (append model.pending-images images))))
+          (t (release-held-prompt model)
+             (when (equal (editor-value model.editor) (getf held :text)) (editor-reset model.editor))
+             (show-status model "That prompt already started")))))
 
 (defun send-navigate-checkpoint (ws session-id &key target-turn-id
                                                     boundary
@@ -814,9 +813,7 @@ so a streamed item and its durable fact are one row, never two."
           ;; withdrawal — this shell's own peel included — and the row
           ;; leaves with it.
           (setf st (prune-pending-steer-rows
-                    st
-                    (loop for prompt across pending
-                          collect (json-value prompt :string "prompt_id"))))
+                    st (map 'list (lambda (prompt) (json-value prompt :string "prompt_id")) pending)))
           (loop for prompt across pending
                 do (setf st (ingest-pending-input-fact
                              st (or (json-value prompt :string "content") "")
@@ -1079,15 +1076,13 @@ attached session's, the one this shell's stop acts on."
     ;; gesture, never to the submit flow the pending-command guard below
     ;; tracks, and a submission parked at the same moment must not swallow it.
     (when (string= command "interrupt_exec")
-      (if (string= status "accepted")
-          (show-status model "Interrupt requested")
-          (progn
+      (cond ((string= status "accepted") (show-status model "Interrupt requested"))
             ;; The receipt names no exec, so a refusal clears every mark.
-            (dolist (row (state-background-rows model.state))
-              (setf (bg-row-stopping row) nil))
-            (show-status model (format nil "Interrupt refused: ~a"
-                                       (result-refusal payload "the exec is gone"))
-                         :error-p t)))
+            (t (dolist (row (state-background-rows model.state))
+                 (setf (bg-row-stopping row) nil))
+               (show-status model (format nil "Interrupt refused: ~a"
+                                          (result-refusal payload "the exec is gone"))
+                            :error-p t)))
       (return-from gateway-command-result nil))
     (when (or (null model.pending-command-id)
               (equal model.pending-command-id command-id)
@@ -1141,12 +1136,16 @@ attached session's, the one this shell's stop acts on."
         model.pending-correlation-id nil
         model.pending-prompt nil))
 
+(defun command-turn-id (frame command-id
+                        &aux (metadata (json-value frame :object "event" "metadata")))
+  "The turn stream FRAME admits for COMMAND-ID: the turn it names, or T when it
+names none; NIL when FRAME answers no such command."
+  (and command-id (equal command-id (json-value metadata :any "command_id"))
+       (or (gethash "turn_id" frame) (gethash "turn_id" metadata) t)))
+
 (defun replay-command-turn-id (payload command-id)
-  (and command-id
-       (loop for frame across (json-array payload "accumulated_frames")
-             for metadata = (json-value frame :object "event" "metadata")
-             when (equal command-id (json-value metadata :any "command_id"))
-               return (or (gethash "turn_id" frame) (gethash "turn_id" metadata) t))))
+  (loop for frame across (json-array payload "accumulated_frames")
+          thereis (command-turn-id frame command-id)))
 
 (defun note-resumed-watermark (model frame)
   "A resumed frame opens a fresh per-peer sequence epoch: REPLACE the
@@ -1421,17 +1420,16 @@ thread reads it and clears this place.")
     ((typep msg 'gw-projection-msg)
      (let* ((frame (gw-projection-msg-frame msg))
             (payload frame.payload)
-            (kind (gethash "type" payload)))
+            (kind (gethash "type" payload))
+            (frame-session (sync-message-session-id frame)))
        ;; Refine the span label the UPDATE :around bound: the payload kind
        ;; names which projection pass a worst span was, and the string is
        ;; already decoded — no consing on the stream path.
        (when kind (setf nlk:*attribution-label* kind))
        (cond
-         ((and (sync-message-session-id frame)
-               (not (string= (sync-message-session-id frame)
-                             model.session-id))
-               (equal (sync-message-session-id frame)
-                      model.preview-session-id))
+         ((and frame-session
+               (not (string= frame-session model.session-id))
+               (equal frame-session model.preview-session-id))
           ;; The followed session's own stream: into the preview lane,
           ;; never the live state or its watermarks.
           (let ((preview model.transcript-preview))
@@ -1459,9 +1457,7 @@ thread reads it and clears this place.")
                 ((string= kind "session_resync_required")
                  (setf model.transcript-preview nil)
                  (sessions-preview-arm model (car preview)))))))
-         ((or (null (sync-message-session-id frame))
-              (string= (sync-message-session-id frame)
-                       model.session-id))
+         ((or (null frame-session) (string= frame-session model.session-id))
           (cond
            ((string= kind "session_stream_resumed")
             ;; A replay folds out of sight and is put in place at its last
@@ -1588,15 +1584,13 @@ thread reads it and clears this place.")
                           :verify (and painted paint)))))
               (when (and line (or (not (stringp origin)) (string= origin model.session-id)))
                 (let* ((text (format nil "[~a — this shell: ~a]" (file-namestring path) line))
-                       (turn-id (json-value payload :string "turn_id")))
+                       (turn-id (json-value payload :string "turn_id"))
+                       (call-id (json-value payload :text "call_id")))
                   ;; A load on this shell can fail even though the organism's
                   ;; eval succeeded. Keep that live-only failure in its call,
                   ;; without rewriting the durable tool result or splitting
                   ;; Standard's completed work trail with a diagnostic card.
-                  (unless (and held
-                               (ingest-tool-load-error model.state
-                                                      (json-value payload :text "call_id")
-                                                      turn-id text))
+                  (unless (and held (ingest-tool-load-error model.state call-id turn-id text))
                     (setf model.state
                           (ingest-system-notice
                            model.state text :turn-id turn-id
@@ -1608,7 +1602,7 @@ thread reads it and clears this place.")
                                                                     (file-namestring path))
                                                       ;; The call it came from, whose line
                                                       ;; under a run says it (RUN-TAIL-LLINE).
-                                                      :opt "call_id" (json-value payload :text "call_id"))))))))
+                                                      :opt "call_id" call-id)))))))
                 (render-state model))))
            ((string= kind "organism.cells")
             ;; The organism turned folders on (SWITCH-CELL-ON): this shell
@@ -1722,16 +1716,10 @@ thread reads it and clears this place.")
             ;; A live frame the pending start_turn produced admits it: the
             ;; turn it names, or T when it names none.
             ;; The stream frame is under "frame", or PAYLOAD itself when it carries none.
-            (let* ((stream-frame (json-value (or (json-value payload :any "frame") payload)
-                                             :object))
-                   (metadata (json-value stream-frame :object "event" "metadata"))
-                   (command-id model.pending-command-id))
-              (when (and command-id metadata
-                         (equal command-id (gethash "command_id" metadata)))
-                (resolve-pending-admission
-                 model (or (gethash "turn_id" stream-frame)
-                           (gethash "turn_id" metadata)
-                           t))))
+            (when-let (turn-id (command-turn-id
+                                (json-value (or (json-value payload :any "frame") payload) :object)
+                                model.pending-command-id))
+              (resolve-pending-admission model turn-id))
             (multiple-value-bind (state verdict)
                 (apply-gateway-event model.state payload)
               (setf model.state state
@@ -1783,34 +1771,7 @@ thread reads it and clears this place.")
             ;; is coming to flush it.
             (if (live-chrome-animating-p model)
                 (setf model.transcript-dirty t)
-                (render-state model)))))
-         ((equal frame.session-id model.preview-session-id)
-          ;; The followed session's own stream: into the preview lane,
-          ;; never the live state or its watermarks.
-          (let ((preview model.transcript-preview))
-            (when (and preview (equal (car preview) frame.session-id))
-              (cond
-                ;; The live reducer, whose verdict feeds the bar under the dialog.
-                ((member kind '("session_stream_event" "item_delta") :test #'string=)
-                 (multiple-value-bind (state verdict)
-                     (apply-gateway-event (cdr preview) payload)
-                   (setf (cdr preview) state)
-                   (let ((verb (getf verdict :activity)))
-                     (when (or verb (getf verdict :lifecycle))
-                       (setf model.preview-activity
-                             (and verb (list verb (getf verdict :kind)
-                                             (iso-8601-ms (nlk::iso-now)))))))
-                   ;; A found-block pin outranks the live follow: the
-                   ;; operator asked to read that block, and a stream frame
-                   ;; moves the session, never the promise.
-                   (unless (transcript-pin-p model (car preview))
-                     (pin-transcript-bottom model))
-                   (if (live-chrome-animating-p model)
-                       (setf model.transcript-dirty t)
-                       (render-state model))))
-                ((string= kind "session_resync_required")
-                 (setf model.transcript-preview nil)
-                 (sessions-preview-arm model (car preview)))))))))
+                (render-state model)))))))
      (when (gw-projection-msg-release msg)
        (funcall (gw-projection-msg-release msg))))
     ((typep msg 'gw-connection-msg)
@@ -1924,8 +1885,7 @@ thread reads it and clears this place.")
         (let ((now (get-internal-real-time))
               (last model.last-escape-at))
           (cond
-            ((and last (< (- now last)
-                          (truncate internal-time-units-per-second 2)))
+            ((and last (< (since-ms last now) 500))
              (setf model.last-escape-at nil)
              (when-let (notice (slash-tree-op model))
                (show-status model notice))
@@ -2380,13 +2340,12 @@ organism comes back under the unit `gateway off' stops, never beside it."
       (if (nlk:gateway-start)
           (values (nlk:gateway-start-argv) :systemd)
           (values nil "the service manager would not start the gateway"))
-      (let ((command (serve-command store-path)))
-        (if (null command)
-            (values nil "this image has no serve binary to exec")
-            ;; The candidate's log lands next to the database it fought for.
-            (nlk::spawn-detached
-             command
-             (pathname (format nil "~a.resurrect.log" (namestring store-path))))))))
+      (if-let (command (serve-command store-path))
+        ;; The candidate's log lands next to the database it fought for.
+        (nlk::spawn-detached
+         command
+         (pathname (format nil "~a.resurrect.log" (namestring store-path))))
+        (values nil "this image has no serve binary to exec"))))
 
 ;;; --- the organism a shell fronts -------------------------------------------
 ;;; A shell never runs the organism in its own process: a collection the
@@ -2979,6 +2938,8 @@ session the shell ended on, or NIL when it never attached."
          ;; go (the clean-shutdown rung), or NIL: joined on the way out like
          ;; the first boot.
          (takeover nil)
+         ;; Whether a boot or takeover thread is still running.
+         (alive (lambda (thread) (and thread (bt2:thread-alive-p thread))))
          (ingress-slots (bt2:make-semaphore :count 256
                                             :name "gateway-client-ingress"))
          ;; One inbound frame into the fold, bounded by the ingress slots: the
@@ -3005,21 +2966,13 @@ session the shell ended on, or NIL when it never attached."
       (spawn "gateway-client-reconnector"
         (loop with delay = *sync-backoff-base-seconds*
               with failures = 0
-              with outage-started = nil
-              with failure-reported = nil
               with resurrect-attempts = 0
-              with last-resurrect = nil
-              with shutdown-reported = nil
-              with stopping-reported = nil
-              with stopping-since = nil
-              ;; The session ensure of the lap in flight: (DONE . OUTCOME),
+              ;; ENSURE is the session ensure of the lap in flight: (DONE . OUTCOME),
               ;; OUTCOME :ENSURED, the condition it failed with, or NIL
-              ;; while it runs.
-              with ensure = nil
-              with ensure-reported = nil
-              with unresolved-since = nil
-              with unresolved-reported = nil
-              with starting-reported = nil
+              ;; while it runs. Every other flag and stamp starts NIL.
+              with (outage-started failure-reported last-resurrect shutdown-reported
+                    stopping-reported stopping-since ensure ensure-reported
+                    unresolved-since unresolved-reported starting-reported) = nil
               ;; An attach ends the outage: the next one walks the ladder from its start.
               with reset-outage = (lambda ()
                                     (setf delay *sync-backoff-base-seconds* failures 0
@@ -3061,9 +3014,7 @@ session the shell ended on, or NIL when it never attached."
                          ;; spending the outage's budget as a resurrection
                          ;; does. One that holds it while it stops is
                          ;; waited out, and said once.
-                         (when (and boot (not pinned)
-                                    (not (and boot-thread (bt2:thread-alive-p boot-thread)))
-                                    (not (and takeover (bt2:thread-alive-p takeover))))
+                         (when (and boot (not pinned) (notany alive (list boot-thread takeover)))
                            (cond ((ignore-errors (nlk::store-lease-held-p store-path))
                                   ;; Said only past a second and a half: a stop
                                   ;; takes under one, and a notice for it only
@@ -3098,8 +3049,7 @@ session the shell ended on, or NIL when it never attached."
                                           (if boot
                                               *sync-failure-after-seconds*
                                               5))))
-                           (cond ((or (and boot-thread (bt2:thread-alive-p boot-thread))
-                                      (and takeover (bt2:thread-alive-p takeover)))
+                           (cond ((some alive (list boot-thread takeover))
                                   (unless starting-reported
                                     (setf starting-reported t)
                                     (post-shell-notice
@@ -3214,7 +3164,7 @@ session the shell ended on, or NIL when it never attached."
                                       ;; A takeover that finished — owning,
                                       ;; or attached to whoever won — may be
                                       ;; needed again on a later clean stop.
-                                      (when (and takeover (not (bt2:thread-alive-p takeover)))
+                                      (unless (funcall alive takeover)
                                         (setf takeover nil))
                                       (cond ((not handshake-complete)
                                              (unless ensure-reported
@@ -3272,8 +3222,7 @@ session the shell ended on, or NIL when it never attached."
                      ;; completed, or an established stream dropped): walk
                      ;; the self-heal ladder before backing off.
                      (incf failures)
-                     (unless outage-started
-                       (setf outage-started (get-internal-real-time)))
+                     (setf outage-started (or outage-started (get-internal-real-time)))
                      ;; An endpoint nobody serves any more -- its owner
                      ;; stopping or gone -- is not dialed again: the next lap
                      ;; watches the store instead, and starts or attaches to
@@ -3362,7 +3311,7 @@ the store; not respawning — start another nodecode to take ownership"))))
                                          ;; A shell that starts organisms starts the
                                          ;; replacement too, fronted as the first was
                                          ;; (FRONT-ORGANISM); the dead endpoint goes.
-                                         (unless (and takeover (bt2:thread-alive-p takeover))
+                                         (unless (funcall alive takeover)
                                            (setf takeover (funcall start-organism) port nil))
                                          t)
                                         (t (spawn-resurrection-candidate store-path)))
@@ -3548,9 +3497,12 @@ models -- so a shell never builds the list itself.")
 (defun gateway-models-facts (body)
   "BODY, a GET /api/gateway/models answer, as *GATEWAY-MODELS* holds it;
 :UNREPORTED when the answer carries no providers field at all."
-  (flet ((ids (key)
+  (flet ((ids (key &optional pairs)
+           ;; The ids whose provider holds KEY; with PAIRS, (ID . VALUE) where VALUE is a string.
            (loop for provider across (or (gethash "providers" body) #())
-                 when (gethash key provider) collect (gethash "id" provider))))
+                 for value = (gethash key provider)
+                 when (if pairs (stringp value) value)
+                   collect (if pairs (cons (gethash "id" provider) value) (gethash "id" provider)))))
     (list :rows (build-models-catalog-picker-rows
                  (append
                   (loop for row across (or (gethash "models" body) #())
@@ -3565,14 +3517,10 @@ models -- so a shell never builds the list itself.")
           :listable (ids "listable")
           :local (ids "local")
           ;; (ID . NAME) for each provider its folder names (OFFERED-PROVIDER-NAME)
-          :names (loop for provider across (or (gethash "providers" body) #())
-                       for name = (gethash "name" provider)
-                       when (stringp name) collect (cons (gethash "id" provider) name))
+          :names (ids "name" t)
           ;; (ID . WHY) for each provider no turn can run on there, WHY the
           ;; gateway's words (PROVIDER-TURN-REFUSAL reads them).
-          :refusals (loop for provider across (or (gethash "providers" body) #())
-                          for why = (gethash "refusal" provider)
-                          when (stringp why) collect (cons (gethash "id" provider) why))
+          :refusals (ids "refusal" t)
           ;; Each provider a folder not installed there serves, which picking
           ;; installs (PROVIDER-OFFERS' plists).
           :offers (loop for offer across (or (gethash "offers" body) #())
@@ -4128,8 +4076,7 @@ signed in to nodecode.ai -- the row that signs it in (MODELS-SIGN-IN-ROWS).
                   rows))
             (picker-search-handlers dialog)
             ;; a result step's edit keys reach the query too: they rebuild nothing
-            (lambda (dialog query)
-              (declare (ignore query))
+            (lambda-ignoring (dialog query)
               (when (and (eq :provider (connect-dialog-step dialog))
                          (not (eq searching (querying))))
                 (setf (picker-dialog-rows dialog) (funcall (connect-dialog-provider-rows dialog)))))))
@@ -5060,12 +5007,6 @@ GATEWAY-HTTP-SESSION-REQUEST takes them."
 ;;; port/token pair is named once, in that function, and never plumbed by
 ;;; hand at a call site.
 
-(defun gateway-sentence (model path body)
-  "POST BODY, an object, to PATH for MODEL => the sentence the organism
-answered, or why it refused."
-  (handler-case (answer-text (gateway-model-http-call model :post path body))
-    (gateway-http-error (refusal) (gateway-http-error-detail refusal))))
-
 (defun session-control-call (model method op &key body (session-id model.session-id))
   "One control call under a session's path: METHOD on
 /api/gateway/sessions/<SESSION-ID>/OP — this shell's own session unless one
@@ -5267,17 +5208,16 @@ the list on both shells)."
                               rows)))
           ;; ... save that its cell is still starting, which is why it is
           ;; not among the connected yet
-          (if held
-              (progn
-                (setf (picker-row-value held) (list* :install offer (picker-row-value held)))
-                (when (getf offer :starting)
-                  (setf (picker-row-detail held)
-                        (let ((detail (picker-row-detail held)))
-                          (format nil "~@[~a  ~]starting" (and (plusp (length detail)) detail))))))
-              (push (make-picker-row :label (getf offer :name)
-                                     :detail (if (getf offer :starting) "starting" "")
-                                     :value (list :provider id :install offer))
-                    rows))))
+          (cond (held
+                 (setf (picker-row-value held) (list* :install offer (picker-row-value held)))
+                 (when (getf offer :starting)
+                   (setf (picker-row-detail held)
+                         (let ((detail (picker-row-detail held)))
+                           (format nil "~@[~a  ~]starting" (and (plusp (length detail)) detail))))))
+                (t (push (make-picker-row :label (getf offer :name)
+                                          :detail (if (getf offer :starting) "starting" "")
+                                          :value (list :provider id :install offer))
+                         rows)))))
       (let* ((sorted (stable-sort (sort rows #'string-lessp :key #'provider)
                                   (lambda (a b &aux (at (pin a)) (bt (pin b)))
                                     (cond ((and at bt) (< at bt))
@@ -5691,8 +5631,7 @@ dialog took the screen meanwhile."
                                                                (list (json-object "provider" (first tokens)
                                                                                   "model" (second tokens))))
                                                        'vector))))
-          :then (lambda (model picked)
-                  (declare (ignore picked))
+          :then (lambda-ignoring (model picked)
                   (reopen-models-backup-tab model nil))))
         (:test
          (show-status model "Testing backups…")
@@ -6341,15 +6280,14 @@ move is conversation-only."
 (defun headless-undo (args session-id)
   (declare (ignore args))
   (require-headless-session session-id "undo")
-  (let ((head (nlk:session-head-turn-id session-id)))
-    (if (null head)
-        "nothing to undo"
-        (let* ((parent (gethash head (nlk:session-composed-parents session-id)))
-               (prompt (turn-started-input-of head))
-               ;; The prompt as one line of at most 120 characters.
-               (flat (nlk:trimmed (substitute #\Space #\Newline (or prompt head)))))
-          (headless-head-move session-id parent "user_message" "rewind")
-          (format nil "rewound to before: ~a" (clip flat 120))))))
+  (if-let (head (nlk:session-head-turn-id session-id))
+    (let* ((parent (gethash head (nlk:session-composed-parents session-id)))
+           (prompt (turn-started-input-of head))
+           ;; The prompt as one line of at most 120 characters.
+           (flat (nlk:trimmed (substitute #\Space #\Newline (or prompt head)))))
+      (headless-head-move session-id parent "user_message" "rewind")
+      (format nil "rewound to before: ~a" (clip flat 120)))
+    "nothing to undo"))
 
 (defun headless-redo (args session-id)
   (declare (ignore args))
@@ -7432,11 +7370,9 @@ else NIL."
 (defun metro-span-ms (entry)
   "Listing ENTRY's span in milliseconds, its STARTED_AT to its ENDED_AT; NIL
 while it has no end (an absent end is no zero)."
-  (let ((start (json-value entry :string "started_at"))
-        (end (json-value entry :string "ended_at")))
-    (let ((from (and start (iso-8601-ms start)))
-          (to (and end (iso-8601-ms end))))
-      (and from to (max 0 (- to from))))))
+  (let ((from (when-let (start (json-value entry :string "started_at")) (iso-8601-ms start)))
+        (to (when-let (end (json-value entry :string "ended_at")) (iso-8601-ms end))))
+    (and from to (max 0 (- to from)))))
 
 (defun metro-ask-key (node)
   "The opening of NODE's ask a retry repeats: its first 22 characters."
@@ -7488,11 +7424,10 @@ again after). A recap whose turn the listing does not carry stays a node.
     ;; puts the head on its turn, the one the operator reads it under.
     (dolist (entry entries)
       (when (and (checkpoint-turn-entry-p entry) (metro-recap-p entry))
-        (let ((node (gethash (up entry) by-id)))
-          (when node
-            (setf (getf node :recaps) (append (getf node :recaps) (list entry)))
-            (when (eq t (gethash "is_head" entry))
-              (setf (getf node :head-p) t)))))))
+        (when-let (node (gethash (up entry) by-id))
+          (setf (getf node :recaps) (append (getf node :recaps) (list entry)))
+          (when (eq t (gethash "is_head" entry))
+            (setf (getf node :head-p) t))))))
   (let ((nodes (stable-sort (nreverse nodes) #'< :key (lambda (node) (getf node :position)))))
     ;; A cancelled ask whose parent was asked the same again later says so.
     (dolist (node nodes)
@@ -7535,15 +7470,13 @@ ended above the row it starts on."
              (setf (gethash id holder) line)))
   (setf lines (nreverse lines))
   (dolist (line lines)
-    (let ((ids (setf (metro-line-nodes line) (reverse (metro-line-nodes line)))))
-      (when ids
-        (setf (metro-line-start line) (gethash (first ids) index)
-              (metro-line-end line) (gethash (car (last ids)) index)))))
+    (when-let (ids (setf (metro-line-nodes line) (reverse (metro-line-nodes line))))
+      (setf (metro-line-start line) (gethash (first ids) index)
+            (metro-line-end line) (gethash (car (last ids)) index))))
   ;; The rail a line left runs on down to the row the line starts on.
   (dolist (line (rest lines))
-    (let ((up (and (metro-line-from line) (gethash (metro-line-from line) holder))))
-      (when up
-        (setf (metro-line-end up) (max (metro-line-end up) (metro-line-start line))))))
+    (when-let (up (and (metro-line-from line) (gethash (metro-line-from line) holder)))
+      (setf (metro-line-end up) (max (metro-line-end up) (metro-line-start line)))))
   (let ((ends (make-array 1 :adjustable t :fill-pointer 1
                             :initial-element (metro-line-end main))))
     (dolist (line (rest lines))
@@ -7604,10 +7537,13 @@ under row I instead: the rails running on below it. HEAD is the head's id."
 
 (defun metro-label-text (node)
   "NODE's words on a row: its ask's excerpt, or a cron fire's job and minute."
-  (let ((cron (getf node :cron)))
-    (if cron
-        (format nil "cron ~a · fired ~a" (car cron) (cdr cron))
-        (checkpoint-row-excerpt (gethash "prompt" (getf node :entry))))))
+  (if-let (cron (getf node :cron))
+    (format nil "cron ~a · fired ~a" (car cron) (cdr cron))
+    (checkpoint-row-excerpt (gethash "prompt" (getf node :entry)))))
+
+(defun selection-edge-seg (selected plain)
+  "A picker row's left edge: the accent bar on the SELECTED row, a PLAIN blank on the rest."
+  (if selected (make-seg :text "▌" :tone :dialog-accent) (make-seg :text " " :tone plain)))
 
 (defun metro-row (left label suffix words columns room selected)
   "One painted /tree row ROOM wide: LEFT, then LABEL -- SUFFIX after it, the
@@ -7659,9 +7595,7 @@ selected row carries ROW's files chrome after the ask."
            (steers (getf node :steers))
            (cron (getf node :cron))
            (left (append
-                  (list (if selected
-                            (make-seg :text "▌" :tone :dialog-accent)
-                            (make-seg :text " " :tone plain))
+                  (list (selection-edge-seg selected plain)
                         (make-seg :text " " :tone plain)
                         (make-seg :text (if (and clock (or selected (not repeat))) clock "     ")
                                   :tone (if selected :system quiet))
@@ -7713,9 +7647,7 @@ asked to do, and flush right how long the call ran."
   (lambda (selected room)
     (let* ((plain (if selected :system :muted))
            (span (metro-span-ms entry))
-           (left (append (list (if selected
-                                   (make-seg :text "▌" :tone :dialog-accent)
-                                   (make-seg :text " " :tone plain))
+           (left (append (list (selection-edge-seg selected plain)
                                (make-seg :text "        " :tone plain))
                          (metro-cell-segs cells)
                          (list (make-seg :text " " :tone plain)
@@ -7734,13 +7666,11 @@ asked to do, and flush right how long the call ran."
 pass over it -- of the rails running on (CELLS), a pen, and what the recap
 said, or when it ran while the listing carries no words of it."
   (let* ((said (or (json-value entry :text "answer")
-                   (metro-clock (let ((start (json-value entry :string "started_at")))
-                                  (and start (iso-8601-ms start))))
+                   (metro-clock (when-let (start (json-value entry :string "started_at")) (iso-8601-ms start)))
                    ""))
          (row (make-picker-row :label (format nil "recap ~a" said) :heading t)))
     (setf (picker-row-paint row)
-          (lambda (selected room)
-            (declare (ignore selected))
+          (lambda-ignoring (selected room)
             (values (clip-segs (append (list (make-seg :text "         " :tone :muted))
                                        (metro-cell-segs cells)
                                        (list (make-seg :text " " :tone :muted)
@@ -7798,10 +7728,9 @@ with the head's line where the move leaves it -- the turn tagged `here'
 line `leaves head', each it puts on `joins head', the head it lands on `HEAD'
 -- then a blank and the move in a sentence, two rows, so every option draws as
 many rows. => painted rows, ROOM wide; NIL for a turn the graph does not hold."
-  (let* ((nodes (getf state :nodes))
-         (by-id (getf state :by-id))
-         (node (gethash (getf value :turn-id) by-id)))
-    (when node
+  (let ((nodes (getf state :nodes))
+        (by-id (getf state :by-id)))
+    (when-let (node (gethash (getf value :turn-id) by-id))
       (let* ((continue (eq (getf option :move) :continue))
              (head (if continue (getf node :id) (getf node :parent)))
              (chain (metro-chain by-id head))
@@ -8367,8 +8296,7 @@ It names the day and is never chosen; a rule runs from it to the edge."
                            (nth-value 1 (local-date (encode-universal-time 0 0 12 date month year)))))))
          (row (make-picker-row :label label :heading t)))
     (setf (picker-row-paint row)
-          (lambda (selected room)
-            (declare (ignore selected))
+          (lambda-ignoring (selected room)
             (list (make-seg :text " " :tone :muted)
                   (make-seg :text label :tone :muted :bold t)
                   (make-seg :text " " :tone :muted)
@@ -8484,9 +8412,7 @@ narrow for the name to keep a reading's width."
         (let* ((right-width (lane-width right))
                (title-width (max 8 (- room lead (after right))))
                (left (append
-                      (list (if selected
-                                (make-seg :text "▌" :tone :dialog-accent)
-                                (make-seg :text " " :tone plain))
+                      (list (selection-edge-seg selected plain)
                             (make-seg :text " " :tone plain)
                             (make-seg :text (if (plusp (length mark)) mark " ") :tone mark-tone)
                             (make-seg :text " " :tone plain)
@@ -9004,10 +8930,7 @@ position the page behind it ends under, NIL when this one starts the session."
   ;; it wait. 128 is the first page only; a rested highlight reads the
   ;; pages behind it (SESSIONS-PREVIEW-OLDER), and the replay an Enter
   ;; starts reads the rest.
-  (let ((page (session-control-call model :get
-                                    (if before
-                                        (format nil "history?limit=128&before=~d" before)
-                                        "history?limit=128")
+  (let ((page (session-control-call model :get (format nil "history?limit=128~@[&before=~d~]" before)
                                     :session-id session-id)))
     (cons (gethash "frames" page)
           (and (gethash "has_more" page) (gethash "next_before" page)))))
@@ -9143,9 +9066,8 @@ repaint when ENTRY is still the preview. => T when that moved the screen."
       (t
        (let* ((older (frames-events (car page)))
               (events (getf paging :events))
-              (all (make-array (+ (length older) (length events)) :adjustable t :fill-pointer t)))
-         (replace all older)
-         (replace all events :start1 (length older))
+              (all (make-array (+ (length older) (length events)) :adjustable t :fill-pointer t
+                               :initial-contents (concatenate 'vector older events))))
          (setf (cdr entry) (preview-carry-slots (cdr entry) (fold-events all)
                                                 (eq :landed (getf paging :header)))
                (getf paging :events) all
@@ -9408,9 +9330,8 @@ the gateway."
         (setf (getf state :staged) query
               (getf state :staged-at) (get-internal-real-time)))
       (cond
-        ((equal (getf state :staged) (getf state :rows-query)) nil)
-        ((equal (getf state :staged) (getf state :fired)) nil)
-        ((< (since-ms (getf state :staged-at)) (* 1000 *session-search-rest*))
+        ((or (member (getf state :staged) (list (getf state :rows-query) (getf state :fired)) :test #'equal)
+             (< (since-ms (getf state :staged-at)) (* 1000 *session-search-rest*)))
          nil)
         ((zerop (length query))
          (let ((fold (getf state :fold)))

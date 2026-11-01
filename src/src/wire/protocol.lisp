@@ -539,10 +539,8 @@ so the payload need not carry the token again."
   (let* ((type (required-string command "type"))
          (kind (or (cdr (assoc type +gateway-command-kinds+ :test #'string=))
                    (protocol-refuse :unsupported-command "unsupported command type ~s" type)))
-         (command-id (unless (eq kind :set-session-subscriptions)
-                       (required-string command "command_id")))
-         (correlation-id (unless (eq kind :set-session-subscriptions)
-                           (required-string command "correlation_id")))
+         (ids (unless (eq kind :set-session-subscriptions)
+                (mapcar (lambda (field) (required-string command field)) '("command_id" "correlation_id"))))
          (request (make-hash-table :test #'equal)))
     (case kind
       ((:start-turn :steer-turn)
@@ -559,7 +557,7 @@ so the payload need not carry the token again."
        (maphash (lambda (key value)
                   (unless (member key '("type" "command_id" "correlation_id") :test #'string=)
                     (setf (gethash key request) value))) command)))
-    (make-gateway-command :kind kind :command-id command-id :correlation-id correlation-id
+    (make-gateway-command :kind kind :command-id (first ids) :correlation-id (second ids)
                           :request request)))
 
 (defun decode-sync-message (json-text)
@@ -570,12 +568,9 @@ so the payload need not carry the token again."
          (type-name (gethash "type" root))
          (type (and type-name
                     (if (stringp type-name)
-                        (cdr (assoc type-name '(("gateway_connect" . :gateway-connect)
-                                                ("gateway_connect_challenge" . :gateway-connect-challenge)
-                                                ("gateway_connect_ack" . :gateway-connect-ack)
-                                                ("gateway_connect_rejected" . :gateway-connect-rejected)
-                                                ("client_command" . :client-command))
-                                    :test #'string=))
+                        (find type-name '(:gateway-connect :gateway-connect-challenge :gateway-connect-ack
+                                          :gateway-connect-rejected :client-command)
+                              :key (lambda (kind) (substitute #\_ #\- (string-downcase kind))) :test #'string=)
                         (protocol-refuse :invalid-envelope "type must be a string")))))
     (when (and type-name (null type))
       (protocol-refuse :unsupported-frame "unsupported frame type ~s" type-name))
@@ -617,10 +612,7 @@ so the payload need not carry the token again."
             (required-array nil "organism.activity sessions" (gethash "sessions" payload)))
            ("organism.loaded"
             (required-string payload "path")
-            (optional-text payload "session_id")
-            (optional-text payload "turn_id")
-            (optional-text payload "call_id")
-            (optional-text payload "comment")
+            (dolist (field '("session_id" "turn_id" "call_id" "comment")) (optional-text payload field))
             (required-array nil "organism.loaded definitions" (gethash "definitions" payload))))
          ;; The session-less half is +UNSEQUENCED-FRAME-KINDS+ and is read from
          ;; it, never listed again here: a kind published outside sequencing
