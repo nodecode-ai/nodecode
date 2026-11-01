@@ -4,7 +4,7 @@ How a published build reaches an organism that is already running, on a box
 nobody is sitting at. The decision and the runbook; the
 code is `src/src/organism/upgrade.lisp` (the mechanism over the image),
 `src/src/surface/update.lisp` (the policy around it) and
-`src/tools/install.sh` (the layout on disk).
+`src/tools/install/install.sh` (the layout on disk).
 
 ## The decision
 

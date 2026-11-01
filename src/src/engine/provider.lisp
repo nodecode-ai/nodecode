@@ -4332,7 +4332,7 @@ path (dexador request: (format nil \"~A://~A\" scheme authority))."
 ;;; A conversation's next request repeats the one before it but for what the
 ;;; round added. Without this, over a slow, distant link that repeat would be
 ;;; most of the first token's wait. A relay beside the server
-;;; (src/tools/body-relay.py) keeps the bodies it forwarded by SHA-256 and
+;;; (src/tools/probes/body-relay.py) keeps the bodies it forwarded by SHA-256 and
 ;;; says so on every response (X-Body-Delta); to an endpoint that said so, a
 ;;; body goes as a delta (NLK:ENCODE-DELTA, the request_bodies encoding)
 ;;; against the one its session sent before. Every body still arrives whole

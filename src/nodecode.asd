@@ -18,7 +18,7 @@
 ;;; --- the version this system declares -----------------------------------------
 ;;; The version carries the commit, not just the base: a checkout has git to
 ;;; ask — the short HEAD of the tree this file is loaded from — and a packed
-;;; build is stamped with the revision it was cut from. src/tools/pack.sh
+;;; build is stamped with the revision it was cut from. src/tools/release/pack.sh
 ;;; builds a `git archive' of a revision in a throwaway tree with no .git and
 ;;; sets NODECODE_BUILD_COMMIT, which outranks git precisely because git cannot
 ;;; answer there. One rule, so the form every reader reaches for —
@@ -454,7 +454,7 @@ of stacking."
     ((:file "support")
      ;; The cell lanes' shared runner and helpers (DEFINE-TEST-SLICE), one
      ;; copy for every cell test system that depends on this one.
-     (:file "../tools/test-slice")
+     (:file "../tools/check/test-slice")
      ;; json-test first: the decoded-wire-value waist is what every later
      ;; suite's payload assertions read through.
      (:file "waist/json-test")
