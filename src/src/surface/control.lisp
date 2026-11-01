@@ -924,20 +924,19 @@ organism on PORT, PID, when one serves this home -- within SECONDS
           (values (cond (port
                          ;; the organism installs it and turns it on, minutes on a slow network: a wait said
                          ;; as it lasts, which it is told of, so that it gives the work no more than that
-                         (let ((seconds wait))
-                           (format nil "~:[~a was already installed; ~;~*~]~a" fresh label
-                                   (json-value
-                                    (handler-case
-                                        (nlk:with-named-wait (seconds "waiting for the nodecode serving this home~@[ (pid ~d)~] to turn ~a on"
-                                                              pid label)
-                                          (gateway-http-session-request
-                                           port :post "/api/gateway/cells"
-                                           (json-object "name" name "on" t :opt "commit" pin "seconds" seconds)
-                                           token :read-timeout seconds))
-                                      (nlk::http-timeout ()
-                                        (error "the nodecode serving this home~@[ (pid ~d)~] did not answer within ~d s; ~a may still be coming on there"
-                                               pid seconds label)))
-                                    :string "text"))))
+                         (format nil "~:[~a was already installed; ~;~*~]~a" fresh label
+                                 (json-value
+                                  (handler-case
+                                      (nlk:with-named-wait (wait "waiting for the nodecode serving this home~@[ (pid ~d)~] to turn ~a on"
+                                                            pid label)
+                                        (gateway-http-session-request
+                                         port :post "/api/gateway/cells"
+                                         (json-object "name" name "on" t :opt "commit" pin "seconds" wait)
+                                         token :read-timeout wait))
+                                    (nlk::http-timeout ()
+                                      (error "the nodecode serving this home~@[ (pid ~d)~] did not answer within ~d s; ~a may still be coming on there"
+                                             pid wait label)))
+                                  :string "text")))
                         (fresh
                          ;; here, as there, the installs have the deadline the wait leaves them
                          (let ((given (nlk:cell-switch-deadline wait)))

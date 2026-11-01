@@ -273,8 +273,7 @@ the exchange went through) or :ERROR."
                  ;; Where this build reads no handshake (WinHTTP), the exchange itself still says
                  ;; it went over HTTPS and who answered.
                  (handler-case
-                     (multiple-value-bind (body status headers) (http :head url :timeout timeout)
-                       (declare (ignore body))
+                     (bind (((_ status headers) (http :head url :timeout timeout)))
                        (list* :https (and status t)
                               :cloudflare (and (hash-table-p headers)
                                                (or (gethash "cf-ray" headers)

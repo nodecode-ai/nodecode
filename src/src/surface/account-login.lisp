@@ -382,43 +382,41 @@ machine has a display, ask after it on a thread of its own -- and answer *ACCOUN
 A sign-in already waiting is answered again, not claimed twice."
   (unless (member mode +account-modes+ :test #'equal)
     (error "/login signs in for subscription or api, not ~s." mode))
-  (if (eq :waiting (getf *account-login* :state))
-      *account-login*
-      (progn
-        (account-login-preflight)
-        (let* ((claim (account-claim nil mode request))
-               (url (getf claim :confirm))
-               (opened (eq t (ignore-errors (funcall open url))))
-               (login (list :state :waiting :mode mode :url url :code (getf claim :code)
-                            :opened opened :text nil :at (get-universal-time))))
-          (setf *account-login* login)
-          (spawn "nodecode-account-login"
-            (handler-case
-                (let* ((reply (account-await claim :request request :again "/login"))
-                       (name (json-value reply :string "name")))
-                  (account-login-save reply)
-                  (setf *account-usage* nil)
-                  (let* ((lead (let ((id (account-default-model reply)))
-                                 ;; the model a turn runs on from now: a refused pick sets none
-                                 (and id (ignore-errors
-                                          (select-default-model :provider (json-value reply :string "provider")
-                                                                :model id))
-                                      id)))
-                         (state (account-usage :max-age 0))
-                         (meter (when-let (usage (getf state :usage))
-                                  (multiple-value-bind (label value) (account-meter usage)
-                                    (format nil "~a ~a" label value))))
-                         (text (format nil "Signed in to nodecode.ai~@[ on ~a~]~@[ · ~a~]~@[ · default model ~a~]"
-                                       name meter lead)))
-                    (setf *account-login* (list* :state :signed-in :text text
-                                                 (alexandria:remove-from-plist login :state :text)))
-                    (notice text)))
-              (error (condition)
-                (let ((text (format nil "nodecode.ai sign-in: ~a" condition)))
-                  (setf *account-login* (list* :state :failed :text text
-                                               (alexandria:remove-from-plist login :state :text)))
-                  (notice text :level :warning)))))
-          login))))
+  (cond ((eq :waiting (getf *account-login* :state)) *account-login*)
+        (t (account-login-preflight)
+         (let* ((claim (account-claim nil mode request))
+                (url (getf claim :confirm))
+                (opened (eq t (ignore-errors (funcall open url))))
+                (login (list :state :waiting :mode mode :url url :code (getf claim :code)
+                             :opened opened :text nil :at (get-universal-time))))
+           (setf *account-login* login)
+           (spawn "nodecode-account-login"
+             (handler-case
+                 (let* ((reply (account-await claim :request request :again "/login"))
+                        (name (json-value reply :string "name")))
+                   (account-login-save reply)
+                   (setf *account-usage* nil)
+                   (let* ((lead (let ((id (account-default-model reply)))
+                                  ;; the model a turn runs on from now: a refused pick sets none
+                                  (and id (ignore-errors
+                                           (select-default-model :provider (json-value reply :string "provider")
+                                                                 :model id))
+                                       id)))
+                          (state (account-usage :max-age 0))
+                          (meter (when-let (usage (getf state :usage))
+                                   (multiple-value-bind (label value) (account-meter usage)
+                                     (format nil "~a ~a" label value))))
+                          (text (format nil "Signed in to nodecode.ai~@[ on ~a~]~@[ · ~a~]~@[ · default model ~a~]"
+                                        name meter lead)))
+                     (setf *account-login* (list* :state :signed-in :text text
+                                                  (alexandria:remove-from-plist login :state :text)))
+                     (notice text)))
+               (error (condition)
+                 (let ((text (format nil "nodecode.ai sign-in: ~a" condition)))
+                   (setf *account-login* (list* :state :failed :text text
+                                                (alexandria:remove-from-plist login :state :text)))
+                   (notice text :level :warning)))))
+           login))))
 
 (defun account-json (&aux (state (account-usage)) (usage (getf state :usage)) (login *account-login*))
   "The account's read model a shell and the web page draw: whether this home is signed in, the

@@ -2020,16 +2020,14 @@ the session's selection back."
                (return-from navigate nil)))
         (cond
           ((equal direction "undo")
-           (let ((head (nlk:session-head-turn-id sid)))
-             (unless head (reject "noop" "nothing to undo"))
-             (setf target head boundary "user_message")))
+           (setf target (or (nlk:session-head-turn-id sid) (reject "noop" "nothing to undo"))
+                 boundary "user_message"))
           ((equal direction "redo")
            ;; The newest head move remembers where the operator came FROM;
            ;; when that origin fell off the current chain it is the
            ;; abandoned branch tip redo returns to.
-           (let ((origin (nlk::redo-origin sid)))
-             (unless origin (reject "noop" "nothing to redo"))
-             (setf target origin boundary "turn"))))
+           (setf target (or (nlk::redo-origin sid) (reject "noop" "nothing to redo"))
+                 boundary "turn")))
         (when (and target (not (nlk:session-known-turn-p sid target)))
           (reject "unknown_turn" "target turn is not in the session's tree"))
         (let* ((parents (nlk:session-composed-parents sid))
