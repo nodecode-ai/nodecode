@@ -15922,16 +15922,48 @@ operator's to answer, so it goes on up."
       (gateway-http-error-detail condition)
       (error condition)))
 
+(defun gateway-setup-choice-name (label)
+  "What a choice's LABEL calls it: the label up to its first two spaces --
+the `#general' of `#general  Home', the `@mods' of `@mods  Home'."
+  (subseq label 0 (or (search "  " label) (length label))))
+
+(defun gateway-setup-named (text choices)
+  "The id of the first of CHOICES ((ID . LABEL) ...) whose name is TEXT,
+case aside and a leading # or @ optional on either side, or NIL."
+  (flet ((bare (name) (string-left-trim "#@" (string-trim '(#\Space #\Tab) name))))
+    (let ((wanted (bare text)))
+      (and (plusp (length wanted))
+           (car (find-if (lambda (choice)
+                           (string-equal wanted (bare (gateway-setup-choice-name (cdr choice)))))
+                         choices))))))
+
 (defun gateway-setup-picks (reply choices)
-  "The ids REPLY names: each comma- or space-separated word a 1-based number
-into CHOICES ((ID . LABEL) ...), or an id as typed."
-  (loop for word in (uiop:split-string reply :separator '(#\, #\Space #\Tab))
-        for number = (and (plusp (length word)) (every #'digit-char-p word)
-                          (parse-integer word))
-        unless (string= word "")
-          collect (if (and number (<= 1 number (length choices)))
-                      (car (nth (1- number) choices))
-                      word)))
+  "The ids REPLY names, each once, in its order: `all' (or *) every one of
+CHOICES ((ID . LABEL) ...); else each comma-separated entry a choice's name
+(GATEWAY-SETUP-NAMED), or words each a 1-based number into CHOICES, a range
+of them (2-5), a name, or an id as typed."
+  (flet ((number-in (text)
+           (and (plusp (length text)) (every #'digit-char-p text)
+                (let ((number (parse-integer text)))
+                  (and (<= 1 number (length choices)) number)))))
+    (if (member (string-trim '(#\Space #\Tab) reply) '("all" "*") :test #'string-equal)
+        (mapcar #'car choices)
+        (remove-duplicates
+         (loop for entry in (uiop:split-string reply :separator '(#\,))
+               for named = (gateway-setup-named entry choices)
+               if named collect named
+                 else append
+                      (loop for word in (uiop:split-string entry :separator '(#\Space #\Tab))
+                            for dash = (position #\- word :start (min 1 (length word)))
+                            for from = (and dash (number-in (subseq word 0 dash)))
+                            for to = (and dash (number-in (subseq word (1+ dash))))
+                            for number = (number-in word)
+                            unless (string= word "")
+                              append (cond ((and from to (<= from to))
+                                            (mapcar #'car (subseq choices (1- from) to)))
+                                           (number (list (car (nth (1- number) choices))))
+                                           (t (list (or (gateway-setup-named word choices) word))))))
+         :test #'equal :from-end t))))
 
 (defun gateway-setup-secret (call ask-secret out path section)
   "Keep the token SECTION takes by reference: a pasted one in its 0600 file,
@@ -15990,41 +16022,97 @@ also when the check refused it, the refusal printed."
       (format out "~&The check refused it: ~a~%" (gateway-setup-refusal condition))
       nil)))
 
+(defvar *gateway-setup-poll-seconds* 3
+  "How long a setup walk waiting on the platform sleeps between asks.")
+
+(defvar *gateway-setup-waited* nil
+  "True once a setup walk has waited on the platform and seen it act: what
+the token sees has changed since the check was shown.")
+
+(defun gateway-setup-offer (call out path name)
+  "What field NAME of the section at PATH offers to pick from, as (values
+CHOICES DEFAULTS WAIT): CHOICES ((ID . LABEL) ...); DEFAULTS the ids an
+unset field takes on an Enter; WAIT, when there is nothing to pick from
+yet, what the operator does on the platform first. A refusal is said on
+OUT and offers nothing."
+  (handler-case
+      (let ((answer (funcall call :post "/api/gateway/config/probe" (json-object "path" path "field" name))))
+        (values (map 'list (lambda (choice) (cons (json-value choice :string "id")
+                                                  (json-value choice :string "label")))
+                     (json-array answer "choices"))
+                (coerce (or (json-array answer "default") #()) 'list)
+                (json-value answer :string "wait")))
+    (gateway-http-error (condition)
+      (format out "~&  (nothing to pick from: ~a)~%" (gateway-setup-refusal condition))
+      (values nil nil nil))))
+
+(defun gateway-setup-wait (call out path name wait &key (seconds 900))
+  "Say WAIT, then ask again for field NAME's choices every
+*GATEWAY-SETUP-POLL-SECONDS* until there are some, or SECONDS pass, or the
+platform stops saying to wait: (values CHOICES DEFAULTS), NIL for none."
+  ;; A Ctrl+C ends the walk where it stands, and what it saved stays saved.
+  (format out "~&~%~a~%Waiting for that; Ctrl+C stops, and what is saved stays" wait)
+  (finish-output out)
+  (loop with deadline = (+ (get-universal-time) seconds)
+        do (sleep *gateway-setup-poll-seconds*)
+           (multiple-value-bind (choices defaults again) (gateway-setup-offer call out path name)
+             (cond (choices
+                    (format out " done.~%")
+                    (setf *gateway-setup-waited* t)
+                    (return (values choices defaults)))
+                   ((or (null again) (>= (get-universal-time) deadline))
+                    (format out "~&")
+                    (return nil))))
+           (format out ".")
+           (finish-output out)))
+
+(defun gateway-setup-question (choices list taken)
+  "The line a field's answer is asked with: TAKEN, the names an Enter takes."
+  (let ((enter (if taken (format nil "Enter takes ~{~a~^, ~}" taken) "Enter keeps it")))
+    (cond (choices (format nil "Numbers, a range like 2-5, all, or names, comma-separated; ~a:" enter))
+          (list (format nil "Ids, comma-separated; ~a:" enter))
+          (t (format nil "Value; ~a:" enter)))))
+
 (defun gateway-setup-field (call ask out path field &aux (name (json-value field :string "name"))
-                                                       (list (equal "list" (json-value field :string "type"))))
-  "Ask for FIELD of the section at PATH -- from the ids its token can see
-when it offers choices -- and write what the answer names; an Enter keeps it."
-  (let ((choices (and (json-value field :boolean "choices")
-                      (handler-case
-                          (map 'list (lambda (choice) (cons (json-value choice :string "id")
-                                                            (json-value choice :string "label")))
-                               (json-array (funcall call :post "/api/gateway/config/probe"
-                                                    (json-object "path" path "field" name))
-                                           "choices"))
-                        (gateway-http-error (condition)
-                          (format out "~&  (nothing to pick from: ~a)~%" (gateway-setup-refusal condition))
-                          nil)))))
-    (format out "~&~%~a: ~a~@[~%  now: ~a~]~%" name (json-value field :string "doc")
-            (and (json-value field :boolean "set") (json-value field :string "text")))
-    (loop for (id . label) in choices
-          for number from 1
-          do (format out "  ~3d  ~a~:[  ~a~;~]~%" number label (search id label) id))
-    (loop
-      (let ((text (string-trim '(#\Space #\Tab #\Return)
-                               (funcall ask (cond (choices "Numbers or ids, comma-separated; Enter keeps it:")
-                                                  (list "Ids, comma-separated; Enter keeps it:")
-                                                  (t "Value; Enter keeps it:"))))))
-        (when (string= text "") (return :kept))
-        (handler-case
-            (progn (format out "~a~%" (gateway-setup-said
-                                       (funcall call :post "/api/gateway/config"
-                                                (json-object "path" (gateway-setup-member-path path name)
-                                                             "value" (if list
-                                                                         (coerce (gateway-setup-picks text choices) 'vector)
-                                                                         text)))))
-                   (return :written))
-          (gateway-http-error (condition)
-            (format out "~a~%" (gateway-setup-refusal condition))))))))
+                                                       (list (equal "list" (json-value field :string "type")))
+                                                       (set (json-value field :boolean "set")))
+  "Ask for FIELD of the section at PATH -- from what its token can see,
+by name, when it offers choices, after waiting for there to be some when
+the platform says to -- and write what the answer names. An Enter keeps a
+set field, and takes an unset one's default when the choices name one."
+  (multiple-value-bind (choices defaults wait)
+      (if (json-value field :boolean "choices")
+          (gateway-setup-offer call out path name)
+          (values nil nil nil))
+    (when (and wait (null choices))
+      (setf (values choices defaults) (gateway-setup-wait call out path name wait)))
+    (let ((taken (and (not set) defaults)))
+      (format out "~&~%~a: ~a~@[~%  now: ~a~]~%" name (json-value field :string "doc")
+              (and set (json-value field :string "text")))
+      (loop for (nil . label) in choices
+            for number from 1
+            do (format out "  ~3d  ~a~%" number label))
+      (loop
+        (let ((text (string-trim '(#\Space #\Tab #\Return)
+                                 (funcall ask (gateway-setup-question
+                                               choices list
+                                               (mapcar (lambda (id)
+                                                         (let ((choice (assoc id choices :test #'equal)))
+                                                           (if choice (gateway-setup-choice-name (cdr choice)) id)))
+                                                       taken))))))
+          (when (and (string= text "") (not taken)) (return :kept))
+          (handler-case
+              (let ((picks (cond ((string= text "") taken)
+                                 (choices (gateway-setup-picks text choices)))))
+                (format out "~a~%" (gateway-setup-said
+                                    (funcall call :post "/api/gateway/config"
+                                             (json-object "path" (gateway-setup-member-path path name)
+                                                          "value" (cond (list (coerce (or picks (gateway-setup-picks text nil)) 'vector))
+                                                                        (picks (first picks))
+                                                                        (t text))))))
+                (return :written))
+            (gateway-http-error (condition)
+              (format out "~a~%" (gateway-setup-refusal condition)))))))))
 
 (defun gateway-setup-lane (call id &key (seconds 30))
   "ID's row of GET /api/channels once it is running and connected, or has
@@ -16110,15 +16198,17 @@ shell serves. => (values TEXT CODE STREAM)."
                  (path (json-value section :array "path")))
             (format out "~&~%Setting up ~a.~%" id)
             (unless (equal "complete" (json-value section :string "needs"))
-              (format out "On ~a's side first:~%~{  ~a~%~}" id
-                      (loop for step in (uiop:split-string (or (json-value section :string "guide") "") :separator '(#\;))
+              (format out "On ~a's side first:~%~:{  ~d  ~a~%~}" id
+                      (loop with number = 0
+                            for step in (uiop:split-string (or (json-value section :string "guide") "") :separator '(#\;))
                             for words = (string-trim '(#\Space) step)
-                            unless (string= words "") collect words)))
+                            unless (string= words "") collect (list (incf number) words))))
             (when (json-value section :object "secret")
               (loop do (gateway-setup-secret call #'ask-secret out path section)
                     until (or (not (json-value section :boolean "check"))
                               (gateway-setup-check call #'ask out path))
                     do (setf section (gateway-setup-section call id))))
+            (setf *gateway-setup-waited* nil)
             (loop repeat 3
                   do (loop with pair = (let ((secret (json-value section :object "secret")))
                                          (and secret (list (json-value secret :string "env")
@@ -16131,6 +16221,18 @@ shell serves. => (values TEXT CODE STREAM)."
                      (setf section (gateway-setup-section call id))
                   until (equal "complete" (json-value section :string "needs"))
                   do (format out "~&~%~:(~a~) ~a.~%" id (json-value section :string "needs")))
+            ;; A wait means the platform moved (a bot added to a server): its
+            ;; check says what the token sees now, before the channels start.
+            (when (and *gateway-setup-waited* (json-value section :boolean "check"))
+              (handler-case
+                  (format out "~&~%What the token sees now:~%~{  ~a~%~}"
+                          (uiop:split-string (or (json-value (funcall call :post "/api/gateway/config/probe"
+                                                                      (json-object "path" path))
+                                                             :string "text")
+                                                 "")
+                                             :separator '(#\Newline)))
+                (gateway-http-error (condition)
+                  (format out "~&The check refused it: ~a~%" (gateway-setup-refusal condition)))))
             (unless (equal "complete" (json-value section :string "needs"))
               (stop (format nil "~a is not started: ~a; what was saved stays, and `nodecode gateway setup ~a' goes on from there"
                             id (json-value section :string "needs") id)))

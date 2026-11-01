@@ -360,9 +360,11 @@
     (loop for (key value) on members by #'cddr do (setf (gethash key object) value))
     object))
 
-(defun setup-fake-organism (&aux (calls '()) installed secret chosen restarted)
+(defun setup-fake-organism (&key offer &aux (calls '()) installed secret chosen restarted)
   "A control surface for the walk: (values CALL CALLS), CALLS answering every
-call made so far, oldest first, as (METHOD PATH BODY-JSON)."
+call made so far, oldest first, as (METHOD PATH BODY-JSON). OFFER, when
+given, answers a field's choices probe from the field's name, and the owner
+field offers choices too."
   (labels ((field (name type &rest more)
              (apply #'setup-fake-object "name" name "type" type "doc" (format nil "~a doc" name) more))
            (section ()
@@ -375,7 +377,7 @@ call made so far, oldest first, as (METHOD PATH BODY-JSON)."
                                (field "bot_token_file" "path" "set" (and secret t) "essential" (and secret t))
                                (field "allowed_channels" "list" "essential" t "choices" t "set" (and chosen t))
                                (field "allowed_users" "list" "essential" t)
-                               (field "owner" "list")
+                               (field "owner" "list" "choices" (and offer t))
                                (field "pairing" "boolean" "default" t))))
            (call (method path body)
              (push (list method path (and body (nlk:encode-json-object body))) calls)
@@ -398,7 +400,8 @@ call made so far, oldest first, as (METHOD PATH BODY-JSON)."
                     (setup-fake-object "said" (and (eq method :post) "saved it")
                                        "sections" (if installed (vector (section)) #())))
                    ((equal path "/api/gateway/config/probe")
-                    (cond ((gethash "field" body)
+                    (cond ((and offer (gethash "field" body)) (funcall offer (gethash "field" body)))
+                          ((gethash "field" body)
                            (setup-fake-object "choices" (vector (setup-fake-object "id" "111" "label" "#general (Home)")
                                                                 (setup-fake-object "id" "222" "label" "#bots (Home)"))))
                           ((equal secret "good-token") (setup-fake-object "text" "token: ok — bot nodebot"))
@@ -418,6 +421,54 @@ call made so far, oldest first, as (METHOD PATH BODY-JSON)."
                                          :ask (lambda (question) (declare (ignore question)) (pop answers))
                                          :ask-secret (lambda (question) (declare (ignore question)) (pop secrets)))
         (values text code stream (get-output-stream-string out) (funcall calls))))))
+
+(deftest launch-gateway-setup-picks-by-number-range-name-or-all ()
+  (let ((choices '(("111" . "#general  Home") ("222" . "#bots  Home") ("333" . "#ops  Away") ("444" . "@mods  Home"))))
+    (is (equal '("111" "222" "333" "444") (nle::gateway-setup-picks "all" choices)) "all picks every one")
+    (is (equal '("111" "222" "333" "444") (nle::gateway-setup-picks " * " choices)))
+    (is (equal '("222" "333") (nle::gateway-setup-picks "2-3" choices)) "a range of numbers")
+    (is (equal '("111" "333") (nle::gateway-setup-picks "general, #ops" choices)) "names, the # optional")
+    (is (equal '("444" "222") (nle::gateway-setup-picks "@mods 2 2" choices)) "each once, in the order named")
+    (is (equal '("999" "5") (nle::gateway-setup-picks "999 5" choices)) "an id, or a number past the list, as typed")
+    (is (equal '("2") (nle::gateway-setup-picks "2" nil)) "no choices: words as typed")))
+
+(deftest launch-gateway-setup-waits-for-a-server-then-takes-all-and-the-owner-default ()
+  ;; The token's bot is in no server for two asks: the walk says how to add it
+  ;; and waits; then `all' picks every channel, and an Enter at the unset
+  ;; owner takes the default the choices name.
+  (let ((asks 0) (questions '()) (answers (list "" "all" "" "")))
+    (multiple-value-bind (call calls)
+        (setup-fake-organism
+         :offer (lambda (field)
+                  (cond ((equal field "owner")
+                         (setup-fake-object "choices" (vector (setup-fake-object "id" "77" "label" "peas  made the app")
+                                                              (setup-fake-object "id" "88" "label" "ada  Home"))
+                                            "default" (vector "77")))
+                        ((< (incf asks) 3)
+                         (setup-fake-object "choices" #() "wait" "nodebot is in no server yet. Add it to one: open the link"))
+                        (t (setup-fake-object "choices" (vector (setup-fake-object "id" "111" "label" "#general  Home")
+                                                                (setup-fake-object "id" "222" "label" "#bots  Home")))))))
+      (let ((out (make-string-output-stream))
+            (nle::*gateway-setup-poll-seconds* 0))
+        (multiple-value-bind (text code)
+            (nle::gateway-setup-text '("discord") :call call :keep-running nil :out out
+                                     :ask (lambda (question) (push question questions) (pop answers))
+                                     :ask-secret (constantly "good-token"))
+          (let ((said (get-output-stream-string out))
+                (made (funcall calls)))
+            (is (= 0 code)) (is (search "discord is connected" text))
+            (is-carrying (text said)
+              "nodebot is in no server yet. Add it to one: open the link" "Ctrl+C stops, and what is saved stays"
+              (" done." "the wait ends when there is something to pick")
+              ("What the token sees now:" "after a wait, the check again, before the channels start")
+              ("#general  Home" "a choice by its name") (:absent "111" "never its id")
+              ("  1  make an app" "the guide's steps are numbered"))
+            (is (= 3 asks) "asked again until the server was there")
+            (flet ((wrote (json) (member json made :key #'third :test #'equal)))
+              (is (wrote "{\"path\":[\"channels\",\"discord\",\"allowed_channels\"],\"value\":[\"111\",\"222\"]}") "all wrote every channel")
+              (is (wrote "{\"path\":[\"channels\",\"discord\",\"owner\"],\"value\":[\"77\"]}") "an Enter at the unset owner took its default"))
+            (let ((asked "Numbers, a range like 2-5, all, or names, comma-separated; Enter takes peas:"))
+              (is (member asked questions :test #'equal) "the question names what an Enter takes"))))))))
 
 (deftest launch-gateway-setup-walks-a-channel-to-connected ()
   (multiple-value-bind (text code stream said calls) (setup-walk '() '("1" "n" "" "2" "" "") '("refused-token" "bad-token" "good-token"))
