@@ -4484,8 +4484,10 @@ outranks the default effort the same way while the turn's effective
       (if (nlk:store-open-p)
           (nlk:session-model-selection (session-id session))
           (values nil nil))
-   (let* ((session-effort (nlk:session-model-effort (session-id session)))
+   (let* ((sid (session-id session))
+         (session-effort (nlk:session-model-effort sid))
          (turn nil)
+         (turn-id nil)
          (*current-durable-turn* nil)
          ;; Round zero's previous request is the turn before's (CALL-PROVIDER).
          (*previous-request-json* nil)
@@ -4500,7 +4502,7 @@ outranks the default effort the same way while the turn's effective
          (*reasoning-effort*
            (effective-effort session-effort *provider* *model*)))
     (with-cleanup ((when turn
-                     (forget-turn-images (nlk:durable-turn-turn-id turn))
+                     (forget-turn-images turn-id)
                      ;; With the log open the working set is the next hydration's to
                      ;; rebuild, so it does not outlive the turn that folded it; the
                      ;; latch goes after it, so no turn admitted meanwhile loses its fold.
@@ -4508,14 +4510,12 @@ outranks the default effort the same way while the turn's effective
                        (forget session))) (finish-turn session))
       (admit session input)
       (setf turn (or admitted-turn
-                     (nlk:admit-turn
-                      (session-id session)
-                      (or command-id (nlk::make-durable-id "command"))
-                      input :invocation invocation))
+                     (nlk:admit-turn sid (or command-id (nlk::make-durable-id "command"))
+                                     input :invocation invocation))
+            turn-id (nlk:durable-turn-turn-id turn)
             *current-durable-turn* turn)
-      (attach-turn-images (nlk:durable-turn-turn-id turn) images)
-      (setf *live-turn* (open-live-turn (session-id session)
-                                        (nlk:durable-turn-turn-id turn)))
+      (attach-turn-images turn-id images)
+      (setf *live-turn* (open-live-turn sid turn-id))
       (handler-case
           (progn
             ;; A home that chose no model has only the target the image was
@@ -4533,7 +4533,7 @@ outranks the default effort the same way while the turn's effective
             ;; in another session, which moves the default, reaches only
             ;; sessions not yet begun (SELECT-SESSION-MODEL, SET-SESSION-EFFORT).
             (unless (or (and session-provider session-model) (not (nlk:store-open-p)))
-              (nlk:record-session-model-selection (session-id session)
+              (nlk:record-session-model-selection sid
                                                   :provider *provider* :model *model*
                                                   :effort (or session-effort *reasoning-effort*)))
             ;; The user_message workspace checkpoint: both admission
@@ -4547,15 +4547,11 @@ outranks the default effort the same way while the turn's effective
             ;; pre-crash run; re-stamping would leave duplicates whose
             ;; predecessor resolution is ambiguous for undo.
             (when nlk::*workspace-capture-enabled*
-              (unless (nlk:turn-boundary-captured-p
-                       (session-id session)
-                       (nlk:durable-turn-turn-id turn)
-                       "user_message")
+              (unless (nlk:turn-boundary-captured-p sid turn-id "user_message")
                 (nlk:checkpoint-capture-boundary
                  turn
                  :boundary-kind "user_message"
-                 :anchor-position (nlk:session-log-cursor
-                                   (session-id session))
+                 :anchor-position (nlk:session-log-cursor sid)
                  ;; The walk overlaps the first provider request; the
                  ;; fact lands ahead of the first round's facts.
                  :defer t)))
@@ -4570,8 +4566,7 @@ outranks the default effort the same way while the turn's effective
                    ;; each completed round left a durable assistant
                    ;; closure, and the count is 0 for fresh turns.
                    :round (if (and turn (nlk:store-open-p))
-                              (nlk:turn-assistant-round-count
-                               (nlk:durable-turn-turn-id turn))
+                              (nlk:turn-assistant-round-count turn-id)
                               0)))
               ;; Assistant messages are durable per provider round. A
               ;; parked steer ended the loop at a boundary it would
@@ -4585,10 +4580,7 @@ outranks the default effort the same way while the turn's effective
                                  ;; so every consumer knows that word is
                                  ;; not the ask's answer.
                                  :background-pending
-                                 (and handoff
-                                      (turn-background-pending
-                                       (session-id session)
-                                       (nlk:durable-turn-turn-id turn))))
+                                 (and handoff (turn-background-pending sid turn-id)))
               (notify-turn-facts-committed)
               ;; The assistant-boundary checkpoint is the only fence
               ;; that catches writes by tool-spawned threads after the
@@ -4596,8 +4588,7 @@ outranks the default effort the same way while the turn's effective
               (nlk:checkpoint-capture-boundary
                turn
                :boundary-kind "assistant_message"
-               :anchor-position (nlk:session-log-cursor
-                                 (session-id session)))
+               :anchor-position (nlk:session-log-cursor sid))
               (values (message-content message) message session)))
         (nlk:turn-cancelled-condition (condition)
           (when (turn-still-open-p turn)
@@ -4612,59 +4603,35 @@ outranks the default effort the same way while the turn's effective
             ;; keeps what the user watched arrive and replay stays
             ;; well-formed (each persisted call closes with an
             ;; interrupted result).
-            (let ((streamed (nlk:turn-cancelled-condition-partial-text
-                             condition))
-                  (thinking (nlk:turn-cancelled-condition-partial-reasoning
-                             condition))
-                  (calls (nlk:turn-cancelled-condition-partial-tool-calls
-                          condition)))
-              (when (or (and (stringp streamed) (plusp (length streamed)))
-                        (and (stringp thinking) (plusp (length thinking)))
-                        calls)
-                (ignore-errors
-                  (let ((message
-                          (json-object
-                           "role" "assistant"
-                           "content" (if (and (stringp streamed)
-                                              (plusp (length streamed)))
-                                         streamed
-                                         "")
-                           :when (and (stringp thinking)
-                                      (plusp (length thinking)))
-                           "reasoning_content" thinking
-                           :when calls "tool_calls"
-                           (map 'vector
-                                (lambda (buf)
-                                  (chat-tool-call-object
-                                   (or (getf buf :id) "")
-                                   (or (getf buf :name) "")
-                                   (or (getf buf :arguments) "")))
-                                calls))))
+            (flet ((text (value) (and (stringp value) (plusp (length value)) value)))
+              (let ((streamed (text (nlk:turn-cancelled-condition-partial-text condition)))
+                    (thinking (text (nlk:turn-cancelled-condition-partial-reasoning condition)))
+                    (calls (loop for buf in (nlk:turn-cancelled-condition-partial-tool-calls condition)
+                                 collect (list (or (getf buf :id) "") (getf buf :name)
+                                               (or (getf buf :arguments) "")))))
+                (when (or streamed thinking calls)
+                  (ignore-errors
                     (nlk:record-assistant-message
-                     turn message
-                     :continued-from
-                     (nlk:turn-cancelled-condition-partial-continued-from
-                      condition))
-                    (dolist (buf calls)
-                      (nlk:record-tool-call
-                       turn (or (getf buf :id) "")
-                       (or (getf buf :name) "unknown")
-                       (or (getf buf :arguments) ""))
-                      (nlk:record-tool-result
-                       turn (or (getf buf :id) "")
-                       (or (getf buf :name) "unknown")
-                       "interrupted by user"
-                       :metadata (when-let (stop (call-stop-document turn (or (getf buf :id) "")))
-                                   (json-object "stopped" stop)))))))
-              ;; The cut round's usage, estimated: the server never
-              ;; reported, but the spend was real and the resting
-              ;; divider must still name the model, the effort and the
-              ;; cost the way a completed turn's does.
-              (when-let (cut (nlk:turn-cancelled-condition-partial-usage
-                              condition))
-                (ignore-errors
-                  (apply #'record-round-usage turn
-                         :estimated t cut))))
+                     turn (json-object "role" "assistant" "content" (or streamed "")
+                                       :when thinking "reasoning_content" thinking
+                                       :when calls "tool_calls"
+                                       (map 'vector (lambda (call)
+                                                      (destructuring-bind (id name arguments) call
+                                                        (chat-tool-call-object id (or name "") arguments)))
+                                            calls))
+                     :continued-from (nlk:turn-cancelled-condition-partial-continued-from condition))
+                    (loop for (id name arguments) in calls
+                          do (nlk:record-tool-call turn id (or name "unknown") arguments)
+                             (nlk:record-tool-result
+                              turn id (or name "unknown") "interrupted by user"
+                              :metadata (when-let (stop (call-stop-document turn id))
+                                          (json-object "stopped" stop))))))))
+            ;; The cut round's usage, estimated: the server never
+            ;; reported, but the spend was real and the resting
+            ;; divider must still name the model, the effort and the
+            ;; cost the way a completed turn's does.
+            (when-let (cut (nlk:turn-cancelled-condition-partial-usage condition))
+              (ignore-errors (apply #'record-round-usage turn :estimated t cut)))
             (nlk:cancel-turn turn (nlk::turn-cancelled-condition-reason condition))
             (notify-turn-facts-committed))
           (error condition))
