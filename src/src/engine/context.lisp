@@ -1638,16 +1638,21 @@ with the text left in the image. Mutable material, like the system prompt.")
 ;;; A project leaves a file for the agents that work in it — AGENTS.md by
 ;;; the open convention, CLAUDE.md and .cursorrules by two others — and an
 ;;; operator who kept one for their last harness expects it to keep
-;;; applying here. The first one found wins, looked for in the session's
-;;; directory and then in each parent up to the repository root (the
-;;; directory holding .git), and it rides as the `instructions' harness
-;;; section: read at every round's request build like the durable
-;;; sections, never written anywhere. The file is the one authority and the
-;;; section its projection — live-only, the channel kit's SOUL.md posture —
-;;; so an edit is live next round and a deleted file clears it. Nothing is
-;;; trimmed to fit: a file over the harness budget is refused with one
-;;; notice per path in RULES-REFUSAL's words, and an unreadable one is no
-;;; section.
+;;; applying here. Every folder from the session's directory up to / may
+;;; hold one, the first name found winning within a folder, and all of them
+;;; ride as the one `instructions' harness section: the farthest first and
+;;; the session's own folder last, so the nearest rules have the last word.
+;;; A monorepo's root file and its package's both apply, and a file above
+;;; every repository (~/AGENTS.md, ~/work/AGENTS.md) reaches each of them:
+;;; the walk pi and Claude Code make, never stopping at .git, which once
+;;; kept every such file from a session inside a repository. The section is
+;;; read at every round's request build like the durable sections, never
+;;; written anywhere. The files are the one authority and the section their
+;;; projection -- live-only, the channel kit's SOUL.md posture -- so an edit
+;;; is live next round and a deleted file clears it. Nothing is trimmed to
+;;; fit: the files share one harness budget, filled nearest first, and a
+;;; file that does not fit is left out whole with one notice per path in
+;;; RULES-REFUSAL's words. A blank or unreadable file is passed over.
 
 (defparameter *instructions-file-names* '("AGENTS.md" "CLAUDE.md" ".cursorrules")
   "The files a project leaves for its agents, in the order the first found
@@ -1661,14 +1666,19 @@ to this projected one the same way.")
   "A project's rules files already said to be over budget: one notice per
 path per image.")
 
-(defun rules-refusal (file text)
+(defun rules-refusal (file text &optional (held 0))
   "What the operator is told of FILE, a rules file whose text is TEXT: NIL
-within +INSTRUCTIONS-BYTE-LIMIT+, past it that no session reads it, and what
+when it fits in +INSTRUCTIONS-BYTE-LIMIT+ beside HELD characters of nearer
+instructions files already read, past it that no session reads it, and what
 to do."
-  (and (> (length text) +instructions-byte-limit+)
-       (format nil "~a is not read: ~a — trim to ~a"
-               (home-abbreviated (uiop:native-namestring file)) (nlk:size-text (length text))
-               (nlk:size-text +instructions-byte-limit+))))
+  (let ((path (home-abbreviated (uiop:native-namestring file)))
+        (size (nlk:size-text (length text)))
+        (limit (nlk:size-text +instructions-byte-limit+)))
+    (cond ((> (length text) +instructions-byte-limit+)
+           (format nil "~a is not read: ~a — trim to ~a" path size limit))
+          ((> (+ held (length text)) +instructions-byte-limit+)
+           (format nil "~a is not read: ~a, and the instructions files nearer the session already take ~a of ~a"
+                   path size (nlk:size-text held) limit)))))
 
 (defun rules-section (name file text)
   "TEXT, what the rules FILE holds, as the section NAME, (NAME . TEXT): none
@@ -1676,6 +1686,43 @@ for a missing, blank or over-budget file."
   (and text (<= (length text) +instructions-byte-limit+) (plusp (length (nlk:trimmed text)))
        (cons name (format nil "From ~a:~%~%~a" (namestring file)
                           (string-right-trim '(#\Newline #\Return) text)))))
+
+(defun instructions-files (cwd &aux (home-rules (probe-file (nlk:home "AGENTS.md"))))
+  "The instructions files a session in CWD reads, nearest first: in CWD and
+each parent up to /, at most 64 folders, the first of *INSTRUCTIONS-FILE-NAMES*
+a folder holds as a file. The home's own AGENTS.md is never among them: it
+rides as `operator-rules' wherever the session is (OPERATOR-RULES-SECTION)."
+  (let ((directory (and cwd (ignore-errors (uiop:ensure-directory-pathname cwd))))
+        (files '()))
+    (loop repeat 64
+          while directory
+          do (let ((file (loop for name in *instructions-file-names*
+                               thereis (uiop:file-exists-p (merge-pathnames name directory))))
+                   (parent (uiop:pathname-parent-directory-pathname directory)))
+               (when (and file (not (equal file home-rules)))
+                 (push file files))
+               (setf directory (and (not (equal parent directory)) parent))))
+    (nreverse files)))
+
+(defun instructions-section (files &aux (held 0) (kept '()))
+  "FILES, the instructions files nearest first (INSTRUCTIONS-FILES), as the
+`instructions' section, (NAME . TEXT), the farthest file first and each under
+its own `From <path>:' line, or NIL when none is read. Blank and unreadable
+files are passed over. The files share one +INSTRUCTIONS-BYTE-LIMIT+, filled
+nearest first: a file that does not fit is left out whole and said once per
+path (RULES-REFUSAL), and a farther one that still fits is read."
+  (dolist (file files)
+    (let ((text (ignore-errors (nlk:read-text file))))
+      (when (and text (plusp (length (nlk:trimmed text))))
+        (let ((said (rules-refusal file text held))
+              (key (namestring file)))
+          (cond ((null said)
+                 (incf held (length text))
+                 (push (rules-section "instructions" file text) kept))
+                ((not (gethash key *instructions-refused*))
+                 (setf (gethash key *instructions-refused*) t)
+                 (ignore-errors (notice said :level :warning))))))))
+  (and kept (cons "instructions" (format nil "~{~a~^~%~%~}" (mapcar #'cdr kept)))))
 
 ;;; The operator's own rules, for every session in any folder, live in the
 ;;; home: AGENTS.md beside config.jsonc (NLK:HOME, so a profile has its
@@ -1685,10 +1732,10 @@ for a missing, blank or over-budget file."
 ;;; build, never stored, refused over the budget under a standing notice, no
 ;;; section when blank or unreadable.
 
-(defun operator-rules-section (project-file)
+(defun operator-rules-section ()
   "The home's AGENTS.md as the `operator-rules' section, (NAME . TEXT), or
-NIL when there is none to read or it is PROJECT-FILE, which the
-`instructions' section carries."
+NIL when there is none to read. A session opened in the home reads it here
+too: INSTRUCTIONS-FILES passes it over."
   (let* ((path (nlk:home "AGENTS.md"))
          (file (probe-file path))
          (text (and file (nlk:read-text file)))
@@ -1703,7 +1750,7 @@ NIL when there is none to read or it is PROJECT-FILE, which the
     ;; that stood comes down; said again only when its words change.
     (unless (equal said (second (assoc key (nlk:standing-notices) :test #'string=)))
       (ignore-errors (notice said :level :warning :key key)))
-    (unless (equal file project-file) (rules-section "operator-rules" file text))))
+    (rules-section "operator-rules" file text)))
 
 ;;; The session's directory itself rides as the `folder' section. Nothing
 ;;; else in the prompt names it, while the `image' section names the home,
@@ -1787,37 +1834,21 @@ a durable row of its own, and rides behind every other (INDEX-LAST)."
                      (handler-case (nlk:standing-harness-sections session-id)
                        (error (e)
                          (warn "harness sections unavailable for this round: ~a" e)))))
-         ;; the instructions file: no section when unreadable, blank or over the budget
+         ;; the instructions files: INSTRUCTIONS-SECTION passes over a blank, unreadable or over-budget one
          (session (and session-id (nlk:store-open-p)
                        (ignore-errors (nlk:find-session session-id))))
          (cwd (and session (nlk:durable-session-cwd session)))
-         ;; the first found at CWD or a parent, stopping after the repository root (.git) or /
-         (file (loop with directory = (and cwd (ignore-errors (uiop:ensure-directory-pathname cwd)))
-                     repeat 64
-                     while directory
-                     thereis (loop for name in *instructions-file-names*
-                                   thereis (uiop:file-exists-p (merge-pathnames name directory)))
-                     until (probe-file (merge-pathnames ".git" directory))
-                     do (let ((parent (uiop:pathname-parent-directory-pathname directory)))
-                          (setf directory (and (not (equal parent directory)) parent)))))
-         (text (and file (nlk:read-text file)))
+         ;; every folder's file from CWD up to /, nearest first
+         (files (and cwd (instructions-files cwd)))
          ;; the home's own AGENTS.md, for a session in any folder: ahead of
-         ;; the project's file, and replacing a durable row of its name
-         (rules (operator-rules-section file)))
-    ;; Past the budget, a project's file is said once; the home's own stands
-    ;; on the board wherever it rides (OPERATOR-RULES-SECTION).
-    (when (and text (> (length text) +instructions-byte-limit+)
-               (not (equal file (probe-file (nlk:home "AGENTS.md")))))
-      (let ((key (namestring file)))
-        (unless (gethash key *instructions-refused*)
-          (setf (gethash key *instructions-refused*) t)
-          (ignore-errors (notice (rules-refusal file text) :level :warning)))))
+         ;; the project's files, and replacing a durable row of its name
+         (rules (operator-rules-section)))
     (dolist (projected (list rules
                              (and cwd (cons "folder" (format nil "~?~:[~; sh is Git's sh.exe: POSIX sh, not cmd or PowerShell.~]"
                                                               *folder-section*
                                                               (list cwd (string-right-trim "/" (namestring (nlk:home))))
                                                               (uiop:os-windows-p))))
-                             (rules-section "instructions" file text)
+                             (instructions-section files)
                              ;; a line a topic of the manual: what the image and its
                              ;; running cells can do, the texts left to (help)
                              (cons "help" (format nil *help-section*

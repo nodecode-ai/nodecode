@@ -471,9 +471,17 @@ the whole frame.")
 (defun enable-mouse (stream mode)
   "SGR mouse tracking: :CELL-MOTION reports motion with a button held,
 :ALL-MOTION reports every motion."
+  ;; Button-event tracking (1002) goes first in both modes. Termux accepts
+  ;; any-event tracking (1003) and drops it, so 1003 alone left it untracked:
+  ;; in the alternate screen it sends a wheel turn as Up/Down, and the prompt
+  ;; walked its history while the transcript stood still (#89). A terminal
+  ;; that keeps one mouse mode -- xterm, tmux -- ends on the last one set.
   (when mode
-    (format stream "~C[?~Dh~C[?1006h" #\Escape (ecase mode (:cell-motion 1002) (:all-motion 1003))
-            #\Escape)))
+    (format stream "~C[?1002h" #\Escape)
+    (ecase mode
+      (:cell-motion)
+      (:all-motion (format stream "~C[?1003h" #\Escape)))
+    (format stream "~C[?1006h" #\Escape)))
 
 (define-escape disable-mouse ("[?1002l" "[?1003l" "[?1006l"))
 
@@ -535,13 +543,17 @@ environment cannot say for sure (ssh forwards TERM but strips COLORTERM).")
   "Ask the terminal the colour of its own background (OSC 11): what a theme
 that leaves the canvas to the terminal stands on.")
 
-(define-escape (enter-modes :flush t) ("[?25l" "[?2004h")
+(define-escape (enter-modes :flush t) ("[?25l" "[?2004h" "[?2031h")
   ;; Modes only: nothing here erases or positions. The alternate screen and
-  ;; mouse tracking are the view-state's, switched by the frames.
-  "The modes a session runs under: cursor hidden, bracketed paste.")
+  ;; mouse tracking are the view-state's, switched by the frames. A terminal
+  ;; that does not know 2031 ignores it, as DECSET does any mode it lacks.
+  "The modes a session runs under: cursor hidden, bracketed paste, and the
+colour-scheme report (DEC 2031): a terminal that follows the desktop between
+light and dark says when it turns, and the shell asks its background again.")
 
-(define-escape (exit-modes :flush t) ("[?2004l" "[?25h")
-  "Undo ENTER-MODES in reverse: bracketed paste off, the cursor shown last.")
+(define-escape (exit-modes :flush t) ("[?2031l" "[?2004l" "[?25h")
+  "Undo ENTER-MODES in reverse: the colour-scheme report and bracketed paste
+off, the cursor shown last.")
 
 (defun apply-terminal-transitions (previous current stream &aux (was (or previous (make-view '()))))
   "Write to STREAM the mode changes between view-states PREVIOUS (NIL for

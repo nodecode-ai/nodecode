@@ -4687,6 +4687,30 @@ and the DELIVERY its handler declares."
              (nle:update model (nlt:make-truecolor-msg :ok-p ok-p))
              (is (eq expected nle:*color-profile*) why))))
 
+;;; --- the terminal turning between light and dark ------------------------
+;;; A shell launched in the dark kept the canvas it asked for at launch: the
+;;; desktop turned light, the terminal with it, and a transparent theme went on
+;;; painting dark-canvas ink on the light background. The terminal reports the
+;;; turn (DEC 2031); the shell asks its background again, and the answer
+;;; re-solves the theme on the new canvas.
+
+(deftest a-scheme-report-re-solves-the-theme-on-the-new-background (with-chat-model (model "c2-scheme"))
+  (let* ((dark '(39 46 51))
+         (light '(239 235 212))
+         (nle::*terminal-canvas* dark)
+         (nle::*palette* (nle::palette-from-theme-colors (nle::theme-colors-for-name "Tungstene" :user nil)))
+         (cmd (nth-value 1 (nle:update model (nlt:make-color-scheme-msg :scheme :light))))
+         (msg (and cmd (funcall cmd)))
+         (written (and (nlt:terminal-io-msg-p msg)
+                       (with-output-to-string (out) (funcall (nlt:terminal-io-msg-thunk msg) out)))))
+    (flet ((ink-on-light ()
+             (nle::contrast-ratio (nle::visual-style-fg (nle::style-for-tone :foreground)) light)))
+      (is (< (ink-on-light) 1.5) "the dark canvas's ink all but vanishes on the light one")
+      (is (equal (format nil "~C]11;?~C\\" #\Escape #\Escape) written) "the report asks the background again")
+      (nle:update model (nlt:make-background-msg :rgb light))
+      (is (equal light nle::*terminal-canvas*) "the answer is the canvas from then on")
+      (is (>= (ink-on-light) 4.5) "and the theme's ink reads on it"))))
+
 ;;; --- the executable's command line ---------------------------------------
 
 (defun launch-plan (&rest args)

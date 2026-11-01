@@ -132,6 +132,18 @@ it, the decoder looks once more and answers Escape."
     (is (null (nlt:read-key stream)) "a DCS version report is nothing")
     (is (key-is (nlt:read-key stream) #\z) "and the key after them still decodes")))
 
+(deftest decoder-reads-the-colour-scheme-report ()
+  ;; DEC 2031, which NLT:ENTER-MODES switches on: a terminal that follows the
+  ;; desktop between light and dark says which it turned to.
+  (is-table (reply scheme) (eq scheme (nlt:color-scheme-msg-scheme (key-from-string (csi reply))))
+    ("?997;1n" :dark "997;1 is dark")
+    ("?997;2n" :light "997;2 is light"))
+  (let ((stream (make-string-input-stream
+                 (concatenate 'string (csi "?997;3n") (csi "?2031;1$y") "z"))))
+    (is (null (nlt:read-key stream)) "a scheme the report does not name is nothing")
+    (is (null (nlt:read-key stream)) "a mode report is still nothing")
+    (is (key-is (nlt:read-key stream) #\z) "and the key after them still decodes")))
+
 (deftest decoder-reads-one-bracketed-paste ()
   (flet ((paste (text) (key-from-string (concatenate 'string (csi "200~") text (csi "201~")))))
     (is (nlt:paste-msg-p (paste (format nil "hello~%world"))) "the paste arrives as one message")

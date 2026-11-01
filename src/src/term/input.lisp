@@ -10,7 +10,8 @@
 ;;;; The terminal replies the shells never ask for (focus, colour, version,
 ;;;; mode reports, clipboard reads) are consumed and dropped rather than
 ;;;; surfaced; the replies they do ask for (the kitty graphics query, the
-;;;; truecolor probe, the background query) surface as their messages.
+;;;; truecolor probe, the background query, the colour-scheme report) surface
+;;;; as their messages.
 ;;;;
 ;;;; READ-KEY takes the stream it reads: the input thread hands it the tty,
 ;;;; a test hands it a string stream, so the same decode runs in both.
@@ -163,12 +164,18 @@ modified arrows, kitty CSI-u keys, and bracketed paste."
     ((eql ch #\Z) (make-key-press-msg :code :tab :mod +mod-shift+))
     ((%final-byte-key ch) (make-key-press-msg :code (%final-byte-key ch)))
     ;; Focus reports and query answers (CSI I, CSI O, CSI ? ...): the
-    ;; shell enables none of them; consumed.
+    ;; shell enables none of them; consumed. One CSI ? reply is asked for:
+    ;; DEC 2031's colour-scheme report, ? 997 ; 1 n dark and ; 2 n light,
+    ;; which ENTER-MODES switches on.
     ((member ch '(#\I #\O)) nil)
     ((eql ch #\?)
-     (loop for c = (read-char stream nil nil)
-           while (and c (not (alpha-char-p c))))
-     nil)
+     (let ((reply (with-output-to-string (out)
+                    (loop for c = (read-char stream nil nil)
+                          while c
+                          do (write-char c out)
+                          until (alpha-char-p c)))))
+       (ppcre:register-groups-bind (scheme) ("^997;([12])n$" reply)
+         (make-color-scheme-msg :scheme (if (string= scheme "1") :dark :light)))))
     ((and ch (digit-char-p ch))
      (nlk:bind (((groups term) (%read-parameters stream (digit-char-p ch)))
                 (params (mapcar #'first groups))
