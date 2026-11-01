@@ -1,4 +1,4 @@
-;;;; cell.lisp --- what ONE cell declares about itself: the composition DSL.
+;;;; cell-dsl.lisp --- what ONE cell declares about itself: the composition DSL.
 ;;;;
 ;;;; SPDX-License-Identifier: MIT
 ;;;;

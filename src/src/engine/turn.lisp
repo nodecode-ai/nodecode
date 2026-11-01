@@ -3649,7 +3649,7 @@ slash op — there is no fact to ride, and nothing is recorded.
 
 The verbs a snippet calls stamp themselves under \"calls\", {:verb :source},
 which is how a transcript names what a snippet of free Lisp did without
-reading the Lisp (activity.lisp): a cell verb stamps the same way. A verb
+reading the Lisp (tool-summary.lisp): a cell verb stamps the same way. A verb
 stamps before it acts, and a stamp that acts (CALL-ACTS-P) is the act's
 mark, the core's verb and a cell's alike: the snippet acted, so it is never
 watched, and a watched snippet's run again, which only reads, refuses it

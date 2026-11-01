@@ -40,7 +40,8 @@ src/
   CELLS.md         the cell contract
   UPGRADE.md       how a new build reaches a running organism
   src/
-    package.lisp   the two packages
+    package.lisp   every package: the kernel/evolved boundary, the terminal
+                   core's, the import's, the facade and the test runner's
     term/          terminal core under both shells (from cl-tuition, see NOTICE)
     waist/         the declaration macros everything reads through: errors,
                    records, json, contracts, config sections, paths
@@ -48,8 +49,12 @@ src/
     store/         store lifecycle, event log, state KV
     session/       sessions, turns, workspace snapshots, checkpoints, recall
     organism/      self-modification: gc, hooks, the layer, cells, knowledge,
-                   launch, profiles, upgrade
+                   launch, profiles, upgrade, and warm.lisp, the release
+                   build's last load (nodecode/bin only)
     engine/        provider lanes, context engine, turn loop, background exec
+      providers/   one file per provider wire
+      image/       decoders (WebP, JPEG, GIF) and FIT-IMAGE, an image as a
+                   provider takes it
     import/        bringing in another agent's home and sessions
     tui/           the shell: theme, editor, slash, keys
     surface/       gateway server, TUI client, rpc, control routes, notify

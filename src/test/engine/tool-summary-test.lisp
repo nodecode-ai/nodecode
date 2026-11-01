@@ -1,5 +1,5 @@
-;;;; activity-test.lisp --- proofs for what a tool call did, in words
-;;;; (activity.lisp).
+;;;; tool-summary-test.lisp --- proofs for what a tool call did, in words
+;;;; (tool-summary.lisp).
 ;;;;
 ;;;; SPDX-License-Identifier: MIT
 ;;;;

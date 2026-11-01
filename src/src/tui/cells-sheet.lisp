@@ -1,4 +1,4 @@
-;;;; cells.lisp --- /cells: every cell on a sheet in the middle of the frame,
+;;;; cells-sheet.lisp --- /cells: every cell on a sheet in the middle of the frame,
 ;;;; the chosen one laid open beside the list.
 ;;;; SPDX-License-Identifier: MIT
 ;;;;

@@ -160,7 +160,7 @@
                             :help-detail
                             "Ctrl+O switches viewport modes. Developer groups routine calls and previews output. Standard (default) shows each call as tool name plus comment, with input and output behind a click, like DSH normal web view. Both open individual cards on click; there is no open-all mode. Bare /details reports the viewport")
         ;; The one folder: on a shell a sheet over the organism's
-        ;; cells routes (tui/cells.lisp OPEN-CELLS-DIALOG), headless the
+        ;; cells routes (tui/cells-sheet.lisp OPEN-CELLS-DIALOG), headless the
         ;; report's lines over (nlk:cells).
         (make-slash-command "cells"
                             "Every cell: turn one on or off, see why one failed"

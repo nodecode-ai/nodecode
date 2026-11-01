@@ -1,4 +1,4 @@
-;;;; settings.lisp --- /settings: every setting on one sheet in the middle of
+;;;; settings-sheet.lisp --- /settings: every setting on one sheet in the middle of
 ;;;; the frame, each changed where it stands.
 ;;;; SPDX-License-Identifier: MIT
 ;;;;

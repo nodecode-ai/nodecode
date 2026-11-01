@@ -1,4 +1,4 @@
-;;;; cells.lisp --- the screen as cells, and the diff that paints it.
+;;;; screen.lisp --- the screen as cells, and the diff that paints it.
 ;;;;
 ;;;; SPDX-License-Identifier: MIT
 ;;;;

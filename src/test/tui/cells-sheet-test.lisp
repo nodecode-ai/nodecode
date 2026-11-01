@@ -1,4 +1,4 @@
-;;;; cells-test.lisp --- /cells: every cell on a sheet, the chosen one laid
+;;;; cells-sheet-test.lisp --- /cells: every cell on a sheet, the chosen one laid
 ;;;; open beside the list (tui/cells.lisp).
 ;;;; SPDX-License-Identifier: MIT
 ;;;;

@@ -18,7 +18,7 @@
 ;;;;
 ;;;; plus the three that are files rather than tree members — SKILL.md,
 ;;;; instruction markdown, memory folders (home.lisp) — and conversations
-;;;; (sessions.lisp).
+;;;; (transcripts.lisp).
 ;;;;
 ;;;; One classifier walks a decoded tree, whatever format it came from:
 ;;;; JSON, YAML (yaml.lisp) and TOML (toml.lisp) all decode to the same

@@ -1,4 +1,4 @@
-;;;; conditions.lisp --- the import's refusals.
+;;;; errors.lisp --- the import's refusals.
 ;;;;
 ;;;; SPDX-License-Identifier: MIT
 ;;;;
