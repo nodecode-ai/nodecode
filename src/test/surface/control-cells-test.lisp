@@ -19,9 +19,16 @@
 (defmacro with-switch-fixture ((port base top) &body body)
   "BODY over a gateway on PORT and a scratch release shipping BASE and TOP
 (standing on BASE), per-process names, into an empty cell folder."
+  ;; The cell folder is a home's cells/, as ~/.nodecode/cells/ is: an install
+  ;; keeps the repositories it fetches (hub/git/) and stages its clone
+  ;; (.cell-staging/) beside it, in the folder's parent, which is then this
+  ;; fixture's own tree and not the temp directory every run and every user
+  ;; of the box share. There a copy another run left, or one this user cannot
+  ;; write, decided which step an install took.
   `(with-temp-gateway (,port)
-     (with-temp-trees ((release "switch-release") (folder "switch-cells"))
-       (let ((,base (format nil "nl-sw-base-~36r" (random (expt 36 6))))
+     (with-temp-trees ((release "switch-release") (switch-home "switch-home"))
+       (let ((folder (merge-pathnames "cells/" switch-home))
+             (,base (format nil "nl-sw-base-~36r" (random (expt 36 6))))
              (,top (format nil "nl-sw-top-~36r" (random (expt 36 6)))))
          (ensure-directories-exist (merge-pathnames "src/" release))
          (write-switch-folder (merge-pathnames "cells/" release) ,base)
@@ -439,8 +446,11 @@ ASK its terminal: (TEXT CODE STREAM PREVIEW), PREVIEW what it printed first."
   ;; `nodecode add --wait 4' tells the organism it waits 4 s, and the
   ;; organism gives the reads and the installs 2 of them
   ;; (CELL-SWITCH-DEADLINE). With git hanging on every fetch and clone it
-  ;; answers by then that the cell did not come on and nothing was installed:
-  ;; add hears how the turn-on ended within its wait, where main gave up at
+  ;; answers by then that the cell did not come on and nothing was installed,
+  ;; naming the step the time ran out in: the entry is a folder of its
+  ;; repository, so its first git run is the fetch into the copy the home
+  ;; keeps (HUB-REPOSITORY), and the clone it would fall back on never starts.
+  ;; Add hears how the turn-on ended within its wait, where main gave up at
   ;; 600 s on an install that ran on. proofs/AddDeadlines.lean, `answer_lands'.
   (with-temp-trees ((bin "add-late-bin"))
     (serve-hub "/test-hub/late.json"
@@ -454,7 +464,7 @@ ASK its terminal: (TEXT CODE STREAM PREVIEW), PREVIEW what it printed first."
                        (add-answer port (lambda (question) (error "asked ~a" question))
                                    "nc://nl-sw-late" "--yes" "--wait" "4")))
                (took (/ (- (get-internal-real-time) started) internal-time-units-per-second)))
-          (is (search "nl-sw-late did not come on within 2 s: the time ran out while cloning nodecode-nl-sw-late from https://127.0.0.1:9/o/nl-sw-late.git; nothing was installed" text) text)
+          (is (search "nl-sw-late did not come on within 2 s: the time ran out while fetching nodecode-nl-sw-late from https://127.0.0.1:9/o/nl-sw-late.git; nothing was installed" text) text)
           (is (< took 4) (format nil "the answer landed within add's wait: ~,1f s" took))
           (is (null (hanging-git-alive bin)) "its hung runs are killed")
           (is (notany #'nlk:installed-cell-p (list "nodecode-nl-sw-late" base top))))))
