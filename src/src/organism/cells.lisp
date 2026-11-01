@@ -2424,7 +2424,12 @@ wrote under MAX-AGE seconds ago is that copy, unread."
                          (ignore-errors (offers (alexandria:read-file-into-byte-vector kept))))
                     (handler-case
                         (bind (((body status _ truncated)
-                                (http :get source :max-bytes (* 1024 1024) :timeout 10)))
+                                ;; one that cannot be reached is named, as its status and its size are
+                                (handler-case
+                                    (with-named-wait (10 "reading the hub index at ~a" source)
+                                      (http :get source :max-bytes (* 1024 1024) :timeout 10))
+                                  (error (condition)
+                                    (error "the hub index at ~a could not be read: ~a" source condition)))))
                           (unless (eql status 200)
                             (error "the hub index at ~a answered ~a" source status))
                           (when truncated
@@ -2484,16 +2489,28 @@ them. NIL on Windows, where a clone makes none."
   "Held while a copy of a hub repository fetches, so two picks at once
 fetch one commit once.")
 
+(defparameter *hub-git-seconds* 600
+  "The most seconds one git run of a hub install -- a fetch, a clone -- is
+given before it is killed and the install fails saying so.")
+
 (defun hub-git (arguments &optional environment)
   "Git run with ARGUMENTS, never prompting and never collecting on its own,
-ENVIRONMENT (NAME=value strings) laid over: => its output. Signals its error
-output when it fails."
+ENVIRONMENT (NAME=value strings) laid over, for *HUB-GIT-SECONDS* at most:
+=> its output. Signals its error output when it fails, and its bound when
+it is killed at it."
   (multiple-value-bind (out err status)
-      (run-bounded (list* *git-program* "-c" "gc.auto=0" arguments) :seconds 600
+      (run-bounded (list* *git-program* "-c" "gc.auto=0" arguments) :seconds *hub-git-seconds*
                    :environment (list* "GIT_TERMINAL_PROMPT=0" environment))
-    (unless (eql status 0)
-      (error "git ~a failed: ~a" (first arguments) (string-trim '(#\Newline) (or err ""))))
-    out))
+    ;; named by its verb, past the -C DIRECTORY and --git-dir= ahead of it
+    (let ((verb (loop with words = arguments
+                      for word = (pop words)
+                      while word
+                      do (cond ((string= word "-C") (pop words))
+                               ((not (uiop:string-prefix-p "-" word)) (return word))))))
+      (case status
+        (0 out)
+        (:timeout (error "git ~a did not finish within ~d s" verb *hub-git-seconds*))
+        (t (error "git ~a failed: ~a" verb (string-trim '(#\Newline) (or err ""))))))))
 
 (defun hub-repository (entry home)
   "The copy HOME keeps of hub ENTRY's repository, holding ENTRY's commit:
@@ -2511,8 +2528,9 @@ directory; signals when git cannot."
         (unless (probe-file (merge-pathnames "HEAD" directory))
           (ensure-directories-exist directory)
           (hub-git (list "init" "--quiet" "--bare" native)))
-        (hub-git (list "-C" native "fetch" "--quiet" "--depth" "1" "--no-tags" "--" (offer-git entry)
-                       (format nil "+~a:~a" commit ref)))))
+        (with-named-wait (*hub-git-seconds* "fetching ~a from ~a" (offer-name entry) (offer-git entry))
+          (hub-git (list "-C" native "fetch" "--quiet" "--depth" "1" "--no-tags" "--" (offer-git entry)
+                         (format nil "+~a:~a" commit ref))))))
     directory))
 
 ;;; A PATH entry's index may name an archive of its folder at its commit, on
@@ -2529,7 +2547,8 @@ and the caller fetches the repository."
   (when (and entry.archive entry.sha256)
     (or (ignore-errors
          (multiple-value-bind (body status)
-             (http :get entry.archive :binary t :max-bytes (* 16 1024 1024) :timeout 20)
+             (with-named-wait (20 "downloading ~a from ~a" entry.name entry.archive)
+               (http :get entry.archive :binary t :max-bytes (* 16 1024 1024) :timeout 20))
            (when (and (eql status 200) (typep body '(vector (unsigned-byte 8)))
                       (string= (sha256-text body) (format nil "sha256:~a" entry.sha256)))
              (ensure-directories-exist staging)
@@ -2589,10 +2608,11 @@ installer's. => TARGET."
              (multiple-value-bind (out err status)
                  (run-bounded (list* *git-program*
                                      (if (string= verb "clone") (cons verb args) (list* "-C" native verb args)))
-                              :seconds 600 :environment '("GIT_TERMINAL_PROMPT=0"))
-               (unless (eql status 0)
-                 (error "~a: git ~a failed: ~a" entry.name verb (string-trim '(#\Newline) (or err ""))))
-               (string-trim '(#\Newline #\Space) (or out "")))))
+                              :seconds *hub-git-seconds* :environment '("GIT_TERMINAL_PROMPT=0"))
+               (case status
+                 (0 (string-trim '(#\Newline #\Space) (or out "")))
+                 (:timeout (error "~a: git ~a did not finish within ~d s" entry.name verb *hub-git-seconds*))
+                 (t (error "~a: git ~a failed: ~a" entry.name verb (string-trim '(#\Newline) (or err ""))))))))
       (when (probe-file staging) (remove-tree staging))
       (ensure-directories-exist (merge-pathnames "../" staging))
       (with-cleanup ((ignore-errors (when (probe-file staging) (remove-tree staging)))
@@ -2605,7 +2625,8 @@ installer's. => TARGET."
         (unless (and entry.path (or (hub-archive-checkout entry staging)
                                     (hub-repository-checkout entry staging home)))
           (when (probe-file staging) (remove-tree staging))
-          (git "clone" "--quiet" "--no-checkout" "--" entry.git native)
+          (with-named-wait (*hub-git-seconds* "cloning ~a from ~a" entry.name entry.git)
+            (git "clone" "--quiet" "--no-checkout" "--" entry.git native))
           (git "checkout" "--quiet" "--detach" entry.commit)
           (unless (equal entry.commit (repository-head staging))
             (error "~a: HEAD is not ~a" entry.name entry.commit)))

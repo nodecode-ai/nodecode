@@ -687,6 +687,31 @@ sees the end; a child that stopped reading first is not an error here."
   (unless (ignore-errors (write-string text out) (close out) t)
     (ignore-errors (close out :abort t))))
 
+;;; A wait on something outside this process -- an index, an archive, a
+;;; repository, another nodecode -- is bounded, and while it lasts it is named
+;;; to whoever listens. `nodecode add' listens (CALL-SAYING-WAITS) and says on
+;;; stderr what it waits on once that has lasted a few seconds: a background
+;;; shell that prints nothing for minutes reads as a hang.
+
+(defvar *wait-hook* nil
+  "NIL, or a function of TEXT and BOUND that this thread calls as it starts a
+wait WITH-NAMED-WAIT names -- TEXT what it waits on, in words, BOUND the
+most seconds it waits -- and of NIL and NIL when that wait ends.")
+
+(defmacro with-named-wait ((bound control &rest arguments) &body body)
+  "BODY, a wait of at most BOUND seconds that CONTROL and ARGUMENTS name as
+FORMAT would, named to *WAIT-HOOK* while it lasts. => BODY's values."
+  `(call-with-named-wait (lambda () ,@body) ,bound ,control ,@arguments))
+
+(defun call-with-named-wait (function bound control &rest arguments)
+  "FUNCTION's values, its wait named to *WAIT-HOOK* as WITH-NAMED-WAIT says."
+  (let ((hook *wait-hook*))
+    (if hook
+        (progn (funcall hook (apply #'format nil control arguments) bound)
+               (unwind-protect (funcall function)
+                 (funcall hook nil nil)))
+        (funcall function))))
+
 (defun run-bounded (argv &key (seconds 60) directory environment input
                              (output :string) (error-output :string))
   "Run ARGV — the program first, searched on PATH — to completion or SECONDS,
