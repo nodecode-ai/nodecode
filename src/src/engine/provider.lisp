@@ -96,6 +96,20 @@ clock. 360 s at the default idle timeout, and a provider's own
 stream_idle_timeout_ms scales it; never under one idle timeout; NIL turns the
 clock off.")
 
+;;; Before an attempt's first content the failover watch (*FIRST-TOKEN-SECONDS*)
+;;; bounds its wait only when a candidate stands behind it. Without one, the
+;;; idle clock was the only bound, and a provider that keeps its socket warm
+;;; with comments -- OpenRouter's ": OPENROUTER PROCESSING" while its upstream
+;;; is stuck -- held the turn for as long as the comments came
+;;; (proofs/RetryLadder.lean, firstTokenMain).
+(defparameter *first-content-idle-windows* 15
+  "Idle timeouts an attempt may stream before its first content, whatever
+else arrives: 1800 s at the default idle timeout, room for a cold start or a
+long hidden reasoning pass, and a provider's own stream_idle_timeout_ms
+scales it; never under one idle timeout. Past it the attempt is cut like a
+stall and the stream budget retries it. NIL leaves that wait to the idle
+clock and the failover watch.")
+
 ;;; The Zig retry_policy.default_stream_max_retries.
 (defparameter *max-stream-retries* 5
   "Maximum stream-scope retries: attempts whose failure arrived after a 200
@@ -1522,30 +1536,37 @@ did not say — never zero."
 ;;; chunk opens no span and emits no part, so it never counts. A window that
 ;;; passes with no content cuts the attempt as a stream-scope
 ;;; PROVIDER-STREAM-INCOMPLETE, "no content for N s", which the stream retries
-;;; take like any idle cut. Before the first content nothing is armed: a cold
-;;; prompt that keeps its socket warm with comments still waits as the idle
-;;; clock and the first-token watch let it. The window is a count of idle
+;;; take like any idle cut. Before the first content the clock runs a first
+;;; window from the head, *FIRST-CONTENT-IDLE-WINDOWS* idle timeouts: a cold
+;;; prompt that keeps its socket warm with comments waits that long, and no
+;;; longer, whether or not a failover watch stands behind it. The window is a count of idle
 ;;; timeouts (*CONTENT-IDLE-WINDOWS*), never under one, so plain silence stays
 ;;; the idle clock's to name and a provider tuned for patience keeps it.
 
 (defstruct (content-clock (:copier nil))
-  "One attempt's content clock: its window, and when content last came."
-  ;; SECONDS is the window; AT the internal real time of the last content part,
-  ;; NIL before the first.
-  (seconds 0 :type real :read-only t)
+  "One attempt's content clock: its windows, and when content last came."
+  ;; SECONDS is the window after content, FIRST-SECONDS the one before it,
+  ;; either NIL when nothing bounds that wait; START the internal real time of
+  ;; the head, AT that of the last content part, NIL before the first.
+  (seconds nil :type (or null real) :read-only t)
+  (first-seconds nil :type (or null real) :read-only t)
+  (start 0 :type integer :read-only t)
   (at nil))
 
 (defvar *content-clock* nil
   "The CONTENT-CLOCK of the stream this thread walks, or NIL.")
 
 (defun content-clock-for (config)
-  "A fresh content clock for one attempt under CONFIG, its window
-*CONTENT-IDLE-WINDOWS* of CONFIG's idle timeout and never under one, or NIL
-while the clock is off."
-  (when *content-idle-windows*
-    (make-content-clock
-     :seconds (* (max 1 *content-idle-windows*)
-                 (effective-provider-config-request-timeout config)))))
+  "A fresh content clock for one attempt under CONFIG, started now: its window
+*CONTENT-IDLE-WINDOWS* of CONFIG's idle timeout, its first window
+*FIRST-CONTENT-IDLE-WINDOWS*, each never under one, or NIL while both are
+off."
+  (let ((idle (effective-provider-config-request-timeout config)))
+    (flet ((window (count) (and count (* (max 1 count) idle))))
+      (when (or *content-idle-windows* *first-content-idle-windows*)
+        (make-content-clock :seconds (window *content-idle-windows*)
+                            :first-seconds (window *first-content-idle-windows*)
+                            :start (get-internal-real-time))))))
 
 (defun content-part-p (kind initargs)
   "True when the part of KIND that INITARGS make carries content."
@@ -1555,16 +1576,22 @@ while the clock is off."
     ((:tool-input-start :tool-call) t)))
 
 (defun content-seconds-left (clock)
-  "The seconds CLOCK's window has left, or NIL while nothing armed it."
-  (let ((at (and clock (content-clock-at clock))))
-    (when at
-      (float (- (content-clock-seconds clock)
-                (/ (- (get-internal-real-time) at) internal-time-units-per-second))
-             1d0))))
+  "The seconds CLOCK's window has left -- since the last content part, or
+since the head while none came -- or NIL while no window bounds the wait."
+  (when clock
+    (multiple-value-bind (window since)
+        (if (content-clock-at clock)
+            (values (content-clock-seconds clock) (content-clock-at clock))
+            (values (content-clock-first-seconds clock) (content-clock-start clock)))
+      (when window
+        (float (- window (/ (- (get-internal-real-time) since) internal-time-units-per-second))
+               1d0)))))
 
 (defun content-cut-detail (clock)
   "The failure detail of an attempt CLOCK cut."
-  (format nil "no content for ~a s" (idle-seconds-label (content-clock-seconds clock))))
+  (if (content-clock-at clock)
+      (format nil "no content for ~a s" (idle-seconds-label (content-clock-seconds clock)))
+      (format nil "no first token for ~a s" (idle-seconds-label (content-clock-first-seconds clock)))))
 
 (defun emit-stream-part (on-part kind &rest initargs)
   ;; Content resets the attempt's content clock, observed or not.
@@ -4422,7 +4449,8 @@ no dexador stream at all (a canned stream)."
 ;;; (PROVIDER-SLOW-START), which leaves for the candidate at once instead of
 ;;; retrying the cold start; SKIP-PROVIDER-ATTEMPT cuts the same wait when
 ;;; asked, a room's press among the askers. With no candidate nothing is
-;;; watched, and an attempt waits as long as its idle clock lets it. A
+;;; watched, and an attempt waits as long as its idle clock and the content
+;;; clock's first window (*FIRST-CONTENT-IDLE-WINDOWS*) let it. A
 ;;; watched read looks at its watch once a second; an unwatched one runs as
 ;;; it always did.
 
