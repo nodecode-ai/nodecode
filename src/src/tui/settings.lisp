@@ -991,8 +991,7 @@ a choice."
     (sheet-call model settings
                    (lambda () (settings-probe model (settings-section-json setting.part)
                                               (json-value setting.field :string "name")))
-                   (lambda (model answer)
-                     (declare (ignore model))
+                   (lambda-ignoring (model answer)
                      (if-let (failure (off-loop-failure answer))
                        (settings-say settings setting failure :danger)
                        (let* ((offered (loop for choice across (or (json-value answer :array "choices") #())
@@ -1013,8 +1012,7 @@ answer -- or its refusal -- under the row."
     (setf settings.said nil)
     (sheet-call model settings
                    (lambda () (settings-probe model (settings-section-json setting.part)))
-                   (lambda (model answer)
-                     (declare (ignore model))
+                   (lambda-ignoring (model answer)
                      (if-let (failure (off-loop-failure answer))
                        (settings-say settings setting failure :danger)
                        (settings-say settings setting
@@ -1246,8 +1244,7 @@ list under the pointer: over the rail the page, over the pane its settings."
 (defun focus-setting-action (index)
   "A click's action that chooses the setting at INDEX: the result under a
 query, the row of the open section otherwise."
-  (lambda (model settings)
-    (declare (ignore model))
+  (lambda-ignoring (model settings)
     (setf settings.said nil)
     (if (plusp (length settings.query))
         (setf settings.hit index)
@@ -1546,12 +1543,10 @@ or NIL."
                         (unless (equal id label)
                           (canvas-put canvas (+ at 2) r id (sheet-ink :muted :ground ground) (+ px pw)))
                         (sheet-hit settings r (- px 2) (+ px pw 2)
-                                      (lambda (model settings)
-                                        (declare (ignore model))
+                                      (lambda-ignoring (model settings)
                                         (setf (fourth settings.ids) index)
                                         (settings-ids-key nil settings #\Space))
-                                      :hover (lambda (model settings)
-                                               (declare (ignore model))
+                                      :hover (lambda-ignoring (model settings)
                                                (unless (eql index (fourth settings.ids))
                                                  (setf (fourth settings.ids) index)
                                                  t))))))
@@ -1644,8 +1639,7 @@ badge until it is chosen, else a dot while any of its settings is set."
 
 (defun open-section-action (index)
   "A click's action on the section at INDEX: choose it, or open it once chosen."
-  (lambda (model settings)
-    (declare (ignore model))
+  (lambda-ignoring (model settings)
     (if (and (= index settings.section-at) settings.stacked)
         (settings-open settings)
         (progn (settings-choose settings index)
@@ -1655,8 +1649,7 @@ badge until it is chosen, else a dot while any of its settings is set."
   "The pointer's action resting on the section at INDEX: choose it, the keys
 on the rail, as the arrows there would; under a query or an open list,
 nothing. => whether it moved."
-  (lambda (model settings)
-    (declare (ignore model))
+  (lambda-ignoring (model settings)
     (unless (or settings.ids (plusp (length settings.query))
                 (and (= index settings.section-at) (eq settings.focus :rail)))
       (unless (= index settings.section-at) (settings-choose settings index))
@@ -1870,8 +1863,7 @@ cell, or NIL."
                   (where (format nil "‹ ~d/~d ›" (1+ settings.section-at) count))
                   (at (canvas-put canvas px header-row "Settings › " (sheet-ink :muted :ground pane))))
              (sheet-hit settings header-row px at
-                           (lambda (model settings)
-                             (declare (ignore model))
+                           (lambda-ignoring (model settings)
                              (setf settings.focus :rail settings.said nil)))
              (canvas-put canvas at header-row
                          (clip-text-to-width part.label (max 1 (- pw 11 (length where) 2)))
@@ -1880,12 +1872,10 @@ cell, or NIL."
                (let ((from (- (+ px pw) (length where))))
                  (canvas-put canvas from header-row where (sheet-ink :muted :ground pane))
                  (sheet-hit settings header-row from (+ from 2)
-                               (lambda (model settings)
-                                 (declare (ignore model))
+                               (lambda-ignoring (model settings)
                                  (settings-step-section settings -1)))
                  (sheet-hit settings header-row (+ from (length where) -2) (+ from (length where))
-                               (lambda (model settings)
-                                 (declare (ignore model))
+                               (lambda-ignoring (model settings)
                                  (settings-step-section settings 1)))))
              (lines (page-entries part settings.setting-at))))))
       (paint-keys settings canvas hint-row px (+ px pw) (settings-keys settings) settings.flash pane)

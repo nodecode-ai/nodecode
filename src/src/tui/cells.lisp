@@ -145,8 +145,7 @@ network's, so the list never waits for it. Each lands while CELLS is still
 open."
   (sheet-call model cells
               (lambda () (gateway-model-http-call model :get "/api/gateway/cells" nil))
-              (lambda (model answer)
-                (declare (ignore model))
+              (lambda-ignoring (model answer)
                 (if-let (failure (off-loop-failure answer))
                   (setf cells.failed failure)
                   (cells-land cells answer)))
@@ -175,8 +174,7 @@ over the cell, in the tone of how it now stands, or why it was refused."
                                                                     "seconds" nlk:*cell-switch-seconds*)
                                                        :read-timeout nlk:*cell-switch-seconds*)
                   (gateway-http-error (refusal) (list :refused (gateway-http-error-detail refusal)))))
-              (lambda (model answer)
-                (declare (ignore model))
+              (lambda-ignoring (model answer)
                 (let ((refused (or (off-loop-failure answer)
                                    (and (consp answer) (eq :refused (first answer)) (second answer)))))
                   (if refused
@@ -515,7 +513,7 @@ count; at the right, how this machine's cells stand when there is room."
                                               (sheet-ink :muted :ground ground)))
              (sheet-hit cells r at (+ at wide)
                         (let ((tab tab))
-                          (lambda (model cells) (declare (ignore model)) (cells-tab cells tab))))
+                          (lambda-ignoring (model cells) (cells-tab cells tab))))
              (incf at (1+ wide)))
     (let* ((running (and (some (lambda (row) (nth-value 1 (json-value row :any "started"))) cells.home)
                          (count-if (lambda (row) (json-value row :boolean "started")) cells.home)))
@@ -549,8 +547,7 @@ wants a look, lifted when CHOSEN."
     (multiple-value-bind (glyph tone) (cell-state-glyph cell)
       (when glyph (canvas-put canvas (+ x width -2) r glyph (sheet-ink tone :ground here))))
     (sheet-hit cells r x (+ x width)
-               (lambda (model cells)
-                 (declare (ignore model))
+               (lambda-ignoring (model cells)
                  (if (and chosen cells.stacked)
                      (setf cells.open t cells.pane-top 0)
                      (cells-choose cells name))))))
@@ -692,7 +689,7 @@ the caret's cell, or NIL."
         (open
          (let ((at (canvas-put canvas px header-row "Cells › " (sheet-ink :muted :ground pane))))
            (sheet-hit cells header-row px at
-                      (lambda (model cells) (declare (ignore model)) (setf cells.open nil)))
+                      (lambda-ignoring (model cells) (setf cells.open nil)))
            (canvas-put canvas at header-row
                        (clip-text-to-width (json-value (cell-of cells name) :string "label") (max 1 (- (+ px pw) at)))
                        (sheet-ink :title :ground pane :bold t))))
