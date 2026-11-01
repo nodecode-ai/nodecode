@@ -335,17 +335,20 @@ name of any other tool it called."
   "FORK as fork answers it, its turn having ended as KIND; one whose turn
 never started, as it stands."
   (let ((child (getf fork :session))
-        (turn (getf fork :turn)))
-    (if (getf fork :status)
-        (list :task (getf fork :task) :session child :status (getf fork :status)
-              :answer (getf fork :answer) :ran '())
-        (list :task (getf fork :task) :session child
-              :status (cond ((eq kind :timeout) :timeout)
-                            ((equal kind "turn.completed") :completed)
-                            ((equal kind "turn.failed") :failed)
-                            (t :cancelled))
-              :answer (or (turn-answer child turn) (fork-ending child turn))
-              :ran (fork-ran child turn)))))
+        (turn (getf fork :turn))
+        (status (getf fork :status)))
+    (list :task (getf fork :task) :session child
+          :status (or status (fork-turn-status kind))
+          :answer (if status (getf fork :answer) (or (turn-answer child turn) (fork-ending child turn)))
+          :ran (unless status (fork-ran child turn)))))
+
+(defun fork-turn-status (kind)
+  "KIND, the kind of the event a fork's turn ended on, or :TIMEOUT, as the
+fork's status: :timeout, :completed, :failed or :cancelled."
+  (cond ((eq kind :timeout) :timeout)
+        ((equal kind "turn.completed") :completed)
+        ((equal kind "turn.failed") :failed)
+        (t :cancelled)))
 
 ;;; --- live progress: how a call's forks stand, for the shells it shows in ---
 ;;; A fork works in a session of its own, so the parent's transcript holds only
@@ -424,10 +427,7 @@ ended -> its FORK-CALL.")
                                 ms)))))
     (json-object "n" n
                  "label" (clip (trimmed (or (first (lines (trimmed (or (getf fork :task) "")))) "")) 60 :ellipsis "…")
-                 "status" (cond ((null kind) "running")
-                                ((equal kind "turn.completed") "completed")
-                                ((equal kind "turn.failed") "failed")
-                                (t "cancelled"))
+                 "status" (if kind (string-downcase (fork-turn-status kind)) "running")
                  "calls" (length ran)
                  :opt "note" (and ran (fork-progress-note (car (last ran))))
                  :opt "ms" ended
