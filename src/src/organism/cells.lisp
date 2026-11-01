@@ -398,34 +398,69 @@ TOPLEVEL-DEFINITIONS lists it -- a function, a value or a class."
              (find-class symbol nil)
              (member (sb-int:info :variable :kind symbol) '(:special :global :constant))))))
 
-(defun definition-defines-p (entry form missing)
+(defun form-definitions (form &aux (made '()))
+  "The functions and variables FORM defines once evaluated as a top-level
+form, as (KIND . NAME) -- KIND :FUNCTION or :VARIABLE, NAME a symbol or (SETF
+SYMBOL) -- in the order it defines them. FORM is expanded under *PACKAGE*,
+never run."
+  ;; Read the way EVAL takes a top-level form: through PROGN, LOCALLY and an
+  ;; EVAL-WHEN that executes, and through every macro on the way, a definer of
+  ;; the project's among them. NLK:DEFINE-SIDE-TABLE writes its DEFVAR and the
+  ;; functions reading it as one form, so the variable is that form's own
+  ;; though no source spells it. A form that does not expand defines nothing
+  ;; here. A DEFMACRO is not counted: a caller compiled before it is a call.
+  (labels ((walk (form)
+             (when (and (consp form) (symbolp (first form)))
+               (case (first form)
+                 ((defvar defparameter defconstant sb-ext:defglobal sb-ext:define-load-time-global)
+                  (when (symbolp (second form))
+                    (push (cons :variable (second form)) made)))
+                 ((defun defgeneric defmethod)
+                  (push (cons :function (second form)) made))
+                 ((progn locally) (mapc #'walk (rest form)))
+                 ((eval-when)
+                  (when (intersection '(:execute eval) (second form))
+                    (mapc #'walk (cddr form))))
+                 (t (when (macro-function (first form))
+                      (multiple-value-bind (expansion expanded-p) (macroexpand-1 form)
+                        (when expanded-p (walk expansion)))))))))
+    (ignore-errors (walk form))
+    (nreverse made)))
+
+(defun definition-defines-p (entry form missing &optional made)
   "Whether ENTRY, a definition as TOPLEVEL-DEFINITIONS lists it, read as FORM,
 defines what a compile noted MISSING, (KIND PACKAGE NAME SETF-P): by its own
-name, or -- a structure, a class, a condition, a record -- by a symbol its
-form carries or a name its constructor, copier, predicate or accessors take."
-  (bind (((_ package name setf-p) (values-list missing)))
+name; or -- a structure, a class, a condition, a record -- by a symbol its
+form carries or a name its constructor, copier, predicate or accessors take;
+or by a function or variable of MADE, what FORM's expansion defines as
+FORM-DEFINITIONS answers it."
+  (bind (((kind package name setf-p) (values-list missing)))
     (let* ((key (first entry))
            (operator (getf key :operator))
            (own (and (definition-package entry)
                      (definition-name-symbol (getf key :name) (definition-package entry))))
            (symbol (and (find-package package) (find-symbol name package))))
       (and own symbol
-           (if (member operator '("DEFSTRUCT" "DEFCLASS" "DEFINE-CONDITION" "DEFINE-RECORD")
-                       :test #'string=)
-               (or (uiop:string-prefix-p (format nil "~a-" (symbol-name own)) name)
-                   (member name (list (format nil "MAKE-~a" (symbol-name own))
-                                      (format nil "COPY-~a" (symbol-name own)))
+           (or (if (member operator '("DEFSTRUCT" "DEFCLASS" "DEFINE-CONDITION" "DEFINE-RECORD")
                            :test #'string=)
-                   (and (member symbol (alexandria:flatten form)) t))
-               ;; a DEFUN of NAME is not one of (SETF NAME); a definer of its
-               ;; own -- DEFSETF, a DEFINE-* table -- may give both
-               (and (eq symbol own)
-                    (or (not (member operator '("DEFUN" "DEFGENERIC" "DEFMETHOD") :test #'string=))
-                        (eq (and setf-p t) (uiop:string-prefix-p "(SETF " (getf key :name))))))))))
+                   (or (uiop:string-prefix-p (format nil "~a-" (symbol-name own)) name)
+                       (member name (list (format nil "MAKE-~a" (symbol-name own))
+                                          (format nil "COPY-~a" (symbol-name own)))
+                               :test #'string=)
+                       (and (member symbol (alexandria:flatten form)) t))
+                   ;; a DEFUN of NAME is not one of (SETF NAME); a definer of its
+                   ;; own -- DEFSETF, a DEFINE-* table -- may give both
+                   (and (eq symbol own)
+                        (or (not (member operator '("DEFUN" "DEFGENERIC" "DEFMETHOD") :test #'string=))
+                            (eq (and setf-p t) (uiop:string-prefix-p "(SETF " (getf key :name))))))
+               ;; what the expansion defines: a side table's *NAME* is its own
+               (and (find (cons kind (if setf-p (list 'setf symbol) symbol)) made :test #'equal)
+                    t))))))
 
 (defun make-definitions-live (text after wanted redefined-p verify
                               &aux (done '()) (live '()) (held '()) (sent '()) (taken '())
-                              (pending '()) (undo '()) (forms (make-hash-table :test 'equal)))
+                              (pending '()) (undo '()) (forms (make-hash-table :test 'equal))
+                              (expansions (make-hash-table :test 'equal)))
   "Evaluate WANTED, definitions of TEXT as TOPLEVEL-DEFINITIONS lists them --
 AFTER is every one TEXT holds -- into this image under the package each
 declares, then call VERIFY, when given: => (values LIVE HELD SENT) as
@@ -444,6 +479,10 @@ LOAD-SOURCE answers them."
   ;; once the load is live, and when it signals every definition the load made
   ;; live is put back as it was (SNAPSHOT-DEFINITIONS, taken before each
   ;; evaluates) and held with its error. A shell passes its own frame.
+  ;;
+  ;; What a definition defines counts what its expansion defines
+  ;; (FORM-DEFINITIONS): a side table's one form both makes and reads its
+  ;; variable, and goes live on its own word.
   (labels ((span (entry) (cons (second entry) (third entry)))
            (label (entry) (definition-key-label (first entry)))
            (first-line (condition)
@@ -506,7 +545,15 @@ LOAD-SOURCE answers them."
              ;; compiled where it is read: a kernel file's package locks
              ;; exempt only the kernel's own code
              (unresolved-names (form entry)))
-           (defines-p (entry name) (definition-defines-p entry (form entry) name)))
+           (made (entry)
+             ;; what the definition's expansion defines, expanded once per
+             ;; span under the package it declares (FORM-DEFINITIONS)
+             (alexandria:ensure-gethash
+              (span entry) expansions
+              (when-let (package (definition-package entry))
+                (let ((*package* package))
+                  (form-definitions (form entry))))))
+           (defines-p (entry name) (definition-defines-p entry (form entry) name (made entry))))
     (mapc #'take wanted)
     (setf pending (nreverse pending))
     (loop

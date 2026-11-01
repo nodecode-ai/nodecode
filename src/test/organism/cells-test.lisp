@@ -1495,6 +1495,30 @@ DEFINITIONS after a blank line."
     (is (eq :in (evolved-fn "SOURCE-ORDER-SLOT" (evolved-fn "MAKE-SOURCE-ORDER-BOX" :slot :in))))
     (is (evolved-fn "SOURCE-ORDER-EVEN-P" 4))))
 
+(deftest load-source-loads-what-a-definer-macro-makes (with-source-tree (root))
+  ;; NLK:DEFINE-SIDE-TABLE writes a DEFVAR and the functions reading it as
+  ;; one form. Compiled apart, that form reads its variable before anything
+  ;; proclaims it, so it named what this image lacks and a release adding a
+  ;; side table was refused live (CONFIG-LOOP-GUARD-LEVEL, nodecode#118).
+  ;; What a form's expansion defines is its own: the table goes live, with a
+  ;; reader of its variable ahead of it and a writer behind it. A table keyed
+  ;; by a function nothing defines is still held.
+  (let ((path (merge-pathnames "side.lisp" root)))
+    (write-temp-file path (evolved-source "(defun source-side-count () (hash-table-count *source-side-probe*))"
+                                          "(nlk:define-side-table source-side-probe (:weakness :key))"
+                                          "(defun source-side-note (box) (setf (source-side-probe box) :noted))"
+                                          "(nlk:define-side-table source-side-keyed (:key source-side-nowhere))"))
+    (is-present (line (nlk:load-source path :before "")) "the load answers"
+      (is-carrying line ("live here: source-side-count, source-side-probe, source-side-note" "the table and both its users")
+        ("source-side-keyed" "the table keyed by nothing is named")
+        ("names source-side-nowhere" "held for what nothing defines")
+        (:absent "*source-side-probe*" "never for the variable a table makes")))
+    (let ((box (list :box)))
+      (evolved-fn "SOURCE-SIDE-NOTE" box)
+      (is (eq :noted (evolved-fn "SOURCE-SIDE-PROBE" box)) "the writer wrote and the reader reads")
+      (is (eql 1 (evolved-fn "SOURCE-SIDE-COUNT")) "and the variable holds the entry"))
+    (is (not (fboundp (uiop:find-symbol* "SOURCE-SIDE-KEYED" '#:nodecode.evolved))) "the held table never ran")))
+
 (deftest shipped-folders-compile-beside-themselves-once-a-release-lays-the-directory-down
     (with-temp-trees ((root "shipped-fasl")))
   ;; A release's src/fasl/ routes every shipped source's fasl there; without
