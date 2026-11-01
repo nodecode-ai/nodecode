@@ -2651,15 +2651,9 @@ installer's. => TARGET."
          (native (string-right-trim "/\\" (uiop:native-namestring staging)))
          (source (if entry.path (merge-pathnames (format nil "~a/" entry.path) staging) staging)))
     (flet ((git (verb &rest args)
-             ;; every verb but the clone runs in the clone
-             (multiple-value-bind (out err status)
-                 (run-bounded (list* *git-program*
-                                     (if (string= verb "clone") (cons verb args) (list* "-C" native verb args)))
-                              :seconds *hub-git-seconds* :environment '("GIT_TERMINAL_PROMPT=0"))
-               (case status
-                 (0 (string-trim '(#\Newline #\Space) (or out "")))
-                 (:timeout (error "~a: git ~a did not finish within ~d s" entry.name verb *hub-git-seconds*))
-                 (t (error "~a: git ~a failed: ~a" entry.name verb (string-trim '(#\Newline) (or err ""))))))))
+             ;; every verb but the clone runs in the clone; HUB-GIT's refusal, under the cell's name
+             (handler-case (hub-git (if (string= verb "clone") (cons verb args) (list* "-C" native verb args)))
+               (error (condition) (error "~a: ~a" entry.name condition)))))
       (when (probe-file staging) (remove-tree staging))
       (ensure-directories-exist (merge-pathnames "../" staging))
       (with-cleanup ((ignore-errors (when (probe-file staging) (remove-tree staging)))
