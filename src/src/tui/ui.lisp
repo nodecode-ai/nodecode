@@ -13223,9 +13223,7 @@ from the ones COLLECT-DURING-WAIT hid inside provider wait."
                               t)
                              ;; The ember, the fades and the glints are the
                              ;; frame's paint: the rows stand.
-                             ((ember-moved-p model) t)
-                             ((fade-moved-p model) t)
-                             ((glint-rows model) t))))
+                             ((or (ember-moved-p model) (fade-moved-p model) (glint-rows model)) t))))
          (setf quiet (not (or landed dragged expired flushed ticked painted))))))
 
     ;; Hand the key to the editor. The viewport deliberately gets no
@@ -13360,7 +13358,7 @@ other part is muted."
                (tone (cond (past :danger) (near :warn) (t :muted)))
                (hit (and cached (plusp cached) (format-cache-hit-percent input cached))))
           (remove nil
-                  (list
+                  (list*
                    (when (plusp used)
                      (cons (if window
                                (format nil "~a/~a"
@@ -13374,16 +13372,13 @@ other part is muted."
                                (format nil "evicts at ~a"
                                        (format-token-count (* window *context-eviction-trigger-ratio*))))
                            tone))
-                   (when-let (text (if (eq detail :developer)
-                                       (format nil "↑ ~a~@[ (cache ~a)~]" (format-token-count input) hit)
-                                       (and hit (format nil "cache ~a" hit))))
-                     (cons text :muted))
-                   (when (eq detail :developer)
-                     (cons (format nil "↓ ~a~@[ (reasoning ~a)~]" (format-token-count output)
-                                   (and reasoning (plusp reasoning) (format-token-count reasoning)))
-                           :muted))
-                   (when (and (eq detail :developer) cost-known)
-                     (cons (format nil "$~,3f" (or cost 0.0)) :muted)))))))))
+                   (if (eq detail :developer)
+                       (list (cons (format nil "↑ ~a~@[ (cache ~a)~]" (format-token-count input) hit) :muted)
+                             (cons (format nil "↓ ~a~@[ (reasoning ~a)~]" (format-token-count output)
+                                           (and reasoning (plusp reasoning) (format-token-count reasoning)))
+                                   :muted)
+                             (and cost-known (cons (format nil "$~,3f" (or cost 0.0)) :muted)))
+                       (list (and hit (cons (format nil "cache ~a" hit) :muted)))))))))))
 
 (defun clip-text-to-width (text max-width)
   "TEXT clipped to at most MAX-WIDTH display columns, an … marking the cut."
