@@ -948,14 +948,19 @@ code is read (OWN-CELL-DIRECTORY), which it keeps (CELL-FOLDER-SOURCE)."
   (setf (gethash folder *cell-folder-sources*) source)
   folder)
 
-(defun cell-served-providers (cell &aux (path (cell-path cell)))
-  "The providers CELL's folder says it serves: its .asd's serves lines."
-  (let* ((folder (and path (ignore-errors (make-cell-folder path))))
+(defun folder-served-providers (directory)
+  "The providers the cell folder DIRECTORY says it serves: its .asd's serves
+lines, read as data, the folder never loaded."
+  (let* ((folder (and directory (ignore-errors (make-cell-folder directory))))
          (primary (and folder (first (cell-folder-systems folder)))))
     (loop for serves in (and primary (declared-system-serves primary))
           for provider = (cdr (assoc "provider" serves :test #'string=))
           when (and (stringp provider) (plusp (length provider)))
             collect provider)))
+
+(defun cell-served-providers (cell)
+  "The providers CELL's folder says it serves: its .asd's serves lines."
+  (folder-served-providers (cell-path cell)))
 
 (defun starting-cells-serving (provider)
   "The cells still to start (CELL-START-PENDING-P) whose folders say they

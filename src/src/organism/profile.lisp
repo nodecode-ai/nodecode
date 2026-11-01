@@ -320,6 +320,22 @@ into HOME, and answer the member's name when there was one to take out."
                (lambda (err) (profile-fail "git clone of ~a failed: ~a" from err)))
   to)
 
+(defparameter +model-pin-keys+ '("default_model" "auxiliary_model" "decider_model")
+  "The general members of config.jsonc that pin a model, each a
+{\"provider\": ..., \"model\": ...} object (CONFIG-MODEL-PIN).")
+
+(defun config-pinned-providers (path)
+  "The providers the config.jsonc at PATH pins under general
+(+MODEL-PIN-KEYS+), or NIL for a file that is absent or does not read."
+  (let* ((root (json-object-file path))
+         (general (and root (gethash "general" root))))
+    (when (hash-table-p general)
+      (loop for key in +model-pin-keys+
+            for pin = (gethash key general)
+            for provider = (and (hash-table-p pin) (gethash "provider" pin))
+            when (and (stringp provider) (plusp (length provider)))
+              collect provider))))
+
 (defun profile-create (name &key (clone :settings) from description &aux carried shared)
   "A new profile NAME under *PROFILES-DIRECTORY*."
   ;; CLONE says what it starts with, and :SETTINGS is the default because a
@@ -412,7 +428,14 @@ into HOME, and answer the member's name when there was one to take out."
           ;; tool the copied config.jsonc still names: a profile cloned from a
           ;; home on claude-code answered its first turn `provider claude-code
           ;; is not one this box knows'.
+          ;; The operator's own folder stays with its home, but for one that
+          ;; serves a provider the copied config pins: the clone's config
+          ;; names that provider too, and without the folder its first turn
+          ;; is refused (FOLDER-SERVED-PROVIDERS reads the .asd, nothing
+          ;; loads). It is shared, not copied, as a knowledge folder is.
           (loop with cells = (merge-pathnames "cells/" source)
+                with pinned = (and (eq clone :settings)
+                                   (config-pinned-providers (merge-pathnames "config.jsonc" source)))
                 for entry in (and (uiop:directory-exists-p cells) (uiop:subdirectories cells))
                 for name = (car (last (pathname-directory entry)))
                 for destination = (merge-pathnames (format nil "cells/~a/" name) staging)
@@ -422,6 +445,15 @@ into HOME, and answer the member's name when there was one to take out."
                                  (copy-tree-preserving entry destination) :carried)
                                 ((and (eq clone :settings) (knowledge-folder-p entry))
                                  ;; Windows, where MAKE-SYMLINK answers NIL, copies
+                                 (if (make-symlink (truename entry) destination)
+                                     :shared
+                                     (progn (copy-tree-preserving entry destination) :carried)))
+                                ((and (eq clone :settings)
+                                      (intersection pinned (folder-served-providers entry)
+                                                    :test #'string-equal))
+                                 ;; Linked like a knowledge folder: the operator's
+                                 ;; code, one copy both homes read, so an edit
+                                 ;; reaches both; Windows copies.
                                  (if (make-symlink (truename entry) destination)
                                      :shared
                                      (progn (copy-tree-preserving entry destination) :carried)))
