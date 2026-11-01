@@ -2350,13 +2350,12 @@ organism comes back under the unit `gateway off' stops, never beside it."
       (if (nlk:gateway-start)
           (values (nlk:gateway-start-argv) :systemd)
           (values nil "the service manager would not start the gateway"))
-      (let ((command (serve-command store-path)))
-        (if (null command)
-            (values nil "this image has no serve binary to exec")
-            ;; The candidate's log lands next to the database it fought for.
-            (nlk::spawn-detached
-             command
-             (pathname (format nil "~a.resurrect.log" (namestring store-path))))))))
+      (if-let (command (serve-command store-path))
+        ;; The candidate's log lands next to the database it fought for.
+        (nlk::spawn-detached
+         command
+         (pathname (format nil "~a.resurrect.log" (namestring store-path))))
+        (values nil "this image has no serve binary to exec"))))
 
 ;;; --- the organism a shell fronts -------------------------------------------
 ;;; A shell never runs the organism in its own process: a collection the
@@ -6293,15 +6292,14 @@ move is conversation-only."
 (defun headless-undo (args session-id)
   (declare (ignore args))
   (require-headless-session session-id "undo")
-  (let ((head (nlk:session-head-turn-id session-id)))
-    (if (null head)
-        "nothing to undo"
-        (let* ((parent (gethash head (nlk:session-composed-parents session-id)))
-               (prompt (turn-started-input-of head))
-               ;; The prompt as one line of at most 120 characters.
-               (flat (nlk:trimmed (substitute #\Space #\Newline (or prompt head)))))
-          (headless-head-move session-id parent "user_message" "rewind")
-          (format nil "rewound to before: ~a" (clip flat 120))))))
+  (if-let (head (nlk:session-head-turn-id session-id))
+    (let* ((parent (gethash head (nlk:session-composed-parents session-id)))
+           (prompt (turn-started-input-of head))
+           ;; The prompt as one line of at most 120 characters.
+           (flat (nlk:trimmed (substitute #\Space #\Newline (or prompt head)))))
+      (headless-head-move session-id parent "user_message" "rewind")
+      (format nil "rewound to before: ~a" (clip flat 120)))
+    "nothing to undo"))
 
 (defun headless-redo (args session-id)
   (declare (ignore args))
@@ -7553,10 +7551,13 @@ under row I instead: the rails running on below it. HEAD is the head's id."
 
 (defun metro-label-text (node)
   "NODE's words on a row: its ask's excerpt, or a cron fire's job and minute."
-  (let ((cron (getf node :cron)))
-    (if cron
-        (format nil "cron ~a · fired ~a" (car cron) (cdr cron))
-        (checkpoint-row-excerpt (gethash "prompt" (getf node :entry))))))
+  (if-let (cron (getf node :cron))
+    (format nil "cron ~a · fired ~a" (car cron) (cdr cron))
+    (checkpoint-row-excerpt (gethash "prompt" (getf node :entry)))))
+
+(defun selection-edge-seg (selected plain)
+  "A picker row's left edge: the accent bar on the SELECTED row, a PLAIN blank on the rest."
+  (if selected (make-seg :text "▌" :tone :dialog-accent) (make-seg :text " " :tone plain)))
 
 (defun metro-row (left label suffix words columns room selected)
   "One painted /tree row ROOM wide: LEFT, then LABEL -- SUFFIX after it, the
@@ -7608,9 +7609,7 @@ selected row carries ROW's files chrome after the ask."
            (steers (getf node :steers))
            (cron (getf node :cron))
            (left (append
-                  (list (if selected
-                            (make-seg :text "▌" :tone :dialog-accent)
-                            (make-seg :text " " :tone plain))
+                  (list (selection-edge-seg selected plain)
                         (make-seg :text " " :tone plain)
                         (make-seg :text (if (and clock (or selected (not repeat))) clock "     ")
                                   :tone (if selected :system quiet))
@@ -7662,9 +7661,7 @@ asked to do, and flush right how long the call ran."
   (lambda (selected room)
     (let* ((plain (if selected :system :muted))
            (span (metro-span-ms entry))
-           (left (append (list (if selected
-                                   (make-seg :text "▌" :tone :dialog-accent)
-                                   (make-seg :text " " :tone plain))
+           (left (append (list (selection-edge-seg selected plain)
                                (make-seg :text "        " :tone plain))
                          (metro-cell-segs cells)
                          (list (make-seg :text " " :tone plain)
@@ -8431,9 +8428,7 @@ narrow for the name to keep a reading's width."
         (let* ((right-width (lane-width right))
                (title-width (max 8 (- room lead (after right))))
                (left (append
-                      (list (if selected
-                                (make-seg :text "▌" :tone :dialog-accent)
-                                (make-seg :text " " :tone plain))
+                      (list (selection-edge-seg selected plain)
                             (make-seg :text " " :tone plain)
                             (make-seg :text (if (plusp (length mark)) mark " ") :tone mark-tone)
                             (make-seg :text " " :tone plain)
