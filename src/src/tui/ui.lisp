@@ -12627,6 +12627,12 @@ it could not do, and why."
         (path "Nothing here opens files — drag across the path to copy it")
         (t "No browser to open links here — drag across one to copy it")))
 
+(defun open-target-or-say (model uri &aux (outcome (open-target uri)))
+  "Open URI (OPEN-TARGET), or say in MODEL's status why it did not open."
+  (unless (eq t outcome)
+    (show-status model (open-refusal-hint uri outcome))
+    (render-state model)))
+
 (defun render-disclosure-at-cursor (model owner line y)
   "Reproject a toggled disclosure without moving its clicked owner at Y."
   (let* ((refs (chat-model-line-rows model))
@@ -12768,51 +12774,39 @@ selection copies to the clipboard through the program's own writer."
               (setf (chat-model-expanded-tool-call model)
                     (if (and run (not (tool-group-open-p group current))) (list :fold key) key))
               (render-disclosure-at-cursor model row line y)))
-           ;; A tab's chip on the open panel shows its tab; a key's hint is
-           ;; that key, handed back for UPDATE to run as a typed one.
-           ((and (consp uri) (eq :dialog-tab (car uri))
-                 (equal uri (frame-target-at-position model x y)))
-            (picker-tab-pick model (cdr uri)))
-           ((and (consp uri) (eq :key (car uri))
-                 (equal uri (frame-target-at-position model x y)))
-            (hint-key-press (cdr uri)))
-           ;; A composer dropdown row is chosen as Enter chooses the
-           ;; highlighted one: it takes the highlight, then Enter goes.
-           ((and (consp uri) (eq :suggestion (car uri))
-                 (equal uri (frame-target-at-position model x y)))
-            (setf (chat-model-slash-selection model) (cdr uri))
-            (nlt:make-key-press-msg :code :enter))
            ((equal uri (frame-target-at-position model x y))
-            (if (and (consp uri) (eq :command (car uri)))
-                (let* ((dialog (chat-model-dialog model))
-                       (kind (and (picker-dialog-p dialog) (picker-dialog-kind dialog))))
-                  ;; Every footer command toggles its canonical picker kind,
-                  ;; not a whitelist of options. A repeat click cancels even
-                  ;; with a query; it never selects or reruns the opener.
-                  (if (and kind (string-equal (cdr uri) (picker-dialog-command kind)))
-                      (dismiss-dialog model (picker-dialog-on-cancel dialog))
-                      (multiple-value-bind (notice cmd) (execute-slash-command model (cdr uri) "")
-                        (when notice (show-status model notice))
-                        (when cmd (error "Footer command unexpectedly returned a program command"))))
-                  (render-state model))
-                (let ((outcome (open-target uri)))
-                  (unless (eq t outcome)
-                    (show-status model (open-refusal-hint uri outcome))
-                    (render-state model)))))
-           ((and (equal uri '(:home . :mark))
-                 (equal uri (home-command-at-position model line column)))
-            (click-mark model))
+            (case (and (consp uri) (car uri))
+              ;; A tab's chip on the open panel shows its tab; a key's hint is
+              ;; that key, handed back for UPDATE to run as a typed one.
+              (:dialog-tab (picker-tab-pick model (cdr uri)))
+              (:key (hint-key-press (cdr uri)))
+              ;; A composer dropdown row is chosen as Enter chooses the
+              ;; highlighted one: it takes the highlight, then Enter goes.
+              (:suggestion (setf (chat-model-slash-selection model) (cdr uri))
+               (nlt:make-key-press-msg :code :enter))
+              (:command
+               (let* ((dialog (chat-model-dialog model))
+                      (kind (and (picker-dialog-p dialog) (picker-dialog-kind dialog))))
+                 ;; Every footer command toggles its canonical picker kind,
+                 ;; not a whitelist of options. A repeat click cancels even
+                 ;; with a query; it never selects or reruns the opener.
+                 (if (and kind (string-equal (cdr uri) (picker-dialog-command kind)))
+                     (dismiss-dialog model (picker-dialog-on-cancel dialog))
+                     (multiple-value-bind (notice cmd) (execute-slash-command model (cdr uri) "")
+                       (when notice (show-status model notice))
+                       (when cmd (error "Footer command unexpectedly returned a program command"))))
+                 (render-state model)))
+              (t (open-target-or-say model uri))))
            ((and (consp uri) (eq :home (car uri))
                  (equal uri (home-command-at-position model line column)))
-            (multiple-value-bind (notice cmd) (execute-slash-command model (cdr uri) "")
-              (when notice (show-status model notice))
-              (render-state model)
-              (when cmd (error "Home view command unexpectedly returned a program command"))))
+            (if (eq :mark (cdr uri))
+                (click-mark model)
+                (multiple-value-bind (notice cmd) (execute-slash-command model (cdr uri) "")
+                  (when notice (show-status model notice))
+                  (render-state model)
+                  (when cmd (error "Home view command unexpectedly returned a program command")))))
            ((and line (equal uri (link-at-position model line column)))
-            (let ((outcome (open-target uri)))
-              (unless (eq t outcome)
-                (show-status model (open-refusal-hint uri outcome))
-                (render-state model))))))))
+            (open-target-or-say model uri))))))
     ;; An open dialog confirms on release: a press on its panel only armed
     ;; the anchor, so a click with no drag between it and this release
     ;; replays Enter on the row under the pointer (the Zig
