@@ -1136,12 +1136,16 @@ attached session's, the one this shell's stop acts on."
         model.pending-correlation-id nil
         model.pending-prompt nil))
 
+(defun command-turn-id (frame command-id
+                        &aux (metadata (json-value frame :object "event" "metadata")))
+  "The turn stream FRAME admits for COMMAND-ID: the turn it names, or T when it
+names none; NIL when FRAME answers no such command."
+  (and command-id (equal command-id (json-value metadata :any "command_id"))
+       (or (gethash "turn_id" frame) (gethash "turn_id" metadata) t)))
+
 (defun replay-command-turn-id (payload command-id)
-  (and command-id
-       (loop for frame across (json-array payload "accumulated_frames")
-             for metadata = (json-value frame :object "event" "metadata")
-             when (equal command-id (json-value metadata :any "command_id"))
-               return (or (gethash "turn_id" frame) (gethash "turn_id" metadata) t))))
+  (loop for frame across (json-array payload "accumulated_frames")
+          thereis (command-turn-id frame command-id)))
 
 (defun note-resumed-watermark (model frame)
   "A resumed frame opens a fresh per-peer sequence epoch: REPLACE the
@@ -1712,16 +1716,10 @@ thread reads it and clears this place.")
             ;; A live frame the pending start_turn produced admits it: the
             ;; turn it names, or T when it names none.
             ;; The stream frame is under "frame", or PAYLOAD itself when it carries none.
-            (let* ((stream-frame (json-value (or (json-value payload :any "frame") payload)
-                                             :object))
-                   (metadata (json-value stream-frame :object "event" "metadata"))
-                   (command-id model.pending-command-id))
-              (when (and command-id metadata
-                         (equal command-id (gethash "command_id" metadata)))
-                (resolve-pending-admission
-                 model (or (gethash "turn_id" stream-frame)
-                           (gethash "turn_id" metadata)
-                           t))))
+            (when-let (turn-id (command-turn-id
+                                (json-value (or (json-value payload :any "frame") payload) :object)
+                                model.pending-command-id))
+              (resolve-pending-admission model turn-id))
             (multiple-value-bind (state verdict)
                 (apply-gateway-event model.state payload)
               (setf model.state state
@@ -1887,8 +1885,7 @@ thread reads it and clears this place.")
         (let ((now (get-internal-real-time))
               (last model.last-escape-at))
           (cond
-            ((and last (< (- now last)
-                          (truncate internal-time-units-per-second 2)))
+            ((and last (< (since-ms last now) 500))
              (setf model.last-escape-at nil)
              (when-let (notice (slash-tree-op model))
                (show-status model notice))
