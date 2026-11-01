@@ -74,5 +74,4 @@ id = 2
                               (nik:read-toml (format nil "a = \"~a\"" escape))))
         (format nil "~a is a refusal naming its line" escape)))
   (is (equal (format nil "~c~c~c" (code-char #xe9) (code-char #x1f600) #\A)
-             (nlk:json-value (nik:read-toml "a = \"\\u00e9\\U0001F600\\u0041\"") :string "a"))
-      "a well-formed escape still reads"))
+             (nlk:json-value (nik:read-toml "a = \"\\u00e9\\U0001F600\\u0041\"") :string "a"))))
