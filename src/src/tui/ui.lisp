@@ -6482,15 +6482,12 @@ attaching to it would paint it."
                  (values (status-mark elapsed-ms (second activity)) (first activity) nil)
                  (values (status-mark elapsed-ms :wait) "waiting on the model"
                          (and activity (- elapsed-ms activity-ms)))))
-           (quiet-segs (quiet-ms)
-             (and quiet-ms
-                  (list (make-seg :text (format nil " · quiet ~a" (format-turn-elapsed quiet-ms))
-                                  :tone :muted))))
-           (elapsed-segs (elapsed-ms)
+           (elapsed-segs (elapsed-ms &optional (label ""))
              ;; After the verb: the bar's first word is what the turn is
              ;; doing, and `11:05' at its head read as a time of day.
+             ;; LABEL names a quiet's elapse: ` · quiet 4.0s'.
              (and elapsed-ms
-                  (list (make-seg :text (format nil " · ~a" (format-turn-elapsed elapsed-ms))
+                  (list (make-seg :text (format nil " · ~a~a" label (format-turn-elapsed elapsed-ms))
                                   :tone :muted))))
            (bar-segs (mark mark-tone head head-tone &rest tails)
              ;; The mark in the gutter where ▸ and ■ stand, set flush against
@@ -6585,7 +6582,7 @@ attaching to it would paint it."
                               (retry-segs retry verb-seg elapsed-ms elapsed (live-usage-meter-segs model))
                               (bar-segs mark :foreground "" :foreground
                                         (cons (funcall verb-seg words :foreground) elapsed)
-                                        (quiet-segs (and (not stopping) quiet))
+                                        (elapsed-segs (and (not stopping) quiet) "quiet ")
                                         (live-usage-meter-segs model))))))))))))
 
 ;;; --- the background-process band ---------------------------------------------
