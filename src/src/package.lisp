@@ -276,7 +276,7 @@ renderer, the program loop.")
    #:cells-report-text #:cells-folder-text #:broken-cell-links #:broken-layer-files
    ;; the shipped catalog, the hub's, and installing from them (cells.lisp)
    #:shipped-cells-directory #:shipped-cells #:find-offer #:offer-closure
-   #:cell-dependents #:system-cell #:hub-pin
+   #:cell-dependents #:system-cell #:hub-pin #:refresh-hub-clones
    #:hub-cells #:read-hub-index #:*hub-index-url* #:*community-index-url*
    #:missing-shipped-cells #:install-cell #:uninstall-cell
    #:installed-cell-p #:load-cell #:definitions-before #:report-unkept-changes #:folder-name

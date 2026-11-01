@@ -2653,6 +2653,83 @@ installer's. => TARGET."
                                                           root))))
     (subseq (append (marker-lines marker) (list nil nil nil)) 0 3)))
 
+(defun refresh-hub-clones (&key (root *cells-directory*) (shipped (shipped-cells)) hub (apply t))
+  "Move each hub clone under ROOT on to what stands for it now: this image's
+own folder when this image ships one of its name (SHIPPED), else the commit
+Nodecode's own index pins it at in HUB, the hub's entries as HUB-CELLS
+answers them -- or a function answering them, called once and only when a
+clone needs it -- when that entry still names the clone's repository and
+folder and its pin moved. With APPLY NIL nothing moves.
+=> (values the names moved -- or that would move -- in folder order,
+((NAME . TEXT) ...) for the ones that failed)."
+  ;; A clone is pinned to the commit its index named the day it was made, and
+  ;; neither a release nor a later index moves it: without this a fix the
+  ;; release ships, or the index takes up, never reaches a box that installed
+  ;; the folder from the hub before (nodecode #112: two homes kept running
+  ;; nodecode-cyber-security from before the cells#14 feed fix). The release's
+  ;; own folder wins because it is what INSTALL-CELL puts there for that name
+  ;; today. A community entry is left where its person read it: only
+  ;; Nodecode's index moves a clone on its own. The operator's own folder
+  ;; carries no marker, so it is never touched. The clone is set aside under
+  ;; the home's .cell-staging/ while its replacement goes in, and put back
+  ;; when that fails, so a failed move leaves the box as it was and the next
+  ;; look tries again. Each clone is its own error boundary.
+  (let ((moved '())
+        (failed '()))
+    (when (and root (uiop:directory-exists-p root))
+      (dolist (name (entry-names root))
+        (when-let (pin (hub-pin name root))
+          (with-handlers ((error (condition)
+                            (push (cons name (princ-to-string condition)) failed)))
+            (destructuring-bind (git commit path) pin
+              (let* ((own (find-if (lambda (offer) (and (string= name (offer-name offer))
+                                                        (null (offer-git offer))))
+                                   shipped))
+                     (entry (and (not own)
+                                 (find-offer name (if (functionp hub) (setf hub (funcall hub)) hub))))
+                     (next (and entry
+                                (equal "hub" (offer-index entry))
+                                (equal git (offer-git entry))
+                                (equal path (offer-path entry))
+                                (not (equal commit (offer-commit entry)))
+                                entry)))
+                (when (or own next)
+                  (when apply
+                    (replace-hub-clone name root
+                                       (if own
+                                           (lambda (target)
+                                             (declare (ignore target))
+                                             (install-cell name :root root :offers (list own)))
+                                           (lambda (target) (clone-install next target)))))
+                  (push name moved))))))))
+    (values (nreverse moved) (nreverse failed))))
+
+(defun replace-hub-clone (name root install)
+  "Put the folder INSTALL, called with the target folder, makes in place of
+the hub clone NAME under ROOT: the clone set aside first, and put back when
+INSTALL signals. => NIL."
+  (let* ((target (merge-pathnames (format nil "~a/" name) root))
+         (home (uiop:pathname-parent-directory-pathname (uiop:ensure-directory-pathname root)))
+         (staging (merge-pathnames ".cell-staging/" home))
+         (aside (merge-pathnames (format nil "~a.before/" name) staging)))
+    (flet ((native (directory) (string-right-trim "/\\" (uiop:native-namestring directory))))
+      (when (probe-file aside) (remove-tree aside))
+      (ensure-directories-exist staging)
+      (sb-posix:rename (native target) (native aside))
+      (handler-bind ((error (lambda (condition)
+                              (declare (ignore condition))
+                              ;; what INSTALL left goes -- a link alone, never the
+                              ;; folder it leads to -- then the clone comes back
+                              (ignore-errors
+                               (cond #-win32 ((symlink-target (merge-pathnames name root))
+                                              (sb-posix:unlink (native target)))
+                                     ((probe-file target) (remove-tree target))))
+                              (sb-posix:rename (native aside) (native target)))))
+        (funcall install target))
+      (remove-tree aside)
+      (ignore-errors (uiop:delete-empty-directory staging))
+      nil)))
+
 (defun install-cell (name &key (root *cells-directory*) (offers (shipped-cells)))
   "Put the offered folder NAME under ROOT: a shipped one as a symlink to where
 it ships from (a copy on a platform without links), a hub entry cloned at

@@ -831,6 +831,15 @@ if this one dies before it serves."
        (loop for (name . text) in failed
              do (format *error-output* "~&cells: ~a still loads from another build: ~a~%"
                         name text)))
+     ;; A hub clone of a folder this build ships gives way to the build's own:
+     ;; a release never touches the home, so the clone would keep running the
+     ;; code it was cloned at (nodecode #112). No index is read here, so a boot
+     ;; never waits on the network; the update check moves the rest.
+     (multiple-value-bind (moved failed)
+         (handler-case (refresh-hub-clones) (error () (values nil nil)))
+       (format *error-output* "~@[~&cells: ~{~a~^, ~} now load from this build in place of the hub clone~%~]" moved)
+       (loop for (name . text) in failed
+             do (format *error-output* "~&cells: ~a still loads from its hub clone: ~a~%" name text)))
      (let* ((warm (and *cells-directory* *warm-cache-directory*))
             ;; Every image, marker and receipt of this build lives under its
             ;; stamp directory: without one, the walk decides nothing.
