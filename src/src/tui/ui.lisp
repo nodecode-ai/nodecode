@@ -8733,7 +8733,8 @@ what a search reads and a test names; the function is only the look.")
   ;; the pointer measures against it; the cells a click or the pointer
   ;; resting there acts on, ((ROW FROM TO ACTION HOVER) ...); the line on the key row, (TEXT TONE . TIME);
   ;; and whether a call is under way.
-  (layout nil) (hits '()) (flash nil) (busy nil))
+  ;; Whether the last paint showed one view at a time.
+  (layout nil) (hits '()) (flash nil) (busy nil) (stacked nil))
 
 (nlk:access (sheet sheet-dialog))
 

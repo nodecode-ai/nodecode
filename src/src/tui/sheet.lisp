@@ -131,6 +131,50 @@ other half. => (values TOP INNER), the first row inside and how many."
                  (canvas-fill canvas x 0 width height (sheet-ink nil :ground ground))))
     (if edges (values 1 (- height 2)) (values 0 height))))
 
+(defmacro with-wide-sheet ((canvas edges rail-width) &body body)
+  "Run BODY over CANVAS laid as a rail beside a pane: WIDTH, RAIL-WIDTH (the
+form, read with WIDTH bound), the PANE, RAIL and FIELD grounds, TOP and INNER
+as PAINT-LANES answers them, and the pane's text column PX, PW wide."
+  `(let* ((width (sheet-canvas-width ,canvas))
+          (rail-width ,rail-width)
+          (pane (sheet-ground :sheet))
+          (rail (sheet-ground :sheet-rail))
+          (field (sheet-ground :composer)))
+     (declare (ignorable field))
+     (multiple-value-bind (top inner)
+         (paint-lanes ,canvas ,edges (list (list 0 rail-width rail) (list rail-width (- width rail-width) pane)))
+       (let ((px (+ rail-width 3)) (pw (- width rail-width 6)))
+         ,@body))))
+
+(defmacro with-stacked-sheet ((canvas edges) &body body)
+  "Run BODY over CANVAS laid as one pane, one view at a time: WIDTH, the PANE
+ground, TOP and INNER as PAINT-LANES answers them, the text column PX (PAD)
+and PW wide, the PAD-ROW, HEADER-ROW and HINT-ROW."
+  `(let* ((width (sheet-canvas-width ,canvas))
+          (pane (sheet-ground :sheet)))
+     (multiple-value-bind (top inner) (paint-lanes ,canvas ,edges (list (list 0 width pane)))
+       (let* ((pad (if (>= width 60) 3 2))
+              (px pad)
+              (pw (- width (* 2 pad)))
+              (pad-row (if (and ,edges (>= inner 20)) 1 0))
+              (header-row (+ top pad-row))
+              (hint-row (- (+ top inner) 1 pad-row)))
+         (declare (ignorable pad-row header-row))
+         ,@body))))
+
+(defun paint-sheet (model sheet width height size wide stacked)
+  "SHEET for a WIDTH x HEIGHT frame, SIZE the (COLUMNS ROWS) it asks for: WIDE
+paints it from 84 columns, STACKED narrower, one view at a time, each called
+with (SHEET CANVAS EDGES) and answering the caret's cell or NIL. => (values
+ROWS X Y CARET)."
+  (multiple-value-bind (x y w h edges)
+      (sheet-box width height (first size) (second size) :whole (chat-model-dialog-fullscreen model))
+    (let ((canvas (make-sheet-canvas w h)))
+      (setf sheet.hits '() sheet.stacked (< w 84))
+      (let ((caret (funcall (if sheet.stacked stacked wide) sheet canvas edges)))
+        (values (canvas-rows canvas) x y
+                (and caret (cons (+ x (car caret)) (+ y (cdr caret)))))))))
+
 (defun clip-tail (text width)
   "The last WIDTH columns of TEXT, an … leading when it was cut."
   (if (<= (text-display-width text) width)

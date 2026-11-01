@@ -31,10 +31,10 @@ the copy kept of it (HUB-STALE); where the operator is -- the TAB, :HOME or
 cell show (TOP, PANE-TOP) and, one view at a time, whether the cell is
 OPEN -- the hub cell whose install the last Space ASKED, what the last
 switch SAID ((NAME TEXT TONE)); and what the last paint left: the RAIL's
-width, 0 when it showed one view at a time (STACKED)."
+width, 0 when it showed one view at a time."
   (home #()) (notices #()) (failed nil) (hub nil) (hub-failed nil) (hub-stale nil)
   (tab :home) (chosen nil) (query "" :type string) (top 0) (pane-top 0) (open nil)
-  (asked nil) (said nil) (rail 0) (stacked nil))
+  (asked nil) (said nil) (rail 0))
 
 (nlk:access (cells cells-sheet))
 
@@ -668,83 +668,67 @@ list could not be read."
 (defun paint-cells-wide (cells canvas edges)
   "The wide sheet: the list in a rail beside the chosen cell. => the
 caret's cell, or NIL."
-  (let* ((width canvas.width)
-         (rail-width (if (>= width 110) 30 28))
-         (pane (sheet-ground :sheet))
-         (rail (sheet-ground :sheet-rail))
-         (field (sheet-ground :composer)))
-    (multiple-value-bind (top inner) (paint-lanes canvas edges `((0 ,rail-width ,rail)
-                                                                 (,rail-width ,(- width rail-width) ,pane)))
-      (let* ((gap (if (< inner 22) 1 2))
-             (px (+ rail-width 3))
-             (pw (- width rail-width 6))
-             (title-row (+ top (1- gap)))
-             (hint-row (- (+ top inner) gap))
-             (items (cells-items cells))
-             (name (cells-focus cells (cells-names items)))
-             (cursor nil))
-        (setf cells.rail rail-width)
-        (canvas-put canvas 3 title-row "Cells" (sheet-ink :title :ground rail :bold t))
-        (if items
-            (paint-cells-list cells canvas items name (+ title-row gap) (- hint-row title-row gap -1)
-                              0 rail-width rail)
-            (when-let (text (cells-empty-text cells))
-              (canvas-put canvas 3 (+ title-row gap) (clip-text-to-width text (- rail-width 4))
-                          (sheet-ink :muted :ground rail))))
-        ;; the search field
-        (canvas-fill canvas (1- px) title-row (+ pw 2) 1 (sheet-ink nil :ground field))
-        (if (plusp (length cells.query))
-            (setf cursor (cons (canvas-put canvas px title-row (clip-tail cells.query (1- pw))
-                                           (sheet-ink :composer :ground field))
-                               title-row))
-            (canvas-put canvas px title-row (clip-text-to-width "Search cells and the hub" (1- pw))
-                        (sheet-ink :muted :ground field)))
-        (paint-cells-tabs cells canvas (+ title-row gap) px pw pane)
-        (paint-cell-pane cells canvas name (+ title-row gap gap) (- hint-row gap) px pw)
-        (paint-keys cells canvas hint-row px (+ px pw) (cells-keys cells name) cells.flash pane)
-        cursor))))
+  (with-wide-sheet (canvas edges (if (>= width 110) 30 28))
+    (let* ((gap (if (< inner 22) 1 2))
+           (title-row (+ top (1- gap)))
+           (hint-row (- (+ top inner) gap))
+           (items (cells-items cells))
+           (name (cells-focus cells (cells-names items)))
+           (cursor nil))
+      (setf cells.rail rail-width)
+      (canvas-put canvas 3 title-row "Cells" (sheet-ink :title :ground rail :bold t))
+      (if items
+          (paint-cells-list cells canvas items name (+ title-row gap) (- hint-row title-row gap -1)
+                            0 rail-width rail)
+          (when-let (text (cells-empty-text cells))
+            (canvas-put canvas 3 (+ title-row gap) (clip-text-to-width text (- rail-width 4))
+                        (sheet-ink :muted :ground rail))))
+      ;; the search field
+      (canvas-fill canvas (1- px) title-row (+ pw 2) 1 (sheet-ink nil :ground field))
+      (if (plusp (length cells.query))
+          (setf cursor (cons (canvas-put canvas px title-row (clip-tail cells.query (1- pw))
+                                         (sheet-ink :composer :ground field))
+                             title-row))
+          (canvas-put canvas px title-row (clip-text-to-width "Search cells and the hub" (1- pw))
+                      (sheet-ink :muted :ground field)))
+      (paint-cells-tabs cells canvas (+ title-row gap) px pw pane)
+      (paint-cell-pane cells canvas name (+ title-row gap gap) (- hint-row gap) px pw)
+      (paint-keys cells canvas hint-row px (+ px pw) (cells-keys cells name) cells.flash pane)
+      cursor)))
 
 (defun paint-cells-stacked (cells canvas edges)
   "The narrow sheet: the list, or the chosen cell, one view at a time. =>
 the caret's cell, or NIL."
-  (let* ((width canvas.width)
-         (pane (sheet-ground :sheet)))
-    (multiple-value-bind (top inner) (paint-lanes canvas edges `((0 ,width ,pane)))
-      (let* ((pad (if (>= width 60) 3 2))
-             (px pad)
-             (pw (- width (* 2 pad)))
-             (pad-row (if (and edges (>= inner 20)) 1 0))
-             (header-row (+ top pad-row))
-             (hint-row (- (+ top inner) 1 pad-row))
-             (items (cells-items cells))
-             (name (cells-focus cells (cells-names items)))
-             (open (and cells.open name))
-             (cursor nil))
-        (setf cells.rail 0)
-        (cond
-          (open
-           (let ((at (canvas-put canvas px header-row "Cells › " (sheet-ink :muted :ground pane))))
-             (sheet-hit cells header-row px at
-                        (lambda (model cells) (declare (ignore model)) (setf cells.open nil)))
-             (canvas-put canvas at header-row
-                         (clip-text-to-width (json-value (cell-of cells name) :string "label") (max 1 (- (+ px pw) at)))
-                         (sheet-ink :title :ground pane :bold t))))
-          ((plusp (length cells.query))
-           (let ((at (canvas-put canvas px header-row "Search " (sheet-ink :muted :ground pane))))
-             (setf cursor (cons (canvas-put canvas at header-row (clip-tail cells.query (max 1 (- pw 8)))
-                                            (sheet-ink :foreground :ground pane))
-                                header-row))))
-          (t
-           (let ((at (canvas-put canvas px header-row "Cells" (sheet-ink :title :ground pane :bold t))))
-             (paint-cells-tabs cells canvas header-row (+ at 3) (- (+ px pw) at 3) pane))))
-        (cond (open (paint-cell-pane cells canvas name (+ header-row 2) (- hint-row 2) px pw))
-              (items (paint-cells-list cells canvas items name (+ header-row 2) (- hint-row header-row 3)
-                                       (- px 2) (+ pw 4) pane))
-              (t (when-let (text (cells-empty-text cells))
-                   (canvas-put canvas px (+ header-row 2) (clip-text-to-width text pw) (sheet-ink :muted :ground pane)))
-                 (paint-cell-pane cells canvas nil (+ header-row 4) (- hint-row 2) px pw)))
-        (paint-keys cells canvas hint-row px (+ px pw) (cells-keys cells name) cells.flash pane)
-        cursor))))
+  (with-stacked-sheet (canvas edges)
+    (let* ((items (cells-items cells))
+           (name (cells-focus cells (cells-names items)))
+           (open (and cells.open name))
+           (cursor nil))
+      (setf cells.rail 0)
+      (cond
+        (open
+         (let ((at (canvas-put canvas px header-row "Cells › " (sheet-ink :muted :ground pane))))
+           (sheet-hit cells header-row px at
+                      (lambda (model cells) (declare (ignore model)) (setf cells.open nil)))
+           (canvas-put canvas at header-row
+                       (clip-text-to-width (json-value (cell-of cells name) :string "label") (max 1 (- (+ px pw) at)))
+                       (sheet-ink :title :ground pane :bold t))))
+        ((plusp (length cells.query))
+         (let ((at (canvas-put canvas px header-row "Search " (sheet-ink :muted :ground pane))))
+           (setf cursor (cons (canvas-put canvas at header-row (clip-tail cells.query (max 1 (- pw 8)))
+                                          (sheet-ink :foreground :ground pane))
+                              header-row))))
+        (t
+         (let ((at (canvas-put canvas px header-row "Cells" (sheet-ink :title :ground pane :bold t))))
+           (paint-cells-tabs cells canvas header-row (+ at 3) (- (+ px pw) at 3) pane))))
+      (cond (open (paint-cell-pane cells canvas name (+ header-row 2) (- hint-row 2) px pw))
+            (items (paint-cells-list cells canvas items name (+ header-row 2) (- hint-row header-row 3)
+                                     (- px 2) (+ pw 4) pane))
+            (t (when-let (text (cells-empty-text cells))
+                 (canvas-put canvas px (+ header-row 2) (clip-text-to-width text pw) (sheet-ink :muted :ground pane)))
+               (paint-cell-pane cells canvas nil (+ header-row 4) (- hint-row 2) px pw)))
+      (paint-keys cells canvas hint-row px (+ px pw) (cells-keys cells name) cells.flash pane)
+      cursor)))
 
 (defparameter +cells-sheet-size+ '(120 34)
   "The columns and rows the sheet asks for: what a wide window gives it.")
@@ -752,17 +736,7 @@ the caret's cell, or NIL."
 (defun cells-paint (model cells width height)
   "The sheet for a WIDTH x HEIGHT frame: wide from 84 columns, the list
 beside the chosen cell; narrower, one view at a time."
-  (multiple-value-bind (x y w h edges)
-      (sheet-box width height (first +cells-sheet-size+) (second +cells-sheet-size+)
-                 :whole (chat-model-dialog-fullscreen model))
-    (let ((canvas (make-sheet-canvas w h)))
-      (setf cells.hits '()
-            cells.stacked (< w 84))
-      (let ((caret (if cells.stacked
-                       (paint-cells-stacked cells canvas edges)
-                       (paint-cells-wide cells canvas edges))))
-        (values (canvas-rows canvas) x y
-                (and caret (cons (+ x (car caret)) (+ y (cdr caret)))))))))
+  (paint-sheet model cells width height +cells-sheet-size+ #'paint-cells-wide #'paint-cells-stacked))
 
 (defun open-cells-dialog (model)
   "/cells on a shell: the sheet at once over the shell, the listing and the
