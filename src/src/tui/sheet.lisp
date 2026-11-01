@@ -183,6 +183,11 @@ ROWS X Y CARET)."
       (progn (canvas-put canvas x row (clip-text-to-width placeholder (1- width)) (sheet-ink :muted :ground ground))
              nil)))
 
+(defun paint-search-line (canvas x row width query ground room)
+  "A stacked sheet's header while QUERY is typed: Search, then its tail in WIDTH less ROOM. => the caret's cell."
+  (let ((at (canvas-put canvas x row "Search " (sheet-ink :muted :ground ground))))
+    (cons (canvas-put canvas at row (clip-tail query (max 1 (- width room))) (sheet-ink :foreground :ground ground)) row)))
+
 (defun sheet-type-query (query key ctrl alt search &key space)
   "Whether KEY edits the search QUERY: a character typed (Space only with SPACE), or Backspace,
 Ctrl+U or Ctrl+W while one is going. SEARCH is called with the query it edits to."

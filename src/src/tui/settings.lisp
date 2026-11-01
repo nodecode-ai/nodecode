@@ -318,14 +318,10 @@ model members, through the config route. => (values NOTICE FAILED)."
   "The Reflections model as one row: EXPERIENCE's provider and model, which
 the model picker sets together and Delete takes out together."
   (let* ((fields (settings-section-fields (settings-section-json experience)))
+         (field (lambda (name) (find name fields :key (lambda (field) (json-value field :string "name")) :test #'equal)))
          (set (loop for name in '("provider" "model")
-                    for field = (find name fields :key (lambda (field) (json-value field :string "name"))
-                                                  :test #'equal)
-                    when (json-value field :boolean "set") collect name))
-         (value (lambda (name)
-                  (json-value (find name fields :key (lambda (field) (json-value field :string "name"))
-                                                :test #'equal)
-                              :text "value"))))
+                    when (json-value (funcall field name) :boolean "set") collect name))
+         (value (lambda (name) (json-value (funcall field name) :text "value"))))
     (make-setting :label "Reflections model" :kind :action :part experience
                   :act (lambda (model) (open-models-picker model :lands (reflections-model-lands experience)))
                   :set (and set t)
@@ -863,15 +859,13 @@ its page, then its name."
 (defun reset-off-loop (model row &aux (setting (cdr row)))
   "Give ROW's setting its default back off the loop: a config member taken
 out through the route, the effort through its writer. => why not, or NIL."
-  (handler-case
-      (progn (cond (setting.field
-                    (gateway-model-http-call model :post "/api/gateway/config"
-                                             (encode-json-object
-                                              (json-object "path" (setting-path setting) "remove" t))))
-                   (setting.remote (funcall setting.remote model nil)))
-             nil)
-    (nlk:config-refusal (condition) (nlk:config-refusal-detail condition))
-    (error (condition) (princ-to-string condition))))
+  (with-handlers ((nlk:config-refusal (condition) (nlk:config-refusal-detail condition))
+                  (error (condition) (princ-to-string condition)))
+    (cond (setting.field
+           (gateway-model-http-call model :post "/api/gateway/config"
+                                    (encode-json-object (json-object "path" (setting-path setting) "remove" t))))
+          (setting.remote (funcall setting.remote model nil)))
+    nil))
 
 (defun settings-reset-all (model settings asking rows)
   "Give each of ROWS, (PART . SETTING), its default back, ASKING the row
@@ -991,8 +985,7 @@ a choice."
     (sheet-call model settings
                    (lambda () (settings-probe model (settings-section-json setting.part)
                                               (json-value setting.field :string "name")))
-                   (lambda (model answer)
-                     (declare (ignore model))
+                   (lambda-ignoring (model answer)
                      (if-let (failure (off-loop-failure answer))
                        (settings-say settings setting failure :danger)
                        (let* ((offered (loop for choice across (or (json-value answer :array "choices") #())
@@ -1013,8 +1006,7 @@ answer -- or its refusal -- under the row."
     (setf settings.said nil)
     (sheet-call model settings
                    (lambda () (settings-probe model (settings-section-json setting.part)))
-                   (lambda (model answer)
-                     (declare (ignore model))
+                   (lambda-ignoring (model answer)
                      (if-let (failure (off-loop-failure answer))
                        (settings-say settings setting failure :danger)
                        (settings-say settings setting
@@ -1084,16 +1076,11 @@ its badge goes, and Latest changes keeps the release it lists as seen."
 
 (defun settings-sideways (settings delta)
   "On the two columns of sections, move to the nearest in the column DELTA over."
-  (let ((here (find settings.section-at settings.columns :key #'first)))
-    (when here
-      (let ((best nil))
-        (loop for spot in settings.columns
-              when (and (= (second spot) (+ (second here) delta))
-                        (or (null best) (< (abs (- (third spot) (third here)))
-                                           (abs (- (third best) (third here))))))
-                do (setf best spot))
-        (when best
-          (settings-choose settings (first best)))))))
+  (when-let (here (find settings.section-at settings.columns :key #'first))
+    (when-let (best (alexandria:extremum (remove (+ (second here) delta) settings.columns
+                                                 :key #'second :test-not #'=)
+                                         #'< :key (lambda (spot) (abs (- (third spot) (third here))))))
+      (settings-choose settings (first best)))))
 
 (defun settings-edit-key (model settings key ctrl alt)
   "A key while a field is open: Enter writes it, Esc leaves it as it was,
@@ -1246,8 +1233,7 @@ list under the pointer: over the rail the page, over the pane its settings."
 (defun focus-setting-action (index)
   "A click's action that chooses the setting at INDEX: the result under a
 query, the row of the open section otherwise."
-  (lambda (model settings)
-    (declare (ignore model))
+  (lambda-ignoring (model settings)
     (setf settings.said nil)
     (if (plusp (length settings.query))
         (setf settings.hit index)
@@ -1546,12 +1532,10 @@ or NIL."
                         (unless (equal id label)
                           (canvas-put canvas (+ at 2) r id (sheet-ink :muted :ground ground) (+ px pw)))
                         (sheet-hit settings r (- px 2) (+ px pw 2)
-                                      (lambda (model settings)
-                                        (declare (ignore model))
+                                      (lambda-ignoring (model settings)
                                         (setf (fourth settings.ids) index)
                                         (settings-ids-key nil settings #\Space))
-                                      :hover (lambda (model settings)
-                                               (declare (ignore model))
+                                      :hover (lambda-ignoring (model settings)
                                                (unless (eql index (fourth settings.ids))
                                                  (setf (fourth settings.ids) index)
                                                  t))))))
@@ -1644,8 +1628,7 @@ badge until it is chosen, else a dot while any of its settings is set."
 
 (defun open-section-action (index)
   "A click's action on the section at INDEX: choose it, or open it once chosen."
-  (lambda (model settings)
-    (declare (ignore model))
+  (lambda-ignoring (model settings)
     (if (and (= index settings.section-at) settings.stacked)
         (settings-open settings)
         (progn (settings-choose settings index)
@@ -1655,8 +1638,7 @@ badge until it is chosen, else a dot while any of its settings is set."
   "The pointer's action resting on the section at INDEX: choose it, the keys
 on the rail, as the arrows there would; under a query or an open list,
 nothing. => whether it moved."
-  (lambda (model settings)
-    (declare (ignore model))
+  (lambda-ignoring (model settings)
     (unless (or settings.ids (plusp (length settings.query))
                 (and (= index settings.section-at) (eq settings.focus :rail)))
       (unless (= index settings.section-at) (settings-choose settings index))
@@ -1848,11 +1830,8 @@ cell, or NIL."
         (cond
           ((plusp (length settings.query))
            ;; The header is the search line.
-           (let* ((count (length (settings-results settings)))
-                  (at (canvas-put canvas px header-row "Search " (sheet-ink :muted :ground pane))))
-             (setf cursor (cons (canvas-put canvas at header-row (clip-tail settings.query (max 1 (- pw 22)))
-                                            (sheet-ink :foreground :ground pane))
-                                header-row))
+           (let ((count (length (settings-results settings))))
+             (setf cursor (paint-search-line canvas px header-row pw settings.query pane 22))
              (right (if (plusp count) (format nil "~d match~:[es~;~]" count (= count 1)) "no match")
                     (sheet-ink :muted :ground pane))
              (lines (result-entries settings))))
@@ -1870,8 +1849,7 @@ cell, or NIL."
                   (where (format nil "‹ ~d/~d ›" (1+ settings.section-at) count))
                   (at (canvas-put canvas px header-row "Settings › " (sheet-ink :muted :ground pane))))
              (sheet-hit settings header-row px at
-                           (lambda (model settings)
-                             (declare (ignore model))
+                           (lambda-ignoring (model settings)
                              (setf settings.focus :rail settings.said nil)))
              (canvas-put canvas at header-row
                          (clip-text-to-width part.label (max 1 (- pw 11 (length where) 2)))
@@ -1880,12 +1858,10 @@ cell, or NIL."
                (let ((from (- (+ px pw) (length where))))
                  (canvas-put canvas from header-row where (sheet-ink :muted :ground pane))
                  (sheet-hit settings header-row from (+ from 2)
-                               (lambda (model settings)
-                                 (declare (ignore model))
+                               (lambda-ignoring (model settings)
                                  (settings-step-section settings -1)))
                  (sheet-hit settings header-row (+ from (length where) -2) (+ from (length where))
-                               (lambda (model settings)
-                                 (declare (ignore model))
+                               (lambda-ignoring (model settings)
                                  (settings-step-section settings 1)))))
              (lines (page-entries part settings.setting-at))))))
       (paint-keys settings canvas hint-row px (+ px pw) (settings-keys settings) settings.flash pane)
