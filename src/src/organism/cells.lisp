@@ -2539,13 +2539,18 @@ fetch one commit once.")
   "The most seconds one git run of a hub install -- a fetch, a clone -- is
 given before it is killed and the install fails saying so.")
 
-(defun hub-git (arguments &optional environment)
+(defun seconds-text (seconds)
+  "SECONDS, any real, as the whole seconds a person reads: rounded up."
+  (ceiling seconds))
+
+(defun hub-git (arguments &optional environment &aux (seconds (wait-seconds *hub-git-seconds*)))
   "Git run with ARGUMENTS, never prompting and never collecting on its own,
-ENVIRONMENT (NAME=value strings) laid over, for *HUB-GIT-SECONDS* at most:
-=> its output. Signals its error output when it fails, and its bound when
-it is killed at it."
+ENVIRONMENT (NAME=value strings) laid over, for *HUB-GIT-SECONDS* at most,
+or what is left of the thread's deadline (WAIT-SECONDS): => its output.
+Signals its error output when it fails, and its bound when it is killed at
+it."
   (multiple-value-bind (out err status)
-      (run-bounded (list* *git-program* "-c" "gc.auto=0" arguments) :seconds *hub-git-seconds*
+      (run-bounded (list* *git-program* "-c" "gc.auto=0" arguments) :seconds seconds
                    :environment (list* "GIT_TERMINAL_PROMPT=0" environment))
     ;; named by its verb, past the -C DIRECTORY and --git-dir= ahead of it
     (let ((verb (loop with words = arguments
@@ -2555,7 +2560,7 @@ it is killed at it."
                                ((not (uiop:string-prefix-p "-" word)) (return word))))))
       (case status
         (0 out)
-        (:timeout (error "git ~a did not finish within ~d s" verb *hub-git-seconds*))
+        (:timeout (error "git ~a did not finish within ~d s" verb (seconds-text seconds)))
         (t (error "git ~a failed: ~a" verb (string-trim '(#\Newline) (or err ""))))))))
 
 (defun hub-repository (entry home)
@@ -2566,7 +2571,11 @@ directory; signals when git cannot."
          (native (string-right-trim "/\\" (uiop:native-namestring directory)))
          (commit (offer-commit entry))
          (ref (format nil "refs/pins/~a" commit)))
-    (bt2:with-lock-held (*hub-repository-lock*)
+    ;; Behind another install's fetch the lock is waited on for what is left
+    ;; of this one's deadline at most: with none, for as long as that takes.
+    (call-with-lock-in-time
+     *hub-repository-lock*
+     (lambda ()
       (unless (or (probe-file (merge-pathnames ref directory))
                   (let ((packed (merge-pathnames "packed-refs" directory)))
                     (and (probe-file packed)
@@ -2577,6 +2586,7 @@ directory; signals when git cannot."
         (with-named-wait (*hub-git-seconds* "fetching ~a from ~a" (offer-name entry) (offer-git entry))
           (hub-git (list "-C" native "fetch" "--quiet" "--depth" "1" "--no-tags" "--" (offer-git entry)
                          (format nil "+~a:~a" commit ref))))))
+     "waiting for another cell's fetch to finish")
     directory))
 
 ;;; A PATH entry's index may name an archive of its folder at its commit, on
@@ -2813,6 +2823,25 @@ its commit (CLONE-INSTALL)."
               #+win32 (t (copy-install entry.directory target))))
       (refresh-shipped-cell-notice :root root :shipped (remove-if #'offer-git offers))
       (truename target))))
+
+;;; Turning a cell on is waited on: `nodecode add', the /cells sheet, the
+;;; /models picker and `nodecode gateway setup' each hold a wall clock on the
+;;; answer of the organism that turns it on. Each sends the seconds it waits,
+;;; and the organism gives the turn-on that much less a margin kept for what
+;;; runs in the image -- the loads, the starts, the answer -- as one deadline
+;;; (WITH-WAIT-DEADLINE), so the answer lands before its waiter stops
+;;; waiting: proofs/AddDeadlines.lean.
+
+(defparameter *cell-switch-seconds* 600
+  "The seconds a waiter on a cell's turn-on waits for the answer, unless it
+says otherwise (`nodecode add --wait').")
+
+(defun cell-switch-deadline (seconds)
+  "The seconds the organism gives a turn-on whose waiter waits SECONDS: all
+but a margin of 30 s, or half of SECONDS when that is less, kept for what
+runs in the image."
+  ;; DEADLINE and MARGIN in proofs/AddDeadlines.lean.
+  (- seconds (min 30 (floor seconds 2))))
 
 (defun shipped-counterpart (path &optional (root (shipped-cells-directory)))
   "This image's own folder in place of PATH, a shipped cell folder of some

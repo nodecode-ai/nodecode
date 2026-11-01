@@ -69,8 +69,9 @@ target at the weakest reasoning rung its model declares (AUXILIARY-MODEL).")
 ;;; never cached. Never logged: failures carry response bodies, not headers.
 (define-startup-parameter *api-key*
   (uiop:getenv "NODECODE_API_KEY")
-  "The operator-config credential tier, or NIL to resolve through the chain
-(auth file, then environment — RESOLVE-PROVIDER-CREDENTIAL).")
+  "The operator-config credential tier, read trimmed, or NIL -- or blank --
+to resolve through the chain (auth file, then environment —
+RESOLVE-PROVIDER-CREDENTIAL).")
 
 ;;; The pi-mono bodyTimeout rule. Kept by the attempt's own idle deadline
 ;;; (WITH-IDLE-CUT), armed only while a read is outstanding: dexador's
@@ -95,6 +96,20 @@ and empty deltas satisfy the idle watchdog (*REQUEST-TIMEOUT*), never this
 clock. 360 s at the default idle timeout, and a provider's own
 stream_idle_timeout_ms scales it; never under one idle timeout; NIL turns the
 clock off.")
+
+;;; Before an attempt's first content the failover watch (*FIRST-TOKEN-SECONDS*)
+;;; bounds its wait only when a candidate stands behind it. Without one, the
+;;; idle clock was the only bound, and a provider that keeps its socket warm
+;;; with comments -- OpenRouter's ": OPENROUTER PROCESSING" while its upstream
+;;; is stuck -- held the turn for as long as the comments came
+;;; (proofs/RetryLadder.lean, firstTokenMain).
+(defparameter *first-content-idle-windows* 15
+  "Idle timeouts an attempt may stream before its first content, whatever
+else arrives: 1800 s at the default idle timeout, room for a cold start or a
+long hidden reasoning pass, and a provider's own stream_idle_timeout_ms
+scales it; never under one idle timeout. Past it the attempt is cut like a
+stall and the stream budget retries it. NIL leaves that wait to the idle
+clock and the failover watch.")
 
 ;;; The Zig retry_policy.default_stream_max_retries.
 (defparameter *max-stream-retries* 5
@@ -1522,30 +1537,37 @@ did not say — never zero."
 ;;; chunk opens no span and emits no part, so it never counts. A window that
 ;;; passes with no content cuts the attempt as a stream-scope
 ;;; PROVIDER-STREAM-INCOMPLETE, "no content for N s", which the stream retries
-;;; take like any idle cut. Before the first content nothing is armed: a cold
-;;; prompt that keeps its socket warm with comments still waits as the idle
-;;; clock and the first-token watch let it. The window is a count of idle
+;;; take like any idle cut. Before the first content the clock runs a first
+;;; window from the head, *FIRST-CONTENT-IDLE-WINDOWS* idle timeouts: a cold
+;;; prompt that keeps its socket warm with comments waits that long, and no
+;;; longer, whether or not a failover watch stands behind it. The window is a count of idle
 ;;; timeouts (*CONTENT-IDLE-WINDOWS*), never under one, so plain silence stays
 ;;; the idle clock's to name and a provider tuned for patience keeps it.
 
 (defstruct (content-clock (:copier nil))
-  "One attempt's content clock: its window, and when content last came."
-  ;; SECONDS is the window; AT the internal real time of the last content part,
-  ;; NIL before the first.
-  (seconds 0 :type real :read-only t)
+  "One attempt's content clock: its windows, and when content last came."
+  ;; SECONDS is the window after content, FIRST-SECONDS the one before it,
+  ;; either NIL when nothing bounds that wait; START the internal real time of
+  ;; the head, AT that of the last content part, NIL before the first.
+  (seconds nil :type (or null real) :read-only t)
+  (first-seconds nil :type (or null real) :read-only t)
+  (start 0 :type integer :read-only t)
   (at nil))
 
 (defvar *content-clock* nil
   "The CONTENT-CLOCK of the stream this thread walks, or NIL.")
 
 (defun content-clock-for (config)
-  "A fresh content clock for one attempt under CONFIG, its window
-*CONTENT-IDLE-WINDOWS* of CONFIG's idle timeout and never under one, or NIL
-while the clock is off."
-  (when *content-idle-windows*
-    (make-content-clock
-     :seconds (* (max 1 *content-idle-windows*)
-                 (effective-provider-config-request-timeout config)))))
+  "A fresh content clock for one attempt under CONFIG, started now: its window
+*CONTENT-IDLE-WINDOWS* of CONFIG's idle timeout, its first window
+*FIRST-CONTENT-IDLE-WINDOWS*, each never under one, or NIL while both are
+off."
+  (let ((idle (effective-provider-config-request-timeout config)))
+    (flet ((window (count) (and count (* (max 1 count) idle))))
+      (when (or *content-idle-windows* *first-content-idle-windows*)
+        (make-content-clock :seconds (window *content-idle-windows*)
+                            :first-seconds (window *first-content-idle-windows*)
+                            :start (get-internal-real-time))))))
 
 (defun content-part-p (kind initargs)
   "True when the part of KIND that INITARGS make carries content."
@@ -1555,16 +1577,22 @@ while the clock is off."
     ((:tool-input-start :tool-call) t)))
 
 (defun content-seconds-left (clock)
-  "The seconds CLOCK's window has left, or NIL while nothing armed it."
-  (let ((at (and clock (content-clock-at clock))))
-    (when at
-      (float (- (content-clock-seconds clock)
-                (/ (- (get-internal-real-time) at) internal-time-units-per-second))
-             1d0))))
+  "The seconds CLOCK's window has left -- since the last content part, or
+since the head while none came -- or NIL while no window bounds the wait."
+  (when clock
+    (multiple-value-bind (window since)
+        (if (content-clock-at clock)
+            (values (content-clock-seconds clock) (content-clock-at clock))
+            (values (content-clock-first-seconds clock) (content-clock-start clock)))
+      (when window
+        (float (- window (/ (- (get-internal-real-time) since) internal-time-units-per-second))
+               1d0)))))
 
 (defun content-cut-detail (clock)
   "The failure detail of an attempt CLOCK cut."
-  (format nil "no content for ~a s" (idle-seconds-label (content-clock-seconds clock))))
+  (if (content-clock-at clock)
+      (format nil "no content for ~a s" (idle-seconds-label (content-clock-seconds clock)))
+      (format nil "no first token for ~a s" (idle-seconds-label (content-clock-first-seconds clock)))))
 
 (defun emit-stream-part (on-part kind &rest initargs)
   ;; Content resets the attempt's content clock, observed or not.
@@ -2855,11 +2883,16 @@ shared config's general.default_model.effort, in that order."
   (when (json-value (read-shared-config) :object "general" "default_model")
     (persist-shared-config (list "general" "default_model" "effort") (or effort :remove))))
 
+(defun present-text (value &aux (trimmed (and (stringp value) (nlk:trimmed value))))
+  "VALUE trimmed, or NIL when it is no string or is blank after the trim: a
+blank value is an absent one (the Zig trimmedStringField and trimmedEnvValue
+rules), the one rule every tier of RESOLVE-PROVIDER-CREDENTIAL reads by."
+  (and (plusp (length trimmed)) trimmed))
+
 (defun trimmed-config-string (object key)
   "OBJECT's KEY as a trimmed non-empty string, or NIL (the Zig
 trimmedStringField rule)."
-  (let ((trimmed (nlk:trimmed (or (json-value object :string key) ""))))
-    (and (plusp (length trimmed)) trimmed)))
+  (present-text (json-value object :string key)))
 
 (defun configured-provider-entry (name)
   "The providers.<NAME> object, or NIL — exact key match, the Zig
@@ -3173,10 +3206,10 @@ failed, or the auth file is corrupt or ambiguous."))
 (defparameter +credential-command-timeout-seconds+ 10
   "Wall clock granted to a !command (config.zig command timeout).")
 
-(defun credential-env (name &aux (value (nlk:trimmed (or (uiop:getenv name) ""))))
+(defun credential-env (name)
   "Trimmed environment variable NAME, or NIL when unset or blank (the
 trimmedEnvValue rule: empty-after-trim counts as absent)."
-  (and (plusp (length value)) value))
+  (present-text (uiop:getenv name)))
 
 (defun read-auth-file (path)
   "The parsed auth.json object, or NIL when the file is absent."
@@ -3196,13 +3229,17 @@ trimmedEnvValue rule: empty-after-trim counts as absent)."
         parsed))))
 
 (defun auth-api-key (auth provider)
-  "auth.json api_keys.<PROVIDER>.key — exact id match only, no aliases."
-  (json-value auth :text "api_keys" provider "key"))
+  "auth.json api_keys.<PROVIDER>.key, trimmed, or NIL when it is absent or
+blank -- exact id match only, no aliases. SAVE-PROVIDER-API-KEY writes a key
+trimmed and never blank, and a file edited by hand is read to that contract:
+a blank key passes to the next tier as an absent one does."
+  (present-text (json-value auth :text "api_keys" provider "key")))
 
 (defun auth-url-value (auth provider name)
   "auth.json api_keys.<PROVIDER>.vars.<NAME>: the value /models saved with
-PROVIDER's key for the ${NAME} blank of its catalog address."
-  (json-value auth :text "api_keys" provider "vars" name))
+PROVIDER's key for the ${NAME} blank of its catalog address, trimmed as it
+was saved, or NIL when absent or blank."
+  (present-text (json-value auth :text "api_keys" provider "vars" name)))
 
 (defun provider-url-value (provider name &optional vars)
   "The value the ${NAME} blank of PROVIDER's catalog address takes
@@ -3310,7 +3347,10 @@ anthropic only (still sent as x-api-key)."
   "The CREDENTIAL PROVIDER resolves to."
   ;;
   ;; Chain: config (*API-KEY*, ! indirection) -> auth api_keys -> the
-  ;; :CREDENTIAL point -> env ladder -> "public". ENDPOINT is the address the
+  ;; :CREDENTIAL point -> env ladder -> "public". Every tier reads its value
+  ;; trimmed, and a value blank after the trim is an absent one, so the next
+  ;; tier answers (PRESENT-TEXT; proofs/CredentialChain.lean proves the
+  ;; chain never sends a blank or padded key of its own). ENDPOINT is the address the
   ;; provider would dial; the point carries it, and a hook may answer a
   ;; credential of its own for another address (a backend a saved login is
   ;; served at). PROBE walks the same chain without its two side effects, for
@@ -3323,8 +3363,7 @@ anthropic only (still sent as x-api-key)."
          (family lane.family)
          (endpoint (unless probe
                      (or endpoint *endpoint* (lane-endpoint provider lane.name))))
-         (value (or (and (stringp *api-key*) (plusp (length *api-key*))
-                         *api-key*)
+         (value (or (present-text *api-key*)
                     (and provider
                          (trimmed-config-string
                           (configured-provider-entry provider) "api_key")))))
@@ -4422,7 +4461,8 @@ no dexador stream at all (a canned stream)."
 ;;; (PROVIDER-SLOW-START), which leaves for the candidate at once instead of
 ;;; retrying the cold start; SKIP-PROVIDER-ATTEMPT cuts the same wait when
 ;;; asked, a room's press among the askers. With no candidate nothing is
-;;; watched, and an attempt waits as long as its idle clock lets it. A
+;;; watched, and an attempt waits as long as its idle clock and the content
+;;; clock's first window (*FIRST-CONTENT-IDLE-WINDOWS*) let it. A
 ;;; watched read looks at its watch once a second; an unwatched one runs as
 ;;; it always did.
 

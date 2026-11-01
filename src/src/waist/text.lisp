@@ -236,6 +236,13 @@ NIL when TEXT is not a duration."
   "TEXT as UTF-8 bytes, a lone surrogate refused: what UTF-8-TEXT reads back."
   (sb-ext:string-to-octets text :external-format :utf-8))
 
+(defun utf-8-size (text)
+  "The bytes TEXT takes in UTF-8, counted without spelling them out: the
+length of (UTF-8-OCTETS TEXT) for every TEXT it spells."
+  (loop for char across text
+        sum (let ((code (char-code char)))
+              (cond ((< code #x80) 1) ((< code #x800) 2) ((< code #x10000) 3) (t 4)))))
+
 (defun utf-8-text (octets &aux (octets (coerce octets '(simple-array (unsigned-byte 8) (*)))))
   "The text OCTETS spell in UTF-8, a fresh string exactly as long: what
 SB-EXT:OCTETS-TO-STRING answers, which a malformed sequence is left to."

@@ -506,31 +506,50 @@ loaded it already. Signals what the install refuses."
                                collect (format nil "FAILED ~@[~a: ~]~a" file text)))
             (or records (not (nlk:find-cell name))))))
 
-(defun switch-cell-on (name &key commit &aux (offers (nlk:shipped-cells)))
+(defun switch-cell-on (name &key commit (seconds nlk:*cell-switch-seconds*)
+                       &aux (offers (nlk:shipped-cells)) (given (nlk:cell-switch-deadline seconds))
+                       (names '()) (failures '()) (done '()))
   "Turn the cell NAME on: every offered folder its closure names installed
-and loaded into this image now, then started. =>
-what came of it, in a sentence. Refused when COMMIT, the pin a person read,
-is not the hub's now."
+and loaded into this image now, then started, for a waiter that waits
+SECONDS for the answer. => what came of it, in a sentence. Refused when
+COMMIT, the pin a person read, is not the hub's now, and when the reads
+and the installs do not fit the deadline SECONDS leaves them."
   ;; A name the release does not ship is looked for on the hub (HUB-OFFERS-FOR).
   ;; INSTALL-CELL refuses a name on offer from neither and a folder whose
   ;; dependencies this image cannot find.
-  (unless (nlk:find-offer name offers)
-    (setf offers (append offers (hub-offers-for name commit offers))))
-  (let ((entry (nlk:find-offer name offers)))
-    (when (and commit entry (not (equal commit (nlk:offer-commit entry))))
-      (nlk::protocol-refuse :refused "the hub moved ~a from ~a~@[ to ~a~] since it was read: nothing was installed; read it again"
-                            (cell-label name) commit (nlk:offer-commit entry))))
-  (let* ((names (or (nlk:offer-closure (list name) offers)
-                    (error "no cell named ~a is shipped or on the hub" name)))
-         (failures (loop for each in names
-                         append (mapcar (lambda (line) (format nil "~a: ~a" (cell-label each) line))
-                                        (install-and-load-cell each offers)))))
-    (start-cells names)
-    (broadcast-organism "organism.cells" (json-object "names" (coerce names 'vector)))
-    (let ((record (nlk:find-cell name)))
-      (format nil "~a is on~@[, with ~{~a~^, ~}~]~:[~;; ~:*~{~a~^; ~}; the next restart loads it again~]~@[; it did not start: ~a~]"
-              (cell-label name) (mapcar #'cell-label (remove name names :test #'string=))
-              failures (and record record.refusal (first-line (princ-to-string record.refusal)))))))
+  ;;
+  ;; The reads and the installs run under one deadline, SECONDS less the
+  ;; margin the loads, the starts and the answer keep (CELL-SWITCH-DEADLINE):
+  ;; no step of them starts past it, so the answer reaches the waiter while
+  ;; it waits and no install runs on after it stopped waiting. A failure
+  ;; once the deadline has passed is said as the deadline's.
+  (nlk:with-wait-deadline (given)
+    (handler-bind ((error (lambda (condition)
+                            (when (and (nlk:wait-deadline-passed-p)
+                                       (not (typep condition 'nlk:protocol-error)))
+                              (nlk::protocol-refuse
+                               :refused "~a did not come on within ~d s~@[: ~a~]; ~:[nothing was installed~;~:*~{~a~^, ~} came on before the time ran out~]"
+                               (cell-label name) given (nlk:wait-deadline-reason condition)
+                               (mapcar #'cell-label (reverse done)))))))
+      (unless (nlk:find-offer name offers)
+        (setf offers (append offers (hub-offers-for name commit offers))))
+      (let ((entry (nlk:find-offer name offers)))
+        (when (and commit entry (not (equal commit (nlk:offer-commit entry))))
+          (nlk::protocol-refuse :refused "the hub moved ~a from ~a~@[ to ~a~] since it was read: nothing was installed; read it again"
+                                (cell-label name) commit (nlk:offer-commit entry))))
+      (setf names (or (nlk:offer-closure (list name) offers)
+                      (error "no cell named ~a is shipped or on the hub" name)))
+      (dolist (each names)
+        (setf failures (append failures
+                               (mapcar (lambda (line) (format nil "~a: ~a" (cell-label each) line))
+                                       (install-and-load-cell each offers))))
+        (push each done))))
+  (start-cells names)
+  (broadcast-organism "organism.cells" (json-object "names" (coerce names 'vector)))
+  (let ((record (nlk:find-cell name)))
+    (format nil "~a is on~@[, with ~{~a~^, ~}~]~:[~;; ~:*~{~a~^; ~}; the next restart loads it again~]~@[; it did not start: ~a~]"
+            (cell-label name) (mapcar #'cell-label (remove name names :test #'string=))
+            failures (and record record.refusal (first-line (princ-to-string record.refusal))))))
 
 (defun switch-cell-off (name)
   "Turn the cell NAME off: its folder out of the one folder, its peripheral
@@ -544,6 +563,14 @@ another folder stands on it or it is the operator's own."
   (when (nlk:find-cell name)
     (stop-cells (list name)))
   (format nil "~a is off; its code stays loaded in this organism until a restart" (cell-label name)))
+
+(defun request-wait-seconds (request &aux (seconds (and (hash-table-p request) (gethash "seconds" request))))
+  "The seconds a POST to /api/gateway/cells says its sender waits for the
+answer (seconds), a whole number above 0; *CELL-SWITCH-SECONDS* when it
+says none."
+  (cond ((null seconds) nlk:*cell-switch-seconds*)
+        ((and (integerp seconds) (plusp seconds)) seconds)
+        (t (nlk::protocol-refuse :invalid_request "seconds is a whole number above 0, not ~a" seconds))))
 
 (define-gateway-route handle-gateway-cells-http (env)
   "GET /api/gateway/cells — CELLS-JSON. POST {name, on} turns that cell
@@ -559,7 +586,8 @@ answers the listing, with what came of it as text when it switched."
        (require-non-empty (list name) "name must be a non-empty string" :required t)
        (multiple-value-bind (on switch) (json-value request :boolean "on")
          (cond ((not switch) (restart-cells name) nil)
-               (on (switch-cell-on name :commit (json-value request :string "commit")))
+               (on (switch-cell-on name :commit (json-value request :string "commit")
+                                        :seconds (request-wait-seconds request)))
                (t (switch-cell-off name))))))))
 
 (define-gateway-route handle-gateway-cells-hub-http (env)
@@ -831,16 +859,23 @@ long so far and at most -- and said again every EVERY seconds it lasts."
 (defun add-text (words &key (ask #'terminal-answer) (port (organism-port))
                             (pid (and port (organism-pid)))
                             (token (gateway-configured-operator-token)))
-  "`nodecode add nc://NAME [--yes]': the cell NAME, shipped or the hub's
-and its nodecode- prefix optional, installed and on -- by the organism on
-PORT, PID, when one serves this home. => (values ANSWER CODE STREAM)."
+  "`nodecode add nc://NAME [--yes] [--wait SECONDS]': the cell NAME, shipped
+or the hub's and its nodecode- prefix optional, installed and on -- by the
+organism on PORT, PID, when one serves this home -- within SECONDS
+(*CELL-SWITCH-SECONDS* unless said). => (values ANSWER CODE STREAM)."
   ;; The preview goes to stdout ahead of the question, which ASK puts on
   ;; stderr: a script that says --yes still reads what it installed.
   (when (intersection '("--help" "-h" "help") words :test #'string=)
     (return-from add-text
       (values (nlk:verb-help-text (nlk:find-verb "add" *launch-verbs*) :command "nodecode") 0 :output)))
   (let* ((yes (member "--yes" words :test #'string=))
-         (named (remove "--yes" words :test #'string=))
+         (at (position "--wait" words :test #'string=))
+         (given (and at (nth (1+ at) words)))
+         (wait (cond ((null at) nlk:*cell-switch-seconds*)
+                     ((and given (plusp (length given)) (every #'digit-char-p given))
+                      (parse-integer given))))
+         (named (remove "--yes" (if at (append (subseq words 0 at) (nthcdr (+ at 2) words)) words)
+                        :test #'string=))
          (word (and (= 1 (length named))
                     (not (uiop:string-prefix-p "-" (first named)))
                     (cell-label (string-right-trim "/" (if (uiop:string-prefix-p "nc://" (first named))
@@ -848,8 +883,10 @@ PORT, PID, when one serves this home. => (values ANSWER CODE STREAM)."
                                                             (first named))))))
          (shipped (nlk:shipped-cells))
          (offers shipped))
+    (unless (and wait (plusp wait))
+      (return-from add-text (values "--wait takes the seconds add waits, a whole number above 0" 2 :error)))
     (unless (plusp (length word))
-      (return-from add-text (values "add takes one cell: nodecode add nc://NAME [--yes]" 2 :error)))
+      (return-from add-text (values "add takes one cell: nodecode add nc://NAME [--yes] [--wait SECONDS]" 2 :error)))
     (flet ((named (offers) (or (nlk:find-offer word offers)
                                (nlk:find-offer (format nil "nodecode-~a" word) offers))))
       ;; the hub is read only for a name the release does not ship
@@ -885,8 +922,9 @@ PORT, PID, when one serves this home. => (values ANSWER CODE STREAM)."
                                         label))
                             1 :error))))))
           (values (cond (port
-                         ;; the organism installs it and turns it on, minutes on a slow network: a wait said as it lasts
-                         (let ((seconds 600))
+                         ;; the organism installs it and turns it on, minutes on a slow network: a wait said
+                         ;; as it lasts, which it is told of, so that it gives the work no more than that
+                         (let ((seconds wait))
                            (format nil "~:[~a was already installed; ~;~*~]~a" fresh label
                                    (json-value
                                     (handler-case
@@ -894,14 +932,21 @@ PORT, PID, when one serves this home. => (values ANSWER CODE STREAM)."
                                                               pid label)
                                           (gateway-http-session-request
                                            port :post "/api/gateway/cells"
-                                           (json-object "name" name "on" t :opt "commit" pin)
+                                           (json-object "name" name "on" t :opt "commit" pin "seconds" seconds)
                                            token :read-timeout seconds))
                                       (nlk::http-timeout ()
                                         (error "the nodecode serving this home~@[ (pid ~d)~] did not answer within ~d s; ~a may still be coming on there"
                                                pid seconds label)))
                                     :string "text"))))
                         (fresh
-                         (dolist (each fresh) (nlk:install-cell each :offers offers))
+                         ;; here, as there, the installs have the deadline the wait leaves them
+                         (let ((given (nlk:cell-switch-deadline wait)))
+                           (nlk:with-wait-deadline (given)
+                             (handler-bind ((error (lambda (condition)
+                                                     (when (nlk:wait-deadline-passed-p)
+                                                       (error "~a was not installed within ~d s~@[: ~a~]"
+                                                              label given (nlk:wait-deadline-reason condition))))))
+                               (dolist (each fresh) (nlk:install-cell each :offers offers)))))
                          (format nil "~a is installed~@[, with ~{~a~^, ~}~]; nodecode is not running, so it loads at the next launch"
                                  label brings))
                         (t (format nil "~a is already installed; it loads at the next launch" label)))

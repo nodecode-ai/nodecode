@@ -15141,8 +15141,8 @@ Zig launcher gives the same thing."
                   :detail "Providers, standing instructions, memory, skills, MCP servers, channels, cron jobs, sessions and profiles, each through the cell that owns it, keys and tokens with them. WORLD names one harness to read; naming none reads every coding-agent home on this box and merges them, newest first, with an existing fact here always winning. --source reads a home at a path instead, or a repository's skills and MCP servers (OWNER/REPO, an https URL, #REF pinning a branch, tag or commit); --only names the kinds, comma-separated; --overwrite replaces what is already here. A foreign gateway polling the same bots is stopped and disabled so they answer from here (the report names the command that gives them back); --keep-running leaves it running, and its bots land off and come on by themselves once it stops. The preview opens in the setup walk; --yes applies it without asking.")
    (nlk:make-verb "add" "install a cell from the hub, or one this release ships, and turn it on"
                   :label "add nc://NAME"
-                  :arguments "nc://NAME [--yes]"
-                  :detail "NAME is the cell's name, its nodecode- prefix optional: nc://channel-slack. Code from the hub is shown first -- its repository, the commit it is pinned at, what it brings -- and installed on a yes; --yes says it on the line, and with no terminal to ask nothing is installed without it. With the organism running it is turned on there, live in every attached shell; with none running it loads at the next launch.")
+                  :arguments "nc://NAME [--yes] [--wait SECONDS]"
+                  :detail "NAME is the cell's name, its nodecode- prefix optional: nc://channel-slack. Code from the hub is shown first -- its repository, the commit it is pinned at, what it brings -- and installed on a yes; --yes says it on the line, and with no terminal to ask nothing is installed without it. With the organism running it is turned on there, live in every attached shell; with none running it loads at the next launch. --wait is how long add waits, 600 s unless it says: the organism fits the turn-on into it, keeping up to 30 s for loading and answering, and when the rest runs out it stops and says so rather than go on after add has stopped waiting.")
    (nlk:make-verb "profile" "list, create, use, delete, export, import and install profiles"
                   :aliases '("profiles")
                   :label "profile [VERB]"
@@ -16003,9 +16003,12 @@ shell serves. => (values TEXT CODE STREAM)."
                            (unless port
                              (stop "nothing was set up: a bot needs a running organism -- `nodecode gateway on', or a `nodecode' shell -- then `nodecode gateway setup' again"))
                            (lambda (method path body)
+                             ;; a turn-on is waited on for the seconds it is told of
                              (gateway-http-session-request port method path body
                                                            (gateway-configured-operator-token)
-                                                           :read-timeout 60)))))
+                                                           :read-timeout (if (equal path "/api/gateway/cells")
+                                                                             nlk:*cell-switch-seconds*
+                                                                             60))))))
                (cells (loop for row across (json-array (funcall call :get "/api/gateway/cells" nil) "cells")
                             for name = (json-value row :string "name")
                             when (and (uiop:string-prefix-p "nodecode-channel-" name)
@@ -16040,7 +16043,8 @@ shell serves. => (values TEXT CODE STREAM)."
                (cell (format nil "nodecode-channel-~a" id)))
           (unless (json-value (cdr (assoc id cells :test #'string=)) :boolean "on")
             (format out "~&Installing ~a...~%" cell)
-            (format out "~a~%" (or (json-value (funcall call :post "/api/gateway/cells" (json-object "name" cell "on" t))
+            (format out "~a~%" (or (json-value (funcall call :post "/api/gateway/cells"
+                                                         (json-object "name" cell "on" t "seconds" nlk:*cell-switch-seconds*))
                                                :string "text")
                                    "installed")))
           (let* ((section (or (gateway-setup-section call id)

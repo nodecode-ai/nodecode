@@ -5270,6 +5270,56 @@ that reads the bytes back rather than going through the reader."
        (let ((nle::*shared-config-path* ,path))
          ,@body))))
 
+(defun credential-trace (&key flag config store hook env probe)
+  "What RESOLVE-PROVIDER-CREDENTIAL answers in one world of
+proofs/CredentialChain.lean, for a provider `proof' configured at a loopback
+address: (SOURCE KEY), or :FAIL when the chain stops. FLAG is
+NODECODE_API_KEY, CONFIG providers.proof.api_key, STORE auth.json's key, HOOK
+the key a :credential hook answers, ENV PROOF_API_KEY; NIL is absent."
+  (with-temp-shared-config ((format nil "{\"providers\": {\"proof\": {\"sdk\": \"openai-completions\", \"base_url\": \"http://127.0.0.1:9/v1\"~@[, \"api_key\": ~a~]}}}"
+                                    (and config (nlk::json-string-literal config))))
+    (with-temp-auth (auth (format nil "{\"api_keys\": {~@[\"proof\": {\"provider\": \"proof\", \"key\": ~a}~]}}"
+                                  (and store (nlk::json-string-literal store))))
+      (let ((nle::*api-key* flag)
+            (nle::*endpoint* nil)
+            (saved (uiop:getenv "PROOF_API_KEY")))
+        (when hook
+          (nle:hook :credential "credential-trace"
+                    (lambda (op next)
+                      (declare (ignore op next))
+                      (nle:make-credential hook :hook))))
+        (if env (sb-posix:setenv "PROOF_API_KEY" env 1) (sb-posix:unsetenv "PROOF_API_KEY"))
+        (unwind-protect
+             (handler-case
+                 (let ((credential (nle::resolve-provider-credential "proof" :auth-path auth :probe probe)))
+                   (list (nle::credential-source credential) (nle::credential-key credential)))
+               (nle::credential-error () :fail))
+          (when hook
+            (nle:unhook :credential "credential-trace"))
+          (if saved (sb-posix:setenv "PROOF_API_KEY" saved 1) (sb-posix:unsetenv "PROOF_API_KEY")))))))
+
+(deftest credential-chain-holds-to-credentialchain-lean-traces ()
+  ;; proofs/CredentialChain.lean proves the chain's one rule over every
+  ;; world -- each tier reads its value trimmed, a blank one is absent, and
+  ;; no key of the chain's own is blank or padded -- and these are its
+  ;; decided traces, by name, on the real chain. Before the rule, auth.json's
+  ;; key and NODECODE_API_KEY rode as they stood: "   " went out as the key.
+  (flet ((is-trace (expected name &rest world)
+           (is (equal expected (apply #'credential-trace world)) name)))
+    (is-trace '(:env "sk-env") "trace_blank_store" :store "   " :env "sk-env")
+    (is-trace '(:api-key "sk-auth") "trace_padded_store" :store "  sk-auth  ")
+    (is-trace '(:env "sk-env") "trace_blank_flag" :flag "  " :env "sk-env")
+    (is-trace '(:config "sk-flag") "trace_padded_flag" :flag " sk-flag ")
+    (is-trace '(:config "sk-config") "trace_blank_flag_config" :flag (string #\Tab) :config "sk-config")
+    (is-trace '(:api-key "sk-auth") "trace_store_over_env" :store "sk-auth" :env "sk-env")
+    (is-trace '(:hook "sk-cell") "trace_blank_store_hook" :store (string #\Newline) :hook "sk-cell")
+    (is-trace '(:public "public") "trace_blank_env" :env (format nil " ~c" #\Tab))
+    (is-trace '(:config "sk-cmd") "trace_command" :flag " !printf ' sk-cmd\\n' ")
+    (is-trace :fail "trace_empty_command" :flag "!  ")
+    (is-trace :fail "trace_silent_command" :flag "!printf ' \\n'")
+    (is-trace :fail "trace_failed_command" :flag "!false")
+    (is-trace '(:config "!print-key") "trace_probe" :flag "!print-key" :probe t)))
+
 (deftest an-sdk-family-env-key-rides-only-to-its-vendors-own-endpoint ()
   ;; OPENAI_API_KEY is OpenAI's, ANTHROPIC_API_KEY Anthropic's: a keyless
   ;; provider of their family -- the build's OpenCode Zen lane, Nodecode's own

@@ -263,7 +263,7 @@ OCTETS TRUNCATED-P); past DEADLINE, an internal-real-time, it signals."
 that is an error too, so a caller's handler for either takes it."))
 
 (defun http (method url &key headers content (timeout 30) (connect-timeout (min 10 timeout))
-                              max-bytes binary stream pool proxy)
+                              max-bytes binary stream pool proxy &aux clipped)
   "One HTTP exchange that answers every status as a value. => (values BODY
 STATUS HEADERS TRUNCATED-P). TIMEOUT seconds bound the whole exchange on a
 wall clock -- the connect, the TLS handshake, the headers and, unless
@@ -284,9 +284,14 @@ STREAM, the body; past them it signals HTTP-TIMEOUT."
   ;; every fd wait feels: dexador's :read-timeout is SO_RCVTIMEO, which a TLS
   ;; stream on SBCL never feels, so without it a peer that stalls mid-handshake
   ;; or mid-headers held a hub read for minutes.
+  ;; Under a deadline the exchange is given what is left of it (WAIT-SECONDS),
+  ;; and running out of that spends it (STEP-RAN-OUT).
+  (multiple-value-setq (timeout clipped) (wait-seconds timeout))
+  (setf connect-timeout (min connect-timeout timeout))
   (handler-bind ((sb-sys:deadline-timeout
                    (lambda (condition)
                      (unless (typep condition 'http-timeout)
+                       (step-ran-out clipped)
                        (error 'http-timeout :host (or (ignore-errors (quri:uri-host (quri:uri url))) url)
                                             :limit timeout)))))
     (sb-sys:with-deadline (:seconds timeout)

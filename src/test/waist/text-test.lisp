@@ -56,6 +56,14 @@
                  (handler-case (nlk::utf-8-text octets) (error () :refused)))
           (format nil "~s" codes)))))
 
+(deftest utf-8-size-counts-the-bytes-utf-8-octets-spells ()
+  ;; The rules files' budget counts this (proofs/ContextBudget.lean): one
+  ;; byte to four a character, never the octets spelled out.
+  (dolist (text (list "" "plain" (format nil "a~%b") "é — ü" "日本語" (string (code-char #x1F600))
+                      (coerce (list (code-char #xFEFF) #\a) 'string) (string (code-char #x10FFFF))
+                      (coerce "base" 'base-string)))
+    (is (= (length (nlk:utf-8-octets text)) (nlk:utf-8-size text)) (format nil "~s" text))))
+
 (deftest read-text-reads-utf-8-within-a-limit (with-temp-workspace (dir))
   (let ((path (write-temp-file (merge-pathnames "utf8.txt" dir) "héllo"))
         (broken (merge-pathnames "broken.txt" dir)))

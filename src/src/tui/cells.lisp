@@ -171,8 +171,9 @@ over the cell, in the tone of how it now stands, or why it was refused."
               (lambda ()
                 ;; a hub install clones before it loads
                 (handler-case (gateway-model-http-call model :post "/api/gateway/cells"
-                                                       (json-object "name" name "on" on :opt "commit" commit)
-                                                       :read-timeout 300)
+                                                       (json-object "name" name "on" on :opt "commit" commit
+                                                                    "seconds" nlk:*cell-switch-seconds*)
+                                                       :read-timeout nlk:*cell-switch-seconds*)
                   (gateway-http-error (refusal) (list :refused (gateway-http-error-detail refusal)))))
               (lambda (model answer)
                 (declare (ignore model))
