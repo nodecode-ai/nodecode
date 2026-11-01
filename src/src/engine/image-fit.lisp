@@ -9,12 +9,13 @@
 ;;;; smaller, so a photo goes as a JPEG and a screenshot as a PNG; when
 ;;;; neither fits, JPEG at lower qualities, then a quarter smaller a side. An
 ;;;; image within both goes as its own bytes. PNG is read and written here,
-;;;; JPEG through cl-jpeg; a GIF, a WebP or a progressive JPEG goes through
-;;;; whichever transcoder the box has (nlt:*PNG-TRANSCODERS*) and then
-;;;; through the PNG reader, and with none installed it goes as itself when
-;;;; it is within what a provider takes whole. No codec is a program the box
-;;;; must have: PNG and baseline JPEG, what screenshots and cameras write,
-;;;; fit on every platform the binary runs on.
+;;;; JPEG through cl-jpeg, WebP in webp.lisp; a GIF or a progressive JPEG
+;;;; goes through whichever transcoder the box has (nlt:*PNG-TRANSCODERS*)
+;;;; and then through the PNG reader, and with none installed it goes as
+;;;; itself when it is within what a provider takes whole. No codec is a
+;;;; program the box must have: PNG, baseline JPEG and WebP, what
+;;;; screenshots, cameras and browsers write, fit on every platform the
+;;;; binary runs on.
 
 (in-package #:nodecode.evolved)
 
@@ -521,7 +522,8 @@ of each times its next weight, the weights of each summing to 1."
 
 ;;; --- decoding, whatever the format ---------------------------------------------
 
-(defparameter *image-decoders* '(("image/png" . png-pixels) ("image/jpeg" . jpeg-pixels))
+(defparameter *image-decoders* '(("image/png" . png-pixels) ("image/jpeg" . jpeg-pixels)
+                                 ("image/webp" . webp-pixels))
   "Media type -> the function that decodes such bytes to PIXELS here, as they
 are stored, signalling IMAGE-UNFIT on bytes it cannot read. A type with no
 entry, or bytes its entry refuses, goes through a transcoder.")

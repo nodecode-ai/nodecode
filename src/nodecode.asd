@@ -255,6 +255,9 @@ of stacking."
      ;; brought within what a provider takes -- decoded, shrunk and
      ;; re-encoded here.
      (:file "engine/image-fit")
+     ;; webp follows image-fit: it decodes to the PIXELS image-fit shrinks,
+     ;; named in *IMAGE-DECODERS* there for image/webp.
+     (:file "engine/webp")
      (:file "engine/turn")
      ;; shell precedes exec: the grammar of what (sh ...) runs — a command
      ;; string as its simple commands, each with words, redirects and the
@@ -616,6 +619,8 @@ of stacking."
      ;; image-fit-test follows exec-test: it shows LOOK a file the way
      ;; exec-test's fixtures do.
      (:file "engine/image-fit-test")
+     ;; webp-test follows image-fit-test: it shrinks a WebP through FIT-IMAGE.
+     (:file "engine/webp-test")
      ;; background-steer-test follows exec-test: it drives the drained
      ;; registry beside it, turn-test's wire helpers and the provider stub.
      (:file "engine/background-steer-test")
