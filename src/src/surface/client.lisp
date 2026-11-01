@@ -1783,34 +1783,7 @@ thread reads it and clears this place.")
             ;; is coming to flush it.
             (if (live-chrome-animating-p model)
                 (setf model.transcript-dirty t)
-                (render-state model)))))
-         ((equal frame.session-id model.preview-session-id)
-          ;; The followed session's own stream: into the preview lane,
-          ;; never the live state or its watermarks.
-          (let ((preview model.transcript-preview))
-            (when (and preview (equal (car preview) frame.session-id))
-              (cond
-                ;; The live reducer, whose verdict feeds the bar under the dialog.
-                ((member kind '("session_stream_event" "item_delta") :test #'string=)
-                 (multiple-value-bind (state verdict)
-                     (apply-gateway-event (cdr preview) payload)
-                   (setf (cdr preview) state)
-                   (let ((verb (getf verdict :activity)))
-                     (when (or verb (getf verdict :lifecycle))
-                       (setf model.preview-activity
-                             (and verb (list verb (getf verdict :kind)
-                                             (iso-8601-ms (nlk::iso-now)))))))
-                   ;; A found-block pin outranks the live follow: the
-                   ;; operator asked to read that block, and a stream frame
-                   ;; moves the session, never the promise.
-                   (unless (transcript-pin-p model (car preview))
-                     (pin-transcript-bottom model))
-                   (if (live-chrome-animating-p model)
-                       (setf model.transcript-dirty t)
-                       (render-state model))))
-                ((string= kind "session_resync_required")
-                 (setf model.transcript-preview nil)
-                 (sessions-preview-arm model (car preview)))))))))
+                (render-state model)))))))
      (when (gw-projection-msg-release msg)
        (funcall (gw-projection-msg-release msg))))
     ((typep msg 'gw-connection-msg)
@@ -5058,12 +5031,6 @@ GATEWAY-HTTP-SESSION-REQUEST takes them."
 ;;; MODEL its caller already holds and rides GATEWAY-MODEL-HTTP-CALL, so the
 ;;; port/token pair is named once, in that function, and never plumbed by
 ;;; hand at a call site.
-
-(defun gateway-sentence (model path body)
-  "POST BODY, an object, to PATH for MODEL => the sentence the organism
-answered, or why it refused."
-  (handler-case (answer-text (gateway-model-http-call model :post path body))
-    (gateway-http-error (refusal) (gateway-http-error-detail refusal))))
 
 (defun session-control-call (model method op &key body (session-id model.session-id))
   "One control call under a session's path: METHOD on
