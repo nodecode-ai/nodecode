@@ -3920,7 +3920,11 @@ recovery closes those (RECOVER-INTERRUPTED-TURNS)."
       ;; The model reads the words; the card, who stopped the call and what
       ;; it had written by then (CALL-STOP-DOCUMENT).
       (ignore-errors
-       (nlk:record-tool-result turn run.call-id run.name "interrupted by user"
+       (nlk:record-tool-result turn run.call-id run.name
+                               ;; under what its shell had written by then,
+                               ;; as a terminal shows it above the stop
+                               (format nil "~@[~a~&~]interrupted by user"
+                                       (call-stop-shell-tail run.call-id))
                                :metadata (when-let (stop (call-stop-document
                                                           turn run.call-id run.started))
                                            (json-object "stopped" stop))))

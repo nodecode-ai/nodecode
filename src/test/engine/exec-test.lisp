@@ -839,9 +839,53 @@ completed. BODY runs with SID bound."
                   ((:integer "stopped" "after_ms") is "after how long")
                   ((:string "stopped" "reason") null "the operator's stop needs no reason"))))))))))
 
+(deftest a-cancelled-turns-call-tells-the-model-what-its-shell-wrote (with-exec-registry (registry))
+  ;; The cancel's words sit under the lines the call's shell had written by
+  ;; then, as a terminal shows them above the stop, so the next turn's model
+  ;; can say where the command stood.
+  (with-session-store ("cancel-wrote")
+    (let* ((turn (nlk:admit-turn "cancel-wrote" "cw-cmd" "run it"))
+           (turn-id turn.turn-id))
+      (with-provider-stub (nil (tool-call-round "c1" "eval" "yield_time_ms" 60000
+                                               "form" "(sh \"echo half-way; sleep 47.2\")"))
+        (let ((worker (nlk:spawn "cancel-wrote-worker"
+                        (nlk:with-handlers ((nlk:turn-cancelled-condition () :cancelled))
+                          (nle:run "run it"
+                                   :session (nle:intern-session "cancel-wrote")
+                                   :command-id "cw-cmd" :admitted-turn turn)))))
+          (flet ((spawned () (first registry.processes)))
+            (await (:tries 250 :rest 0.02)
+              (and (nlk::cancellation-signal-waiting-threads (nlk::turn-signal turn))
+                   (spawned) (nle::exec-process-preview (spawned))
+                   (search "half-way" (nle::octets-to-text (nle::exec-process-preview (spawned))))))
+            (nlk:request-cancel-turn "cancel-wrote" turn-id :operator)
+            (is (eq :cancelled (bt2:join-thread worker)))
+            (let ((result (first (session-events "cancel-wrote" :type 'nlk:tool-result-event))))
+              (is (equal (format nil "half-way~%interrupted by user") (nlk:tool-result-event-result result)) "the shell's lines, then the words"))))))))
+
+(deftest an-interrupted-sh-answers-what-its-child-wrote (with-exec-registry (registry))
+  ;; An agent stopped a backgrounded `nodecode add' after four hours and read
+  ;; back only "; compilation unit aborted ; caught 1 fatal ERROR condition":
+  ;; what the child had written lived on its card alone (2026-11-01). The
+  ;; stop's read carries those lines, and not the compiler's report of it.
+  (nle::background-capable-eval
+   "(sh \"sleep 0.2; echo stuck-at-step; echo why-line >&2; sleep 60\")" 50)
+  (let ((process (first registry.processes)))
+    (is-eventually (and process (nle::exec-process-preview process)
+                        (search "why-line" (nle::octets-to-text (nle::exec-process-preview process))))
+                   "the child wrote both lines" :seconds 6)
+    ;; the look reads them first, as an agent's await does; the stop still
+    ;; answers where the command stood
+    (is (search "why-line" (or (getf (nle::eval-status (nle::exec-process-id process)) :shell-output) "")) "a look reads the lines")
+    (let ((plist (nle::eval-interrupt (nle::exec-process-id process))))
+      (is (eql 130 (getf plist :exit-code)) "a stop")
+      (is (equal (format nil "stuck-at-step~%why-line~%") (getf plist :shell-output)) "what the child wrote, both streams in order")
+      (is (not (search "compilation unit" (getf plist :output))) "and not the compiler's report of the abort"))))
+
 (deftest an-operators-stop-keeps-what-the-call-wrote (with-exec-registry (registry))
   ;; The stop rides the result as its own end: who stopped it, after how
-  ;; long, and what it had written; the model's text is left as it was.
+  ;; long, and what it had written; the model reads what it had written too,
+  ;; above the stop, and never the compiler's report of the abort.
   (with-session-store ("stop-x")
     (let ((turn (nlk:admit-turn "stop-x" "sx-cmd" "run it")))
       (with-stub-provider ((tool-call-round "c1" "eval" "yield_time_ms" 60000
@@ -859,7 +903,10 @@ completed. BODY runs with SID bound."
             (bt2:join-thread worker)
             (let ((result (first (session-events "stop-x" :type 'nlk:tool-result-event))))
               (is (not (nlk:tool-result-event-failed result)) "a stop is no failure")
-              (is (search "(eval-interrupt)" (nlk:tool-result-event-result result)) "the model's text as it was")
+              (let ((text (nlk:tool-result-event-result result)))
+                (is (search "(eval-interrupt)" text) "the model reads the stop")
+                (is (search "step 2" text) "and what the call had written before it")
+                (is (not (search "compilation unit" text)) "never the compiler's report of the abort"))
               (let ((stop (nlk:json-value (nlk:tool-result-event-metadata result) :object "stopped"))
                     (tail (nlk:json-value (nlk:tool-result-event-metadata result) :string "stopped" "tail")))
                 (is-shape stop ("by" "operator") ("after_ms" is "after how long"))
