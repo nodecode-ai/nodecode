@@ -777,6 +777,7 @@ generations are MANIFESTS, oldest first, ALL their parts, BEFORE the manifest
 sealed before them, BUILTIN the names of the cells this binary ships."
   (labels ((parts (verb) (remove verb all :key #'first :test-not #'eq))
            (origin-words (origin) (or (cdr (assoc origin +origin-words+ :test #'equal)) origin))
+           (builtin-words (origin) (if (equal "release" origin) "a release" "your checkout"))
            (also (verbs)
              ;; what else the change carried, two lines at most
              (let ((notes (distinct
@@ -788,9 +789,7 @@ sealed before them, BUILTIN the names of the cells this binary ships."
                                                                     (short-version (second detail))))
                                                    (:builtin (format nil "also: the ~d built-in cells moved with ~a"
                                                                      (first detail)
-                                                                     (if (equal "release" (second detail))
-                                                                         "a release"
-                                                                         "your checkout")))
+                                                                     (builtin-words (second detail))))
                                                    (:added (format nil "also: installed ~a" (first detail)))
                                                    (:removed (format nil "also: removed ~a" (first detail)))
                                                    (:moved (format nil "also: ~a changed" (listed (first detail) 2)))))
@@ -844,7 +843,7 @@ sealed before them, BUILTIN the names of the cells this binary ships."
                (destructuring-bind (origin from) (subseq (first builtins) 2 4)
                  (values (format nil "Built-in cells ~a → ~a" from (fifth (car (last builtins))))
                          (format nil "~d cells · ~a" (second (car (last builtins)))
-                                 (if (equal "release" origin) "a release" "your checkout"))
+                                 (builtin-words origin))
                          (also '(:added :removed :moved)))))))
         ((equal kind "edits")
          (let* ((names (distinct (mapcar #'second (parts :edits))))

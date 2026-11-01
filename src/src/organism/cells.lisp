@@ -1742,8 +1742,7 @@ LOAD-CELL-FOLDERS started it -- of FOLDER into CELL, one file at a time."
   "Freeze the image (every live system immutable), register FOLDERS with ASDF
 and load them dependencies first, each judged from the snapshot the one before
 left (BEFORE for the first) against OWNERS. => the records, in load order."
-  (dolist (loaded (asdf:already-loaded-systems))
-    (asdf:register-immutable-system loaded))
+  (mapc #'asdf:register-immutable-system (asdf:already-loaded-systems))
   (note-image-systems)
   ;; ASDF's output configuration is process state a dump hook clears, so it
   ;; is set at every load, not once at boot.
