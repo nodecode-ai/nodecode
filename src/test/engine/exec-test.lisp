@@ -1005,16 +1005,17 @@ completed. BODY runs with SID bound."
           31 0 5 0 1 255 137 153 61 29 0 0 0 0 73 69 78 68 174 66 96 130)
   "A 1x1 red PNG, 70 bytes.")
 
-(defmacro with-look-image ((path tag &key turn-id call) &body body)
-  "Run BODY with PATH a one-pixel PNG file named after TAG, deleted on unwind
-with the images staged under TURN-ID, when given; CALL, when given, is the
-executing tool call of a current durable turn carrying that id."
+(defmacro with-look-image ((path tag &key turn-id call (octets '*one-pixel-png*)) &body body)
+  "Run BODY with PATH a file of OCTETS, a one-pixel PNG unless given, named
+after TAG and deleted on unwind with the images staged under TURN-ID, when
+given; CALL, when given, is the executing tool call of a current durable
+turn carrying that id."
   `(let ((,path (namestring (temp-path ,tag "png")))
          ,@(when call `((nle::*executing-tool-call-id* ,call)
                         (nle::*current-durable-turn* (detached-turn "look-session" ,turn-id)))))
      (nlk:with-cleanup (,@(when turn-id `((nle::forget-turn-images ,turn-id)))
                         (ignore-errors (delete-file ,path)))
-       (alexandria:write-byte-vector-into-file *one-pixel-png* ,path)
+       (alexandria:write-byte-vector-into-file ,octets ,path)
        ,@body)))
 
 (defun image-message-p (message)

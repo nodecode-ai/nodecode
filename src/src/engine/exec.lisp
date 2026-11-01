@@ -2279,11 +2279,15 @@ newline says so, since a reader that counts newlines finds one line fewer."
 ;;; Without the verb, a model asked to view an image would say it has no
 ;;; way to see it.
 
-;;; Over it the verb refuses and says so, rather than staging bytes every
-;;; remaining round of the turn would then fail on.
+;;; What the model receives is FIT-IMAGE's (image-fit.lisp): an image past
+;;; 2000 pixels a side or a provider's bytes is shrunk and re-encoded to fit,
+;;; on whichever path it came -- a LOOK, a paste, a room's attachment -- since
+;;; the turn stages nothing unfitted (turn.lisp ATTACH-TURN-IMAGES). What is
+;;; left of a ceiling here is how much of a picture is taken in whole.
 (defparameter *image-max-bytes* (* 5 1024 1024)
-  "Ceiling on one image LOOK attaches: Anthropic's per-image limit, the
-tightest of the lanes'.")
+  "Ceiling on one picture taken in whole: a room's attachment, a paste, a
+fetched picture, and a file an answer names. LOOK reads a file up to
+*IMAGE-READ-MAX-BYTES*; what a provider receives is FIT-IMAGE's.")
 
 ;;; What the operator sees of a LOOK is the other half of the verb. The
 ;;; provider gets the bytes; the transcript gets a durable image fact naming
@@ -2340,14 +2344,17 @@ bytes — and answer a one-line receipt."
   ;; ends while the receipt stays, so look again with another call. A relative
   ;; PATH is against the session's directory. The operator sees it too: the
   ;; transcript draws the file under the call, as the image itself where the
-  ;; terminal speaks the kitty graphics protocol. Refuses a file that is not
-  ;; an image, one over *IMAGE-MAX-BYTES*, a model models.dev says reads text
+  ;; terminal speaks the kitty graphics protocol. An image past 2000 pixels a
+  ;; side or a provider's bytes reaches you shrunk (FIT-IMAGE), and the receipt
+  ;; says to what, so crop a part with sh first when its detail matters.
+  ;; Refuses a file that is not an image, one over *IMAGE-READ-MAX-BYTES* or
+  ;; that cannot be shrunk to fit, a model models.dev says reads text
   ;; only, and any image once this turn's provider has refused one: a model
   ;; the catalog does not know is tried, and a request it refuses is re-sent
   ;; without the image, a note standing where the image was (turn.lisp
   ;; CALL-PROVIDER).
   (receipt-call "look" path)
-  (bind (((octets resolved) (image-file-octets path))
+  (bind (((octets resolved) (image-file-octets path :ceiling *image-read-max-bytes*))
          (media-type (image-media-type octets)))
     (when (null (model-reads-images-p *model* *provider*))
       (error "~a reads text only, by models.dev; (select-model ...) one whose input includes image, then look again"
@@ -2357,31 +2364,42 @@ bytes — and answer a one-line receipt."
       (when (turn-images-withheld-p (nlk:durable-turn-turn-id turn))
         (error "~a ~a did not accept two requests that carried this turn's images and would not take ~a either; work from the file another way, or (select-model ...) one whose input includes image"
                *provider* *model* (namestring resolved)))
-      (attach-turn-images (nlk:durable-turn-turn-id turn)
-                          (list (cons media-type
-                                      (cl-base64:usb8-array-to-base64-string
-                                       octets)))
-                          :anchor (json-value *executing-tool-call-id* :text)))
-    (let ((fact (display-fact "image" (image-fact resolved octets))))
-      (format nil "[image: ~a, ~a~@[~a~], ~:d bytes; shown to you from the next round until this turn ends]"
-              (namestring resolved) media-type
-              (when-let (width (gethash "width" fact))
-                (format nil " ~dx~d" width (gethash "height" fact)))
-              (length octets)))))
+      (bind (((sent sent-type sent-width sent-height)
+              (handler-case (fit-image octets)
+                (image-unfit (e)
+                  (error "~a cannot be shown: ~a; shrink or convert it first"
+                         (namestring resolved) (image-unfit-reason e))))))
+        (attach-turn-images (nlk:durable-turn-turn-id turn)
+                            (list (cons sent-type (cl-base64:usb8-array-to-base64-string sent)))
+                            :anchor (json-value *executing-tool-call-id* :text))
+        (let ((fact (display-fact "image" (image-fact resolved octets))))
+          (format nil "[image: ~a, ~a~@[~a~], ~:d bytes~@[~a~]; shown to you from the next round until this turn ends]"
+                  (namestring resolved) media-type
+                  (when-let (width (gethash "width" fact))
+                    (format nil " ~dx~d" width (gethash "height" fact)))
+                  (length octets)
+                  (unless (eq sent octets)
+                    (format nil ", sent shrunk to ~a ~dx~d, ~:d bytes"
+                            sent-type sent-width sent-height (length sent)))))))))
 
-(defun image-file-octets (path)
+(defun image-file-octets (path &key (ceiling *image-max-bytes*))
   "The bytes of the image file at PATH, resolved as LOOK resolves it, once
-they open an image under the ceiling. => (values OCTETS RESOLVED)."
-  (let* ((resolved (eval-snippet-path path))
-         (octets (handler-case (alexandria:read-file-into-byte-vector resolved)
-                   (error (e) (error "cannot read ~a: ~a"
-                                     (namestring resolved) e)))))
+they open an image of no more than CEILING bytes. => (values OCTETS RESOLVED)."
+  (let ((resolved (eval-snippet-path path)) (octets nil) (size 0))
+    (handler-case
+        (with-open-file (in resolved :element-type '(unsigned-byte 8))
+          ;; Past CEILING only the head is read: enough to say what the file is.
+          (setf size (file-length in)
+                octets (make-array (if (> size ceiling) (min size 16) size)
+                                   :element-type '(unsigned-byte 8)))
+          (read-sequence octets in))
+      (error (e) (error "cannot read ~a: ~a" (namestring resolved) e)))
     (unless (image-media-type octets)
       (error "~a is not an image this verb can show: its bytes open no PNG, JPEG, GIF or WebP"
              (namestring resolved)))
-    (when (> (length octets) *image-max-bytes*)
+    (when (> size ceiling)
       (error "~a is ~:d bytes, over the ~:d-byte ceiling one image may take; shrink it first"
-             (namestring resolved) (length octets) *image-max-bytes*))
+             (namestring resolved) size ceiling))
     (values octets resolved)))
 
 (defun image-fact (resolved octets &key target &aux (media-type (image-media-type octets)))

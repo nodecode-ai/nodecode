@@ -3994,13 +3994,27 @@ first, each group's images oldest first."
       (loop for (anchor . images) in (gethash turn-id *turn-images*)
             collect (cons anchor (copy-list images))))))
 
+(defun fitted-attachment (image)
+  "IMAGE, a (MEDIA-TYPE . BASE64) attachment, as a provider takes it
+(FIT-IMAGE): IMAGE itself when it already fits, or when nothing here can
+shrink it -- the provider's own answer then decides, as for any image it
+refuses (CALL-PROVIDER)."
+  (with-handlers ((error () image))
+    (let* ((octets (cl-base64:base64-string-to-usb8-array (cdr image)))
+           (fitted (multiple-value-list (fit-image octets))))
+      (if (eq (first fitted) octets)
+          image
+          (cons (second fitted) (cl-base64:usb8-array-to-base64-string (first fitted)))))))
+
 (defun attach-turn-images (turn-id images &key anchor)
   "Append IMAGES to TURN-ID's attachments under ANCHOR: NIL, the default,
 for an input's own attachments — a steer that lands mid-turn adds its own
 images to the turn it steered, and the next round carries all of them —
 or the id of the tool call attaching them, so they land behind that call's
-result rather than on the prompt."
+result rather than on the prompt. Each is fitted first (FITTED-ATTACHMENT):
+a paste, a room's attachment and a LOOK reach the model by this one door."
   (when (and turn-id images)
+    (setf images (mapcar #'fitted-attachment images))
     (bt2:with-lock-held (*turn-images-lock*)
       (let* ((groups (gethash turn-id *turn-images*))
              (group (assoc anchor groups :test #'equal)))
