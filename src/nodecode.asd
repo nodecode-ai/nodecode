@@ -240,6 +240,10 @@ of stacking."
      (:file "engine/providers/anthropic")
      (:file "engine/providers/google")
      (:file "engine/providers/openai-responses")
+     ;; loop-guard follows the lanes and precedes turn: it reads the stream
+     ;; parts every lane emits and signals the failure provider declares, and
+     ;; turn's provider call watches each attempt through it.
+     (:file "engine/loop-guard")
      ;; meter precedes context and turn: the running turn as a value -- what
      ;; it spent, the budget it runs under, the spend line a tool result
      ;; carries -- is the record RUN binds and the loop folds, the line the
@@ -530,6 +534,9 @@ of stacking."
      (:file "engine/context-test")
      ;; tool-call-id-test follows turn-test: it drives turn-test's canned SSE helpers.
      (:file "engine/tool-call-id-test")
+     ;; loop-guard-test follows turn-test: its round gates drive turn-test's
+     ;; canned SSE helpers.
+     (:file "engine/loop-guard-test")
      (:file "engine/working-context-proof")
      (:file "engine/working-context-test")
      ;; activity-test follows turn-test: its receipt proof drives the same

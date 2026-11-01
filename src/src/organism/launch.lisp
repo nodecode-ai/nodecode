@@ -208,8 +208,8 @@ why when this image has no organism to spawn."
 ;;; fallback.
 (define-startup-parameter *warm-cache-directory*
   (and (organism-binary-p) #+win32 nil #-win32 (cache-path "nodecode/warm/"))
-  "Where launch images live: <stamp>/<key>/nodecode per published
-image, beside its markers.")
+  "Where launch images live: <folder>/<stamp>/<key>/nodecode per published
+image, beside its markers, in a part of its own per cell folder.")
 
 ;;; --- the key ---------------------------------------------------------------
 
@@ -308,9 +308,37 @@ and the names of the links that resolve to nothing."
 
 ;;; --- the cache layout ------------------------------------------------------
 
+;;; Every home on a machine shares the one cache, and an image answers one
+;;; folder only, so each cell folder keeps a part of its own: its images, its
+;;; pointer and its markers are never another folder's. With one shared
+;;; newest-two prune, six gateways on one box (2026-11-01) deleted each
+;;; other's images, and each rebuilt its own every minute, for ever.
+
+(defun folder-cache-name (directory &aux (hash #xcbf29ce484222325))
+  "The name of DIRECTORY's part of the cache: FNV-1a over its namestring, 16
+hex digits -- the same in every process and every build, and no digest library
+woken on a launch's fast path."
+  (declare (type (unsigned-byte 64) hash))
+  (loop for octet across (sb-ext:string-to-octets (if directory (namestring directory) "")
+                                                  :external-format :utf-8)
+        do (setf hash (ldb (byte 64 0) (* (logxor hash octet) #x100000001b3))))
+  (format nil "~(~16,'0x~)" hash))
+
+(defun warm-folder-directory ()
+  "This cell folder's part of the cache: every build's images of it, its
+pointers and its markers, apart from every other folder's."
+  (merge-pathnames (format nil "~a/" (folder-cache-name *cells-directory*))
+                   *warm-cache-directory*))
+
+(defun warm-owner-path (&optional (part (warm-folder-directory)))
+  "The file naming the folder PART belongs to, one line: what a prune asks
+before it deletes a part that is not its own."
+  (merge-pathnames "folder" part))
+
 (defun warm-stamp-directory ()
-  "Everything this build caches — images, markers, receipts, its pointer."
-  (merge-pathnames (format nil "~a/" *image-stamp*) *warm-cache-directory*))
+  "Everything this build caches of this folder — images, markers, receipts,
+its pointer."
+  (merge-pathnames (format nil "~a/" *image-stamp*) (warm-folder-directory)))
 
 (defun warm-key-directory (key)
   (merge-pathnames (format nil "~a/" key) (warm-stamp-directory)))
@@ -894,29 +922,67 @@ if this one dies before it serves."
 
 ;;; --- the builder: two verbs, files between them ----------------------------
 
-(defun prune-warm-cache (&aux (running (running-executables)))
-  "Keep the newest two published images across every stamp — this machine
-really runs two organism binaries sharing one cache — and every image a live
-process runs, and delete the rest of the key directories whole."
+(defparameter *warm-abandoned-age* (* 24 3600)
+  "Seconds a part of the cache no folder owns sits still before a prune
+deletes it: a part being set up, or an older build at work in the layout
+before parts, has moved within it.")
+
+(defun newest-write-under (directory)
+  "The latest write date of DIRECTORY and of every file and directory under it."
+  (let ((newest (or (ignore-errors (file-write-date directory)) 0)))
+    (uiop:collect-sub*directories
+     directory t t
+     (lambda (sub)
+       (dolist (path (cons sub (ignore-errors (uiop:directory-files sub))))
+         (setf newest (max newest (or (ignore-errors (file-write-date path)) 0))))))
+    newest))
+
+(defun abandoned-warm-part-p (part running)
+  "Whether nobody comes back for PART, a part of the cache: the folder its
+owner file names is gone -- or it names none, as the stamps the layout before
+parts left at the top -- no live process runs an image in it, and nothing in
+it has moved for *WARM-ABANDONED-AGE*."
+  (let ((owner (ignore-errors (uiop:read-file-line (warm-owner-path part)))))
+    (and (not (and (plusp (length owner)) (probe-file owner)))
+         (notany (lambda (exe) (uiop:string-prefix-p (namestring part) exe)) running)
+         (< (newest-write-under part) (- (get-universal-time) *warm-abandoned-age*)))))
+
+(defun prune-warm-cache (&aux (running (running-executables))
+                              (own (folder-cache-name *cells-directory*))
+                              (root (namestring (or (ignore-errors (truename *warm-cache-directory*))
+                                                    *warm-cache-directory*))))
+  "Keep this folder's newest two published images across every stamp — one
+folder runs under two organism binaries at most, a release and a developer
+build — and every image a live process runs, and delete the rest of its key
+directories whole. Then delete every other part of the cache nobody comes
+back for (ABANDONED-WARM-PART-P)."
   ;; Without this, an image deleted under its process would strand it: the
   ;; process would serve on, but every fresh child it execs from that file
   ;; would fail.
   ;; The kernel's list is the authority, not a receipt the image writes, so
   ;; an organism of any build is kept, the one already running included.
-  (let* ((images (sort (directory (merge-pathnames "*/*/nodecode"
-                                                   *warm-cache-directory*))
-                       #'> :key (lambda (path)
-                                  (or (ignore-errors (file-write-date path)) 0))))
-         (stale (remove-if (lambda (image)
-                             (member (namestring image) running :test #'string=))
-                           (nthcdr 2 images))))
-    (dolist (image stale)
-      (ignore-errors
-       (uiop:delete-directory-tree
-        (uiop:pathname-directory-pathname image)
-        :validate (lambda (path)
-                    (uiop:string-prefix-p (namestring *warm-cache-directory*)
-                                          (namestring path))))))))
+  ;; DIRECTORY answers truenames, as the kernel's list does, so a cache
+  ;; reached through a link is checked against where it really lies.
+  (flet ((delete-part (directory)
+           (ignore-errors
+            (uiop:delete-directory-tree
+             directory
+             :validate (lambda (path) (uiop:string-prefix-p root (namestring path)))))))
+    (let* ((images (sort (directory (merge-pathnames "*/*/nodecode" (warm-folder-directory)))
+                         #'> :key (lambda (path)
+                                    (or (ignore-errors (file-write-date path)) 0))))
+           (stale (remove-if (lambda (image)
+                               (member (namestring image) running :test #'string=))
+                             (nthcdr 2 images))))
+      (dolist (image stale)
+        (delete-part (uiop:pathname-directory-pathname image))))
+    ;; Another folder's part is that folder's own to prune; it goes here only
+    ;; once nobody comes back for it -- a profile deleted, or a stamp of the
+    ;; layout before parts that nothing runs any more.
+    (dolist (part (ignore-errors (directory (merge-pathnames "*/" *warm-cache-directory*))))
+      (unless (equal own (car (last (pathname-directory part))))
+        (when (abandoned-warm-part-p part running)
+          (delete-part part))))))
 
 (defun build-warm-image (key &aux (directory (warm-key-directory key))
                                   (tmp (merge-pathnames (format nil "nodecode.tmp-~d"
@@ -960,6 +1026,10 @@ say so on stdout — the builder's log is the story, its exit is always 0."
     ;; The atomic publish this design leans on (REPLACE-FILE: rename(2),
     ;; never CL's type-merging RENAME-FILE).
     (replace-file tmp (warm-image-path key))
+    ;; the part's owner, which a prune for another folder asks before it
+    ;; deletes this part (ABANDONED-WARM-PART-P)
+    (write-file-atomically (warm-owner-path)
+                           (format nil "~a~%" (namestring *cells-directory*)))
     ;; name the image as this build's published one, atomically: a launch
     ;; follows the pointer before it walks anything
     (write-file-atomically (warm-pointer-path)
