@@ -496,6 +496,11 @@ of zero is left out, all but the first."
                    (string-capitalize (or kind "Item")))))
     (format nil "~a~@[ · ~a~]" name (json-value item :text "destination"))))
 
+(defun open-setup-panel (model &rest options)
+  "A Setup work panel over MODEL, nothing on it to pick: OPEN-PICKER-DIALOG with OPTIONS."
+  (apply #'open-picker-dialog model "Setup" '() (lambda (model value) (declare (ignore model value)) nil)
+         :empty-label "" options))
+
 (defun setup-import-wait (model run subtitle thunk continuation &key importing)
   "A work panel off the loop; live progress and completion belong to this dialog."
   (let ((first-run (setup-first-run-p run))
@@ -543,14 +548,11 @@ of zero is left out, all but the first."
                  (setf (chat-model-dialog model) nil)
                  (funcall continuation model result)
                  t)))
-      (open-picker-dialog
-       model "Setup" '()
-       (lambda (model value) (declare (ignore model value)) nil)
+      (open-setup-panel model
        :context (if first-run "Preparing Nodecode" (setup-context run :import "Import"))
        :subtitle subtitle
        :summary-rows (when (or first-run importing) (work-summary (status-mark 0 :search)))
        :header-rows (when (or first-run importing) 3)
-       :empty-label ""
        :footer-hints (if (or first-run importing) :none '(("esc" . "cancel")))
        :kind :setup-import
        :on-cancel (lambda (model) (setf (chat-model-setup-walk model) nil))
@@ -1012,12 +1014,9 @@ first: its answer, the deadline, or Esc."
                                         (setup-panel-width model))
                        (picker-dialog-header-rows dialog)
                        (+ 2 (length (picker-dialog-summary-rows dialog))))))
-          (open-picker-dialog
-           model "Setup" '()
-           (lambda (model value) (declare (ignore model value)) nil)
+          (open-setup-panel model
            :context (setup-context run :import "Import")
            :subtitle (format nil "Checking that ~a answers~@[ at ~a~]…" provider endpoint)
-           :empty-label ""
            :hint "esc skip the check"
            :kind :setup-import
            :on-cancel (lambda (model) (unverified model "the check was skipped"))
@@ -1211,12 +1210,9 @@ sign-in still waiting in the browser."
                             (models model)))
                        (t (back model (or (and login (json-value login :string "text"))
                                           "nodecode.ai sign-in: the browser did not allow this machine in time")))))))
-      (open-picker-dialog
-       model "Setup" '()
-       (lambda (model value) (declare (ignore model value)) nil)
+      (open-setup-panel model
        :context (setup-context run :provider "Step 1. Sign in to nodecode.ai")
        :subtitle "Asking nodecode.ai…"
-       :empty-label ""
        :footer-hints '(("esc" . "back"))
        :kind :setup-sign-in
        :on-cancel (lambda (model) (setup-stage-provider model run)))
