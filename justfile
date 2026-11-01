@@ -4,6 +4,7 @@
 #   just test       run the core test suite
 #   just lint       check Lisp structure: parens, layout, test prose
 #   just check      lint, loc, build, test -- cheapest first
+#   just proofs     check the Lean proofs under proofs/ (needs elan)
 #   just release    dump ./nodecode and warm its launch image
 #   just <cell>-build | <cell>-test | <cell>-check    one lane per shipped cell
 #
@@ -95,6 +96,15 @@ loc:
 # suite has run.
 # Gate a change: lint, loc, build, test.
 check: lint loc build test
+
+# Lean, at the version proofs/lean-toolchain pins, checks each proofs/*.lean
+# with warnings as errors, so a `sorry' fails; then every theorem must rest on
+# no axiom beyond propext, Classical.choice and Quot.sound, so an `axiom' of
+# the file's own or a native_decide fails too (src/tools/proofs.sh). A new
+# file is checked once it is there; CI runs this on every change.
+# Check every Lean proof under proofs/ (needs elan).
+proofs:
+    @src/tools/proofs.sh
 
 # The heap set here is the binary's for good:
 # the dump saves its runtime options, so the executable ignores them on its
