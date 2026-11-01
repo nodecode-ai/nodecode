@@ -432,8 +432,8 @@ row that opens or closes a slab. Errors and refusals are said whole."
                                   :foreground t)
                             (list "It runs inside Nodecode with full access to your files and keys." :foreground))
                       (when cells.hub-stale
-                        (list (list (format nil "The hub could not be read; this is the copy last read: ~a"
-                                            cells.hub-stale)
+                        ;; the reason names the index and what came of reading it
+                        (list (list (format nil "This is the copy last read: ~a" cells.hub-stale)
                                     :muted)))
                       (when (equal cells.asked name)
                         (list (list "Space again installs it; any other key leaves it." :sheet-restart t))))))

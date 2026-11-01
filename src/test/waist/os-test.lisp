@@ -522,3 +522,17 @@ process's own, or NIL."
           (when (> hard 2048)
             (nlk::file-limit 2048)
             (is (= 2048 (getf (nlk::raise-file-limit) :soft)) "a higher limit is never lowered")))))))
+
+(deftest a-named-wait-is-heard-from-its-start-to-its-end ()
+  ;; With nobody listening the body only runs. A listener hears what the
+  ;; body waits on and its bound as it starts, and NIL as it ends, however
+  ;; it ends; the body's values pass through.
+  (is (equal '(1 2) (multiple-value-list (nlk:with-named-wait (5 "nothing heard") (values 1 2)))))
+  (let* ((heard '())
+         (nlk:*wait-hook* (lambda (text bound) (push (list text bound) heard))))
+    (is (equal '(1 2) (multiple-value-list
+                       (nlk:with-named-wait (7 "fetching ~a from ~a" "x" "https://y") (values 1 2)))))
+    (is (equal '(("fetching x from https://y" 7) (nil nil)) (reverse heard)))
+    (setf heard '())
+    (ignore-errors (nlk:with-named-wait (7 "a wait that throws") (error "cut short")))
+    (is (equal '(("a wait that throws" 7) (nil nil)) (reverse heard)) "it ends when its body throws")))

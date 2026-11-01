@@ -797,11 +797,49 @@ the listing, with what the scribe said as text."
 ;;; the commit it is pinned at, what it brings -- and installed on a yes; the
 ;;; commit rides the request, so the route refuses a pin the hub moved since.
 
+(defun call-saying-waits (function &key (stream *error-output*) (after 5) (every 30))
+  "FUNCTION's values, called with NLK:*WAIT-HOOK* hearing each wait it names:
+one that lasts AFTER seconds is said on STREAM -- what it waits on, for how
+long so far and at most -- and said again every EVERY seconds it lasts."
+  ;; A wait that ends sooner says nothing, so a quick install reads as it did.
+  ;; A thread of its own keeps the time, parked on a condition variable until
+  ;; the next line is due or the wait changes: nothing polls.
+  (let ((lock (bt2:make-lock :name "waits said"))
+        (changed (bt2:make-condition-variable :name "waits said"))
+        (text nil) (bound nil) (started nil) (said 0) (done nil))
+    (flet ((next-line ()
+             ;; => the next line to say, or NIL once FUNCTION has returned
+             (bt2:with-lock-held (lock)
+               (loop
+                 (cond (done (return nil))
+                       ((null text) (bt2:condition-wait changed lock))
+                       (t (let ((elapsed (/ (since-ms started) 1000))
+                                (due (+ after (* every said))))
+                            (if (< elapsed due)
+                                (bt2:condition-wait changed lock :timeout (float (- due elapsed)))
+                                (progn (incf said)
+                                       (return (format nil "nodecode: still ~a (~d s~@[ of at most ~d s~])"
+                                                       text (round elapsed) bound))))))))))
+           (hear (what most)
+             (bt2:with-lock-held (lock)
+               (setf text what bound most started (get-internal-real-time) said 0)
+               (bt2:condition-notify changed))))
+      (let ((sayer (bt2:make-thread (lambda ()
+                                      (loop for line = (next-line)
+                                            while line
+                                            do (ignore-errors (format stream "~a~%" line)
+                                                              (finish-output stream))))
+                                    :name "waits said")))
+        (unwind-protect (let ((nlk:*wait-hook* #'hear)) (funcall function))
+          (bt2:with-lock-held (lock) (setf done t) (bt2:condition-notify changed))
+          (bt2:join-thread sayer))))))
+
 (defun add-text (words &key (ask #'terminal-answer) (port (organism-port))
+                            (pid (and port (organism-pid)))
                             (token (gateway-configured-operator-token)))
   "`nodecode add nc://NAME [--yes]': the cell NAME, shipped or the hub's
-and its nodecode- prefix optional, installed and on. => (values ANSWER CODE
-STREAM)."
+and its nodecode- prefix optional, installed and on -- by the organism on
+PORT, PID, when one serves this home. => (values ANSWER CODE STREAM)."
   ;; The preview goes to stdout ahead of the question, which ASK puts on
   ;; stderr: a script that says --yes still reads what it installed.
   (when (intersection '("--help" "-h" "help") words :test #'string=)
@@ -853,12 +891,21 @@ STREAM)."
                                         label))
                             1 :error))))))
           (values (cond (port
-                         (format nil "~:[~a was already installed; ~;~*~]~a" fresh label
-                                 (json-value (gateway-http-session-request
-                                              port :post "/api/gateway/cells"
-                                              (json-object "name" name "on" t :opt "commit" pin)
-                                              token :read-timeout 600)
-                                             :string "text")))
+                         ;; the organism installs it and turns it on, minutes on a slow network: a wait said as it lasts
+                         (let ((seconds 600))
+                           (format nil "~:[~a was already installed; ~;~*~]~a" fresh label
+                                   (json-value
+                                    (handler-case
+                                        (nlk:with-named-wait (seconds "waiting for the nodecode serving this home~@[ (pid ~d)~] to turn ~a on"
+                                                              pid label)
+                                          (gateway-http-session-request
+                                           port :post "/api/gateway/cells"
+                                           (json-object "name" name "on" t :opt "commit" pin)
+                                           token :read-timeout seconds))
+                                      (nlk::http-timeout ()
+                                        (error "the nodecode serving this home~@[ (pid ~d)~] did not answer within ~d s; ~a may still be coming on there"
+                                               pid seconds label)))
+                                    :string "text"))))
                         (fresh
                          (dolist (each fresh) (nlk:install-cell each :offers offers))
                          (format nil "~a is installed~@[, with ~{~a~^, ~}~]; nodecode is not running, so it loads at the next launch"

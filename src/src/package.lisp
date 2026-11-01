@@ -144,6 +144,7 @@ renderer, the program loop.")
    #:*session-wrapper* #:session-argv #:pid-live-p #:kill-tree #:spawn-detached
    #:exits-zero-p
    #:environment-with #:spawn-program #:wait-for-child #:child-exit #:run-bounded #:lock-file
+   #:*wait-hook* #:with-named-wait
    #:file-locked-p #:unlock-file #:folder-lock-path #:lock-folder #:unlock-folder #:file-bytes
    #:with-folder-lock #:replace-file #:random-bytes #:with-output-file
    #:call-with-severed-stdio

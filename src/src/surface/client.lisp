@@ -2076,6 +2076,13 @@ environment, the token BOOT-OWNED-ORGANISM materialized, the shared config."
   "The port of the organism serving this home, or NIL when none is running."
   (and state (nlk:gateway-state-owner-port state)))
 
+(defun organism-pid ()
+  "The pid of the organism serving this home, as its store's lock testifies,
+or NIL when none is running."
+  (multiple-value-bind (verdict pid)
+      (ignore-errors (nlk::store-death-verdict (nlk::home-store-path nlk:*home*)))
+    (and (eq verdict :live) pid)))
+
 (define-error gateway-http-error (error)
     (status (code :initform nil) detail)
   (:report "Gateway HTTP ~d~@[ (~a)~]: ~a" status code detail))

@@ -258,6 +258,53 @@ ASK its terminal: (TEXT CODE STREAM PREVIEW), PREVIEW what it printed first."
           (is (search "the hub moved nl-sw-hubbed" (nlk:json-value body :string "error" "message"))))
         (is (not (nlk:installed-cell-p "nodecode-nl-sw-hubbed")))))))
 
+(deftest control-cells-add-says-a-wait-that-lasts-and-not-one-that-ends-sooner ()
+  ;; `nodecode add' says on stderr what it waits on once that has lasted
+  ;; AFTER seconds, with its bound; a wait that ends sooner says nothing, so
+  ;; a quick install prints what it printed before.
+  (let ((said (make-string-output-stream)))
+    (is (equal '(:done) (multiple-value-list
+                         (nle::call-saying-waits (lambda () (nlk:with-named-wait (7 "reading a quick index") :done))
+                                                 :stream said :after 5))))
+    (is (equal "" (get-output-stream-string said)) "a quick wait says nothing")
+    (is (equal '(:a :b) (multiple-value-list
+                         (nle::call-saying-waits (lambda ()
+                                                   (nlk:with-named-wait (7 "fetching x from https://y") (sleep 0.6))
+                                                   (values :a :b))
+                                                 :stream said :after 0.1 :every 60))))
+    (let ((lines (remove "" (uiop:split-string (get-output-stream-string said) :separator '(#\Newline))
+                         :test #'string=)))
+      (is (= 1 (length lines)) "said once by 0.6 s, the next line due a minute on")
+      (is (uiop:string-prefix-p "nodecode: still fetching x from https://y (" (first lines)))
+      (is (search " s of at most 7 s)" (first lines))))))
+
+(deftest control-cells-an-index-that-cannot-be-reached-is-named ()
+  ;; An index nobody answers at fails naming itself, as its status and its
+  ;; size do, and its read is a wait a listener hears with its URL.
+  (let ((url "http://127.0.0.1:9/test-hub/unreachable.json")
+        (heard '()))
+    (with-saved-globals ((nlk:*hub-index-url* url) (nlk:*community-index-url* nil))
+      (let ((nlk:*wait-hook* (lambda (text bound) (push (list text bound) heard))))
+        (is (search (format nil "the hub index at ~a could not be read: " url)
+                    (refusal-text error (nlk:hub-cells :shipped '()))))))
+    (is (equal (list (list (format nil "reading the hub index at ~a" url) 10) '(nil nil)) (reverse heard)))))
+
+#-win32
+(deftest control-cells-a-hub-git-run-is-named-by-its-verb-and-its-bound ()
+  ;; A hub git run that fails names its verb, not the -C ahead of it, and
+  ;; one killed at *HUB-GIT-SECONDS* says it did not finish, where its error
+  ;; output said nothing.
+  (is (search "git fetch failed: "
+              (refusal-text error (nlk::hub-git (list "-C" "/nonexistent-nodecode-test" "fetch" "--quiet")))))
+  (with-temp-trees ((bin "slow-git"))
+    (let ((git (uiop:native-namestring (ensure-directories-exist (merge-pathnames "git" bin)))))
+      (with-open-file (out git :direction :output)
+        (format out "#!/bin/sh~%sleep 30~%"))
+      (nlk::run-checked (list "chmod" "+x" git) #'error)
+      (with-saved-globals ((nlk::*git-program* git) (nlk::*hub-git-seconds* 1))
+        (is (equal "git fetch did not finish within 1 s"
+                   (refusal-text error (nlk::hub-git (list "-C" "/tmp" "fetch" "--quiet")))))))))
+
 (deftest control-cells-a-pick-at-the-pin-just-read-reads-no-index-again
     (with-switch-fixture (port base top))
   ;; The picker read the index a moment ago: turning on its entry at the pin
