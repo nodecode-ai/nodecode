@@ -2577,7 +2577,9 @@ lane function, so nothing dials."
                        (nle::collect-session-events "refusal-ttft"))))
     (is-present (fact fact) "the candidate's request fact"
       (is (equal "alt-model" (nlk:provider-request-event-model fact)))
-      (is (<= 50 (nlk:provider-request-event-ttft-ms fact) 190) "timed from the candidate's request, never from the refused attempt's first token")
+      ;; 40 under the 50 ms slept: the coarse clock's lag, as in
+      ;; A-ROUND-WITH-NO-TEXT-STILL-TIMES-ITS-FIRST-TOKEN.
+      (is (<= 40 (nlk:provider-request-event-ttft-ms fact) 190) "timed from the candidate's request, never from the refused attempt's first token")
       (is (= 1 (nlk:provider-request-event-stream-part-count fact)) "the candidate's parts alone"))))
 
 (deftest failover-triggers-read-the-shared-config ()
@@ -5169,8 +5171,11 @@ next boot resume."
     (let ((fact (find-if (lambda (event) (typep event 'nlk:provider-request-event))
                          (nle::collect-session-events "silent-ttft"))))
       (is (= 0 (nlk:provider-request-event-text-delta-count fact)))
-      ;; The wait before the stream is part of the first token's time.
-      (is (<= 50 (nlk:provider-request-event-ttft-ms fact))))))
+      ;; The wait before the stream is part of the first token's time. The
+      ;; floor sits under the 50 ms slept: on Linux GET-INTERNAL-REAL-TIME
+      ;; reads CLOCK_MONOTONIC_COARSE, whose tick can lag the end of the
+      ;; sleep, so the wait now and then reads 49 (a tick is 4 ms at HZ=250).
+      (is (<= 40 (nlk:provider-request-event-ttft-ms fact))))))
 
 ;;; --- pre-request cancellation ----------------------------------------------
 ;;; The one fold carries this alone now: a cancel that landed before the round
