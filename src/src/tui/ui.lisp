@@ -10637,12 +10637,8 @@ operator to, and the device code it asks for there when it names one: =>
   ;; The code is the word after `code' that reads as one -- a digit in it, or
   ;; capitals around a dash: `enter the code ABCD-1234' or `NFGT-NHBJ', never
   ;; `send /openai-codex code ADDRESS' nor `Kimi Code sign-in'.
-  (let ((words (loop with start = nil
-                     for i from 0 to (length text)
-                     for blank = (or (= i (length text))
-                                     (member (char text i) '(#\Space #\Tab #\Newline #\Return)))
-                     if (and blank start) collect (subseq text start i) and do (setf start nil)
-                     else if (and (not blank) (null start)) do (setf start i))))
+  (let ((words (remove "" (uiop:split-string text :separator '(#\Space #\Tab #\Newline #\Return))
+                       :test #'string=)))
     (values (let ((url (find-if (lambda (word &aux (host (search "://" word)))
                                   ;; a loopback address is where the browser
                                   ;; comes back to, never where to sign in
