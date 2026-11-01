@@ -2948,6 +2948,8 @@ session the shell ended on, or NIL when it never attached."
          ;; go (the clean-shutdown rung), or NIL: joined on the way out like
          ;; the first boot.
          (takeover nil)
+         ;; Whether a boot or takeover thread is still running.
+         (alive (lambda (thread) (and thread (bt2:thread-alive-p thread))))
          (ingress-slots (bt2:make-semaphore :count 256
                                             :name "gateway-client-ingress"))
          ;; One inbound frame into the fold, bounded by the ingress slots: the
@@ -3022,9 +3024,7 @@ session the shell ended on, or NIL when it never attached."
                          ;; spending the outage's budget as a resurrection
                          ;; does. One that holds it while it stops is
                          ;; waited out, and said once.
-                         (when (and boot (not pinned)
-                                    (not (and boot-thread (bt2:thread-alive-p boot-thread)))
-                                    (not (and takeover (bt2:thread-alive-p takeover))))
+                         (when (and boot (not pinned) (notany alive (list boot-thread takeover)))
                            (cond ((ignore-errors (nlk::store-lease-held-p store-path))
                                   ;; Said only past a second and a half: a stop
                                   ;; takes under one, and a notice for it only
@@ -3059,8 +3059,7 @@ session the shell ended on, or NIL when it never attached."
                                           (if boot
                                               *sync-failure-after-seconds*
                                               5))))
-                           (cond ((or (and boot-thread (bt2:thread-alive-p boot-thread))
-                                      (and takeover (bt2:thread-alive-p takeover)))
+                           (cond ((some alive (list boot-thread takeover))
                                   (unless starting-reported
                                     (setf starting-reported t)
                                     (post-shell-notice
@@ -3175,7 +3174,7 @@ session the shell ended on, or NIL when it never attached."
                                       ;; A takeover that finished — owning,
                                       ;; or attached to whoever won — may be
                                       ;; needed again on a later clean stop.
-                                      (when (and takeover (not (bt2:thread-alive-p takeover)))
+                                      (unless (funcall alive takeover)
                                         (setf takeover nil))
                                       (cond ((not handshake-complete)
                                              (unless ensure-reported
@@ -3233,8 +3232,7 @@ session the shell ended on, or NIL when it never attached."
                      ;; completed, or an established stream dropped): walk
                      ;; the self-heal ladder before backing off.
                      (incf failures)
-                     (unless outage-started
-                       (setf outage-started (get-internal-real-time)))
+                     (setf outage-started (or outage-started (get-internal-real-time)))
                      ;; An endpoint nobody serves any more -- its owner
                      ;; stopping or gone -- is not dialed again: the next lap
                      ;; watches the store instead, and starts or attaches to
@@ -3323,7 +3321,7 @@ the store; not respawning — start another nodecode to take ownership"))))
                                          ;; A shell that starts organisms starts the
                                          ;; replacement too, fronted as the first was
                                          ;; (FRONT-ORGANISM); the dead endpoint goes.
-                                         (unless (and takeover (bt2:thread-alive-p takeover))
+                                         (unless (funcall alive takeover)
                                            (setf takeover (funcall start-organism) port nil))
                                          t)
                                         (t (spawn-resurrection-candidate store-path)))
