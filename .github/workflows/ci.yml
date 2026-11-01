@@ -40,7 +40,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Lint, build the release tarball, run the core suite
-        run: src/tools/ci-linux.sh
+        run: src/tools/ci/ci-linux.sh
 
   proofs:
     name: Proofs
@@ -51,7 +51,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Check every Lean proof under proofs/
-        run: src/tools/ci-proofs.sh
+        run: src/tools/ci/ci-proofs.sh
 
   perf:
     name: Perf
@@ -87,7 +87,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build, pack and smoke the Mac release
-        run: src/tools/ci-macos.sh
+        run: src/tools/ci/ci-macos.sh
 
   windows:
     name: Windows
@@ -98,4 +98,4 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build nodecode.exe and run both smokes
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File src\tools\ci-windows.ps1
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File src\tools\ci\ci-windows.ps1

@@ -167,7 +167,7 @@ sanitizer — a printed eval value, the inline eval's captured output."
     (note-removed-controls (octets-to-text clean) dropped)))
 
 ;;; --- band preview material (port of src/tui/model/background.zig) ---------
-;;; Pure functions shared by the client reducer (client.lisp) and, later, the
+;;; Pure functions shared by the client reducer (tui/client.lisp) and, later, the
 ;;; band renderer. Previews are bounded on both ends so a chatty process
 ;;; cannot grow the model without bound.
 
@@ -1148,7 +1148,7 @@ left (meter.lisp BUDGET-REMAINING-MS), nor under 50 ms."
    "EVAL-INTERRUPT's soft abort, injected into the evaluating thread."))
 
 ;;; The two streams that stand in for a terminal: this eval's output, and the
-;;; TUI's *ERROR-OUTPUT* (ui.lisp TUI-ERROR-STREAM). Each is a line buffer
+;;; TUI's *ERROR-OUTPUT* (tui/entry.lisp TUI-ERROR-STREAM). Each is a line buffer
 ;;; with its own sink, so the buffer is written once.
 (defclass line-output-stream (sb-gray:fundamental-character-output-stream)
   ((pending :initform (make-array 128 :element-type 'character
@@ -1673,8 +1673,7 @@ THUNK-VALUE...)."
   ;; The copy is a keyed table, since EVAL-FORM-PRINTED reads and writes it
   ;; by key; the seed is compared by identity afterwards, so a snippet that
   ;; wrote nothing captures nothing.
-  (bind ((key (or (and *current-durable-turn* (nlk:durable-turn-session-id *current-durable-turn*))
-                  "local"))
+  (bind ((key (or (eval-session-id) "local"))
          (seed-history (bt2:with-lock-held (*snippet-settle-lock*) (snippet-history key)))
          (*snippet-histories* (alexandria:plist-hash-table (list key seed-history) :test #'equal))
          (answers (multiple-value-list (funcall thunk)))
@@ -2393,7 +2392,7 @@ fetched picture, and a file an answer names. LOOK reads a file up to
 ;;; provider gets the bytes; the transcript gets a durable image fact naming
 ;;; the file, its media type and its pixel size, and a shell whose terminal
 ;;; speaks the kitty graphics protocol draws the image itself under the card
-;;; (tui/ui.lisp KITTY-IMAGE-PLACEMENTS). The fact carries a path, never the
+;;; (tui/view.lisp KITTY-IMAGE-PLACEMENTS). The fact carries a path, never the
 ;;; bytes: it is durable history, and megabytes of base64 in the event log
 ;;; would be paid for on every hydration of the session. The protocol takes
 ;;; PNG only, so a JPEG, GIF or WebP is transcoded once here, into a
@@ -2645,7 +2644,7 @@ nothing, which is no fence's to repeat."
                               (format nil "~s" arguments))))))))
 
 ;;; --- band surface plan (src/tui/render_plan.zig background cluster) ---------
-;;; Pure material for the status-bar band renderer (ui.lisp) and its tests:
+;;; Pure material for the status-bar band renderer (tui/paint.lisp) and its tests:
 ;;; budget, newest-first ordering with the overflow collapse, and the
 ;;; frozen-head/marker/live-tail output window.
 ;;; All display-line semantics reuse the preview counters the reducer keeps.

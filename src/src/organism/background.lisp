@@ -17,7 +17,7 @@
 ;;;; waiting while a shell owns the store and taking it over the moment that
 ;;;; shell lets go. A shell and the gateway never contend: a shell opened
 ;;;; while the gateway serves attaches to it, and a shell attached when the
-;;;; gateway is turned off takes the organism back (client.lisp).
+;;;; gateway is turned off takes the organism back (tui/client-update.lisp).
 ;;;;
 ;;;; This file is the mechanism, and the one text every shell speaks
 ;;;; (GATEWAY-TEXT): on, off, restart, the log, the state. Kernel, and
@@ -67,7 +67,7 @@ process starts.")
     (let ((directory (runtime-directory)))
       (and directory (probe-file (merge-pathnames "nodecode-launcher" directory))))
   "The gateway launcher this build carries beside its executable
-(src/tools/launcher.c, compiled by a macOS release), or NIL.")
+(src/tools/build/launcher.c, compiled by a macOS release), or NIL.")
 
 ;;; The gates bind a script of systemd's or launchd's answers.
 (defvar *unit-runner* 'run-unit-program
@@ -207,7 +207,7 @@ is refused."
 ;;; The organism's file moves with every release and every warm launch image,
 ;;; so launchd starts a launcher that never moves instead, and the launcher
 ;;; runs the organism as its child: a child's access is asked on its parent's
-;;; behalf (src/tools/launcher.c). Installed once and never rewritten after,
+;;; behalf (src/tools/build/launcher.c). Installed once and never rewritten after,
 ;;; since a grant is held against its bytes; a launcher that must change is a
 ;;; new generation, a new folder, and one new question to the operator.
 (defparameter +launcher-generation+ 1

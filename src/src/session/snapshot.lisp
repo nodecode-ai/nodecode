@@ -211,13 +211,12 @@ SAVE-LISP-AND-DIE or fork."
 
 (defun snapshot-storage-path (store)
   "The shared snapshot storage relative to STORE's workspace, or NIL outside it."
-  (let ((relative (uiop:subpathp
-                   (uiop:pathname-parent-directory-pathname
-                    (truename (snapshot-store-git-dir store)))
-                   (truename (snapshot-store-workspace store)))))
-    (when relative
-      (let ((path (uiop:unix-namestring relative)))
-        (if (zerop (length path)) "." path)))))
+  (when-let (relative (uiop:subpathp
+                       (uiop:pathname-parent-directory-pathname
+                        (truename (snapshot-store-git-dir store)))
+                       (truename (snapshot-store-workspace store))))
+    (let ((path (uiop:unix-namestring relative)))
+      (if (zerop (length path)) "." path))))
 
 (defun write-store-exclude (store)
   (with-output-file (stream (snapshot-store-file store "info/exclude"))
