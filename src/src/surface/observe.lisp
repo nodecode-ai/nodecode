@@ -421,6 +421,12 @@ recency, and ASKED-WHERE owns the exclusions."
                                 scope nlk::+kind-turn-usage+))
                   :row (and scope "events") :literal t))))
 
+(defun log-trigger (name kinds sql &optional (guard ""))
+  "The schema entry of trigger NAME: SQL run after a fact of KINDS, one kind or a list, is logged, GUARD narrowing it."
+  (list "trigger" name (format nil "create trigger ~a
+            after insert on events when new.kind ~:[= '~a'~;in (~{'~a'~^, ~})~]~a
+            begin ~a; end" name (listp kinds) kinds guard sql)))
+
 (defparameter *model-history-schema*
   (list
    (list "table" "model_history"
@@ -432,11 +438,8 @@ recency, and ASKED-WHERE owns the exclusions."
          "create index model_history_by_turn on model_history (turn_id)")
    (list "index" "model_history_by_session"
          "create index model_history_by_session on model_history (session_id)")
-   (list "trigger" "model_history_follows_usage"
-         (format nil "create trigger model_history_follows_usage
-            after insert on events when new.kind = '~a'
-            begin ~a; end"
-                 nlk::+kind-turn-usage+ (model-history-fill-sql "log_position = new.log_position")))
+   (log-trigger "model_history_follows_usage" nlk::+kind-turn-usage+
+                (model-history-fill-sql "log_position = new.log_position"))
    (list "trigger" "model_history_follows_completion"
          (format nil "create trigger model_history_follows_completion
             after insert on events when new.kind = '~a'
@@ -620,40 +623,26 @@ each request's wait for its first token and the time it spent writing."
          "create index request_timings_by_wait on request_timings (ttft) where ttft is not null")
    (list "index" "request_timings_by_model"
          "create index request_timings_by_model on request_timings (model, provider, ttft, streamed)")
-   (list "trigger" "usage_rollup_follows_the_log"
-         (format nil "create trigger usage_rollup_follows_the_log
-            after insert on events when new.kind = '~a'
-            begin ~a; end"
-                 nlk::+kind-turn-usage+
-                 (usage-rollup-fill-sql "(select new.occurred_at occurred_at, new.session_id session_id,
-                                                 new.payload payload)")))
-   (list "trigger" "request_timings_follow_the_log"
-         (format nil "create trigger request_timings_follow_the_log
-            after insert on events when new.kind = '~a'
-            begin ~a; end"
-                 nlk::+kind-provider-request+
-                 (request-timings-fill-sql "log_position = new.log_position")))
+   (log-trigger "usage_rollup_follows_the_log" nlk::+kind-turn-usage+
+                (usage-rollup-fill-sql "(select new.occurred_at occurred_at, new.session_id session_id,
+                                                 new.payload payload)"))
+   (log-trigger "request_timings_follow_the_log" nlk::+kind-provider-request+
+                (request-timings-fill-sql "log_position = new.log_position"))
    ;; Each turn's start and end, and whether it was a reflection: what the
    ;; folder table's turns, failures and time and the totals' counts read.
    (list "table" "turn_spans"
          "create table turn_spans (
             turn_id text primary key, session_id, started_at, ended_at, kind,
             reflection integer not null default 0) without rowid")
-   (list "trigger" "turn_spans_follow_starts"
-         (format nil "create trigger turn_spans_follow_starts
-            after insert on events when new.kind = '~a' and new.turn_id is not null
-            begin ~a; end"
-                 nlk::+kind-turn-started+
-                 (turn-starts-fill-sql "(select new.turn_id turn_id, new.session_id session_id,
-                                                new.occurred_at occurred_at)")))
-   (list "trigger" "turn_spans_follow_ends"
-         (format nil "create trigger turn_spans_follow_ends
-            after insert on events when new.kind in (~{'~a'~^, ~}) and new.turn_id is not null
-            begin ~a; end"
-                 +turn-end-kinds+
-                 (turn-ends-fill-sql "(select new.turn_id turn_id, new.session_id session_id,
+   (log-trigger "turn_spans_follow_starts" nlk::+kind-turn-started+
+                (turn-starts-fill-sql "(select new.turn_id turn_id, new.session_id session_id,
+                                                new.occurred_at occurred_at)")
+                " and new.turn_id is not null")
+   (log-trigger "turn_spans_follow_ends" +turn-end-kinds+
+                (turn-ends-fill-sql "(select new.turn_id turn_id, new.session_id session_id,
                                               new.occurred_at occurred_at, new.kind kind,
-                                              new.payload payload)"))))
+                                              new.payload payload)")
+                " and new.turn_id is not null"))
   "The usage projection.")
 
 (defun prepare-usage-rounds (handle)
