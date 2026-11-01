@@ -15879,9 +15879,10 @@ NIL when the operator says no or it does not serve within SECONDS."
         (json-array (funcall call :get "/api/gateway/config" nil) "sections")
         :key (lambda (section) (json-value section :string "key")) :test #'equal))
 
-(defun gateway-setup-said (answer)
-  "What a config write ANSWER says it did."
-  (or (json-value answer :string "said") "saved"))
+(defun gateway-setup-write (call out object)
+  "POST OBJECT as a config write and print what the organism says it did."
+  (format out "~a~%" (or (json-value (funcall call :post "/api/gateway/config" object) :string "said")
+                          "saved")))
 
 (defun gateway-setup-member-path (path name)
   "The member NAME of the section at PATH, as a write's path."
@@ -15933,14 +15934,10 @@ an Enter keeps a set one, :WRITTEN."
                        ((not (and (plusp (length name))
                                   (every (lambda (char) (or (alphanumericp char) (char= char #\_))) name)))
                         (format out "~s is not an environment variable's name.~%" name))
-                       (t (format out "~a~%" (gateway-setup-said
-                                              (funcall call :post "/api/gateway/config"
-                                                       (json-object "path" (gateway-setup-member-path path env)
-                                                                    "value" name))))
+                       (t (gateway-setup-write call out (json-object "path" (gateway-setup-member-path path env)
+                                                                     "value" name))
                           (return :written)))))
-              (t (format out "~a~%" (gateway-setup-said
-                                     (funcall call :post "/api/gateway/config"
-                                              (json-object "path" path "secret" text))))
+              (t (gateway-setup-write call out (json-object "path" path "secret" text))
                  ;; The file names it now; the variable it replaces goes, so one of the two is set.
                  (when (equal set env)
                    (funcall call :post "/api/gateway/config"
@@ -15988,12 +15985,10 @@ when it offers choices -- and write what the answer names; an Enter keeps it."
                                                   (t "Value; Enter keeps it:"))))))
         (when (string= text "") (return :kept))
         (handler-case
-            (progn (format out "~a~%" (gateway-setup-said
-                                       (funcall call :post "/api/gateway/config"
-                                                (json-object "path" (gateway-setup-member-path path name)
-                                                             "value" (if list
-                                                                         (coerce (gateway-setup-picks text choices) 'vector)
-                                                                         text)))))
+            (progn (gateway-setup-write call out (json-object "path" (gateway-setup-member-path path name)
+                                                              "value" (if list
+                                                                          (coerce (gateway-setup-picks text choices) 'vector)
+                                                                          text)))
                    (return :written))
           (gateway-http-error (condition)
             (format out "~a~%" (gateway-setup-refusal condition))))))))
