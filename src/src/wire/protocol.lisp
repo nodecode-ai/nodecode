@@ -570,12 +570,9 @@ so the payload need not carry the token again."
          (type-name (gethash "type" root))
          (type (and type-name
                     (if (stringp type-name)
-                        (cdr (assoc type-name '(("gateway_connect" . :gateway-connect)
-                                                ("gateway_connect_challenge" . :gateway-connect-challenge)
-                                                ("gateway_connect_ack" . :gateway-connect-ack)
-                                                ("gateway_connect_rejected" . :gateway-connect-rejected)
-                                                ("client_command" . :client-command))
-                                    :test #'string=))
+                        (find type-name '(:gateway-connect :gateway-connect-challenge :gateway-connect-ack
+                                          :gateway-connect-rejected :client-command)
+                              :key (lambda (kind) (substitute #\_ #\- (string-downcase kind))) :test #'string=)
                         (protocol-refuse :invalid-envelope "type must be a string")))))
     (when (and type-name (null type))
       (protocol-refuse :unsupported-frame "unsupported frame type ~s" type-name))
