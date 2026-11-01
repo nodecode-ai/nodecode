@@ -907,58 +907,40 @@ already through the loop filter."
                ;; --- the loop filter ---
                (clamp15 (v) (declare (type fixnum v)) (max -16 (min 15 v)))
                (clamp127 (v) (declare (type fixnum v)) (max -128 (min 127 v)))
-               (filter2 (pix level index istep jstep)
-                 (declare (type (simple-array (unsigned-byte 8) (*)) pix) (type fixnum level index istep jstep))
-                 (loop repeat 16
-                       for at of-type fixnum from index by istep
-                       do (let ((p1 (aref pix (- at (* 2 jstep)))) (p0 (aref pix (- at jstep)))
-                                (q0 (aref pix at)) (q1 (aref pix (+ at jstep))))
-                            (unless (> (+ (* 2 (abs (- p0 q0))) (ash (abs (- p1 q1)) -1)) level)
-                              (let* ((a (+ (* 3 (- q0 p0)) (clamp127 (- p1 q1))))
-                                     (a1 (clamp15 (ash (+ a 4) -3)))
-                                     (a2 (clamp15 (ash (+ a 3) -3))))
-                                (setf (aref pix (- at jstep)) (%clip8 (+ p0 a2))
-                                      (aref pix at) (%clip8 (- q0 a1))))))))
-               (filter246 (pix n level ilevel hlevel index istep jstep four-not-six)
+               (filter (pix n level ilevel hlevel index istep jstep inner)
+                 ;; N points from INDEX by ISTEP, each across the edge JSTEP
+                 ;; before it: the simple filter, else the normal filter's
+                 ;; 4-tap INNER edge or 6-tap macroblock edge.
                  (declare (type (simple-array (unsigned-byte 8) (*)) pix)
                           (type fixnum n level ilevel hlevel index istep jstep))
                  (loop repeat n
                        for at of-type fixnum from index by istep
-                       do (let ((p3 (aref pix (- at (* 4 jstep)))) (p2 (aref pix (- at (* 3 jstep))))
-                                (p1 (aref pix (- at (* 2 jstep)))) (p0 (aref pix (- at jstep)))
-                                (q0 (aref pix at)) (q1 (aref pix (+ at jstep)))
-                                (q2 (aref pix (+ at (* 2 jstep)))) (q3 (aref pix (+ at (* 3 jstep)))))
-                            (unless (or (> (+ (* 2 (abs (- p0 q0))) (ash (abs (- p1 q1)) -1)) level)
-                                        (> (abs (- p3 p2)) ilevel) (> (abs (- p2 p1)) ilevel)
-                                        (> (abs (- p1 p0)) ilevel) (> (abs (- q1 q0)) ilevel)
-                                        (> (abs (- q2 q1)) ilevel) (> (abs (- q3 q2)) ilevel))
-                              (cond
-                                ((or (> (abs (- p1 p0)) hlevel) (> (abs (- q1 q0)) hlevel))
-                                 (let* ((a (+ (* 3 (- q0 p0)) (clamp127 (- p1 q1))))
-                                        (a1 (clamp15 (ash (+ a 4) -3)))
-                                        (a2 (clamp15 (ash (+ a 3) -3))))
-                                   (setf (aref pix (- at jstep)) (%clip8 (+ p0 a2))
-                                         (aref pix at) (%clip8 (- q0 a1)))))
-                                (four-not-six
-                                 (let* ((a (* 3 (- q0 p0)))
-                                        (a1 (clamp15 (ash (+ a 4) -3)))
-                                        (a2 (clamp15 (ash (+ a 3) -3)))
-                                        (a3 (ash (+ a1 1) -1)))
-                                   (setf (aref pix (- at (* 2 jstep))) (%clip8 (+ p1 a3))
-                                         (aref pix (- at jstep)) (%clip8 (+ p0 a2))
-                                         (aref pix at) (%clip8 (- q0 a1))
-                                         (aref pix (+ at jstep)) (%clip8 (- q1 a3)))))
-                                (t
-                                 (let* ((a (clamp127 (+ (* 3 (- q0 p0)) (clamp127 (- p1 q1)))))
-                                        (a1 (ash (+ (* 27 a) 63) -7))
-                                        (a2 (ash (+ (* 18 a) 63) -7))
-                                        (a3 (ash (+ (* 9 a) 63) -7)))
-                                   (setf (aref pix (- at (* 3 jstep))) (%clip8 (+ p2 a3))
-                                         (aref pix (- at (* 2 jstep))) (%clip8 (+ p1 a2))
-                                         (aref pix (- at jstep)) (%clip8 (+ p0 a1))
-                                         (aref pix at) (%clip8 (- q0 a1))
-                                         (aref pix (+ at jstep)) (%clip8 (- q1 a2))
-                                         (aref pix (+ at (* 2 jstep))) (%clip8 (- q2 a3))))))))))
+                       do (macrolet ((px (k) `(aref pix (+ at (* ,k jstep)))))
+                            (let ((p3 (px -4)) (p2 (px -3)) (p1 (px -2)) (p0 (px -1))
+                                  (q0 (px 0)) (q1 (px 1)) (q2 (px 2)) (q3 (px 3)))
+                              (flet ((adjust (a)
+                                       ;; P0 and Q0 moved toward each other by A; => Q0's step.
+                                       (let ((a1 (clamp15 (ash (+ a 4) -3))) (a2 (clamp15 (ash (+ a 3) -3))))
+                                         (setf (px -1) (%clip8 (+ p0 a2)) (px 0) (%clip8 (- q0 a1)))
+                                         a1)))
+                                (unless (or (> (+ (* 2 (abs (- p0 q0))) (ash (abs (- p1 q1)) -1)) level)
+                                            (and (not filter-simple)
+                                                 (> (max (abs (- p3 p2)) (abs (- p2 p1)) (abs (- p1 p0))
+                                                         (abs (- q1 q0)) (abs (- q2 q1)) (abs (- q3 q2)))
+                                                    ilevel)))
+                                  (cond
+                                    ((or filter-simple (> (abs (- p1 p0)) hlevel) (> (abs (- q1 q0)) hlevel))
+                                     (adjust (+ (* 3 (- q0 p0)) (clamp127 (- p1 q1)))))
+                                    (inner
+                                     (let ((a3 (ash (+ (adjust (* 3 (- q0 p0))) 1) -1)))
+                                       (setf (px -2) (%clip8 (+ p1 a3)) (px 1) (%clip8 (- q1 a3)))))
+                                    (t
+                                     ;; Taps K away from the edge move by 27, 18 and 9 of 128ths of A.
+                                     (let ((a (clamp127 (+ (* 3 (- q0 p0)) (clamp127 (- p1 q1))))))
+                                       (loop for k of-type fixnum from 1 to 3
+                                             do (let ((d (ash (+ (* 9 (- 4 k) a) 63) -7)))
+                                                  (setf (px (- k)) (%clip8 (+ (px (- k)) d))
+                                                        (px (1- k)) (%clip8 (- (px (1- k)) d))))))))))))))
                (loop-filter ()
                  (dotimes (mby mbh)
                    (dotimes (mbx mbw)
@@ -971,34 +953,20 @@ already through the loop filter."
                             (ci (* 8 (+ (* mby uv-stride) mbx))))
                        (declare (type fixnum level ilevel hlevel yi ci))
                        (unless (zerop level)
-                         (if filter-simple
-                             (progn
-                               (when (> mbx 0) (filter2 yp (+ level 4) yi y-stride 1))
-                               (when inner
-                                 (loop for k from 4 below 16 by 4 do (filter2 yp level (+ yi k) y-stride 1)))
-                               (when (> mby 0) (filter2 yp (+ level 4) yi 1 y-stride))
-                               (when inner
-                                 (loop for k from 4 below 16 by 4
-                                       do (filter2 yp level (+ yi (* k y-stride)) 1 y-stride))))
-                             (progn
-                               (when (> mbx 0)
-                                 (filter246 yp 16 (+ level 4) ilevel hlevel yi y-stride 1 nil)
-                                 (filter246 up 8 (+ level 4) ilevel hlevel ci uv-stride 1 nil)
-                                 (filter246 vp 8 (+ level 4) ilevel hlevel ci uv-stride 1 nil))
-                               (when inner
-                                 (loop for k from 4 below 16 by 4
-                                       do (filter246 yp 16 level ilevel hlevel (+ yi k) y-stride 1 t))
-                                 (filter246 up 8 level ilevel hlevel (+ ci 4) uv-stride 1 t)
-                                 (filter246 vp 8 level ilevel hlevel (+ ci 4) uv-stride 1 t))
-                               (when (> mby 0)
-                                 (filter246 yp 16 (+ level 4) ilevel hlevel yi 1 y-stride nil)
-                                 (filter246 up 8 (+ level 4) ilevel hlevel ci 1 uv-stride nil)
-                                 (filter246 vp 8 (+ level 4) ilevel hlevel ci 1 uv-stride nil))
-                               (when inner
-                                 (loop for k from 4 below 16 by 4
-                                       do (filter246 yp 16 level ilevel hlevel (+ yi (* k y-stride)) 1 y-stride t))
-                                 (filter246 up 8 level ilevel hlevel (+ ci (* 4 uv-stride)) 1 uv-stride t)
-                                 (filter246 vp 8 level ilevel hlevel (+ ci (* 4 uv-stride)) 1 uv-stride t))))))))))
+                         ;; The left edge and the inner columns, then the top edge and the inner rows;
+                         ;; chroma, under the normal filter only, has one inner edge at 4.
+                         (dolist (across-columns '(t nil))
+                           (let ((ys (if across-columns y-stride 1)) (yj (if across-columns 1 y-stride))
+                                 (cs (if across-columns uv-stride 1)) (cj (if across-columns 1 uv-stride)))
+                             (declare (type fixnum ys yj cs cj))
+                             (flet ((edge (level k inner)
+                                      (declare (type fixnum level k))
+                                      (filter yp 16 level ilevel hlevel (+ yi (* k yj)) ys yj inner)
+                                      (unless (or filter-simple (> k 4))
+                                        (filter up 8 level ilevel hlevel (+ ci (* k cj)) cs cj inner)
+                                        (filter vp 8 level ilevel hlevel (+ ci (* k cj)) cs cj inner))))
+                               (when (> (if across-columns mbx mby) 0) (edge (+ level 4) 0 nil))
+                               (when inner (loop for k from 4 below 16 by 4 do (edge level k t))))))))))))
             ;; --- the frame header ---
             (flag 128)                   ; color space
             (flag 128)                   ; clamping type
