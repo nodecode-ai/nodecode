@@ -863,15 +863,13 @@ its page, then its name."
 (defun reset-off-loop (model row &aux (setting (cdr row)))
   "Give ROW's setting its default back off the loop: a config member taken
 out through the route, the effort through its writer. => why not, or NIL."
-  (handler-case
-      (progn (cond (setting.field
-                    (gateway-model-http-call model :post "/api/gateway/config"
-                                             (encode-json-object
-                                              (json-object "path" (setting-path setting) "remove" t))))
-                   (setting.remote (funcall setting.remote model nil)))
-             nil)
-    (nlk:config-refusal (condition) (nlk:config-refusal-detail condition))
-    (error (condition) (princ-to-string condition))))
+  (with-handlers ((nlk:config-refusal (condition) (nlk:config-refusal-detail condition))
+                  (error (condition) (princ-to-string condition)))
+    (cond (setting.field
+           (gateway-model-http-call model :post "/api/gateway/config"
+                                    (encode-json-object (json-object "path" (setting-path setting) "remove" t))))
+          (setting.remote (funcall setting.remote model nil)))
+    nil))
 
 (defun settings-reset-all (model settings asking rows)
   "Give each of ROWS, (PART . SETTING), its default back, ASKING the row

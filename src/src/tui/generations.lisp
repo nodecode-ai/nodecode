@@ -391,15 +391,13 @@ stays on the question, whole, after whatever went first."
     (sheet-call model history
                 (lambda ()
                   (let ((said '()))
-                    (handler-case
-                        (progn
-                          (setf said (edits-calls model names (if (eq how :keep) "keep" "discard")))
-                          (list :said said
-                                :text (answer-text (gateway-model-http-call
-                                                    model :post "/api/gateway/generations/rollback"
-                                                    (json-object "number" to) :read-timeout 300))))
-                      (gateway-http-error (refusal)
-                        (list :said said :failed (gateway-http-error-detail refusal))))))
+                    (with-handlers ((gateway-http-error (refusal)
+                                      (list :said said :failed (gateway-http-error-detail refusal))))
+                      (setf said (edits-calls model names (if (eq how :keep) "keep" "discard")))
+                      (list :said said
+                            :text (answer-text (gateway-model-http-call
+                                                model :post "/api/gateway/generations/rollback"
+                                                (json-object "number" to) :read-timeout 300))))))
                 (lambda (model answer)
                   (let ((failed (or (off-loop-failure answer) (getf answer :failed)))
                         (said (format nil "~{~a. ~}" (getf answer :said))))
@@ -1173,13 +1171,11 @@ the restore kept or discarded first, by HOW (`keep', `discard'; `go' touches
 none), then the restore -- the organism's sentences, a refusal the last of
 them, never a signal."
   (let ((said '()))
-    (handler-case
-        (progn
-          (unless (string-equal how "go")
-            (loop for entry across (json-array (generation-plan-answer number) "edits")
-                  do (push (generation-edits-text (json-value entry :string "name") (string-downcase how)) said)))
-          (format nil "~{~a. ~}~a" (reverse said) (rollback number)))
-      (error (condition) (format nil "~{~a. ~}~a" (reverse said) condition)))))
+    (with-handlers ((error (condition) (format nil "~{~a. ~}~a" (reverse said) condition)))
+      (unless (string-equal how "go")
+        (loop for entry across (json-array (generation-plan-answer number) "edits")
+              do (push (generation-edits-text (json-value entry :string "name") (string-downcase how)) said)))
+      (format nil "~{~a. ~}~a" (reverse said) (rollback number)))))
 
 (defun headless-generations (args session-id &aux (tokens (split-words (or args ""))))
   "/generations without a shell -- a room, the model's eval, the headless
