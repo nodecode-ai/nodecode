@@ -237,18 +237,21 @@ the buffer and how much of it was read."
              (funcall sink buffer got)
              (decf left got))))
 
-(defun drain-upload (env)
-  "Read a refused upload's body and let it go."
+(defun drain-upload (env left)
+  "Read the LEFT bytes of ENV's body the request did not, and let them go."
   ;; An answer sent before its request's body is read leaves that body on a
   ;; connection the browser keeps open, where it is read as the start of the
   ;; next request: a page that retried with replace=1 over the same connection
-  ;; had its retry refused as a bad request.
-  (ignore-errors (copy-body env (or (getf env :content-length) 0) (constantly nil))))
+  ;; had its retry refused as a bad request. Only what is left: a body read
+  ;; whole, read again, waits on the next request's bytes.
+  (when (plusp left)
+    (ignore-errors (copy-body env left (constantly nil)))))
 
-(defun folder-upload (env folder steps name replace)
+(defun folder-upload (env folder steps name replace unread)
   "Write ENV's body as the file NAME in the directory STEPS name under FOLDER.
 => the directory's listing. A name already there is refused unless REPLACE,
-and a directory's name always."
+and a directory's name always. UNREAD is a cons whose car counts the body's
+bytes not read yet, kept as the write reads them."
   (cond ((or (null name) (zerop (length name)))
          (folder-refuse 400 "invalid_name" "name the file (name=...)"))
         ((find #\/ name) (folder-refuse 400 "invalid_name" "a file's name holds no slash"))
@@ -275,7 +278,9 @@ and a directory's name always."
                (folder-refuse 409 "file_exists" "a file named ~a is here already" name)))
         (nlk:write-file-atomically
          target
-         (lambda (out) (copy-body env length (lambda (buffer got) (write-sequence buffer out :end got))))
+         (lambda (out) (copy-body env length (lambda (buffer got)
+                                               (decf (car unread) got)
+                                               (write-sequence buffer out :end got))))
          :parents nil :mode (and (eq there :file) :keep))
         (folder-listing folder steps directory)))))
 
@@ -291,21 +296,26 @@ listing. A path or a name that leads outside the folder is a 403
 outside_folder."
   (:route nil "files")
   (:on (folder-refused (condition)
-         (when (eq (getf env :request-method) :post) (drain-upload env))
          (gateway-error-response (folder-refused-status condition) (folder-refused-code condition)
                                  (folder-refused-detail condition))))
-  (let* ((folder (session-folder session-id))
-         (steps (folder-steps (or (folder-query env "path") "")))
-         (flag (lambda (key) (member (folder-query env key) '("1" "true") :test #'equal))))
-    (case (getf env :request-method)
-      (:get (multiple-value-bind (path kind stat) (folder-resolve folder steps)
-              (case kind
-                (:directory (folder-listing folder steps path))
-                (:file (folder-file steps path stat (funcall flag "download")))
-                (t (folder-refuse 400 "not_a_file" "the path ~a is neither a file nor a folder"
-                                  (steps-path steps))))))
-      (:post (folder-upload env folder steps (folder-query env "name") (funcall flag "replace")))
-      (t (gateway-error-response 405 "method_not_allowed" "files is a GET or POST control operation")))))
+  ;; However the request ends -- a refusal, a write the folder or the disk
+  ;; refused, the answer itself -- what is left of an upload's body is read
+  ;; off first (DRAIN-UPLOAD): a folder this process may not write refused
+  ;; the temp before a byte was read, and its error left the whole body there.
+  (let ((unread (list (if (eq (getf env :request-method) :post) (or (getf env :content-length) 0) 0))))
+    (with-cleanup ((drain-upload env (car unread)))
+      (let* ((folder (session-folder session-id))
+             (steps (folder-steps (or (folder-query env "path") "")))
+             (flag (lambda (key) (member (folder-query env key) '("1" "true") :test #'equal))))
+        (case (getf env :request-method)
+          (:get (multiple-value-bind (path kind stat) (folder-resolve folder steps)
+                  (case kind
+                    (:directory (folder-listing folder steps path))
+                    (:file (folder-file steps path stat (funcall flag "download")))
+                    (t (folder-refuse 400 "not_a_file" "the path ~a is neither a file nor a folder"
+                                      (steps-path steps))))))
+          (:post (folder-upload env folder steps (folder-query env "name") (funcall flag "replace") unread))
+          (t (gateway-error-response 405 "method_not_allowed" "files is a GET or POST control operation")))))))
 
 ;;; --- the folder a new session would open in -----------------------------------------
 ;;;
