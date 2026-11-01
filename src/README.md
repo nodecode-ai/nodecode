@@ -56,7 +56,8 @@ src/
   test/            mirrors src/; support.lisp at the root
   cells/           bundle.json pins the nodecode-ai/cells commit; just cells-pull
                    fetches each cell into its own git-ignored folder
-  tools/           lint, bloat ledger, install and release scripts
+  tools/           checks, build, release, installers and QA, one folder per job
+                   (tools/README.md)
 ```
 
 Each concern has one owner and each owner one file. The `.asd` lists every
