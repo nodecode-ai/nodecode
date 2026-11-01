@@ -276,13 +276,12 @@ discarded. REFUSED: the prompt promoted before the gateway read
 the withdrawal — the hold ends, the text goes back out of the composer
 while it is still exactly what the peel wrote, and a hint says why."
   (when held
-    (if (string= status "accepted")
-        (when-let (images (nlk::content-image-attachments (json-value response :any "images")))
-          (setf model.pending-images (append model.pending-images images)))
-        (progn
-          (release-held-prompt model)
-          (when (equal (editor-value model.editor) (getf held :text)) (editor-reset model.editor))
-          (show-status model "That prompt already started")))))
+    (cond ((string= status "accepted")
+           (when-let (images (nlk::content-image-attachments (json-value response :any "images")))
+             (setf model.pending-images (append model.pending-images images))))
+          (t (release-held-prompt model)
+             (when (equal (editor-value model.editor) (getf held :text)) (editor-reset model.editor))
+             (show-status model "That prompt already started")))))
 
 (defun send-navigate-checkpoint (ws session-id &key target-turn-id
                                                     boundary
@@ -1079,15 +1078,13 @@ attached session's, the one this shell's stop acts on."
     ;; gesture, never to the submit flow the pending-command guard below
     ;; tracks, and a submission parked at the same moment must not swallow it.
     (when (string= command "interrupt_exec")
-      (if (string= status "accepted")
-          (show-status model "Interrupt requested")
-          (progn
+      (cond ((string= status "accepted") (show-status model "Interrupt requested"))
             ;; The receipt names no exec, so a refusal clears every mark.
-            (dolist (row (state-background-rows model.state))
-              (setf (bg-row-stopping row) nil))
-            (show-status model (format nil "Interrupt refused: ~a"
-                                       (result-refusal payload "the exec is gone"))
-                         :error-p t)))
+            (t (dolist (row (state-background-rows model.state))
+                 (setf (bg-row-stopping row) nil))
+               (show-status model (format nil "Interrupt refused: ~a"
+                                          (result-refusal payload "the exec is gone"))
+                            :error-p t)))
       (return-from gateway-command-result nil))
     (when (or (null model.pending-command-id)
               (equal model.pending-command-id command-id)
@@ -4092,8 +4089,7 @@ signed in to nodecode.ai -- the row that signs it in (MODELS-SIGN-IN-ROWS).
                   rows))
             (picker-search-handlers dialog)
             ;; a result step's edit keys reach the query too: they rebuild nothing
-            (lambda (dialog query)
-              (declare (ignore query))
+            (lambda-ignoring (dialog query)
               (when (and (eq :provider (connect-dialog-step dialog))
                          (not (eq searching (querying))))
                 (setf (picker-dialog-rows dialog) (funcall (connect-dialog-provider-rows dialog)))))))
@@ -5225,17 +5221,16 @@ the list on both shells)."
                               rows)))
           ;; ... save that its cell is still starting, which is why it is
           ;; not among the connected yet
-          (if held
-              (progn
-                (setf (picker-row-value held) (list* :install offer (picker-row-value held)))
-                (when (getf offer :starting)
-                  (setf (picker-row-detail held)
-                        (let ((detail (picker-row-detail held)))
-                          (format nil "~@[~a  ~]starting" (and (plusp (length detail)) detail))))))
-              (push (make-picker-row :label (getf offer :name)
-                                     :detail (if (getf offer :starting) "starting" "")
-                                     :value (list :provider id :install offer))
-                    rows))))
+          (cond (held
+                 (setf (picker-row-value held) (list* :install offer (picker-row-value held)))
+                 (when (getf offer :starting)
+                   (setf (picker-row-detail held)
+                         (let ((detail (picker-row-detail held)))
+                           (format nil "~@[~a  ~]starting" (and (plusp (length detail)) detail))))))
+                (t (push (make-picker-row :label (getf offer :name)
+                                          :detail (if (getf offer :starting) "starting" "")
+                                          :value (list :provider id :install offer))
+                         rows)))))
       (let* ((sorted (stable-sort (sort rows #'string-lessp :key #'provider)
                                   (lambda (a b &aux (at (pin a)) (bt (pin b)))
                                     (cond ((and at bt) (< at bt))
@@ -5649,8 +5644,7 @@ dialog took the screen meanwhile."
                                                                (list (json-object "provider" (first tokens)
                                                                                   "model" (second tokens))))
                                                        'vector))))
-          :then (lambda (model picked)
-                  (declare (ignore picked))
+          :then (lambda-ignoring (model picked)
                   (reopen-models-backup-tab model nil))))
         (:test
          (show-status model "Testing backups…")
@@ -7446,11 +7440,10 @@ again after). A recap whose turn the listing does not carry stays a node.
     ;; puts the head on its turn, the one the operator reads it under.
     (dolist (entry entries)
       (when (and (checkpoint-turn-entry-p entry) (metro-recap-p entry))
-        (let ((node (gethash (up entry) by-id)))
-          (when node
-            (setf (getf node :recaps) (append (getf node :recaps) (list entry)))
-            (when (eq t (gethash "is_head" entry))
-              (setf (getf node :head-p) t)))))))
+        (when-let (node (gethash (up entry) by-id))
+          (setf (getf node :recaps) (append (getf node :recaps) (list entry)))
+          (when (eq t (gethash "is_head" entry))
+            (setf (getf node :head-p) t))))))
   (let ((nodes (stable-sort (nreverse nodes) #'< :key (lambda (node) (getf node :position)))))
     ;; A cancelled ask whose parent was asked the same again later says so.
     (dolist (node nodes)
@@ -7493,15 +7486,13 @@ ended above the row it starts on."
              (setf (gethash id holder) line)))
   (setf lines (nreverse lines))
   (dolist (line lines)
-    (let ((ids (setf (metro-line-nodes line) (reverse (metro-line-nodes line)))))
-      (when ids
-        (setf (metro-line-start line) (gethash (first ids) index)
-              (metro-line-end line) (gethash (car (last ids)) index)))))
+    (when-let (ids (setf (metro-line-nodes line) (reverse (metro-line-nodes line))))
+      (setf (metro-line-start line) (gethash (first ids) index)
+            (metro-line-end line) (gethash (car (last ids)) index))))
   ;; The rail a line left runs on down to the row the line starts on.
   (dolist (line (rest lines))
-    (let ((up (and (metro-line-from line) (gethash (metro-line-from line) holder))))
-      (when up
-        (setf (metro-line-end up) (max (metro-line-end up) (metro-line-start line))))))
+    (when-let (up (and (metro-line-from line) (gethash (metro-line-from line) holder)))
+      (setf (metro-line-end up) (max (metro-line-end up) (metro-line-start line)))))
   (let ((ends (make-array 1 :adjustable t :fill-pointer 1
                             :initial-element (metro-line-end main))))
     (dolist (line (rest lines))
@@ -7697,8 +7688,7 @@ said, or when it ran while the listing carries no words of it."
                    ""))
          (row (make-picker-row :label (format nil "recap ~a" said) :heading t)))
     (setf (picker-row-paint row)
-          (lambda (selected room)
-            (declare (ignore selected))
+          (lambda-ignoring (selected room)
             (values (clip-segs (append (list (make-seg :text "         " :tone :muted))
                                        (metro-cell-segs cells)
                                        (list (make-seg :text " " :tone :muted)
@@ -8325,8 +8315,7 @@ It names the day and is never chosen; a rule runs from it to the edge."
                            (nth-value 1 (local-date (encode-universal-time 0 0 12 date month year)))))))
          (row (make-picker-row :label label :heading t)))
     (setf (picker-row-paint row)
-          (lambda (selected room)
-            (declare (ignore selected))
+          (lambda-ignoring (selected room)
             (list (make-seg :text " " :tone :muted)
                   (make-seg :text label :tone :muted :bold t)
                   (make-seg :text " " :tone :muted)
@@ -8962,10 +8951,7 @@ position the page behind it ends under, NIL when this one starts the session."
   ;; it wait. 128 is the first page only; a rested highlight reads the
   ;; pages behind it (SESSIONS-PREVIEW-OLDER), and the replay an Enter
   ;; starts reads the rest.
-  (let ((page (session-control-call model :get
-                                    (if before
-                                        (format nil "history?limit=128&before=~d" before)
-                                        "history?limit=128")
+  (let ((page (session-control-call model :get (format nil "history?limit=128~@[&before=~d~]" before)
                                     :session-id session-id)))
     (cons (gethash "frames" page)
           (and (gethash "has_more" page) (gethash "next_before" page)))))
@@ -9101,9 +9087,8 @@ repaint when ENTRY is still the preview. => T when that moved the screen."
       (t
        (let* ((older (frames-events (car page)))
               (events (getf paging :events))
-              (all (make-array (+ (length older) (length events)) :adjustable t :fill-pointer t)))
-         (replace all older)
-         (replace all events :start1 (length older))
+              (all (make-array (+ (length older) (length events)) :adjustable t :fill-pointer t
+                               :initial-contents (concatenate 'vector older events))))
          (setf (cdr entry) (preview-carry-slots (cdr entry) (fold-events all)
                                                 (eq :landed (getf paging :header)))
                (getf paging :events) all
