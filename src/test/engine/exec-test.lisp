@@ -976,6 +976,30 @@ completed. BODY runs with SID bound."
     (is (search "2 lines" receipt) receipt)
     (is (equal (format nil "one~%two~%") (uiop:read-file-string path)))))
 
+#-win32
+(deftest edit-and-write-file-keep-the-files-own-mode (with-temp-trees ((root "file-mode")))
+  ;; The rename that replaces a file carries its mode across: an edit never
+  ;; drops a script's executable bit (it dropped pack-macos.sh's, again and
+  ;; again, each time a commit carrying it as a mode change) nor widens an
+  ;; operator's 0600. A new file takes the ordinary mode, never an executable one.
+  (let ((script (namestring (merge-pathnames "run.sh" root)))
+        (secret (namestring (merge-pathnames "key.env" root)))
+        (fresh (namestring (merge-pathnames "new.txt" root))))
+    (flet ((mode (path) (logand #o7777 (sb-posix:stat-mode (sb-posix:stat path)))))
+      (nle:write-file script (format nil "echo one~%"))
+      (sb-posix:chmod script #o755)
+      (nle:edit script "one" "two")
+      (is (= #o755 (mode script)) (format nil "edit left run.sh ~o" (mode script)))
+      (nle:write-file script (format nil "echo three~%"))
+      (is (= #o755 (mode script)) (format nil "write-file left run.sh ~o" (mode script)))
+      (is (equal (format nil "echo three~%") (uiop:read-file-string script)))
+      (nle:write-file secret (format nil "K=1~%"))
+      (sb-posix:chmod secret #o600)
+      (nle:edit secret "K=1" "K=2")
+      (is (= #o600 (mode secret)) (format nil "edit left key.env ~o" (mode secret)))
+      (nle:write-file fresh "x")
+      (is (zerop (logand #o111 (mode fresh))) (format nil "a new file came out ~o" (mode fresh))))))
+
 (deftest write-file-names-a-missing-final-newline (with-temp-trees ((root "write-file-eol")))
   ;; The receipt counts lines the way an editor does, so `one~%two` and
   ;; `one~%two~%` both read "2 lines" while wc -l counts 1 and 2: the
