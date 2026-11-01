@@ -1,4 +1,4 @@
-;;;; activity.lisp --- what a tool call did, said in words. Evolved package.
+;;;; tool-summary.lisp --- what a tool call did, said in words. Evolved package.
 ;;;;
 ;;;; SPDX-License-Identifier: MIT
 ;;;;

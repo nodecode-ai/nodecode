@@ -1,4 +1,4 @@
-;;;; cells-test.lisp --- the cell parser and the diff painter.
+;;;; screen-test.lisp --- the cell parser and the diff painter.
 ;;;;
 ;;;; SPDX-License-Identifier: MIT
 ;;;;

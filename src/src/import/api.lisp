@@ -1,4 +1,4 @@
-;;;; verbs.lisp --- the verbs, /import, POST /api/import, the watch.
+;;;; api.lisp --- the verbs, /import, POST /api/import, the watch.
 ;;;;
 ;;;; SPDX-License-Identifier: MIT
 ;;;;

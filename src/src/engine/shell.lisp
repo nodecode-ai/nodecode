@@ -3,7 +3,7 @@
 ;;;;
 ;;;; SPDX-License-Identifier: MIT
 ;;;;
-;;;; One authority for what (sh ...) hands sh -c: activity.lisp reads it to
+;;;; One authority for what (sh ...) hands sh -c: tool-summary.lisp reads it to
 ;;;; name what a transcript card should say of the command. Not a shell: it
 ;;;; splits far enough to name each command's program, words, redirects and
 ;;;; here-documents, and marks a command substitution as one that may do

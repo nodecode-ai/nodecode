@@ -1,4 +1,4 @@
-;;;; cell-test.lisp --- the cell composition DSL and the scope under it.
+;;;; cell-dsl-test.lisp --- the cell composition DSL and the scope under it.
 ;;;;
 ;;;; SPDX-License-Identifier: MIT
 ;;;;

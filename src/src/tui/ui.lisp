@@ -1567,7 +1567,7 @@ else."
 
 (defun span-target-uri (target)
   "The URI for a fact's TARGET — (:PATH . STRING) or (:URL . STRING), the
-shape activity.lisp hands a title — or NIL."
+shape tool-summary.lisp hands a title — or NIL."
   ;; A fact names its own address, so a path here is taken at its word; only
   ;; prose has to look like one first.
   (when (consp target)
@@ -2921,7 +2921,7 @@ collectTranscriptRows)."
 activity).")
 
 (defun row-activity (row)
-  "ROW's ACTIVITY (activity.lisp): what its tool call did, in words — or NIL
+  "ROW's ACTIVITY (tool-summary.lisp): what its tool call did, in words — or NIL
 for a row that is no tool call, or a tool that module has no words for."
   ;; The reducers replace these fields rather than mutate them, so identity is
   ;; the change signal.
@@ -3669,7 +3669,7 @@ produced it for a fact that carries bytes and no path."
 
 (defun image-card-title-lline (image row)
   "The card's title, in the shape every other tool card's has: the :IMAGE
-family's own verb (activity.lisp *ACTIVITY-FAMILIES* — `Viewed', `Viewing'
+family's own verb (tool-summary.lisp *ACTIVITY-FAMILIES* — `Viewed', `Viewing'
 while the call runs) over the image's name, then the status word a card ends
 with when it is not simply complete."
   ;; The whole path this is the name of lives in the caption under the

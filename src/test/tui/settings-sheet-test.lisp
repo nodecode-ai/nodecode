@@ -1,4 +1,4 @@
-;;;; settings-test.lisp --- /settings: the sheet in the middle of the frame,
+;;;; settings-sheet-test.lisp --- /settings: the sheet in the middle of the frame,
 ;;;; through the canonical route.
 ;;;; SPDX-License-Identifier: MIT
 

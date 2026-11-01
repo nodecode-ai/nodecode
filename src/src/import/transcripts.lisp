@@ -1,4 +1,4 @@
-;;;; sessions.lisp --- foreign conversations as exchanges with their own clock.
+;;;; transcripts.lisp --- foreign conversations as exchanges with their own clock.
 ;;;;
 ;;;; SPDX-License-Identifier: MIT
 ;;;;
