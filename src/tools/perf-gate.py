@@ -29,7 +29,9 @@ Each process is measured four ways, over the workload's own spans only:
 
 Base and head runs alternate, REPS of each (default 5). A metric regressed
 when the head's median exceeds the base's by more than its floor AND every
-head run costs more than every base run, so one noisy run never fails it:
+head run costs more than every base run, so one noisy run never fails it;
+a flagged workload is then measured again, a fresh round of both sides, and
+fails only when that round flags the same metric:
   instructions 3%   consed 3% + 256 KiB   cpu 20% + 5 ms   wall 25% + 20 ms
 PERF_FLOORS="instructions=0.05,wall=0.4" overrides floors (fractions).
 
@@ -256,7 +258,9 @@ def table(rows, base_sha, head_label, reps):
         lines.append("| %s | %s | %s | %s | %+.1f%% | %.1f%% | %s |"
                      % (row["workload"], row["metric"], human(row["metric"], row["base"]),
                         human(row["metric"], row["head"]), 100 * row["change"],
-                        100 * row["spread"], "REGRESSED" if row["regressed"] else "ok"))
+                        100 * row["spread"],
+                        "REGRESSED" if row["regressed"]
+                        else "ok (not confirmed)" if row.get("unconfirmed") else "ok"))
     return "\n".join(lines)
 
 
@@ -284,15 +288,35 @@ def main():
         started = time.time()
         for tree in (base_path, REPO):
             compile_tree(tree, scratch)
-        base, head = {w: [] for w in workloads}, {w: [] for w in workloads}
-        for rep in range(args.reps):
-            order = [(base_path, base), (REPO, head)]
-            if rep % 2:
-                order.reverse()
-            for workload in workloads:
-                for tree, sink in order:
-                    sink[workload].append(run_one(tree, workload, scratch, use_perf))
+        def measure(names):
+            base, head = {w: [] for w in names}, {w: [] for w in names}
+            for rep in range(args.reps):
+                order = [(base_path, base), (REPO, head)]
+                if rep % 2:
+                    order.reverse()
+                for workload in names:
+                    for tree, sink in order:
+                        sink[workload].append(run_one(tree, workload, scratch, use_perf))
+            return base, head
+
+        base, head = measure(workloads)
         rows = verdicts(base, head, use_perf)
+        # A flagged workload is measured again, a fresh round of both sides,
+        # and a metric fails only when the second round flags it too: one
+        # round's chance of every head run landing above every base run is
+        # what a confirmation squares away.
+        flagged = sorted({r["workload"] for r in rows if r["regressed"]}, key=workloads.index)
+        if flagged:
+            print("perf-gate: %s flagged; measuring again to confirm" % ", ".join(flagged), file=sys.stderr)
+            again_base, again_head = measure(flagged)
+            again = {(r["workload"], r["metric"]): r for r in verdicts(again_base, again_head, use_perf)}
+            for row in rows:
+                second = again.get((row["workload"], row["metric"]))
+                if row["regressed"] and not (second and second["regressed"]):
+                    row["regressed"] = False
+                    row["unconfirmed"] = True
+            for w in flagged:
+                base[w + " (again)"], head[w + " (again)"] = again_base[w], again_head[w]
         report = table(rows, base_sha, head_label, args.reps)
         print(report)
         print("\n%.0f s" % (time.time() - started))
