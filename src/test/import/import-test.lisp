@@ -276,7 +276,7 @@
                               (nik:item-source left) (nik::item-world left))
                       text))))
       (nik:apply-plan plan)
-      (is (<= (length (uiop:read-file-string (nlk:home "AGENTS.md"))) limit))
+      (is (<= (nlk:utf-8-size (uiop:read-file-string (nlk:home "AGENTS.md"))) limit))
       (is-present (text (cdr (nle::operator-rules-section))) "and a session reads what landed"
         (is (search (format nil "## ~a — ~a" (nik::item-world kept) (nik:item-source kept)) text)))))
   ;; A file past the limit on its own says that.
@@ -288,6 +288,16 @@
       (is (search (format nil ".claude/CLAUDE.md is ~a" (nlk:size-text (* 2 nle::+instructions-byte-limit+))) text))
       "trim it and run `nodecode import claude'")
     (is (null (probe-file (merge-pathnames "AGENTS.md" home))) "nothing written for it"))
+  ;; Sized as a session sizes it, in UTF-8 bytes: under the limit in
+  ;; characters but over it in bytes, a file would land where no session
+  ;; reads it.
+  (let ((characters (floor nle::+instructions-byte-limit+ 2)))
+    (import-write box ".claude/CLAUDE.md" (make-string characters :initial-element (code-char #x65E5)))
+    (let ((item (first (import-items (nik:make-plan :source "claude" :only "instructions")
+                                     "instructions"))))
+      (is (equal "skipped" (nik:item-status item)) "32 Ki characters of CJK are 96 KiB")
+      (is (search (format nil ".claude/CLAUDE.md is ~a" (nlk:size-text (* 3 characters))) (nik:item-reason item)))
+      (is (null (probe-file (merge-pathnames "AGENTS.md" home))) "nothing written for it")))
   ;; A persona is held to what a chat bot reads (channels/kit/soul.lisp):
   ;; past it, no bot speaks in it, so it is not reported as their voice.
   (import-write box ".hermes/SOUL.md" (make-string (* 2 nlk::+max-harness-bytes+) :initial-element #\s))

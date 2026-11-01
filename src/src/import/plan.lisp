@@ -517,9 +517,10 @@ the providers this import lands that serve it. Else NIL."
                                   :test #'equal :from-end t)))
     (loop for (name . keys)
             in `(("AGENTS.md" :what "rules every session reads" :reader "a session"
-                              :limit ,nle::+instructions-byte-limit+)
+                              :limit ,nle::+instructions-byte-limit+ :measure ,#'nlk:utf-8-size)
                  ("SOUL.md" :what "the voice your chat bots speak in; a terminal session does not read SOUL.md"
-                            :reader "a chat bot" :limit ,nlk::+max-harness-bytes+ :persona t))
+                            :reader "a chat bot" :limit ,nlk::+max-harness-bytes+ :measure ,#'length
+                            :persona t))
           do (apply #'plan-instructions-file plan name
                     (remove-if-not (lambda (fact) (eq (getf keys :persona) (getf fact.value :persona)))
                                    facts)
@@ -566,13 +567,13 @@ lines trimmed off both ends of each."
   "PIECES as the file's text, a blank line between each two."
   (format nil "~{~a~%~^~%~}" (mapcar #'cdr pieces)))
 
-(defun plan-instructions-file (plan name facts &key what reader limit persona)
+(defun plan-instructions-file (plan name facts &key what reader limit (measure #'length) persona)
   "One item a fact of FACTS, landing its text under its own heading in this
 home's file NAME, WHAT that file is to the operator: added after what the
 file holds, or in place of the section it landed before under --overwrite,
 and left out, said, where it would take the file past LIMIT, what READER
-reads. A PERSONA past the operator's own voice lands only under --overwrite,
-in its place."
+reads, sized by READER's own MEASURE of a text. A PERSONA past the operator's
+own voice lands only under --overwrite, in its place."
   (let ((destination (merge-pathnames name (getf plan.settings :home))))
     (labels ((pieces-now () (rules-pieces (or (nlk:read-text destination) "")))
              (shown (path) (nlk:home-abbreviated (uiop:native-namestring path)))
@@ -600,7 +601,7 @@ in its place."
                  (landed (lambda (pieces)
                            (nlk::put-in-place (if mine (remove nil pieces :key #'car) pieces)
                                               heading (cdr section) #'equal)))
-                 (size (length (rules-text (funcall landed pieces)))))
+                 (size (funcall measure (rules-text (funcall landed pieces)))))
             (multiple-value-bind (status reason)
                 (cond
                   ((some (lambda (piece) (cl:search (plain body) (plain (cdr piece)))) pieces)
@@ -615,9 +616,9 @@ in its place."
                   ;; reader, so what would take it there stays out, named.
                   ((> size limit)
                    (values "skipped"
-                           (if (> (length body) limit)
+                           (if (> (funcall measure body) limit)
                                (format nil "left out: ~a is ~a, past the ~a ~a reads — trim it and run `~a'"
-                                       (read-from fact) (nlk:size-text (length body))
+                                       (read-from fact) (nlk:size-text (funcall measure body))
                                        (nlk:size-text limit) reader (again fact))
                                (format nil "left out: with it ~a would be ~a, past the ~a ~a reads — trim ~a or what is already there, and run `~a'"
                                        (shown destination) (nlk:size-text size) (nlk:size-text limit) reader
@@ -629,7 +630,7 @@ in its place."
                                    what (cond (old "replaced its own section")
                                               (mine "in place of your own, under")
                                               (t "added under"))
-                                   heading (and (or old mine) (nlk:size-text (length (or old mine))))
+                                   heading (and (or old mine) (nlk:size-text (funcall measure (or old mine))))
                                    name (nlk:size-text size) (nlk:size-text limit) reader))))
               (add-item plan "instructions" status :fact fact :reason reason
                         :destination (namestring destination)

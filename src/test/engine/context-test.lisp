@@ -1189,9 +1189,9 @@ answering `ok' => the compiled context of the turn's one request."
   (loop for (text) in (nlk:notice-log :limit nlk:+notice-log-size+)
         when (and (search "is not read" text) (search needle text)) collect text))
 
-(defun rules-size-words (length)
-  "The words the refusal of a rules file of LENGTH characters carries."
-  (list (format nil "is not read: ~a" (nlk:size-text length))
+(defun rules-size-words (size)
+  "The words the refusal of a rules file of SIZE bytes carries."
+  (list (format nil "is not read: ~a" (nlk:size-text size))
         (format nil "trim to ~a" (nlk:size-text nle::+instructions-byte-limit+))))
 
 (deftest harness-sections-carry-the-working-directory-instructions ()
@@ -1245,14 +1245,81 @@ answering `ok' => the compiled context of the turn's one request."
         (is (search "rrrr" (instructions "other")) "and another folder still reads it whole")
         (write-temp-file (merge-pathnames "AGENTS.md" dir) "root rules")
         (write-temp-file (merge-pathnames "proj/AGENTS.md" dir) (format nil "  ~%~%"))
-        (is-present (text (instructions "deep")) "a blank file is passed over, the walk goes on"
+        (is-present (text (instructions "deep")) "a blank file passes to its folder's next name, the walk goes on"
           (is (search "root rules" text))
-          (is (= 1 (froms text))))
+          (is (search "claude rules" text) "the folder's CLAUDE.md is read in the blank AGENTS.md's place")
+          (is (= 2 (froms text))))
         (write-temp-file (merge-pathnames "proj/AGENTS.md" dir) "deep rules")
         (is (search "deep rules" (instructions "deep")) "trimmed, it is read at the next build")
         (is (null (instructions nil)) "no session, no section")
         (is (search "<harness key=\"instructions\">"
                     (nle::harness-overlay-prompt "base" (nle::read-harness-sections "root"))))))))
+
+(defun instructions-trace (folders &key (limit nle::+instructions-byte-limit+))
+  "What proofs/ContextBudget.lean's `read LIMIT FOLDERS' answers, on the real
+INSTRUCTIONS-FILES and INSTRUCTIONS-SECTION: the paths that ride, the
+farthest first. FOLDERS lists folders nearest first, each what its AGENTS.md,
+CLAUDE.md and .cursorrules are, in that order: NIL missing, :UNREADABLE a
+file that does not decode, :HOME the home's own AGENTS.md (the one folder is
+then the home), or (PATH TEXT)."
+  (with-temp-workspace (root)
+    (let* ((home (find :home (first folders)))
+           (depth (length folders))
+           (dirs (loop for i below depth
+                       collect (if home
+                                   (nlk:home)
+                                   (merge-pathnames (format nil "~{f~a/~}" (alexandria:iota (- depth i) :start 1))
+                                                    root))))
+           (written '())
+           (paths '()))
+      (unwind-protect
+           (progn
+             (loop for folder in folders
+                   for dir in dirs
+                   do (loop for name in nle::*instructions-file-names*
+                            for candidate in folder
+                            for file = (merge-pathnames name dir)
+                            do (when candidate
+                                 (ensure-directories-exist file)
+                                 (push file written))
+                               (etypecase candidate
+                                 (null)
+                                 ((eql :unreadable)
+                                  (alexandria:write-byte-vector-into-file
+                                   (coerce '(#x61 #xFF) '(vector (unsigned-byte 8))) file :if-exists :supersede))
+                                 ((eql :home) (write-temp-file file "home rules"))
+                                 (cons (write-temp-file file (second candidate))
+                                       (push (cons (first candidate) (namestring (truename file))) paths)))))
+             (let* ((nle::+instructions-byte-limit+ limit)
+                    (text (cdr (nle::instructions-section (nle::instructions-files (first dirs))))))
+               (mapcar #'car (sort (loop for (id . path) in paths
+                                         for at = (and text (search (format nil "From ~a:" path) text))
+                                         when at collect (cons id at))
+                                   #'< :key #'cdr))))
+        (when home
+          (mapc #'uiop:delete-file-if-exists written))))))
+
+(deftest instructions-files-hold-to-contextbudget-lean-traces ()
+  ;; proofs/ContextBudget.lean proves the reading over every folder, limit
+  ;; and measure of size -- a folder's file is its first readable, non-blank
+  ;; name; the files kept never pass the budget, filled nearest first; no file
+  ;; left out would fit -- and these are its decided traces, by name, on the
+  ;; real functions. Before, the first name that existed was the folder's,
+  ;; so a blank AGENTS.md hid CLAUDE.md, and the budget counted characters.
+  (let ((claude '(2 "claude rules")))
+    (loop for (name expected folders limit)
+            in `(("trace_blank_passes" (2) (((1 ,(format nil "  ~%")) ,claude nil)))
+                 ("trace_unreadable_passes" (2) ((:unreadable ,claude nil)))
+                 ("trace_first_wins" (1) (((1 "agents rules") ,claude nil)))
+                 ("trace_last_name" (3) ((nil nil (3 "cursor rules"))))
+                 ("trace_home" () ((:home ,claude nil)))
+                 ("trace_over_budget_not_replaced" () (((1 "xxxxxxxxxxxxxxxxx") (2 "claude") nil)) 16)
+                 ("trace_fill" (3 1) (((1 "pppppppppp")) ((2 "rrrrrrrrr")) ((3 "ssssss"))) 16)
+                 ("trace_exactly_the_limit" (1) (((1 "aaaaaaaaaaaaaaaa"))) 16)
+                 ("trace_bytes_not_characters" () (((1 "日本語日本語"))) 16)
+                 ;; at the build's own limit: 24,000 CJK characters are 72,000 bytes
+                 ("the build's own limit" () (((1 ,(make-string 24000 :initial-element (code-char #x65E5)))))))
+          do (is (equal expected (instructions-trace folders :limit (or limit nle::+instructions-byte-limit+))) name))))
 
 (deftest harness-sections-carry-the-home-operator-rules ()
   ;; am-101: the home's own AGENTS.md -- where an import lands another
