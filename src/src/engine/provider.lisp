@@ -4751,8 +4751,7 @@ functions below."
     (note-phase "connect pooled=~d ~a"
                 (pooled-connection-count endpoint) (provider-connection-key endpoint)))
   (let ((seconds config.request-timeout)
-        (session (and *current-durable-turn*
-                      (nlk:durable-turn-session-id *current-durable-turn*))))
+        (session (eval-session-id)))
     (multiple-value-bind (stream status response-headers)
         (with-idle-cut (seconds)
             (with-read-deadline (seconds)

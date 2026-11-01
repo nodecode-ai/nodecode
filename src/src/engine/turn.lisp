@@ -606,18 +606,13 @@ member it declares" refusal))))
                                                   ((string-equal type "null") (null value))
                                                   (t t))))
                                collect (list key type)))))
-        (when missing
-          (refuse "missing_required_argument"
-                  (coerce missing 'vector)
-                  (keys arguments)
-                  (format nil "provide required key~:[s~;~]: ~{~a~^, ~}"
-                          (= 1 (length missing)) missing)))
-        (when bad
-          (refuse "argument_type_mismatch"
-                  (coerce bad 'vector)
-                  (keys arguments)
-                  (format nil "correct argument type~:[s~;~]: ~{~{~a requires ~a~}~^, ~}"
-                          (= 1 (length bad)) bad)))
+        (loop for (code items control) in `(("missing_required_argument" ,missing
+                                              "provide required key~:[s~;~]: ~{~a~^, ~}")
+                                             ("argument_type_mismatch" ,bad
+                                              "correct argument type~:[s~;~]: ~{~{~a requires ~a~}~^, ~}"))
+              when items
+                do (refuse code (coerce items 'vector) (keys arguments)
+                           (format nil control (= 1 (length items)) items)))
         (values arguments nil)))))
 
 (defun tools-payload (&optional (tools *tools*))
@@ -1527,9 +1522,7 @@ form binds are no calls; anything the walk does not know is refused."
              (walk (x)
                (when (minusp (decf budget))
                  (return-from replay-safe-form-p nil))
-               (typecase x
-                 (cons (and (ignore-errors (list-length x)) (call x)))
-                 (t t)))
+               (or (atom x) (and (ignore-errors (list-length x)) (call x))))
              (bindings (list)
                (and (listp list)
                     (every (lambda (binding)
@@ -1567,8 +1560,7 @@ form binds are no calls; anything the walk does not know is refused."
                  (handler-case (and (walk (second x)) (clauses (cddr x) :handler)))
                  (t (cond ((and (consp head) (eq 'lambda (car head)))
                            (and (lambda-body (cdr head)) (forms (cdr x))))
-                          ((and (symbolp head) (operator-p head)) (forms (cdr x)))
-                          (t nil))))))
+                          ((and (symbolp head) (operator-p head)) (forms (cdr x))))))))
       (walk form))))
 
 (defun replay-safe-snippet-p (arguments)
@@ -1595,7 +1587,7 @@ it printed whole inside *WATCH-SIZE* and readably: a value worth watching."
   "OBJECT printed for a change line, as a watched value prints."
   (values (watch-value-text object)))
 
-(defun watch-changes (old new &optional path)
+(defun watch-changes (old new &optional path whole)
   "What changed from OLD to NEW, one entry per place: two lists of one
 length are held place by place, a place named by its index path [i j], and
 an element too long to show whole is opened the same way; two lists of
@@ -1603,26 +1595,21 @@ different lengths say what came (+) and what went (-); anything else reads
 old -> new."
   (let ((at (and path (format nil "[~{~d~^ ~}] " (reverse path)))))
     (cond ((equal old new) nil)
-          ((not (and (alexandria:proper-list-p old) (alexandria:proper-list-p new)))
+          ((or whole (not (and (alexandria:proper-list-p old) (alexandria:proper-list-p new))))
            (list (format nil "~@[~a~]~a -> ~a" at (watch-print old) (watch-print new))))
           ((= (length old) (length new))
            (loop for a in old
                  for b in new
                  for i from 0
                  unless (equal a b)
-                   append (if (and (consp a) (consp b)
-                                   (> (length (watch-print a)) *watch-width*))
-                              (watch-changes a b (cons i path))
-                              (watch-changes-at a b (cons i path)))))
+                   append (watch-changes a b (cons i path)
+                                         (not (and (consp a) (consp b)
+                                                   (> (length (watch-print a)) *watch-width*))))))
           (t (let ((came (remove-if (lambda (x) (member x old :test #'equal)) new))
                    (went (remove-if (lambda (x) (member x new :test #'equal)) old)))
                (list (format nil "~@[~a~]~@[+~a~]~:[~; ~]~@[-~a~]"
                              at (and came (watch-print came)) (and came went)
                              (and went (watch-print went)))))))))
-
-(defun watch-changes-at (old new path)
-  "The one entry of a place PATH that went from OLD to NEW."
-  (list (format nil "[~{~d~^ ~}] ~a -> ~a" (reverse path) (watch-print old) (watch-print new))))
 
 (defun watch-change-text (watch text object)
   "How WATCH changing to TEXT, OBJECT printed, reads on its line, never cut
@@ -1642,11 +1629,6 @@ whole, `now ...'."
   "WATCH's form as its lines name it."
   (nlk:one-line watch.text :cap 60 :ellipsis "…"))
 
-(defun watch-session ()
-  "The session the evaluating snippet belongs to, whose snippets it watches, or
-NIL outside one: a driver's own forms and a slash op watch nothing."
-  (and *current-durable-turn* (nlk:durable-turn-session-id *current-durable-turn*)))
-
 (defun watched-text (text entry value started &optional acted)
   "TEXT, a snippet's result, followed by what its session's watched snippets say.
 ENTRY is the snippet's last form and its text as read, VALUE its value and
@@ -1656,7 +1638,7 @@ watched from now on and says so -- the model's reader is most often a
 definition and its call, in one snippet -- and a snippet that reached outside,
 before that form or in it, first runs the watched snippets again, each that
 changed or closed adding its line."
-  (let ((session (watch-session)))
+  (let ((session (eval-session-id)))
     (if (null session)
         text
         (bind (((shown whole)
@@ -1863,11 +1845,9 @@ with TAG; see RAW-TEXT-END."
                           (return))
                         (write-string lead out)
                         (write-string tag out :end matched)
-                        (loop for c = (read-char stream nil nil)
-                              do (cond ((null c)
-                                        (error 'end-of-file :stream stream))
-                                       (t (write-char c out)
-                                          (when (char= c #\Newline) (return)))))))))))
+                        (loop for c = (read-char stream)
+                              do (write-char c out)
+                              until (char= c #\Newline))))))))
       (if *read-suppress* nil text))))
 
 (defun raw-text-readtable (&optional (readtable *readtable*))
@@ -1981,11 +1961,7 @@ is still on the stack. Declines, so the snippet's own arm still answers."
                     (lambda (frame)
                       (when-let (name (ignore-errors (sb-debug::frame-call frame)))
                         (return-from found
-                          (let ((text (let ((*print-pretty* nil))
-                                        (princ-to-string name))))
-                            (if (> (length text) 90)
-                                (format nil "~a..." (subseq text 0 90))
-                                text)))))
+                          (nlk:clip (let ((*print-pretty* nil)) (princ-to-string name)) 90))))
                     :count 3)
                    nil))))))
 
@@ -2087,10 +2063,7 @@ a snippet is not atomic, and the model must know exactly where it stopped."
   (if (<= count 1)
       (format nil "ERROR: ~a" message)
       (flet ((preview (text)
-               (let ((line (subseq text 0 (or (position #\Newline text) (length text)))))
-                 (if (> (length line) 60)
-                     (format nil "~a..." (subseq line 0 60))
-                     line))))
+               (nlk:clip (subseq text 0 (or (position #\Newline text) (length text))) 60)))
         (format nil "ERROR in form ~d of ~d (~{~a~^; ~}): ~a" index count
                 (append (when (> index 1)
                           (list (format nil "form~:[s 1-~d~;~* 1~] evaluated and stand~:[~;s~]: ~{~a~^, ~}"
@@ -2185,9 +2158,7 @@ asked — that is the property that makes this substrate worth choosing."
               (*trace-output* stream)
               ;; The ambient scribe session: the layer write below names it
               ;; in its commit and keys its durable fact off it.
-              (nlk:*scribe-session-id*
-                (and *current-durable-turn*
-                     (nlk:durable-turn-session-id *current-durable-turn*)))
+              (nlk:*scribe-session-id* (eval-session-id))
               ;; The REPL's history variables, this session's: * ** *** the
               ;; last values of its last three finished snippets, / // /// the
               ;; lists of their values. Dynamic bindings, so a gateway
