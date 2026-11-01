@@ -4446,11 +4446,14 @@ not said again.")
 (defun retry-wanted-p (cell)
   "Whether CELL is still a loaded peripheral, present, that refused its
 start: what a retry tries again."
-  (and cell
-       (eq cell.state :loaded)
-       cell.start
-       (not cell.started-p)
-       cell.refusal
+  (and cell cell.refusal (cell-startable-p cell)))
+
+(defun cell-startable-p (cell)
+  "Whether CELL is a loaded peripheral not started, still present: what a
+start starts."
+  ;; A folder taken out of the one folder (control.lisp's off) keeps its code
+  ;; until a restart, never its start: presence is consent.
+  (and (eq cell.state :loaded) cell.start (not cell.started-p)
        (or (null cell.path) (probe-file cell.path))))
 
 (defun retry-cell-start (name &aux (handler *gateway-handler*))
@@ -4488,14 +4491,7 @@ One thread per folder; none outside a serving gateway."
                       (namestring nlk::*cells-directory*))
               :level :warning))
     (dolist (cell (nlk:cells))
-      (when (and (cell-selected-p cell names)
-                 (eq cell.state :loaded)
-                 cell.start
-                 (not cell.started-p)
-                 ;; A folder taken out of the one folder (control.lisp's off)
-                 ;; keeps its code until a restart, never its start: presence
-                 ;; is consent.
-                 (or (null cell.path) (probe-file cell.path)))
+      (when (and (cell-selected-p cell names) (cell-startable-p cell))
         (let ((name cell.name))
           (handler-case
               (let ((stop (funcall cell.start config)))
@@ -5053,6 +5049,17 @@ back after them (NLK:TRIM-MEMORY)."
 flight; also its first wait, so the answer that asked for it is out before
 the process goes.")
 
+(defmacro spawn-once-idle (place name &body body)
+  "Unless the thread PLACE holds still runs, set PLACE to a thread NAME that
+runs BODY at the first moment no turn is in flight, asked every
+*IDLE-POLL-SECONDS* from the first wait on: one wait at a time, and a later
+ask rides the same one."
+  `(unless (and ,place (bt2:thread-alive-p ,place))
+     (setf ,place (spawn ,name
+                    (loop do (sleep *idle-poll-seconds*)
+                          while (ignore-errors (nlk:any-active-turn-p)))
+                    ,@body))))
+
 (defvar *restart-wait* nil
   "The thread waiting for an idle moment to exit this gateway, or NIL.")
 
@@ -5106,12 +5113,8 @@ installed binary started."
   "Exit this gateway once no turn is in flight, for the next launch to run
 TO, REASON why: one wait at a time, and a later request rides the same one."
   (unless (and *restart-wait* (bt2:thread-alive-p *restart-wait*))
-    (setf *restart-reason* reason
-          *restart-wait*
-          (spawn "restart-wait"
-            (loop do (sleep *idle-poll-seconds*)
-                  while (ignore-errors (nlk:any-active-turn-p)))
-            (funcall *restart-exit* to)))))
+    (setf *restart-reason* reason))
+  (spawn-once-idle *restart-wait* "restart-wait" (funcall *restart-exit* to)))
 
 ;;; --- the channels a live release starts again ------------------------------
 ;;;
@@ -5137,14 +5140,10 @@ TO, REASON why: one wait at a time, and a later request rides the same one."
 release VERSION just live: one wait at a time, and a later release rides the
 same one. => the waiting thread, or NIL."
   (let ((kit (nlk:find-cell *channel-kit-folder*)))
-    (when (and kit (nlk:cell-started-p kit)
-               (not (and *channel-restart-wait* (bt2:thread-alive-p *channel-restart-wait*))))
-      (setf *channel-restart-wait*
-            (spawn "channel-restart-wait"
-              (loop do (sleep *idle-poll-seconds*)
-                    while (ignore-errors (nlk:any-active-turn-p)))
-              (unless *restart-wait*
-                (restart-started-cell *channel-kit-folder* (format nil "~a is live" version))))))))
+    (when (and kit (nlk:cell-started-p kit))
+      (spawn-once-idle *channel-restart-wait* "channel-restart-wait"
+        (unless *restart-wait*
+          (restart-started-cell *channel-kit-folder* (format nil "~a is live" version)))))))
 
 (defun restart-started-cell (name why)
   "Stop the folder NAME and start it again on the shared config as it reads
