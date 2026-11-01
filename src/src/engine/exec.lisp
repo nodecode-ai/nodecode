@@ -422,13 +422,20 @@ and every EXEC-UPDATE of it carries."
   ;; outlived its window. Live-only; dies with the entry.
   (snippet-capture nil)
   ;; The last *EXEC-PREVIEW-BYTES* its (sh ...) child wrote, as they arrived:
-  ;; what a band shows while the command runs. Never the model's output --
-  ;; SH answers its whole capture as the value, and the model reads that.
+  ;; what a band shows while the command runs. Never the model's output
+  ;; stream -- SH answers its whole capture as the value -- but what a look
+  ;; at the running evaluation has not shown yet rides it as :SHELL-OUTPUT.
   (preview nil)
   ;; T while a subscriber has not been sent PREVIEW's news, or the handoff.
   (preview-dirty nil :type boolean)
   ;; When a preview last left (internal real time): its throttle.
   (preview-at 0 :type integer)
+  ;; How many bytes its (sh ...) children wrote in all -- PREVIEW holds the
+  ;; newest of them -- and how many of those a look has shown the model,
+  ;; through a sanitizer of the model's own (EXEC-SHELL-OUTPUT-LOCKED).
+  (shell-total 0 :type integer)
+  (shell-model-cursor 0 :type integer)
+  (shell-model-sanitizer (make-text-sanitizer))
   ;; When it was spawned (internal real time): how long a stopped one ran.
   (started (get-internal-real-time) :type integer)
   ;; Who stopped it, once someone did (EXEC-STOP-PROCESS): (:BY BY :REASON
@@ -803,7 +810,8 @@ the registry lock held (it joins the wait thread)."
 
 (defun exec-park-until (registry id yield-ms &key cursor)
   "Block until YIELD-MS elapses, ID exits or vanishes, the wait is woken via
-WAKE-EXEC-SESSION, or — when CURSOR is given — output arrives past it."
+WAKE-EXEC-SESSION, or — when CURSOR is given — output arrives past it, or its
+(sh ...) child writes what no look has shown the model."
   ;; The verdict and the park share one lock hold: that is the missed-wake
   ;; guard, since wait-observable state only ever changes under this lock.
   (exec-wait registry (/ yield-ms 1000) 0.025
@@ -811,7 +819,8 @@ WAKE-EXEC-SESSION, or — when CURSOR is given — output arrives past it."
                (or (null process)
                    (eq :exited process.status)
                    (and cursor
-                        (> (exec-total-len process) cursor))
+                        (or (> (exec-total-len process) cursor)
+                            (> process.shell-total process.shell-model-cursor)))
                    ;; a wake is one-shot: taken as it is read
                    (shiftf process.wake-pending nil)))))
 
@@ -840,13 +849,22 @@ sanitizer (state persists across contiguous snapshots; a jumped cursor
 restarts it) and advance the model cursor."
   ;; Reaps the process when exited,
   ;; fully projected, and observed by the model. Returns a plist
-  ;; (:output :status :exit-code), or NIL.
+  ;; (:output :shell-output :status :exit-code), or NIL; :SHELL-OUTPUT what
+  ;; its (sh ...) children wrote since the model's last look, or NIL.
   (prog1 (bt2:with-lock-held ((exec-registry-lock registry))
            (when-let (process (exec-find-locked registry id))
              (let* ((output process.output)
                     (base process.base-offset)
                     (start-offset (max cursor base))
-                    (bytes (subseq output (min (- start-offset base) (fill-pointer output)))))
+                    (stop process.stopped)
+                    ;; A stopped form's output ends where it stood at the
+                    ;; stop: the compiler's report of the abort, printed on
+                    ;; the way out, is not what it wrote (EXEC-EXIT-TAIL keeps
+                    ;; the same rule for the card).
+                    (end (if (and stop (eq :exited process.status) (eql 130 process.exit-code))
+                             (max 0 (min (- (getf stop :end) base) (fill-pointer output)))
+                             (fill-pointer output)))
+                    (bytes (subseq output (min (- start-offset base) end) end)))
                (unless (= start-offset process.model-cursor)
                  (setf process.model-sanitizer
                        (make-text-sanitizer)))
@@ -858,6 +876,7 @@ restarts it) and advance the model cursor."
                          reap (exec-reap-locked registry process)))
                  (list :output (note-removed-controls
                                 (octets-to-text clean) dropped)
+                       :shell-output (exec-shell-output-locked process)
                        :status process.status
                        :exit-code process.exit-code)))))
     (when reap (exec-destroy-process reap))))
@@ -922,13 +941,45 @@ from the line that opens with ERROR, that word and its colon left off, cut at
   "The least seconds between two previews of one running snippet.")
 
 (defun note-exec-preview (process text &aux (registry (exec-registry-instance)))
-  "Add TEXT, what PROCESS's (sh ...) child just wrote, to its live preview."
+  "Add TEXT, what PROCESS's (sh ...) child just wrote, to its live preview:
+what a band shows, and what the model's next look at it reads."
   (let ((octets (sb-ext:string-to-octets text :external-format :utf-8)))
     (bt2:with-lock-held ((exec-registry-lock registry))
       (let ((joined (concatenate '(vector (unsigned-byte 8))
                                  (or process.preview #()) octets)))
         (setf process.preview (subseq joined (max 0 (- (length joined) *exec-preview-bytes*)))
-              process.preview-dirty t)))))
+              process.preview-dirty t)
+        (incf process.shell-total (length octets))
+        ;; news for a parked (eval-await ID)
+        (bt2:condition-broadcast registry.change)))))
+
+(defun exec-shell-output-locked (process &aux (preview (or process.preview #()))
+                                              (total process.shell-total)
+                                              (seen process.shell-model-cursor))
+  "=> what PROCESS's (sh ...) children wrote since the model's last look at
+it, as the model reads text -- each line as a terminal last drew it,
+sanitized, led by a line counting the bytes the preview no longer held --
+or NIL when they wrote nothing new. The look advances."
+  ;; The caller holds the registry lock. SH answers its capture only when the
+  ;; command ends, so without this a backgrounded `nodecode add' or build read
+  ;; as silent to the model until its exit, whatever it had printed. PREVIEW
+  ;; holds the newest *EXEC-PREVIEW-BYTES* of TOTAL: a look after a burst
+  ;; reads its tail, and says so.
+  (when (< seen total)
+    (let* ((held-from (- total (length preview)))
+           (from (max seen held-from))
+           (skipped (- from seen)))
+      (setf process.shell-model-cursor total)
+      ;; a jumped cursor restarts the sanitizer, as EXEC-SNAPSHOT-SINCE does
+      (when (plusp skipped)
+        (setf process.shell-model-sanitizer (make-text-sanitizer)))
+      (multiple-value-bind (clean dropped)
+          (sanitize-octets process.shell-model-sanitizer
+                           (last-redraws (subseq preview (utf8-cut preview (- from held-from)))))
+        (let ((text (note-removed-controls (octets-to-text clean) dropped)))
+          (cond ((plusp skipped)
+                 (format nil "[~:d earlier byte~:p not kept]~%~a" skipped text))
+                ((plusp (length text)) text)))))))
 
 (defun exec-exit-tail (process &optional (end (fill-pointer process.output)))
   "=> (values TEXT CUT-P): the last lines PROCESS wrote, as its exit keeps
@@ -1188,7 +1239,8 @@ to the background, and its exit is read once and never watched."
 
 (defvar *sh-chunk* nil
   "NIL, or where SH sends each chunk of its child's output as it arrives: the
-running evaluation's live preview (RUN-BACKGROUND-EVAL).")
+running evaluation's live preview, which the model's next look at it reads
+(RUN-BACKGROUND-EVAL, EXEC-SHELL-OUTPUT-LOCKED).")
 
 (defun run-background-eval (registry process thunk)
   "The evaluating thread's whole life."
@@ -1263,6 +1315,15 @@ running evaluation's live preview (RUN-BACKGROUND-EVAL).")
         (append (list :id id
                       :status (getf snapshot :status)
                       :output (getf snapshot :output))
+                ;; What its (sh ...) child wrote: while it runs, what came
+                ;; since the last look, the only word of it before its exit;
+                ;; once someone stopped it, its last lines, which the stop
+                ;; would otherwise leave to its card alone.
+                (when-let (shell (cond ((eq :running (getf snapshot :status))
+                                        (getf snapshot :shell-output))
+                                       ((eql 130 (getf snapshot :exit-code))
+                                        (exec-stop-shell-tail process))))
+                  (list :shell-output shell))
                 (when (eq :exited (getf snapshot :status))
                   (list* :value process.eval-value :exit-code (getf snapshot :exit-code)
                          (and process.shell-exit (list :shell-exit process.shell-exit))))
@@ -1298,7 +1359,7 @@ and what it wrote, in the operator's lines -- the plist is the model's -- or,
 for a job someone stopped, who stopped it, its lines being in its box.
 => SNAPSHOT."
   ;; PROCESS is found before the read: the read that observes an exit reaps it.
-  (destructuring-bind (&key status output value exit-code shell-exit &allow-other-keys) snapshot
+  (destructuring-bind (&key status output shell-output value exit-code shell-exit &allow-other-keys) snapshot
     (when (and *read-is-the-snippet* (member status '(:running :exited)))
       (let ((stop (and (eql 130 exit-code) process (exec-stop-document process))))
         (display-fact "background_read"
@@ -1310,16 +1371,20 @@ for a job someone stopped, who stopped it, its lines being in its box.
                                               ""
                                               (string-trim '(#\Newline)
                                                            (tool-result-display-text
-                                                            "eval" (format nil "~@[~a~]~@[~&~a~]"
+                                                            "eval" (format nil "~@[~a~]~@[~&~a~]~@[~&~a~]"
                                                                            (and (plusp (length output)) output)
+                                                                           shell-output
                                                                            value)))))))))
   snapshot)
 
 (defun eval-status (id)
   "One non-blocking look at background eval ID: (:status :output ...) with
 :OUTPUT everything the form printed since the last look (the cursor
-advances), plus :VALUE and :EXIT-CODE once exited -- and :SHELL-EXIT, the
-status of the last (sh ...) it ran, when it ran one."
+advances); while it runs, :SHELL-OUTPUT, what its (sh ...) child wrote since
+the last look (the newest 4 KiB of it at most), when it wrote anything; plus
+:VALUE and :EXIT-CODE once exited -- and :SHELL-EXIT, the status of the last
+(sh ...) it ran, when it ran one; once someone stopped it, :SHELL-OUTPUT is the
+last lines its (sh ...) child had written."
   (receipt-call "eval-status" id)
   (let ((process (find-background-eval (exec-registry-instance) id)))
     (note-background-read (eval-snapshot-plist (exec-registry-instance) id) process)))
@@ -1336,8 +1401,9 @@ operator dispatch.")
 (defun eval-await (id &key (yield-ms (or *exec-tool-yield-ms*
                                          +exec-default-poll-yield-ms+))
                         until-exit)
-  "Park until eval ID prints new output or exits — or, with UNTIL-EXIT,
-until it exits — then return what EVAL-STATUS returns."
+  "Park until eval ID prints new output, its (sh ...) child writes, or it
+exits — or, with UNTIL-EXIT, until it exits — then return what EVAL-STATUS
+returns."
   ;; The park is server-side wall-clock, wakes the moment there is something
   ;; to report, and wakes on turn cancellation. Park only when a short wait
   ;; beats ending the turn: an exited evaluation is read to the model on its
@@ -1475,14 +1541,39 @@ The caller holds the registry lock."
   (bt2:with-lock-held ((exec-registry-lock (exec-registry-instance)))
     (exec-stop-document-locked process)))
 
+(defun exec-stop-shell-tail (process)
+  "What PROCESS's (sh ...) child had written when someone stopped it, as the
+model reads the stop: the last lines its card keeps (EXEC-EXIT-TAIL), under a
+line saying earlier ones were cut when they were -- or NIL when nobody stopped
+PROCESS or its form ran no (sh ...) that wrote anything."
+  ;; Without it a stop answered the model the compiler's report of the abort
+  ;; and nothing else: an agent that stopped a `nodecode add' hung for hours
+  ;; on a hub read learned nothing of where it stood (2026-11-01), the
+  ;; child's lines being the card's alone.
+  (bt2:with-lock-held ((exec-registry-lock (exec-registry-instance)))
+    (when (and process.stopped (plusp (length process.preview)))
+      (multiple-value-bind (tail cut) (exec-exit-tail process)
+        (when (plusp (length tail))
+          (if cut (format nil "[earlier output cut]~%~a" tail) tail))))))
+
+(defun call-exec-process (call-id)
+  "The evaluation CALL-ID ran, while the registry still holds it, or NIL."
+  (and (plusp (length call-id))
+       (do-registry (process (exec-registry-instance))
+         thereis (and (equal call-id process.tool-call-id) process))))
+
+(defun call-stop-shell-tail (call-id)
+  "EXEC-STOP-SHELL-TAIL of the evaluation CALL-ID ran: what its (sh ...) child
+had written when the call was stopped, or NIL."
+  (when-let (process (call-exec-process call-id))
+    (exec-stop-shell-tail process)))
+
 (defun call-stop-document (turn call-id &optional started)
   "How CALL-ID, a call of TURN cut before it answered, was stopped: its
 evaluation's stop when one ran for it, else the cause of TURN's cancel, the
 call having run since STARTED (internal real time) when it began at all.
 NIL for a call no stop cut."
-  (or (when-let (process (and (plusp (length call-id))
-                              (do-registry (process (exec-registry-instance))
-                                thereis (and (equal call-id process.tool-call-id) process))))
+  (or (when-let (process (call-exec-process call-id))
         (exec-stop-document process))
       (when (nlk:turn-cancellation-requested-p turn)
         (multiple-value-bind (reason operator-p) (nlk:turn-cancel-cause turn)
@@ -1680,11 +1771,14 @@ yield-and-background lifecycle."
                                  (value (or process.eval-value ""))
                                  (exit-code (or (getf snapshot :exit-code) 0))
                                  (stop (and (= 130 exit-code) (exec-stop-document process)))
+                                 ;; a stopped command's last lines come first,
+                                 ;; as a terminal shows them above the stop
+                                 (shell (and stop (exec-stop-shell-tail process)))
                                  (text (truncate-eval-result
                                         (cond ((= 1 exit-code)
                                                (concatenate 'string (reader-lines output) value))
-                                              ((string= output "") value)
-                                              (t (format nil "~a~&~a" output value))))))
+                                              ((string= output "") (format nil "~@[~a~&~]~a" shell value))
+                                              (t (format nil "~@[~a~&~]~a~&~a" shell output value))))))
                             (when (hash-table-p process.eval-metadata)
                               (setf *tool-result-metadata* process.eval-metadata))
                             ;; A stopped call did not fail: its card says who
@@ -1703,12 +1797,15 @@ yield-and-background lifecycle."
                           (setf *tool-result-metadata*
                                 (running-shell-metadata id form))
                           (encode-json-object
-                           (make-json-object
+                           (json-object
                             "status" "running"
                             "eval_id" id
                             "output" (truncate-eval-result
                                       (getf snapshot :output))
-                            "message" "Form is still evaluating in the background. Do not wait for it: go on with anything else, or end your turn — when the evaluation exits, the harness reads it for you with an (eval-status ID) call whose result carries its remaining output and value: in this turn, after the calls running then, or, once the turn has ended, in a turn that wakes this session. Meanwhile (eval-status ID) is one non-blocking look; (list-evals) lists evaluations; (eval-interrupt ID) aborts one ((eval-interrupt ID :force t) if it traps the soft abort). (eval-await ID) parks at most the yield_time_ms of the call it runs in (10000 when unset), and only when a short wait beats ending the turn — never park a long window.")))))))
+                            ;; what its (sh ...) child wrote so far: a
+                            ;; command's capture is its value, read at exit
+                            :opt "shell_output" (getf snapshot :shell-output)
+                            "message" "Form is still evaluating in the background. Do not wait for it: go on with anything else, or end your turn — when the evaluation exits, the harness reads it for you with an (eval-status ID) call whose result carries its remaining output and value: in this turn, after the calls running then, or, once the turn has ended, in a turn that wakes this session. Meanwhile (eval-status ID) is one non-blocking look, :SHELL-OUTPUT in it what its (sh ...) child wrote since the last; (list-evals) lists evaluations; (eval-interrupt ID) aborts one ((eval-interrupt ID :force t) if it traps the soft abort). (eval-await ID) parks at most the yield_time_ms of the call it runs in (10000 when unset), and only when a short wait beats ending the turn — never park a long window.")))))))
             ;; A cancel that cut this call takes its evaluation with it.
             ;; The cancel reaches a parked call as the worker's unwind
             ;; (WITH-CANCELLABLE-WAIT's throw) or as the park's wake, and
