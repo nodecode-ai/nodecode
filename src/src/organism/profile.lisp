@@ -562,7 +562,9 @@ file names it, and is removed for `default'."
 (defun profile-switch (name &optional (argv sb-ext:*posix-argv*))
   "The plan that moves a shell to profile NAME: => (values BINARY ARGV),
 ARGV being BINARY, `-p NAME', and every word this process was launched
-with but the profile flag it already carried."
+with but the profile flag it already carried and what it asked of its first
+session: --provider, --model, --effort, --prompt-file and `--' with every
+word after it (#141)."
   ;; Pure — it reads the roster and ORGANISM-BINARY and touches nothing. The
   ;; caller performs it with EXEC-PROGRAM once its terminal is restored and
   ;; its store is closed.
@@ -578,15 +580,21 @@ with but the profile flag it already carried."
                      so it cannot re-exec; run `nodecode -p ~a' in a new ~
                      shell, or `profile use ~a' to make it the default"
                     name name))
-    ;; Any `-p NAME' or `--profile NAME' pair goes, wherever it sits -- the rule
-    ;; PARSE-LAUNCH-ARGUMENTS reads them by.
-    ;; What is left is every other word this process was started with, so a
-    ;; switch keeps the session, the store path and the verb the operator
-    ;; launched under.
+    ;; Any `-p NAME' or `--profile NAME' pair goes, wherever it sits ahead of
+    ;; a `--' -- the rule PARSE-LAUNCH-ARGUMENTS reads them by. So does what
+    ;; the launch asked of its first session: its target pairs, and its first
+    ;; prompt -- `--' and every word after it, or --prompt-file's pair --
+    ;; which this shell already sent, and which the other profile's fresh
+    ;; session would only run again. What is left is every other word this
+    ;; process was started with, so a switch keeps the session, the store
+    ;; path and the verb the operator launched under.
     (values binary (list* binary "-p" name
                           (rest (loop while argv
                                       for word = (pop argv)
-                                      if (member word '("-p" "--profile") :test #'string=)
+                                      until (string= word "--")
+                                      if (member word '("-p" "--profile" "--provider" "--model"
+                                                        "--effort" "--prompt-file")
+                                                 :test #'string=)
                                         do (pop argv)
                                       else collect word))))))
 

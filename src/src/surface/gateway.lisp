@@ -1825,6 +1825,64 @@ no prompt queued."
   "Serializes PIN-START-TURN-TARGET's read and write, so two start_turns
 racing on one session not yet begun cannot both find it unpinned.")
 
+(defun target-from-spec (provider model effort &key (lane *provider*))
+  "PROVIDER, MODEL and EFFORT as a session's target, MODEL read as a spec
+`[PROVIDER/]MODEL[:EFFORT]' for each member not given on its own:
+`openai-codex/gpt-6.1-sol:high' is provider openai-codex, model gpt-6.1-sol,
+effort high. LANE is the provider a target naming none rides. => (values
+PROVIDER MODEL EFFORT)."
+  ;; The whole text first, as pi reads it: a prefix splits off only when it
+  ;; names a provider this home rides (RIDDEN-PROVIDER-P) and LANE lists no
+  ;; model of that whole id, and a suffix
+  ;; only when it names a rung (+EFFORT-LADDER+) and what is left is no model
+  ;; the provider lists. So an id that holds a slash or a colon of its own
+  ;; stays whole: OpenRouter's `deepseek/deepseek-r1:free' on its lane (though
+  ;; `deepseek' names a catalog provider too) or behind `openrouter/',
+  ;; `llama3:8b', and the listed ids that end in a rung
+  ;; (`nanogpt/coding-router:high'). The spec reads the same wherever a
+  ;; target is given -- a launch's --model, a session's create, a start_turn.
+  (when (and (stringp model) (null provider))
+    (let ((slash (position #\/ model)))
+      (when (and slash (plusp slash) (< (1+ slash) (length model))
+                 (not (model-listed-p lane model))
+                 (ridden-provider-p (subseq model 0 slash)))
+        (setf provider (subseq model 0 slash) model (subseq model (1+ slash))))))
+  (when (and (stringp model) (null effort))
+    (let ((colon (position #\: model :from-end t)))
+      (when (and colon (plusp colon) (effort-rank (subseq model (1+ colon)))
+                 (not (model-listed-p (or provider lane) model)))
+        (setf effort (subseq model (1+ colon)) model (subseq model 0 colon)))))
+  (values provider model effort))
+
+(defun ridden-provider-p (name)
+  "Whether NAME is a provider this home rides: one its config names, or one
+it holds a credential for -- never a catalog id alone, which a spec's
+prefix would otherwise send the prompt to with no key of the home's."
+  (and (configured-provider-lane name)
+       (or (configured-provider-entry name)
+           (member (ignore-errors (provider-auth-state name)) '(:config :api-key :oauth :env)))
+       t))
+
+(defun target-refusal (provider model effort)
+  "Why a session cannot run on PROVIDER, MODEL and EFFORT, as a (CODE
+MESSAGE) list -- unknown_provider for a provider or a model the lane refuses,
+effort_unsupported for an effort the model does not take -- or NIL when it
+can. Reads and writes nothing."
+  (handler-case
+      (progn
+        (check-model-id provider model)
+        ;; SELECT-DEFAULT-MODEL's resolve half: the lane, and the address it
+        ;; rides unless the process override already is one.
+        (if (and *endpoint* (equal provider *provider*))
+            (find-provider-lane provider)
+            (provider-endpoint provider))
+        (check-effort provider model effort)
+        nil)
+    (provider-error (condition)
+      (list "unknown_provider" (provider-error-detail condition)))
+    (effort-refusal (condition)
+      (list "effort_unsupported" (effort-refusal-detail condition)))))
+
 (defun pin-start-turn-target (session-id provider model effort)
   "Pin SESSION-ID to the target a start_turn's PROVIDER, MODEL and EFFORT
 members name, before its turn is admitted: SELECT-SESSION-MODEL's pin
@@ -1846,6 +1904,11 @@ written."
   (unless (and (nlk:store-open-p)
                (handler-case (nlk:session-exists-p session-id) (type-error () nil)))
     (return-from pin-start-turn-target (values nil nil)))
+  ;; A spec reads against the lane the session rides: its pin, else the
+  ;; default's.
+  (multiple-value-setq (provider model effort)
+    (target-from-spec provider model effort
+                      :lane (or (nlk:session-model-selection session-id) *provider*)))
   (bt2:with-lock-held (*start-turn-pin-lock*)
     (bind (((pinned-provider pinned-model) (nlk:session-model-selection session-id))
            (picked-effort (nlk:session-model-effort session-id))
@@ -1861,21 +1924,8 @@ written."
                                          a session keeps the target it began on"
                                     session-id pinned-provider pinned-model picked-effort))
                       nil))))
-      (handler-case
-          (progn
-            (check-model-id target-provider target-model)
-            ;; SELECT-DEFAULT-MODEL's resolve half: the lane, and the address
-            ;; it rides unless the process override already is one.
-            (if (and *endpoint* (equal target-provider *provider*))
-                (find-provider-lane target-provider)
-                (provider-endpoint target-provider))
-            (check-effort target-provider target-model effort))
-        (provider-error (condition)
-          (return-from pin-start-turn-target
-            (values (list "unknown_provider" (provider-error-detail condition)) nil)))
-        (effort-refusal (condition)
-          (return-from pin-start-turn-target
-            (values (list "effort_unsupported" (effort-refusal-detail condition)) nil))))
+      (when-let (refusal (target-refusal target-provider target-model effort))
+        (return-from pin-start-turn-target (values refusal nil)))
       (nlk:record-session-model-selection
        session-id :provider target-provider :model target-model
        :effort (or effort (admitted-effort picked-effort target-provider target-model)))
@@ -3506,15 +3556,50 @@ go and deletes nothing)."
          ;; on the spawn. A fork that names none works where its parent does.
          (when (or (gethash "cwd" request) (null (gethash "parent" request)))
            (nlk:check-session-cwd (gethash "cwd" request)))
-         ;; A new session is minted standing by (standby.lisp): the shell's
-         ;; /clear, /fork and first attach name an id here, and it is durable
-         ;; once its first block lands — a shell opened and never typed in
-         ;; leaves no session in the store at all.
-         (gateway-standby-session-json
-          (nlk:standby-session
-           :id id :cwd (gethash "cwd" request)
-           :parent (gethash "parent" request)
-           :anchor-turn-id (json-value request :text "anchor_turn_id")))))
+         ;; The target the session runs on, all optional: a launch's
+         ;; `--provider', `--model' and `--effort' (#141), the members a
+         ;; start_turn takes, checked the same way. A refused one is the
+         ;; answer and no session is minted; one that passes pins the new
+         ;; session alone (PIN-START-TURN-TARGET), so the shared default and
+         ;; every other session stay where they are.
+         (let ((target (mapcar (lambda (key) (gethash key request))
+                               '("provider" "model" "effort")))
+               (given nil))
+           (require-non-empty target "provider, model and effort are non-empty strings when given")
+           ;; Read as a spec, then defaulted the way the pin defaults it: a
+           ;; target naming no provider rides the lane the session would. A
+           ;; create naming none pins nothing: its session follows the
+           ;; default until its first turn, as every session does.
+           (setf given (some #'identity target)
+                 target (multiple-value-list (apply #'target-from-spec target))
+                 (first target) (or (first target) *provider*))
+           (when-let (refusal (and given
+                                   (destructuring-bind (provider model effort) target
+                                     (target-refusal provider (or model *model*) effort))))
+             (return-from handle-gateway-sessions-http
+               (gateway-error-response 400 (first refusal) (second refusal))))
+           ;; A new session is minted standing by (standby.lisp): the shell's
+           ;; /clear, /fork and first attach name an id here, and it is
+           ;; durable once its first block lands — a shell opened and never
+           ;; typed in leaves no session in the store at all.
+           (let ((session (nlk:standby-session
+                           :id id :cwd (gethash "cwd" request)
+                           :parent (gethash "parent" request)
+                           :anchor-turn-id (json-value request :text "anchor_turn_id"))))
+             (when given
+               (when-let (refusal (apply #'pin-start-turn-target id target))
+                 (return-from handle-gateway-sessions-http
+                   (gateway-error-response 400 (first refusal) (second refusal)))))
+             ;; The target as read is said back: the shell sends it, its
+             ;; members apart, on the first start_turn -- which an organism
+             ;; that never read the spec takes word for word.
+             (let ((json (gateway-standby-session-json session)))
+               (when given
+                 (setf (gethash "target" json)
+                       (destructuring-bind (provider model effort) target
+                         (json-object :opt "provider" provider :opt "model" model
+                                      :opt "effort" effort))))
+               json)))))
       (t (gateway-error-response 405 "method_not_allowed"
                                  "unsupported session control operation")))))
 

@@ -2649,6 +2649,17 @@ anything else replaces the member, and :REMOVE takes the member out)."
           (persist-shared-config (list "general" "default_provider") :remove)))
       (values :failed "provider and model are both required")))
 
+(defun model-listed-p (provider model)
+  "Whether MODEL is an id PROVIDER's config entry, its fetched listing or the
+models.dev catalog holds -- the ids CHECK-MODEL-ID takes on sight."
+  (or (and (configured-model-entry provider model) t)
+      (and (find model (getf (provider-models-cache-entry provider) :models)
+                 :key (lambda (row) (getf row :id)) :test #'equal)
+           t)
+      (when-let (catalog (models-catalog-table))
+        (loop for entry being the hash-values of catalog
+              thereis (and (json-value entry :any "models" model) t)))))
+
 (defun check-model-id (provider model)
   "MODEL unchanged, or PROVIDER-CONFIG-ERROR for an empty id or a known
 listing/catalog display name. Exact ids win; unlisted private ids stay legal."
@@ -2657,17 +2668,12 @@ listing/catalog display name. Exact ids win; unlisted private ids stay legal."
   (unless (and (stringp model) (plusp (length (nlk:trimmed model))))
     (error 'provider-config-error :provider provider :model model
            :detail "the model id must be a non-empty string"))
-  (when (configured-model-entry provider model)
+  (when (model-listed-p provider model)
     (return-from check-model-id model))
   (let* ((rows (getf (provider-models-cache-entry provider) :models))
          (catalog (models-catalog-table))
          (candidates (loop for row in rows
                            when (equal model (getf row :display)) collect (getf row :id))))
-    (when (or (find model rows :key (lambda (row) (getf row :id)) :test #'equal)
-              (and catalog
-                   (loop for entry being the hash-values of catalog
-                         thereis (json-value entry :any "models" model))))
-      (return-from check-model-id model))
     (flet ((names (entry)
              (when-let (models (json-value entry :object "models"))
                (maphash (lambda (id row)
