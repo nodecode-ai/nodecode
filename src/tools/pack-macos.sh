@@ -86,9 +86,25 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# One build at a time on the Mac: the run directory is one per account.
+# One build at a time on the Mac: the run directory is one per account. The
+# lock is freed by this driver's cleanup, over ssh. A build the Mac's reboot
+# cut off never got that far, so a lock older than the Mac's last boot is held
+# by no running build: it is taken over, its owner named in the log.
 owner="$(hostname) pid $$ $label $(date -u +%FT%TZ)"
-if ! ssh_mac "mkdir -p \"$mroot\" && mkdir \"$mroot/.lock\" && printf '%s\n' '$owner' > \"$mroot/.lock/owner\""; then
+if ! ssh_mac "/bin/bash -s \"$mroot\" '$owner'" <<'LOCK'
+set -e
+mkdir -p "$1"
+if [ -d "$1/.lock" ]; then
+  boot="$(/usr/sbin/sysctl -n kern.boottime | sed -E 's/^[^0-9]*([0-9]+).*/\1/')"
+  if [ "$(/usr/bin/stat -f %m "$1/.lock")" -lt "$boot" ]; then
+    echo "pack-macos: $1/.lock is from before the Mac's last boot; taken over from $(cat "$1/.lock/owner" 2>/dev/null || echo 'no owner')" >&2
+    rm -rf "$1/.lock"
+  fi
+fi
+mkdir "$1/.lock"
+printf '%s\n' "$2" > "$1/.lock/owner"
+LOCK
+then
   held="$(ssh_mac "cat \"$mroot/.lock/owner\"" 2>/dev/null || true)"
   printf 'pack-macos: another build holds %s/.lock on %s (%s); remove it when none runs\n' "$mroot" "$mac" "${held:-no owner}" >&2
   exit 1
