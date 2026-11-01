@@ -427,6 +427,15 @@ recency, and ASKED-WHERE owns the exclusions."
             after insert on events when new.kind ~:[= '~a'~;in (~{'~a'~^, ~})~]~a
             begin ~a; end" name (listp kinds) kinds guard sql)))
 
+(defun model-history-refill (name column event)
+  "The schema entry of trigger NAME: on EVENT, the history of the row's COLUMN dropped and filled again."
+  (list "trigger" name (format nil "create trigger ~a
+            ~a
+            begin
+              delete from model_history where ~a = new.~:*~a;
+              ~a;
+            end" name event column (model-history-fill-sql (format nil "~a = new.~:*~a" column)))))
+
 (defparameter *model-history-schema*
   (list
    (list "table" "model_history"
@@ -440,22 +449,10 @@ recency, and ASKED-WHERE owns the exclusions."
          "create index model_history_by_session on model_history (session_id)")
    (log-trigger "model_history_follows_usage" nlk::+kind-turn-usage+
                 (model-history-fill-sql "log_position = new.log_position"))
-   (list "trigger" "model_history_follows_completion"
-         (format nil "create trigger model_history_follows_completion
-            after insert on events when new.kind = '~a'
-            begin
-              delete from model_history where turn_id = new.turn_id;
-              ~a;
-            end"
-                 nlk::+kind-turn-completed+ (model-history-fill-sql "turn_id = new.turn_id")))
-   (list "trigger" "model_history_follows_source"
-         (format nil "create trigger model_history_follows_source
-            after update of source on session_directory when new.source is not old.source
-            begin
-              delete from model_history where session_id = new.session_id;
-              ~a;
-            end"
-                 (model-history-fill-sql "session_id = new.session_id"))))
+   (model-history-refill "model_history_follows_completion" "turn_id"
+                         (format nil "after insert on events when new.kind = '~a'" nlk::+kind-turn-completed+))
+   (model-history-refill "model_history_follows_source" "session_id"
+                         "after update of source on session_directory when new.source is not old.source"))
   "Rebuildable persisted-history, never authority. Triggers keep it inside the
 fact's transaction, including late reflection/source facts and rollback.")
 
