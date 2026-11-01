@@ -9342,9 +9342,8 @@ the gateway."
         (setf (getf state :staged) query
               (getf state :staged-at) (get-internal-real-time)))
       (cond
-        ((equal (getf state :staged) (getf state :rows-query)) nil)
-        ((equal (getf state :staged) (getf state :fired)) nil)
-        ((< (since-ms (getf state :staged-at)) (* 1000 *session-search-rest*))
+        ((or (member (getf state :staged) (list (getf state :rows-query) (getf state :fired)) :test #'equal)
+             (< (since-ms (getf state :staged-at)) (* 1000 *session-search-rest*)))
          nil)
         ((zerop (length query))
          (let ((fold (getf state :fold)))
