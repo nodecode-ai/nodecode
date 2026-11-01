@@ -815,10 +815,8 @@ named at its position, because SBCL's END-OF-FILE on it names nothing."
                   ;; completion drops, never a refusal — the text cannot
                   ;; read with it, and the tree without it is the
                   ;; model's own.
-                  (if (zerop depth)
-                      (push (list :orphan i line) tokens)
-                      (progn (push (list :close i) tokens)
-                             (decf depth)))
+                  (cond ((zerop depth) (push (list :orphan i line) tokens))
+                        (t (push (list :close i) tokens) (decf depth)))
                   (code (incf i)))
                  (#\" (head) (skip-delimited "string" i #\"))
                  (#\| (head) (skip-delimited "|symbol|" i #\|))
@@ -838,10 +836,7 @@ named at its position, because SBCL's END-OF-FILE on it names nothing."
                                                 (incf i 2)
                                                 (when (zerop (decf depth)) (return)))
                                                ((equal pair "#|") (incf i 2) (incf depth))
-                                               ((char= (char text i) #\Newline)
-                                                (incf line)
-                                                (setf line-start (1+ i) at-head t)
-                                                (incf i))
+                                               ((char= (char text i) #\Newline) (newline) (incf i))
                                                (t (incf i)))))))
                               ((and (eql next #\>) (raw-text-end text i))
                                ;; #>TAG raw text: nothing inside it is
