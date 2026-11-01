@@ -68,6 +68,9 @@ matrix:
   - - 1
     - 2
   - - 3
+indented: |2
+    code
+  text
 ")))
     (is-shape config (hash-table-p is) ((:string "model" "default") "gpt-5.5")
       ((:string "model" "provider") "custom:subrouter-1")
@@ -96,7 +99,8 @@ matrix:
       ("note" (format nil "first line~%second line~%") "a literal block")
       ("folded" "one two" "a folded block, stripped")
       ("paragraphs" (format nil "first line~%second~%") "a blank line is a newline, with no space after it")
-      ("matrix" equalp #(#(1 2) #(3)) "a sequence of sequences")))
+      ("matrix" equalp #(#(1 2) #(3)) "a sequence of sequences")
+      ("indented" (format nil "  code~%text~%") "an indentation indicator keeps the first line's indent")))
   (is (zerop (hash-table-count (nik:read-yaml ""))) "an empty document is an empty object")
   (is (search "anchors" (refusal-text nik:import-error (nik:read-yaml "a: &x 1"))))
   ;; One document, opened by a `---' and closed by a `...', is read; a second is
