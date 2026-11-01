@@ -1231,6 +1231,54 @@ answering `ok' => the compiled context of the turn's one request."
         (is (search "<harness key=\"instructions\">"
                     (nle::harness-overlay-prompt "base" (nle::read-harness-sections "root"))))))))
 
+(deftest harness-sections-read-every-rules-file-from-the-repository-root-down ()
+  ;; A monorepo's root AGENTS.md and a package's own both apply to a
+  ;; session in the package: every directory from the session's up to the
+  ;; repository root gives its file, root first, the nearer last so it
+  ;; wins, and nothing above the root is read.
+  (with-temp-workspace (dir "AGENTS.md" "mono/.git/HEAD" "mono/packages/api/src/x")
+    (write-temp-file (merge-pathnames "AGENTS.md" dir) "outside rules")
+    (write-temp-file (merge-pathnames "mono/AGENTS.md" dir) "root rules")
+    (write-temp-file (merge-pathnames "mono/packages/CLAUDE.md" dir) "packages rules")
+    (write-temp-file (merge-pathnames "mono/packages/api/AGENTS.md" dir) "api rules")
+    (with-temp-store ()
+      (loop for (id folder) in '(("api" "mono/packages/api/src/") ("root" "mono/"))
+            do (nlk:create-session :id id :cwd (namestring (merge-pathnames folder dir))))
+      (flet ((instructions (session-id) (cell-section session-id "instructions"))
+             (at (needle text) (or (search needle text) -1)))
+        (is-present (text (instructions "api")) "a session in a package reads every file up to the root"
+          (is (< -1 (at "root rules" text) (at "packages rules" text) (at "api rules" text)) "root first, the nearest last")
+          (is (null (search "outside rules" text)) "and nothing above the repository root")
+          (is (search nle::*instructions-chain-note* text) "it says the nearer one wins")
+          (is-carrying text "From " ("mono/AGENTS.md:" "each file named") ("packages/CLAUDE.md:") ("api/AGENTS.md:")))
+        (is-present (text (instructions "root")) "one file reads as it always did"
+          (is (eql 0 (search "From " text)) "with no note ahead of it"))
+        (write-temp-file (merge-pathnames "mono/packages/CLAUDE.md" dir) (format nil "  ~%"))
+        (is-present (text (instructions "api")) "a blank file is passed over and the walk goes on"
+          (is (search "root rules" text))
+          (is (null (search "packages/CLAUDE.md" text))))
+        (write-temp-file (merge-pathnames "mono/packages/api/AGENTS.md" dir) "root rules")
+        (is-present (text (instructions "api")) "a copy of a farther file's text"
+          (is (= 1 (loop for at = (search "root rules" text) then (search "root rules" text :start2 (1+ at)) while at count t)) "is read once")
+          (is (search "api/AGENTS.md:" text) "as the nearer file"))
+        (write-temp-file (nlk:home "AGENTS.md") "house rules")
+        (write-temp-file (merge-pathnames "mono/packages/CLAUDE.md" dir) "house rules")
+        (is (null (search "house rules" (instructions "api"))) "what the home's AGENTS.md holds rides once, as operator-rules")
+        (is (search "house rules" (cell-section "api" "operator-rules")))
+        ;; The budget holds the whole: from the nearest out, a file that would
+        ;; pass it is refused, said once, and the walk goes on.
+        (write-temp-file (merge-pathnames "mono/packages/api/AGENTS.md" dir) (make-string 40000 :initial-element #\a))
+        (write-temp-file (merge-pathnames "mono/packages/CLAUDE.md" dir) (make-string 30000 :initial-element #\p))
+        (is-present (text (instructions "api")) "the nearest file is read"
+          (is (search "aaaa" text))
+          (is (null (search "pppp" text)) "the one that would pass the budget is not")
+          (is (search "root rules" text) "and a farther one that fits still is"))
+        (instructions "api")
+        (let ((said (rules-said "packages/CLAUDE.md")))
+          (is (= 1 (length said)) "said once")
+          (is (search "with the nearer rules files it makes" (first said)) "and why"))
+        (is (null (rules-notice "packages/CLAUDE.md")) "on no board")))))
+
 (deftest harness-sections-carry-the-home-operator-rules ()
   ;; am-101: the home's own AGENTS.md -- where an import lands another
   ;; harness's global CLAUDE.md, AGENTS.md or GEMINI.md -- rides as the
