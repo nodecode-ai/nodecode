@@ -13524,6 +13524,15 @@ Segments are the one authority for text, color, clipping and target ranges."
   "(text-width bg palette profile bar-p hot) the band-row cache was built
 under; any drift flushes it wholesale.")
 
+(defun row-words-span (y plain &rest more)
+  "(Y X0 X1 . MORE) for frame row Y whose style-free text PLAIN has words:
+the cells from X0 below X1 they span, past the band's two-column inset; NIL
+for no PLAIN or a blank one."
+  (when-let (start (and plain (position #\Space plain :test-not #'char=)))
+    (list* y (+ 2 (text-display-width (subseq plain 0 start)))
+           (+ 2 (text-display-width (string-right-trim " " plain)))
+           more)))
+
 (defun transcript-band-rows (model width text-width bg)
   "The transcript band: each viewport row inset 2 columns from the left,
 padded to TEXT-WIDTH, then one blank column and the scroll rail's cell in
@@ -13569,23 +13578,14 @@ the frame's last column, WIDTH - 1."
           (loop for line in lines
                 for y from 3
                 for call = (ember-line line)
-                for plain = (and call (plain-frame-row line))
-                for start = (and plain (position #\Space plain :test-not #'char=))
-                when start
-                  collect (list y (+ 2 (text-display-width (subseq plain 0 start)))
-                                (+ 2 (text-display-width (string-right-trim " " plain)))
-                                call))
+                when (row-words-span y (and call (plain-frame-row line)) call) collect it)
           ;; And where the rows of a place still fading stand, for its light.
           (fade-rows model)
           (loop for line in lines
                 for y from 3
                 for (fade . item) = (and (plusp (length line)) (fade-line line))
-                for plain = (and fade (not (fade-settled-p fade)) (plain-frame-row line))
-                for start = (and plain (position #\Space plain :test-not #'char=))
-                when start
-                  collect (list y (+ 2 (text-display-width (subseq plain 0 start)))
-                                (+ 2 (text-display-width (string-right-trim " " plain)))
-                                fade item))
+                when (row-words-span y (and fade (not (fade-settled-p fade)) (plain-frame-row line)) fade item)
+                  collect it)
           ;; And where the chips a glint still crosses stand.
           (glint-rows model)
           (loop with now = (get-internal-real-time)
@@ -14735,20 +14735,15 @@ shine, on what an answer found. Truecolor only: quantized, the band jumps."
                                                           (round (* 100 heat)))
                                                nil :truecolor))))))))
 
-(defun frame-overlay (model &aux (fade (fade-overlay model))
-                                 (ember (ember-overlay model))
-                                 (glint (glint-overlay model))
-                                 (hint (status-hint-overlay model))
-                                 (toasts (toasts-overlay model))
-                                 (wash (selection-overlay model))
-                                 (timestamp (message-timestamp-overlay model))
-                                 (sheet (sheet-overlay model)))
+(defun frame-overlay (model &aux (overlays (remove nil (mapcar (lambda (overlay) (funcall overlay model))
+                                                               '(fade-overlay ember-overlay glint-overlay
+                                                                 status-hint-overlay toasts-overlay selection-overlay
+                                                                 message-timestamp-overlay sheet-overlay)))))
   "The frame's overlays: the fading places' light, the running lines' ember,
 the arriving chips' glints, verb hint, toasts, then the drag selection wash,
 the message timestamps, and an open sheet's window over them all."
-  (let ((overlays (remove nil (list fade ember glint hint toasts wash timestamp sheet))))
-    (when overlays
-      (lambda (buffer) (dolist (overlay overlays) (funcall overlay buffer))))))
+  (when overlays
+    (lambda (buffer) (dolist (overlay overlays) (funcall overlay buffer)))))
 
 (defun shell-view (model)
   "The composed frame as the tui view — the named body VIEW delegates to,
