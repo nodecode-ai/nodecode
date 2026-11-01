@@ -1135,9 +1135,8 @@ where none stands: git archive, unpacked. The repository moves nothing.
 (defun lay-as-today (name root directory)
   "Put the folder NAME under ROOT, as it stands now, at DIRECTORY: a copy
 through the kept bytes. => DIRECTORY, or NIL when ROOT holds no such folder."
-  (let ((live (and root (ignore-errors (truename (folder-under name root))))))
-    (when live
-      (lay-tree (tree-digest live :keep t) directory))))
+  (when-let (live (and root (ignore-errors (truename (folder-under name root)))))
+    (lay-tree (tree-digest live :keep t) directory)))
 
 (defun build-generation (number target &key (root *cells-directory*))
   "Lay generation NUMBER's folder at TARGET -- a cells folder none stands at
@@ -1173,10 +1172,9 @@ had it."
                  (lay-as-today name root directory)
                  (place-row row directory)))
             ((equal origin "release")
-             (let ((offer (find-offer name)))
-               (if offer
-                   (lay-tree (tree-digest (offer-directory offer) :keep t) directory)
-                   (push (format nil "~a left out: this binary ships no folder of that name" name) notes))))
+             (if-let (offer (find-offer name))
+               (lay-tree (tree-digest (offer-directory offer) :keep t) directory)
+               (push (format nil "~a left out: this binary ships no folder of that name" name) notes)))
             ((not (equal origin "own"))
              (if (and live (equal (getf row :revision) (getf live :revision)))
                  (lay-as-today name root directory)
