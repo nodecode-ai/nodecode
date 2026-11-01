@@ -4,8 +4,9 @@
 # SPDX-License-Identifier: MIT
 #
 # Run from a checkout's root (the CI workflow runs it on the Linux runner; any
-# Linux box with elan, just and bash does). It runs `just proofs'
-# (src/tools/proofs.sh) on the toolchain proofs/lean-toolchain pins.
+# Linux box with elan and bash does; a GitHub-hosted runner, which has no
+# just, checks a fork's pull request). It runs src/tools/proofs.sh, the
+# script `just proofs' runs, on the toolchain proofs/lean-toolchain pins.
 #
 # Lean comes from elan. A runner account without one gets the elan release
 # pinned below in its own home, the download checked against its SHA-256,
@@ -43,4 +44,4 @@ fi
 elan toolchain install "$toolchain"
 flock -u 9
 
-just proofs
+exec src/tools/proofs.sh

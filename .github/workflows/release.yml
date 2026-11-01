@@ -17,6 +17,10 @@ name: Release
 # The Linux tarball is handed over only once a gateway of the release users
 # run now, serving with no unit, has moved onto it (upgrade-proof.py).
 #
+# Nothing is published unless every Lean proof under proofs/ checks at the
+# tagged commit: the Proofs job is CI's own (ci-proofs.sh), and Publish
+# needs it.
+#
 # Run by hand (Actions > Release > Run workflow, from main) it is a
 # rehearsal: the same three builds, the archives handed over, the Windows
 # tar.zst packed, and every credential the publish uses tried -- no archive is
@@ -126,9 +130,19 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+  proofs:
+    name: Proofs
+    needs: check
+    runs-on: [self-hosted, nc-linux]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check every Lean proof under proofs/ (ci-proofs.sh)
+        run: src/tools/ci-proofs.sh
+
   publish:
     name: Publish
-    needs: [check, linux, macos, windows]
+    needs: [check, linux, macos, windows, proofs]
     runs-on: [self-hosted, nc-linux]
     environment: release
     timeout-minutes: 30
