@@ -530,24 +530,17 @@ edits that hold it kept first; d discards them, then goes."
 
 (defun generations-key (model history key &key ctrl alt shift)
   "Every key the shell's chords leave the open sheet."
-  (let ((typed (and (characterp key) (not ctrl) (not alt))))
-    (cond
-      (history.ask (history-ask-key model history key))
-      ;; Typing searches every change; Space is a key of its own until a
-      ;; query is going.
-      ((or (and typed (graphic-char-p key) (char/= key #\Space))
-           (and typed (eql key #\Space) (plusp (length history.query)))
-           (and (plusp (length history.query))
-                (or (eq key :backspace)
-                    (and ctrl (characterp key) (member key '(#\u #\w) :test #'char-equal)))))
-       (when-let (query (edit-text-field history.query key :ctrl ctrl :alt alt
-                                                           :max *max-dialog-search-chars*))
-         (history-search history query)))
-      ((eq key :tab) (history-step-filter history (if shift -1 1)))
-      ((eq history.focus :banner) (history-banner-key model history key))
-      ((plusp (length history.query)) (history-query-key model history key))
-      ((eq history.focus :rail) (history-rail-key model history key))
-      (t (history-pane-key model history key)))))
+  (cond
+    (history.ask (history-ask-key model history key))
+    ;; Typing searches every change; Space is a key of its own until a
+    ;; query is going.
+    ((sheet-type-query history.query key ctrl alt (lambda (query) (history-search history query))
+                       :space (plusp (length history.query))))
+    ((eq key :tab) (history-step-filter history (if shift -1 1)))
+    ((eq history.focus :banner) (history-banner-key model history key))
+    ((plusp (length history.query)) (history-query-key model history key))
+    ((eq history.focus :rail) (history-rail-key model history key))
+    (t (history-pane-key model history key))))
 
 (defun generations-paste (model history text)
   "A paste lands in the query."
@@ -795,10 +788,7 @@ day's head at the top."
                     (setf at (canvas-put canvas at r (clip-text-to-width words (- (+ px pw) at)) ink))
                     (when (< at (+ px pw))
                       (canvas-put canvas at r (make-string (- (+ px pw) at) :initial-element #\─) ink))))))
-      (when (plusp offset)
-        (canvas-put canvas (+ px pw 1) top "▴" (sheet-ink :muted :ground pane)))
-      (when (< (+ offset rows) (length lines))
-        (canvas-put canvas (+ px pw 1) (+ top rows -1) "▾" (sheet-ink :muted :ground pane))))))
+      (paint-scroll-marks canvas (+ px pw 1) top (+ top rows -1) offset rows (length lines) pane))))
 
 (defun paint-history-chips (history canvas r px pw ground)
   "The filters side by side on R, the one shown filled, each with its count."
@@ -894,10 +884,7 @@ the tab the list hangs from."
                             (declare (ignore model))
                             (setf history.query "" history.ask nil history.said nil history.focus :rail
                                   history.day d)))))
-    (when (plusp offset)
-      (canvas-put canvas (- width 2) top "▴" (sheet-ink :muted :ground rail)))
-    (when (< (+ offset rows) (length days))
-      (canvas-put canvas (- width 2) (+ top rows -1) "▾" (sheet-ink :muted :ground rail)))))
+    (paint-scroll-marks canvas (- width 2) top (+ top rows -1) offset rows (length days) rail)))
 
 (defun paint-history-wide (history canvas edges)
   "The wide sheet: the days in a rail beside the changes. => the caret's
@@ -926,13 +913,7 @@ cell, or NIL."
                                         (- rail-width 4))
                     (sheet-ink :muted :ground rail)))
       ;; the search field
-      (canvas-fill canvas (1- px) title-row (+ pw 2) 1 (sheet-ink nil :ground field))
-      (if (plusp (length history.query))
-          (setf cursor (cons (canvas-put canvas px title-row (clip-tail history.query (1- pw))
-                                         (sheet-ink :composer :ground field))
-                             title-row))
-          (canvas-put canvas px title-row (clip-text-to-width "Search changes, cells, sessions, #numbers" (1- pw))
-                      (sheet-ink :muted :ground field)))
+      (setf cursor (paint-search-field canvas px title-row pw history.query "Search changes, cells, sessions, #numbers" field))
       (unless tight
         (paint-history-chips history canvas r px pw pane)
         (incf r 2))

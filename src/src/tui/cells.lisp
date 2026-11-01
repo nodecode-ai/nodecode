@@ -230,8 +230,7 @@ first, in place, and a second Space installs it at the commit read."
 (defun cells-key (model cells key &key ctrl alt shift)
   "Every key the shell's chords leave the open sheet."
   (declare (ignore shift))
-  (let* ((typed (and (characterp key) (not ctrl) (not alt)))
-         (names (cells-names (cells-items cells)))
+  (let* ((names (cells-names (cells-items cells)))
          (name (cells-focus cells names))
          (asked cells.asked))
     ;; any key but Space leaves a hub cell's question
@@ -239,12 +238,7 @@ first, in place, and a second Space installs it at the commit read."
     (cond
       ((and asked (eq key :escape)))
       ;; typing searches; Space stays the switch
-      ((or (and typed (graphic-char-p key) (char/= key #\Space))
-           (and (plusp (length cells.query))
-                (or (eq key :backspace)
-                    (and ctrl (characterp key) (member key '(#\u #\w) :test #'char-equal)))))
-       (when-let (query (edit-text-field cells.query key :ctrl ctrl :alt alt :max *max-dialog-search-chars*))
-         (cells-search cells query)))
+      ((sheet-type-query cells.query key ctrl alt (lambda (query) (cells-search cells query))))
       ((eql key #\Space) (when name (cells-space model cells name)))
       ((eq key :escape)
        (cond ((plusp (length cells.query)) (cells-search cells ""))
@@ -585,10 +579,7 @@ head with it when there is room."
                                                (sheet-ink tone :ground ground :bold t))))
                           (canvas-put canvas (+ end 2) r (princ-to-string count) (sheet-ink :muted :ground ground)))))
                (:cell (paint-cells-row cells canvas r x width (second line) (equal name (second line)) ground))))
-    (when (plusp offset)
-      (canvas-put canvas (+ x width -1) top "▴" (sheet-ink :muted :ground ground)))
-    (when (< (+ offset rows) (length lines))
-      (canvas-put canvas (+ x width -1) (+ top rows -1) "▾" (sheet-ink :muted :ground ground)))))
+    (paint-scroll-marks canvas (+ x width -1) top (+ top rows -1) offset rows (length lines) ground)))
 
 (defun cell-switch-chips (cells cell ground)
   "CELL's switch as (TEXT INK ACTION) chips on GROUND: on and off, the one
@@ -660,10 +651,7 @@ list could not be read."
                                (unless (eq (effective-color-profile) :none)
                                  (canvas-put canvas px r (make-string pw :initial-element (if (eq side :top) #\▄ #\▀))
                                              (sheet-ink ground :ground pane))))))))
-          (when (plusp offset)
-            (canvas-put canvas (+ px pw 1) (+ top 2) "▴" (sheet-ink :muted :ground pane)))
-          (when (< (+ offset rows) (length lines))
-            (canvas-put canvas (+ px pw 1) bottom "▾" (sheet-ink :muted :ground pane)))))))
+          (paint-scroll-marks canvas (+ px pw 1) (+ top 2) bottom offset rows (length lines) pane)))))
 
 (defun paint-cells-wide (cells canvas edges)
   "The wide sheet: the list in a rail beside the chosen cell. => the
@@ -684,13 +672,7 @@ caret's cell, or NIL."
             (canvas-put canvas 3 (+ title-row gap) (clip-text-to-width text (- rail-width 4))
                         (sheet-ink :muted :ground rail))))
       ;; the search field
-      (canvas-fill canvas (1- px) title-row (+ pw 2) 1 (sheet-ink nil :ground field))
-      (if (plusp (length cells.query))
-          (setf cursor (cons (canvas-put canvas px title-row (clip-tail cells.query (1- pw))
-                                         (sheet-ink :composer :ground field))
-                             title-row))
-          (canvas-put canvas px title-row (clip-text-to-width "Search cells and the hub" (1- pw))
-                      (sheet-ink :muted :ground field)))
+      (setf cursor (paint-search-field canvas px title-row pw cells.query "Search cells and the hub" field))
       (paint-cells-tabs cells canvas (+ title-row gap) px pw pane)
       (paint-cell-pane cells canvas name (+ title-row gap gap) (- hint-row gap) px pw)
       (paint-keys cells canvas hint-row px (+ px pw) (cells-keys cells name) cells.flash pane)

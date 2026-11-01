@@ -175,6 +175,31 @@ ROWS X Y CARET)."
         (values (canvas-rows canvas) x y
                 (and caret (cons (+ x (car caret)) (+ y (cdr caret)))))))))
 
+(defun paint-search-field (canvas x row width query placeholder ground)
+  "The search field WIDTH wide from X on ROW: QUERY, else PLACEHOLDER quiet. => the caret's cell, or NIL."
+  (canvas-fill canvas (1- x) row (+ width 2) 1 (sheet-ink nil :ground ground))
+  (if (plusp (length query))
+      (cons (canvas-put canvas x row (clip-tail query (1- width)) (sheet-ink :composer :ground ground)) row)
+      (progn (canvas-put canvas x row (clip-text-to-width placeholder (1- width)) (sheet-ink :muted :ground ground))
+             nil)))
+
+(defun sheet-type-query (query key ctrl alt search &key space)
+  "Whether KEY edits the search QUERY: a character typed (Space only with SPACE), or Backspace,
+Ctrl+U or Ctrl+W while one is going. SEARCH is called with the query it edits to."
+  (when (or (and (characterp key) (not ctrl) (not alt) (graphic-char-p key) (or space (char/= key #\Space)))
+            (and (plusp (length query))
+                 (or (eq key :backspace)
+                     (and ctrl (characterp key) (member key '(#\u #\w) :test #'char-equal)))))
+    (when-let (edited (edit-text-field query key :ctrl ctrl :alt alt :max *max-dialog-search-chars*))
+      (funcall search edited))
+    t))
+
+(defun paint-scroll-marks (canvas x top bottom offset rows count ground)
+  "In column X, a ▴ on TOP when lines stand above the OFFSET shown, a ▾ on BOTTOM when
+more than ROWS of the COUNT stand from it."
+  (when (plusp offset) (canvas-put canvas x top "▴" (sheet-ink :muted :ground ground)))
+  (when (< (+ offset rows) count) (canvas-put canvas x bottom "▾" (sheet-ink :muted :ground ground))))
+
 (defun clip-tail (text width)
   "The last WIDTH columns of TEXT, an … leading when it was cut."
   (if (<= (text-display-width text) width)
