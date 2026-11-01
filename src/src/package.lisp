@@ -179,7 +179,7 @@ renderer, the program loop.")
    ;; --- plain helpers every folder reaches for (text.lisp) ---
    #:one-line #:clip #:narrow-string #:safe-condition-report #:*condition-report-budget* #:lines
    #:distinct #:iso-universal #:read-text #:append-json-line #:read-json-lines #:trimmed
-   #:first-line #:+unix-epoch+ #:unix-now #:iso-time #:parse-duration #:split-words #:utf-8-octets
+   #:first-line #:+unix-epoch+ #:unix-now #:iso-time #:parse-duration #:split-words #:utf-8-octets #:utf-8-size
    #:size-text #:duration-text #:deadline-after #:elapsed-ms #:unused-name #:wait-until #:string-set
    ;; --- compiled deny/allow pattern rules (textrules.lisp) ---
    #:compile-text-rules #:text-rules-refusal
