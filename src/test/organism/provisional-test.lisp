@@ -69,6 +69,38 @@ BACKTRACE-NAMES answers."
     (is (= 50 (evolved-fn "PROV-CONFIRM" 5)) "the definition still answers")
     (is (= (1+ commits) (layer-commits)))))
 
+(deftest provisional-a-batch-records-only-once-every-held-name-has-returned (with-scribe-fixture)
+  ;; One form, two names on its stack: a clean return of one is no proof of
+  ;; the other. Redefining AGENT-LOOP and EXECUTE-TOOL-CALL together, the
+  ;; next tool call returns long before the loop does, and would otherwise
+  ;; write a loop that never ran (proofs/SelfEditHold.lean, trace pairBroken).
+  (nle:eval-string "(progn (defun prov-batch-a (x) (* x 3)) (defun prov-batch-b (x) (* x 5)))")
+  (let ((commits (layer-commits)))
+    (eval-from-stack ("PROV-BATCH-A" "PROV-BATCH-B")
+                     "(progn (defun prov-batch-a (x) (* x 2)) (defun prov-batch-b (x) (prov-batch-absent x)))")
+    (is (= 4 (evolved-fn "PROV-BATCH-A" 2)) "one held name returns")
+    (is (= commits (layer-commits)) "the batch still commits nothing")
+    (is (= 2 (length (nlk:held-definitions))) "both names wait on the one that has not run")
+    (signals-error undefined-function (evolved-fn "PROV-BATCH-B" 1))
+    (is (= commits (layer-commits)) "the broken batch never reaches the layer")
+    (is (null (nlk:held-definitions)))
+    (is (= 3 (evolved-fn "PROV-BATCH-A" 1)) "the revert puts back every name of the batch")
+    (is (= 5 (evolved-fn "PROV-BATCH-B" 1)))))
+
+(deftest provisional-the-last-held-name-to-return-records-the-batch-once (with-scribe-fixture)
+  ;; proofs/SelfEditHold.lean, trace pairClean
+  (nle:eval-string "(progn (defun prov-pair-a (x) (* x 3)) (defun prov-pair-b (x) (* x 5)))")
+  (let ((commits (layer-commits)))
+    (eval-from-stack ("PROV-PAIR-A" "PROV-PAIR-B")
+                     "(progn (defun prov-pair-a (x) (* x 2)) (defun prov-pair-b (x) (* x 7)))")
+    (is (= 4 (evolved-fn "PROV-PAIR-A" 2)))
+    (is (= 6 (evolved-fn "PROV-PAIR-A" 3)) "a second return of the same name proves nothing new")
+    (is (= commits (layer-commits)))
+    (is (= 14 (evolved-fn "PROV-PAIR-B" 2)))
+    (is (= (1+ commits) (layer-commits)) "the last name's return writes the batch, once")
+    (is (search "(* x 7)" (layer-file-text "prov-pair-b.lisp")))
+    (is (null (nlk:held-definitions)))))
+
 (deftest provisional-signalling-traversal-reverts-and-wakes-the-session (with-scribe-fixture)
   ;; The kernel's one session-ingress seam collects (SESSION-ID . TEXT).
   (let* ((wakes '())
@@ -118,6 +150,23 @@ BACKTRACE-NAMES answers."
 
 ;; the model called the helper it had just
 ;; defined from its next eval, and that return wrote the layer.
+(deftest provisional-a-keyword-list-that-shifts-its-callers-calls-is-refused ()
+  ;; (x &optional y) -> (x &key y): the caller's (f 1 2) would hand 2 to the
+  ;; keyword parser (proofs/SelfEditHold.lean, main_unsound).
+  (is (not (nlk::takes-every-call-p '(x &key y) '(x &optional y))))
+  (is (not (nlk::takes-every-call-p '(x &key k) '(x y &key k))))
+  (is (not (nlk::takes-every-call-p '(x &optional y &key k) '(x &key k))))
+  (is (not (nlk::takes-every-call-p '(x &key k &allow-other-keys) '(x &rest r))))
+  ;; under &allow-other-keys only the keyword part's length must be even: (f 1) is odd
+  (is (not (nlk::takes-every-call-p '(&rest a &key &allow-other-keys) '(x &optional y))))
+  (is (nlk::takes-every-call-p '(&rest a &key &allow-other-keys) '(a b)))
+  ;; what takes every call is still taken
+  (is (nlk::takes-every-call-p '(x &optional y z w) '(x y &optional z)))
+  (is (nlk::takes-every-call-p '(x &optional y &key k) '(x y)))
+  (is (nlk::takes-every-call-p '(x &optional y &key k j) '(x &optional y &key k)))
+  (is (nlk::takes-every-call-p '(x &rest r &key k) '(x &key k)))
+  (is (nlk::takes-every-call-p '(x &rest r) '(x y &optional z &key k))))
+
 (deftest provisional-a-call-from-inside-an-eval-proves-nothing (with-scribe-fixture)
   (nle:eval-string "(defun prov-inside (x) (* x 2))")
   (eval-from-stack ("PROV-INSIDE") "(defun prov-inside (x) (* x 10))")
@@ -187,6 +236,37 @@ BACKTRACE-NAMES answers."
           (is (null (layer-file-text "agent-loop.lisp")))
           (is (null (nlk:held-definitions)))
           (is (eq shipped (fdefinition 'nle:agent-loop))))))))
+
+(defvar *prov-shipped-run-tool-call* nil
+  "The shipped dispatcher, for a redefinition of it that wraps what it displaced.")
+
+(deftest provisional-a-loop-redefined-beside-its-dispatcher-cannot-outlive-the-image ()
+  ;; One eval redefines RUN-TOOL-CALL, wrapping the shipped one, and
+  ;; AGENT-LOOP, with a body calling a name the image does not have; the
+  ;; round carries a second tool call. That call returns through the new
+  ;; dispatcher before the loop is entered again, and a batch confirmed by
+  ;; one name's return wrote the broken loop there: every later turn died,
+  ;; and the restart loaded it again (proofs/SelfEditHold.lean, pairBroken).
+  (let ((shipped (fdefinition 'nle:agent-loop))
+        (dispatch (fdefinition 'nle::run-tool-call)))
+    (setf *prov-shipped-run-tool-call* dispatch)
+    (nlk:with-cleanup ((ignore-errors (nlk:revert "AGENT-LOOP"))
+                       (ignore-errors (nlk:revert "RUN-TOOL-CALL"))
+                       (setf (fdefinition 'nle:agent-loop) shipped
+                             (fdefinition 'nle::run-tool-call) dispatch))
+      (with-scribe-fixture
+        (let ((session (nle::make-session)))
+          (nle:admit session "wrap your dispatcher")
+          (with-stub-provider
+              ((wire-message "assistant" :tool-calls
+                             (vector (wire-tool-call "c1" "eval" (nlk:encode-json-object (nlk:json-object "form" "(progn (defun run-tool-call (run turn) (funcall nodecode.test::*prov-shipped-run-tool-call* run turn)) (defun agent-loop (session &rest keys) (declare (ignore session keys)) (prov-loop-absent)))")))
+                                     (wire-tool-call "c2" "eval" (nlk:encode-json-object (nlk:json-object "form" "(+ 1 2)")))))
+               (wire-message "assistant" :content "unreachable"))
+            (is (signals-error undefined-function (nle:agent-loop session))))
+          (is (null (layer-file-text "agent-loop.lisp")) "the loop that never ran is never written")
+          (is (null (nlk:held-definitions)))
+          (is (eq shipped (fdefinition 'nle:agent-loop)) "the image runs its own loop again")
+          (is (eq dispatch (fdefinition 'nle::run-tool-call)) "and its own dispatcher"))))))
 
 (deftest provisional-a-helper-named-like-the-turn-runner-leaves-the-runner-running ()
   ;; ARC run od3 bp35 end to end, offline: the model named a game helper RUN,
