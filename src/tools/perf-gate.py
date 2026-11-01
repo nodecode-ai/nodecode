@@ -48,6 +48,7 @@ whose source directory is gone. SBCL is `sbcl' on PATH; PERF_SBCL_USERINIT, when
 """
 
 import argparse
+import fcntl
 import json
 import os
 import shutil
@@ -273,6 +274,18 @@ def main():
     args = parser.parse_args()
     workloads = [w for w in args.workloads.split(",") if w]
     os.makedirs(PERF_HOME, exist_ok=True)
+    if not os.access(PERF_HOME, os.W_OK | os.X_OK):
+        print("perf-gate: cannot measure: %s is not writable by this user (it belongs to uid %d);"
+              " remove it or set PERF_HOME" % (PERF_HOME, os.stat(PERF_HOME).st_uid), file=sys.stderr)
+        return 2
+    # One run at a time per PERF_HOME: two runs share its base trees and
+    # compiled code, and on one box each would be the other's noise.
+    lock = open(os.path.join(PERF_HOME, ".lock"), "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print("perf-gate: another run holds %s; waiting for it" % PERF_HOME, file=sys.stderr)
+        fcntl.flock(lock, fcntl.LOCK_EX)
     prune()
     scratch = tempfile.mkdtemp(prefix="run-", dir=PERF_HOME)
     try:
