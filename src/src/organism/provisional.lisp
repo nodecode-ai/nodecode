@@ -45,8 +45,11 @@
 ;;;;   redefinition and gets one) under a HELD encapsulation, and the layer
 ;;;;   write is deferred until that definition has been entered and has
 ;;;;   returned once. One clean traversal and the scribe's ordinary write
-;;;;   runs, unchanged, exactly as if it had never been delayed. A traversal
-;;;;   that signals instead restores the escrowed definition — the one in
+;;;;   runs, unchanged, exactly as if it had never been delayed. A form that
+;;;;   redefines several such names is one batch, written once the last of
+;;;;   them has returned: a clean return of one name is no evidence about
+;;;;   another (proofs/SelfEditHold.lean). A traversal that signals before
+;;;;   then restores, for every name of its batch, the escrowed definition — the one in
 ;;;;   place before the traversal — and the session is woken through the one
 ;;;;   in-process ingress (*SESSION-WAKE*, the gateway's SUBMIT) with the
 ;;;;   condition that killed it. The image heals itself and then reports,
@@ -173,6 +176,8 @@ themselves."
   ;; The form is the unit: a PROGN that defines a helper beside the loop
   ;; persists as a whole or not at all, which is what its author meant.
   (names '())
+  ;; the names whose traversal has returned: the form is written when they are all of NAMES
+  (proven '())
   (thunk nil)
   (session-id nil)
   (state :armed))
@@ -212,16 +217,50 @@ when any keyword passes, else the keyword names taken."
   (list min (unless (or rest key-p) positional)
         (if (or any (and rest (not key-p))) :any keys)))
 
+(defun keyword-start (lambda-list &aux (state :required) (positional 0))
+  "How many arguments LAMBDA-LIST binds positionally before its keywords
+begin, or NIL when it takes no &KEY."
+  (dolist (item lambda-list nil)
+    (case item
+      (&optional (setf state :optional))
+      ((&rest &body &aux) (setf state :other))
+      (&key (return positional))
+      (t (when (and (member state '(:required :optional))
+                    (not (and (symbolp item) (uiop:string-prefix-p "&" (symbol-name item)))))
+           (incf positional))))))
+
+(defun keywords-aligned-p (new-start any old-min old-max old-start)
+  "Whether a lambda list reading keywords from NEW-START, any keyword when
+ANY, reads every call of one taking OLD-MIN to OLD-MAX arguments (NIL,
+unbounded) with keywords from OLD-START (NIL when it takes none): under
+&ALLOW-OTHER-KEYS only the keyword part's length must come out even (SBCL
+checks nothing else there); otherwise the old positional arguments, which
+can be any values, must end where the keywords begin, and the old keywords
+begin there too."
+  (cond ((null new-start) t)
+        (any (if old-start
+                 (and (evenp (- old-start new-start))
+                      (or (<= old-start new-start) (<= old-start old-min)))
+                 (and old-max
+                      (or (<= old-max new-start)
+                          (and (= (max old-min (1+ new-start)) old-max)
+                               (evenp (- old-max new-start)))))))
+        (old-start (= new-start old-start))
+        (t (and old-max (<= old-max new-start)))))
+
 (defun takes-every-call-p (new old)
   "Whether lambda list NEW takes every call lambda list OLD takes: argument
-counts and keywords. Positional and keyword alignment between them is not
-checked."
+counts, keywords, and where the keywords begin (proofs/SelfEditHold.lean)."
   (destructuring-bind (new-min new-max new-keys) (call-shape new)
     (destructuring-bind (old-min old-max old-keys) (call-shape old)
-      (and (<= new-min old-min)
-           (or (null new-max) (and old-max (>= new-max old-max)))
-           (or (null old-keys) (eq new-keys :any)
-               (and (listp old-keys) (subsetp old-keys new-keys :test #'string=)))))))
+      (let ((new-start (keyword-start new)) (old-start (keyword-start old)))
+        (and (<= new-min old-min)
+             (or (null new-max) (and old-max (>= new-max old-max)))
+             (or (null old-keys) (eq new-keys :any)
+                 (and (listp old-keys) (subsetp old-keys new-keys :test #'string=)))
+             ;; NEW reads keywords from NEW-START on: (x &optional y) -> (x &key y)
+             ;; would read the caller's (f 1 2) as a keyword list
+             (keywords-aligned-p new-start (eq new-keys :any) old-min old-max old-start))))))
 
 (defvar *held* (make-hash-table :test 'equal)
   "NAME -> HELD-DEFINITION for every definition still waiting on its first
@@ -345,8 +384,9 @@ load-bearing."
                                                (funcall *session-wake* session-id
                                                         (reverted-text names condition)))))))))
                        (multiple-value-prog1 (apply next args)
-                         ;; one traversal returned: the scribe records the form as it would have at the eval
-                         (when (claim-batch batch :confirmed)
+                         ;; this name returned; once every name of the batch has, the scribe
+                         ;; records the form as it would have at the eval
+                         (when (prove-held batch name)
                            (release-held batch)
                            (handler-case (funcall batch.thunk)
                              (error (condition)
@@ -356,10 +396,11 @@ load-bearing."
                                (warn "held definitions not recorded: ~a" condition)))))))))))))
       (format t "~&[layer: ~{~a~^, ~} ~:[is~;are~] running on the stack this eval was ~
                  dispatched from — the definition is live but HELD: it is written to the ~
-                 layer after one clean traversal, and reverts to what it displaced if the ~
-                 first traversal signals. (held-definitions) lists what is waiting, ~
-                 (revert 'NAME) puts one back by hand.]~%"
-              (mapcar #'first escrow) (rest escrow))
+                 layer after ~:[one clean traversal~;each name has returned from one clean ~
+                 traversal~], and reverts to what it displaced if a traversal signals ~
+                 first. (held-definitions) lists what is waiting, (revert 'NAME) puts one ~
+                 back by hand.]~%"
+              (mapcar #'first escrow) (rest escrow) (rest escrow))
       batch.names)))
 
 (defun claim-batch (batch state)
@@ -369,6 +410,19 @@ load-bearing."
   ;; round — so confirm and revert both arrive repeatedly and exactly one of
   ;; them may act.
   (bt2:with-lock-held (*held-lock*) (when (eq :armed batch.state) (setf batch.state state) t)))
+
+(defun prove-held (batch name)
+  "Count NAME's traversal as returned for BATCH, and claim BATCH :CONFIRMED
+when that leaves none of its names unproven: true on the winning claim."
+  ;; A return of one held name says nothing about another. Of AGENT-LOOP and
+  ;; RUN-TOOL-CALL redefined in one form, the dispatcher returns at the
+  ;; round's next tool call, before the loop has entered its new body at all.
+  (bt2:with-lock-held (*held-lock*)
+    (when (eq :armed batch.state)
+      (pushnew name batch.proven :test #'string=)
+      (when (subsetp batch.names batch.proven :test #'string=)
+        (setf batch.state :confirmed)
+        t))))
 
 (defun release-held (batch &key restore)
   "Take BATCH's names out of the held table and off their encapsulations,
@@ -401,6 +455,7 @@ STATE) ...). The read behind (held)."
                 collect (list :name name
                               :session-id (batch-session-id held.batch)
                               :state (batch-state held.batch)
+                              :returned (and (member name (batch-proven held.batch) :test #'string=) t)
                               :restores (and held.previous t))))
         #'string< :key (lambda (entry) (getf entry :name))))
 
