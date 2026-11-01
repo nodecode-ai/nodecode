@@ -380,6 +380,21 @@ against.")
                   :detail "The store only: config, the layer and the knowledge cells are still this profile's. HOME=$(mktemp -d) nodecode is a throwaway organism.")
    (nlk:make-verb "--pristine" "run generation 0: the binary alone, no folder loaded"
                   :detail "Nothing of the cell folder loads, no published image is followed, and keeps are refused while it runs: the floor to stand on when the folder itself is the problem. (generations) lists what was sealed and (rollback N) restores one, the next launch running it. A launch whose last self died before serving stands here by itself.")
+   (nlk:make-verb "--provider" "open the shell's fresh session on provider P"
+                  :arguments "P" :label "--provider P"
+                  :detail "--model PROVIDER/MODEL says the same; this says it outright, for a model id whose own prefix names a provider.")
+   (nlk:make-verb "--model" "open the shell's fresh session on model M: [PROVIDER/]MODEL[:EFFORT]"
+                  :arguments "M" :label "--model M"
+                  :detail "This session alone runs on it: the default and every other session stay where they are. M is a model id as /models lists it, behind PROVIDER/ for another provider and before :EFFORT for a reasoning effort: --model openai-codex/gpt-6.1-sol:high. A prefix is the provider only when it names one, and a suffix the effort only when it names a rung and the id without it is no listed model, so ids like openrouter's deepseek/deepseek-r1:free stay whole; --provider and --effort say either part outright. The organism checks the target before the session opens; one it refuses is said in the shell, and nothing runs on the default instead.")
+   (nlk:make-verb "--effort" "open the shell's fresh session at reasoning effort E"
+                  :arguments "E" :label "--effort E"
+                  :detail "--model MODEL:E says the same; this says it outright.")
+   (nlk:make-verb "--prompt-file" "send FILE's text as the shell's first prompt"
+                  :arguments "FILE" :label "--prompt-file FILE"
+                  :detail "Read before anything starts; one that cannot be read, or holds no text, refuses the launch. Its trailing newlines go, as $(cat FILE) drops them. Keeps a long prompt off the command line.")
+   (nlk:make-verb "--" "send every word after it as the shell's first prompt"
+                  :arguments "PROMPT..." :label "-- PROMPT..."
+                  :detail "The words join with one space; quote the prompt to keep it exactly. Nothing after it is read as a command or an option, -p and --help included. The prompt sends once the session stands, as if typed; edited in the composer before then, it waits there instead. nodecode resume SESSION-ID -- PROMPT sends it in that session.")
    (nlk:make-verb "--help" "this text" :aliases '("-h") :label "-h, --help")
    (nlk:make-verb "--version" "the version, and the commit it was built from"))
   "The executable's options, in help's order.")
@@ -425,9 +440,9 @@ read one line alike."
                          (t t))))))
     (values request args)))
 
-(defun parse-launch-arguments (args &aux (profile nil))
+(defun parse-launch-arguments (args &aux (profile nil) (prompt nil))
   "ARGS, the executable's command line, as the launch plan: (values SERVE
-CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE)."
+CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
   ;; SERVE is the headless owner, :WAIT for `gateway run' — the gateway, which
   ;; waits for the store instead of losing it; CHILD what runs before any
   ;; folder loads, (:help TOPIC . MORE), (:version), (:profile WORDS) or
@@ -447,6 +462,18 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE)."
   ;; rest of the line. A refusal is a LAUNCH-USAGE-ERROR naming what was
   ;; wrong, and the nearest word the tables hold for one they do not.
   ;; `-p NAME' or `--profile NAME' comes out wherever it sits (Hermes's rule).
+  ;;
+  ;; LAUNCH is what the line asks of the shell's session (#141), a plist
+  ;; (:PROVIDER :MODEL :EFFORT :PROMPT) or NIL: --provider, --model and
+  ;; --effort, and the first prompt -- every word after the first `--', which
+  ;; is cut off before any pass reads the line, so no word of a prompt is
+  ;; ever a profile, a help request or a command -- or --prompt-file's text.
+  (let ((cut (position "--" args :test #'string=)))
+    (when cut
+      (setf prompt (format nil "~{~a~^ ~}" (nthcdr (1+ cut) args))
+            args (subseq args 0 cut))
+      (when (zerop (length (string-trim '(#\Space #\Tab #\Newline) prompt)))
+        (launch-usage-error "-- needs the PROMPT after it: nodecode -- \"what the session should do\""))))
   (setf args (loop while args
                    for arg = (pop args)
                    if (member arg '("-p" "--profile") :test #'string=)
@@ -469,8 +496,8 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE)."
                             (list :help (some (lambda (word) (launch-name word *launch-verbs*))
                                               args)))
                            ((member "--version" head :test #'string=) (list :version))))
-      (return-from parse-launch-arguments (values nil child nil nil nil nil profile nil))))
-  (let (session-id store-path serve child ephemeral setup pristine)
+      (return-from parse-launch-arguments (values nil child nil nil nil nil profile nil nil))))
+  (let (session-id store-path serve child ephemeral setup pristine target prompt-file)
     (flet ((value-for (refusal)
              ;; The word a flag or a verb takes, or REFUSAL when the line ends first.
              (or (pop args) (launch-usage-error refusal))))
@@ -549,10 +576,40 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE)."
                   (setf store-path (value-for "--store needs a PATH")))
                  ((string= name "--ephemeral") (setf ephemeral t))
                  ((string= name "--pristine") (setf pristine t))
+                 ((member name '("--provider" "--model" "--effort") :test #'string=)
+                  (let* ((noun (string-upcase (subseq name 2)))
+                         (key (intern noun :keyword))
+                         (value (value-for (format nil "~a needs a ~a" name noun))))
+                    (when (getf target key)
+                      (launch-usage-error "~a names a second ~(~a~), ~a; a session runs on one"
+                                          name noun value))
+                    (when (or (zerop (length (string-trim " " value)))
+                              (char= (char value 0) #\-))
+                      (launch-usage-error "~a needs a ~a, not ~s" name noun value))
+                    (setf (getf target key) value)))
+                 ((string= name "--prompt-file")
+                  (when prompt-file
+                    (launch-usage-error "--prompt-file names a second FILE; a launch sends one first prompt"))
+                  (setf prompt-file (value-for "--prompt-file needs a FILE")))
                  (t (refuse-launch-word arg)))))
     (when (and child (eq (first child) :help))
       (return-from parse-launch-arguments
-        (values nil child nil nil nil nil profile nil)))
+        (values nil child nil nil nil nil profile nil nil)))
+    (when (and prompt prompt-file)
+      (launch-usage-error "a launch sends one first prompt: -- PROMPT or --prompt-file FILE"))
+    (when (or target prompt prompt-file)
+      (when (or serve child)
+        (launch-usage-error "~a is the shell's: nodecode [-p NAME] [--provider P] [--model M] [--effort E] -- PROMPT"
+                            (cond (target (format nil "--~(~a~)" (first target)))
+                                  (prompt-file "--prompt-file")
+                                  (t "a first prompt"))))
+      (when (and target session-id)
+        (launch-usage-error "resume keeps the model ~a began on: /models in the shell picks another"
+                            session-id)))
+    ;; Read now, before anything boots: a prompt that cannot be had stops
+    ;; the launch here, with nothing started.
+    (when prompt-file
+      (setf prompt (launch-prompt-file prompt-file)))
     (when ephemeral
       (when serve
         (launch-usage-error "--ephemeral is a shell's flag: a headless owner names its store with --store PATH"))
@@ -571,7 +628,28 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE)."
                (or serve session-id store-path ephemeral setup))
       (launch-usage-error "~a is a command of its own: nodecode [-p NAME] ~:*~a ..."
                           (substitute #\Space #\- (string-downcase (first child)))))
-    (values serve child session-id store-path ephemeral setup profile pristine)))
+    (values serve child session-id store-path ephemeral setup profile pristine
+            (and (or target prompt)
+                 (loop for key in '(:provider :model :effort :prompt)
+                       for value = (if (eq key :prompt) prompt (getf target key))
+                       when value append (list key value))))))
+
+(defun launch-prompt-file (file)
+  "FILE's text as a first prompt (`--prompt-file FILE'), its trailing
+newlines dropped as $(cat FILE) drops them; a file that cannot be read, or
+holds no text, is a LAUNCH-USAGE-ERROR."
+  ;; A relative FILE is the caller's: read against the working folder.
+  (let* ((path (merge-pathnames (uiop:parse-native-namestring file)
+                                (uiop:ensure-directory-pathname (uiop:getcwd))))
+         (text (handler-case (uiop:read-file-string path :external-format :utf-8)
+                 (error (condition)
+                   (launch-usage-error "--prompt-file ~a cannot be read: ~a"
+                                       file (or (ignore-errors (plain-error-text condition))
+                                                (type-of condition)))))))
+    (setf text (string-right-trim '(#\Newline #\Return) text))
+    (when (zerop (length (string-trim '(#\Space #\Tab #\Newline #\Return) text)))
+      (launch-usage-error "--prompt-file ~a holds no prompt" file))
+    text))
 
 (defun launch-help-text (&optional topic more)
   "`nodecode --help': the commands and the options, from the tables; or
@@ -580,8 +658,8 @@ TOPIC's own help, a command's or an option's."
   ;; (NLK:PROFILE-COMMAND), MORE naming one of them.
   (cond
     ((null topic)
-     (format nil "usage: nodecode [-p NAME] [COMMAND] [OPTIONS]~%~%~a~%~%commands~%~a~%options~%~a~%Run \"nodecode help COMMAND\" to read one command.~%"
-             "With no command, nodecode opens the shell on this home's organism, and starts the organism first when none is running."
+     (format nil "usage: nodecode [-p NAME] [COMMAND] [OPTIONS] [-- PROMPT]~%~%~a~%~%commands~%~a~%options~%~a~%Run \"nodecode help COMMAND\" to read one command.~%"
+             "With no command, nodecode opens the shell on this home's organism, and starts the organism first when none is running. --model M -- PROMPT opens it on a fresh session running on M, its first prompt sent."
              (nlk:verbs-text *launch-verbs*)
              (nlk:verbs-text *launch-options*)))
     ((equal topic "profile")
@@ -726,7 +804,7 @@ condition's report, exit 1."
                     ;; would print `compilation unit aborted'.
                     (uiop:finish-outputs)
                     (uiop:quit 1 nil)))
-    (multiple-value-bind (serve child session-id store-path ephemeral setup profile pristine)
+    (multiple-value-bind (serve child session-id store-path ephemeral setup profile pristine launch)
         (handler-case (parse-launch-arguments (uiop:command-line-arguments))
           (launch-usage-error (refusal)
             (usage-quit (princ-to-string refusal))))
@@ -843,6 +921,7 @@ condition's report, exit 1."
                         (attach-or-own-organism :session-id session-id
                                                 :store-path store-path
                                                 :setup setup
+                                                :launch launch
                                                 :prelude (lambda ()
                                                            (decide-folder-behind-the-frame
                                                             store-path))))

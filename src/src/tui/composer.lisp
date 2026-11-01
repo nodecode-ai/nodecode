@@ -503,6 +503,21 @@ whole dropdown rect). NIL while no lane matches or the window has no room."
          ;; scrollbar cell (Zig draws the bar on the row window only).
          (list (dropdown-panel-row '() width bg surface)))))))
 
+(defun attach-composer-prompt (model text)
+  "Put TEXT, a prompt the command line gave (#141), in the composer exactly:
+verbatim when a paste of it would land unchanged, else collapsed to a
+`[Paste #N] ' marker whose stash is TEXT itself, so the prompt that goes out
+is byte for byte the one given -- its tabs, controls and outer blanks
+included, which a paste would picture or trim."
+  (if (and (string= text (normalize-pasted-text text))
+           (<= (length text) *paste-collapse-max-chars*)
+           (<= (1+ (count #\Newline text)) *paste-collapse-max-lines*))
+      (editor-insert (chat-model-editor model) text)
+      (let ((id (incf (chat-model-paste-counter model))))
+        ;; No space after it: the marker's expansion is the whole prompt.
+        (editor-insert (chat-model-editor model) (format nil "[Paste #~d]" id))
+        (push (cons id text) (chat-model-pastes model)))))
+
 ;;; --- paste capture and image attachments -------------------------------------
 ;;; The Zig attachComposerPaste / attachComposerImage pair: large pastes
 ;;; collapse to a [Paste #N] marker re-expanded at submit; Ctrl+V probes the

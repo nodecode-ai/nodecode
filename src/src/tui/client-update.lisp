@@ -122,6 +122,7 @@ thread reads it and clears this place.")
                 (t
                  (setf model.quiet-resync nil)
                  (reconcile-pending-command model payload)
+                 (send-launch-prompt model)
                  (keep-window-from-bottom model (lambda () (render-state model)))
                  (nlk:note-boot-phase "transcript-replayed" frame.session-id)
                  ;; The frame the attach was for is on screen now. A replay
@@ -562,61 +563,7 @@ thread reads it and clears this place.")
          ;; the HTTP control ops.
          (return-from update (values model (nth-value 1 (submit-slash model text)))))
        (when (and typed (not model.turn-in-flight))
-         (let ((command-id (nlk:make-durable-id "command"))
-               (correlation-id (nlk:make-durable-id "correlation"))
-               ;; Collapsed [Paste #N] markers expand into the outgoing
-               ;; prompt; staged images ride the command. History keeps the
-               ;; readable marker form, so the stash reads them here, before
-               ;; the submit empties the composer.
-               (pastes model.pastes))
-           (send-composer-prompt
-            model text
-            (lambda (prompt images)
-              (setf model.turn-in-flight t
-                    ;; A fresh submit restarts the live-bar clock and retires
-                    ;; the previous turn's activity stamp.
-                    model.turn-started-at (get-internal-real-time)
-                    model.turn-activity nil
-                    model.pending-command-id command-id
-                    model.pending-correlation-id correlation-id
-                    model.pending-prompt prompt
-                    ;; The composer as typed, kept until the turn settles: a
-                    ;; retraction hands it back whole (RESTORE-RETRACTED-COMPOSER).
-                    model.retract-stash
-                    (list :text text
-                          :pastes pastes
-                          :images images
-                          :command-id command-id
-                          :turn-id nil)
-                    model.retract-requested nil
-                    ;; The prompt shows the moment Enter lands, at the
-                    ;; tail where its durable fact will rest: a live-only
-                    ;; row keyed by this command id, which that fact
-                    ;; hydrates in place (INGEST-MESSAGE-FACT). Painted
-                    ;; before the send, so the frame after Enter never
-                    ;; waits on the loopback round trip.
-                    model.state
-                    (ingest-submitted-prompt model.state prompt
-                                             :prompt-id command-id))
-              ;; A transport that refuses takes the row back before the
-              ;; refusal lands as the delivery-uncertain notice: a re-send
-              ;; after reconnect appends its own fact row. A frame the sync
-              ;; bound refuses never left: nothing is pending, nothing is
-              ;; in flight, and there is no stash to hand back later.
-              (handler-bind ((error (lambda (condition)
-                                      (setf model.state
-                                            (drop-submitted-prompt model.state command-id))
-                                      (when (typep condition 'nlk:frame-too-large)
-                                        (clear-pending-command model)
-                                        ;; The flight settles; any turn id armed stays.
-                                        (setf model.turn-in-flight nil model.turn-started-at nil
-                                              model.turn-activity nil)
-                                        (clear-retract-stash model)))))
-                (send-start-turn model.ws
-                                 model.session-id prompt
-                                 :command-id command-id
-                                 :correlation-id correlation-id
-                                 :images images))))))
+         (start-composer-turn model text))
        ;; The steer leg: submitting while a turn runs steers exactly that
        ;; turn. Fire-and-forget — the pending-command machinery stays
        ;; reserved for start_turn, whose replay reconciliation would
@@ -728,8 +675,19 @@ caller. Both return headers. Refusals use the same closed, structured error lane
   "What an organism's control op ANSWER says came of it, in words."
   (or (json-value answer :string "text") "the organism answered nothing"))
 
-(defun ensure-gateway-session (sid port token)
+(defparameter +launch-target-refusals+ '("unknown_provider" "effort_unsupported")
+  "The codes a session's create answers a target it cannot run on with, the
+ones a start_turn refuses its target by (the gateway's TARGET-REFUSAL).")
+
+(defun ensure-gateway-session (sid port token &key target on-refusal on-target)
   "Return SID when it exists; create exactly SID only on structured not-found."
+  ;; TARGET, a plist (:PROVIDER :MODEL :EFFORT), rides the create: the
+  ;; organism pins the new session alone to it, and ON-TARGET is handed the
+  ;; plist it read. One it refuses is handed to ON-REFUSAL, the
+  ;; GATEWAY-HTTP-ERROR saying why, and the session is created without it --
+  ;; a shell needs a session to stand on, and nothing in it runs until a
+  ;; target is settled. An organism whose create reads no target creates the
+  ;; session unpinned; the first start_turn pins it then.
   (handler-case
       (prog1 sid
         (gateway-http-session-request port :get
@@ -739,19 +697,61 @@ caller. Both return headers. Refusals use the same closed, structured error lane
       (unless (and (= 404 (gateway-http-error-status lookup-error))
                    (equal "unknown_session" (gateway-http-error-code lookup-error)))
         (error lookup-error))
-      (unless (equal sid (gethash "session_id"
-                                  (gateway-http-session-request
-                                   port :post "/api/gateway/sessions"
-                                   ;; The shell's own folder: a gateway in
-                                   ;; another process resolves an unstated one
-                                   ;; against its own.
-                                   (make-json-object "session_id" sid
-                                                     "title" "Lisp Gateway client"
-                                                     "cwd" (workspace-directory))
-                                   token)))
-        (error 'gateway-http-error :status 200 :code "session_identity_mismatch"
-               :detail "Gateway created a different session id"))
+      (flet ((create (target)
+               (gateway-http-session-request
+                port :post "/api/gateway/sessions"
+                ;; The shell's own folder: a gateway in another process
+                ;; resolves an unstated one against its own.
+                (json-object "session_id" sid
+                             "title" "Lisp Gateway client"
+                             "cwd" (workspace-directory)
+                             (:getf target :opt "provider" "model" "effort"))
+                token)))
+        (let* ((refused nil)
+               (created (handler-case (create target)
+                          (gateway-http-error (refusal)
+                            (unless (and target
+                                         (member (gateway-http-error-code refusal)
+                                                 +launch-target-refusals+
+                                                 :test #'equal))
+                              (error refusal))
+                            (setf refused t)
+                            (when on-refusal (funcall on-refusal refusal))
+                            (create nil))))
+               (read (gethash "target" created)))
+          (unless (equal sid (gethash "session_id" created))
+            (error 'gateway-http-error :status 200 :code "session_identity_mismatch"
+                   :detail "Gateway created a different session id"))
+          ;; The target as the organism read it goes to ON-TARGET, its
+          ;; members apart. An organism that says none back read none: its
+          ;; first start_turn takes the members word for word, so a spec only
+          ;; a reader splits (`openai-codex/gpt-6.1-sol:high' with no
+          ;; provider or effort of its own) would run as one model id on the
+          ;; default's lane -- refused here instead, before anything runs.
+          (cond ((or refused (null target)))
+                ((hash-table-p read)
+                 (when on-target
+                   (funcall on-target (list :provider (gethash "provider" read)
+                                            :model (gethash "model" read)
+                                            :effort (gethash "effort" read)))))
+                ((and on-refusal (target-spec-p target))
+                 (funcall on-refusal
+                          (make-condition 'gateway-http-error
+                                          :status 200 :code "target_unread"
+                                          :detail (format nil "this organism predates the PROVIDER/MODEL:EFFORT form (~a); name --provider and --effort apart, or update it"
+                                                          (getf target :model))))))))
       sid)))
+
+(defun target-spec-p (target)
+  "Whether TARGET, a plist (:PROVIDER :MODEL :EFFORT), holds a model only an
+organism that reads the spec splits: a `PROVIDER/' prefix with no provider
+named, or a `:EFFORT' suffix that names a rung with no effort named."
+  (let ((model (getf target :model)))
+    (and (stringp model)
+         (or (and (null (getf target :provider)) (find #\/ model))
+             (and (null (getf target :effort))
+                  (let ((colon (position #\: model :from-end t)))
+                    (and colon (effort-rank (subseq model (1+ colon))))))))))
 
 
 (nlt:defmessage gw-connection-msg

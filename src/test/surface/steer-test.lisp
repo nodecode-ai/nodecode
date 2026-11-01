@@ -176,8 +176,8 @@ CANCELS collects (turn-id retract)."
        (let ((,starts '()) (,cancels '()))
          (with-stubbed-fdefinitions
              ((nle::send-start-turn (ws session-id prompt &key command-id
-                                        correlation-id images)
-                (push (list prompt command-id) ,starts))
+                                        correlation-id images target)
+                (push (list prompt command-id target) ,starts))
               (nle::send-cancel-turn (ws session-id turn-id &key retract)
                 (push (list turn-id retract) ,cancels))
               (nle::send-subscribe (ws session-ids) nil))
@@ -390,6 +390,61 @@ STATUS, and the MEMBERS that ride it — the code, the message, the response."
   (with-steer-shell (model starts cancels :submit "hello there" :accepted "turn-1")
     (feed-wire model (%turn-fact "turn.completed" "turn-1"))
     (is-shape model (.turn-in-flight not) (.active-turn-id null))))
+
+(deftest a-refused-start-hands-its-prompt-back-to-the-composer ()
+  ;; A start the gateway refuses never became a turn: the prompt comes home as
+  ;; typed, unless the composer holds something new, which it keeps.
+  (with-steer-shell (model starts cancels :submit "run this")
+    (feed-wire model (%start-result (second (first starts)) "rejected" "code" "unknown_provider" "message" "no x"))
+    (is (equal "run this" (nle::editor-value model.editor)) "the prompt is back in the composer")
+    (is (search "Turn rejected" (nle::status-said model)) "and the notice says why")
+    (press model :enter)
+    (type-string model "newer")
+    (feed-wire model (%start-result (second (first starts)) "rejected" "code" "unknown_provider" "message" "no x"))
+    (is (equal "newer" (nle::editor-value model.editor)) "what was typed since stays")))
+
+(deftest a-launch-prompt-goes-out-on-its-target-once-the-session-stands ()
+  ;; The launch's prompt waits in the composer, then goes through Enter's
+  ;; start leg with the held target; the admission spends the target.
+  (with-steer-shell (model starts cancels)
+    (nle::seat-launch model "s" '(:model "openai-codex/gpt-6.1-sol:high" :prompt "fix the bug"))
+    (is (equal "fix the bug" (nle::editor-value model.editor)) "the prompt waits in the composer")
+    (nle::send-launch-prompt model)
+    (is (equal "fix the bug" (first (first starts))) "then goes out as typed")
+    (is (equal "openai-codex/gpt-6.1-sol:high" (getf (third (first starts)) :model)) "with the target")
+    (feed-wire model (%accepted-start (second (first starts)) "turn-1"))
+    (is (null (nle::held-launch-target model)) "which the admission spends")
+    (nle::send-launch-prompt model)
+    (is (= 1 (length starts)) "and it goes once")))
+
+(deftest a-launch-prompt-seated-before-the-composer-waits-for-init ()
+  ;; The shell seats its launch before the program's INIT makes the composer.
+  (let ((model (make-instance 'nle::gateway-chat-model :session-id "s" :ws nil)))
+    (nle::seat-launch model "s" '(:model "m" :prompt "fix the bug"))
+    (is (null (nle::chat-model-editor model)) "no composer yet")
+    (nlt:init model)
+    (is (equal "fix the bug" (nle::editor-value (nle::chat-model-editor model))) "INIT seats it in the composer")
+    (is (equal "fix the bug" (getf (nle::gateway-model-launch-prompt model) :composer)) "to be sent from there")))
+
+(deftest a-launch-prompt-waits-when-edited-or-refused-and-goes-out-exact ()
+  (with-steer-shell (model starts cancels)
+    (nle::seat-launch model "s" '(:prompt "fix"))
+    (type-string model " it")
+    (nle::send-launch-prompt model)
+    (is (null starts) "an edited prompt is the operator's: it waits"))
+  (with-steer-shell (model starts cancels)
+    (nle::seat-launch model "s" '(:model "nope" :prompt "fix"))
+    (setf (nle::gateway-model-launch-refusal model) (cons "unknown_provider" "no provider \"nope\""))
+    (nle::send-launch-prompt model)
+    (is (null starts) "a refused target sends nothing")
+    (is (search "refused: no provider" (nle::status-said model)) "and says why")
+    (is (equal "fix" (nle::editor-value model.editor)) "the prompt waiting in the composer"))
+  (with-steer-shell (model starts cancels)
+    (let ((exact (format nil "  a~cb~%" #\Tab)))
+      (nle::seat-launch model "s" (list :prompt exact))
+      (is (equal "[Paste #1]" (nle::editor-value model.editor)) "a prompt a paste would change shows as one")
+      (nle::send-launch-prompt model)
+      (is (equal exact (first (first starts))) "and goes out byte for byte"))))
 
 (deftest rejected-start-turn-clears-stash-and-marker ()
   ;; The rejection takes back the prompt row Enter painted, too, and says why.

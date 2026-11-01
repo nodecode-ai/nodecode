@@ -559,9 +559,14 @@ INSTANCE, TOKEN its operator token."
 
 (defun run-chat-gateway (&key session-id port
                               (store-path nlk::*default-store-path*)
-                              boot setup)
+                              boot setup launch)
   "Run the Gateway TUI with a reconnecting reader and UI-owned state. => the
 session the shell ended on, or NIL when it never attached."
+  ;; LAUNCH, a plist (:PROVIDER :MODEL :EFFORT :PROMPT), is what the command
+  ;; line asked of the session it opens (#141): the target is held until the
+  ;; session's first turn is admitted (HELD-LAUNCH-TARGET), and the prompt
+  ;; waits in the composer until the session stands replayed
+  ;; (SEND-LAUNCH-PROMPT).
   ;; The shell paints FIRST. Nothing in the first frame needs a gateway — the
   ;; session id is client-chosen, the band is in-memory, the composer
   ;; placeholder is the :connecting lifecycle — so endpoint resolution and the
@@ -617,6 +622,7 @@ session the shell ended on, or NIL when it never attached."
          ;; shell program's construction instead of following it. Nothing in
          ;; the boot before this shell's first frame needs the program.
          (boot-thread (and boot (funcall start-organism))))
+    (seat-launch model sid launch)
     (let ((prog (nlt:make-program model)))
       (nlk:note-boot-phase "shell-program")
       (setf model.program prog program prog)
@@ -769,7 +775,19 @@ session the shell ended on, or NIL when it never attached."
                                            (setf model.http-port
                                                  (live-published-endpoint store-path)))))
                          (nlk:note-boot-phase "ensure-start")
-                         (ensure-gateway-session sid port token)
+                         (ensure-gateway-session
+                          sid port token
+                          :target (and (equal sid (getf model.launch-target :session-id))
+                                       model.launch-target)
+                          :on-refusal (lambda (refusal)
+                                        (setf model.launch-target nil
+                                              model.launch-refusal
+                                              (cons (gateway-http-error-code refusal)
+                                                    (gateway-http-error-detail refusal))))
+                          :on-target (lambda (target)
+                                       (when (equal sid (getf model.launch-target :session-id))
+                                         (setf model.launch-target
+                                               (list* :session-id sid target)))))
                          (nlk:note-boot-phase "session-ensured")
                          (setf (cdr attempt) :ensured)
                          ;; The facts read goes out HERE, the moment

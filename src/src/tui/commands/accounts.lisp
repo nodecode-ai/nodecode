@@ -274,6 +274,12 @@ start on: POST /api/gateway/sessions/<id>/effort (SET-SESSION-EFFORT)."
   ;; Returns NIL, so a picker's on-select can tail-call it.
   (session-control-call model :post "effort"
                         :body (json-object "effort" (or effort :null)))
+  ;; The pick is this session's effort now: a launch's held one would only
+  ;; be refused against it.
+  (when (held-launch-target model)
+    (let ((held (copy-list model.launch-target)))
+      (remf held :effort)
+      (setf model.launch-target held)))
   ;; The pick the footer renders came from the gateway with the identity it
   ;; belongs to; the landed pick makes that pair stale.
   (refresh-gateway-model-facts model)

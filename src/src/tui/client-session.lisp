@@ -1810,7 +1810,38 @@ quietly."
            (return (format t "~&restart refused: ~a~%"
                            (nlk::exec-program (nlk:organism-binary) sb-ext:*posix-argv*)))))))))
 
-(defun attach-or-own-organism (&key session-id store-path setup prelude)
+(defun seat-launch (model session-id launch)
+  "Seat LAUNCH, what the command line asked of SESSION-ID (RUN-CHAT-GATEWAY),
+on MODEL before its first frame: the target held, and the prompt in the
+composer -- a large one collapsed to its [Paste #N] marker, as a paste is --
+waiting to be sent."
+  (let ((target (loop for (key value) on launch by #'cddr
+                      when (and value (member key '(:provider :model :effort)))
+                        append (list key value))))
+    (when target
+      (setf model.launch-target (list* :session-id session-id target))))
+  ;; The composer is made by the program's INIT, which runs after this: the
+  ;; prompt waits for it there (the INIT method below).
+  (when-let (prompt (getf launch :prompt))
+    (if model.editor
+        (seat-launch-prompt model session-id prompt)
+        (setf model.launch-prompt (list :session-id session-id :unseated prompt)))))
+
+(defun seat-launch-prompt (model session-id prompt)
+  "PROMPT, the launch's, into MODEL's composer, waiting there to be sent to
+SESSION-ID (SEND-LAUNCH-PROMPT)."
+  (attach-composer-prompt model prompt)
+  (setf model.launch-prompt (list :session-id session-id
+                                  :composer (editor-value model.editor)))
+  (show-status model "The prompt sends once the organism answers; edit it to keep it here"))
+
+(defmethod nlt:init :after ((model gateway-chat-model))
+  "Seat the launch's prompt in the composer INIT has just made (SEAT-LAUNCH)."
+  (let ((launch model.launch-prompt))
+    (when-let (prompt (getf launch :unseated))
+      (seat-launch-prompt model (getf launch :session-id) prompt))))
+
+(defun attach-or-own-organism (&key session-id store-path setup prelude launch)
   "The binary's entry: paint the shell NOW, boot the organism BEHIND it."
   ;; Nothing in the first frame needs a gateway — the session id is
   ;; client-chosen, the band is in-memory, the composer placeholder is the
@@ -1826,6 +1857,7 @@ quietly."
     (let ((ended
             (run-chat-gateway
              :session-id (or session-id (fresh-session-id)) :store-path path :setup setup
+             :launch launch
              ;; Start the organism when the store is free, else attach to the live owner.
              :boot
              ;; The boot starts from the first moment, before the program is
