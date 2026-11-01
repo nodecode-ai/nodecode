@@ -209,6 +209,62 @@ evaluation's exit fact — narrowed to CALL-ID when one is named."
     (let ((process (find id (nle::exec-registry-processes registry) :key #'nle::exec-process-id)))
       (is (equal (format nil "one~%two~%") (nle::exec-process-eval-value process)) "the value is the whole capture"))))
 
+(deftest a-look-at-a-running-sh-snippet-reads-what-its-child-wrote (with-exec-registry (registry))
+  ;; SH answers its capture only when the command ends, so a backgrounded
+  ;; `nodecode add' read as silent to the model until it exited, whatever it
+  ;; had printed. A look carries what the child wrote since the last one; the
+  ;; output stays what the form printed -- nothing.
+  (let* ((command "echo one; sleep 30")
+         (id (spawn-test-eval registry :form (format nil "(sh ~s)" command)
+                                       :value (lambda () (nle::sh command))))
+         (process (nle::find-background-eval registry id)))
+    (is (await (:rest 0.02) (plusp (nle::exec-process-shell-total process))) "the child wrote")
+    (let ((look (nle::eval-status id)))
+      (is (eq :running (getf look :status)) "the command still runs")
+      (is (equal "" (getf look :output)) "the form printed nothing")
+      (is (equal (format nil "one~%") (getf look :shell-output)) "the look reads the child's line"))
+    (is (null (getf (nle::eval-status id) :shell-output)) "and the next look reads nothing new")))
+
+(deftest eval-await-wakes-on-what-a-sh-child-writes (with-exec-registry (registry))
+  ;; A park on a running command answers the child's line as it comes, not
+  ;; at the window's end.
+  (let* ((command "sleep 0.5; echo late; sleep 30")
+         (id (spawn-test-eval registry :form (format nil "(sh ~s)" command)
+                                       :value (lambda () (nle::sh command))))
+         (start (get-internal-real-time))
+         (look (nle::eval-await id :yield-ms 20000))
+         (seconds (/ (- (get-internal-real-time) start) internal-time-units-per-second)))
+    (is (eq :running (getf look :status)) "the command still runs")
+    (is (equal (format nil "late~%") (getf look :shell-output)) "the await answers the child's line")
+    (is (< seconds 10) (format nil "at once, not at the window's end: ~,1f s" seconds))))
+
+(deftest a-sh-snippet-past-its-window-answers-what-its-child-wrote (with-exec-registry (registry))
+  ;; The running envelope is the first look: the child's lines so far ride it
+  ;; as shell_output, and the next look starts after them.
+  (let* ((text (nle::background-capable-eval "(sh \"echo first; sleep 30\")" 1500))
+         (json (nlk:decode-json text))
+         (id (gethash "eval_id" json)))
+    (is (equal "running" (gethash "status" json)) text)
+    (is (equal (format nil "first~%") (gethash "shell_output" json)) text)
+    (is (null (getf (nle::eval-status id) :shell-output)) "the next look reads nothing new")))
+
+(deftest a-look-reads-a-childs-terminal-bytes-as-text (with-exec-registry (registry))
+  ;; Colour leaves with its count disclosed, a progress line as a terminal
+  ;; last drew it, and a burst past the preview as its tail, led by a count of
+  ;; what went before it.
+  (flet ((look (command total)
+           (let* ((id (spawn-test-eval registry :form (format nil "(sh ~s)" command)
+                                                :value (lambda () (nle::sh command))))
+                  (process (nle::find-background-eval registry id)))
+             (await (:rest 0.02) (= total (nle::exec-process-shell-total process)))
+             (getf (nle::eval-status id) :shell-output))))
+    (is (equal (format nil "ared~%30%~%[2 terminal control sequences removed by the output sanitizer]")
+               (look "printf 'a\\033[31mred\\033[0m\\n10%%\\r20%%\\r30%%\\n'; sleep 30" 26)))
+    (let ((skipped (- 6005 nle::*exec-preview-bytes*)))
+      (is (equal (format nil "[~:d earlier bytes not kept]~%~a~%end~%" skipped
+                         (make-string (- nle::*exec-preview-bytes* 5) :initial-element #\x))
+                 (look "head -c 6000 /dev/zero | tr '\\0' x; echo; echo end; sleep 30" 6005))))))
+
 (deftest a-silent-snippet-announces-its-handoff (with-exec-registry (registry))
   ;; A backgrounded snippet that writes nothing still runs in a band.
   (let ((nle::*exec-preview-interval* 0)
