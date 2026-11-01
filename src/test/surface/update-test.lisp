@@ -57,7 +57,7 @@ repo's own installer, for BODY."
                           (nle::*release-fetch* 'nle::release-fetch)
                           (nle::*release-directory* releases-dir)
                           (nle::*installer-path*
-                           (asdf:system-relative-pathname "nodecode" "tools/install.sh")))
+                           (asdf:system-relative-pathname "nodecode" "tools/install/install.sh")))
        ,@body)))
 
 (deftest update-installer-stages-then-links ()
@@ -82,7 +82,7 @@ repo's own installer, for BODY."
   ;; Started from PowerShell 7, 5.1 found no Get-FileHash and every staging failed.
   (flet ((child-environment (platform &aux environment)
            (with-saved-globals ((nle::*installer-path*
-                                 (asdf:system-relative-pathname "nodecode" "tools/install.ps1"))
+                                 (asdf:system-relative-pathname "nodecode" "tools/install/install.ps1"))
                                 (nle::*release-directory* (temp-path "releases")))
              (with-stubbed-fdefinitions ((nlk:platform () platform)
                                          (nle::run-bounded (argv &key ((:environment handed)) &allow-other-keys)

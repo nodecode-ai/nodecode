@@ -402,7 +402,7 @@ names a repository (`nodecode-ai/cells`), the commit it is read at, and every
 folder the release builds in from it, each at the shipped path it takes here
 (`guard` from `tools/nodecode-guard`, `channels/kit` from
 `rooms/nodecode-channel-kit`, `template` from `template`, and so on).
-`just cells-pull` (`src/tools/pull-cells.sh`) lays them down at that commit
+`just cells-pull` (`src/tools/build/pull-cells.sh`) lays them down at that commit
 before a build, a release, a pack or any cell lane, marks each with `.bundle`,
 and does nothing while the marker names the pin; the paths are git-ignored, so
 a shipped cell is edited in that repository (checked out at `~/nodecode-cells`;
