@@ -98,6 +98,12 @@ while a home is read."
     (nlk:when-let (text (trim-text (cdr (gethash (normal-name name) index))))
       (return text))))
 
+(defun texts-of (items &rest names)
+  "Each of the vector ITEMS that is a string, or an object holding one of NAMES (TEXT-OF): those texts."
+  (loop for item across items
+        for text = (if (stringp item) item (and (hash-table-p item) (apply #'text-of (object-index item) names)))
+        when text collect text))
+
 (defun boolean-of (index name default)
   "NAME as a boolean: absent or null is DEFAULT, :FALSE and NIL are false."
   (multiple-value-bind (value key) (member-of index name)
@@ -261,12 +267,7 @@ the catalog's row when BASE is that provider's api, else the host's words
                         "openai-completions"))))
          (models (let ((value (member-of index "models")))
                    (cond ((hash-table-p value) (sort (alexandria:hash-table-keys value) #'string<))
-                         ((vectorp value)
-                          (loop for item across value
-                                for id = (cond ((stringp item) item)
-                                               ((hash-table-p item)
-                                                (text-of (object-index item) "id" "name" "model")))
-                                when id collect id))))))
+                         ((vectorp value) (texts-of value "id" "name" "model"))))))
     (when id
       (make-fact :kind :provider :id id :world world
                  :source (format nil "~a~@[ ~{~a~^.~}~]" source
