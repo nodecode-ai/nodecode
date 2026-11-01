@@ -134,11 +134,20 @@ chat-shaped assistant message."
   (let ((choices (gethash "choices" chunk)))
     (when (and (vectorp choices) (plusp (length choices)))
       (with-json ((fr :string "finish_reason")
+                  (sr :string "stop_reason")
                   (delta :object "delta")
                   (dc :string "delta" "content")
                   (tc-deltas :any "delta" "tool_calls"))
           (aref choices 0)
-        (when fr (setf finish-reason fr))
+        ;; A server that stops a looping generation itself says so: vLLM's
+        ;; repetition detection answers finish_reason "repetition", or
+        ;; stop_reason "repetition_detected" beside a plain "stop" or no
+        ;; finish at all. Either is the round's finish "repetition", which a
+        ;; later clean finish never masks (the loop guard reads it).
+        (flet ((repetition-p (reason)
+                 (member reason '("repetition" "repetition_detected") :test #'string-equal)))
+          (cond ((or (repetition-p fr) (repetition-p sr)) (setf finish-reason "repetition"))
+                ((and fr (not (equal finish-reason "repetition"))) (setf finish-reason fr))))
         ;; Content chunk. Its arrival closes an open
         ;; thinking span (the chat.zig rule: text and
         ;; reasoning never interleave within one span).

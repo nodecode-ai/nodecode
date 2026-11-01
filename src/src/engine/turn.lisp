@@ -2685,6 +2685,11 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
          ;; attempt's :response-metadata overwrites both slots.
          (response-model nil)
          (response-effort nil)
+         ;; The attempt's loop guard (loop-guard.lisp), made afresh for each
+         ;; attempt at its own model's level: NIL when that model is not
+         ;; guarded. It reads what the observer reads, last, so a loop it
+         ;; cuts was streamed and sealed whole.
+         (loop-guard nil)
          (observer (lambda (part)
                      (observe-stream-cadence cadence part)
                      (case part.kind
@@ -2709,7 +2714,8 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                             (when (stringp part.arguments)
                               (setf (getf buf :arguments)
                                     part.arguments))))))
-                     (when on-part (funcall on-part part))))
+                     (when on-part (funcall on-part part))
+                     (when loop-guard (loop-guard-observe loop-guard part))))
          (config context.provider-config))
     (labels ((continuing-p ()
                (or (plusp (length sealed-reasoning))
@@ -3221,7 +3227,8 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                                               text thinking partial-calls))))))
                     ;; One fold per lane: a round with no observer IS the
                     ;; blocking call. OBSERVER is NIL when nothing wants parts.
-                    (setf cadence.sent-ms (elapsed-ms 0))
+                    (setf cadence.sent-ms (elapsed-ms 0)
+                          loop-guard (attempt-loop-guard config))
                     ;; Watched until its first token while a candidate a
                     ;; slow start would leave for stands behind it.
                     (call-with-attempt-watch
@@ -3236,6 +3243,14 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                      (output (and usage
                                   usage.output-tokens))
                      (cut-recovered nil))
+                ;; A server that detects the loop itself stops the generation
+                ;; and says so -- vLLM's repetition detection answers
+                ;; finish_reason "repetition" -- and what it kept is the loop
+                ;; cut short: the guard's failure at any level, since the
+                ;; verdict is the server's, not the guard's heuristics.
+                (when (equal finish-reason "repetition")
+                  (error 'provider-reasoning-loop
+                         :detail "the model looped: the server stopped it for repetition"))
                 ;; A tool call with no name fails the attempt before the
                 ;; round can count as history: the wire (an aggregator
                 ;; converting a streamed call chunk by chunk) did not carry
@@ -3482,7 +3497,12 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                     ;; reply and asks it to go on (ATTEMPT-CONTEXT). Under
                     ;; the ceiling the re-run is the cheaper, cleaner
                     ;; prompt. Request-scope failures streamed nothing.
-                    (continue-p (and (not request-p) (past-rerun-ceiling-p))))
+                    ;; A loop is never continued, wherever it was cut:
+                    ;; handed back as the model's own reply, it would be
+                    ;; the prompt to go on looping.
+                    (continue-p (and (not request-p)
+                                     (not (typep e 'provider-reasoning-loop))
+                                     (past-rerun-ceiling-p))))
                ;; A refused connection spends the request budget at once:
                ;; nothing listens there, and the next attempt hears the same.
                (let ((exhausted (or (typep e 'provider-connection-refused)

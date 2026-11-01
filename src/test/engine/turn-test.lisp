@@ -7558,8 +7558,11 @@ three
          (nle::emit-stream-part on-part :response-metadata :model "served-id")
          (nle::emit-stream-part on-part :reasoning-delta
                                 :text (make-string 40 :initial-element #\t))
+         ;; 284 characters of text: one letter 284 times is a loop the guard
+         ;; would cut (loop-guard.lisp), and this round is cut by the cancel.
          (nle::emit-stream-part on-part :text-delta
-                                :text (make-string 284 :initial-element #\a))
+                                :text (subseq (format nil "~{~r~^ ~}" (loop for i from 1 to 80 collect i))
+                                              0 284))
          (error (make-condition 'nlk:turn-cancelled-condition
                                 :turn-id turn-id :reason "esc")))
       (nlk:with-handlers ((nlk:turn-cancelled-condition () nil))

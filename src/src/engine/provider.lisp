@@ -1336,6 +1336,16 @@ never resent."))
   (:documentation "A clean stream whose assembled message carries a tool call
 with no name."))
 
+(define-error provider-reasoning-loop (provider-error) ()
+  (:default-initargs :scope :contract)
+  ;; The stream was healthy and the answer is not: a model looping on one
+  ;; passage streams until its output limit, so the guard cuts it
+  ;; (loop-guard.lisp) and the attempt spends the stream budget like an empty
+  ;; message. It is re-run, never continued (CALL-PROVIDER): a loop handed back
+  ;; as the model's own cut-off reply is the loop resumed.
+  (:documentation "An attempt whose reasoning or answer started repeating
+itself, or that the provider stopped for repetition."))
+
 (define-error provider-config-error (provider-error) ()
   (:report "~a" detail)
   ;; Refused wherever a selection is made or frozen, and printed as its detail
@@ -2328,6 +2338,7 @@ or `unknown' when that is empty."
     ((typep condition 'provider-empty-response) "empty_response")
     ((typep condition 'provider-refused) "refused")
     ((typep condition 'provider-malformed-tool-call) "malformed_tool_call")
+    ((typep condition 'provider-reasoning-loop) "reasoning_loop")
     ((plusp (length (provider-error-detail condition))) (provider-error-detail condition))
     (t "unknown")))
 
@@ -3239,6 +3250,25 @@ this file's own rungs; whatever a cell names for its own.")
   "The request attributes the credential frozen into a provider config
 carried.")
 
+;;; The loop guard's level the operator set for a provider rides beside the
+;;; config it was frozen into, as the credential's attributes do: a config a
+;;; running turn holds keeps its shape (DEFINE-SIDE-TABLE).
+(nlk:define-side-table config-loop-guard-level (:weakness :key)
+  "The loop guard level providers.<id>.loop_guard set for a provider config,
+:OFF, :EXACT or :SEMANTIC, or NIL when it set none (LOOP-GUARD-LEVEL).")
+
+(defun configured-loop-guard-level (entry)
+  "The level ENTRY, a providers.<id> object, sets in its loop_guard: \"off\" or
+false, \"exact\", \"semantic\" -- or NIL when it names none."
+  (multiple-value-bind (setting present-p) (if (hash-table-p entry) (gethash "loop_guard" entry) (values nil nil))
+    (cond ((stringp setting)
+           (let ((setting (nlk:trimmed setting)))
+             (cond ((member setting '("off" "none" "false") :test #'string-equal) :off)
+                   ((string-equal setting "exact") :exact)
+                   ((string-equal setting "semantic") :semantic))))
+          ;; JSON false reads as NIL, present
+          ((and present-p (null setting)) :off))))
+
 (defun credential-attribute (config key)
   "The request attribute KEY CONFIG's frozen credential carries, or NIL."
   (getf (config-credential-attributes config) key))
@@ -3409,7 +3439,9 @@ the compiled context carries for the whole turn."
         ;; a table keyed by it, never in a slot: a config this image already
         ;; handed to a running turn keeps its shape across the change.
         (setf (config-credential-attributes config)
-              (credential-attributes credential))
+              (credential-attributes credential)
+              (config-loop-guard-level config)
+              (configured-loop-guard-level entry))
         config))))
 
 ;;; --- model failover: the chain and its candidates ---------------------------
@@ -3463,7 +3495,7 @@ one lane resolution, one capability resolution."
 the order a picker lists them: a 429; a server or transport failure, a
 timeout or a stall; an attempt that streamed no token by its deadline, or
 was skipped while it waited (ATTEMPT-WATCH); a stream cut short, an empty
-answer or a malformed tool call; the model's refusal.")
+answer, a malformed tool call or a loop; the model's refusal.")
 
 (defvar *failover* t
   "NIL holds a provider call to the model it was aimed at: a probe asks one
@@ -3475,7 +3507,7 @@ model, never the chain behind it.")
         ((typep condition 'provider-slow-start) "slow_start")
         ((eql 429 (provider-error-status condition)) "rate_limit")
         ((typep condition '(or provider-stream-incomplete provider-empty-response
-                            provider-malformed-tool-call))
+                            provider-malformed-tool-call provider-reasoning-loop))
          "broken_answer")
         (t "outage")))
 
