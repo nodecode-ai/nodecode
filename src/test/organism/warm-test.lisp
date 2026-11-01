@@ -283,6 +283,79 @@ exit 0~%" ,inner))
           (nlk::prune-warm-cache)
           (is (probe-file served) "an image put back at a running process's path stays"))))))
 
+(deftest warm-folders-keep-their-own-images-and-pointers (with-warm-fixture (key root cache))
+  ;; Every home on a machine shares the one cache, and a launch image answers
+  ;; one folder only. Six gateways on one box (2026-11-01) pruned each other's
+  ;; images down to the newest two, so each rebuilt its own every minute, for
+  ;; ever. Other folders' newer images must not prune this one's, and their
+  ;; pointers must not stand for its own.
+  (flet ((publish (folder key age &aux (nlk::*cells-directory* folder))
+           (let ((image (backdate (write-temp-file (nlk::warm-image-path key) "core") age)))
+             (nlk::write-file-atomically (nlk::warm-pointer-path)
+                                         (format nil "~a~%~a~%" (namestring image) key))
+             image)))
+    (with-temp-trees ((first-other "folder-a") (second-other "folder-b"))
+      (let ((own (publish root key -300)))
+        (publish first-other "k-a" -200)
+        (publish second-other "k-b" -100)
+        (let ((nlk::*cells-directory* second-other))
+          (nlk::prune-warm-cache))
+        (is (probe-file own) "another folder's publish never prunes this folder's image")
+        (is (equal key (nth-value 1 (nlk::read-warm-pointer))) "this folder's pointer still names its own image")))))
+
+(defun backdate-tree (directory age)
+  "DIRECTORY and everything under it, its times set AGE seconds from now."
+  (uiop:collect-sub*directories directory t t
+                                (lambda (sub)
+                                  (dolist (file (uiop:directory-files sub))
+                                    (backdate file age))
+                                  (backdate sub age)))
+  directory)
+
+(deftest warm-prune-deletes-what-no-folder-comes-back-for (with-warm-fixture (key root cache))
+  ;; A deleted profile leaves its part of the cache behind, and a build from
+  ;; before the per-folder layout left its stamps at the top. Neither has a
+  ;; folder to come back for it: a prune deletes both once they have sat
+  ;; still a day. A part whose folder stands stays however old, and a part
+  ;; touched within the day stays -- a build of it may be under way.
+  (with-temp-trees ((standing "folder-standing"))
+    (ensure-directories-exist standing)
+    (flet ((part (folder age &aux (nlk::*cells-directory* folder))
+             (write-temp-file (nlk::warm-image-path "k-old") "core")
+             (nlk::write-file-atomically (nlk::warm-owner-path) (format nil "~a~%" (namestring folder)))
+             (backdate-tree (nlk::warm-folder-directory) age)))
+      (let ((kept (part standing -172800))
+            (gone (part (merge-pathnames "deleted/" standing) -172800))
+            (busy (part (merge-pathnames "deleting/" standing) -60))
+            (old-layout (merge-pathnames "stamp-old/" cache)))
+        (write-temp-file (merge-pathnames "k-old/nodecode" old-layout) "core")
+        (backdate-tree old-layout -172800)
+        (write-temp-file (nlk::warm-image-path key) "core")
+        (nlk::prune-warm-cache)
+        (is (probe-file kept) "a part whose folder stands stays, however old")
+        (is (null (probe-file gone)) "a part whose folder is gone goes once it sat still a day")
+        (is (probe-file busy) "a part touched within the day stays")
+        (is (null (probe-file old-layout)) "a stamp the old layout left at the top goes too")
+        (is (probe-file (nlk::warm-image-path key)) "this folder's own image stays")))))
+
+#+linux
+(deftest warm-prune-keeps-a-part-a-live-process-runs (with-warm-fixture (key root cache))
+  ;; A gateway of an older build still serves from the image it exec'd out of
+  ;; its stamp at the top of the cache: deleting that would strand every
+  ;; fresh child the gateway execs from the path.
+  (let* ((old (merge-pathnames "stamp-run/" cache))
+         (served (ensure-directories-exist (merge-pathnames "k-served/nodecode" old))))
+    (uiop:copy-file (nlk::executable-on-path "sh") served)
+    (sb-posix:chmod (namestring served) #o755)
+    (backdate-tree old -172800)
+    (let ((child (uiop:launch-program (list (namestring served) "-c" "sleep 30; :"))))
+      (nlk:with-cleanup ((uiop:terminate-process child :urgent t)
+                         (uiop:wait-process child))
+        (is (await (:tries 200 :rest 0.01) (member (namestring served) (nlk::running-executables) :test #'string=)) "the kernel lists the copy as running")
+        (write-temp-file (nlk::warm-image-path key) "core")
+        (nlk::prune-warm-cache)
+        (is (probe-file served) "a part holding an image a live process runs stays")))))
+
 (deftest a-launcher-hands-over-instead-of-execing-when-asked (with-warm-fixture (key root cache))
   ;; The TUI launcher paints first and hands the process over from its boot
   ;; thread; BOOT-CELLS itself only execs for the entries that never painted
