@@ -197,8 +197,7 @@ refusal at boot."
 named, $NODECODE_HOME, the profile the sticky file names, ~/.nodecode/."
   (or (and *profile-flag* (profile-home *profile-flag*))
       (environment-directory "NODECODE_HOME")
-      (let ((name (sticky-profile)))
-        (and name (profile-home name)))
+      (when-let (name (sticky-profile)) (profile-home name))
       (default-home)))
 
 ;;; Resolved at process start, before every parameter that reads it; read
