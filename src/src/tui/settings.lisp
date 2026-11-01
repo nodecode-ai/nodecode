@@ -318,14 +318,10 @@ model members, through the config route. => (values NOTICE FAILED)."
   "The Reflections model as one row: EXPERIENCE's provider and model, which
 the model picker sets together and Delete takes out together."
   (let* ((fields (settings-section-fields (settings-section-json experience)))
+         (field (lambda (name) (find name fields :key (lambda (field) (json-value field :string "name")) :test #'equal)))
          (set (loop for name in '("provider" "model")
-                    for field = (find name fields :key (lambda (field) (json-value field :string "name"))
-                                                  :test #'equal)
-                    when (json-value field :boolean "set") collect name))
-         (value (lambda (name)
-                  (json-value (find name fields :key (lambda (field) (json-value field :string "name"))
-                                                :test #'equal)
-                              :text "value"))))
+                    when (json-value (funcall field name) :boolean "set") collect name))
+         (value (lambda (name) (json-value (funcall field name) :text "value"))))
     (make-setting :label "Reflections model" :kind :action :part experience
                   :act (lambda (model) (open-models-picker model :lands (reflections-model-lands experience)))
                   :set (and set t)
