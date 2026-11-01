@@ -1413,17 +1413,14 @@ just under the previous page's floor. AS as for PAGE-EVENTS."
                           aggregate-type kind schema-version contract-hash)
   "Refuse a row whose payload or contract identity no longer hashes to what
 it was written with."
-  (let ((computed (sha256-text payload)))
-    (unless (equal computed payload-hash)
-      (error 'payload-hash-mismatch :seq log-position
-             :stored payload-hash :computed computed)))
-  ;; The contract hash binds aggregate_type|kind|schema_version at write
-  ;; time; recomputing it on read is what makes schema_version trustworthy
-  ;; downstream — the SQL CHECK only proves the column LOOKS like a hash.
-  (let ((computed (contract-hash-for aggregate-type kind schema-version)))
-    (unless (equal computed contract-hash)
-      (error 'contract-hash-mismatch :seq log-position
-             :stored contract-hash :computed computed))))
+  (flet ((hold (mismatch stored computed)
+           (unless (equal computed stored)
+             (error mismatch :seq log-position :stored stored :computed computed))))
+    (hold 'payload-hash-mismatch payload-hash (sha256-text payload))
+    ;; The contract hash binds aggregate_type|kind|schema_version at write
+    ;; time; recomputing it on read is what makes schema_version trustworthy
+    ;; downstream — the SQL CHECK only proves the column LOOKS like a hash.
+    (hold 'contract-hash-mismatch contract-hash (contract-hash-for aggregate-type kind schema-version))))
 
 ;;; --- stored facts: a row as the wire carries it ---------------------------
 ;;; A replay and the history pager carry each fact to a shell as it is kept:
