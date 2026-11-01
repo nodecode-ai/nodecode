@@ -17,6 +17,32 @@ B="$2"
 run="$B/run"
 repo="$run/repo"
 name="nodecode-$label-arm64-darwin"
+
+# This run lives as long as the ssh session that started it. A driver that is
+# gone -- a cancelled CI job's is killed with its whole tree, no trap of its
+# own runs -- takes that session with it, and nothing reads this run any more:
+# its process group is stopped, not left building unseen until a write fails.
+# The lock names the group, so a driver that takes the lock over from a gone
+# one stops what that one left (pack-macos.sh).
+session=$PPID
+pg="$(ps -o pgid= -p $$ | tr -d ' ')"
+if [ -d "$B/.lock" ]; then
+  printf '%s %s\n' "$pg" "$(ps -o lstart= -p "$pg" | tr -s ' ' | sed 's/^ //; s/ $//')" > "$B/.lock/build"
+fi
+case "$(ps -o command= -p "$session")" in
+  sshd*)
+    ( set +e
+      exec </dev/null >/dev/null 2>&1
+      while :; do
+        parent="$(ps -o ppid= -p $$ | tr -d ' ')"
+        [ -n "$parent" ] || exit 0
+        [ "$parent" = "$session" ] || break
+        sleep 2
+      done
+      kill -TERM -- "-$pg" ) &
+    ;;
+esac
+
 export HOME="$B/env"
 export XDG_CACHE_HOME="$HOME/.cache"
 export PATH="$B/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -201,7 +227,7 @@ slog="$run/serve.log"
 NODECODE_HOME="$run/serve-home" "$dir/nodecode" serve --store "$store" >"$slog" 2>&1 &
 pid=$!
 port=''
-for i in $(seq 1 120); do
+for _ in $(seq 1 120); do
   sleep 0.5
   kill -0 "$pid" 2>/dev/null || break
   if [ -f "$store.owner" ]; then

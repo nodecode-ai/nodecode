@@ -79,36 +79,125 @@ facts="$(ssh_mac 'uname -sm' 2>&1)" || {
 work="$(mktemp -d)"
 locked=''
 fetch_pid=''
-cleanup() {
-  if [ -n "$fetch_pid" ]; then kill "$fetch_pid" 2>/dev/null || true; fi
-  if [ -n "$locked" ]; then ssh_mac "rm -rf \"$mroot/.lock\"" >/dev/null 2>&1 || true; fi
-  rm -rf "$work"
-}
-trap cleanup EXIT INT TERM
 
 # One build at a time on the Mac: the run directory is one per account. The
-# lock is freed by this driver's cleanup, over ssh. A build the Mac's reboot
-# cut off never got that far, so a lock older than the Mac's last boot is held
-# by no running build: it is taken over, its owner named in the log.
+# lock names the driver that holds it, and that driver frees it on its way out.
+# A driver can end without a way out: a cancelled CI job's is killed with its
+# whole tree, so no trap of its own runs and its lock stays behind. A lock is
+# taken over, its holder named in the log, once that holder is provably gone:
+# the lock is from before the Mac last booted, or the driver it names ran on
+# this machine and runs no more. A driver that ran elsewhere, or may still run,
+# keeps it. Taking it over first stops what the holder's run left on the Mac
+# (mac-build.sh names its process group in the lock).
 owner="$(hostname) pid $$ $label $(date -u +%FT%TZ)"
-if ! ssh_mac "/bin/bash -s \"$mroot\" '$owner'" <<'LOCK'
-set -e
-mkdir -p "$1"
-if [ -d "$1/.lock" ]; then
-  boot="$(/usr/sbin/sysctl -n kern.boottime | sed -E 's/^[^0-9]*([0-9]+).*/\1/')"
-  if [ "$(/usr/bin/stat -f %m "$1/.lock")" -lt "$boot" ]; then
-    echo "pack-macos: $1/.lock is from before the Mac's last boot; taken over from $(cat "$1/.lock/owner" 2>/dev/null || echo 'no owner')" >&2
-    rm -rf "$1/.lock"
-  fi
-fi
-mkdir "$1/.lock"
-printf '%s\n' "$2" > "$1/.lock/owner"
+
+# driver_id PID: who a driver is, so a later one can tell whether it still
+# runs -- this machine, its boot, its process namespace, the pid and the pid's
+# start in clock ticks after boot. Nothing where /proc cannot say.
+driver_id() {
+  local start
+  start="$(sed -E 's/^.*\) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f20)" || return 1
+  [ -n "$start" ] || return 1
+  printf '%s %s %s %s %s\n' "$(cat /etc/machine-id)" "$(cat /proc/sys/kernel/random/boot_id)" \
+    "$(readlink /proc/self/ns/pid)" "$1" "$start"
+}
+me="$(driver_id $$ 2>/dev/null || true)"
+
+# driver_gone RECORD: the driver a lock names ran on this machine and runs no
+# more -- the machine booted since, or its pid is gone or another process's.
+# A record from another machine or process namespace, or none, proves nothing.
+driver_gone() {
+  local machine boot ns pid start
+  read -r machine boot ns pid start <<<"$1"
+  [ -n "$start" ] && [ "$machine" = "$(cat /etc/machine-id 2>/dev/null)" ] || return 1
+  [ "$boot" = "$(cat /proc/sys/kernel/random/boot_id)" ] || return 0
+  [ "$ns" = "$(readlink /proc/self/ns/pid)" ] || return 1
+  [ "$(driver_id "$pid" 2>/dev/null)" != "$1" ]
+}
+
+# mac_lock take [STALE] | free: the lock's Mac half, one ssh round trip.
+# `take' takes the lock -- over from its holder when the lock is from before the
+# Mac's last boot, or still names STALE, a holder this driver found gone -- or
+# prints `held', the holder and its driver record, and exits 3. `free' frees
+# the lock while it is still this driver's, stopping what its run left.
+mac_lock() {
+  ssh_mac "/bin/bash -s $1 \"$mroot\" '$owner' '$me' '${2:-}'" <<'LOCK'
+set -eu
+verb="$1" root="$2" owner="$3" me="$4" stale="$5"
+lock="$root/.lock"
+started() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//'; }
+# The run the holder started here, as mac-build.sh named it in the lock: its
+# process group, stopped -- TERM, then KILL after ten seconds -- while the
+# group's leader is still that process.
+stop_run() {
+  local pg start
+  [ -f "$lock/build" ] && read -r pg start < "$lock/build" || return 0
+  [ -n "$pg" ] && [ "$(started "$pg")" = "$start" ] || return 0
+  kill -TERM -- "-$pg" 2>/dev/null || return 0
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    kill -0 -- "-$pg" 2>/dev/null || break
+    sleep 1
+  done
+  kill -KILL -- "-$pg" 2>/dev/null || true
+  echo "pack-macos: stopped the run left on the Mac (process group $pg)" >&2
+}
+case "$verb" in
+  take)
+    mkdir -p "$root"
+    if [ -d "$lock" ]; then
+      held="$(cat "$lock/owner" 2>/dev/null || echo 'no owner')"
+      boot="$(/usr/sbin/sysctl -n kern.boottime | sed -E 's/^[^0-9]*([0-9]+).*/\1/')"
+      if [ "$(/usr/bin/stat -f %m "$lock")" -lt "$boot" ]; then
+        why="is from before the Mac's last boot"
+      elif [ -n "$stale" ] && [ "$held" = "$stale" ]; then
+        why='names a driver that runs no more'
+      else
+        printf 'held\t%s\t%s\n' "$held" "$(cat "$lock/driver" 2>/dev/null || true)"
+        exit 3
+      fi
+      stop_run
+      echo "pack-macos: $lock $why; taken over from $held" >&2
+      rm -rf "$lock"
+    fi
+    mkdir "$lock"
+    printf '%s\n' "$owner" > "$lock/owner"
+    printf '%s\n' "$me" > "$lock/driver"
+    ;;
+  free)
+    [ "$(cat "$lock/owner" 2>/dev/null || true)" = "$owner" ] || exit 0
+    stop_run
+    rm -rf "$lock"
+    ;;
+esac
 LOCK
-then
-  held="$(ssh_mac "cat \"$mroot/.lock/owner\"" 2>/dev/null || true)"
-  printf 'pack-macos: another build holds %s/.lock on %s (%s); remove it when none runs\n' "$mroot" "$mac" "${held:-no owner}" >&2
+}
+
+cleanup() {
+  if [ -n "$fetch_pid" ]; then kill "$fetch_pid" 2>/dev/null || true; fi
+  if [ -n "$locked" ]; then mac_lock free >/dev/null 2>&1 || true; fi
+  rm -rf "$work"
+}
+# An interrupt ends the driver, and its way out is the EXIT trap, once: a
+# cleanup that ran on the signal and then carried on would build on with no
+# lock and no work directory.
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+stale=''
+while :; do
+  rc=0
+  answer="$(mac_lock take "$stale")" || rc=$?
+  [ "$rc" != 0 ] || break
+  [ "$rc" = 3 ] || { printf 'pack-macos: taking %s/.lock on %s failed (rc %s)\n' "$mroot" "$mac" "$rc" >&2; exit 1; }
+  held="$(printf '%s\n' "$answer" | cut -f2)"
+  if [ "$held" != "$stale" ] && driver_gone "$(printf '%s\n' "$answer" | cut -f3)"; then
+    stale="$held"
+    continue
+  fi
+  printf 'pack-macos: another build holds %s/.lock on %s (%s); remove it when none runs\n' "$mroot" "$mac" "$held" >&2
   exit 1
-fi
+done
 locked=1
 
 # What the Mac builds: a one-commit repository of the revision (pack.sh asks
