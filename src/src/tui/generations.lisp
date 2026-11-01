@@ -338,8 +338,7 @@ plan route answers."
               (lambda ()
                 (gateway-model-http-call model :get (format nil "/api/gateway/generations/plan?to=~d" to) nil
                                          :read-timeout 60))
-              (lambda (model answer)
-                (declare (ignore model))
+              (lambda-ignoring (model answer)
                 (when (and history.ask (eql to (getf history.ask :to)) (not (getf history.ask :going)))
                   (if-let (failure (off-loop-failure answer))
                     (setf (getf history.ask :failed) failure)
@@ -349,21 +348,19 @@ plan route answers."
 (defun history-ask-number (model history number)
   "/generations N: stand on the change that holds generation NUMBER and ask
 about NUMBER itself; say so when no change holds it."
-  (let ((index (history-holding history number)))
-    (if index
-        (progn (setf history.filter :all history.query "")
-               (history-select history index)
-               (history-ask model history index number))
-        (setf history.said (list (no-generation-words history number) :danger)))))
+  (if-let (index (history-holding history number))
+    (progn (setf history.filter :all history.query "")
+           (history-select history index)
+           (history-ask model history index number))
+    (setf history.said (list (no-generation-words history number) :danger))))
 
 (defun ask-edits (history)
   "The edits that hold the restore asked about, ((NAME . COUNT) ...): the
 plan's once it answered, else the list's."
-  (let ((plan (getf history.ask :plan)))
-    (if plan
-        (loop for entry across (json-array plan "edits")
-              collect (cons (json-value entry :string "name") (or (json-value entry :integer "count") 0)))
-        history.edits)))
+  (if-let (plan (getf history.ask :plan))
+    (loop for entry across (json-array plan "edits")
+          collect (cons (json-value entry :string "name") (or (json-value entry :integer "count") 0)))
+    history.edits))
 
 (defun ask-refusal (history)
   "Why the restore asked about can never work: the plan's once it answered,
@@ -394,15 +391,13 @@ stays on the question, whole, after whatever went first."
     (sheet-call model history
                 (lambda ()
                   (let ((said '()))
-                    (handler-case
-                        (progn
-                          (setf said (edits-calls model names (if (eq how :keep) "keep" "discard")))
-                          (list :said said
-                                :text (answer-text (gateway-model-http-call
-                                                    model :post "/api/gateway/generations/rollback"
-                                                    (json-object "number" to) :read-timeout 300))))
-                      (gateway-http-error (refusal)
-                        (list :said said :failed (gateway-http-error-detail refusal))))))
+                    (with-handlers ((gateway-http-error (refusal)
+                                      (list :said said :failed (gateway-http-error-detail refusal))))
+                      (setf said (edits-calls model names (if (eq how :keep) "keep" "discard")))
+                      (list :said said
+                            :text (answer-text (gateway-model-http-call
+                                                model :post "/api/gateway/generations/rollback"
+                                                (json-object "number" to) :read-timeout 300))))))
                 (lambda (model answer)
                   (let ((failed (or (off-loop-failure answer) (getf answer :failed)))
                         (said (format nil "~{~a. ~}" (getf answer :said))))
@@ -428,8 +423,7 @@ from the banner: the organism's sentence said over the list, read again."
                                       :answer (gateway-model-http-call model :get "/api/gateway/generations" nil
                                                                        :read-timeout 120))
                     (gateway-http-error (refusal) (list :failed (gateway-http-error-detail refusal)))))
-                (lambda (model answer)
-                  (declare (ignore model))
+                (lambda-ignoring (model answer)
                   (let ((failed (or (off-loop-failure answer) (getf answer :failed))))
                     (when (getf answer :answer) (history-install history (getf answer :answer)))
                     (setf history.said (if failed
@@ -803,8 +797,7 @@ day's head at the top."
                                               (sheet-ink :muted :ground ground)))
              (sheet-hit history r at (+ at width)
                         (let ((key key))
-                          (lambda (model history)
-                            (declare (ignore model))
+                          (lambda-ignoring (model history)
                             (let ((was (history-focus history)))
                               (setf history.filter key history.top 0 history.at 0)
                               (when was (history-select history was))))))
@@ -835,8 +828,7 @@ said, the banner of edits. => the row the list starts on."
                                                     (- (+ px pw) at))
                     (sheet-ink (if on :foreground :system) :ground here)))
       (sheet-hit history r (- px 2) (+ px pw 2)
-                 (lambda (model history)
-                   (declare (ignore model))
+                 (lambda-ignoring (model history)
                    (setf history.focus :banner history.said nil)))
       (incf r (if tight 1 2))))
   r)
@@ -880,8 +872,7 @@ the tab the list hangs from."
                                       :ground ground :bold on))
                (canvas-put canvas (- width 2 (length count)) r count (sheet-ink :muted :ground ground))
                (sheet-hit history r 0 width
-                          (lambda (model history)
-                            (declare (ignore model))
+                          (lambda-ignoring (model history)
                             (setf history.query "" history.ask nil history.said nil history.focus :rail
                                   history.day d)))))
     (paint-scroll-marks canvas (- width 2) top (+ top rows -1) offset rows (length days) rail)))
@@ -950,11 +941,8 @@ at a time. => the caret's cell, or NIL."
                              (sheet-ink :muted :ground pane)))))
         (cond
           ((plusp (length history.query))
-           (let* ((count (length visible))
-                  (at (canvas-put canvas px header-row "Search " (sheet-ink :muted :ground pane))))
-             (setf cursor (cons (canvas-put canvas at header-row (clip-tail history.query (max 1 (- pw 22)))
-                                            (sheet-ink :foreground :ground pane))
-                                header-row))
+           (let ((count (length visible)))
+             (setf cursor (paint-search-line canvas px header-row pw history.query pane 22))
              (right (if (plusp count) (format nil "~d match~:[es~;~]" count (= count 1)) "no match"))))
           (days-view
            (canvas-put canvas px header-row "Generations" (sheet-ink :title :ground pane :bold t))
@@ -963,8 +951,7 @@ at a time. => the caret's cell, or NIL."
            (let* ((chosen (history-chosen-day history focus))
                   (at (canvas-put canvas px header-row "Generations › " (sheet-ink :muted :ground pane))))
              (sheet-hit history header-row px at
-                        (lambda (model history)
-                          (declare (ignore model))
+                        (lambda-ignoring (model history)
                           (setf history.day (history-chosen-day history (history-focus history))
                                 history.focus :rail)))
              (when (plusp (length history.days))
@@ -1001,8 +988,7 @@ at a time. => the caret's cell, or NIL."
                                                   :ground ground :bold on))
                            (canvas-put canvas (- (+ px pw) (length count)) y count (sheet-ink :muted :ground ground))
                            (sheet-hit history y (- px 2) (+ px pw 2)
-                                      (lambda (model history)
-                                        (declare (ignore model))
+                                      (lambda-ignoring (model history)
                                         (if (and (= d history.day) (eq history.focus :rail))
                                             (history-open-day history d)
                                             (setf history.day d history.focus :rail history.said nil)))))))
@@ -1182,13 +1168,11 @@ the restore kept or discarded first, by HOW (`keep', `discard'; `go' touches
 none), then the restore -- the organism's sentences, a refusal the last of
 them, never a signal."
   (let ((said '()))
-    (handler-case
-        (progn
-          (unless (string-equal how "go")
-            (loop for entry across (json-array (generation-plan-answer number) "edits")
-                  do (push (generation-edits-text (json-value entry :string "name") (string-downcase how)) said)))
-          (format nil "~{~a. ~}~a" (reverse said) (rollback number)))
-      (error (condition) (format nil "~{~a. ~}~a" (reverse said) condition)))))
+    (with-handlers ((error (condition) (format nil "~{~a. ~}~a" (reverse said) condition)))
+      (unless (string-equal how "go")
+        (loop for entry across (json-array (generation-plan-answer number) "edits")
+              do (push (generation-edits-text (json-value entry :string "name") (string-downcase how)) said)))
+      (format nil "~{~a. ~}~a" (reverse said) (rollback number)))))
 
 (defun headless-generations (args session-id &aux (tokens (split-words (or args ""))))
   "/generations without a shell -- a room, the model's eval, the headless
