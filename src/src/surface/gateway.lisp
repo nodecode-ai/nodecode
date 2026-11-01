@@ -2631,23 +2631,21 @@ and model NULL when none is configured — side work then runs on each
 session's own target."
   (multiple-value-bind (provider model effort configured)
       (auxiliary-model)
-    (json-object "provider" (if configured provider :null)
-                 "model" (if configured model :null)
-                 "effort" (if (and configured effort) effort :null)
-                 "efforts" (coerce (and configured (effort-ladder provider model)) 'vector)
-                 :opt "shared_config" (and outcome (string-downcase outcome))
-                 :opt "shared_config_error" detail)))
+    (config-outcome (json-object "provider" (if configured provider :null)
+                                 "model" (if configured model :null)
+                                 "effort" (if (and configured effort) effort :null)
+                                 "efforts" (coerce (and configured (effort-ladder provider model)) 'vector))
+                    outcome detail)))
 
 (defun gateway-decider-json (&optional outcome detail)
   "The decider general.decider_model picks (DECIDER-MODEL) as the wire says
 it, provider and model NULL when none is, and every decider /models offers."
   (multiple-value-bind (id model base) (decider-model)
-    (json-object "provider" (or id :null)
-                 "model" (or model :null)
-                 "base_url" (or base :null)
-                 "deciders" (gateway-deciders-json)
-                 :opt "shared_config" (and outcome (string-downcase outcome))
-                 :opt "shared_config_error" detail)))
+    (config-outcome (json-object "provider" (or id :null)
+                                 "model" (or model :null)
+                                 "base_url" (or base :null)
+                                 "deciders" (gateway-deciders-json))
+                    outcome detail)))
 
 (defun gateway-deciders-json ()
   "DECIDER-CHOICES as the wire's array: id, name, model, base_url, local."
@@ -2662,21 +2660,33 @@ it, provider and model NULL when none is, and every decider /models offers."
                                                                      (provider-config-error (condition)
                                                                        (setf refusal (provider-error-detail condition))
                                                                        :null))))
-  (json-object "provider" *provider*
-               "model" *model*
-               ;; A selection with no address (PROVIDER-CONFIG-ERROR) is still
-               ;; the selection: the page keeps the picker that can move it,
-               ;; and says why this one cannot serve.
-               "endpoint" endpoint
-               "refusal" (or refusal :null)
-               ;; The auxiliary target rides along so a shell's /models
-               ;; summary can name it without a second dial.
-               "auxiliary" (gateway-auxiliary-model-json)
-               ;; Config is the only durability now, so a write that did not
-               ;; land has to be visible rather than warned about into a log
-               ;; nobody is reading.
-               :opt "shared_config" (and outcome (string-downcase outcome))
-               :opt "shared_config_error" detail))
+  (config-outcome (json-object "provider" *provider*
+                               "model" *model*
+                               ;; A selection with no address (PROVIDER-CONFIG-ERROR) is still
+                               ;; the selection: the page keeps the picker that can move it,
+                               ;; and says why this one cannot serve.
+                               "endpoint" endpoint
+                               "refusal" (or refusal :null)
+                               ;; The auxiliary target rides along so a shell's /models
+                               ;; summary can name it without a second dial.
+                               "auxiliary" (gateway-auxiliary-model-json))
+                  outcome detail))
+
+(defun config-outcome (object outcome detail)
+  "OBJECT, a JSON object, with what writing the shared config came to: OUTCOME
+as shared_config, and DETAIL, why it failed, as shared_config_error; a
+failure is also warned."
+  ;; Config is the only durability now, so a write that did not land has to
+  ;; be visible rather than warned about into a log nobody is reading.
+  (warn-unsaved-config outcome detail)
+  (when outcome (setf (gethash "shared_config" object) (string-downcase outcome)))
+  (when detail (setf (gethash "shared_config_error" object) detail))
+  object)
+
+(defun warn-unsaved-config (outcome detail)
+  "Warn that the shared config was not updated, saying DETAIL, when OUTCOME is :FAILED."
+  (when (eq outcome :failed)
+    (warn "shared config not updated: ~a" detail)))
 
 (defun restore-model-config ()
   "Boot lane: the shared config's general defaults seed the selection, under
@@ -2822,8 +2832,6 @@ for a command that offers none."
        ;; not at the next turn, and the pair reaches config together or not at
        ;; all.
        (bind (((_ _ outcome detail) (select-default-model :provider provider :model model :endpoint endpoint)))
-         (when (eq outcome :failed)
-           (warn "shared config not updated: ~a" detail))
          ;; The default moved: every attached shell whose session follows
          ;; it is rendering stale facts now.
          (broadcast-model-changed)
@@ -2856,8 +2864,6 @@ unknown lane or a rung its model does not offer before anything moves;
                  (apply #'select-auxiliary-model (and (stringp model) model)
                         :provider (and (stringp provider) provider)
                         (and effort-p (list :effort (and (stringp effort) effort))))))
-           (when (eq outcome :failed)
-             (warn "shared config not updated: ~a" detail))
            (gateway-auxiliary-model-json outcome detail)))))))
 
 (define-gateway-route handle-gateway-decider-model-http (env)
@@ -2878,30 +2884,28 @@ moves; {provider: null} takes the pin out."
        (bind (((_ _ outcome detail)
                (select-decider-model (and (stringp provider) provider)
                                      :model (and (stringp model) model))))
-         (when (eq outcome :failed)
-           (warn "shared config not updated: ~a" detail))
          (gateway-decider-json outcome detail))))))
 
 (defun gateway-failover-json (&optional outcome detail)
   "The failover chain as the wire says it -- each backup in order with what
 history says of it (FAILOVER-RECORD) -- and every trigger with whether it is on."
   (let ((on (failover-triggers)))
-    (json-object
-     "chain" (map 'vector
-                  (lambda (entry)
-                    (destructuring-bind (&key provider model) entry
-                      (destructuring-bind (&key answered-at tried rescued) (failover-record provider model)
-                        (json-object "provider" provider "model" model
-                                     "answered_at" (or answered-at :null)
-                                     "tried" tried "rescued" rescued))))
-                  (failover-chain))
-     "triggers" (map 'vector
-                     (lambda (trigger)
-                       (json-object "id" (car trigger) "label" (cdr trigger)
-                                    "on" (if (member (car trigger) on :test #'string=) t :false)))
-                     +failover-triggers+)
-     :opt "shared_config" (and outcome (string-downcase outcome))
-     :opt "shared_config_error" detail)))
+    (config-outcome
+     (json-object
+      "chain" (map 'vector
+                   (lambda (entry)
+                     (destructuring-bind (&key provider model) entry
+                       (destructuring-bind (&key answered-at tried rescued) (failover-record provider model)
+                         (json-object "provider" provider "model" model
+                                      "answered_at" (or answered-at :null)
+                                      "tried" tried "rescued" rescued))))
+                   (failover-chain))
+      "triggers" (map 'vector
+                      (lambda (trigger)
+                        (json-object "id" (car trigger) "label" (cdr trigger)
+                                     "on" (if (member (car trigger) on :test #'string=) t :false)))
+                      +failover-triggers+))
+     outcome detail)))
 
 (define-gateway-route handle-gateway-failover-http (env)
   "GET /api/gateway/failover answers the failover chain every session and room
@@ -2943,8 +2947,6 @@ id no trigger has before anything moves."
                                         chain))))
            (when on
              (multiple-value-call #'wrote (set-failover-triggers (coerce on 'list)))))
-         (when (eq outcome :failed)
-           (warn "shared config not updated: ~a" detail))
          (gateway-failover-json outcome detail))))))
 
 (define-gateway-route handle-gateway-failover-test-http (env)
@@ -3542,10 +3544,7 @@ sent to be saved; POST /api/gateway/sessions/import takes it back.
                (values (sb-ext:string-to-octets (session-markdown session-id) :external-format :utf-8)
                        "text/markdown; charset=utf-8" (markdown-file-name session-id)))
               (t (nlk::protocol-refuse :invalid_request "format is jsonl or markdown")))
-      (list 200 (list :content-type type
-                      :content-disposition (format nil "attachment; filename=\"~a\"" name)
-                      :content-length (length octets))
-            octets))))
+      (download-answer octets type name :content-length (length octets)))))
 
 (defparameter *session-import-bytes* (* 128 1024 1024)
   "The largest session file an import reads.")
@@ -3769,8 +3768,7 @@ SESSION-ID, and tell every attached shell (BROADCAST-MODEL-CHANGED)."
          (old (effective-effort picked provider model)))
     (check-effort provider model effort)
     (multiple-value-bind (outcome detail) (select-default-effort effort)
-      (when (eq outcome :failed)
-        (warn "shared config not updated: ~a" detail))
+      (warn-unsaved-config outcome detail)
       (nlk:record-session-model-selection session-id :provider pin-provider :model pin-model
                                                      :effort effort)
       (broadcast-model-changed)
@@ -3808,8 +3806,7 @@ durably pin SESSION-ID to it, and tell every attached shell
               (values *provider* *model*)))
          (effort (admitted-effort (nlk:session-model-effort session-id)
                                   target-provider target-model)))
-    (when (eq outcome :failed)
-      (warn "shared config not updated: ~a" detail))
+    (warn-unsaved-config outcome detail)
     (nlk:record-session-model-selection session-id
                                         :provider (and picked target-provider)
                                         :model (and picked target-model)

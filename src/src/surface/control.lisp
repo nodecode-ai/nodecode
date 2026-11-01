@@ -1053,7 +1053,5 @@ to be saved."
     (with-cleanup ((ignore-errors (delete-file path)))
       (nlk:profile-export name (namestring path))
       (let ((octets (alexandria:read-file-into-byte-vector path)))
-        (list 200 (list :content-type "application/gzip"
-                        :content-disposition (format nil "attachment; filename=\"nodecode-profile-~a.tar.gz\"" name)
-                        :content-length (length octets))
-              octets)))))
+        (download-answer octets "application/gzip" (format nil "nodecode-profile-~a.tar.gz" name)
+                         :content-length (length octets))))))
