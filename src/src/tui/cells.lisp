@@ -579,10 +579,7 @@ head with it when there is room."
                                                (sheet-ink tone :ground ground :bold t))))
                           (canvas-put canvas (+ end 2) r (princ-to-string count) (sheet-ink :muted :ground ground)))))
                (:cell (paint-cells-row cells canvas r x width (second line) (equal name (second line)) ground))))
-    (when (plusp offset)
-      (canvas-put canvas (+ x width -1) top "▴" (sheet-ink :muted :ground ground)))
-    (when (< (+ offset rows) (length lines))
-      (canvas-put canvas (+ x width -1) (+ top rows -1) "▾" (sheet-ink :muted :ground ground)))))
+    (paint-scroll-marks canvas (+ x width -1) top (+ top rows -1) offset rows (length lines) ground)))
 
 (defun cell-switch-chips (cells cell ground)
   "CELL's switch as (TEXT INK ACTION) chips on GROUND: on and off, the one
@@ -654,10 +651,7 @@ list could not be read."
                                (unless (eq (effective-color-profile) :none)
                                  (canvas-put canvas px r (make-string pw :initial-element (if (eq side :top) #\▄ #\▀))
                                              (sheet-ink ground :ground pane))))))))
-          (when (plusp offset)
-            (canvas-put canvas (+ px pw 1) (+ top 2) "▴" (sheet-ink :muted :ground pane)))
-          (when (< (+ offset rows) (length lines))
-            (canvas-put canvas (+ px pw 1) bottom "▾" (sheet-ink :muted :ground pane)))))))
+          (paint-scroll-marks canvas (+ px pw 1) (+ top 2) bottom offset rows (length lines) pane)))))
 
 (defun paint-cells-wide (cells canvas edges)
   "The wide sheet: the list in a rail beside the chosen cell. => the

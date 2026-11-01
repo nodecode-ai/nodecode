@@ -788,10 +788,7 @@ day's head at the top."
                     (setf at (canvas-put canvas at r (clip-text-to-width words (- (+ px pw) at)) ink))
                     (when (< at (+ px pw))
                       (canvas-put canvas at r (make-string (- (+ px pw) at) :initial-element #\─) ink))))))
-      (when (plusp offset)
-        (canvas-put canvas (+ px pw 1) top "▴" (sheet-ink :muted :ground pane)))
-      (when (< (+ offset rows) (length lines))
-        (canvas-put canvas (+ px pw 1) (+ top rows -1) "▾" (sheet-ink :muted :ground pane))))))
+      (paint-scroll-marks canvas (+ px pw 1) top (+ top rows -1) offset rows (length lines) pane))))
 
 (defun paint-history-chips (history canvas r px pw ground)
   "The filters side by side on R, the one shown filled, each with its count."
@@ -887,10 +884,7 @@ the tab the list hangs from."
                             (declare (ignore model))
                             (setf history.query "" history.ask nil history.said nil history.focus :rail
                                   history.day d)))))
-    (when (plusp offset)
-      (canvas-put canvas (- width 2) top "▴" (sheet-ink :muted :ground rail)))
-    (when (< (+ offset rows) (length days))
-      (canvas-put canvas (- width 2) (+ top rows -1) "▾" (sheet-ink :muted :ground rail)))))
+    (paint-scroll-marks canvas (- width 2) top (+ top rows -1) offset rows (length days) rail)))
 
 (defun paint-history-wide (history canvas edges)
   "The wide sheet: the days in a rail beside the changes. => the caret's

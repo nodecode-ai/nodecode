@@ -194,6 +194,12 @@ Ctrl+U or Ctrl+W while one is going. SEARCH is called with the query it edits to
       (funcall search edited))
     t))
 
+(defun paint-scroll-marks (canvas x top bottom offset rows count ground)
+  "In column X, a ▴ on TOP when lines stand above the OFFSET shown, a ▾ on BOTTOM when
+more than ROWS of the COUNT stand from it."
+  (when (plusp offset) (canvas-put canvas x top "▴" (sheet-ink :muted :ground ground)))
+  (when (< (+ offset rows) count) (canvas-put canvas x bottom "▾" (sheet-ink :muted :ground ground))))
+
 (defun clip-tail (text width)
   "The last WIDTH columns of TEXT, an … leading when it was cut."
   (if (<= (text-display-width text) width)

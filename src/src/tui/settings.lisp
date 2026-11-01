@@ -1600,10 +1600,7 @@ or NIL."
                                       (focus-setting-action index))
                         (sheet-hit settings r (- px 2) (+ px pw 2) nil
                                    :hover (hover-setting-action index))))))))
-      (when (plusp top-line)
-        (canvas-put canvas (+ px pw 1) top "▴" (sheet-ink :muted :ground ground)))
-      (when (< (+ top-line rows) (length lines))
-        (canvas-put canvas (+ px pw 1) (+ top rows -1) "▾" (sheet-ink :muted :ground ground))))
+      (paint-scroll-marks canvas (+ px pw 1) top (+ top rows -1) top-line rows (length lines) ground))
     cursor))
 
 (defun result-entries (settings)
@@ -1696,10 +1693,7 @@ reads as the tab the pane hangs from."
                    (section-mark canvas (- width 3) r part ground on)
                    (sheet-hit settings r 0 width (open-section-action index)
                               :hover (hover-section-action index))))))
-    (when (plusp offset)
-      (canvas-put canvas (- width 2) top "▴" (sheet-ink :muted :ground rail)))
-    (when (< (+ offset rows) (length entries))
-      (canvas-put canvas (- width 2) (+ top rows -1) "▾" (sheet-ink :muted :ground rail)))))
+    (paint-scroll-marks canvas (- width 2) top (+ top rows -1) offset rows (length entries) rail)))
 
 (defun settings-failed-lines (settings width)
   "Why the last read failed, whole, broken to WIDTH columns as (:FAILED
@@ -1829,10 +1823,7 @@ keep the chosen one in view."
                   (sheet-hit settings r (- x 2) (+ x column-width 2) (open-section-action index)
                              :hover (hover-section-action index))))))
     (when scrolls
-      (when (plusp settings.rail-top)
-        (canvas-put canvas (+ px pw 1) top "▴" (sheet-ink :muted :ground ground)))
-      (when (< (+ settings.rail-top rows) (length entries))
-        (canvas-put canvas (+ px pw 1) (+ top rows -1) "▾" (sheet-ink :muted :ground ground))))))
+      (paint-scroll-marks canvas (+ px pw 1) top (+ top rows -1) settings.rail-top rows (length entries) ground))))
 
 (defun paint-stacked (settings canvas edges)
   "The narrow sheet: the sections, or the open one, or a query's results, one
