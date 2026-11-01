@@ -347,10 +347,9 @@ import's (IMPORT-USE-P), HOURS hour number -> what that hour's lines weigh
         (when (and (member kind '("keep" "helped") :test #'string=) (not (import-use-p line)))
           (setf (second total) t))
         (unless (zerop weight)
-          (let ((cell (assoc hour (cddr total))))
-            (if cell
-                (incf (cdr cell) weight)
-                (push (cons hour weight) (cddr total)))))))))
+          (if-let (cell (assoc hour (cddr total)))
+            (incf (cdr cell) weight)
+            (push (cons hour weight) (cddr total))))))))
 
 (defun fold-ledger (&aux (path (knowledge-ledger-path)))
   "The ledger's running totals, *LEDGER-TOTALS*'s TABLE, with every line
