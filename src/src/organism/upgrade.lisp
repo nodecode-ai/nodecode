@@ -243,18 +243,17 @@ image, evaluating nothing."
              (inline (inline-names (loop for file in new-files collect (gethash file texts)))))
         (dolist (file new-files)
           (let* ((new-text (gethash file texts))
-                 (old-text (gethash file old-texts)))
+                 (old-text (gethash file old-texts))
+                 (same (and old-text (string= old-text new-text))))
             (if (member (file-package-name new-text) absent :test #'string=)
-                (unless (and old-text (string= old-text new-text))
-                  (push file unloaded))
+                (unless same (push file unloaded))
             (handler-case
                 (multiple-value-bind (entries lost residue after)
-                    (if (and old-text (string= old-text new-text))
+                    (if same
                         (values nil nil nil (toplevel-definitions new-text :read-eval t))
                         (definition-changes old-text new-text))
                   (setf (gethash file definitions) after)
-                  (unless (and old-text (string= old-text new-text))
-                    (if old-text (incf changed) (incf added)))
+                  (unless same (if old-text (incf changed) (incf added)))
                   (setf gone (append gone lost))
                   (when residue
                     (push (cons file "changes outside any definition are boot state") held))

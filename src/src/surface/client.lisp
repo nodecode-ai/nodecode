@@ -813,9 +813,7 @@ so a streamed item and its durable fact are one row, never two."
           ;; withdrawal — this shell's own peel included — and the row
           ;; leaves with it.
           (setf st (prune-pending-steer-rows
-                    st
-                    (loop for prompt across pending
-                          collect (json-value prompt :string "prompt_id"))))
+                    st (map 'list (lambda (prompt) (json-value prompt :string "prompt_id")) pending)))
           (loop for prompt across pending
                 do (setf st (ingest-pending-input-fact
                              st (or (json-value prompt :string "content") "")
@@ -1138,12 +1136,16 @@ attached session's, the one this shell's stop acts on."
         model.pending-correlation-id nil
         model.pending-prompt nil))
 
+(defun command-turn-id (frame command-id
+                        &aux (metadata (json-value frame :object "event" "metadata")))
+  "The turn stream FRAME admits for COMMAND-ID: the turn it names, or T when it
+names none; NIL when FRAME answers no such command."
+  (and command-id (equal command-id (json-value metadata :any "command_id"))
+       (or (gethash "turn_id" frame) (gethash "turn_id" metadata) t)))
+
 (defun replay-command-turn-id (payload command-id)
-  (and command-id
-       (loop for frame across (json-array payload "accumulated_frames")
-             for metadata = (json-value frame :object "event" "metadata")
-             when (equal command-id (json-value metadata :any "command_id"))
-               return (or (gethash "turn_id" frame) (gethash "turn_id" metadata) t))))
+  (loop for frame across (json-array payload "accumulated_frames")
+          thereis (command-turn-id frame command-id)))
 
 (defun note-resumed-watermark (model frame)
   "A resumed frame opens a fresh per-peer sequence epoch: REPLACE the
@@ -1418,17 +1420,16 @@ thread reads it and clears this place.")
     ((typep msg 'gw-projection-msg)
      (let* ((frame (gw-projection-msg-frame msg))
             (payload frame.payload)
-            (kind (gethash "type" payload)))
+            (kind (gethash "type" payload))
+            (frame-session (sync-message-session-id frame)))
        ;; Refine the span label the UPDATE :around bound: the payload kind
        ;; names which projection pass a worst span was, and the string is
        ;; already decoded — no consing on the stream path.
        (when kind (setf nlk:*attribution-label* kind))
        (cond
-         ((and (sync-message-session-id frame)
-               (not (string= (sync-message-session-id frame)
-                             model.session-id))
-               (equal (sync-message-session-id frame)
-                      model.preview-session-id))
+         ((and frame-session
+               (not (string= frame-session model.session-id))
+               (equal frame-session model.preview-session-id))
           ;; The followed session's own stream: into the preview lane,
           ;; never the live state or its watermarks.
           (let ((preview model.transcript-preview))
@@ -1456,9 +1457,7 @@ thread reads it and clears this place.")
                 ((string= kind "session_resync_required")
                  (setf model.transcript-preview nil)
                  (sessions-preview-arm model (car preview)))))))
-         ((or (null (sync-message-session-id frame))
-              (string= (sync-message-session-id frame)
-                       model.session-id))
+         ((or (null frame-session) (string= frame-session model.session-id))
           (cond
            ((string= kind "session_stream_resumed")
             ;; A replay folds out of sight and is put in place at its last
@@ -1585,15 +1584,13 @@ thread reads it and clears this place.")
                           :verify (and painted paint)))))
               (when (and line (or (not (stringp origin)) (string= origin model.session-id)))
                 (let* ((text (format nil "[~a — this shell: ~a]" (file-namestring path) line))
-                       (turn-id (json-value payload :string "turn_id")))
+                       (turn-id (json-value payload :string "turn_id"))
+                       (call-id (json-value payload :text "call_id")))
                   ;; A load on this shell can fail even though the organism's
                   ;; eval succeeded. Keep that live-only failure in its call,
                   ;; without rewriting the durable tool result or splitting
                   ;; Standard's completed work trail with a diagnostic card.
-                  (unless (and held
-                               (ingest-tool-load-error model.state
-                                                      (json-value payload :text "call_id")
-                                                      turn-id text))
+                  (unless (and held (ingest-tool-load-error model.state call-id turn-id text))
                     (setf model.state
                           (ingest-system-notice
                            model.state text :turn-id turn-id
@@ -1605,7 +1602,7 @@ thread reads it and clears this place.")
                                                                     (file-namestring path))
                                                       ;; The call it came from, whose line
                                                       ;; under a run says it (RUN-TAIL-LLINE).
-                                                      :opt "call_id" (json-value payload :text "call_id"))))))))
+                                                      :opt "call_id" call-id)))))))
                 (render-state model))))
            ((string= kind "organism.cells")
             ;; The organism turned folders on (SWITCH-CELL-ON): this shell
@@ -1719,16 +1716,10 @@ thread reads it and clears this place.")
             ;; A live frame the pending start_turn produced admits it: the
             ;; turn it names, or T when it names none.
             ;; The stream frame is under "frame", or PAYLOAD itself when it carries none.
-            (let* ((stream-frame (json-value (or (json-value payload :any "frame") payload)
-                                             :object))
-                   (metadata (json-value stream-frame :object "event" "metadata"))
-                   (command-id model.pending-command-id))
-              (when (and command-id metadata
-                         (equal command-id (gethash "command_id" metadata)))
-                (resolve-pending-admission
-                 model (or (gethash "turn_id" stream-frame)
-                           (gethash "turn_id" metadata)
-                           t))))
+            (when-let (turn-id (command-turn-id
+                                (json-value (or (json-value payload :any "frame") payload) :object)
+                                model.pending-command-id))
+              (resolve-pending-admission model turn-id))
             (multiple-value-bind (state verdict)
                 (apply-gateway-event model.state payload)
               (setf model.state state
@@ -1894,8 +1885,7 @@ thread reads it and clears this place.")
         (let ((now (get-internal-real-time))
               (last model.last-escape-at))
           (cond
-            ((and last (< (- now last)
-                          (truncate internal-time-units-per-second 2)))
+            ((and last (< (since-ms last now) 500))
              (setf model.last-escape-at nil)
              (when-let (notice (slash-tree-op model))
                (show-status model notice))
@@ -2948,6 +2938,8 @@ session the shell ended on, or NIL when it never attached."
          ;; go (the clean-shutdown rung), or NIL: joined on the way out like
          ;; the first boot.
          (takeover nil)
+         ;; Whether a boot or takeover thread is still running.
+         (alive (lambda (thread) (and thread (bt2:thread-alive-p thread))))
          (ingress-slots (bt2:make-semaphore :count 256
                                             :name "gateway-client-ingress"))
          ;; One inbound frame into the fold, bounded by the ingress slots: the
@@ -3022,9 +3014,7 @@ session the shell ended on, or NIL when it never attached."
                          ;; spending the outage's budget as a resurrection
                          ;; does. One that holds it while it stops is
                          ;; waited out, and said once.
-                         (when (and boot (not pinned)
-                                    (not (and boot-thread (bt2:thread-alive-p boot-thread)))
-                                    (not (and takeover (bt2:thread-alive-p takeover))))
+                         (when (and boot (not pinned) (notany alive (list boot-thread takeover)))
                            (cond ((ignore-errors (nlk::store-lease-held-p store-path))
                                   ;; Said only past a second and a half: a stop
                                   ;; takes under one, and a notice for it only
@@ -3059,8 +3049,7 @@ session the shell ended on, or NIL when it never attached."
                                           (if boot
                                               *sync-failure-after-seconds*
                                               5))))
-                           (cond ((or (and boot-thread (bt2:thread-alive-p boot-thread))
-                                      (and takeover (bt2:thread-alive-p takeover)))
+                           (cond ((some alive (list boot-thread takeover))
                                   (unless starting-reported
                                     (setf starting-reported t)
                                     (post-shell-notice
@@ -3175,7 +3164,7 @@ session the shell ended on, or NIL when it never attached."
                                       ;; A takeover that finished — owning,
                                       ;; or attached to whoever won — may be
                                       ;; needed again on a later clean stop.
-                                      (when (and takeover (not (bt2:thread-alive-p takeover)))
+                                      (unless (funcall alive takeover)
                                         (setf takeover nil))
                                       (cond ((not handshake-complete)
                                              (unless ensure-reported
@@ -3233,8 +3222,7 @@ session the shell ended on, or NIL when it never attached."
                      ;; completed, or an established stream dropped): walk
                      ;; the self-heal ladder before backing off.
                      (incf failures)
-                     (unless outage-started
-                       (setf outage-started (get-internal-real-time)))
+                     (setf outage-started (or outage-started (get-internal-real-time)))
                      ;; An endpoint nobody serves any more -- its owner
                      ;; stopping or gone -- is not dialed again: the next lap
                      ;; watches the store instead, and starts or attaches to
@@ -3323,7 +3311,7 @@ the store; not respawning — start another nodecode to take ownership"))))
                                          ;; A shell that starts organisms starts the
                                          ;; replacement too, fronted as the first was
                                          ;; (FRONT-ORGANISM); the dead endpoint goes.
-                                         (unless (and takeover (bt2:thread-alive-p takeover))
+                                         (unless (funcall alive takeover)
                                            (setf takeover (funcall start-organism) port nil))
                                          t)
                                         (t (spawn-resurrection-candidate store-path)))
