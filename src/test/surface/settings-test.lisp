@@ -130,6 +130,21 @@ name, a check -- and nl-settings.shut, whose probe refuses."
                            :body "{\"path\": [\"nl-settings\", \"shut\"], \"field\": \"rooms\"}")
     (is (equal "refused" (nlk:json-value body :string "error" "code")))
     (is (search "unauthorized (401)" (nlk:json-value body :string "error" "message")) "in the probe's own words"))
+  ;; A choices function's second value: nothing to pick until the operator
+  ;; acts (wait), and what an unset field takes on an Enter (default).
+  (nlk:define-section ("nl-settings" "wait")
+    ("rooms" :list :choices (nlk:lambda-ignoring (table) (values '() '(:wait "add the bot to a server"))))
+    ("owner" :list :choices (nlk:lambda-ignoring (table)
+                              (values '(("u1" . "peas  made the app") ("u2" . "ada")) '(:default ("u1"))))))
+  (with-gateway-http (port :post "/api/gateway/config/probe" :status 200
+                           :body "{\"path\": [\"nl-settings\", \"wait\"], \"field\": \"rooms\"}")
+    (is (equalp #() (nlk:json-value body :array "choices")) "nothing to pick from yet")
+    (is (equal "add the bot to a server" (nlk:json-value body :string "wait")) "and what the operator does first")
+    (is (null (nth-value 1 (nlk:json-value body :any "default"))) "no default named, none sent"))
+  (with-gateway-http (port :post "/api/gateway/config/probe" :status 200
+                           :body "{\"path\": [\"nl-settings\", \"wait\"], \"field\": \"owner\"}")
+    (is (equalp #("u1") (nlk:json-value body :array "default")) "the ids an Enter takes")
+    (is (null (nth-value 1 (nlk:json-value body :any "wait"))) "no wait named, none sent"))
   (is-route (port :post "/api/gateway/config/probe" :body "{\"path\": [\"nl-settings\", \"shut\"]}")
             400 "a section with no check" "invalid_request")
   (is-route (port :post "/api/gateway/config/probe" :body "{\"path\": [\"no\", \"such\"]}")

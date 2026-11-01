@@ -259,8 +259,11 @@ section's own reader would refuse is refused first (REFUSE-SECTION-WRITE),
 (define-gateway-route handle-gateway-config-probe-http (env)
   "POST /api/gateway/config/probe {path, field?} — what the section at PATH
 declares it can ask, over the section as config.jsonc says it now: with
-FIELD, that field's CHOICES as {choices: [{id, label}]}; without, the
-section's CHECK as {text}. A probe's refusal answers 400 in its own words."
+FIELD, that field's CHOICES as {choices: [{id, label}]}, beside `wait' when
+there is nothing to pick from until the operator acts on the platform (the
+text says what to do) and `default', the ids an unset field takes when the
+operator just presses Enter; without, the section's CHECK as {text}. A
+probe's refusal answers 400 in its own words."
   (:route :post "/api/gateway/config/probe" "probe")
   (let* ((request (gateway-request-json env))
          (section (request-section request))
@@ -272,9 +275,12 @@ section's CHECK as {text}. A probe's refusal answers 400 in its own words."
     (require-request (or name section.check) "~a declares no check" (nlk:section-key section.path))
     (handler-case
         (if field
-            (json-object "choices" (map 'vector (lambda (choice)
-                                                  (json-object "id" (car choice) "label" (cdr choice)))
-                                        (funcall field.choices table)))
+            (multiple-value-bind (choices offer) (funcall field.choices table)
+              (json-object "choices" (map 'vector (lambda (choice)
+                                                    (json-object "id" (car choice) "label" (cdr choice)))
+                                          choices)
+                           :opt "wait" (getf offer :wait)
+                           :opt "default" (and (getf offer :default) (coerce (getf offer :default) 'vector))))
             (json-object "text" (princ-to-string (funcall section.check table))))
       (nlk:config-refusal (condition)
         (nlk::protocol-refuse :refused "~a" (nlk:config-refusal-detail condition))))))
