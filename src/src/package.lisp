@@ -144,6 +144,8 @@ renderer, the program loop.")
    #:*session-wrapper* #:session-argv #:pid-live-p #:kill-tree #:spawn-detached
    #:exits-zero-p
    #:environment-with #:spawn-program #:wait-for-child #:child-exit #:run-bounded #:lock-file
+   #:*wait-deadline* #:wait-seconds #:wait-deadline-passed-p #:wait-deadline-reason #:with-wait-deadline #:call-with-wait-deadline
+   #:call-with-lock-in-time
    #:*wait-hook* #:with-named-wait
    #:file-locked-p #:unlock-file #:folder-lock-path #:lock-folder #:unlock-folder #:file-bytes
    #:with-folder-lock #:replace-file #:random-bytes #:with-output-file
@@ -279,6 +281,7 @@ renderer, the program loop.")
    #:shipped-cells-directory #:shipped-cells #:find-offer #:offer-closure
    #:cell-dependents #:system-cell #:hub-pin #:refresh-hub-clones
    #:hub-cells #:read-hub-index #:*hub-index-url* #:*community-index-url*
+   #:*cell-switch-seconds* #:cell-switch-deadline
    #:missing-shipped-cells #:install-cell #:uninstall-cell
    #:installed-cell-p #:load-cell #:definitions-before #:report-unkept-changes #:folder-name
    ;; what a peripheral is made of, and what it runs on (cells.lisp)

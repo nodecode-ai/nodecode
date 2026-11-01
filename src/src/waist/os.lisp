@@ -698,22 +698,135 @@ sees the end; a child that stopped reading first is not an error here."
 wait WITH-NAMED-WAIT names -- TEXT what it waits on, in words, BOUND the
 most seconds it waits -- and of NIL and NIL when that wait ends.")
 
+(defvar *wait-step* nil
+  "The name of the innermost named wait this thread is in (WITH-NAMED-WAIT):
+the name a deadline keeps for a step it cuts short (STEP-RAN-OUT).")
+
 (defmacro with-named-wait ((bound control &rest arguments) &body body)
   "BODY, a wait of at most BOUND seconds that CONTROL and ARGUMENTS name as
 FORMAT would, named to *WAIT-HOOK* while it lasts. => BODY's values."
   `(call-with-named-wait (lambda () ,@body) ,bound ,control ,@arguments))
 
 (defun call-with-named-wait (function bound control &rest arguments)
-  "FUNCTION's values, its wait named to *WAIT-HOOK* as WITH-NAMED-WAIT says."
-  (let ((hook *wait-hook*))
+  "FUNCTION's values, its wait named to *WAIT-HOOK* as WITH-NAMED-WAIT says,
+and a step inside it that a deadline cuts short named so (*WAIT-STEP*)."
+  (let* ((hook *wait-hook*)
+         (name (apply #'format nil control arguments))
+         (*wait-step* name))
     (if hook
-        (progn (funcall hook (apply #'format nil control arguments) bound)
+        (progn (funcall hook name bound)
                (unwind-protect (funcall function)
                  (funcall hook nil nil)))
         (funcall function))))
 
+;;; Work done for one waiter -- a cell turned on for `nodecode add', which
+;;; holds a wall clock on the answer -- runs in steps each bounded on its own:
+;;; an index read, a download, a fetch, a clone, a wait for a lock. Their
+;;; bounds add up to far more than the waiter waits, so it could give up on
+;;; work that went on and succeeded, and its retry ran beside it. Under
+;;; WITH-WAIT-DEADLINE the work has one deadline instead: every step this
+;;; thread starts gets what is left of it at most (WAIT-SECONDS) -- a child of
+;;; RUN-BOUNDED, an exchange of HTTP, a lock taken through
+;;; CALL-WITH-LOCK-IN-TIME -- and a step that finds nothing left signals
+;;; WAIT-DEADLINE-PASSED instead of starting. proofs/AddDeadlines.lean proves
+;;; such work ends by its deadline whatever each step takes within what it is
+;;; given, the lock's waits included.
+
+(defstruct (wait-deadline (:constructor make-wait-deadline (end seconds)) (:copier nil) (:predicate nil))
+  "A deadline work for one waiter runs under (WITH-WAIT-DEADLINE): the
+internal real time END by which it ends and the SECONDS it was given. SPENT
+once a step it cut short ran out (STEP-RAN-OUT), and STEP then that step's
+name -- the named wait (WITH-NAMED-WAIT) it ran in -- or NIL for an unnamed one."
+  (end 0 :type integer :read-only t)
+  (seconds 0 :type real :read-only t)
+  (spent nil)
+  (step nil :type (or null string)))
+
+(defvar *wait-deadline* nil
+  "NIL, or the WAIT-DEADLINE the work this thread does for one waiter runs
+under (WITH-WAIT-DEADLINE).")
+
+(define-error wait-deadline-passed (error) (seconds (step :initform nil)) (:export)
+  (:report "the ~d s it was given ran out~@[ while ~a~]" seconds step))
+
+(defun wait-deadline-reason (condition &optional (deadline *wait-deadline*))
+  "Why work under DEADLINE failed once it passed, for a person: the time ran
+out while the step it cut short ran, when that step had a name; else
+CONDITION's report, and NIL for a WAIT-DEADLINE-PASSED, which says no more."
+  (let ((step (if (typep condition 'wait-deadline-passed)
+                  (wait-deadline-passed-step condition)
+                  (and deadline (wait-deadline-step deadline)))))
+    (cond (step (format nil "the time ran out while ~a" step))
+          ((typep condition 'wait-deadline-passed) nil)
+          (t (princ-to-string condition)))))
+
+(defun step-ran-out (clipped &optional (deadline *wait-deadline*))
+  "Say a step ran out of what it was given: when the deadline gave it that
+(CLIPPED, WAIT-SECONDS' second value) the deadline is SPENT, named by the
+step running now (*WAIT-STEP*)."
+  ;; The clock can read a hair short of END when a timed wait wakes: spent,
+  ;; the next step is refused rather than given that hair and failing as
+  ;; though it were the one the time ran out in.
+  (when (and clipped deadline (not (wait-deadline-spent deadline)))
+    (setf (wait-deadline-spent deadline) t
+          (wait-deadline-step deadline) *wait-step*)))
+
+(defun wait-seconds (bound &key (deadline *wait-deadline*) (now (get-internal-real-time)))
+  "The seconds a step bounded by BOUND -- seconds, or NIL for a step with no
+bound of its own -- is given under DEADLINE (*WAIT-DEADLINE*): BOUND, or
+what is left of DEADLINE when that is less or BOUND is NIL; BOUND when there
+is no deadline. Signals WAIT-DEADLINE-PASSED when nothing is left -- the
+clock is past it, or a step it cut short ran out -- so a step never starts
+past the deadline."
+  ;; GIVEN in proofs/AddDeadlines.lean, whose decided traces the test
+  ;; wait-seconds-holds-to-adddeadlines-lean-traces pins here.
+  ;; The second value is T when the deadline, not BOUND, gives the step its
+  ;; time: a step that runs out of it then says so (STEP-RAN-OUT).
+  (if (null deadline)
+      (values bound nil)
+      (let ((left (/ (- (wait-deadline-end deadline) now) internal-time-units-per-second)))
+        (when (or (wait-deadline-spent deadline) (not (plusp left)))
+          (error 'wait-deadline-passed :seconds (wait-deadline-seconds deadline)
+                                       :step (wait-deadline-step deadline)))
+        (if (and bound (< bound left))
+            (values bound nil)
+            (values left t)))))
+
+(defun wait-deadline-passed-p (&optional (deadline *wait-deadline*) (now (get-internal-real-time)))
+  "Whether the thread works under a deadline (*WAIT-DEADLINE*) that has passed."
+  (and deadline (or (wait-deadline-spent deadline) (>= now (wait-deadline-end deadline)))))
+
+(defmacro with-wait-deadline ((seconds) &body body)
+  "BODY, work for one waiter that must end within SECONDS (WAIT-SECONDS), or
+by the deadline it runs under already when that comes first. SECONDS NIL
+leaves the deadline as it stands."
+  `(call-with-wait-deadline (lambda () ,@body) ,seconds))
+
+(defun call-with-wait-deadline (function seconds)
+  "FUNCTION's values under WITH-WAIT-DEADLINE's deadline of SECONDS."
+  (let* ((end (and seconds (deadline-after seconds)))
+         (*wait-deadline* (if (and end (or (null *wait-deadline*) (< end (wait-deadline-end *wait-deadline*))))
+                              (make-wait-deadline end seconds)
+                              *wait-deadline*)))
+    (funcall function)))
+
+(defun call-with-lock-in-time (lock function &optional step)
+  "FUNCTION's values, called holding LOCK: waited for as long as it takes
+with no deadline, and under one for what is left of it at most
+(WAIT-SECONDS), past which WAIT-DEADLINE-PASSED is signalled. STEP names
+the wait for the lock, when it is one, to the deadline (*WAIT-STEP*)."
+  (unless (bt2:acquire-lock lock :wait nil)
+    (let ((*wait-step* (or step *wait-step*)))
+      (multiple-value-bind (seconds clipped) (wait-seconds nil)
+        (unless (bt2:acquire-lock lock :timeout seconds)
+          (step-ran-out clipped)
+          (error 'wait-deadline-passed :seconds (wait-deadline-seconds *wait-deadline*)
+                                       :step (wait-deadline-step *wait-deadline*))))))
+  (unwind-protect (funcall function)
+    (bt2:release-lock lock)))
+
 (defun run-bounded (argv &key (seconds 60) directory environment input
-                             (output :string) (error-output :string))
+                             (output :string) (error-output :string) &aux clipped)
   "Run ARGV — the program first, searched on PATH — to completion or SECONDS,
 whichever comes first, stdin the string INPUT when given (written whole, then
 closed) and empty otherwise, in DIRECTORY when given, under ENVIRONMENT
@@ -734,6 +847,9 @@ closed) and empty otherwise, in DIRECTORY when given, under ENVIRONMENT
   ;; INPUT is written on a thread of its own for the same reason: a string
   ;; longer than the pipe holds would otherwise block the write against a
   ;; child blocked writing its answer to a pipe nobody reads yet.
+  ;; Under a deadline the child is given what is left of it (WAIT-SECONDS),
+  ;; and none is started once it has passed.
+  (multiple-value-setq (seconds clipped) (wait-seconds seconds))
   (multiple-value-bind (pid output-stream error-stream process input-stream)
       (spawn-program argv :directory directory
                           :environment (and environment
@@ -754,6 +870,7 @@ closed) and empty otherwise, in DIRECTORY when given, under ENVIRONMENT
                      (when input-stream (ignore-errors (close input-stream :abort t)))
                      (when process (ignore-errors (sb-ext:process-close process))))
         (when (eq status :timeout)
+          (step-ran-out clipped)
           (kill-tree pid)
           (%join-bounded waiter 5))
         ;; A killed child's own children may hold the pipes open; the

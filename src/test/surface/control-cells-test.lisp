@@ -432,3 +432,32 @@ ASK its terminal: (TEXT CODE STREAM PREVIEW), PREVIEW what it printed first."
             (is (search "index   community" theirs))
             (is (search git theirs))
             (is (not (search "index" own)) "Nodecode's own prints as it did")))))))
+
+#-win32
+(deftest control-cells-add-gives-the-turn-on-its-wait-and-hears-how-it-ended
+    (with-switch-fixture (port base top))
+  ;; `nodecode add --wait 4' tells the organism it waits 4 s, and the
+  ;; organism gives the reads and the installs 2 of them
+  ;; (CELL-SWITCH-DEADLINE). With git hanging on every fetch and clone it
+  ;; answers by then that the cell did not come on and nothing was installed:
+  ;; add hears how the turn-on ended within its wait, where main gave up at
+  ;; 600 s on an install that ran on. proofs/AddDeadlines.lean, `answer_lands'.
+  (with-temp-trees ((bin "add-late-bin"))
+    (serve-hub "/test-hub/late.json"
+               (list :name "nodecode-nl-sw-late" :git "https://127.0.0.1:9/o/nl-sw-late.git"
+                     :commit (make-string 40 :initial-element #\d) :path "cells/nl-sw-late"))
+    (nlk:with-cleanup ((nle:route "/test-hub/late.json" nil))
+      (with-saved-globals ((nlk:*hub-index-url* (format nil "http://127.0.0.1:~d/test-hub/late.json" port))
+                           (nlk::*git-program* (write-hanging-git bin)))
+        (let* ((started (get-internal-real-time))
+               (text (refusal-text nle::gateway-http-error
+                       (add-answer port (lambda (question) (error "asked ~a" question))
+                                   "nc://nl-sw-late" "--yes" "--wait" "4")))
+               (took (/ (- (get-internal-real-time) started) internal-time-units-per-second)))
+          (is (search "nl-sw-late did not come on within 2 s: the time ran out while cloning nodecode-nl-sw-late from https://127.0.0.1:9/o/nl-sw-late.git; nothing was installed" text) text)
+          (is (< took 4) (format nil "the answer landed within add's wait: ~,1f s" took))
+          (is (null (hanging-git-alive bin)) "its hung runs are killed")
+          (is (notany #'nlk:installed-cell-p (list "nodecode-nl-sw-late" base top))))))
+    (is (search "--wait takes the seconds add waits" (first (add-answer port (constantly nil) top "--wait" "soon"))))
+    (is (search "--wait takes the seconds add waits" (first (add-answer port (constantly nil) top "--wait"))))
+    (is (search "add takes one cell" (first (add-answer port (constantly nil) "--wait" "9"))))))
