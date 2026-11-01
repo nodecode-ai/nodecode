@@ -813,9 +813,7 @@ so a streamed item and its durable fact are one row, never two."
           ;; withdrawal — this shell's own peel included — and the row
           ;; leaves with it.
           (setf st (prune-pending-steer-rows
-                    st
-                    (loop for prompt across pending
-                          collect (json-value prompt :string "prompt_id"))))
+                    st (map 'list (lambda (prompt) (json-value prompt :string "prompt_id")) pending)))
           (loop for prompt across pending
                 do (setf st (ingest-pending-input-fact
                              st (or (json-value prompt :string "content") "")
@@ -1418,17 +1416,16 @@ thread reads it and clears this place.")
     ((typep msg 'gw-projection-msg)
      (let* ((frame (gw-projection-msg-frame msg))
             (payload frame.payload)
-            (kind (gethash "type" payload)))
+            (kind (gethash "type" payload))
+            (frame-session (sync-message-session-id frame)))
        ;; Refine the span label the UPDATE :around bound: the payload kind
        ;; names which projection pass a worst span was, and the string is
        ;; already decoded — no consing on the stream path.
        (when kind (setf nlk:*attribution-label* kind))
        (cond
-         ((and (sync-message-session-id frame)
-               (not (string= (sync-message-session-id frame)
-                             model.session-id))
-               (equal (sync-message-session-id frame)
-                      model.preview-session-id))
+         ((and frame-session
+               (not (string= frame-session model.session-id))
+               (equal frame-session model.preview-session-id))
           ;; The followed session's own stream: into the preview lane,
           ;; never the live state or its watermarks.
           (let ((preview model.transcript-preview))
@@ -1456,9 +1453,7 @@ thread reads it and clears this place.")
                 ((string= kind "session_resync_required")
                  (setf model.transcript-preview nil)
                  (sessions-preview-arm model (car preview)))))))
-         ((or (null (sync-message-session-id frame))
-              (string= (sync-message-session-id frame)
-                       model.session-id))
+         ((or (null frame-session) (string= frame-session model.session-id))
           (cond
            ((string= kind "session_stream_resumed")
             ;; A replay folds out of sight and is put in place at its last
@@ -1585,15 +1580,13 @@ thread reads it and clears this place.")
                           :verify (and painted paint)))))
               (when (and line (or (not (stringp origin)) (string= origin model.session-id)))
                 (let* ((text (format nil "[~a — this shell: ~a]" (file-namestring path) line))
-                       (turn-id (json-value payload :string "turn_id")))
+                       (turn-id (json-value payload :string "turn_id"))
+                       (call-id (json-value payload :text "call_id")))
                   ;; A load on this shell can fail even though the organism's
                   ;; eval succeeded. Keep that live-only failure in its call,
                   ;; without rewriting the durable tool result or splitting
                   ;; Standard's completed work trail with a diagnostic card.
-                  (unless (and held
-                               (ingest-tool-load-error model.state
-                                                      (json-value payload :text "call_id")
-                                                      turn-id text))
+                  (unless (and held (ingest-tool-load-error model.state call-id turn-id text))
                     (setf model.state
                           (ingest-system-notice
                            model.state text :turn-id turn-id
@@ -1605,7 +1598,7 @@ thread reads it and clears this place.")
                                                                     (file-namestring path))
                                                       ;; The call it came from, whose line
                                                       ;; under a run says it (RUN-TAIL-LLINE).
-                                                      :opt "call_id" (json-value payload :text "call_id"))))))))
+                                                      :opt "call_id" call-id)))))))
                 (render-state model))))
            ((string= kind "organism.cells")
             ;; The organism turned folders on (SWITCH-CELL-ON): this shell
