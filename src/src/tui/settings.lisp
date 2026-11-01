@@ -1834,11 +1834,8 @@ cell, or NIL."
         (cond
           ((plusp (length settings.query))
            ;; The header is the search line.
-           (let* ((count (length (settings-results settings)))
-                  (at (canvas-put canvas px header-row "Search " (sheet-ink :muted :ground pane))))
-             (setf cursor (cons (canvas-put canvas at header-row (clip-tail settings.query (max 1 (- pw 22)))
-                                            (sheet-ink :foreground :ground pane))
-                                header-row))
+           (let ((count (length (settings-results settings))))
+             (setf cursor (paint-search-line canvas px header-row pw settings.query pane 22))
              (right (if (plusp count) (format nil "~d match~:[es~;~]" count (= count 1)) "no match")
                     (sheet-ink :muted :ground pane))
              (lines (result-entries settings))))

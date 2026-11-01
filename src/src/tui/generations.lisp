@@ -941,11 +941,8 @@ at a time. => the caret's cell, or NIL."
                              (sheet-ink :muted :ground pane)))))
         (cond
           ((plusp (length history.query))
-           (let* ((count (length visible))
-                  (at (canvas-put canvas px header-row "Search " (sheet-ink :muted :ground pane))))
-             (setf cursor (cons (canvas-put canvas at header-row (clip-tail history.query (max 1 (- pw 22)))
-                                            (sheet-ink :foreground :ground pane))
-                                header-row))
+           (let ((count (length visible)))
+             (setf cursor (paint-search-line canvas px header-row pw history.query pane 22))
              (right (if (plusp count) (format nil "~d match~:[es~;~]" count (= count 1)) "no match"))))
           (days-view
            (canvas-put canvas px header-row "Generations" (sheet-ink :title :ground pane :bold t))

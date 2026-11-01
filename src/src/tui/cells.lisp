@@ -692,10 +692,7 @@ the caret's cell, or NIL."
                        (clip-text-to-width (json-value (cell-of cells name) :string "label") (max 1 (- (+ px pw) at)))
                        (sheet-ink :title :ground pane :bold t))))
         ((plusp (length cells.query))
-         (let ((at (canvas-put canvas px header-row "Search " (sheet-ink :muted :ground pane))))
-           (setf cursor (cons (canvas-put canvas at header-row (clip-tail cells.query (max 1 (- pw 8)))
-                                          (sheet-ink :foreground :ground pane))
-                              header-row))))
+         (setf cursor (paint-search-line canvas px header-row pw cells.query pane 8)))
         (t
          (let ((at (canvas-put canvas px header-row "Cells" (sheet-ink :title :ground pane :bold t))))
            (paint-cells-tabs cells canvas header-row (+ at 3) (- (+ px pw) at 3) pane))))
