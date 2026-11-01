@@ -9,7 +9,7 @@ name: CI
 #            axioms only (`just proofs')
 #   scaling  every hot path's cost at three sizes, its growth held to its
 #            contract (`just perf'; src/perf/scaling.lisp), after linux
-# The scripts live in src/tools/ci-*, so a job is one step and the same check
+# The scripts live in src/tools/ci/, so a job is one step and the same check
 # runs by hand on the same machine.
 #
 # The repository is public, so a pull request from a fork never runs on our
@@ -52,7 +52,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Hold every hot path's growth to its contract
-        run: src/tools/ci-scaling.sh
+        run: src/tools/ci/ci-scaling.sh
 
   proofs:
     name: Proofs

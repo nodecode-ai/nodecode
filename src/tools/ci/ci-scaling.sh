@@ -13,11 +13,11 @@
 # A case prints each size's cost and its fitted slopes; a breach is measured
 # again before it counts, and any breach that holds fails the job.
 set -euo pipefail
-repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$repo"
 
 build_home="${NODECODE_BUILD_HOME:-/var/tmp/nodecode-ci-build}"
-key="$(cat src/tools/sbcl/build.sh src/tools/sbcl/patches/* | sha256sum | cut -d' ' -f1)"
+key="$(cat src/tools/build/sbcl/build.sh src/tools/build/sbcl/patches/* | sha256sum | cut -d' ' -f1)"
 sbcl_root="$build_home/env/.cache/nodecode-sbcl/$key"
 ql_setup="$build_home/env/quicklisp/setup.lisp"
 [ -x "$sbcl_root/bin/sbcl" ] || { echo "ci-scaling: no SBCL at $sbcl_root; the Linux job builds it" >&2; exit 1; }
@@ -25,7 +25,7 @@ ql_setup="$build_home/env/quicklisp/setup.lisp"
 
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/nodecode-scaling.XXXXXX")"
 trap 'rm -rf "$scratch"' EXIT
-src/tools/pull-cells.sh
+src/tools/build/pull-cells.sh
 printf '(load "%s")\n' "$ql_setup" > "$scratch/sbclrc"
 mkdir -p "$scratch/home" "$scratch/cache"
 cd src
