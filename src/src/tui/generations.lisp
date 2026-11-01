@@ -1154,29 +1154,27 @@ there already."
                               :summary "Nothing moves: the folder stands here." :hint "esc back"
                               :empty-label "Pick another change to go to.")
                  nil))
-        (edits
-         (answer (list-dialog :title (format nil "~@(~a~) to ~a?" go stamp) :context context
-                              :summary (cost-words history index current) :tone :warn
-                              :hint (format nil "enter ~a  esc stay" go)
-                              :rows (append
-                                     (list (list :label (format nil "~a, and going back would lose ~:[it~;them~]."
-                                                                (edits-words edits)
-                                                                (or (rest edits) (/= 1 (cdr (first edits)))))))
-                                     moves
-                                     (list (runs "Keep the edits first, as a change you can come back to" "keep")
-                                           (runs "Discard the edits into git stash first" "discard"))))
-                 (format nil "/generations ~d keep keeps the edits first, as a change you can come back to; ~
-                              /generations ~d discard sets them aside in git stash; then it goes."
-                         number number)))
+        ;; with edits standing, the edits' line first and a way to keep or discard them
         (t
          (answer (list-dialog :title (format nil "~@(~a~) to ~a?" go stamp) :context context
                               :summary (cost-words history index current) :tone :warn
                               :hint (format nil "enter ~a  esc stay" go)
                               :rows (append
+                                     (when edits
+                                       (list (list :label (format nil "~a, and going back would lose ~:[it~;them~]."
+                                                                  (edits-words edits)
+                                                                  (or (rest edits) (/= 1 (cdr (first edits))))))))
                                      moves
-                                     (list (list :label "Sessions, memory and settings stay; nodecode restarts on it once nothing is running.")
-                                           (runs (format nil "~@(~a~) to #~d" go number) "go"))))
-                 (format nil "/generations ~d go does it." number)))))))
+                                     (if edits
+                                         (list (runs "Keep the edits first, as a change you can come back to" "keep")
+                                               (runs "Discard the edits into git stash first" "discard"))
+                                         (list (list :label "Sessions, memory and settings stay; nodecode restarts on it once nothing is running.")
+                                               (runs (format nil "~@(~a~) to #~d" go number) "go")))))
+                 (if edits
+                     (format nil "/generations ~d keep keeps the edits first, as a change you can come back to; ~
+                                  /generations ~d discard sets them aside in git stash; then it goes."
+                             number number)
+                     (format nil "/generations ~d go does it." number))))))))
 
 (defun history-go-words (number how)
   "/generations NUMBER HOW without a shell: the uncommitted edits that hold

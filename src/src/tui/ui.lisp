@@ -11647,16 +11647,6 @@ last inclusive; NIL for a mark no drag laid over the transcript."
             (cons a b)
             (cons b a))))))
 
-(defun hold-mark-points (model mark &optional (from (frame-cell-point model (car mark))))
-  "Hold MARK, a screen mark on MODEL's frame, as the selection with its
-transcript points: FROM (by default its first cell's) to its last cell's."
-  (let ((to (frame-cell-point model (cdr mark))))
-    (setf (chat-model-selection model) mark)
-    (if (and from to)
-        (setf (mark-points model) (cons mark (cons from to)))
-        (forget-mark-points model))
-    mark))
-
 (defun extend-mark (model anchor cell &aux (old (chat-model-selection model))
                                            (before (mark-span model)))
   "Lay the mark a drag from ANCHOR to CELL makes (LANE-MARK) with its
