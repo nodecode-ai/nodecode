@@ -448,9 +448,8 @@ endpoint only once the catalog or the gateway's cells have landed.")
 (defun connection-key (model)
   "(PROVIDER . MODEL-ID) of the target MODEL's footer names, else NIL."
   (multiple-value-bind (raw-provider raw-model state) (footer-identity model)
-    (let ((provider (json-value raw-provider :text))
-          (model-id (json-value raw-model :text)))
-      (and (eq state :configured) provider (cons provider model-id)))))
+    (let ((provider (json-value raw-provider :text)))
+      (and (eq state :configured) provider (cons provider (json-value raw-model :text))))))
 
 (defun connection-target-endpoint (model key)
   "The URL KEY's turns dial: what the gateway answered for that target, else this process's own
