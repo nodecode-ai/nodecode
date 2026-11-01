@@ -263,9 +263,6 @@ of stacking."
      ;; shrinks, cl-jpeg's baseline and the progressive form cl-jpeg cannot,
      ;; named in *IMAGE-DECODERS* there for image/jpeg.
      (:file "engine/jpeg")
-     ;; gif follows image-fit: it reads a GIF's first frame to the PIXELS
-     ;; image-fit shrinks, named in *IMAGE-DECODERS* there for image/gif.
-     (:file "engine/gif")
      (:file "engine/turn")
      ;; shell precedes exec: the grammar of what (sh ...) runs — a command
      ;; string as its simple commands, each with words, redirects and the
@@ -632,10 +629,8 @@ of stacking."
      ;; image-fit-test follows exec-test: it shows LOOK a file the way
      ;; exec-test's fixtures do.
      (:file "engine/image-fit-test")
-     ;; jpeg-test and gif-test follow image-fit-test: each shrinks its
-     ;; format through FIT-IMAGE.
+     ;; jpeg-test follows image-fit-test: it shrinks a JPEG through FIT-IMAGE.
      (:file "engine/jpeg-test")
-     (:file "engine/gif-test")
      ;; background-steer-test follows exec-test: it drives the drained
      ;; registry beside it, turn-test's wire helpers and the provider stub.
      (:file "engine/background-steer-test")

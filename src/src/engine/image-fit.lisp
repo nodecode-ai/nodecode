@@ -9,13 +9,13 @@
 ;;;; smaller, so a photo goes as a JPEG and a screenshot as a PNG; when
 ;;;; neither fits, JPEG at lower qualities, then a quarter smaller a side. An
 ;;;; image within both goes as its own bytes. PNG is read and written here,
-;;;; JPEG written through cl-jpeg and read in jpeg.lisp, a GIF's first
-;;;; frame in gif.lisp. A WebP, and the rare file none of them reads -- an
-;;;; arithmetic-coded or 12-bit JPEG -- goes through whichever transcoder the
-;;;; box has (nlt:*PNG-TRANSCODERS*) and then through the PNG reader, and with
-;;;; none installed it goes as itself when it is within what a provider takes
-;;;; whole, as every provider takes a WebP. PNG, JPEG and GIF, what
-;;;; screenshots and cameras write, fit on every platform the binary runs on.
+;;;; JPEG written through cl-jpeg and read in jpeg.lisp. A GIF, a WebP, and
+;;;; the rare file neither reads -- an arithmetic-coded or 12-bit JPEG -- goes
+;;;; through whichever transcoder the box has (nlt:*PNG-TRANSCODERS*, a GIF's
+;;;; first frame) and then through the PNG reader, and with none installed it
+;;;; goes as itself when it is within what a provider takes whole. PNG and
+;;;; JPEG, what screenshots and cameras write, fit on every platform the
+;;;; binary runs on.
 
 (in-package #:nodecode.evolved)
 
@@ -510,8 +510,7 @@ of each times its next weight, the weights of each summing to 1."
 
 ;;; --- decoding, whatever the format ---------------------------------------------
 
-(defparameter *image-decoders* '(("image/png" . png-pixels) ("image/jpeg" . jpeg-pixels)
-                                 ("image/gif" . gif-pixels))
+(defparameter *image-decoders* '(("image/png" . png-pixels) ("image/jpeg" . jpeg-pixels))
   "Media type -> the function that decodes such bytes to PIXELS here, as they
 are stored, signalling IMAGE-UNFIT on bytes it cannot read. A type with no
 entry, or bytes its entry refuses, goes through a transcoder.")
