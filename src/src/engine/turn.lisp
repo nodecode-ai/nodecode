@@ -933,24 +933,18 @@ unchanged, and so is dropping a \")\" that closes nothing."
                 (not (find #\Newline text :end (min code-end (length text)))))
            (values nil (one-line-completion-refusal text missing tokens)))
           (t
-           (let* ((count (length tokens))
+           (let* ((depth 0)
                   ;; The written depth after each token, and its suffix
                   ;; minimum: how many closers may have been inserted before
                   ;; token I without a later ")" of the model's finding
                   ;; nothing to close.
-                  (after (make-array count))
-                  (bound (make-array count))
-                  (depth 0))
-             (loop for token in tokens for i from 0
-                   do (case (first token)
-                        (:open (incf depth))
-                        (:close (decf depth)))
-                      (setf (aref after i) depth))
-             (loop for i from (1- count) downto 0
-                   do (setf (aref bound i)
-                            (if (= i (1- count))
-                                (aref after i)
-                                (min (aref after i) (aref bound (1+ i))))))
+                  (after (loop for (kind) in tokens
+                               do (case kind (:open (incf depth)) (:close (decf depth)))
+                               collect depth))
+                  (bound (coerce (reverse (loop for written in (reverse after)
+                                                for least = written then (min least written)
+                                                collect least))
+                                 'vector)))
              (let ((open '())
                    (inserted 0)
                    (sites '()))
@@ -959,8 +953,7 @@ unchanged, and so is dropping a \")\" that closes nothing."
                           (:open (push token open))
                           (:close (pop open))
                           (:head
-                           (destructuring-bind (pos line column previous-end previous-line) (rest token)
-                             (declare (ignore pos line))
+                           (destructuring-bind (column previous-end previous-line) (cdddr token)
                              (when (and open (plusp previous-end))
                                (bind ((wanted (loop for entry in open
                                                     while (>= (fourth entry) column)
@@ -986,10 +979,8 @@ unchanged, and so is dropping a \")\" that closes nothing."
                         ;; inserted at the sites, orphans skipped.
                         (with-output-to-string (out)
                           (let ((cursor 0)
-                                (edits (sort (append (mapcar (lambda (site) (list (first site) :insert (second site)))
-                                                             sites)
-                                                     (mapcar (lambda (orphan) (list (first orphan) :drop 1))
-                                                             orphans))
+                                (edits (sort (append (loop for (pos n) in sites collect (list pos :insert n))
+                                                     (loop for (pos) in orphans collect (list pos :drop 1)))
                                              #'< :key #'first)))
                             (dolist (edit edits)
                               (destructuring-bind (pos kind n) edit
