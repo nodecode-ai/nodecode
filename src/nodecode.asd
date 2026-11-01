@@ -102,6 +102,13 @@ of stacking."
                "clack"
                "clack-handler-hunchentoot"
                "websocket-driver"
+               ;; The image codecs FIT-IMAGE shrinks pictures through
+               ;; (engine/image-fit): chipz inflates PNG (it was already in
+               ;; the image through dexador), salza2 deflates it, and
+               ;; cl-jpeg reads and writes baseline JPEG. All three Lisp.
+               "chipz"
+               "salza2"
+               "cl-jpeg"
                (:require "sb-bsd-sockets")
                (:require "sb-posix")
                (:require "sb-concurrency"))
@@ -244,6 +251,10 @@ of stacking."
      (:file "engine/context")
      ;; Revisions reuse context units; the request loop publishes their working copy.
      (:file "engine/working-context")
+     ;; image-fit precedes turn: every picture the turn stages is first
+     ;; brought within what a provider takes -- decoded, shrunk and
+     ;; re-encoded here.
+     (:file "engine/image-fit")
      (:file "engine/turn")
      ;; shell precedes exec: the grammar of what (sh ...) runs — a command
      ;; string as its simple commands, each with words, redirects and the
@@ -602,6 +613,9 @@ of stacking."
      ;; exec-test drives the same WS fixtures plus the store fixtures, so it
      ;; loads late.
      (:file "engine/exec-test")
+     ;; image-fit-test follows exec-test: it shows LOOK a file the way
+     ;; exec-test's fixtures do.
+     (:file "engine/image-fit-test")
      ;; background-steer-test follows exec-test: it drives the drained
      ;; registry beside it, turn-test's wire helpers and the provider stub.
      (:file "engine/background-steer-test")

@@ -125,12 +125,20 @@ the header does not carry it."
 ;;; Data, so an operator's layer can name another. None of them is a
 ;;; dependency — with none installed a non-PNG image simply shows no inline
 ;;; preview, and the card says so.
+;;; An animation is its first frame: one PNG is wanted, and ImageMagick
+;;; writes a numbered file per frame unless one is picked, ffmpeg refuses
+;;; to. None of them is told to turn the picture upright: an EXIF
+;;; orientation is the reader's to apply (engine/image-fit.lisp FIT-IMAGE),
+;;; once.
 (defparameter *png-transcoders*
-  '(("magick" :source :target)
-    ("convert" :source :target)
-    ("ffmpeg" "-v" "error" "-y" "-i" :source :target))
+  '(("magick" :first-frame :target)
+    ("convert" :first-frame :target)
+    ("ffmpeg" "-v" "error" "-y" "-noautorotate" "-i" :source "-frames:v" "1" :target)
+    ("sips" "-s" "format" "png" :source "--out" :target))
   "The programs tried, in order, to turn an image file into a PNG: each a
-command whose :SOURCE is the file read and :TARGET the .png written.")
+command whose :SOURCE is the file read, :FIRST-FRAME that file's first
+frame as ImageMagick names it, and :TARGET the .png written. sips is
+macOS's own.")
 
 (defun transcode-to-png (source target)
   "Write the image file SOURCE to TARGET as a PNG through the first of
@@ -138,7 +146,8 @@ command whose :SOURCE is the file read and :TARGET the .png written.")
   ;; => TARGET on
   ;; success, NIL when every transcoder is missing or refused the file.
   (dolist (command *png-transcoders*)
-    (let ((argv (sublis `((:source . ,(namestring source)) (:target . ,(namestring target)))
+    (let ((argv (sublis `((:source . ,(namestring source)) (:target . ,(namestring target))
+                          (:first-frame . ,(format nil "~a[0]" (namestring source))))
                         command)))
       (when (and (nlk:exits-zero-p argv)
                  (equal "image/png" (image-media-type (file-octets target))))
