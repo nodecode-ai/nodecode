@@ -1082,16 +1082,11 @@ its badge goes, and Latest changes keeps the release it lists as seen."
 
 (defun settings-sideways (settings delta)
   "On the two columns of sections, move to the nearest in the column DELTA over."
-  (let ((here (find settings.section-at settings.columns :key #'first)))
-    (when here
-      (let ((best nil))
-        (loop for spot in settings.columns
-              when (and (= (second spot) (+ (second here) delta))
-                        (or (null best) (< (abs (- (third spot) (third here)))
-                                           (abs (- (third best) (third here))))))
-                do (setf best spot))
-        (when best
-          (settings-choose settings (first best)))))))
+  (when-let (here (find settings.section-at settings.columns :key #'first))
+    (when-let (best (alexandria:extremum (remove (+ (second here) delta) settings.columns
+                                                 :key #'second :test-not #'=)
+                                         #'< :key (lambda (spot) (abs (- (third spot) (third here))))))
+      (settings-choose settings (first best)))))
 
 (defun settings-edit-key (model settings key ctrl alt)
   "A key while a field is open: Enter writes it, Esc leaves it as it was,

@@ -348,21 +348,19 @@ plan route answers."
 (defun history-ask-number (model history number)
   "/generations N: stand on the change that holds generation NUMBER and ask
 about NUMBER itself; say so when no change holds it."
-  (let ((index (history-holding history number)))
-    (if index
-        (progn (setf history.filter :all history.query "")
-               (history-select history index)
-               (history-ask model history index number))
-        (setf history.said (list (no-generation-words history number) :danger)))))
+  (if-let (index (history-holding history number))
+    (progn (setf history.filter :all history.query "")
+           (history-select history index)
+           (history-ask model history index number))
+    (setf history.said (list (no-generation-words history number) :danger))))
 
 (defun ask-edits (history)
   "The edits that hold the restore asked about, ((NAME . COUNT) ...): the
 plan's once it answered, else the list's."
-  (let ((plan (getf history.ask :plan)))
-    (if plan
-        (loop for entry across (json-array plan "edits")
-              collect (cons (json-value entry :string "name") (or (json-value entry :integer "count") 0)))
-        history.edits)))
+  (if-let (plan (getf history.ask :plan))
+    (loop for entry across (json-array plan "edits")
+          collect (cons (json-value entry :string "name") (or (json-value entry :integer "count") 0)))
+    history.edits))
 
 (defun ask-refusal (history)
   "Why the restore asked about can never work: the plan's once it answered,
