@@ -93,7 +93,7 @@ FRAME-TOO-LARGE naming both sizes."
   ;; present "payload" an object, and "metadata" an object when present. The
   ;; discriminator itself is deliberately NOT checked here — a foreign
   ;; gateway's newer fact must not cost the replay frame it rode in — and the
-  ;; client folds the raw JSON below (client.lisp APPLY-GATEWAY-EVENT), so
+  ;; client folds the raw JSON below (tui/client.lisp APPLY-GATEWAY-EVENT), so
   ;; nothing typed stands between the wire and the reducer.
   (protocol-object object "event")
   (required-string object "type")
@@ -218,7 +218,7 @@ as JSON text, or with OCTETS as its UTF-8 octets."
   (mapcar (lambda (kind) (cons (substitute #\_ #\- (string-downcase kind)) kind))
           '(:set-session-subscriptions :start-turn :steer-turn :withdraw-prompt :cancel-turn
             :navigate-checkpoint
-            ;; The pending-exec view's own gesture (client.lisp SEND-INTERRUPT-EXEC):
+            ;; The pending-exec view's own gesture (tui/client.lisp SEND-INTERRUPT-EXEC):
             ;; one more request-reply kind, decoded and answered like every other.
             :interrupt-exec
             ;; A read: the session as it stands, in its command result (gateway.lisp
@@ -253,7 +253,7 @@ table, so the two directions cannot drift apart.")
     ;; the path and the definitions' names, never the code.
     ;; A shell in another process on the same disk
     ;; evaluates them from its own copy of the file
-    ;; (client.lisp). Never replayed: a shell that starts
+    ;; (tui/client-update.lisp). Never replayed: a shell that starts
     ;; later reads the file itself.
     "organism.loaded"
     ;; Live-only, unsequenced, session-less: the organism's image moved to a
@@ -513,7 +513,7 @@ so the payload need not carry the token again."
        (setf (gethash "request" table) request))
       (:set-session-subscriptions
        (setf (gethash "subscriptions" table) (gethash "subscriptions" request))
-       ;; The shell's pid rides the subscription (client.lisp
+       ;; The shell's pid rides the subscription (tui/client.lisp
        ;; SEND-SUBSCRIBE): the gateway names each attached shell's
        ;; process in the image section, and skips the shell in its own
        ;; process when a source load is sent out (SOURCE-LOADED).

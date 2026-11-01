@@ -360,7 +360,7 @@ RECORD-DEFINITIONS for a layer file just written."
   ;; gateway.lisp): every attached shell in another process is sent an
   ;; organism.loaded frame naming PATH and DEFINITIONS, and each evaluates the
   ;; same definitions from the same file into its own image (LOAD-SOURCE :ONLY,
-  ;; folded in client.lisp). Only the names cross the wire: a shell on another
+  ;; folded in tui/client-update.lisp). Only the names cross the wire: a shell on another
   ;; disk finds no file of its trees and loads nothing. Live-only by
   ;; construction — a shell that starts later reads the file itself.
   (declare (ignore path definitions))

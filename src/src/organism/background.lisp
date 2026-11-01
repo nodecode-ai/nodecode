@@ -17,7 +17,7 @@
 ;;;; waiting while a shell owns the store and taking it over the moment that
 ;;;; shell lets go. A shell and the gateway never contend: a shell opened
 ;;;; while the gateway serves attaches to it, and a shell attached when the
-;;;; gateway is turned off takes the organism back (client.lisp).
+;;;; gateway is turned off takes the organism back (tui/client-update.lisp).
 ;;;;
 ;;;; This file is the mechanism, and the one text every shell speaks
 ;;;; (GATEWAY-TEXT): on, off, restart, the log, the state. Kernel, and

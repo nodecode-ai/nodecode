@@ -17,7 +17,7 @@
 ;;;; body defaulted both to "unknown"/"other". TOOL-CALL-PREFLIGHT was a third
 ;;;; authority over the same shape -- a partial JSON-Schema reader that knows
 ;;;; `type' and `required' and ignores `enum'. A gateway request is the same
-;;;; story with the producer and the consumer in one image: client.lisp built
+;;;; story with the producer and the consumer in one image: the client built
 ;;;; {package_id, method, params_json, session_id} by hand and gateway.lisp
 ;;;; read the four members back by hand.
 ;;;;

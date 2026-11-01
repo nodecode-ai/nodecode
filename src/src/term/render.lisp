@@ -41,7 +41,7 @@ terminal's size, the placements on screen."
 (defvar *frame-scratch* nil
   "The cell grid the next frame is parsed into: the buffer one paint retired.")
 
-;;; A launcher's hand-over waits for the first of them (ui.lisp,
+;;; A launcher's hand-over waits for the first of them (tui/entry.lisp,
 ;;; DECIDE-FOLDER-BEHIND-THE-FRAME): a successor is told it inherited a live
 ;;; screen, and that is only true once a frame is really on it. A
 ;;; process-level counter, not a renderer slot — redefining the renderer

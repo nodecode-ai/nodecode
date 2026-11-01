@@ -3648,7 +3648,7 @@ PROVIDER-FAILURE-REASON; SECONDS, how long it took."
 ;;; The Zig connect dialog is client-side: it lists the models.dev providers
 ;;; the gateway catalog carries and saves an entered API key into the SHARED
 ;;; ~/.nodecode/auth.json (auth/root.zig writeApiKeyAuthFile: api_keys.<id>
-;;; = {"provider": id, "key": key}). The catalog half is client.lisp's
+;;; = {"provider": id, "key": key}). The catalog half is tui/commands/models.lisp's
 ;;; (CONNECT-PICKER-ROWS over MODELS-CATALOG-TABLE); the two credential
 ;;; halves live here because this file owns the credential chain and the
 ;;; auth-file shape.

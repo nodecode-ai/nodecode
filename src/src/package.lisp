@@ -396,7 +396,7 @@ renderer, the program loop.")
    ;; --- what a turn ran on and spent, in the finish divider's words: a
    ;; usage accumulator's sum (NIL stays unknown), its identity and token
    ;; meter, the prompt its newest round put in the window, and the window
-   ;; a model has (ui.lisp, provider.lisp) — the TUI and a channel card read
+   ;; a model has (tui/transcript/ingest.lisp, provider.lisp) — the TUI and a channel card read
    ;; one line ---
    #:organism-note #:usage-plus #:usage-identity-text #:usage-meter-text
    #:context-occupancy-tokens #:model-context-tokens
@@ -454,11 +454,11 @@ renderer, the program loop.")
    ;; host with, a failure answered as a value ---
    #:http-fetch
    ;; --- the model-facing selection verbs: the catalog the shell's /models
-   ;; picker shows (client.lisp), everything a pick means, everything a
+   ;; picker shows (tui/commands/models.lisp), everything a pick means, everything a
    ;; /think pick means, and the target a session's next turn binds
    ;; (gateway.lisp) ---
    #:models #:select-model #:select-effort #:gateway-target
-   ;; --- the headless slash surface (client.lisp): one command line run
+   ;; --- the headless slash surface (tui/commands/headless.lisp): one command line run
    ;; without a shell against a session, and the catalog it can run — what
    ;; a channel publishes as its menu, a cron job or an eval snippet calls --
    ;; and the one reading of a typed line as a command (slash.lisp) ---

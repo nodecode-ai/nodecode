@@ -60,7 +60,7 @@ both apply."
   (merge-pathnames "refused.json" (generations-directory)))
 
 ;;; The session an organism fact lands on when no turn asked for it: the
-;;; gateway's boot session, +GATEWAY-SESSION-ID+ (client.lisp), one per home
+;;; gateway's boot session, +GATEWAY-SESSION-ID+ (tui/client-session.lisp), one per home
 ;;; across every restart.
 (defparameter *generation-session-id* "s-GATEWAY"
   "The session the seal and restore facts are recorded on.")

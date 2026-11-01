@@ -42,7 +42,7 @@ else
 fi
 
 # The refused release: one more commit, made with a scratch index.
-file=src/src/tui/ui.lisp
+file=src/src/tui/entry.lisp
 blob="$( { git show "$head:$file"; cat <<'LISP'
 
 ;;; upgrade-proof-refused.sh's release: a form outside any definition is boot

@@ -56,8 +56,10 @@ src/
       image/       decoders (WebP, JPEG, GIF) and FIT-IMAGE, an image as a
                    provider takes it
     import/        bringing in another agent's home and sessions
-    tui/           the shell: theme, editor, slash, keys
-    surface/       gateway server, TUI client, rpc, control routes, notify
+    tui/           the shell: theme, editor, slash, keys, the model and its
+                   frame, the gateway client; transcript/ folds and lays out
+                   the log, commands/ runs the slash commands
+    surface/       gateway server, rpc, control routes, notify
   test/            mirrors src/; support.lisp at the root
   cells/           bundle.json pins the nodecode-ai/cells commit; just cells-pull
                    fetches each cell into its own git-ignored folder

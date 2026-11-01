@@ -71,7 +71,8 @@ of stacking."
   ;; G0 added: clack + clack-handler-hunchentoot (HTTP/WS server) and
   ;; websocket-driver (RFC-6455 framing). clack-handler-hunchentoot must be
   ;; named explicitly so clackup resolves :hunchentoot; websocket-driver
-  ;; provides the wsd: nickname used by gateway.lisp and client.lisp.
+  ;; provides the wsd: nickname used by gateway.lisp and the shell's client
+  ;; (tui/client.lisp, tui/client-boot.lisp).
   ;; textrules added: cl-ppcre. The waist's pattern-rule engine needs real
   ;; word boundaries and match POSITIONS — allow-overrides are span-scoped
   ;; rather than whole-text (see waist/textrules.lisp) — so SEARCH cannot
@@ -309,7 +310,27 @@ of stacking."
      ;; catalogs, and paste normalization are pure input material the update
      ;; function consults.
      (:file "tui/keys")
-     (:file "tui/ui")
+     ;; The shell, transcript to frame, in load order: transcript/ folds the
+     ;; log into rows and lays them out; then the model, the composer, the
+     ;; dialogs, the frame and view, and the entry point with the command line.
+     (:file "tui/transcript/reduce")
+     (:file "tui/transcript/ingest")
+     (:file "tui/transcript/display")
+     (:file "tui/transcript/markdown")
+     (:file "tui/transcript/layout")
+     (:file "tui/transcript/cards")
+     (:file "tui/transcript/groups")
+     (:file "tui/model")
+     (:file "tui/paint")
+     (:file "tui/fact-block")
+     (:file "tui/composer")
+     (:file "tui/dialog")
+     (:file "tui/models-wizard")
+     (:file "tui/history")
+     (:file "tui/mouse")
+     (:file "tui/frame")
+     (:file "tui/view")
+     (:file "tui/entry")
      (:file "surface/gateway")
      ;; One debugger boundary for raw, cell and product workers; gateway owns notices.
      (:file "tui/worker")
@@ -326,7 +347,20 @@ of stacking."
      ;; frames PUBLISH-EVENT lets out.
      (:file "surface/notify")
      (:file "surface/health")
-     (:file "surface/client")
+     ;; The shell's gateway client, in load order: the WebSocket model and its
+     ;; update, the organism it fronts, the slash commands it runs
+     ;; (tui/commands/), and the sessions it lists and attaches to.
+     (:file "tui/client")
+     (:file "tui/client-update")
+     (:file "tui/client-boot")
+     (:file "tui/commands/dispatch")
+     (:file "tui/commands/models")
+     (:file "tui/commands/accounts")
+     (:file "tui/commands/cell-control")
+     (:file "tui/commands/headless")
+     (:file "tui/commands/context-view")
+     (:file "tui/commands/tree")
+     (:file "tui/client-session")
      (:file "tui/timestamps")
      ;; rpc: `nodecode rpc', a program's shell -- the gateway's commands on
      ;; its stdin, the gateway's frames on its stdout. After client: it
