@@ -2033,12 +2033,14 @@ against the session's directory, else the image's."
 
 (defun write-file-text (path text)
   "The one atomic writer under EDIT and WRITE-FILE: parents created, the
-file replaced through a same-directory rename, and the scribe's
-shipped-definition memo dropped so DEFINITION-LOCATION answers the new spans
-instead of stale ones."
+file replaced through a same-directory rename that keeps its own mode, and the
+scribe's shipped-definition memo dropped so DEFINITION-LOCATION answers the new
+spans instead of stale ones."
   ;; A crash leaves either the old file or the complete new file, never a
-  ;; partially written source file.
-  (nlk:write-file-atomically path text)
+  ;; partially written source file. The temp the rename brings in has a fresh
+  ;; file's mode, 0644 under the usual umask: without :KEEP an edit drops a
+  ;; script's executable bit and widens a 0600 secret to world-readable.
+  (nlk:write-file-atomically path text :mode :keep)
   (nlk:forget-shipped-definitions))
 
 (defun text-line-count (text)
