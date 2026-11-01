@@ -84,7 +84,7 @@ renderer, the program loop.")
    ;; --- the program loop (program.lisp) ---
    #:program #:program-p #:make-program #:run #:send #:program-running
    #:*keep-terminal* #:release-terminal #:*inherit-screen*
-   #:release-inherited-modes #:exit-raw-mode #:*frames-on-screen*
+   #:release-inherited-modes #:enter-raw-mode #:exit-raw-mode #:tty-fd #:*frames-on-screen*
    #:program-tty-stream #:program-model
    #:program-renderer #:program-error-handler #:program-worker #:start-worker
    #:stop-worker #:program-loop-thread #:on-loop-thread-p #:run-command

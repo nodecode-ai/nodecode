@@ -15901,6 +15901,253 @@ NIL when the operator says no or it does not serve within SECONDS."
               finally (format out "~%")
                       (return nil)))))
 
+;;; The walk's screen. On a terminal the walk keeps only what is still open:
+;;; a finished step folds into one line saying what it settled, and a wait's
+;;; dots and a picker's list are drawn over in place. The screen counts the
+;;; rows drawn since a step began -- wrapped lines and the operator's own
+;;; typed answers among them -- so it can go back up over exactly those.
+;;; Anywhere else (a pipe, a test) nothing is drawn over, and each step's
+;;; line follows what the step printed.
+
+(defclass setup-screen (sb-gray:fundamental-character-output-stream)
+  ((target :initarg :target :reader setup-screen-target)
+   (tty :initarg :tty :initform nil :reader setup-screen-tty)
+   (color :initarg :color :initform nil :reader setup-screen-color)
+   (width :initarg :width :initform 80 :reader setup-screen-width)
+   (rows :initform 0 :accessor setup-screen-rows)
+   (column :initform 0 :accessor setup-screen-column))
+  (:documentation "The setup walk's output: TARGET, with the rows drawn on it
+counted; TTY when TARGET is a terminal WIDTH cells wide that may be drawn
+over, COLOR when it may be painted too."))
+
+(defmethod sb-gray:stream-write-char ((screen setup-screen) char)
+  (setup-screen-advance screen char)
+  (write-char char (setup-screen-target screen))
+  char)
+
+(defmethod sb-gray:stream-line-column ((screen setup-screen))
+  (setup-screen-column screen))
+
+(defmethod sb-gray:stream-force-output ((screen setup-screen))
+  (force-output (setup-screen-target screen)))
+
+(defmethod sb-gray:stream-finish-output ((screen setup-screen))
+  (finish-output (setup-screen-target screen)))
+
+(defun setup-terminal-p ()
+  "Whether the setup walk talks to a terminal it may draw over: both ends of
+this process on one, and not Windows, whose console is unproven here."
+  #+win32 nil
+  #-win32 (and (interactive-stream-p *standard-input*)
+               (interactive-stream-p *standard-output*)
+               (nlt:terminal-present-p)))
+
+(defun make-setup-screen (target &key tty width)
+  "A SETUP-SCREEN over TARGET: drawn over when TTY, painted unless NO_COLOR
+says not, WIDTH cells wide (the terminal's own by default)."
+  (make-instance 'setup-screen :target target :tty tty
+                               :color (and tty (zerop (length (uiop:getenv "NO_COLOR"))))
+                               :width (or width (if tty (nlt:terminal-size) 80))))
+
+(defun setup-screen-advance (screen char &aux (width (setup-screen-width screen)))
+  "Count CHAR as the terminal draws it: a newline ends the row, and a
+character that would pass the right edge wraps to the next row first."
+  (case char
+    (#\Newline (incf (setup-screen-rows screen)) (setf (setup-screen-column screen) 0))
+    (#\Return (setf (setup-screen-column screen) 0))
+    (t (let ((cells (nlt:codepoint-width char)))
+         (when (> (+ (setup-screen-column screen) cells) width)
+           (incf (setup-screen-rows screen))
+           (setf (setup-screen-column screen) 0))
+         (incf (setup-screen-column screen) cells)))))
+
+(defun setup-screen-control (screen control &rest arguments)
+  "ESC and CONTROL (a FORMAT string over ARGUMENTS) on SCREEN's terminal,
+uncounted: it moves or clears, it draws nothing. Nothing off a terminal."
+  (when (and (typep screen 'setup-screen) (setup-screen-tty screen))
+    (format (setup-screen-target screen) "~c~?" #\Escape control arguments)))
+
+(defun setup-screen-paint (screen sgr)
+  "Set the colour SGR on SCREEN when it may be painted."
+  (when (and (typep screen 'setup-screen) (setup-screen-color screen))
+    (setup-screen-control screen "[~am" sgr)))
+
+(defun setup-screen-asked (screen question answer)
+  "Count the row a question took on SCREEN's terminal: QUESTION, a space,
+ANSWER as the terminal echoed it (NIL when it echoed none), then the Enter."
+  (when (typep screen 'setup-screen)
+    (loop for char across (format nil "~a ~@[~a~]~%" question answer)
+          do (setup-screen-advance screen char))))
+
+(defun setup-screen-mark (screen)
+  "Where SCREEN stands, at a line's start, for a later SETUP-SCREEN-REWIND."
+  (fresh-line screen)
+  (if (typep screen 'setup-screen) (setup-screen-rows screen) 0))
+
+(defun setup-screen-rewind (screen &optional (mark 0))
+  "On a terminal, draw over what SCREEN drew since its rows read MARK: the
+cursor back at the start of that row, and everything below it cleared."
+  (when (and (typep screen 'setup-screen) (setup-screen-tty screen))
+    (let ((up (- (setup-screen-rows screen) mark)))
+      (write-char #\Return (setup-screen-target screen))
+      (when (plusp up) (setup-screen-control screen "[~dA" up))
+      (setup-screen-control screen "[J")
+      ;; Out now: anything written elsewhere (stderr) lands below, not under it.
+      (force-output (setup-screen-target screen))
+      (setf (setup-screen-rows screen) mark
+            (setup-screen-column screen) 0))))
+
+(defun setup-screen-fit (screen text &optional (margin 0))
+  "TEXT's first line, cut with an ellipsis to fit one row of SCREEN's
+terminal after MARGIN cells; whole off a terminal."
+  (let ((line (subseq text 0 (or (position #\Newline text) (length text)))))
+    (if (not (and (typep screen 'setup-screen) (setup-screen-tty screen)))
+        line
+        (loop with room = (- (setup-screen-width screen) margin 1)
+              with used = 0
+              for index from 0 below (length line)
+              for cells = (nlt:codepoint-width (char line index))
+              when (> (+ used cells) room)
+                return (concatenate 'string (subseq line 0 (max 0 (1- index))) "…")
+              do (incf used cells)
+              finally (return line)))))
+
+(defun setup-screen-fold (screen mark summary &key (done t))
+  "Fold what SCREEN drew since MARK into one line: a check and SUMMARY when
+the step is DONE, a dash when it left things as they were. On a terminal
+the step's own lines are drawn over; elsewhere the line follows them."
+  (setup-screen-rewind screen mark)
+  (fresh-line screen)
+  (setup-screen-paint screen (if done 32 90))
+  (write-string (if done "✓" "-") screen)
+  (setup-screen-paint screen 0)
+  (format screen " ~a~%" (setup-screen-fit screen summary 2))
+  (force-output screen))
+
+(defun gateway-setup-names (ids choices &key (shown 3))
+  "IDS as their names among CHOICES ((ID . LABEL) ...), the first SHOWN of
+them and how many more, `all N' when they are every one of more than SHOWN."
+  (let ((names (mapcar (lambda (id)
+                         (let ((choice (assoc id choices :test #'equal)))
+                           (if choice (gateway-setup-choice-name (cdr choice)) id)))
+                       ids)))
+    (format nil "~:[~*~;all ~d: ~]~{~a~^, ~}~@[, +~d more~]"
+            (and (> (length ids) shown) (= (length ids) (length choices))) (length ids)
+            (subseq names 0 (min shown (length names)))
+            (and (> (length names) shown) (- (length names) shown)))))
+
+;;; The picker: on a terminal a field with choices is a checklist -- arrows
+;;; (or j and k) move, space picks, a picks every one or none, Enter is done,
+;;; Esc leaves the field as it stands. Its rows are drawn over on each key.
+
+(defun setup-key-of (bytes)
+  "The picker's key that BYTES, one read from the terminal in raw mode,
+spell: :UP :DOWN :SPACE :ALL :ENTER :ESCAPE :INTERRUPT, or NIL."
+  (let ((bytes (coerce bytes 'list)))
+    (cond ((member bytes '((27 91 65) (27 79 65) (107)) :test #'equal) :up)
+          ((member bytes '((27 91 66) (27 79 66) (106)) :test #'equal) :down)
+          ((equal bytes '(32)) :space)
+          ((member bytes '((97) (65)) :test #'equal) :all)
+          ((member bytes '((13) (10)) :test #'equal) :enter)
+          ((or (null bytes) (equal bytes '(27))) :escape)
+          ((equal bytes '(3)) :interrupt))))
+
+(defun setup-read-key ()
+  "One key from the terminal in raw mode (SETUP-KEY-OF); :ESCAPE when it
+is gone."
+  (let ((buffer (make-array 16 :element-type '(unsigned-byte 8))))
+    (sb-sys:with-pinned-objects (buffer)
+      (let ((count (sb-unix:unix-read (nlt:tty-fd) (sb-sys:vector-sap buffer) 16)))
+        (setup-key-of (subseq buffer 0 (max 0 (or count 0))))))))
+
+(defun setup-pick-lines (title choices picked cursor &key (rows 20))
+  "The picker over CHOICES ((ID . LABEL) ...) as lines: TITLE, its keys,
+the row picking all, then the choices under the server each label names,
+the ids in PICKED ticked, the CURSOR row (0, the all row) pointed at, at
+most ROWS choices shown around it."
+  (let* ((count (length choices))
+         (top (max 0 (min (- cursor (floor rows 2)) (- count rows))))
+         (end (min count (+ top rows)))
+         (lines (list (format nil "  ↑↓ move · space pick · a all · Enter done · Esc keep it") title)))
+    (flet ((row (pointed ticked text &optional (indent 2))
+             (push (format nil "~a~:[  ~;› ~][~:[ ~;x~]] ~a"
+                           (make-string indent :initial-element #\Space) pointed ticked text)
+                   lines)))
+      (row (zerop cursor) (and choices (every (lambda (choice) (member (car choice) picked :test #'equal)) choices))
+           (format nil "all ~d" count))
+      (when (plusp top) (push (format nil "      … ~d more above" top) lines))
+      ;; A label's tail (`#general  Home') heads a group when two or more
+      ;; share it, a server's channels; a lone one rides after its name.
+      (loop with group = nil
+            with tails = (mapcar (lambda (choice)
+                                   (let ((cut (search "  " (cdr choice))))
+                                     (and cut (subseq (cdr choice) (+ cut 2)))))
+                                 choices)
+            for index from top below end
+            for (id . label) = (nth index choices)
+            for tail = (nth index tails)
+            for heading = (and tail (< 1 (count tail tails :test #'equal)))
+            do (when (and heading (not (equal tail group)))
+                 (setf group tail)
+                 (push (format nil "    ~a" tail) lines))
+               (row (= cursor (1+ index)) (member id picked :test #'equal)
+                    (format nil "~a~:[~@[  ~a~]~;~*~]" (gateway-setup-choice-name label) heading tail)
+                    (if heading 4 2)))
+      (when (< end count) (push (format nil "      … ~d more below" (- count end)) lines)))
+    (nreverse lines)))
+
+(defun setup-pick (screen title choices picked &key (read-key #'setup-read-key) (rows 20))
+  "Let the operator pick any of CHOICES ((ID . LABEL) ...) on SCREEN's
+terminal, PICKED ticked to begin with: => the picked ids in CHOICES' order,
+or :KEEP when Esc leaves the field as it stands. A Ctrl+C stops the walk
+as it would anywhere else."
+  (let ((mark (setup-screen-mark screen))
+        (cursor 0)
+        (picked (copy-list picked)))
+    (flet ((draw ()
+             (setup-screen-rewind screen mark)
+             (dolist (line (setup-pick-lines title choices picked cursor :rows rows))
+               (write-line (setup-screen-fit screen line) screen))
+             (force-output screen))
+           (toggle-all ()
+             (setf picked (if (every (lambda (choice) (member (car choice) picked :test #'equal)) choices)
+                              '()
+                              (mapcar #'car choices)))))
+      (setup-screen-control screen "[?25l")
+      (unwind-protect
+           (loop
+             (draw)
+             (case (funcall read-key)
+               (:up (setf cursor (max 0 (1- cursor))))
+               (:down (setf cursor (min (length choices) (1+ cursor))))
+               (:all (toggle-all))
+               (:space (if (zerop cursor)
+                           (toggle-all)
+                           (let ((id (car (nth (1- cursor) choices))))
+                             (setf picked (if (member id picked :test #'equal)
+                                              (remove id picked :test #'equal)
+                                              (cons id picked))))))
+               (:enter (return (remove-if-not (lambda (id) (member id picked :test #'equal))
+                                              (mapcar #'car choices))))
+               (:escape (return :keep))
+               (:interrupt (error 'sb-sys:interactive-interrupt))))
+        (setup-screen-rewind screen mark)
+        (setup-screen-control screen "[?25h")
+        (force-output screen)))))
+
+(defun setup-terminal-pick (screen title choices picked)
+  "SETUP-PICK in raw mode, the terminal's own attributes back after."
+  (nlt:enter-raw-mode)
+  (unwind-protect
+       (setup-pick screen title choices picked
+                   :rows (max 5 (- (nth-value 1 (nlt:terminal-size)) 10)))
+    (nlt:exit-raw-mode)))
+
+(defvar *gateway-setup-pick* nil
+  "How the setup walk lets the operator pick from a field's choices, when it
+may draw a picker: (FUNCTION SCREEN TITLE CHOICES PICKED), SETUP-PICK's
+contract. NIL asks for a typed line.")
+
 (defun gateway-setup-section (call id)
   "The channels.ID section as GET /api/gateway/config draws it, or NIL."
   (find (format nil "channels.~a" id)
@@ -16007,17 +16254,25 @@ an Enter keeps a set one, :WRITTEN."
                             (json-object "path" (gateway-setup-member-path path env) "remove" t)))
                  (return :written)))))))
 
+(defun gateway-setup-probe-check (call path)
+  "The section at PATH's check over what config.jsonc says now: (values
+TEXT SUMMARY), SUMMARY its one line, the first of TEXT when it names none."
+  (let* ((answer (funcall call :post "/api/gateway/config/probe" (json-object "path" path)))
+         (text (or (json-value answer :string "text") "")))
+    (values text (or (json-value answer :string "summary")
+                     (first (uiop:split-string text :separator '(#\Newline)))))))
+
 (defun gateway-setup-check (call ask out path)
   "What the section at PATH's check says its token sees, printed, and
-whether the operator goes on with that token: T, or NIL to paste another --
-also when the check refused it, the refusal printed."
+whether the operator goes on with that token: (values T SUMMARY), SUMMARY
+the check's one line, or NIL to paste another -- also when the check
+refused it, the refusal printed."
   ;; The check's text is a report (a wrong token is one of its lines), not a
   ;; verdict: the operator, who reads it, decides.
   (handler-case
-      (let ((text (json-value (funcall call :post "/api/gateway/config/probe" (json-object "path" path))
-                              :string "text")))
-        (format out "~&~%What the token sees:~%~{  ~a~%~}" (uiop:split-string (or text "") :separator '(#\Newline)))
-        (default-yes-p (funcall ask "Go on with this token? [Y/n]")))
+      (multiple-value-bind (text summary) (gateway-setup-probe-check call path)
+        (format out "~&~%What the token sees:~%~{  ~a~%~}" (uiop:split-string text :separator '(#\Newline)))
+        (values (default-yes-p (funcall ask "Go on with this token? [Y/n]")) summary))
     (gateway-http-error (condition)
       (format out "~&The check refused it: ~a~%" (gateway-setup-refusal condition))
       nil)))
@@ -16041,30 +16296,41 @@ OUT and offers nothing."
                                                   (json-value choice :string "label")))
                      (json-array answer "choices"))
                 (coerce (or (json-array answer "default") #()) 'list)
-                (json-value answer :string "wait")))
+                (json-value answer :string "wait")
+                (json-value answer :string "found")))
     (gateway-http-error (condition)
       (format out "~&  (nothing to pick from: ~a)~%" (gateway-setup-refusal condition))
-      (values nil nil nil))))
+      (values nil nil nil nil))))
 
 (defun gateway-setup-wait (call out path name wait &key (seconds 900))
   "Say WAIT, then ask again for field NAME's choices every
 *GATEWAY-SETUP-POLL-SECONDS* until there are some, or SECONDS pass, or the
 platform stops saying to wait: (values CHOICES DEFAULTS), NIL for none."
   ;; A Ctrl+C ends the walk where it stands, and what it saved stays saved.
-  (format out "~&~%~a~%Waiting for that; Ctrl+C stops, and what is saved stays" wait)
-  (finish-output out)
-  (loop with deadline = (+ (get-universal-time) seconds)
-        do (sleep *gateway-setup-poll-seconds*)
-           (multiple-value-bind (choices defaults again) (gateway-setup-offer call out path name)
-             (cond (choices
-                    (format out " done.~%")
-                    (setf *gateway-setup-waited* t)
-                    (return (values choices defaults)))
-                   ((or (null again) (>= (get-universal-time) deadline))
-                    (format out "~&")
-                    (return nil))))
-           (format out ".")
-           (finish-output out)))
+  (let ((mark (setup-screen-mark out)))
+    (format out "~&~a~%Waiting for that; Ctrl+C stops, and what is saved stays" wait)
+    (finish-output out)
+    (loop with deadline = (+ (get-universal-time) seconds)
+          do (sleep *gateway-setup-poll-seconds*)
+             (multiple-value-bind (choices defaults again found) (gateway-setup-offer call out path name)
+               (cond (choices
+                      (format out " done.~%")
+                      (setf *gateway-setup-waited* t)
+                      (setup-screen-fold out mark
+                                         (or found
+                                          (format nil "there now~@[: ~{~a~^, ~}~]"
+                                                 (remove-duplicates
+                                                  (loop for (nil . label) in choices
+                                                        for cut = (search "  " label)
+                                                        when cut collect (subseq label (+ cut 2)))
+                                                  :test #'equal :from-end t))))
+                      (return (values choices defaults)))
+                     ((or (null again) (>= (get-universal-time) deadline))
+                      (format out "~&")
+                      (setup-screen-fold out mark "still nothing to pick from" :done nil)
+                      (return nil))))
+             (format out ".")
+             (finish-output out))))
 
 (defun gateway-setup-question (choices list taken)
   "The line a field's answer is asked with: TAKEN, the names an Enter takes."
@@ -16086,33 +16352,62 @@ set field, and takes an unset one's default when the choices name one."
           (values nil nil nil))
     (when (and wait (null choices))
       (setf (values choices defaults) (gateway-setup-wait call out path name wait)))
-    (let ((taken (and (not set) defaults)))
-      (format out "~&~%~a: ~a~@[~%  now: ~a~]~%" name (json-value field :string "doc")
-              (and set (json-value field :string "text")))
-      (loop for (nil . label) in choices
-            for number from 1
-            do (format out "  ~3d  ~a~%" number label))
-      (loop
-        (let ((text (string-trim '(#\Space #\Tab #\Return)
-                                 (funcall ask (gateway-setup-question
-                                               choices list
-                                               (mapcar (lambda (id)
-                                                         (let ((choice (assoc id choices :test #'equal)))
-                                                           (if choice (gateway-setup-choice-name (cdr choice)) id)))
-                                                       taken))))))
-          (when (and (string= text "") (not taken)) (return :kept))
-          (handler-case
-              (let ((picks (cond ((string= text "") taken)
-                                 (choices (gateway-setup-picks text choices)))))
-                (format out "~a~%" (gateway-setup-said
-                                    (funcall call :post "/api/gateway/config"
-                                             (json-object "path" (gateway-setup-member-path path name)
-                                                          "value" (cond (list (coerce (or picks (gateway-setup-picks text nil)) 'vector))
-                                                                        (picks (first picks))
-                                                                        (t text))))))
-                (return :written))
-            (gateway-http-error (condition)
-              (format out "~a~%" (gateway-setup-refusal condition)))))))))
+    (let* ((taken (and (not set) defaults))
+           (mark (setup-screen-mark out))
+           (title (format nil "~a: ~a" (substitute #\Space #\_ name) (json-value field :string "doc")))
+           (now (and set (json-value field :string "text")))
+           (current (and set list (coerce (or (json-array field "value") #()) 'list))))
+      (flet ((write-value (value)
+               ;; T once written, NIL when the organism refused it (said)
+               (handler-case
+                   (progn (format out "~a~%" (gateway-setup-said
+                                              (funcall call :post "/api/gateway/config"
+                                                       (json-object "path" (gateway-setup-member-path path name)
+                                                                    "value" value))))
+                          t)
+                 (gateway-http-error (condition)
+                   (format out "~a~%" (gateway-setup-refusal condition))
+                   nil)))
+             (fold-kept ()
+               (setup-screen-fold out mark (format nil "~a: ~a" (substitute #\Space #\_ name) (or now "none"))
+                                  :done (and now t))
+               :kept)
+             (fold-written (ids text)
+               (setup-screen-fold out mark (format nil "~a: ~a" (substitute #\Space #\_ name)
+                                                   (if ids (gateway-setup-names ids choices) text)))
+               :written))
+        (if (and *gateway-setup-pick* list choices)
+            ;; A checklist on the terminal, ticked as the field stands (or as
+            ;; its default when it is unset).
+            (loop
+              (let ((picks (funcall *gateway-setup-pick* out title choices (or current taken))))
+                (cond ((eq picks :keep) (return (fold-kept)))
+                      ((and (null picks) (not set)) (return (fold-kept)))
+                      ((equal picks current) (return (fold-kept)))
+                      ((write-value (coerce picks 'vector)) (return (fold-written picks nil))))))
+            (progn
+              (format out "~&~a~@[~%  now: ~a~]~%" title now)
+              (loop for (nil . label) in choices
+                    for number from 1
+                    do (format out "  ~3d  ~a~%" number label))
+              (loop
+                (let ((text (string-trim '(#\Space #\Tab #\Return)
+                                         (funcall ask (gateway-setup-question
+                                                       choices list
+                                                       (mapcar (lambda (id)
+                                                                 (let ((choice (assoc id choices :test #'equal)))
+                                                                   (if choice (gateway-setup-choice-name (cdr choice)) id)))
+                                                               taken))))))
+                  (when (and (string= text "") (not taken)) (return (fold-kept)))
+                  (let* ((picks (cond ((string= text "") taken)
+                                      (choices (gateway-setup-picks text choices))))
+                         (ids (cond (list (or picks (gateway-setup-picks text nil)))
+                                    (picks (list (first picks)))))
+                         (value (cond (list (coerce ids 'vector))
+                                      (picks (first picks))
+                                      (t text))))
+                    (when (write-value value)
+                      (return (fold-written ids text))))))))))))
 
 (defun gateway-setup-lane (call id &key (seconds 30))
   "ID's row of GET /api/channels once it is running and connected, or has
@@ -16128,19 +16423,30 @@ settled anywhere else, after at most SECONDS."
         do (sleep 1)))
 
 (defun gateway-setup-text (words &key (ask #'terminal-answer) (ask-secret #'terminal-secret-answer)
-                                      (out *standard-output*) call (keep-running t))
+                                      ((:out target) *standard-output*) call (keep-running t)
+                                      (tty (setup-terminal-p)) width
+                                      (pick (and tty #'setup-terminal-pick))
+                                      &aux (out (make-setup-screen target :tty tty :width width))
+                                      (*gateway-setup-pick* pick)
+                                      (*gateway-setup-waited* nil))
   "`nodecode gateway setup [CHANNEL]': walk one channel from its bot's token
 to a running lane, over the organism serving this home (GATEWAY-SETUP-PORT
 turns the gateway on when none does). CALL, (METHOD PATH BODY) => the
 decoded answer, is the organism's control surface -- a test's fake; ASK and
 ASK-SECRET read a line. KEEP-RUNNING offers the gateway at the end when a
-shell serves. => (values TEXT CODE STREAM)."
+shell serves. On a terminal (TTY, WIDTH cells wide) each finished step
+folds into one line and a field with choices is picked from a checklist
+(PICK, SETUP-PICK's contract). => (values TEXT CODE STREAM)."
   (labels ((ask (question)
              (finish-output out)
-             (or (funcall ask question) (error 'gateway-setup-ended)))
+             (let ((answer (or (funcall ask question) (error 'gateway-setup-ended))))
+               (setup-screen-asked out question answer)
+               answer))
            (ask-secret (question)
              (finish-output out)
-             (or (funcall ask-secret question) (error 'gateway-setup-ended)))
+             (let ((answer (or (funcall ask-secret question) (error 'gateway-setup-ended))))
+               (setup-screen-asked out question nil)
+               answer))
            (stop (text &optional (code 1))
              (return-from gateway-setup-text (values text code (if (zerop code) :output :error)))))
     (handler-case
@@ -16170,7 +16476,7 @@ shell serves. => (values TEXT CODE STREAM)."
                            (unless (assoc id cells :test #'string=)
                              (stop (format nil "no channel ~a here; there are ~{~a~^, ~}" named (mapcar #'car cells)) 2))
                            id)
-                         (progn
+                         (let ((mark (setup-screen-mark out)))
                            (unless cells (stop "no channel adapter is on offer here"))
                            (format out "~&Which channel?~%")
                            (loop for (id . row) in cells
@@ -16184,31 +16490,41 @@ shell serves. => (values TEXT CODE STREAM)."
                                  for number = (ignore-errors (parse-integer reply))
                                  for pick = (cond ((and number (<= 1 number (length cells))) (car (nth (1- number) cells)))
                                                   ((assoc (string-downcase reply) cells :test #'string=) (string-downcase reply)))
-                                 when pick return pick
+                                 when pick return (progn (setup-screen-fold out mark (format nil "channel: ~a" pick))
+                                                         pick)
                                  do (format out "Pick 1 to ~d, or a name.~%" (length cells)))))))
                (cell (format nil "nodecode-channel-~a" id)))
           (unless (json-value (cdr (assoc id cells :test #'string=)) :boolean "on")
-            (format out "~&Installing ~a...~%" cell)
-            (format out "~a~%" (or (json-value (funcall call :post "/api/gateway/cells"
-                                                         (json-object "name" cell "on" t "seconds" nlk:*cell-switch-seconds*))
-                                               :string "text")
-                                   "installed")))
+            (let ((mark (setup-screen-mark out)))
+              (format out "~&Installing ~a...~%" cell)
+              (finish-output out)
+              (let ((text (or (json-value (funcall call :post "/api/gateway/cells"
+                                                   (json-object "name" cell "on" t "seconds" nlk:*cell-switch-seconds*))
+                                          :string "text")
+                              "installed")))
+                (format out "~a~%" text)
+                (setup-screen-fold out mark text))))
           (let* ((section (or (gateway-setup-section call id)
                               (stop (format nil "~a declares no channels.~a section to set up" cell id))))
-                 (path (json-value section :array "path")))
-            (format out "~&~%Setting up ~a.~%" id)
+                 (path (json-value section :array "path"))
+                 (token-mark (setup-screen-mark out)))
+            (format out "~&Setting up ~a.~%" id)
             (unless (equal "complete" (json-value section :string "needs"))
               (format out "On ~a's side first:~%~:{  ~d  ~a~%~}" id
                       (loop with number = 0
                             for step in (uiop:split-string (or (json-value section :string "guide") "") :separator '(#\;))
                             for words = (string-trim '(#\Space) step)
                             unless (string= words "") collect (list (incf number) words))))
-            (when (json-value section :object "secret")
-              (loop do (gateway-setup-secret call #'ask-secret out path section)
-                    until (or (not (json-value section :boolean "check"))
-                              (gateway-setup-check call #'ask out path))
-                    do (setf section (gateway-setup-section call id))))
-            (setf *gateway-setup-waited* nil)
+            ;; The guide, the token and its check fold into the check's line.
+            (let ((summary nil))
+              (when (json-value section :object "secret")
+                (loop do (gateway-setup-secret call #'ask-secret out path section)
+                      until (or (not (json-value section :boolean "check"))
+                                (multiple-value-bind (go-on said) (gateway-setup-check call #'ask out path)
+                                  (setf summary said)
+                                  go-on))
+                      do (setf section (gateway-setup-section call id))))
+              (setup-screen-fold out token-mark (or summary id)))
             (loop repeat 3
                   do (loop with pair = (let ((secret (json-value section :object "secret")))
                                          (and secret (list (json-value secret :string "env")
@@ -16224,21 +16540,23 @@ shell serves. => (values TEXT CODE STREAM)."
             ;; A wait means the platform moved (a bot added to a server): its
             ;; check says what the token sees now, before the channels start.
             (when (and *gateway-setup-waited* (json-value section :boolean "check"))
-              (handler-case
-                  (format out "~&~%What the token sees now:~%~{  ~a~%~}"
-                          (uiop:split-string (or (json-value (funcall call :post "/api/gateway/config/probe"
-                                                                      (json-object "path" path))
-                                                             :string "text")
-                                                 "")
-                                             :separator '(#\Newline)))
-                (gateway-http-error (condition)
-                  (format out "~&The check refused it: ~a~%" (gateway-setup-refusal condition)))))
+              (let ((mark (setup-screen-mark out)))
+                (handler-case
+                    (multiple-value-bind (text summary) (gateway-setup-probe-check call path)
+                      (format out "~&What the token sees now:~%~{  ~a~%~}"
+                              (uiop:split-string text :separator '(#\Newline)))
+                      (setup-screen-fold out mark summary))
+                  (gateway-http-error (condition)
+                    (format out "~&The check refused it: ~a~%" (gateway-setup-refusal condition))))))
             (unless (equal "complete" (json-value section :string "needs"))
               (stop (format nil "~a is not started: ~a; what was saved stays, and `nodecode gateway setup ~a' goes on from there"
                             id (json-value section :string "needs") id)))
-            (format out "~&~%Starting the channels...~%")
+            (format out "~&Starting the channels...~%")
+            (finish-output out)
             (funcall call :post "/api/channels?op=restart" nil)
-            (let* ((lane (gateway-setup-lane call id))
+            (let* ((lane (prog1 (gateway-setup-lane call id)
+                           ;; the line goes once the lane has said how it stands
+                           (setup-screen-rewind out (1- (setup-screen-rows out)))))
                    (state (and lane (json-value lane :string "state")))
                    (connected (and lane (json-value lane :boolean "connected")))
                    (detail (and lane (or (json-value lane :string "detail") (json-value lane :string "last_rejection")))))

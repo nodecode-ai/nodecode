@@ -261,9 +261,10 @@ section's own reader would refuse is refused first (REFUSE-SECTION-WRITE),
 declares it can ask, over the section as config.jsonc says it now: with
 FIELD, that field's CHOICES as {choices: [{id, label}]}, beside `wait' when
 there is nothing to pick from until the operator acts on the platform (the
-text says what to do) and `default', the ids an unset field takes when the
-operator just presses Enter; without, the section's CHECK as {text}. A
-probe's refusal answers 400 in its own words."
+text says what to do), `found', one line on what there is to pick from, and
+`default', the ids an unset field takes when the operator just presses Enter; without, the section's CHECK as {text}, beside
+`summary', the check's one line, when it answers one. A probe's refusal
+answers 400 in its own words."
   (:route :post "/api/gateway/config/probe" "probe")
   (let* ((request (gateway-request-json env))
          (section (request-section request))
@@ -280,8 +281,10 @@ probe's refusal answers 400 in its own words."
                                                     (json-object "id" (car choice) "label" (cdr choice)))
                                           choices)
                            :opt "wait" (getf offer :wait)
+                           :opt "found" (getf offer :found)
                            :opt "default" (and (getf offer :default) (coerce (getf offer :default) 'vector))))
-            (json-object "text" (princ-to-string (funcall section.check table))))
+            (multiple-value-bind (text summary) (funcall section.check table)
+              (json-object "text" (princ-to-string text) :opt "summary" summary)))
       (nlk:config-refusal (condition)
         (nlk::protocol-refuse :refused "~a" (nlk:config-refusal-detail condition))))))
 
