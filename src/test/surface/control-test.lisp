@@ -114,7 +114,7 @@
     (with-saved-globals ((nle::*shared-config-path* config)
                          (nle::*provider-models-cache-path* nil)
                          (nle::*models-catalog-path* nil))
-      (with-stubbed-fdefinition (nle::provider-key-check (provider key) nil)
+      (with-stubbed-fdefinition (nle::provider-key-check (provider key &key vars) nil)
         (flet ((row (body) (wire-row "lane-k" (nlk:json-value body :array "providers"))))
           (with-gateway-http (port :get "/api/gateway/keys")
             (is (equal "none" (nlk:json-value (row body) :string "source")) "a provider named with no key"))
@@ -130,7 +130,7 @@
             (is (equal "none" (nlk:json-value (row body) :string "source")) "a null key takes it out")
             (is (null (nlk:json-value body :string "unchecked"))))
           ;; A key nothing answered may be right: saved, and the answer says it was not checked.
-          (with-stubbed-fdefinition (nle::provider-key-check (provider key)
+          (with-stubbed-fdefinition (nle::provider-key-check (provider key &key vars)
                                       (values :unchecked "no answer from 127.0.0.1:9 in 5 s"))
             (with-gateway-http (port :post "/api/gateway/keys" :body "{\"provider\": \"lane-k\", \"key\": \"sk-hang\"}")
               (is (= 200 status))
@@ -140,6 +140,27 @@
             (is (equal "none" (nlk:json-value (row body) :string "source"))))
           (is (null (nlk:json-value (nle::read-auth-file nle::*auth-file-path*) :object "api_keys" "lane-k"))))))))
 
+(deftest control-keys-carry-the-blanks-of-a-catalog-address (with-temp-gateway (port))
+  ;; A shell's /models asks the organism to check a key: the values it asked
+  ;; for the blanks of the provider's catalog address go to the check, and
+  ;; into auth.json beside the key.
+  (with-saved-globals ((nle::*provider-models-cache-path* nil)
+                       (nle::*models-catalog-path* nil))
+    (let ((seen '()))
+      (with-stubbed-fdefinition (nle::provider-key-check (provider key &key vars)
+                                  (push vars seen)
+                                  (values :works nil))
+        (with-gateway-http (port :post "/api/gateway/keys" :status 200
+                            :body "{\"provider\": \"blanked\", \"key\": \"k\", \"check\": true, \"vars\": {\"NL_BLANK_ACCOUNT\": \"acc-1\", \"odd\": 7}}")
+          (is (equal "works" (nlk:json-value body :string "verdict"))))
+        (is (equal '(("NL_BLANK_ACCOUNT" . "acc-1")) (first seen)) "the check is given the value, and a member that is no string is dropped")
+        (with-gateway-http (port :post "/api/gateway/keys" :status 200
+                            :body "{\"provider\": \"blanked\", \"key\": \"k\", \"vars\": {\"NL_BLANK_ACCOUNT\": \"acc-1\"}}"))
+        (is (equal "acc-1" (nlk:json-value (nle::read-auth-file nle::*auth-file-path*)
+                                           :string "api_keys" "blanked" "vars" "NL_BLANK_ACCOUNT")) "saved with the key")
+        (with-gateway-http (port :post "/api/gateway/keys" :body "{\"provider\": \"blanked\", \"key\": null}"))
+        (is (null (nlk:json-value (nle::read-auth-file nle::*auth-file-path*) :object "api_keys" "blanked")) "and taken out with it")))))
+
 (deftest control-keys-say-what-is-wrong-with-a-keyless-config-entry (with-temp-gateway (port))
   ;; The config's providers name a key typed where a name goes, a numbered copy
   ;; of a provider whose key is saved, and a provider simply missing its key.
@@ -148,7 +169,7 @@
     (with-saved-globals ((nle::*shared-config-path* config)
                          (nle::*provider-models-cache-path* nil)
                          (nle::*models-catalog-path* nil))
-      (with-stubbed-fdefinition (nle::provider-key-check (provider key) nil)
+      (with-stubbed-fdefinition (nle::provider-key-check (provider key &key vars) nil)
         (flet ((fix (body id &optional (member "fix"))
                  (nlk:json-value (wire-row id (nlk:json-value body :array "providers")) :string member)))
           (with-gateway-http (port :post "/api/gateway/keys" :status 200

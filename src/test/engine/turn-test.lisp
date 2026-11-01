@@ -5834,6 +5834,67 @@ own provider with one model pinned to another lane.")
                 (is (equal '("acme-large:free") (mapcar (lambda (row) (getf row :id)) (getf entry :models))) "the rows the endpoint listed and the catalog never carried")))
             (is (equal '("odd" "pinned") (nle::stale-listable-provider-ids)) "a fresh listing is not refetched; the never-listed config providers are")))))))
 
+(defparameter +blanked-catalog-json+
+  "{\"blanked\": {\"name\": \"Blanked AI\", \"npm\": \"@ai-sdk/openai-compatible\",
+                 \"env\": [\"NL_BLANK_ACCOUNT\", \"NL_BLANK_KEY\"],
+                 \"api\": \"https://api.blanked.test/accounts/${NL_BLANK_ACCOUNT}/ai/v1\",
+                 \"models\": {\"m\": {\"tool_call\": true}}},
+    \"hosted\": {\"name\": \"Hosted\", \"npm\": \"@ai-sdk/openai-compatible\", \"env\": [\"NL_BLANK_HOST\"],
+                \"api\": \"https://${NL_BLANK_HOST}/serving/v1\", \"models\": {\"m\": {\"tool_call\": true}}}}"
+  "Two models.dev providers whose api carries a ${NAME} blank, as
+cloudflare-workers-ai's and databricks' do: one in the path, one the host.")
+
+(deftest a-catalog-address-blank-is-filled-or-named-never-dialed-as-written ()
+  ;; models.dev writes cloudflare-workers-ai's api as
+  ;; .../accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1: dialed as written, /models
+  ;; saved its key over `HTTP 405' and every turn answered 404 `Could not route
+  ;; to /client/v4/accounts/$%7BCLOUDFLARE_ACCOUNT_ID%7D/ai/v1/chat/completions'.
+  (with-catalog-fixture (catalog +blanked-catalog-json+)
+    (with-temp-auth (auth "{\"api_keys\":{\"blanked\":{\"provider\":\"blanked\",\"key\":\"k\"}}}")
+      (with-temp-shared-config ("{}")
+        (let ((nle::*auth-file-path* auth))
+          (sb-posix:unsetenv "NL_BLANK_ACCOUNT")
+          (nlk:with-cleanup ((sb-posix:unsetenv "NL_BLANK_ACCOUNT"))
+            (multiple-value-bind (base missing) (nle::provider-base-url "blanked")
+              (is (null base) "no address while a blank stands")
+              (is (equal '("NL_BLANK_ACCOUNT") missing) "and the blank is named"))
+            (is-carrying (words (nle::selection-refusal "blanked"))
+              "Blanked AI's address needs NL_BLANK_ACCOUNT" "/models asks for it with the key"
+              "in the environment nodecode runs in" "providers.blanked.base_url")
+            (is (equal "https://api.blanked.test/accounts/acc-1/ai/v1"
+                       (nle::provider-base-url "blanked" :vars '(("NL_BLANK_ACCOUNT" . "acc-1")))) "a check's value fills it before anything is saved")
+            (sb-posix:setenv "NL_BLANK_ACCOUNT" "acc-env" 1)
+            (is (equal "https://api.blanked.test/accounts/acc-env/ai/v1/chat/completions"
+                       (nle::provider-endpoint "blanked")) "the env var of its name fills it, and the lane's path follows")
+            (nle::save-provider-api-key "blanked" "k2" :vars '(("NL_BLANK_ACCOUNT" . " acc-saved ")))
+            (is (equal "acc-saved" (nlk:json-value (nle::read-auth-file auth)
+                                                   :string "api_keys" "blanked" "vars" "NL_BLANK_ACCOUNT")) "the value is saved with the key")
+            (is (equal "https://api.blanked.test/accounts/acc-saved/ai/v1" (nle::provider-base-url "blanked")) "and outranks the env var")
+            (nle::save-provider-api-key "blanked" "k3")
+            (is (equal "https://api.blanked.test/accounts/acc-saved/ai/v1" (nle::provider-base-url "blanked")) "a key saved again without values keeps them")
+            (is (equal "https://adb-1.example.net/serving/v1"
+                       (nle::provider-base-url "hosted" :vars '(("NL_BLANK_HOST" . "https://adb-1.example.net/")))) "a host pasted with its scheme and slash fills the host alone")))
+        (with-temp-shared-config ("{\"providers\": {\"blanked\": {\"sdk\": \"openai-completions\", \"base_url\": \"http://127.0.0.1:2/v1\"}}}")
+          (is (equal "http://127.0.0.1:2/v1" (nle::provider-base-url "blanked")) "a configured base_url outranks the catalog")
+          (is (null (nle::catalog-address-template "blanked")) "and leaves no blank to ask for"))))))
+
+(deftest a-key-check-dials-the-address-its-blanks-fill ()
+  ;; The check is the one a turn would make: at the literal ${NAME} address it
+  ;; answered `HTTP 405', and the key was saved as merely unchecked.
+  (with-catalog-fixture (catalog +blanked-catalog-json+)
+    (with-temp-shared-config ("{}")
+      (with-temp-file (nle::*provider-models-cache-path*)
+        (let ((nle::*auth-file-path* nil)
+              (urls '()))
+          (sb-posix:unsetenv "NL_BLANK_ACCOUNT")
+          (with-stubbed-fdefinition (nlk:http (method url &rest args) (push url urls) (values "{\"data\": []}" 200))
+            (multiple-value-bind (verdict words) (nle::provider-key-check "blanked" "k")
+              (is (eq :unchecked verdict) "with the blank standing there is nowhere to ask")
+              (is (search "needs NL_BLANK_ACCOUNT" words) "and the words name the blank"))
+            (is (null urls) "nothing is fetched")
+            (nle::provider-key-check "blanked" "k" :vars '(("NL_BLANK_ACCOUNT" . "acc-1")))
+            (is (uiop:string-prefix-p "https://api.blanked.test/accounts/acc-1/ai/v1/" (first urls)) "the value given fills the address it asks")))))))
+
 (deftest provider-models-cache-entry-reads-fresh-stale-and-moved (with-temp-shared-config ("{
   \"providers\": {
     \"local\": {\"sdk\": \"openai-completions\", \"base_url\": \"http://127.0.0.1:1/v1\"},

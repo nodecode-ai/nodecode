@@ -5301,12 +5301,15 @@ the list on both shells)."
                                 :detail "Enter a provider id from models.dev"
                                 :value (list :custom t))))))))
 
-(defun gateway-key-check (model provider key)
+(defun gateway-key-check (model provider key &optional vars)
   "PROVIDER-KEY-CHECK of KEY for PROVIDER as MODEL's organism answers it
-(POST /api/gateway/keys, check: true), as the list (VERDICT WORDS) the
-/models sink reads: VERDICT NIL when nothing was asked."
+(POST /api/gateway/keys, check: true), VARS the values of its catalog
+address's blanks, as the list (VERDICT WORDS) the /models sink reads: VERDICT
+NIL when nothing was asked."
   (let ((answer (gateway-model-http-call model :post "/api/gateway/keys"
-                                         (json-object "provider" provider "key" (nlk:trimmed key) "check" t)
+                                         (json-object "provider" provider "key" (nlk:trimmed key) "check" t
+                                                      :opt "vars" (and vars (alexandria:alist-hash-table
+                                                                             vars :test #'equal)))
                                          :read-timeout (+ *provider-models-fetch-timeout-seconds* 15))))
     (list (cdr (assoc (json-value answer :string "verdict")
                       '(("works" . :works) ("refused" . :refused)
@@ -5329,12 +5332,15 @@ start, and the same key is checked again -- else T."
   ;; A shell asks its organism (GATEWAY-KEY-CHECK): the address a key is
   ;; checked at is the one a turn dials, and a cell that serves the provider
   ;; sets it there only -- OpenCode Go's, checked at models.dev's, answered 404.
-  (lambda (model provider-id secret done)
+  ;; VARS are the ${NAME} blanks of the provider's catalog address the wizard
+  ;; asked for before the key: the check dials the address they fill, and
+  ;; they are saved with the key.
+  (lambda (model provider-id secret done &key vars)
     (off-loop
      model
      (lambda () (if *serving*
-                    (multiple-value-list (provider-key-check provider-id (nlk:trimmed secret)))
-                    (gateway-key-check model provider-id secret)))
+                    (multiple-value-list (provider-key-check provider-id (nlk:trimmed secret) :vars vars))
+                    (gateway-key-check model provider-id secret vars)))
      ;; VALUE is the check's two values as a list, or OFF-LOOP's failure,
      ;; which is said plainly: its text is a Lisp condition's.
      (lambda (model value)
@@ -5350,7 +5356,7 @@ start, and the same key is checked again -- else T."
                      :retry))
            (t
             (handler-case
-                (let* ((id (save-provider-api-key provider-id secret))
+                (let* ((id (save-provider-api-key provider-id secret :vars vars))
                        (name (or (json-value (models-catalog-table) :text id "name") id)))
                   (if (eq verdict :unchecked)
                       (setf (gethash id *key-checks*)

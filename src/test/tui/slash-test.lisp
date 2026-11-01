@@ -964,7 +964,7 @@ package no lane speaks.")
           (equal expected
                  (let ((said nil))
                    (clrhash nle::*key-checks*)
-                   (with-stubbed-fdefinition (nle::provider-key-check (provider key) check)
+                   (with-stubbed-fdefinition (nle::provider-key-check (provider key &key vars) check)
                      (funcall (nle::connect-credential-sink) model "anthropic" "sk-1"
                               (nlk:lambda-ignoring (model message error)
                                 (setf said (list message error)))))
@@ -984,13 +984,57 @@ package no lane speaks.")
               :retry)
              nil))))))
 
+(defparameter +blanked-connect-catalog+
+  "{\"blanked\": {\"name\": \"Blanked AI\", \"npm\": \"@ai-sdk/openai-compatible\",
+                 \"env\": [\"NL_BLANK_ACCOUNT\", \"NL_BLANK_KEY\"],
+                 \"api\": \"https://api.blanked.test/accounts/${NL_BLANK_ACCOUNT}/ai/v1\",
+                 \"models\": {\"m\": {\"tool_call\": true}}}}"
+  "A models.dev provider whose api carries a ${NAME} blank, as
+cloudflare-workers-ai's carries ${CLOUDFLARE_ACCOUNT_ID}.")
+
+(deftest connect-asks-for-a-catalog-address-blank-before-the-key (let ((checked '())))
+  ;; Cloudflare Workers AI's key was asked for alone, checked at the literal
+  ;; .../accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1 and saved over `HTTP 405'
+  ;; (Elektra, 2026-11-01). The wizard asks for each blank first, by name, over
+  ;; the address it goes in and starting on the value it has; the check and
+  ;; the save carry the values.
+  (with-model-listings (:catalog +blanked-connect-catalog+)
+    (sb-posix:unsetenv "NL_BLANK_ACCOUNT")
+    (with-stubbed-fdefinition (nle::provider-key-check (provider key &key vars)
+                                (push (list provider key vars) checked)
+                                (values :works nil))
+      (with-frame-model (model 100 30 :session-id "connect-blank")
+        (with-slash-dialog (dialog model "models" "") "/models opens silently"
+          (enter-row model "blanked" :provider)
+          (is (eq :address (nle::connect-dialog-step dialog)) "the blank before the key")
+          (is (equal "NL_BLANK_ACCOUNT" dialog.input-label) "asked for by name")
+          (is (equal "Blanked AI's address needs NL_BLANK_ACCOUNT." dialog.subtitle))
+          (is (equal "https://api.blanked.test/accounts/${NL_BLANK_ACCOUNT}/ai/v1" dialog.input-context) "over the address it goes in")
+          (is (eq :address (step-after model :enter)) "an empty value moves nothing")
+          (is (eq :address (step-after model "acc 1" :enter)) "nor one with a space in it")
+          (dialog-keys model :backspace :backspace :backspace :backspace :backspace)
+          (is (eq :api-key (step-after model "acc-1" :enter)) "a value moves on to the key")
+          (is (eq :provider (step-after model "sk-1" :enter)) "which is saved")
+          (is (equal '(("blanked" "sk-1" (("NL_BLANK_ACCOUNT" . "acc-1")))) checked) "checked at the address the value fills")
+          (is (equal "acc-1" (nlk:json-value (nle::read-auth-file nle::*auth-file-path*)
+                                             :string "api_keys" "blanked" "vars" "NL_BLANK_ACCOUNT")) "and saved with the key")
+          (is (null (nle::selection-refusal "blanked")) "the provider has its address now")
+          ;; Ctrl+E pastes a new key: the blank is asked again, on the saved value.
+          (setf (nle::picker-dialog-selection dialog)
+                (position "blanked" (nle::picker-visible-rows dialog) :test #'equal
+                          :key (lambda (row) (getf (nle::picker-row-value row) :provider))))
+          (nle::picker-dialog-key model #\e :ctrl t)
+          (is (eq :address (nle::connect-dialog-step dialog)))
+          (is (equal "acc-1" dialog.input) "starting on the value saved")
+          (is (eq :provider (step-after model :escape)) "Esc goes back to the list"))))))
+
 (deftest connect-checks-a-key-again-where-nothing-listened (let ((checks '()) (verdict :unreachable)))
   ;; A key checked against a stopped server said `Enter pastes another' and
   ;; emptied the field, though the key was not the problem (xm-202): Enter
   ;; checks the same key again once the server is up, and Esc picks another
   ;; provider, since any key would meet the same stopped server.
   (with-model-listings (:catalog +connect-catalog-fixture+)
-    (with-stubbed-fdefinition (nle::provider-key-check (provider key)
+    (with-stubbed-fdefinition (nle::provider-key-check (provider key &key vars)
                                 (push key checks)
                                 (if (eq verdict :unreachable)
                                     (values :unreachable (format nil "~a could not check the key: nothing listens at 127.0.0.1:1" provider))

@@ -8667,10 +8667,10 @@ what a search reads and a test names; the function is only the look.")
 ;;; re-derived by a panel that would have to know a wizard from a picker.
 (defstruct (connect-dialog (:include picker-dialog))
   "The /models wizard state."
-  ;; STEP is :provider, :custom-provider, :api-key, or :result; the provider
+  ;; STEP is :provider, :custom-provider, :address, :api-key, or :result; the provider
   ;; PICKER-ROWs live in the inherited ROWS slot (values are plists (:provider
   ;; id) or (:custom t)), which PROVIDER-ROWS, a function of no
-  ;; arguments, answers anew at open and after each saved key; the two text
+  ;; arguments, answers anew at open and after each saved key; the text
   ;; steps ride the picker's own input mode (INPUT-LABEL / INPUT), cleared
   ;; whenever the flow leaves the step — the Zig zero-on-clear discipline,
   ;; minus the byte scrubbing CL cannot promise. CUSTOM-P is also the result's
@@ -8694,7 +8694,13 @@ what a search reads and a test names; the function is only the look.")
   ;; the key a result keeps while nothing listened where it was checked,
   ;; so Enter checks the same key again once the server is up.
   (checking-since nil)
-  (retry nil))
+  (retry nil)
+  ;; The ${NAME} blanks of the provider's catalog address still to ask for,
+  ;; the one the address step asks first, and (NAME . VALUE) for each one
+  ;; answered, newest first: the key's check dials the address they fill,
+  ;; and they are saved with the key (CONNECT-ASK-BLANKS-OR-KEY).
+  (blanks '())
+  (blank-values '()))
 
 ;;; A sheet stands in the middle of the frame over the shell as it is -- the
 ;;; transcript and the composer behind it, dimmed -- where a docked dialog
@@ -10354,6 +10360,14 @@ picker's own ceiling thumb."
      :subtitle "Enter a models.dev provider id."
      :hint "enter continue  esc back  ctrl+u clear  type provider id"
      :empty-label "Provider id must be lowercase letters, numbers, hyphen, or underscore.")
+    (:address
+     ;; the input label is the blank's name, and the line under the field the
+     ;; address it goes in: CONNECT-ENTER-STEP writes both
+     :context "Address" :input-label ""
+     ;; a control string: CONNECT-ENTER-STEP fills in the provider and the blank
+     :subtitle "~a's address needs ~a."
+     :hint "enter continue  esc back  ctrl+u clear  type value"
+     :empty-label "")
     (:api-key
      :context "API key" :input-label "API key" :input-secret-p t
      ;; a control string: CONNECT-ENTER-STEP fills in the provider and the
@@ -10430,6 +10444,12 @@ slots the panel already reads."
   (when (eq step :api-key)
     (setf dialog.subtitle (format nil dialog.subtitle (connect-provider-name dialog)
                                   (connect-dialog-key-page dialog))))
+  ;; The address step asks for its blank by name, over the field that bears
+  ;; the name.
+  (when (eq step :address)
+    (let ((blank (first (connect-dialog-blanks dialog))))
+      (setf dialog.subtitle (format nil dialog.subtitle (connect-provider-name dialog) blank)
+            dialog.input-label blank)))
   ;; The check says how long it waits and counts up to it, as the import's
   ;; does: a static `checking...' would read as a hang. The tick repaints
   ;; when the tenth shown moves.
@@ -10448,10 +10468,21 @@ slots the panel already reads."
   ;; :INPUT-LABEL leaves it): the id step reopens on the id a failed save
   ;; returned from, under its rule line; the key step starts empty, under
   ;; the provider it is for.
-  (setf dialog.input (if (and (eq step :custom-provider) (connect-dialog-custom-p dialog))
-                         (connect-dialog-provider-id dialog)
-                         "")
-        dialog.input-context (if (eq step :api-key) "" (getf spec :empty-label))))
+  ;; The address step starts on the value the blank has now -- saved with
+  ;; the key, or the env var's (PROVIDER-URL-VALUE) -- so Enter keeps it, and
+  ;; shows under the field the address it goes in.
+  (setf dialog.input (case step
+                       (:custom-provider (if (connect-dialog-custom-p dialog)
+                                             (connect-dialog-provider-id dialog)
+                                             ""))
+                       (:address (or (provider-url-value (connect-dialog-provider-id dialog)
+                                                         (first (connect-dialog-blanks dialog)))
+                                     ""))
+                       (t ""))
+        dialog.input-context (case step
+                               (:api-key "")
+                               (:address (or (catalog-address-template (connect-dialog-provider-id dialog)) ""))
+                               (t (getf spec :empty-label)))))
 
 (defun connect-checking-clock (dialog &aux (since (connect-dialog-checking-since dialog)))
   "`checking… 1.3s', the checking step's body line, counting from when the
@@ -10479,7 +10510,21 @@ while its cell starts, `waiting for the sign-in… 1.3s' on the sign-in step."
         (connect-dialog-custom-p dialog) nil
         (connect-dialog-key-page dialog) nil
         (connect-dialog-retry dialog) nil
+        (connect-dialog-blanks dialog) '()
+        (connect-dialog-blank-values dialog) '()
         dialog.input ""))
+
+(defun connect-ask-blanks-or-key (dialog &aux (id (connect-dialog-provider-id dialog)))
+  "Move DIALOG on to its provider's key, through an address step for each
+${NAME} blank of the provider's catalog address first, when that address is
+the one it dials (CATALOG-ADDRESS-TEMPLATE)."
+  ;; Cloudflare Workers AI's address carries the account: without its step,
+  ;; the key was checked at, saved for and dialed on the literal
+  ;; .../accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1 (Elektra, 2026-11-01).
+  (setf (connect-dialog-blanks dialog) (when-let (template (catalog-address-template id))
+                                         (url-blank-names template))
+        (connect-dialog-blank-values dialog) '())
+  (connect-enter-step dialog (if (connect-dialog-blanks dialog) :address :api-key)))
 
 (defun connect-ask-key (dialog row &aux (value (and row (picker-row-value row))))
   "Move DIALOG from the provider list to what ROW asks for: Other
@@ -10491,7 +10536,9 @@ provider's id, a provider's key. Any other row moves nothing."
         (setf (connect-dialog-provider-id dialog) (getf value :provider)
               (connect-dialog-provider-label dialog) (picker-row-label row)
               (connect-dialog-key-page dialog) (getf value :key-page)))
-    (connect-enter-step dialog (if (getf value :custom) :custom-provider :api-key))))
+    (if (getf value :custom)
+        (connect-enter-step dialog :custom-provider)
+        (connect-ask-blanks-or-key dialog))))
 
 (defun connect-install (model dialog row &key key &aux (value (picker-row-value row))
                                                      (offer (getf value :install))
@@ -10711,7 +10758,7 @@ checked."
   ;; it, from a saved key as from the list.
   (ecase (connect-dialog-step dialog)
     (:provider (dismiss-dialog model dialog.on-cancel))
-    ((:custom-provider :api-key)
+    ((:custom-provider :address :api-key)
      (connect-clear-credential dialog)
      (connect-enter-step dialog :provider)
      (when (eq :model-providers (picker-dialog-kind dialog))
@@ -10793,7 +10840,15 @@ showing for one to mean anything else."
               (progn (setf (connect-dialog-result-message dialog)
                            (format nil "~a Nothing was saved." refusal))
                      (connect-enter-step dialog :result))
-              (connect-enter-step dialog :api-key)))))
+              (connect-ask-blanks-or-key dialog)))))
+       (:address
+        ;; The value goes into an address: an empty one fills nothing and one
+        ;; with a space in it is no part of one, so neither moves on.
+        (let ((value (nlk:trimmed dialog.input)))
+          (when (and (plusp (length value)) (not (ppcre:scan "\\s" value)))
+            (push (cons (pop (connect-dialog-blanks dialog)) value)
+                  (connect-dialog-blank-values dialog))
+            (connect-enter-step dialog (if (connect-dialog-blanks dialog) :address :api-key)))))
        (:api-key
         ;; The sink answers DONE once the provider has had its say on the
         ;; key, off the loop in a live shell; the step waits on it.
@@ -10827,8 +10882,11 @@ showing for one to mean anything else."
                             ;; update repaints the band the notice joins.
                             (when (chat-model-band model)
                               (render-state model)))))))
+            ;; the address step's values ride along, for the check and the save
             (if on-save
-                (funcall on-save model (connect-dialog-provider-id dialog) secret #'done)
+                (apply on-save model (connect-dialog-provider-id dialog) secret #'done
+                       (when-let (vars (connect-dialog-blank-values dialog))
+                         (list :vars (reverse vars))))
                 (done model "no credential sink is wired" t)))))
        ;; a step that waits on the organism takes no Enter
        ((:checking :installing :starting :signing-in) nil)

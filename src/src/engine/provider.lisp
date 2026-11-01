@@ -1945,20 +1945,87 @@ most *CELLS-STARTING-WAIT-SECONDS*. => T when it waited."
             do (sleep 0.05))
       t)))
 
-(defun provider-base-url (provider)
+;;; --- a catalog address with blanks -------------------------------------------
+;;; models.dev writes some providers' api with ${NAME} blanks, each NAME an env
+;;; var its `env' list names: the account, host or product the address carries
+;;; (cloudflare-workers-ai's ${CLOUDFLARE_ACCOUNT_ID}, snowflake-cortex's
+;;; ${SNOWFLAKE_ACCOUNT}, databricks' ${DATABRICKS_HOST}). Dialed as written,
+;;; /models saved a key over `api.cloudflare.com:443 answered HTTP 405' and
+;;; every turn went to the literal address: `Could not route to
+;;; /client/v4/accounts/$%7BCLOUDFLARE_ACCOUNT_ID%7D/ai/v1/chat/completions'
+;;; (Elektra, 2026-11-01). A blank takes the value a check brings, then the one
+;;; /models saved with the key, then the env var of its name; a blank none
+;;; fills leaves the provider no address, and the refusal names it.
+
+(defparameter +url-blank-pattern+ "\\$\\{([A-Za-z_][A-Za-z0-9_]*)\\}"
+  "A ${NAME} blank in a catalog address, NAME its one register.")
+
+(defun url-blank-names (template)
+  "The ${NAME} blanks TEMPLATE carries, in order, each once."
+  (let ((names '()))
+    (ppcre:do-register-groups (name) (+url-blank-pattern+ template)
+      (pushnew name names :test #'string=))
+    (nreverse names)))
+
+(defun url-blank-value (template name value)
+  "VALUE as TEMPLATE's ${NAME} blank takes it: trimmed, right-trimmed of
+slashes, and without a scheme pasted with it where the blank opens the host;
+NIL when nothing is left."
+  ;; Copied from a console, a host comes as `https://adb-1.azuredatabricks.net/':
+  ;; filled as pasted, the address read `https://https://adb-1...//ai-gateway'.
+  (let ((value (string-right-trim "/" (nlk:trimmed (or value "")))))
+    (when (search (format nil "://${~a}" name) template)
+      (setf value (ppcre:regex-replace "^[A-Za-z][A-Za-z0-9+.-]*://" value "")))
+    (and (plusp (length value)) value)))
+
+(defun fill-url-blanks (template value-of)
+  "TEMPLATE with each ${NAME} blank filled by (FUNCALL VALUE-OF NAME), a string
+or NIL, as URL-BLANK-VALUE takes it: (values ADDRESS MISSING), ADDRESS NIL
+while MISSING, the names nothing fills, is not empty."
+  (let* ((names (url-blank-names template))
+         (fills (mapcar (lambda (name) (url-blank-value template name (funcall value-of name))) names))
+         (missing (loop for name in names for fill in fills unless fill collect name)))
+    (if missing
+        (values nil missing)
+        (values (ppcre:regex-replace-all +url-blank-pattern+ template
+                                         (lambda (match name)
+                                           (declare (ignore match))
+                                           (nth (position name names :test #'string=) fills))
+                                         :simple-calls t)
+                nil))))
+
+(defun catalog-address-template (provider)
+  "PROVIDER's models.dev api base as the catalog writes it, blanks and all,
+when no configured base_url stands in for it; else NIL."
+  (unless (trimmed-config-string (configured-provider-entry provider) "base_url")
+    (trimmed-config-string (and (stringp provider)
+                                (json-value (models-catalog-table) :object provider))
+                           "api")))
+
+(defun url-blank-refusal (provider missing)
+  "Why PROVIDER has no address while MISSING, the blanks of its catalog
+address nothing fills, stands, in the words that say what to set."
+  (format nil "~a's address needs ~{~a~^ and ~}: /models asks for ~:[it~;them~] with the key, ~
+               or set ~:*~:[it~;them~] in the environment nodecode runs in, or set ~
+               providers.~a.base_url in ~a"
+          (or (json-value (models-catalog-table) :text provider "name") provider)
+          missing (rest missing) provider (shared-config-where)))
+
+(defun provider-base-url (provider &key vars)
   "The base PROVIDER's endpoint composes from and its listing is fetched
 against: the configured entry's base_url, else the models.dev catalog's api
 base — the tier that makes an auth.json-credentialed catalog provider
-reachable without a config entry. NIL when neither names one."
+reachable without a config entry — its ${NAME} blanks filled
+(PROVIDER-URL-VALUE, VARS first). => (values BASE MISSING): BASE NIL when
+neither names one, or while MISSING, the blanks nothing fills, is not empty."
   ;; One rule for both readers: the endpoint a turn dials and the endpoint
   ;; /models asks for a listing are the same endpoint, so a provider a turn
   ;; can reach is a provider the picker can list. Without the catalog's api
   ;; fallback, the picker would list only providers whose config entry carries
   ;; a base_url.
   (or (trimmed-config-string (configured-provider-entry provider) "base_url")
-      (trimmed-config-string (and (stringp provider)
-                                  (json-value (models-catalog-table) :object provider))
-                             "api")))
+      (when-let (template (catalog-address-template provider))
+        (fill-url-blanks template (lambda (name) (provider-url-value provider name vars))))))
 
 (defun local-endpoint-p (url)
   "Whether URL's host is a machine of the operator's own: localhost, a
@@ -2001,22 +2068,25 @@ refused by name."
                                     or try again in a moment~]"
                                provider unloaded provider (shared-config-where) unloaded)))))
 
-(defun lane-endpoint (provider lane &aux (base (provider-base-url provider))
-                                         (resolved (or lane (resolve-model-lane provider *model*))))
+(defun lane-endpoint (provider lane &aux (resolved (or lane (resolve-model-lane provider *model*))))
   "The endpoint PROVIDER's LANE rides: PROVIDER-BASE-URL — the configured
 provider's base_url, then the models.dev catalog's api base for an
 auth-credentialed catalog provider — composed with the lane path, then the
-lane's default when that is PROVIDER's own (LANE-DEFAULT-ENDPOINT)."
+lane's default when that is PROVIDER's own (LANE-DEFAULT-ENDPOINT). A
+catalog address with a blank nothing fills is PROVIDER-CONFIG-ERROR naming
+the blank (URL-BLANK-REFUSAL)."
   ;; The explicit
   ;; *ENDPOINT* override is deliberately not a rung here: it names one lane's
   ;; path, so only EFFECTIVE-ENDPOINT weighs it, against the lane it resolves.
   ;; A base composes with LANE, else the lane RESOLVE-MODEL-LANE picks for the
   ;; selected model, the kit.buildRequestUrl way: right-trimmed of slashes, then
   ;; the lane's path.
-  (if (and base resolved)
-      (uiop:strcat (string-right-trim "/" base) (provider-lane-path (find-lane-by-name resolved)))
-      (lane-default-endpoint
-       provider (if lane (find-lane-by-name lane) (find-provider-lane provider)))))
+  (multiple-value-bind (base missing) (provider-base-url provider)
+    (cond ((and base resolved)
+           (uiop:strcat (string-right-trim "/" base) (provider-lane-path (find-lane-by-name resolved))))
+          (missing (error 'provider-config-error :detail (url-blank-refusal provider missing)))
+          (t (lane-default-endpoint
+              provider (if lane (find-lane-by-name lane) (find-provider-lane provider)))))))
 
 (defun provider-endpoint (provider)
   "The endpoint PROVIDER's own lane rides (LANE-ENDPOINT), or
@@ -3047,6 +3117,23 @@ trimmedEnvValue rule: empty-after-trim counts as absent)."
   "auth.json api_keys.<PROVIDER>.key — exact id match only, no aliases."
   (json-value auth :text "api_keys" provider "key"))
 
+(defun auth-url-value (auth provider name)
+  "auth.json api_keys.<PROVIDER>.vars.<NAME>: the value /models saved with
+PROVIDER's key for the ${NAME} blank of its catalog address."
+  (json-value auth :text "api_keys" provider "vars" name))
+
+(defun provider-url-value (provider name &optional vars)
+  "The value the ${NAME} blank of PROVIDER's catalog address takes
+(FILL-URL-BLANKS): VARS', an alist of (NAME . VALUE) a key's check brings
+before anything is saved, then the one saved with PROVIDER's key
+(AUTH-URL-VALUE), then the env var NAME."
+  ;; A store that cannot be read fills nothing: the credential chain is what
+  ;; says so, loudly, on the turn.
+  (or (cdr (assoc name vars :test #'string=))
+      (and *auth-file-path*
+           (ignore-errors (auth-url-value (read-auth-file *auth-file-path*) provider name)))
+      (credential-env name)))
+
 ;;; --- what a credential is -------------------------------------------------
 ;;; A credential is a PLIST — (:key SECRET :source PROVENANCE :attributes
 ;;; PLIST) — and not a structure, because it is what a :CREDENTIAL hook
@@ -3521,7 +3608,7 @@ twenty or more letters and digits with a digit in it."
              (ppcre:all-matches-as-strings "[A-Za-z0-9]{20,}" text))
        t))
 
-(defun save-provider-api-key (provider api-key &key (auth-path *auth-file-path*))
+(defun save-provider-api-key (provider api-key &key (auth-path *auth-file-path*) vars)
   "Persist API-KEY for PROVIDER into the shared auth.json, creating the file
 and its directory (0700/0600) when absent; API-KEY NIL takes PROVIDER's key
 out."
@@ -3529,6 +3616,9 @@ out."
   ;; api_keys.<PROVIDER> = {"provider": id, "key": key}; every other field of
   ;; an existing file is preserved. The write is atomic (temp file + rename).
   ;; => the normalized provider id.
+  ;; VARS, an alist of (NAME . VALUE), are the ${NAME} blanks of PROVIDER's
+  ;; catalog address /models asked for: they go in the entry's vars, over the
+  ;; ones it had, and a key saved without any keeps those (AUTH-URL-VALUE).
   (check-type provider provider-id)
   (check-type api-key (or null string))
   (let ((id (string-downcase (nlk:trimmed provider)))
@@ -3539,11 +3629,17 @@ out."
       (credential-fail "api key must be non-empty"))
     (update-auth-file
      (lambda (auth)
-       (let ((api-keys (or (json-value auth :object "api_keys")
-                           (setf (gethash "api_keys" auth)
-                                 (make-hash-table :test #'equal)))))
+       (let* ((api-keys (or (json-value auth :object "api_keys")
+                            (setf (gethash "api_keys" auth)
+                                  (make-hash-table :test #'equal))))
+              (kept (json-value api-keys :object id "vars"))
+              (blanks (if kept (alexandria:copy-hash-table kept) (make-hash-table :test #'equal))))
+         (loop for (name . value) in vars
+               do (setf (gethash name blanks) (nlk:trimmed value)))
          (if key
-             (setf (gethash id api-keys) (json-object "provider" id "key" key))
+             (setf (gethash id api-keys)
+                   (json-object "provider" id "key" key
+                                :opt "vars" (and (plusp (hash-table-count blanks)) blanks)))
              (remhash id api-keys))))
      :auth-path auth-path)
     id))
@@ -3839,9 +3935,11 @@ BASE, with KEY in place of the credential PROVIDER resolves when given."
                      (setf last-error error)
                      (return (values rows nil)))))))))))
 
-(defun provider-key-check (provider key)
+(defun provider-key-check (provider key &key vars)
   "What PROVIDER's model listing, asked with KEY, says of it, as (values
-VERDICT WORDS), or NIL when nothing was asked. VERDICT is :WORKS, the listing
+VERDICT WORDS), or NIL when nothing was asked. VARS, an alist of (NAME .
+VALUE), fills the ${NAME} blanks of its catalog address ahead of anything
+saved (PROVIDER-BASE-URL). VERDICT is :WORKS, the listing
 answered; :REFUSED, it refused the key (REFUSED-KEY-ANSWER-P); :UNREACHABLE,
 nothing listens where it would ask, a verdict on the address; or :UNCHECKED,
 no verdict either way -- no answer within *PROVIDER-MODELS-FETCH-TIMEOUT-
@@ -3869,7 +3967,8 @@ the fact for :UNCHECKED (`no answer from 127.0.0.1:8080 in 5 s')."
                                 (provider-config-error (condition)
                                   (setf refusal (provider-error-detail condition))
                                   nil))))
-           (base (or (provider-base-url provider)
+           (found (multiple-value-list (provider-base-url provider :vars vars)))
+           (base (or (first found)
                      (and default (uiop:string-suffix-p default lane.path)
                           (subseq default 0 (- (length default) (length lane.path))))))
            (where (or (url-address base) base))
@@ -3890,6 +3989,9 @@ the fact for :UNCHECKED (`no answer from 127.0.0.1:8080 in 5 s')."
             ((equal reason "timeout")
              (values :unchecked (format nil "no answer from ~a in ~d s" where seconds)))
             (answer (values :unchecked (format nil "~a answered HTTP ~d" where (first answer))))
+            ;; a blank of its catalog address nothing fills: the words say which
+            ((and (null base) (second found))
+             (values :unchecked (url-blank-refusal provider (second found))))
             ;; the rest name the address too: a bare `host not found' read as the key's
             ((null base) (values :unchecked (or refusal "no address to check it at")))
             ((find reason +transport-failures+ :key #'second :test #'equal)
