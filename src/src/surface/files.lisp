@@ -184,6 +184,11 @@ reader, and the name itself as RFC 5987 spells it."
                name)
           (quri:url-encode name)))
 
+(defun download-answer (body type name &rest headers)
+  "BODY, octets or a file, as a 200 of TYPE that saves it as NAME
+(ATTACHMENT-DISPOSITION), HEADERS after."
+  (list 200 (list* :content-type type :content-disposition (attachment-disposition name) headers) body))
+
 (defun folder-file (steps path stat download)
   "The file at the native PATH, which STEPS name, answered as the Files view
 reads it (see the file's head); DOWNLOAD sends it to be saved."
@@ -205,10 +210,7 @@ reads it (see the file's head); DOWNLOAD sends it to be saved."
                       ;; Text is UTF-8 with no NUL (NLK::UTF-8-TEXT signals on anything else).
                       (and (not (find 0 octets)) (ignore-errors (nlk::utf-8-text octets))
                            octets)))))
-    (cond (download
-           (list 200 (list* :content-type "application/octet-stream"
-                            :content-disposition (attachment-disposition name) headers)
-                 file))
+    (cond (download (apply #'download-answer file "application/octet-stream" name headers))
           ((and sniffed (<= size *folder-image-bytes*))
            (list 200 (list* :content-type sniffed headers) file))
           (text (list 200 (list* :content-type "text/plain; charset=utf-8" :content-length (length text) headers)

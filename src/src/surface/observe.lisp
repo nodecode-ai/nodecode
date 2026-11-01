@@ -456,20 +456,36 @@ recency, and ASKED-WHERE owns the exclusions."
   "Rebuildable persisted-history, never authority. Triggers keep it inside the
 fact's transaction, including late reflection/source facts and rollback.")
 
+(defun projection-current-p (handle schema)
+  "True when every entry of SCHEMA stands in HANDLE's store as SCHEMA says it."
+  (every (lambda (entry)
+           (destructuring-bind (type name sql) entry
+             (equalp sql (sqlite:execute-single
+                          handle "select sql from sqlite_master where type = ? and name = ?"
+                          type name))))
+         schema))
+
+(defun drop-stale-projection (handle schema)
+  "Drop SCHEMA's entries, the last first, unless every one stands as SCHEMA says it."
+  (unless (projection-current-p handle schema)
+    (dolist (entry (reverse schema))
+      (sqlite:execute-non-query handle (format nil "drop ~a if exists ~a" (first entry) (second entry))))))
+
+(defun install-projection (handle schema)
+  "Create SCHEMA's entries unless its first, a table, stands: true when it did."
+  ;; DROP-STALE-PROJECTION ran first in the same transaction, so the entries
+  ;; stand all together or not at all.
+  (unless (sqlite:execute-single handle "select 1 from sqlite_master where type = ? and name = ?"
+                                 (first (first schema)) (second (first schema)))
+    (dolist (entry schema)
+      (sqlite:execute-non-query handle (third entry)))
+    t))
+
 (defun prepare-model-history (handle)
   "Discard a stale model projection shape before its schema is applied."
   ;; EXECUTE-SINGLE finalizes before DDL. Compare every trigger, not just the
   ;; table: IF NOT EXISTS would preserve stale eligibility or recency policy.
-  (unless (every (lambda (entry)
-                   (destructuring-bind (type name sql) entry
-                     (equalp sql (sqlite:execute-single
-                                  handle "select sql from sqlite_master where type = ? and name = ?"
-                                  type name))))
-                 *model-history-schema*)
-    (dolist (entry *model-history-schema*)
-      (when (string= "trigger" (first entry))
-        (sqlite:execute-non-query handle (format nil "drop trigger if exists ~a" (second entry)))))
-    (sqlite:execute-non-query handle "drop table if exists model_history"))
+  (drop-stale-projection handle *model-history-schema*)
   ;; The displaced full-usage covering index has no remaining reader.
   (sqlite:execute-non-query handle "drop index if exists events_usage_by_model"))
 
@@ -479,10 +495,7 @@ fact's transaction, including late reflection/source facts and rollback.")
     ;; Recheck after the kernel schema: replacing events/the directory also
     ;; drops their triggers, so a surviving derived table must be rebuilt.
     (prepare-model-history handle)
-    (unless (sqlite:execute-single handle
-                                   "select 1 from sqlite_master where type = 'table' and name = 'model_history'")
-      (dolist (entry *model-history-schema*)
-        (sqlite:execute-non-query handle (third entry)))
+    (when (install-projection handle *model-history-schema*)
       (sqlite:execute-non-query handle (model-history-fill-sql)))))
 
 (pushnew 'prepare-model-history nlk::*schema-prepare-hooks*)
@@ -643,20 +656,9 @@ each request's wait for its first token and the time it spent writing."
                                               new.payload payload)"))))
   "The usage projection.")
 
-(defun projection-current-p (handle schema)
-  "True when every entry of SCHEMA stands in HANDLE's store as SCHEMA says it."
-  (every (lambda (entry)
-           (destructuring-bind (type name sql) entry
-             (equalp sql (sqlite:execute-single
-                          handle "select sql from sqlite_master where type = ? and name = ?"
-                          type name))))
-         schema))
-
 (defun prepare-usage-rounds (handle)
   "Discard a usage projection of another shape before the schema is applied."
-  (unless (projection-current-p handle *usage-rounds-schema*)
-    (dolist (entry (reverse *usage-rounds-schema*))
-      (sqlite:execute-non-query handle (format nil "drop ~a if exists ~a" (first entry) (second entry))))))
+  (drop-stale-projection handle *usage-rounds-schema*))
 
 (defun tier-sizes-of (pairs &optional (prices (make-hash-table :test #'equal)))
   "Every tier size the prices of PAIRS, (MODEL PROVIDER) lists, name,
@@ -684,10 +686,7 @@ ascending; PRICES memoizes MODEL-PRICE by (MODEL . PROVIDER)."
     ;; Rechecked after the kernel schema, as OPEN-MODEL-HISTORY is: a
     ;; replaced events table took the triggers with it.
     (prepare-usage-rounds handle)
-    (unless (sqlite:execute-single handle
-                                   "select 1 from sqlite_master where type = 'table' and name = 'usage_rollup'")
-      (dolist (entry *usage-rounds-schema*)
-        (sqlite:execute-non-query handle (third entry)))
+    (when (install-projection handle *usage-rounds-schema*)
       (derive-usage-rollup handle (tier-sizes-of
                                    (nlk::sql-rows handle (format nil "select distinct ~{~a~^, ~} from events
                                                                        where kind = '~a'"

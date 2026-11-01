@@ -1374,8 +1374,7 @@ when an import ran. Start and Esc close it on an empty chat."
 of it; Enter or Esc goes BACK, a function of the model. RUN is the walk the
 page belongs to, for an import landing behind it."
   (let* ((items (setup-report-items report))
-         (worlds (remove-duplicates (mapcar (lambda (item) (or (json-value item :string "world") "")) items)
-                                    :test #'equal :from-end t)))
+         (worlds (nlk:distinct (mapcar (lambda (item) (or (json-value item :string "world") "")) items))))
     (open-picker-dialog
      model "Setup"
      (loop for world in worlds
@@ -1495,8 +1494,7 @@ source worlds."
                (list key "✓" (format nil "~d ~a" count (if (= 1 count) one many)) text)))
            (worlds (names)
              (format nil "~{~a~^ · ~}"
-                     (remove-duplicates (remove-if-not #'plusp names :key #'length)
-                                        :test #'equal :from-end t))))
+                     (nlk:distinct (remove-if-not #'plusp names :key #'length)))))
       (loop for line in lines
             when (ecase line
                       (:keys (entry :keys (length keys) "key" "keys"

@@ -165,9 +165,7 @@ the job running; DELETE ?name=NAME removes one. Each answers the listing."
   (:route :get "/api/gateway/backups/file" "backup download")
   (let* ((name (folder-query env "name"))
          (path (backup-file name)))
-    (list 200 (list :content-type "application/gzip"
-                    :content-disposition (format nil "attachment; filename=\"~a\"" name))
-          path)))
+    (download-answer path "application/gzip" name)))
 
 (define-gateway-route handle-gateway-backup-restore-http (env)
   "POST /api/gateway/backups/restore {name, profile} — the backup NAME
