@@ -7,7 +7,7 @@ Usage: perf-gate.py BASE [--reps N] [--workloads tui,boot,turns] [--json OUT]
 Run from a nodecode checkout (`just perf BASE'). The checkout as it stands is
 the head; BASE is any revision of its repository (CI passes the pull
 request's merge base, or the commit a push moved main from). Both trees run
-one bench file, the head's src/tools/perf/bench.lisp, each in an SBCL that
+one bench file, the head's src/tools/check/perf-bench.lisp, each in an SBCL that
 loaded its own :nodecode/test, so the two differ only in the code under
 review. The workloads, each its own process:
 
@@ -59,8 +59,8 @@ import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
-BENCH = os.path.join(HERE, "perf", "bench.lisp")
+REPO = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
+BENCH = os.path.join(HERE, "perf-bench.lisp")
 WORKLOADS = ["tui", "boot", "turns"]
 METRICS = ["instructions", "consed", "cpu", "wall"]
 # (fraction, absolute) per metric; absolute in the metric's own unit
@@ -122,7 +122,11 @@ def prune(days=7):
 
 
 def cells(tree):
-    r = subprocess.run([os.path.join(tree, "src", "tools", "pull-cells.sh")], cwd=tree,
+    # A base from before tools/ took one folder per job keeps it at the top.
+    script = os.path.join(tree, "src", "tools", "build", "pull-cells.sh")
+    if not os.path.exists(script):
+        script = os.path.join(tree, "src", "tools", "pull-cells.sh")
+    r = subprocess.run([script], cwd=tree,
                        capture_output=True, text=True)
     if r.returncode != 0:
         raise CannotMeasure("pull-cells in %s: %s" % (tree, r.stderr.strip()[-400:]))

@@ -162,7 +162,7 @@ bloat:
 # keys and paging, the gateway's start, streamed turns (src/tools/perf/).
 # Measure this checkout against BASE.
 perf base="origin/main":
-    @python3 src/tools/perf-gate.py {{base}}
+    @python3 src/tools/check/perf-gate.py {{base}}
 
 footprint_ceilings := "--max-boot-mb 95 --max-turn-mb 105 --max-growth-mb 15 --max-idle-mb 46"
 

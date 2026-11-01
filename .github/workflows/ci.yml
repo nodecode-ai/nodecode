@@ -67,7 +67,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Hold this revision to its base where a person waits
-        run: src/tools/ci-perf.sh
+        run: src/tools/ci/ci-perf.sh
         env:
           PERF_BASE: ${{ github.event_name == 'push' && github.event.before || '' }}
           CI_OUT: ${{ runner.temp }}/perf

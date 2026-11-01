@@ -13,7 +13,7 @@
 #
 # CI_OUT, when set, keeps perf.json there (every run's numbers, both sides).
 set -euo pipefail
-repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$repo"
 
 base="${PERF_BASE:-}"
@@ -22,7 +22,7 @@ if [ -z "$base" ] || [ -z "${base//0/}" ] || ! git cat-file -e "$base^{commit}" 
 fi
 
 build_home="${NODECODE_BUILD_HOME:-/var/tmp/nodecode-ci-build}"
-key="$(cat src/tools/sbcl/build.sh src/tools/sbcl/patches/* | sha256sum | cut -d' ' -f1)"
+key="$(cat src/tools/build/sbcl/build.sh src/tools/build/sbcl/patches/* | sha256sum | cut -d' ' -f1)"
 sbcl_root="$build_home/env/.cache/nodecode-sbcl/$key"
 ql_setup="$build_home/env/quicklisp/setup.lisp"
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/nodecode-perf.XXXXXX")"
@@ -38,4 +38,4 @@ export PERF_HOME="${PERF_HOME:-/var/tmp/nodecode-perf-ci}"
 out="${CI_OUT:-$scratch}"
 mkdir -p "$out"
 echo "ci-perf: HEAD $(git rev-parse --short HEAD) against base $(git rev-parse --short "$base")"
-python3 src/tools/perf-gate.py "$base" --json "$out/perf.json"
+python3 src/tools/check/perf-gate.py "$base" --json "$out/perf.json"

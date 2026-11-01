@@ -1,4 +1,4 @@
-;;;; bench.lisp --- the workloads `just perf' measures, one per process.
+;;;; perf-bench.lisp --- the workloads `just perf' measures, one per process.
 ;;;;
 ;;;; SPDX-License-Identifier: MIT
 ;;;;
