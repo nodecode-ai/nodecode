@@ -2493,7 +2493,11 @@ while the terminal has not said, which nothing guesses at."
   "Columns SEGS occupy."
   (loop for s in segs sum (text-display-width s.text)))
 
-(defun blank-frame-row (width bg &aux (spaces (make-string width :initial-element #\Space)))
+(defun spaces (count)
+  "COUNT spaces, none when COUNT is not positive."
+  (make-string (max 0 count) :initial-element #\Space))
+
+(defun blank-frame-row (width bg &aux (spaces (spaces width)))
   "A full-WIDTH canvas row: painted spaces under a profile, plain under :none."
   (if bg (styled spaces (vstyle :bg bg)) spaces))
 
@@ -2681,7 +2685,7 @@ keeps it; a row short of the ground's end is padded to it."
                              (:solid tone)
                              (t (vstyle :bg (blend-rgb fill canvas (round (* 100 (- end key 1)) fade)))))))
         (loop for seg in (if (< shown end)
-                             (append segs (list (make-seg :text (make-string (- end shown) :initial-element #\Space))))
+                             (append segs (list (make-seg :text (spaces (- end shown)))))
                              segs)
               nconc (loop with text = seg.text
                           with start = 0
@@ -2723,11 +2727,9 @@ glint crosses and the time it set off (GLINT-OVERLAY)."
                                   :tone (or line.gutter-tone
                                             line.tone)
                                   :italic line.gutter-italic)))
-          (cont (flet ((blanks (count)
-                         (make-seg :text (make-string (max 0 count) :initial-element #\Space))))
-                  (let ((marks (alexandria:ensure-list line.hang-mark)))
-                    (list* (blanks cont-indent)
-                           (append marks (list (blanks (- line.hang (segs-display-width marks))))))))))
+          (cont (let ((marks (alexandria:ensure-list line.hang-mark)))
+                  (list* (make-seg :text (spaces cont-indent))
+                         (append marks (list (make-seg :text (spaces (- line.hang (segs-display-width marks))))))))))
       (if line.rule
           ;; A full-width thematic-break rule (Zig markdown_rule_fill).
           (let ((rule (make-string (lline-widths line width) :initial-element #\─)))
@@ -2746,11 +2748,9 @@ glint crosses and the time it set off (GLINT-OVERLAY)."
                                ;; The aside ends where the words may: the gap
                                ;; before it is the rest of the first row.
                                (append words
-                                       (list (make-seg :text (make-string
-                                                              (max 2 (- width first-indent *transcript-right-padding*
-                                                                        (segs-display-width words)
-                                                                        (text-display-width (seg-text aside))))
-                                                              :initial-element #\Space))
+                                       (list (make-seg :text (spaces (max 2 (- width first-indent *transcript-right-padding*
+                                                                               (segs-display-width words)
+                                                                               (text-display-width (seg-text aside))))))
                                              aside))
                                words)
                 for paint = (if (and ground (or firstp (not (integerp (third ground)))))
@@ -3156,24 +3156,20 @@ line of its answer. NIL for a call that forked nothing."
                            (done (equal status "completed"))
                            (words (json-value fork :text (if running "note" "answer")))
                            (shown (clip-text-to-width name room))
-                           (line (make-lline :text (make-string indent :initial-element #\Space)
-                                             :tone :muted)))
+                           (line (make-lline :text (spaces indent) :tone :muted)))
                       (append-lline-run line (if (= index last) "╰ " "├ ") :tone :muted)
                       (append-lline-run line (cond (running "○") (done "✓") (t "✗"))
                                         :tone (cond (running :tool) (done :success) (t :danger)))
                       (append-lline-run line (format nil " fork ~d  " (json-value fork :integer "n")) :tone :muted)
-                      (append-lline-run line (concatenate 'string shown
-                                                          (make-string (max 0 (- room (text-display-width shown)))
-                                                                       :initial-element #\Space))
+                      (append-lline-run line (concatenate 'string shown (spaces (- room (text-display-width shown))))
                                         :tone :foreground)
                       (append-lline-run line counts :tone :muted)
                       (when ending
                         (append-lline-run line ending :tone :danger))
                       (when words
                         (append-lline-run line (concatenate 'string
-                                                            (make-string (max 0 (- stat-room (text-display-width counts)
-                                                                                   (text-display-width (or ending ""))))
-                                                                         :initial-element #\Space)
+                                                            (spaces (- stat-room (text-display-width counts)
+                                                                       (text-display-width (or ending ""))))
                                                             "  " (nlk:one-line words))
                                           :tone (if running :muted :foreground) :italic running))
                       (clip-lline line width))))))
@@ -3581,8 +3577,7 @@ of it while the header (KEY) is clicked open, else its first
          (hidden (- (length entries) (length shown))))
     (append (mapcar (lambda (entry) (diff-body-lline entry gutter)) shown)
             (when (plusp hidden)
-              (let ((more (make-lline :text (make-string (if (plusp gutter) (+ gutter 3) 2)
-                                                         :initial-element #\Space)
+              (let ((more (make-lline :text (spaces (if (plusp gutter) (+ gutter 3) 2))
                                       :tone :muted :role :tool-cont)))
                 (append-lline-run more (format nil "… +~d line~:p" hidden) :tone :muted)
                 (dolist (span (lline-spans more)) (setf (mspan-link span) key))
@@ -3604,8 +3599,7 @@ its diff and opening its own full diff (FILE-DIFF-LLINES)."
                             ;; so every path starts on it, under the words of the
                             ;; call that wrote it.
                             (hang (- *transcript-detail-column* (nth-value 2 (body-gutter :prose))))
-                            (header (make-lline :text (make-string (max 0 (- hang (length added) (length removed) 2))
-                                                                   :initial-element #\Space)
+                            (header (make-lline :text (spaces (- hang (length added) (length removed) 2))
                                                 :tone :muted :hang hang)))
                        (append-lline-run header added :tone :diff-added)
                        (append-lline-run header (format nil " ~a" removed) :tone :diff-removed)
@@ -4051,8 +4045,7 @@ mark: its metadata says `bare'."
                     ;; off the canvas, so the band would read as blank rows.
                     (let* ((hang (- *transcript-detail-column* (nth-value 2 (body-gutter :prose))))
                            (line (make-lline :text "" :tone :system :hang hang))
-                           (gap (make-string (max 1 (- hang (text-display-width label)))
-                                             :initial-element #\Space)))
+                           (gap (spaces (max 1 (- hang (text-display-width label))))))
                       (append-lline-run line label :bold t)
                       (append-lline-run line gap)
                       (list (append-lline-run line (nlk:one-line text))))
