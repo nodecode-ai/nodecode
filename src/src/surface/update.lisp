@@ -594,6 +594,30 @@ layer's overrides the release now stands over."
 
 (defvar *update-poller* nil)
 
+(defun refresh-hub-installs (&key apply)
+  "The hub clones this home holds moved on to what stands for them now
+(NLK:REFRESH-HUB-CLONES) when APPLY, else only found; either said in the
+standing `hub-cells' notice. => that sentence, or NIL when none moves."
+  ;; Nodecode's index is read here, beside the release check, so a fix the
+  ;; hub takes up reaches a box on the same cadence as a release (nodecode
+  ;; #112). What moves loads at the next restart: the running image keeps
+  ;; the code it loaded.
+  (multiple-value-bind (moved failed)
+      (nlk:refresh-hub-clones :hub (lambda () (ignore-errors (nlk:hub-cells :community nil)))
+                              :apply apply)
+    (let ((text (cond (failed
+                       (format nil "~{~a~^; ~}"
+                               (loop for (name . why) in failed
+                                     collect (format nil "~a stays at its hub clone: ~a" name why))))
+                      ((and moved apply)
+                       (format nil "~{~a~^, ~} moved on to the hub's pin; the next restart loads ~:[it~;them~]"
+                               moved (rest moved)))
+                      (moved
+                       (format nil "the hub moved ~{~a~^, ~} on: `nodecode update' takes ~:[it~;them~]"
+                               moved (rest moved))))))
+      (nlk:note-standing "hub-cells" text (if failed :warning :info))
+      text)))
+
 (defun check-for-update ()
   "One look at the channel: nothing while the pointer names this image's own
 label, or the release this image refused live and linked for its next boot;
@@ -602,6 +626,7 @@ else the update, applied in `auto' mode, staged and said in `ask' mode."
   ;; so a running gateway that began before there was a reader to start gets
   ;; one at the next look.
   (start-release-feed)
+  (ignore-errors (refresh-hub-installs :apply (string= "auto" (update-settings))))
   (bind (((mode channel) (update-settings)) ((latest reason) (latest-release :channel channel)))
     ;; `nodecode update VERSION' holds this home at VERSION (UPGRADE-ORGANISM
     ;; :HOLD): the channel is left alone until `nodecode update' lifts it, and
@@ -1125,11 +1150,12 @@ applied; the answer carries what happened and the sentence the verb prints."
   (:route :post "/api/gateway/update" "update")
   (let* ((body (gateway-request-json env))
          (version (json-value body :string "version"))
-         (result (upgrade-organism :version version :hold (and version t)
-                                   :check (eq t (json-value body :any "check")) :apply t)))
+         (check (eq t (json-value body :any "check")))
+         (result (upgrade-organism :version version :hold (and version t) :check check :apply t))
+         (hub (and (not check) (ignore-errors (refresh-hub-installs :apply t)))))
     (json-object (:getf result "from" "to")
                  "verdict" (string-downcase (symbol-name (getf result :verdict)))
                  "applied" (string-downcase (symbol-name (getf result :applied)))
-                 "text" (update-answer-text result)
+                 "text" (format nil "~a~@[~%~a~]" (update-answer-text result) hub)
                  "held" (map 'vector (lambda (entry) (format nil "~a — ~a" (car entry) (cdr entry)))
                              (getf result :held)))))

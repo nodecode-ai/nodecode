@@ -866,6 +866,65 @@ from GIT at COMMIT; KEYS come first, so they win."
           (is (null (nlk::cell-folders root)) "a refused clone leaves nothing to load")
           (is (probe-file (merge-pathnames "nl-hub-out/nl-hub-out.asd" outside)) "and moves nothing out of place"))))))
 
+(deftest cells-hub-clone-follows-the-index-and-gives-way-to-the-release ()
+  ;; nodecode #112: a clone stayed at the commit it was made at for good, so a
+  ;; fix the hub's index or a release took up never reached a box that had
+  ;; installed the folder before. An existing clone at an old pin ends on the
+  ;; new one; a clone of a folder the release ships becomes the release's own;
+  ;; a community pin, another repository and the operator's own folder move
+  ;; nothing, and a move that fails leaves the clone as it was.
+  (with-temp-trees ((remote "hub-follow-remote") (home "hub-follow-home") (release "hub-follow-release"))
+    (let ((root (merge-pathnames "cells/" home))
+          (name "nl-hub-follow"))
+      (multiple-value-bind (git old) (hub-fixture-repository remote name)
+        (let* ((new (flet ((git (&rest args)
+                             (string-trim '(#\Newline)
+                                          (nlk::run-checked (list* "git" "-C" git "-c" "user.name=nl" "-c" "user.email=nl@nl"
+                                                                   "-c" "commit.gpgsign=false" args)
+                                                            (lambda (err) (error "git ~a: ~a" (first args) err))))))
+                      (alexandria:write-string-into-file
+                       "the fix" (merge-pathnames "fixed.txt" (uiop:ensure-directory-pathname git)))
+                      (git "add" "-A")
+                      (git "commit" "--quiet" "-m" "the fix")
+                      (git "rev-parse" "HEAD")))
+               (folder (merge-pathnames (format nil "~a/" name) root))
+               (marker (merge-pathnames ".hub" folder)))
+          (flet ((refresh (hub &rest keys)
+                   (multiple-value-list (apply #'nlk:refresh-hub-clones :root root :shipped '() :hub hub keys)))
+                 (pin () (second (uiop:read-file-lines marker))))
+            (is (hub-install (hub-offer name git old) root))
+            (is (equal '(nil nil) (refresh (list (hub-offer name git old)))) "an unmoved pin moves nothing")
+            ;; a community pin moves nothing, nor does an entry naming another repository
+            (is (equal '(nil nil) (refresh (list (hub-offer name git new :index "community")))))
+            (is (equal '(nil nil) (refresh (list (hub-offer name "https://example.org/other.git" new)))))
+            (is (equal (list (list name) nil) (refresh (list (hub-offer name git new)) :apply nil)))
+            (is (equal old (pin)) "found, not moved")
+            (is (equal (list (list name) nil) (refresh (lambda () (list (hub-offer name git new))))))
+            (is (equal new (pin)) "the clone ends on the index's new pin")
+            (is (probe-file (merge-pathnames "fixed.txt" folder)))
+            (is (null (probe-file (merge-pathnames ".cell-staging/" home))) "nothing is left aside")
+            (let ((result (refresh (list (hub-offer name git (make-string 40 :initial-element #\0))))))
+              (is (null (first result)))
+              (is (equal name (car (first (second result)))) "a failed move is said"))
+            (is (equal new (pin)) "and leaves the clone as it was")
+            (is (probe-file (merge-pathnames (format nil "~a.asd" name) folder)))
+            #-win32
+            (let ((own (nlk::make-offer :name name :systems (list name)
+                                        :directory (write-peripheral-folder release name))))
+              (is (equal (list (list name) nil)
+                         (multiple-value-list (nlk:refresh-hub-clones :root root :shipped (list own)
+                                                                      :hub (lambda () (error "the hub is not read"))))))
+              (is (nlk:symlink-target (merge-pathnames name root)) "the release's own folder stands there")
+              (is (null (probe-file marker)))
+              (is (null (probe-file (merge-pathnames ".cell-staging/" home))))
+              ;; a link is no clone
+              (is (equal '(nil nil) (multiple-value-list (nlk:refresh-hub-clones :root root :shipped (list own)))))))
+          (write-peripheral-folder root "nl-hub-mine")
+          (is (equal '(nil nil) (multiple-value-list
+                                 (nlk:refresh-hub-clones :root root :shipped '()
+                                                         :hub (list (hub-offer "nl-hub-mine" git new))))))
+          (is (probe-file (merge-pathnames "nl-hub-mine/nl-hub-mine.asd" root)) "the operator's own folder stays"))))))
+
 (deftest cells-hub-folders-of-one-repository-come-out-of-one-kept-copy ()
   ;; Folders of one repository at one commit fetch it once: the first pick
   ;; fills the copy the home keeps, and the next needs no network -- here,
