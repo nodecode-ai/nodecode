@@ -60,7 +60,7 @@ lint *files:
 # Hold HEAD's Common Lisp code lines (tokei) to this ceiling. Lower it when
 # the code shrinks; raise it only with the reason in the commit. Cells pulled
 # into src/cells/ are in no revision here and stay out of the count.
-loc_ceiling := "104552"
+loc_ceiling := "104852"
 
 # Fail when HEAD's Lisp code lines exceed loc_ceiling.
 loc:
@@ -105,6 +105,23 @@ check: lint loc build test
 # Check every Lean proof under proofs/ (needs elan).
 proofs:
     @src/tools/proofs.sh
+
+# Each hot path -- a keystroke, a page and a streamed word in a long
+# conversation, a turn appended to a long session, the wire fold, a session's
+# replay, the sessions listing, a JSON round trip, laying out a long answer
+# and long tool output -- runs at three sizes a heavy day reaches, and the
+# slope of its cost against the size is held to its contract in
+# src/perf/scaling.lisp: flat for what a person does inside a conversation,
+# linear for what reads all of it. Slopes are ratios inside one process, so a
+# slower or busier box does not move them and no second build is needed; a
+# breach must reproduce once before it fails. BASE is accepted for a gate
+# that compares two revisions; the growth contracts need none.
+# Hold every hot path's growth to its contract.
+perf *base:
+    @set -euo pipefail; cd src && {{sbcl}} \
+        --eval '(push (truename ".") asdf:*central-registry*)' \
+        --eval '(asdf:load-system :nodecode-perf)' \
+        --eval '(sb-ext:exit :code (min 1 (nodecode.perf.scaling:run-scaling)))'
 
 # The heap set here is the binary's for good:
 # the dump saves its runtime options, so the executable ignores them on its

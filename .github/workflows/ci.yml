@@ -7,6 +7,8 @@ name: CI
 #   windows  the release's Windows half: build-windows.ps1 and both smokes
 #   proofs   every Lean proof under proofs/, strict and on the classical
 #            axioms only (`just proofs')
+#   scaling  every hot path's cost at three sizes, its growth held to its
+#            contract (`just perf'; src/perf/scaling.lisp), after linux
 # The scripts live in src/tools/ci-*, so a job is one step and the same check
 # runs by hand on the same machine.
 #
@@ -38,6 +40,19 @@ jobs:
       - uses: actions/checkout@v4
       - name: Lint, build the release tarball, run the core suite
         run: src/tools/ci-linux.sh
+
+  scaling:
+    name: Scaling
+    # After Linux, on the box Linux ran on: its release build leaves the SBCL
+    # and quicklisp this needs, and the slopes are fitted on a box that is not
+    # also running the suite.
+    needs: linux
+    runs-on: [self-hosted, nc-linux]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Hold every hot path's growth to its contract
+        run: src/tools/ci-scaling.sh
 
   proofs:
     name: Proofs
