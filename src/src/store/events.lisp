@@ -984,14 +984,13 @@ contract hash, invocation text, and SEQUENCE when the writer names one."
                        (values position sequence resolved-event-id nil)
                        (same (existing-event-row resolved-event-id))))))
         (if expected-sequence
-            (let ((existing (existing-event-row resolved-event-id)))
-              (if existing
-                  (same existing)
-                  (let ((actual (current-aggregate-sequence aggregate-type aggregate-id)))
-                    (unless (= actual expected-sequence)
-                      (error 'event-sequence-conflict :session-id session-id
-                             :expected expected-sequence :actual actual))
-                    (insert (1+ actual)))))
+            (if-let (existing (existing-event-row resolved-event-id))
+              (same existing)
+              (let ((actual (current-aggregate-sequence aggregate-type aggregate-id)))
+                (unless (= actual expected-sequence)
+                  (error 'event-sequence-conflict :session-id session-id
+                         :expected expected-sequence :actual actual))
+                (insert (1+ actual))))
             (insert nil))))))
 
 (defun append-session-created-row (handle session-id &key cwd parent
@@ -1034,9 +1033,8 @@ id."
        :correlation-id command-id))))
 
 (defun %materialize-standby-session (handle session-id cwd parent anchor-turn-id)
-  (let ((record (standby-session-record session-id)))
+  (when-let (record (standby-session-record session-id))
     (cond
-      ((null record) nil)
       ((session-created-fact-p session-id)
        ;; The identity landed by another road; the record is stale.
        (forget-standby-session session-id)
@@ -1133,16 +1131,15 @@ the aggregate's next."
   (destructuring-bind (&optional position sequence)
       (first (apply #'sqlite:execute-to-list handle +insert-event-sql+ columns))
     (when position
-      (let ((columns (copy-list columns))
-            (size nil))
+      (let* ((columns (copy-list columns))
+             ;; the payload text's length, the measure the ring's budget is in
+             (size (length (nth (load-time-value
+                                 (1- (position :payload +event-row-columns+ :key #'second)))
+                                columns))))
         (setf (nth (load-time-value
                     (1- (position :aggregate-sequence +event-row-columns+ :key #'second)))
                    columns)
-              sequence
-              ;; the payload text's length, the measure the ring's budget is in
-              size (length (nth (load-time-value
-                                 (1- (position :payload +event-row-columns+ :key #'second)))
-                                columns)))
+              sequence)
         (let ((event (event-row-to-instance (cons position columns))))
           (after-commit (lambda () (remember-committed-event event size))))
         (values position sequence)))))
@@ -1344,10 +1341,9 @@ handle is WITHIN, when given (an import lands a whole file as one)."
             for value in (list aggregate-type aggregate-id session-id event-id kind)
             unless (and (stringp value) (plusp (length value)))
               do (invalid "~a must be a non-empty string" name))
-      (unless (and (integerp sequence) (plusp sequence))
-        (invalid "aggregate_sequence must be a positive integer"))
-      (unless (and (integerp schema-version) (plusp schema-version))
-        (invalid "schema_version must be a positive integer"))
+      (loop for (name value) on (list "aggregate_sequence" sequence "schema_version" schema-version) by #'cddr
+            unless (and (integerp value) (plusp value))
+              do (invalid "~a must be a positive integer" name))
       (unless (stringp payload)
         (invalid "payload must be JSON text"))
       (handler-case (decode-event-payload-object payload)
@@ -1602,7 +1598,7 @@ hold."
         (committed-ring-push ring event size)
         (committed-rings-hold table)))))
 
-(defun committed-events-after (session-id cursor)
+(defun committed-events-after (session-id cursor &aux (store *store*))
   "=> (values EVENTS MISS): SESSION-ID's committed events above log position
 CURSOR, oldest first, out of this process's memory — or NIL and :MISS when
 the memory does not reach back to CURSOR (nothing committed since the store
@@ -1610,17 +1606,16 @@ opened, or more than the ring holds), in which case the caller pages the
 log. Empty EVENTS with no MISS is an answer: nothing after CURSOR."
   (check-type session-id session-id)
   (check-type cursor log-position)
-  (let ((store *store*))
-    (if (store-open-p store)
-        (sb-ext:with-locked-hash-table (store.committed)
-          (let ((ring (gethash session-id store.committed)))
-            (if (or (null ring) (< cursor ring.floor))
-                (values nil :miss)
-                (values (loop for (event) in ring.retained
-                              when (> (event-log-position event) cursor)
-                                collect event)
-                        nil))))
-        (values nil :miss))))
+  (if (store-open-p store)
+      (sb-ext:with-locked-hash-table (store.committed)
+        (let ((ring (gethash session-id store.committed)))
+          (if (or (null ring) (< cursor ring.floor))
+              (values nil :miss)
+              (values (loop for (event) in ring.retained
+                            when (> (event-log-position event) cursor)
+                              collect event)
+                      nil))))
+      (values nil :miss)))
 
 (defun event-count (&key session-id)
   "How many event facts are stored. Cheap enough to call per turn."
