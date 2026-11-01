@@ -238,7 +238,12 @@ names too (PAINT-KEYS)."
     ;; Zig's fixed_image_paste_shortcut_label row folds in here: its keys are
     ;; a real action for the lisp shells, so it needs no separate fixed row.
     (:paste-image "Paste image from clipboard" ("ctrl+v" "ctrl+alt+v"))
-    (:copy-selection "Copy selection" ("ctrl+shift+c")))
+    (:copy-selection "Copy selection" ("ctrl+shift+c"))
+    ;; Ctrl+Y marks the transcript from the keyboard (TRANSCRIPT-SELECT-KEY):
+    ;; y is the copy key of vi, tmux's copy mode and Codex's select mode, and
+    ;; the chord is free in both key ladders and in the editor, which keeps
+    ;; no kill ring for readline's yank to paste from.
+    (:select-transcript "Select transcript text with the keyboard" ("ctrl+y")))
   "The declarative default keymap: (ACTION LABEL DEFAULT-CHORD-STRINGS).")
 
 (define-startup-parameter *keybinds-path*

@@ -2629,6 +2629,13 @@ character ranges in its style-free text. TARGET is a URI or (:COMMAND . NAME).")
   (when links (setf (plain-row-links row) links))
   row)
 
+;;; LLINE-ROWS marks the rows a wrapped line goes on in, keyed on the plain row
+;;; the way its links are, so the keyboard selection can take a logical line
+;;; -- its line motions and its whole-line mark -- where the band shows rows.
+(nlk:define-side-table plain-row-continues (:weakness :key :synchronized t)
+  "Plain transcript row -> T when it goes on the logical line wrapped above
+it: every row LLINE-ROWS lays after a line's first (SELECT-LOGICAL-LINE).")
+
 (defun seg-links (segs start)
   "The (START END TARGET) ranges of SEGS' linked segs, SEGS laid from column START."
   (loop for seg in segs
@@ -2753,13 +2760,16 @@ glint crosses and the time it set off (GLINT-OVERLAY)."
                                 (append prefix segs))
                 collect (render-row nil paint fill-bg width :shadow line.shadow)
                   into painted
-                collect (let ((prefix (if firstp
-                                          (concatenate 'string lead mark)
-                                          (segs-text cont))))
-                          ;; Narrow before attaching EQ-keyed link ranges:
-                          ;; the string returned is the click lane's key.
-                          (link-plain-row (nlk:narrow-string (uiop:strcat prefix (segs-text segs)))
-                                          (seg-links segs (length prefix))))
+                collect (let* ((prefix (if firstp
+                                           (concatenate 'string lead mark)
+                                           (segs-text cont)))
+                               ;; Narrow before attaching EQ-keyed link ranges:
+                               ;; the string returned is the click lane's key.
+                               (plain (link-plain-row (nlk:narrow-string
+                                                       (uiop:strcat prefix (segs-text segs)))
+                                                      (seg-links segs (length prefix)))))
+                          (unless firstp (setf (plain-row-continues plain) t))
+                          plain)
                   into plains
                 collect (loop for seg in paint
                               for from = 0 then to
@@ -11919,6 +11929,11 @@ instead selects the word under the pointer."
   ;; No leg paints: the message that got here is folded in a batch the loop
   ;; paints once, and the frame's overlay washes the mark at that paint.
   ;;
+  ;; A left press is the pointer taking the transcript back from the keys:
+  ;; the keyboard selection closes, its mark with it, and the press goes on
+  ;; to do what it does.
+  (when (and (eq :left (nlt:mouse-event-button msg)) (transcript-select model))
+    (end-transcript-select model))
   ;; A sheet's window is over everything, the toasts too, and takes the
   ;; pointer whole: a click on it is its own, run on the release, and a press
   ;; anywhere else but a toast does nothing, the shell behind it waiting as
@@ -12183,6 +12198,424 @@ TRANSCRIPT-LANE -- for a drag's mark the shown rows whose lines it holds
                   collect (list row
                                 (if (= row r1) (max left c1) left)
                                 (if (= row r2) (min right c2) right))))))))
+
+;;; --- keyboard select mode ------------------------------------------------
+;;; The transcript's words mark from the keyboard as well as under a drag
+;;; (Codex's transcript select mode, openai/codex#57221): the
+;;; :SELECT-TRANSCRIPT chord sets a cursor on the last words the window shows,
+;;; and the keys move it -- h j k l and the arrows by a character or a row,
+;;; w b e and Ctrl+Left/Right by words, 0 ^ $ Home End to the ends of a
+;;; logical line, the page keys and Ctrl+B/F/U/D by pages, g and G to the
+;;; transcript's two ends. v (or Space) marks from the cursor, V marks whole
+;;; lines, a Shift+arrow marks as it moves, o swaps the mark's ends, and y,
+;;; Enter, Ctrl+C or the copy chord copy it and leave; Esc takes a mark away,
+;;; then leaves.
+;;;
+;;; Nothing here paints a mark of its own: the mark is a drag's -- a screen
+;;; mark held on transcript points (MARK-POINTS) -- so the wash, the copy and
+;;; the scroll that keeps its words are the ones a drag's mark has, and a mark
+;;; standing when the mode opens is taken up as its own. The hardware cursor
+;;; parks on the cursor's cell while the mode lasts, the composer names the
+;;; keys, and every key is the mode's but the quit chord: no letter reaches
+;;; the composer, no Enter submits.
+
+(defstruct (select-state (:constructor make-select-state (cursor &key anchor (unit :char))))
+  "A keyboard selection over a transcript: CURSOR the transcript point the
+keys move (TRANSCRIPT-POINT), ANCHOR the point its mark opened at or NIL
+while nothing is marked, UNIT :CHAR or :LINE (a mark of whole logical
+lines), and GOAL the display column a run of row motions keeps."
+  cursor anchor (unit :char) goal)
+
+(nlk:define-side-table transcript-select (:weakness :key)
+  "Weak memo: chat model -> its SELECT-STATE while the keyboard selects the
+transcript's words.")
+
+(defun select-line-text (model line &aux (plains (chat-model-line-plain model)))
+  "Transcript LINE's words as a copy reads them (SPAN-MARK-ROWS): the
+gutter's marks and a message's clock blanked, so its display columns are the
+lane columns a mark is cut at. Empty past the transcript's lines."
+  (if (< -1 line (length plains))
+      (without-line-clock model line (without-gutter-marks (aref plains line)))
+      ""))
+
+(defun select-text-bounds (text)
+  "=> (values FIRST LAST): the indices of TEXT's first and last character
+that is not a blank, or NIL for a blank TEXT."
+  (when-let (first (position #\Space text :test-not #'char=))
+    (values first (position #\Space text :test-not #'char= :from-end t))))
+
+(defun select-word-char-p (char)
+  "Whether CHAR belongs to a word the w, b and e keys step by: a letter or a
+digit of any script, or `_' -- a run of punctuation, a rule or a bullet is
+passed over, as Codex's word motions pass it."
+  (or (alphanumericp char) (char= char #\_)))
+
+(defun select-logical-line (model line &aux (plains (chat-model-line-plain model))
+                                            (count (length plains)))
+  "=> (values FIRST LAST): the first and last transcript lines of the logical
+line LINE is a row of -- the rows a wrapped line goes on in
+(PLAIN-ROW-CONTINUES) belong to the line above them."
+  (let ((first line) (last line))
+    (loop while (and (< 0 first count) (plain-row-continues (aref plains first)))
+          do (decf first))
+    (loop while (and (< -1 (1+ last) count) (plain-row-continues (aref plains (1+ last))))
+          do (incf last))
+    (values first last)))
+
+(defun select-point (model line index &aux (text (select-line-text model line)))
+  "The transcript point at character INDEX of transcript LINE."
+  (transcript-point model line (text-display-width (subseq text 0 (min index (length text))))))
+
+(defun select-cursor-position (model state)
+  "=> (values LINE INDEX): STATE's cursor on MODEL's lines as they stand now,
+its index on the line's last character at most."
+  (let* ((point (select-state-cursor state))
+         (line (point-line model point))
+         (text (select-line-text model line)))
+    (values line (min (plain-column-index text (third point)) (max 0 (1- (length text)))))))
+
+(defun select-step-char (model line index delta)
+  "=> (values LINE INDEX) one character from LINE's INDEX, DELTA -1 or 1: on
+the line while its words go on that way, else the near end of the next line
+that has words; NIL past the last."
+  (multiple-value-bind (first last) (select-text-bounds (select-line-text model line))
+    (if (and first (if (minusp delta) (> index first) (< index last)))
+        (values line (+ index delta))
+        (loop for at = (+ line delta) then (+ at delta)
+              while (< -1 at (length (chat-model-line-plain model)))
+              do (multiple-value-bind (first last) (select-text-bounds (select-line-text model at))
+                   (when first
+                     (return (values at (if (minusp delta) last first)))))))))
+
+(defun select-word-edge-p (text index edge)
+  "Whether character INDEX of TEXT opens (EDGE :START) or closes (:END) a word."
+  (and (< -1 index (length text))
+       (select-word-char-p (char text index))
+       (let ((beside (if (eq edge :start) (1- index) (1+ index))))
+         (not (and (< -1 beside (length text)) (select-word-char-p (char text beside)))))))
+
+(defun select-step-word (model line index delta edge)
+  "=> (values LINE INDEX) of the next word's EDGE (:START or :END) from
+LINE's INDEX going DELTA (1 or -1), across lines -- w is forward to a
+start, b back to one, e forward to an end; NIL when no word is left that way."
+  (loop for at = line then (+ at delta)
+        while (< -1 at (length (chat-model-line-plain model)))
+        do (let ((text (select-line-text model at)))
+             (loop for i = (cond ((= at line) (+ index delta))
+                                 ((plusp delta) 0)
+                                 (t (1- (length text))))
+                     then (+ i delta)
+                   while (< -1 i (length text))
+                   when (select-word-edge-p text i edge)
+                     do (return-from select-step-word (values at i))))))
+
+(defun select-line-end (model line end)
+  "=> (values LINE INDEX): the first words of LINE's logical line, or with
+END its last character -- a row's ends are the wrapped line's."
+  (multiple-value-bind (first last) (select-logical-line model line)
+    (let ((at (if end last first)))
+      (multiple-value-bind (from to) (select-text-bounds (select-line-text model at))
+        (values at (or (if end to from) 0))))))
+
+(defun select-step-rows (model line rows column)
+  "=> (values LINE INDEX COLUMN) ROWS lines from LINE, up for a negative ROWS
+and clamped to the transcript, at display COLUMN or the line's last character
+when it ends before. A row with no words keeps COLUMN itself, the third
+value, so a run of rows through a block's padding or a blank between
+paragraphs goes straight down the column rather than out to the margin."
+  (let* ((at (max 0 (min (1- (length (chat-model-line-plain model))) (+ line rows))))
+         (text (select-line-text model at))
+         (last (nth-value 1 (select-text-bounds text))))
+    (if last
+        (values at (min last (plain-column-index text column)))
+        (values at 0 (min column (select-lane-end model))))))
+
+(defun select-boundary (model end &aux (count (length (chat-model-line-plain model))))
+  "=> (values LINE INDEX): the transcript's first words, or with END its
+last character; NIL while no line has words."
+  (loop for i below count
+        for at = (if end (- count i 1) i)
+        do (multiple-value-bind (first last) (select-text-bounds (select-line-text model at))
+             (when first (return (values at (if end last first)))))))
+
+(defun select-text-column (model line end)
+  "The display column of transcript LINE's first character that is not a
+blank, or with END its last; 0 for a line with no words."
+  (let ((text (select-line-text model line)))
+    (multiple-value-bind (first last) (select-text-bounds text)
+      (if first (text-display-width (subseq text 0 (if end last first))) 0))))
+
+(defun select-lane-end (model)
+  "The last lane column of a transcript line: as far right as a row motion
+keeps its column on a row with no words."
+  (multiple-value-bind (top bottom left right) (transcript-lane model)
+    (declare (ignore top bottom))
+    (- right left)))
+
+(defun sync-select-mark (model state &aux (anchor (select-state-anchor state)))
+  "Lay STATE's mark as MODEL's selection, the drag's own shape -- a screen
+mark held on transcript points (MARK-SPAN) -- from its anchor to its cursor,
+both ends inclusive, or for whole lines from the first logical line's start
+to the last one's end; with nothing marked, take the selection down."
+  (if (null anchor)
+      (progn (setf (chat-model-selection model) nil)
+             (forget-mark-points model))
+      (let ((cursor (select-state-cursor state))
+            ;; The screen cells are the points' to say: MARK-SPAN reads the
+            ;; points whenever they ride this very cons.
+            (mark (cons (cons 0 0) (cons 0 0))))
+        (multiple-value-bind (from to)
+            (if (eq :line (select-state-unit state))
+                ;; Whole lines, held on their words: from the first line's first
+                ;; character to the last one's last, so the wash keeps to the
+                ;; text a block stands on and never spills into the margin; the
+                ;; rows between are washed across the lane, as a drag's are.
+                (let ((first (select-logical-line model (min (point-line model anchor)
+                                                             (point-line model cursor))))
+                      (last (nth-value 1 (select-logical-line model (max (point-line model anchor)
+                                                                         (point-line model cursor))))))
+                  (values (transcript-point model first (select-text-column model first nil))
+                          (transcript-point model last (select-text-column model last t))))
+                (values anchor cursor))
+          (setf (chat-model-selection model) mark
+                (mark-points model) (cons mark (cons from to)))))))
+
+(defun select-line-band-row (model line &aux (window (chat-model-band model))
+                                             (pad (band-window-top-padding window)))
+  "The band row, 0-based under the frame head, transcript LINE is painted
+on, or NIL while the window does not show it."
+  (loop for row from 0 below (- (band-window-height window) pad)
+        when (eql line (band-window-row-index window row))
+          return (+ row pad)))
+
+(defun reveal-select-line (model line &aux (window (chat-model-band model)))
+  "Scroll the transcript window the least that shows LINE, as a scroll moves
+it: a found-block pin spent, the follow re-pinned only at the bottom."
+  (unless (select-line-band-row model line)
+    (clear-transcript-pin model)
+    ;; The last piece is the run the window scrolls; a pinned prompt above it
+    ;; can take rows, so the step is tried until the line stands.
+    (loop repeat 4
+          until (select-line-band-row model line)
+          do (let ((run (car (last (band-window-pieces window)))))
+               (unless (and (consp run) (integerp (first run)))
+                 (return))
+               (destructuring-bind (start count) run
+                 (band-window-scroll window (if (< line start)
+                                                (- line start)
+                                                (- line (+ start count -1)))))))
+    (setf (chat-model-follow-bottom model) (band-window-at-bottom-p window))))
+
+(defun select-move (model state motion)
+  "Move STATE's cursor by MOTION, carry its mark to it and scroll the window
+to show it. MOTION is :LEFT, :RIGHT, (:ROWS N), :WORD-FORWARD,
+:WORD-BACKWARD, :WORD-END, :LINE-START, :LINE-END, :BEGINNING or :END."
+  ;; A motion up first grows the projection the way a scroll up does, so the
+  ;; rows above the window's first are there to move onto; the points keep
+  ;; the cursor on its words while the lines under it renumber.
+  (when (or (member motion '(:word-backward :beginning))
+            (and (consp motion) (minusp (second motion))))
+    (setf (chat-model-follow-bottom model) nil)
+    (grow-transcript-projection model :whole (eq motion :beginning)))
+  (multiple-value-bind (line index) (select-cursor-position model state)
+    (let ((rows (and (consp motion) (second motion)))
+          (column (or (select-state-goal state) (third (select-state-cursor state)))))
+      (multiple-value-bind (to at to-column)
+          (cond (rows (select-step-rows model line rows column))
+                (t (ecase motion
+                     (:left (select-step-char model line index -1))
+                     (:right (select-step-char model line index 1))
+                     (:word-forward (select-step-word model line index 1 :start))
+                     (:word-backward (select-step-word model line index -1 :start))
+                     (:word-end (select-step-word model line index 1 :end))
+                     (:line-start (select-line-end model line nil))
+                     (:line-end (select-line-end model line t))
+                     (:beginning (select-boundary model nil))
+                     (:end (select-boundary model t)))))
+        (when to
+          (setf (select-state-cursor state) (if to-column
+                                                 (transcript-point model to to-column)
+                                                 (select-point model to at))
+                ;; A run of row motions keeps the column it set out from.
+                (select-state-goal state) (and rows column))
+          (sync-select-mark model state)
+          ;; G is the tail as End is: the window lands on the bottom, the
+          ;; follow pinned again, and the cursor's line shown from there.
+          (when (eq motion :end) (pin-transcript-bottom model))
+          (reveal-select-line model to))))))
+
+(defun select-toggle-mark (model state unit)
+  "v and V: open a mark of UNIT at the cursor; the same key again takes it
+away, and the other changes the standing mark's unit."
+  (cond ((null (select-state-anchor state))
+         (setf (select-state-anchor state) (select-state-cursor state)
+               (select-state-unit state) unit))
+        ((eq unit (select-state-unit state))
+         (setf (select-state-anchor state) nil))
+        (t (setf (select-state-unit state) unit)))
+  (sync-select-mark model state))
+
+(defun select-swap-ends (model state)
+  "o: the cursor goes to the mark's other end, which stands where it was."
+  (when-let (anchor (select-state-anchor state))
+    (setf (select-state-anchor state) (select-state-cursor state)
+          (select-state-cursor state) anchor
+          (select-state-goal state) nil)
+    (sync-select-mark model state)
+    (reveal-select-line model (point-line model anchor))))
+
+(defun begin-transcript-select (model)
+  "Open the keyboard selection on MODEL's transcript: a mark standing is
+taken up as its own, the cursor on its later end; else the cursor stands on
+the first words of the last line the window shows. With no words to select
+it says so and opens nothing. => whether it opened."
+  (let* ((window (chat-model-band model))
+         (span (mark-span model))
+         (mark (chat-model-selection model))
+         (ends (cond (span (cons (transcript-point model (caar span) (cdar span))
+                                 (transcript-point model (cadr span) (cddr span))))
+                     (mark (let ((from (frame-cell-point model (car mark)))
+                                 (to (frame-cell-point model (cdr mark))))
+                             (and from to (cons from to))))))
+         (line (unless ends
+                 (loop with pad = (band-window-top-padding window)
+                       for row downfrom (- (band-window-height window) pad 1) to 0
+                       for line = (band-window-row-index window row)
+                       when (and line (select-text-bounds (select-line-text model line)))
+                         return line))))
+    ;; A notice that is news (a turn's `Completed') gives the mode's own line
+    ;; its place at once; a held one, a failure, stays to be read.
+    (when (and (or ends line) (chat-model-composer-status model)
+               (not (composer-status-held (chat-model-composer-status model))))
+      (setf (chat-model-composer-status model) nil))
+    (cond
+      (ends
+       ;; The cursor stands on the mark's last character, never past it.
+       (let* ((to (cdr ends))
+              (at (point-line model to))
+              (text (select-line-text model at))
+              (last (nth-value 1 (select-text-bounds text)))
+              (state (make-select-state
+                      (select-point model at (min (or last 0) (plain-column-index text (third to))))
+                      :anchor (car ends))))
+         (setf (transcript-select model) state)
+         (sync-select-mark model state)
+         t))
+      (line
+       (setf (chat-model-selection model) nil
+             (transcript-select model)
+             (make-select-state (select-point model line (select-text-bounds (select-line-text model line)))))
+       (forget-mark-points model)
+       t)
+      (t (show-status model "Nothing to select yet")
+         nil))))
+
+(defun end-transcript-select (model &key keep-mark)
+  "Close MODEL's keyboard selection: the hardware cursor goes back to the
+composer, and the mark goes with the mode unless KEEP-MARK -- a copy leaves
+what it took washed, as a drag's release does."
+  (forget-transcript-select model)
+  (unless keep-mark
+    (setf (chat-model-selection model) nil)
+    (forget-mark-points model)))
+
+(defun select-copy (model state &key leave)
+  "y, Enter, Ctrl+C and the copy chord: copy the mark and leave, the mark
+kept; with nothing marked, LEAVE leaves and anything else says nothing is
+marked."
+  (cond ((select-state-anchor state)
+         (copy-frame-selection model)
+         (end-transcript-select model :keep-mark t))
+        (leave (end-transcript-select model))
+        (t (show-status model +selection-empty-hint+))))
+
+(defun transcript-select-key (model key mod &aux (state (transcript-select model)))
+  "One key pressed while MODEL's keyboard selection runs, KEY and MOD the
+press's code and modifiers => T when the selection took it, which every key
+but the quit chord is: a letter it has no use for types nothing."
+  (let* ((ctrl (nlt:mod-contains mod nlt:+mod-ctrl+))
+         (alt (nlt:mod-contains mod nlt:+mod-alt+))
+         (shift (nlt:mod-contains mod nlt:+mod-shift+))
+         (height (max 1 (band-window-height (chat-model-band model))))
+         (page (max 1 (1- height)))
+         (half (ceiling height 2)))
+    ;; A letter's case says its key, whatever the shift bit says (KEYBIND-
+    ;; MATCHES-P's rule), so V and v, G and g are told apart by the character.
+    (flet ((char-key (char) (and (not ctrl) (not alt) (eql key char)))
+           (ctrl-key (char) (and ctrl (not alt) (characterp key) (char-equal key char))))
+      (let ((motion (cond ((or (ctrl-key #\b) (and (eq key :page-up) (not ctrl))) (list :rows (- page)))
+                          ((or (ctrl-key #\f) (and (eq key :page-down) (not ctrl))) (list :rows page))
+                          ((ctrl-key #\u) (list :rows (- half)))
+                          ((ctrl-key #\d) (list :rows half))
+                          ((and (or ctrl alt) (eq key :left)) :word-backward)
+                          ((and (or ctrl alt) (eq key :right)) :word-forward)
+                          ((and ctrl (eq key :home)) :beginning)
+                          ((and ctrl (eq key :end)) :end)
+                          ((or ctrl alt) nil)
+                          ((or (eq key :left) (char-key #\h)) :left)
+                          ((or (eq key :right) (char-key #\l)) :right)
+                          ((or (eq key :up) (char-key #\k)) (list :rows -1))
+                          ((or (eq key :down) (char-key #\j)) (list :rows 1))
+                          ((char-key #\w) :word-forward)
+                          ((char-key #\b) :word-backward)
+                          ((char-key #\e) :word-end)
+                          ((or (eq key :home) (char-key #\0) (char-key #\^)) :line-start)
+                          ((or (eq key :end) (char-key #\$)) :line-end)
+                          ((char-key #\g) :beginning)
+                          ((char-key #\G) :end))))
+        (cond
+          ;; The chord that opened the mode closes it, as Ctrl+S does the picker.
+          ((model-key-matches-p model :select-transcript key mod)
+           (end-transcript-select model))
+          ((or (model-key-matches-p model :copy-selection key mod)
+               (ctrl-key #\c) (char-key #\y) (and (eq key :enter) (not ctrl) (not alt)))
+           (select-copy model state :leave (not (char-key #\y))))
+          ((eq key :escape)
+           (if (select-state-anchor state)
+               (select-toggle-mark model state (select-state-unit state))
+               (end-transcript-select model)))
+          ((char-key #\q) (end-transcript-select model))
+          ((or (char-key #\v) (char-key #\Space)) (select-toggle-mark model state :char))
+          ((char-key #\V) (select-toggle-mark model state :line))
+          ((char-key #\o) (select-swap-ends model state))
+          (motion
+           ;; A Shift+arrow marks as it goes: the first one opens the mark.
+           (when (and shift (member key '(:left :right :up :down))
+                      (null (select-state-anchor state)))
+             (select-toggle-mark model state :char))
+           (select-move model state motion))
+          ;; The quit chord still quits; Ctrl+D, a page here, never does.
+          ((model-key-matches-p model :quit key mod)
+           (return-from transcript-select-key nil)))
+        t))))
+
+(defun select-cursor-cell (model &aux (state (transcript-select model)))
+  "The frame cell (COLUMN . ROW), both 0-based, the keyboard selection's
+cursor stands on -- where the hardware cursor parks while the mode lasts --
+or NIL while the window does not show its line."
+  (when state
+    (let* ((point (select-state-cursor state))
+           (row (select-line-band-row model (point-line model point))))
+      (when row
+        (multiple-value-bind (top bottom left right) (transcript-lane model)
+          (when (<= (+ top row) bottom)
+            (cons (min right (+ left (third point))) (+ top row))))))))
+
+(defun select-mode-hint (state)
+  "The composer's line while the keyboard selects: what moves the cursor,
+or, with a mark standing, that moving carries it."
+  (if (select-state-anchor state)
+      "Selecting · move to extend the mark"
+      "Selecting · move with h j k l, w b e, 0 $, PgUp PgDn, g G"))
+
+(defun select-key-segs (state)
+  "The keys the keyboard selection answers, each a filled cap before its
+verb, as STEER-KEY-SEGS lays the running turn's."
+  (loop for (cap verb) in (if (select-state-anchor state)
+                              '(("o" "swap ends") ("y" "copy") ("esc" "unmark"))
+                              '(("v" "mark") ("V" "lines") ("esc" "leave")))
+        append (list (make-seg :text (format nil " ~a " cap) :tone :key-chip)
+                     (make-seg :text (format nil " ~a  " verb) :tone :muted))))
 
 (defun range-target (ranges index)
   "The TARGET of the (START END TARGET) in RANGES whose span holds INDEX, or NIL."
@@ -12496,6 +12929,13 @@ from the ones COLLECT-DURING-WAIT hid inside provider wait."
               (shift (nlt:mod-contains mod nlt:+mod-shift+))
               (dialog (chat-model-dialog model)))
          (cond
+           ;; A keyboard selection over the transcript owns the keys while it
+           ;; runs (TRANSCRIPT-SELECT-KEY), ahead of every chord below: its
+           ;; Ctrl+D pages, its Enter copies, its letters move the cursor, and
+           ;; the quit chord it declines falls through to quit. An open dialog
+           ;; keeps its own keys; the mode waits behind it.
+           ((and (transcript-select model) (null dialog)
+                 (transcript-select-key model key mod)))
            ;; Quit dispatches through the keymap (defaults Ctrl+Q/Ctrl+D).
            ;; Ctrl+C clears a non-empty composer first (the Zig keybind
            ;; split), then stops a running turn the way Esc does
@@ -12573,6 +13013,11 @@ from the ones COLLECT-DURING-WAIT hid inside provider wait."
 
            ;; An open modal picker owns every remaining key.
            (dialog (picker-dialog-key model key :ctrl ctrl :alt alt :shift shift :mod mod))
+
+           ;; Ctrl+Y opens the keyboard selection over the transcript
+           ;; (BEGIN-TRANSCRIPT-SELECT); the mode's own ladder above closes it.
+           ((model-key-matches-p model :select-transcript key mod)
+            (begin-transcript-select model))
 
            ;; Switch Developer / Standard viewport (Ctrl+O).
            ((model-key-matches-p model :toggle-viewport key mod)
@@ -13285,8 +13730,10 @@ the last two the box's right margin."
          ;; Ready placeholder is the floor.
          ;; Expire status even while typed text hides its placeholder.
          ((status-lines under status) (composer-status-lines model columns))
+         (select (transcript-select model))
          (hint (and (zerop (length (or value ""))) (not status)
-                    (or (and (home-screen-p model) (home-prompt-text model))
+                    (or (and select (select-mode-hint select))
+                        (and (home-screen-p model) (home-prompt-text model))
                         ;; The floor, the widget's own placeholder, reads
                         ;; muted like every other placeholder line: it is
                         ;; absence of input, not input. Taking it through
@@ -13346,7 +13793,9 @@ the last two the box's right margin."
                                     (if steering
                                         (styled "▐" (style-with (style-for-tone :tool) :bg bg))
                                         (blank-frame-row 1 bg))))
-                 (keys (and steering (steer-key-segs model)))
+                 ;; While the keyboard selects, the pad row names its keys.
+                 (keys (cond (select (select-key-segs select))
+                             (steering (steer-key-segs model))))
                  (right (blank-frame-row (- width 2 (composer-box-width width)) bg))
                  (visible-count (min (length ta-lines)
                                      (- (composer-visible-rows model) (length under))))
@@ -13667,20 +14116,24 @@ footer, and the final blank; short windows end with two blank rows."
            ;; through SYNC-VIEWPORT-GEOMETRY.
            (let ((dropdown (composer-dropdown-panel-rows model width bg)))
              ;; The composer paints, so its caret cell is where the hardware
-             ;; cursor parks.
+             ;; cursor parks -- unless the keyboard selects the transcript,
+             ;; whose cursor it stands on then (SELECT-CURSOR-CELL), hidden
+             ;; while the window does not show that line.
              (setf (chat-model-parked-cursor model)
-                   (multiple-value-bind (x y)
-                       (editor-cursor-screen-position (chat-model-editor model))
-                     (when (and x (< y (composer-visible-rows model)))
-                       (let* ((tall (shell-footer-p height))
-                              ;; blank + header + blank, the band, the gap blank, and
-                              ;; the box's top pad row on tall windows.
-                              (row (+ 3 (length band) 1 (if tall 1 0) y))
-                              ;; Tall windows inset the side gutter (2) plus the box's own
-                              ;; text inset; the short single-line mode only its inset (2).
-                              (col (+ (if tall (+ 2 (composer-text-inset)) 2) x)))
-                         (when (< row height)
-                           (cons (min col (1- width)) row))))))
+                   (if (transcript-select model)
+                       (select-cursor-cell model)
+                       (multiple-value-bind (x y)
+                           (editor-cursor-screen-position (chat-model-editor model))
+                         (when (and x (< y (composer-visible-rows model)))
+                           (let* ((tall (shell-footer-p height))
+                                  ;; blank + header + blank, the band, the gap blank, and
+                                  ;; the box's top pad row on tall windows.
+                                  (row (+ 3 (length band) 1 (if tall 1 0) y))
+                                  ;; Tall windows inset the side gutter (2) plus the box's own
+                                  ;; text inset; the short single-line mode only its inset (2).
+                                  (col (+ (if tall (+ 2 (composer-text-inset)) 2) x)))
+                             (when (< row height)
+                               (cons (min col (1- width)) row)))))))
              (setf toast-floor (+ (length head) (length band)))
              ;; The live block is the band's own tail, so the scroll gutter
              ;; ends one canvas row over the composer.

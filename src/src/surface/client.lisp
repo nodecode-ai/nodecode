@@ -1851,8 +1851,11 @@ thread reads it and clears this place.")
          (setf model.turn-in-flight nil model.turn-started-at nil model.turn-activity nil))
        (render-state model)))
     ;; An open modal picker owns its keys — the base update routes them. So
-    ;; does every other message; the arms below are all key presses.
-    ((or (not (nlt:key-press-msg-p msg)) model.dialog)
+    ;; does every other message; the arms below are all key presses. So does
+    ;; the keyboard selection over the transcript (TRANSCRIPT-SELECT-KEY):
+    ;; while it runs, Left moves its cursor, Enter copies and Esc unmarks,
+    ;; never leaving the session, submitting or stopping the turn.
+    ((or (not (nlt:key-press-msg-p msg)) model.dialog (transcript-select model))
      (return-from update (call-next-method model msg)))
     ;; Every key advances or resets the Konami code's run, ahead of the arms
     ;; below: its Left is not the leave gesture (KONAMI-KEY).
