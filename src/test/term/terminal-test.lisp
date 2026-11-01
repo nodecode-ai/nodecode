@@ -107,6 +107,18 @@ event type at 0, bKeyDown at 4, wRepeatCount at 8, uChar at 14."
     (is (equal "" (transition keys keys)) "and only once")
     (is (search (csi "<u") (transition keys plain)) "dropping the enhancements pops the mode")))
 
+(deftest a-terminal-without-any-event-tracking-still-gets-the-wheel ()
+  ;; Termux accepts 1003 and drops it: asked for 1003 alone, it sent the
+  ;; wheel as Up/Down and the prompt walked its history (#89).
+  ;; Button events first, so a terminal that keeps one mode ends on 1003.
+  (is (equal '((1002 . #\h) (1003 . #\h) (1006 . #\h))
+             (dec-private-modes (written #'nlt:enable-mouse :all-motion))))
+  (is (equal '((1002 . #\h) (1006 . #\h))
+             (dec-private-modes (written #'nlt:enable-mouse :cell-motion))))
+  ;; Every mode tracking turned on is turned off again.
+  (is (null (set-difference '(1002 1003 1006)
+                            (mapcar #'car (dec-private-modes (written #'nlt:disable-mouse)))))))
+
 (defun osc2-writes (string &aux (found '()))
   "The OSC 2 payloads STRING carries, in order: what a terminal would read
 as a window title, the empty string included."
