@@ -266,7 +266,9 @@ it counts. True where there is no password entry to ask."
   ;; account's own gateway exited 143).
   (let ((account (account-home)))
     (or (null account)
-        (equal (true-home-name (user-homedir-pathname)) (true-home-name account)))))
+        (flet ((true (path) (namestring (or (ignore-errors (truename path))
+                                            (uiop:ensure-directory-pathname path)))))
+          (equal (true (user-homedir-pathname)) (true account))))))
 
 (defun account-named-home-p (home)
   "Whether HOME is a home nodecode names for this account: the default one
@@ -308,7 +310,10 @@ label itself, which is how launchd names an agent."
 (defun gateway-unit-path (&optional (home *home*))
   "Where HOME's unit file lives, or NIL where there is no unit folder: the
 unit's own name under systemd's folder, <label>.plist under launchd's."
-  (and *unit-directory* (unit-file-path (gateway-label home))))
+  (and *unit-directory*
+       (merge-pathnames (concatenate 'string (gateway-unit-name home)
+                                     (if (eq *service-manager* :launchd) ".plist" ""))
+                        *unit-directory*)))
 
 (defun gateway-log-path (&optional (home *home*))
   "Where HOME's gateway writes under launchd, which keeps no journal:
@@ -632,11 +637,13 @@ of folders otherwise. A test binds its own.")
   ;; on starting a gateway on the binary `current' names, at every login,
   ;; in an empty folder. True names on both sides, so a link either way
   ;; counts.
-  (let ((home (true-home-name home)))
-    (some (lambda (root) (uiop:string-prefix-p (true-home-name root) home))
-          (if (eq *temporary-roots* :system)
-              (list* (uiop:temporary-directory) #-win32 '("/tmp/") #+win32 '())
-              *temporary-roots*))))
+  (flet ((real (path) (namestring (or (ignore-errors (truename path)) path))))
+    (let ((home (real (uiop:ensure-directory-pathname home))))
+      (some (lambda (root)
+              (uiop:string-prefix-p (real (uiop:ensure-directory-pathname root)) home))
+            (if (eq *temporary-roots* :system)
+                (list* (uiop:temporary-directory) #-win32 '("/tmp/") #+win32 '())
+                *temporary-roots*)))))
 
 (defun gateway-off-p (&optional (home *home*))
   "Whether the operator turned HOME's gateway off: then nothing but the
