@@ -277,7 +277,7 @@
                       text))))
       (nik:apply-plan plan)
       (is (<= (length (uiop:read-file-string (nlk:home "AGENTS.md"))) limit))
-      (is-present (text (cdr (nle::operator-rules-section nil))) "and a session reads what landed"
+      (is-present (text (cdr (nle::operator-rules-section))) "and a session reads what landed"
         (is (search (format nil "## ~a — ~a" (nik::item-world kept) (nik:item-source kept)) text)))))
   ;; A file past the limit on its own says that.
   (import-write box ".claude/CLAUDE.md" (make-string (* 2 nle::+instructions-byte-limit+) :initial-element #\c))

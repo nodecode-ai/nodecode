@@ -1195,29 +1195,37 @@ answering `ok' => the compiled context of the turn's one request."
         (format nil "trim to ~a" (nlk:size-text nle::+instructions-byte-limit+))))
 
 (deftest harness-sections-carry-the-working-directory-instructions ()
-  ;; A project's AGENTS.md — or CLAUDE.md, or .cursorrules — rides as the
+  ;; A project's AGENTS.md -- or CLAUDE.md, or .cursorrules -- rides in the
   ;; `instructions' section of every session whose directory sits under it,
-  ;; found by walking up to the repository root and never past it; the
-  ;; file is the authority, nothing is stored, and a file over the harness
-  ;; budget is refused and said once.
+  ;; found by walking up to / past any repository root, every folder's file
+  ;; read, the farthest first; the files are the authority, nothing is
+  ;; stored, and a file over the budget they share is refused and said once.
   (with-temp-workspace (dir "AGENTS.md" "proj/.git/HEAD" "proj/deep/x" "other/y")
     (write-temp-file (merge-pathnames "AGENTS.md" dir) "root rules")
     (with-temp-store ()
       (loop for (id folder) in '(("root" "") ("deep" "proj/deep/") ("other" "other/"))
             do (nlk:create-session :id id :cwd (namestring (merge-pathnames folder dir))))
-      (flet ((instructions (session-id) (cell-section session-id "instructions")))
+      (flet ((instructions (session-id) (cell-section session-id "instructions"))
+             (froms (text) (loop for at = (search "From " text) then (search "From " text :start2 (1+ at))
+                                 while at count t)))
         (is-present (text (instructions "root")) "the session at the root reads its AGENTS.md"
           (is-carrying text "root rules" ("AGENTS.md" "and says which file")))
         (is-present (text (instructions "other")) "a directory below it walks up to the file"
           (is (search "root rules" text)))
-        (is (null (instructions "deep")))
+        (is-present (text (instructions "deep")) "a repository's .git does not end the walk"
+          (is (search "root rules" text)))
         (write-temp-file (merge-pathnames "proj/CLAUDE.md" dir) "claude rules")
         (is-present (text (instructions "deep")) "CLAUDE.md is read where there is no AGENTS.md"
-          (is (search "claude rules" text)))
+          (is (search "claude rules" text))
+          (is (< (search "root rules" text) (search "claude rules" text)) "the farthest first, the nearest last")
+          (is (= 2 (froms text)) "each file under its own From line"))
         (write-temp-file (merge-pathnames "proj/AGENTS.md" dir)
                          (make-string 70000 :initial-element #\x))
-        (is (null (instructions "deep")) "a file over the budget is no section")
-        (is (null (instructions "deep")))
+        (is-present (text (instructions "deep")) "a file over the budget is left out, the files above it read"
+          (is (search "root rules" text))
+          (is (null (search "xxxx" text)))
+          (is (null (search "claude rules" text)) "the folder's first name still wins in it"))
+        (is (instructions "deep"))
         ;; Said once per path, never on the board: a project's file is one
         ;; folder's, and a standing notice would ride every other session's
         ;; prompt until a restart.
@@ -1225,6 +1233,21 @@ answering `ok' => the compiled context of the turn's one request."
           (is (= 1 (length said)) "said once, not at every build")
           (is (every (lambda (words) (search words (first said))) (rules-size-words 70000))))
         (is (null (rules-notice "proj/AGENTS.md")) "and stands on no board")
+        ;; One budget for them all, the nearest served first: a farther file
+        ;; that fits alone but not beside the nearer ones is the one left out.
+        (write-temp-file (merge-pathnames "proj/AGENTS.md" dir) (make-string 40000 :initial-element #\p))
+        (write-temp-file (merge-pathnames "AGENTS.md" dir) (make-string 30000 :initial-element #\r))
+        (is-present (text (instructions "deep")) "the nearest file keeps its place in the budget"
+          (is (search "pppp" text))
+          (is (null (search "rrrr" text)) "the farther one is left out whole"))
+        (is-present (said (first (rules-said "already take"))) "the farther file is said"
+          (is (search (namestring (merge-pathnames "AGENTS.md" dir)) said) "by its path"))
+        (is (search "rrrr" (instructions "other")) "and another folder still reads it whole")
+        (write-temp-file (merge-pathnames "AGENTS.md" dir) "root rules")
+        (write-temp-file (merge-pathnames "proj/AGENTS.md" dir) (format nil "  ~%~%"))
+        (is-present (text (instructions "deep")) "a blank file is passed over, the walk goes on"
+          (is (search "root rules" text))
+          (is (= 1 (froms text))))
         (write-temp-file (merge-pathnames "proj/AGENTS.md" dir) "deep rules")
         (is (search "deep rules" (instructions "deep")) "trimmed, it is read at the next build")
         (is (null (instructions nil)) "no session, no section")
@@ -1266,8 +1289,9 @@ answering `ok' => the compiled context of the turn's one request."
         ;; The board labels a row with its key: `rules', not the file's
         ;; absolute path, which pushed the words off the /cells row.
         (is (equal (rules-notice "AGENTS.md") (second (assoc "rules" (nlk:standing-notices) :test #'string=))))
-        ;; A session opened in the home itself reads the file as its project's:
-        ;; the notice still stands, said once over two builds, not at each.
+        ;; A session opened in the home itself reads the file as its operator
+        ;; rules, never as a project's: the notice still stands, said once over
+        ;; two builds, not at each.
         (nlk:create-session :id "at-home" :cwd (namestring (nlk:home)))
         (is (null (cell-section "at-home" "instructions")))
         (is (null (rules "at-home")))
