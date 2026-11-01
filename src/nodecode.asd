@@ -259,6 +259,9 @@ of stacking."
      ;; brought within what a provider takes -- decoded, shrunk and
      ;; re-encoded here.
      (:file "engine/image-fit")
+     ;; webp follows image-fit: it decodes to the PIXELS image-fit shrinks,
+     ;; named in *IMAGE-DECODERS* there for image/webp.
+     (:file "engine/webp")
      ;; jpeg follows image-fit: it reads every JPEG to the PIXELS image-fit
      ;; shrinks, cl-jpeg's baseline and the progressive form cl-jpeg cannot,
      ;; named in *IMAGE-DECODERS* there for image/jpeg.
@@ -632,6 +635,8 @@ of stacking."
      ;; image-fit-test follows exec-test: it shows LOOK a file the way
      ;; exec-test's fixtures do.
      (:file "engine/image-fit-test")
+     ;; webp-test follows image-fit-test: it shrinks a WebP through FIT-IMAGE.
+     (:file "engine/webp-test")
      ;; jpeg-test and gif-test follow image-fit-test: each shrinks its
      ;; format through FIT-IMAGE.
      (:file "engine/jpeg-test")
