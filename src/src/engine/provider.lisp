@@ -77,12 +77,24 @@ target at the weakest reasoning rung its model declares (AUXILIARY-MODEL).")
 ;;; :READ-TIMEOUT carries the same number but never reaches a TLS socket.
 (defparameter *request-timeout* 120
   "Seconds without a single byte arriving before the attempt fails: the
-stream's idle watchdog, and the ONLY clock a streaming attempt runs under —
-a stream that keeps delivering bytes is never cut by wall time, however
-long the generation takes (a local model at ~100 tok/s spends 10+ minutes
-on a long answer, and a ceiling on a lively stream only ever kills
-productive work and then retries the identical generation into the same
-wall).")
+stream's idle watchdog. A stream that keeps delivering content is never cut
+by wall time, however long the generation takes (a local model at ~100 tok/s
+spends 10+ minutes on a long answer, and a ceiling on a lively stream only
+ever kills productive work and then retries the identical generation into
+the same wall); one that delivers bytes but no content answers to the
+content clock (*CONTENT-IDLE-WINDOWS*).")
+
+;;; The content clock (CONTENT-CLOCK) runs three idle timeouts: omp 18.14.2
+;;; counts a ping as progress for at most three idle timeouts past the last
+;;; real event (PING_PROGRESS_MAX_IDLE_MULTIPLIER), and never an empty delta
+;;; (can1357/oh-my-pi#17484).
+(defparameter *content-idle-windows* 3
+  "Idle timeouts an attempt that has streamed content may go on without more
+before it fails as stalled, whatever else arrives: keep-alive comments, pings
+and empty deltas satisfy the idle watchdog (*REQUEST-TIMEOUT*), never this
+clock. 360 s at the default idle timeout, and a provider's own
+stream_idle_timeout_ms scales it; never under one idle timeout; NIL turns the
+clock off.")
 
 ;;; The Zig retry_policy.default_stream_max_retries.
 (defparameter *max-stream-retries* 5
@@ -1488,7 +1500,66 @@ did not say — never zero."
 (defvar *current-durable-turn* nil
   "Kernel lifecycle record for the currently executing evolved turn.")
 
+;;; --- the content clock: silence counted in content, once content flowed ---
+;;; The idle deadline (WITH-IDLE-CUT) counts octets, so once a stream has
+;;; streamed a token any bytes keep it alive: an endpoint that stalls but keeps
+;;; its socket warm -- keep-alive comments, pings, deltas whose text is "" -- is
+;;; never cut, and the turn waits on it until someone cancels (omp 18.14.2
+;;; closed the same hole, can1357/oh-my-pi#17484). The content clock counts the
+;;; other silence. An attempt's first content part arms it and every one after
+;;; resets it: a non-empty text, reasoning or tool-input fragment, a reasoning
+;;; signature, a tool call's start or the whole call (CONTENT-PART-P). An empty
+;;; chunk opens no span and emits no part, so it never counts. A window that
+;;; passes with no content cuts the attempt as a stream-scope
+;;; PROVIDER-STREAM-INCOMPLETE, "no content for N s", which the stream retries
+;;; take like any idle cut. Before the first content nothing is armed: a cold
+;;; prompt that keeps its socket warm with comments still waits as the idle
+;;; clock and the first-token watch let it. The window is a count of idle
+;;; timeouts (*CONTENT-IDLE-WINDOWS*), never under one, so plain silence stays
+;;; the idle clock's to name and a provider tuned for patience keeps it.
+
+(defstruct (content-clock (:copier nil))
+  "One attempt's content clock: its window, and when content last came."
+  ;; SECONDS is the window; AT the internal real time of the last content part,
+  ;; NIL before the first.
+  (seconds 0 :type real :read-only t)
+  (at nil))
+
+(defvar *content-clock* nil
+  "The CONTENT-CLOCK of the stream this thread walks, or NIL.")
+
+(defun content-clock-for (config)
+  "A fresh content clock for one attempt under CONFIG, its window
+*CONTENT-IDLE-WINDOWS* of CONFIG's idle timeout and never under one, or NIL
+while the clock is off."
+  (when *content-idle-windows*
+    (make-content-clock
+     :seconds (* (max 1 *content-idle-windows*)
+                 (effective-provider-config-request-timeout config)))))
+
+(defun content-part-p (kind initargs)
+  "True when the part of KIND that INITARGS make carries content."
+  (case kind
+    ((:text-delta :reasoning-delta :tool-input-delta :reasoning-signature)
+     (plusp (length (getf initargs :text))))
+    ((:tool-input-start :tool-call) t)))
+
+(defun content-seconds-left (clock)
+  "The seconds CLOCK's window has left, or NIL while nothing armed it."
+  (let ((at (and clock (content-clock-at clock))))
+    (when at
+      (float (- (content-clock-seconds clock)
+                (/ (- (get-internal-real-time) at) internal-time-units-per-second))
+             1d0))))
+
+(defun content-cut-detail (clock)
+  "The failure detail of an attempt CLOCK cut."
+  (format nil "no content for ~a s" (idle-seconds-label (content-clock-seconds clock))))
+
 (defun emit-stream-part (on-part kind &rest initargs)
+  ;; Content resets the attempt's content clock, observed or not.
+  (when (and *content-clock* (content-part-p kind initargs))
+    (setf (content-clock-at *content-clock*) (get-internal-real-time)))
   (when on-part
     (funcall on-part (apply #'make-stream-part :kind kind initargs)))
   nil)
@@ -4567,6 +4638,10 @@ functions below."
   ;;   - the idle deadline: armed across the POST and each octet read
   ;;     (WITH-IDLE-CUT); a cut before headers is a
   ;;     request-scope PROVIDER-ERROR, after them a PROVIDER-STREAM-INCOMPLETE
+  ;;   - the content clock (CONTENT-CLOCK): once content flowed, each read
+  ;;     waits at most what the clock's window has left, and a window spent
+  ;;     with no content is a PROVIDER-STREAM-INCOMPLETE however lively the
+  ;;     bytes ("no content for N s")
   ;;   - the non-200 refusal (with REQUEST-JSON as evidence) and the buffered
   ;;     non-SSE 200 verdict
   ;;   - the :stream-start part on ON-PART
@@ -4686,6 +4761,12 @@ functions below."
             (done nil)
             (count 0)
             (first nil)
+            ;; The attempt's content clock (CONTENT-CLOCK), armed by its first
+            ;; content part; CONTENT-CUT-P is true while its window, not the
+            ;; idle timeout, bounds the read in flight, LIMIT seconds.
+            (*content-clock* (content-clock-for config))
+            (content-cut-p nil)
+            (limit seconds)
             ;; The attempt's line buffer when STREAM yields octets; a
             ;; stream that already yields characters (a canned stream)
             ;; is read with READ-LINE.
@@ -4713,11 +4794,19 @@ functions below."
                       ;; keeps every read short -- ends here.
                       (when-let (cut (attempt-cut-condition :scope :stream))
                         (error cut))
+                      ;; Bytes without content: once content flowed, the content
+                      ;; clock's window bounds each read, and a spent one cuts.
+                      (let ((left (content-seconds-left *content-clock*)))
+                        (when (and left (<= left 0))
+                          (error 'provider-stream-incomplete
+                                 :detail (content-cut-detail *content-clock*)))
+                        (setf content-cut-p (and left (< left seconds) t)
+                              limit (if content-cut-p left seconds)))
                       ;; A read error mid-body is truncation; a cancel unwinds as itself.
                       (let ((line (handler-case (nlk:with-cancellable-wait (*current-durable-turn*)
                                                   (if buffer
-                                                      (read-octet-line stream buffer seconds)
-                                                      (with-read-deadline (seconds)
+                                                      (read-octet-line stream buffer limit)
+                                                      (with-read-deadline (limit)
                                                         (read-line stream nil nil))))
                                     (nlk:turn-cancelled-condition (c) (error c))
                                     (error (e)
@@ -4747,8 +4836,10 @@ functions below."
                 (funcall signal-error-fn first))
               (error (or (attempt-cut-condition :scope :stream)
                          (make-condition 'provider-stream-incomplete
-                                         :detail (format nil "no byte for ~a s"
-                                                         (idle-seconds-label seconds))))))
+                                         :detail (if content-cut-p
+                                                     (content-cut-detail *content-clock*)
+                                                     (format nil "no byte for ~a s"
+                                                             (idle-seconds-label seconds)))))))
             ;; After the fold declared the stream complete, read what is already there of
             ;; the tail -- the event terminator and the terminal chunk -- so a body that ends
             ;; where the stream did reaches EOF and the keep-alive wrapper pools its socket

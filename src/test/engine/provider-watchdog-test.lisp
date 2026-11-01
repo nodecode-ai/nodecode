@@ -37,7 +37,11 @@ client side of the same process reads the same clock.")
 head; then by MODE: :NEVER writes nothing; :HEAD writes a 200
 text/event-stream chunked head and nothing more; :LINE writes the head and
 one comment line, then nothing more; :DRIP writes the head, then one data
-chunk every 0.2 s for 3 s, then the sentinel."
+chunk every 0.2 s for 3 s, then the sentinel. The content modes stream chat
+deltas after the head: :STALL one word, then an empty delta and a keep-alive
+comment every 0.1 s for 10 s; :CHATTY a word every 0.2 s for 3 s, then the
+sentinel; :WARM keep-alive comments and empty deltas every 0.1 s for 1.5 s,
+then a word and the sentinel."
   ;; The head declares keep-alive, so a body that ended cleanly WOULD be
   ;; pooled: the pool gate is not trivially green. The thread then reads until
   ;; the client closes, so its end proves the socket was closed. => (values
@@ -92,6 +96,17 @@ chunk every 0.2 s for 3 s, then the sentinel."
                              (sleep 1)
                              (chunk (format nil "data: {\"n\": 2}~%~%"))
                              (last-chunk (format nil "data: [DONE]~%~%")))
+                           (flet ((word () (chunk (chat-delta-line "hi")))
+                                  (warm ()
+                                    (chunk (chat-delta-line ""))
+                                    (chunk (format nil ": keep-alive~%~%"))))
+                             (case mode
+                               (:stall (word) (loop repeat 100 do (sleep 0.1) (warm)))
+                               (:chatty (loop repeat 15 do (sleep 0.2) (word))
+                                (last-chunk (format nil "data: [DONE]~%~%")))
+                               (:warm (loop repeat 15 do (sleep 0.1) (warm))
+                                (word)
+                                (last-chunk (format nil "data: [DONE]~%~%")))))
                            ;; hold the socket until the client lets go
                            (ignore-errors (loop while (read-byte stream nil))))))))))))
     (values (format nil "https://127.0.0.1:~d/v1/chat" port) thread)))
@@ -244,6 +259,98 @@ idle clock, WATCH the thread's attempt watch => (values OUTCOME SECONDS SERVER).
         (is (equal "skipped from the room" (nle::provider-error-detail outcome)) "the skip's words are the detail"))
       (is (< seconds 2.5) (format nil "cut ~,1f s in, within a second of the skip" seconds))
       (is (thread-ends-within server 3) "the server saw the socket close"))))
+
+(defun chat-delta-line (text)
+  "One SSE data line and its blank: a chat chunk whose delta content is TEXT."
+  (format nil "data: {\"choices\": [{\"index\": 0, \"delta\": {\"content\": ~s}}]}~%~%" text))
+
+;;; --- the content clock -------------------------------------------------------
+;;; Bytes are not progress: past its first content an attempt is cut when its
+;;; window passes with no more, however lively its socket, and never before
+;;; content came. Each frame's delta text streams through a lane assembly as
+;;; the chat lane streams it, so an empty delta is what the lanes make of one.
+
+(defun frame-delta-text (frame)
+  "FRAME's choices[0].delta.content, or NIL."
+  (ignore-errors (gethash "content" (gethash "delta" (aref (gethash "choices" frame) 0)))))
+
+(defun walk-content (mode &key (windows 1))
+  "One attempt against a SERVE-SILENCE server of MODE under a 1 s idle clock
+and a content clock of WINDOWS idle timeouts => (values OUTCOME SECONDS TEXT
+SERVER URL), OUTCOME the condition signalled or :DONE, TEXT what the assembly
+gathered."
+  (multiple-value-bind (url server) (serve-silence mode)
+    (let* ((asm (nle::make-lane-assembly))
+           (t0 (get-internal-real-time))
+           (outcome
+             (let ((dexador.backend.usocket:*ca-bundle* (loopback-ca-path "loopback-ca.pem"))
+                   (nle::*content-idle-windows* windows))
+               (handler-case
+                   (progn (nle::walk-provider-stream
+                           (nlk:lambda-ignoring (frame finish record)
+                             (let ((text (frame-delta-text frame)))
+                               (when (stringp text) (nle::assembly-text-delta asm "text-0" text))))
+                           :config (nle::make-effective-provider-config
+                                    :lane "openai-completions" :endpoint url :model "stalling"
+                                    :api-key "none" :request-timeout 1)
+                           :request-json "{}" :headers '() :finish-on-sentinel t)
+                          :done)
+                 (nle::provider-error (e) e)))))
+      (values outcome
+              (/ (- (get-internal-real-time) t0) internal-time-units-per-second)
+              (get-output-stream-string (nle::lane-assembly-content asm))
+              server url))))
+
+(deftest an-attempt-whose-content-stops-is-cut-however-lively-its-bytes ()
+  ;; One word, then an empty delta and a keep-alive comment every 0.1 s: the
+  ;; idle clock never fires on this, and before the content clock the turn
+  ;; waited on it until someone cancelled.
+  (multiple-value-bind (outcome seconds text server url) (walk-content :stall)
+    (is (typep outcome 'nle::provider-stream-incomplete) (format nil "truncation: ~a" outcome))
+    (when (typep outcome 'nle::provider-error)
+      (is (eq :stream (nle::provider-error-scope outcome)))
+      (is (equal "no content for 1 s" (nle::provider-error-detail outcome))
+          (format nil "the detail names the content's silence: ~a" (nle::provider-error-detail outcome))))
+    (is (equal "hi" text) "the word before the stall folded")
+    (is (< 0.9 seconds 2.5) (format nil "cut in ~,1f s, at the 1 s window" seconds))
+    (is (= 0 (nle::pooled-connection-count url)) "a cut socket is not pooled")
+    (is (thread-ends-within server 3) "the server saw the socket close")))
+
+(deftest content-that-keeps-coming-is-never-cut-by-the-content-clock ()
+  ;; A word every 0.2 s for 3 s: three windows long, and no ceiling on it.
+  (multiple-value-bind (outcome seconds text server url) (walk-content :chatty)
+    (is (eq :done outcome) (format nil "the walk completed: ~a" outcome))
+    (is (= 30 (length text)) "every word folded")
+    (is (>= seconds 2.9) (format nil "the stream took its 3 s: ~,1f" seconds))
+    (is (= 1 (nle::pooled-connection-count url)) "a clean stream pools its socket")
+    (nle::flush-provider-connection-pool)
+    (is (thread-ends-within server 3) "the flush closed it: the server saw the socket close")))
+
+(deftest keep-alives-before-the-first-content-arm-no-content-clock ()
+  ;; A cold prompt keeping its socket warm for 1.5 s, past the 1 s window,
+  ;; before its first word: nothing was armed, so nothing cuts it.
+  (multiple-value-bind (outcome seconds text server) (walk-content :warm)
+    (is (eq :done outcome) (format nil "the walk completed: ~a" outcome))
+    (is (equal "hi" text) "the word after the warm-up folded")
+    (is (>= seconds 1.4) (format nil "the warm-up took its 1.5 s: ~,1f" seconds))
+    (nle::flush-provider-connection-pool)
+    (is (thread-ends-within server 3) "the flush closed it: the server saw the socket close")))
+
+(deftest the-content-window-counts-idle-timeouts ()
+  (flet ((clock (request)
+           (nle::content-clock-for
+            (nle::make-effective-provider-config
+             :lane "openai-completions" :endpoint "https://clock.example/v1" :model "m"
+             :api-key "k" :request-timeout request))))
+    (is (= 360 (nle::content-clock-seconds (clock 120))) "three idle timeouts at the default")
+    (is (= 90 (nle::content-clock-seconds (clock 30))) "a provider's own idle timeout scales it")
+    (let ((nle::*content-idle-windows* 1/2))
+      (is (= 120 (nle::content-clock-seconds (clock 120))) "never under one idle timeout"))
+    (let ((nle::*content-idle-windows* nil))
+      (is (null (clock 120)) "off, no clock"))
+    (is (not (nle::content-part-p :text-delta '(:id "t" :text ""))) "an empty fragment is no content")
+    (is (nle::content-part-p :tool-input-start '(:id "c" :tool-name "read")) "a tool call's start is content")
+    (is (not (nle::content-part-p :response-metadata '(:id "r"))) "metadata is no content")))
 
 (deftest a-watch-whose-token-came-leaves-the-idle-clock-alone ()
   ;; Past its deadline, but a token already streamed: the cut is the idle
