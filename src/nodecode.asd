@@ -570,6 +570,8 @@ of stacking."
      (:file "surface/account-login-test")
      (:file "surface/connection-test")
      (:file "tui/scroll-test")
+     ;; select-mode-test drives ui-test's frame-model fixture and key helpers.
+     (:file "tui/select-mode-test")
      (:file "tui/chrome-test")
      (:file "tui/home-sessions-test")
      (:file "tui/footer-pending-test")
