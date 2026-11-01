@@ -9243,15 +9243,12 @@ it answers. No row, or no handler: nothing happens."
           ((and (picker-dialog-on-toggle dialog)
                 (eql key #\Space) (not ctrl) (not alt))
            (when-let (row (selected-of rows dialog.selection))
-             (let* ((value row.value)
-                    (marked (not (member value dialog.marks
-                                         :test #'equal))))
-               (setf dialog.marks
-                     (if marked
-                         (append dialog.marks (list value))
-                         (remove value dialog.marks :test #'equal)))
+             (let ((marked (not (member row.value dialog.marks :test #'equal))))
+               (setf dialog.marks (if marked
+                                      (append dialog.marks (list row.value))
+                                      (remove row.value dialog.marks :test #'equal)))
                (picker-mark-rows dialog)
-               (funcall dialog.on-toggle model value marked))))
+               (funcall dialog.on-toggle model row.value marked))))
           ;; The detail gesture (Zig isDialogDetailKey: Right, i, I) on
           ;; dialogs that carry a detail handler — the cells dialog's
           ;; drill into one cell's facts. Bare letters stay search input on
@@ -9987,8 +9984,7 @@ row (DOCKED-PANEL-ROW's LEAD): a picture beside it."
                                                      (plusp (length dialog.rows))
                                                      dialog.no-match-label)
                                                 dialog.empty-label)))
-                                 (when (plusp (length label))
-                                   (list (make-seg :text label :tone :muted))))
+                                 (when (plusp (length label)) (list (seg label :muted))))
                                width surface :lead (first lead) :lead-width lead-width))
                         (bind (((selection offset visible) (dialog-body-viewport dialog count))
                                ((thumb-top thumb-height)
