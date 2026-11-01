@@ -50,6 +50,11 @@ note: |
 folded: >-
   one
   two
+paragraphs: >
+  first
+  line
+
+  second
 ")))
     (is-shape config (hash-table-p is) ((:string "model" "default") "gpt-5.5")
       ((:string "model" "provider") "custom:subrouter-1")
@@ -73,7 +78,8 @@ folded: >-
       ((:integer "nested" "m" "k") eql 3 "a flow mapping inside a flow mapping")
       ("nested_seq" equalp #(1 #(2 3) "a,b") "a flow sequence inside a flow sequence")
       ("note" (format nil "first line~%second line~%") "a literal block")
-      ("folded" "one two" "a folded block, stripped")))
+      ("folded" "one two" "a folded block, stripped")
+      ("paragraphs" (format nil "first line~%second~%") "a blank line is a newline, with no space after it")))
   (is (zerop (hash-table-count (nik:read-yaml ""))) "an empty document is an empty object")
   (is (search "anchors" (refusal-text nik:import-error (nik:read-yaml "a: &x 1")))))
 
