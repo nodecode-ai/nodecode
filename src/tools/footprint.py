@@ -280,16 +280,16 @@ def main():
         pid = launch()
         images = []
         for _ in range(600):
-            images = [path for path in glob.glob(os.path.join(home, ".cache/nodecode/warm/*/*/nodecode"))
+            images = [path for path in glob.glob(os.path.join(home, ".cache/nodecode/warm/**/nodecode"), recursive=True)
                       if os.path.getmtime(path) >= started]
-            failed = glob.glob(os.path.join(home, ".cache/nodecode/warm/*/*/failed"))
+            failed = glob.glob(os.path.join(home, ".cache/nodecode/warm/**/failed"), recursive=True)
             if images or failed:
                 break
             time.sleep(0.5)
         stop(pid)
         if not images:
             die("no warm image was published: " + " ".join(
-                open(path).read().strip() for path in glob.glob(os.path.join(home, ".cache/nodecode/warm/*/*/failed"))))
+                open(path).read().strip() for path in glob.glob(os.path.join(home, ".cache/nodecode/warm/**/failed"), recursive=True)))
 
         pid = launch()
         for _ in range(100):
