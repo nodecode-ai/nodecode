@@ -247,9 +247,9 @@ wrote, what it cost, and its flags."
                                                                  switch.to-model)
                                                     "reason" switch.reason))
                   "flags" (coerce flags 'vector)))))
-    (flet ((total (key &optional (objects (loop for turn in turn-objects
-                                                append (coerce (gethash "calls" turn) 'list))))
-             (sum-known (mapcar (lambda (object) (gethash key object)) objects))))
+    (labels ((across (key) (loop for turn in turn-objects append (coerce (gethash key turn) 'list)))
+             (total (key &optional (objects (across "calls")))
+               (sum-known (mapcar (lambda (object) (gethash key object)) objects))))
       (json-object
        "session_id" session-id
        "turns" (coerce turn-objects 'vector)
@@ -268,8 +268,7 @@ wrote, what it cost, and its flags."
         :opt "reasoning" (total "reasoning")
         :opt "wait_ms" (total "wait_ms")
         :opt "stream_ms" (total "stream_ms")
-        :opt "step_ms" (total "ms" (loop for turn in turn-objects
-                                         append (coerce (gethash "steps" turn) 'list)))
+        :opt "step_ms" (total "ms" (across "steps"))
         :opt "usual_wait_ms" usual-wait
         :opt "peak_prompt" (and calls
                                 (loop for call in calls
