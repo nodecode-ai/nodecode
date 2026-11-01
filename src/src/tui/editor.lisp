@@ -81,7 +81,7 @@ transcript instead of a blank line."
   "PLACE's memoized answer while every one of FIELDS is still EQL to what it
 was when that answer was made, else BODY, stored back under the fresh fields."
   ;; The one shape every render cache writes by hand, the editor's and
-  ;; ui.lisp's: a simple-vector of the inputs the answer is a function of,
+  ;; the transcript's: a simple-vector of the inputs the answer is a function of,
   ;; then the answer. The guard and the
   ;; store come from the one FIELDS list, so they cannot read different fields
   ;; or read them in a different order -- that drift is a stale render nothing

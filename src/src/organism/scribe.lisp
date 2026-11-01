@@ -286,23 +286,22 @@ spans the unit: the file that holds one holds them all."
              (let ((form-start (scribe-skip-blank text start end)))
                (when (>= form-start end) (return end))
                (when (char= (char text form-start) #\)) (return form-start))
-               (let ((members (members-start form-start end)))
-                 (if members
-                     ;; A PROGN or EVAL-WHEN is read member by member, never
-                     ;; whole first: without that, a large PROGN would be read
-                     ;; twice over.
-                     (let ((close (region-forms members end)))
-                       (when (>= close end) (return end))
-                       (setf start (1+ close)))
-                     (multiple-value-bind (form next)
-                         (handler-case
-                             (read-at form-start end)
-                           ((or reader-error end-of-file) ()
-                             (when-let (head (head-form form-start end))
-                               (consider head form-start end))
-                             (return end)))
-                       (consider form form-start (min next end))
-                       (setf start next)))))))
+               (if-let (members (members-start form-start end))
+                 ;; A PROGN or EVAL-WHEN is read member by member, never
+                 ;; whole first: without that, a large PROGN would be read
+                 ;; twice over.
+                 (let ((close (region-forms members end)))
+                   (when (>= close end) (return end))
+                   (setf start (1+ close)))
+                 (multiple-value-bind (form next)
+                     (handler-case
+                         (read-at form-start end)
+                       ((or reader-error end-of-file) ()
+                         (when-let (head (head-form form-start end))
+                           (consider head form-start end))
+                         (return end)))
+                   (consider form form-start (min next end))
+                   (setf start next))))))
          (members-start (form-start end)
            ;; Where the members of the PROGN or EVAL-WHEN at FORM-START begin,
            ;; past its operator and EVAL-WHEN's situations; NIL for any other form.

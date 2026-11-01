@@ -94,12 +94,7 @@ where it cannot be done from here."
       ;; first, and the page waits for the gateway to come back. Held for
       ;; idle, the first poll is that wait, and one hold serves every ask.
       (if idle
-          (unless (and *lifecycle-wait* (bt2:thread-alive-p *lifecycle-wait*))
-            (setf *lifecycle-wait*
-                  (spawn (format nil "gateway-~(~a~)-idle" verb)
-                    (loop do (sleep *idle-poll-seconds*)
-                          while (ignore-errors (nlk:any-active-turn-p)))
-                    (act))))
+          (spawn-once-idle *lifecycle-wait* (format nil "gateway-~(~a~)-idle" verb) (act))
           (spawn (format nil "gateway-~(~a~)" verb)
             (sleep 0.3)
             (act))))
@@ -345,22 +340,21 @@ a shell's /models asks it here, where a cell's lane and its address run."
              (key (json-value request :string "key"))
              (vars (request-url-vars request)))
         (require-non-empty (list provider) "provider must be a non-empty string" :required t)
-        (cond
-          ((eq t (gethash "forget" request))
-           (forget-provider-entry provider))
-          ((eq t (gethash "check" request))
-           (multiple-value-bind (verdict words)
-               (and key (provider-key-check provider (nlk:trimmed key) :vars vars))
-             (setf checked (json-object "verdict" (if verdict (string-downcase verdict) "none")
-                                        :opt "words" words))))
-          (t
-           (multiple-value-bind (verdict words)
-               (and key (provider-key-check provider (nlk:trimmed key) :vars vars))
-             (when (member verdict '(:refused :unreachable))
-               (error 'nlk:protocol-error :code :key_refused :field "key"
-                                          :message (format nil "~a; nothing was saved" words)))
-             (setf unchecked (and (eq verdict :unchecked) words))
-             (save-provider-api-key provider key :vars vars))))))
+        (flet ((check () (and key (provider-key-check provider (nlk:trimmed key) :vars vars))))
+          (cond
+            ((eq t (gethash "forget" request))
+             (forget-provider-entry provider))
+            ((eq t (gethash "check" request))
+             (multiple-value-bind (verdict words) (check)
+               (setf checked (json-object "verdict" (if verdict (string-downcase verdict) "none")
+                                          :opt "words" words))))
+            (t
+             (multiple-value-bind (verdict words) (check)
+               (when (member verdict '(:refused :unreachable))
+                 (error 'nlk:protocol-error :code :key_refused :field "key"
+                                            :message (format nil "~a; nothing was saved" words)))
+               (setf unchecked (and (eq verdict :unchecked) words))
+               (save-provider-api-key provider key :vars vars)))))))
     (or checked (keys-json unchecked))))
 
 ;;; --- the cells ---------------------------------------------------------------------
@@ -930,20 +924,19 @@ organism on PORT, PID, when one serves this home -- within SECONDS
           (values (cond (port
                          ;; the organism installs it and turns it on, minutes on a slow network: a wait said
                          ;; as it lasts, which it is told of, so that it gives the work no more than that
-                         (let ((seconds wait))
-                           (format nil "~:[~a was already installed; ~;~*~]~a" fresh label
-                                   (json-value
-                                    (handler-case
-                                        (nlk:with-named-wait (seconds "waiting for the nodecode serving this home~@[ (pid ~d)~] to turn ~a on"
-                                                              pid label)
-                                          (gateway-http-session-request
-                                           port :post "/api/gateway/cells"
-                                           (json-object "name" name "on" t :opt "commit" pin "seconds" seconds)
-                                           token :read-timeout seconds))
-                                      (nlk::http-timeout ()
-                                        (error "the nodecode serving this home~@[ (pid ~d)~] did not answer within ~d s; ~a may still be coming on there"
-                                               pid seconds label)))
-                                    :string "text"))))
+                         (format nil "~:[~a was already installed; ~;~*~]~a" fresh label
+                                 (json-value
+                                  (handler-case
+                                      (nlk:with-named-wait (wait "waiting for the nodecode serving this home~@[ (pid ~d)~] to turn ~a on"
+                                                            pid label)
+                                        (gateway-http-session-request
+                                         port :post "/api/gateway/cells"
+                                         (json-object "name" name "on" t :opt "commit" pin "seconds" wait)
+                                         token :read-timeout wait))
+                                    (nlk::http-timeout ()
+                                      (error "the nodecode serving this home~@[ (pid ~d)~] did not answer within ~d s; ~a may still be coming on there"
+                                             pid wait label)))
+                                  :string "text")))
                         (fresh
                          ;; here, as there, the installs have the deadline the wait leaves them
                          (let ((given (nlk:cell-switch-deadline wait)))
@@ -1098,7 +1091,5 @@ to be saved."
     (with-cleanup ((ignore-errors (delete-file path)))
       (nlk:profile-export name (namestring path))
       (let ((octets (alexandria:read-file-into-byte-vector path)))
-        (list 200 (list :content-type "application/gzip"
-                        :content-disposition (format nil "attachment; filename=\"nodecode-profile-~a.tar.gz\"" name)
-                        :content-length (length octets))
-              octets)))))
+        (download-answer octets "application/gzip" (format nil "nodecode-profile-~a.tar.gz" name)
+                         :content-length (length octets))))))

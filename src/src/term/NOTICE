@@ -10,7 +10,7 @@ Common Lisp port of charmbracelet's bubbletea, bubbles and lipgloss:
     the soft-wrap visual cursor step, LF as Ctrl+J, ESC ESC and ESC + C0
     decoding), archived as the tag nodecode-absorbed.
 
-They are reduced, not vendored: message.lisp, width.lisp, cells.lisp,
+They are reduced, not vendored: message.lisp, width.lisp, screen.lisp (their cells.lisp),
 terminal.lisp, input.lisp, image.lisp and render.lisp carry the fork's
 mechanism with every path the shells never reach removed; program.lisp
 and editor.lisp are rewritten to the shape the shells run. Each derived

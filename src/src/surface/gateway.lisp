@@ -234,7 +234,7 @@ first pass: a shorter log replays whole about as fast.")
 
 (defparameter +replay-seed-kinds+ (list nlk::+kind-turn-usage+)
   "The kinds a first pass carries from before its turns: the facts the
-shell's fold sums across the whole session (ui.lisp INGEST-TURN-USAGE),
+shell's fold sums across the whole session (tui/transcript/ingest.lisp INGEST-TURN-USAGE),
 which its header reads beside the title the session's first prompt names
 (SESSION-DISPLAY-TITLE), the one other fact it carries.")
 
@@ -760,7 +760,7 @@ attached peer, through the :FRAME point like every live frame."
   "NLK:SOURCE-LOADED while this gateway serves — START-GATEWAY advises the
 seam with this: every attached shell is sent one
 organism.loaded frame naming PATH and DEFINITIONS ((OPERATOR . LABEL)
-...), and evaluates them from its own copy of the file (client.lisp's
+...), and evaluates them from its own copy of the file (tui/client-update.lisp's
 organism.loaded arm, NLK:LOAD-SOURCE :ONLY)."
   ;; Only the names cross the wire. Rides the :FRAME point like a notice,
   ;; session-less, on the calling thread: the image is one, so the frame
@@ -780,8 +780,7 @@ organism.loaded arm, NLK:LOAD-SOURCE :ONLY)."
                                                              "label" (cdr pair)))
                                               definitions)
                            :opt "session_id" (eval-session-id)
-                           :opt "turn_id" (and *current-durable-turn*
-                                               (nlk:durable-turn-turn-id *current-durable-turn*))
+                           :opt "turn_id" (eval-turn-id)
                            :opt "call_id" *executing-tool-call-id*
                            :opt "comment" *snippet-note*))))
 
@@ -1109,7 +1108,7 @@ item_delta wire shape."
 ;;; so far, which the live deltas behind it append to.
 ;;;
 ;;; Retention: live-only. A row leaves when the fact that seats it is
-;;; published -- the pairing a shell's fold makes (ui.lisp INGEST-MESSAGE-FACT,
+;;; published -- the pairing a shell's fold makes (tui/transcript/ingest.lisp INGEST-MESSAGE-FACT,
 ;;; INGEST-TOOL-CALL-FACT, INGEST-ATTEMPT-VOIDED-FACT) -- and every row with
 ;;; the turn's end.
 
@@ -1137,7 +1136,7 @@ attempt, each of its calls, and the turn's end.")
 
 (defun stream-partial-delta (partial turn-id delta)
   "Fold one item_delta's DELTA, of TURN-ID, into PARTIAL as a shell's fold
-does (client.lisp APPLY-GATEWAY-EVENT): text and thinking onto the newest
+does (tui/client.lisp APPLY-GATEWAY-EVENT): text and thinking onto the newest
 row when it is of their kind, a call's fragments onto its stream index's."
   (unless (equal turn-id partial.turn-id)
     (setf partial.turn-id turn-id partial.rows '() partial.reset nil))
@@ -2020,16 +2019,14 @@ the session's selection back."
                (return-from navigate nil)))
         (cond
           ((equal direction "undo")
-           (let ((head (nlk:session-head-turn-id sid)))
-             (unless head (reject "noop" "nothing to undo"))
-             (setf target head boundary "user_message")))
+           (setf target (or (nlk:session-head-turn-id sid) (reject "noop" "nothing to undo"))
+                 boundary "user_message"))
           ((equal direction "redo")
            ;; The newest head move remembers where the operator came FROM;
            ;; when that origin fell off the current chain it is the
            ;; abandoned branch tip redo returns to.
-           (let ((origin (nlk::redo-origin sid)))
-             (unless origin (reject "noop" "nothing to redo"))
-             (setf target origin boundary "turn"))))
+           (setf target (or (nlk::redo-origin sid) (reject "noop" "nothing to redo"))
+                 boundary "turn")))
         (when (and target (not (nlk:session-known-turn-p sid target)))
           (reject "unknown_turn" "target turn is not in the session's tree"))
         (let* ((parents (nlk:session-composed-parents sid))
@@ -2631,23 +2628,21 @@ and model NULL when none is configured — side work then runs on each
 session's own target."
   (multiple-value-bind (provider model effort configured)
       (auxiliary-model)
-    (json-object "provider" (if configured provider :null)
-                 "model" (if configured model :null)
-                 "effort" (if (and configured effort) effort :null)
-                 "efforts" (coerce (and configured (effort-ladder provider model)) 'vector)
-                 :opt "shared_config" (and outcome (string-downcase outcome))
-                 :opt "shared_config_error" detail)))
+    (config-outcome (json-object "provider" (if configured provider :null)
+                                 "model" (if configured model :null)
+                                 "effort" (if (and configured effort) effort :null)
+                                 "efforts" (coerce (and configured (effort-ladder provider model)) 'vector))
+                    outcome detail)))
 
 (defun gateway-decider-json (&optional outcome detail)
   "The decider general.decider_model picks (DECIDER-MODEL) as the wire says
 it, provider and model NULL when none is, and every decider /models offers."
   (multiple-value-bind (id model base) (decider-model)
-    (json-object "provider" (or id :null)
-                 "model" (or model :null)
-                 "base_url" (or base :null)
-                 "deciders" (gateway-deciders-json)
-                 :opt "shared_config" (and outcome (string-downcase outcome))
-                 :opt "shared_config_error" detail)))
+    (config-outcome (json-object "provider" (or id :null)
+                                 "model" (or model :null)
+                                 "base_url" (or base :null)
+                                 "deciders" (gateway-deciders-json))
+                    outcome detail)))
 
 (defun gateway-deciders-json ()
   "DECIDER-CHOICES as the wire's array: id, name, model, base_url, local."
@@ -2662,21 +2657,33 @@ it, provider and model NULL when none is, and every decider /models offers."
                                                                      (provider-config-error (condition)
                                                                        (setf refusal (provider-error-detail condition))
                                                                        :null))))
-  (json-object "provider" *provider*
-               "model" *model*
-               ;; A selection with no address (PROVIDER-CONFIG-ERROR) is still
-               ;; the selection: the page keeps the picker that can move it,
-               ;; and says why this one cannot serve.
-               "endpoint" endpoint
-               "refusal" (or refusal :null)
-               ;; The auxiliary target rides along so a shell's /models
-               ;; summary can name it without a second dial.
-               "auxiliary" (gateway-auxiliary-model-json)
-               ;; Config is the only durability now, so a write that did not
-               ;; land has to be visible rather than warned about into a log
-               ;; nobody is reading.
-               :opt "shared_config" (and outcome (string-downcase outcome))
-               :opt "shared_config_error" detail))
+  (config-outcome (json-object "provider" *provider*
+                               "model" *model*
+                               ;; A selection with no address (PROVIDER-CONFIG-ERROR) is still
+                               ;; the selection: the page keeps the picker that can move it,
+                               ;; and says why this one cannot serve.
+                               "endpoint" endpoint
+                               "refusal" (or refusal :null)
+                               ;; The auxiliary target rides along so a shell's /models
+                               ;; summary can name it without a second dial.
+                               "auxiliary" (gateway-auxiliary-model-json))
+                  outcome detail))
+
+(defun config-outcome (object outcome detail)
+  "OBJECT, a JSON object, with what writing the shared config came to: OUTCOME
+as shared_config, and DETAIL, why it failed, as shared_config_error; a
+failure is also warned."
+  ;; Config is the only durability now, so a write that did not land has to
+  ;; be visible rather than warned about into a log nobody is reading.
+  (warn-unsaved-config outcome detail)
+  (when outcome (setf (gethash "shared_config" object) (string-downcase outcome)))
+  (when detail (setf (gethash "shared_config_error" object) detail))
+  object)
+
+(defun warn-unsaved-config (outcome detail)
+  "Warn that the shared config was not updated, saying DETAIL, when OUTCOME is :FAILED."
+  (when (eq outcome :failed)
+    (warn "shared config not updated: ~a" detail)))
 
 (defun restore-model-config ()
   "Boot lane: the shared config's general defaults seed the selection, under
@@ -2822,8 +2829,6 @@ for a command that offers none."
        ;; not at the next turn, and the pair reaches config together or not at
        ;; all.
        (bind (((_ _ outcome detail) (select-default-model :provider provider :model model :endpoint endpoint)))
-         (when (eq outcome :failed)
-           (warn "shared config not updated: ~a" detail))
          ;; The default moved: every attached shell whose session follows
          ;; it is rendering stale facts now.
          (broadcast-model-changed)
@@ -2856,8 +2861,6 @@ unknown lane or a rung its model does not offer before anything moves;
                  (apply #'select-auxiliary-model (and (stringp model) model)
                         :provider (and (stringp provider) provider)
                         (and effort-p (list :effort (and (stringp effort) effort))))))
-           (when (eq outcome :failed)
-             (warn "shared config not updated: ~a" detail))
            (gateway-auxiliary-model-json outcome detail)))))))
 
 (define-gateway-route handle-gateway-decider-model-http (env)
@@ -2878,30 +2881,28 @@ moves; {provider: null} takes the pin out."
        (bind (((_ _ outcome detail)
                (select-decider-model (and (stringp provider) provider)
                                      :model (and (stringp model) model))))
-         (when (eq outcome :failed)
-           (warn "shared config not updated: ~a" detail))
          (gateway-decider-json outcome detail))))))
 
 (defun gateway-failover-json (&optional outcome detail)
   "The failover chain as the wire says it -- each backup in order with what
 history says of it (FAILOVER-RECORD) -- and every trigger with whether it is on."
   (let ((on (failover-triggers)))
-    (json-object
-     "chain" (map 'vector
-                  (lambda (entry)
-                    (destructuring-bind (&key provider model) entry
-                      (destructuring-bind (&key answered-at tried rescued) (failover-record provider model)
-                        (json-object "provider" provider "model" model
-                                     "answered_at" (or answered-at :null)
-                                     "tried" tried "rescued" rescued))))
-                  (failover-chain))
-     "triggers" (map 'vector
-                     (lambda (trigger)
-                       (json-object "id" (car trigger) "label" (cdr trigger)
-                                    "on" (if (member (car trigger) on :test #'string=) t :false)))
-                     +failover-triggers+)
-     :opt "shared_config" (and outcome (string-downcase outcome))
-     :opt "shared_config_error" detail)))
+    (config-outcome
+     (json-object
+      "chain" (map 'vector
+                   (lambda (entry)
+                     (destructuring-bind (&key provider model) entry
+                       (destructuring-bind (&key answered-at tried rescued) (failover-record provider model)
+                         (json-object "provider" provider "model" model
+                                      "answered_at" (or answered-at :null)
+                                      "tried" tried "rescued" rescued))))
+                   (failover-chain))
+      "triggers" (map 'vector
+                      (lambda (trigger)
+                        (json-object "id" (car trigger) "label" (cdr trigger)
+                                     "on" (if (member (car trigger) on :test #'string=) t :false)))
+                      +failover-triggers+))
+     outcome detail)))
 
 (define-gateway-route handle-gateway-failover-http (env)
   "GET /api/gateway/failover answers the failover chain every session and room
@@ -2943,8 +2944,6 @@ id no trigger has before anything moves."
                                         chain))))
            (when on
              (multiple-value-call #'wrote (set-failover-triggers (coerce on 'list)))))
-         (when (eq outcome :failed)
-           (warn "shared config not updated: ~a" detail))
          (gateway-failover-json outcome detail))))))
 
 (define-gateway-route handle-gateway-failover-test-http (env)
@@ -3542,10 +3541,7 @@ sent to be saved; POST /api/gateway/sessions/import takes it back.
                (values (sb-ext:string-to-octets (session-markdown session-id) :external-format :utf-8)
                        "text/markdown; charset=utf-8" (markdown-file-name session-id)))
               (t (nlk::protocol-refuse :invalid_request "format is jsonl or markdown")))
-      (list 200 (list :content-type type
-                      :content-disposition (format nil "attachment; filename=\"~a\"" name)
-                      :content-length (length octets))
-            octets))))
+      (download-answer octets type name :content-length (length octets)))))
 
 (defparameter *session-import-bytes* (* 128 1024 1024)
   "The largest session file an import reads.")
@@ -3769,8 +3765,7 @@ SESSION-ID, and tell every attached shell (BROADCAST-MODEL-CHANGED)."
          (old (effective-effort picked provider model)))
     (check-effort provider model effort)
     (multiple-value-bind (outcome detail) (select-default-effort effort)
-      (when (eq outcome :failed)
-        (warn "shared config not updated: ~a" detail))
+      (warn-unsaved-config outcome detail)
       (nlk:record-session-model-selection session-id :provider pin-provider :model pin-model
                                                      :effort effort)
       (broadcast-model-changed)
@@ -3808,8 +3803,7 @@ durably pin SESSION-ID to it, and tell every attached shell
               (values *provider* *model*)))
          (effort (admitted-effort (nlk:session-model-effort session-id)
                                   target-provider target-model)))
-    (when (eq outcome :failed)
-      (warn "shared config not updated: ~a" detail))
+    (warn-unsaved-config outcome detail)
     (nlk:record-session-model-selection session-id
                                         :provider (and picked target-provider)
                                         :model (and picked target-model)
@@ -4171,8 +4165,7 @@ the longest directory's (a path ending in /) that URI lies under."
                            (dispatch-command ws msg subscription-ref accepted-scopes)
                            (let ((frame (nlk:decode-sync-message msg)))
                              (unless (eq :gateway-connect frame.type)
-                               (error 'nlk:protocol-error :code :connect_required
-                                      :message "gateway_connect must complete before commands"))
+                               (nlk::protocol-refuse :connect_required "gateway_connect must complete before commands"))
                              (setf accepted-scopes
                                    (nlk::validate-gateway-connect
                                     frame.payload nonce
@@ -4449,11 +4442,14 @@ not said again.")
 (defun retry-wanted-p (cell)
   "Whether CELL is still a loaded peripheral, present, that refused its
 start: what a retry tries again."
-  (and cell
-       (eq cell.state :loaded)
-       cell.start
-       (not cell.started-p)
-       cell.refusal
+  (and cell cell.refusal (cell-startable-p cell)))
+
+(defun cell-startable-p (cell)
+  "Whether CELL is a loaded peripheral not started, still present: what a
+start starts."
+  ;; A folder taken out of the one folder (control.lisp's off) keeps its code
+  ;; until a restart, never its start: presence is consent.
+  (and (eq cell.state :loaded) cell.start (not cell.started-p)
        (or (null cell.path) (probe-file cell.path))))
 
 (defun retry-cell-start (name &aux (handler *gateway-handler*))
@@ -4491,14 +4487,7 @@ One thread per folder; none outside a serving gateway."
                       (namestring nlk::*cells-directory*))
               :level :warning))
     (dolist (cell (nlk:cells))
-      (when (and (cell-selected-p cell names)
-                 (eq cell.state :loaded)
-                 cell.start
-                 (not cell.started-p)
-                 ;; A folder taken out of the one folder (control.lisp's off)
-                 ;; keeps its code until a restart, never its start: presence
-                 ;; is consent.
-                 (or (null cell.path) (probe-file cell.path)))
+      (when (and (cell-selected-p cell names) (cell-startable-p cell))
         (let ((name cell.name))
           (handler-case
               (let ((stop (funcall cell.start config)))
@@ -4742,7 +4731,7 @@ USOCKET:ADDRESS-IN-USE-ERROR."
 ;;; closed the gateway's own local WS peer at every 20s of idle, forcing a
 ;;; reconnect + full-session replay cycle that promoted ~15MB/min of floating
 ;;; garbage (the 328MB-RSS incident). The WS client now pings inside that window
-;;; (*sync-keepalive-seconds*, client.lisp), so this value is a backstop that
+;;; (*sync-keepalive-seconds*, tui/client-update.lisp), so this value is a backstop that
 ;;; reaps genuinely dead peers and idle HTTP keep-alive connections, not the
 ;;; liveness mechanism. It must stay comfortably above the ping cadence.
 (defparameter *gateway-connection-read-timeout* 75
@@ -5030,7 +5019,7 @@ back after them (NLK:TRIM-MEMORY)."
           *gateway-operator-token* nil))
   t)
 
-;;; The headless serve entry lives in client.lisp (SERVE-ORGANISM-CANDIDATE):
+;;; The headless serve entry lives in tui/client-session.lisp (SERVE-ORGANISM-CANDIDATE):
 ;;; it shares the ownership boot spine with the foreground entry and adds
 ;;; election etiquette (probe first, lose quietly on STORE-IN-USE), which the
 ;;; old START-GATEWAY-ORGANISM here lacked — that entry served without the
@@ -5049,12 +5038,23 @@ back after them (NLK:TRIM-MEMORY)."
 ;;; to, so it exits once no turn is in flight and the unit -- systemd's
 ;;; Restart=always, launchd's KeepAlive through the launcher -- starts it
 ;;; again on `current'; a shell fronting its organism re-fronts a fresh one
-;;; the same way (client.lisp, the reconnect ladder).
+;;; the same way (tui/client-update.lisp, the reconnect ladder).
 
 (defparameter *idle-poll-seconds* 5
   "How often a restart waiting for an idle moment asks whether a turn is in
 flight; also its first wait, so the answer that asked for it is out before
 the process goes.")
+
+(defmacro spawn-once-idle (place name &body body)
+  "Unless the thread PLACE holds still runs, set PLACE to a thread NAME that
+runs BODY at the first moment no turn is in flight, asked every
+*IDLE-POLL-SECONDS* from the first wait on: one wait at a time, and a later
+ask rides the same one."
+  `(unless (and ,place (bt2:thread-alive-p ,place))
+     (setf ,place (spawn ,name
+                    (loop do (sleep *idle-poll-seconds*)
+                          while (ignore-errors (nlk:any-active-turn-p)))
+                    ,@body))))
 
 (defvar *restart-wait* nil
   "The thread waiting for an idle moment to exit this gateway, or NIL.")
@@ -5109,12 +5109,8 @@ installed binary started."
   "Exit this gateway once no turn is in flight, for the next launch to run
 TO, REASON why: one wait at a time, and a later request rides the same one."
   (unless (and *restart-wait* (bt2:thread-alive-p *restart-wait*))
-    (setf *restart-reason* reason
-          *restart-wait*
-          (spawn "restart-wait"
-            (loop do (sleep *idle-poll-seconds*)
-                  while (ignore-errors (nlk:any-active-turn-p)))
-            (funcall *restart-exit* to)))))
+    (setf *restart-reason* reason))
+  (spawn-once-idle *restart-wait* "restart-wait" (funcall *restart-exit* to)))
 
 ;;; --- the channels a live release starts again ------------------------------
 ;;;
@@ -5140,14 +5136,10 @@ TO, REASON why: one wait at a time, and a later request rides the same one."
 release VERSION just live: one wait at a time, and a later release rides the
 same one. => the waiting thread, or NIL."
   (let ((kit (nlk:find-cell *channel-kit-folder*)))
-    (when (and kit (nlk:cell-started-p kit)
-               (not (and *channel-restart-wait* (bt2:thread-alive-p *channel-restart-wait*))))
-      (setf *channel-restart-wait*
-            (spawn "channel-restart-wait"
-              (loop do (sleep *idle-poll-seconds*)
-                    while (ignore-errors (nlk:any-active-turn-p)))
-              (unless *restart-wait*
-                (restart-started-cell *channel-kit-folder* (format nil "~a is live" version))))))))
+    (when (and kit (nlk:cell-started-p kit))
+      (spawn-once-idle *channel-restart-wait* "channel-restart-wait"
+        (unless *restart-wait*
+          (restart-started-cell *channel-kit-folder* (format nil "~a is live" version)))))))
 
 (defun restart-started-cell (name why)
   "Stop the folder NAME and start it again on the shared config as it reads

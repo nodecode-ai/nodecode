@@ -3,9 +3,9 @@
 ;;;;
 ;;;; SPDX-License-Identifier: MIT
 ;;;;
-;;;; A shell folds the sync stream itself (APPLY-GATEWAY-EVENT, client.lisp).
+;;;; A shell folds the sync stream itself (APPLY-GATEWAY-EVENT, tui/client.lisp).
 ;;;; A browser cannot: the fold is Lisp, and a tool card's words come from
-;;;; reading the snippet it ran (activity.lisp). So a subscription entry carrying
+;;;; reading the snippet it ran (tool-summary.lisp). So a subscription entry carrying
 ;;;; "rows": true has the fold done here, by the same reducer over the same
 ;;;; frames. An in-process peer (ATTACH-LOOPBACK-GATEWAY-PEER) subscribes to the
 ;;;; session in the client's place and folds every frame the gateway would have
@@ -245,8 +245,8 @@ and what its context holds."
                        if (gethash id live) collect id
                        else do (push id gone) (remhash id view.sent)))
            (moved (let ((at (mismatch kept order))) (and at (< at (length kept)))))
-           ;; What the turn is doing reads as a shell's live bar reads it (ui.lisp,
-           ;; the bar's head): a retrying provider ahead of the activity, until
+           ;; What the turn is doing reads as a shell's live bar reads it
+           ;; (tui/transcript/ingest.lisp, the bar's head): a retrying provider ahead of the activity, until
            ;; the stream moves and the reducer retires it. The rows are sent
            ;; when something changes, never on a clock, so the retry carries no
            ;; countdown: one would stand frozen at its first second.
