@@ -2701,19 +2701,12 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                         (write-string (or part.text "") partial))
                        (:reasoning-delta (write-string (or part.text "") partial-reasoning))
                        ((:tool-input-start :tool-input-delta :tool-call)
-                        (let ((entry (assoc (or part.index 0)
-                                            partial-calls)))
-                          (unless entry
-                            (setf entry (cons (or part.index 0)
-                                              (list :id nil :name nil
-                                                    :arguments "")))
-                            (push entry partial-calls))
-                          (let ((buf (cdr entry)))
-                            (when (stringp part.id) (setf (getf buf :id) part.id))
-                            (when (stringp part.tool-name) (setf (getf buf :name) part.tool-name))
-                            (when (stringp part.arguments)
-                              (setf (getf buf :arguments)
-                                    part.arguments))))))
+                        (let ((buf (cdr (or (assoc (or part.index 0) partial-calls)
+                                            (car (push (list (or part.index 0) :id nil :name nil :arguments "")
+                                                       partial-calls))))))
+                          (loop for (key value) on (list :id part.id :name part.tool-name :arguments part.arguments)
+                                  by #'cddr
+                                when (stringp value) do (setf (getf buf key) value)))))
                      (when on-part (funcall on-part part))
                      (when loop-guard (loop-guard-observe loop-guard part))))
          (config context.provider-config))
@@ -2740,6 +2733,9 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                (if (continuing-p)
                    (continuation-context context sealed-reasoning sealed-text)
                    context))
+             (seal-prefix ()
+               ;; the sealed reasoning as a continued round's reasoning opens: on its own line
+               (if (plusp (length sealed-reasoning)) (format nil "~a~%" sealed-reasoning) ""))
              (merge-continuation (message)
                ;; The winning attempt's message, with the seal restored in
                ;; front of what it streamed: reasoning joined on a newline
@@ -2751,9 +2747,7 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                ;; nothing was continued.
                (if (not (continuing-p))
                    (values message nil)
-                   (let ((reasoning-prefix (if (plusp (length sealed-reasoning))
-                                               (format nil "~a~%" sealed-reasoning)
-                                               ""))
+                   (let ((reasoning-prefix (seal-prefix))
                          (reasoning (gethash "reasoning_content" message))
                          (content (gethash "content" message)))
                      (setf (gethash "reasoning_content" message)
@@ -2823,6 +2817,17 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                            thinking)))
                (when (plusp (length text))
                  (setf sealed-text (concatenate 'string sealed-text text))))
+             (scaled-estimate (&aux (config context.provider-config))
+               ;; the round's estimate, scaled by what this model's counts taught
+               (round (* (compiled-context-estimated-tokens context)
+                         (context-estimate-ratio config.provider config.model))))
+             (record-fallback (to-provider to-model reason &rest more)
+               (when *current-durable-turn*
+                 (apply #'nlk:record-provider-fallback *current-durable-turn*
+                        :from-provider config.provider :from-model config.model
+                        :to-provider to-provider :to-model to-model :reason reason
+                        :attempt provider-attempt more)
+                 (notify-turn-facts-committed)))
              (verdict-of (e)
                ;; What failure E said of its model: the failover label, the
                ;; HTTP status, and the provider's own words on one line.
@@ -2905,18 +2910,8 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                            ;; refused attempt's first token, and the
                            ;; candidate's TTFT came out negative.
                            (void-partial-stream)
-                           (when *current-durable-turn*
-                             (nlk:record-provider-fallback
-                              *current-durable-turn*
-                              :from-provider current-provider
-                              :from-model current-model
-                              :to-provider provider
-                              :to-model model
-                              :reason reason
-                              :status (provider-error-status e)
-                              :attempt provider-attempt
-                              :detail (provider-error-detail e))
-                             (notify-turn-facts-committed))
+                           (record-fallback provider model reason :status (provider-error-status e)
+                                            :detail (provider-error-detail e))
                            (setf config candidate
                                  context (context-with context
                                                        :provider-config candidate)
@@ -2942,17 +2937,7 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                          (setf (getf (first fallback-tried) :reason) "unresolved"
                                (getf (first fallback-tried) :said)
                                (nlk:one-line (princ-to-string refusal)))
-                         (when *current-durable-turn*
-                           (nlk:record-provider-fallback
-                            *current-durable-turn*
-                            :from-provider current-provider
-                            :from-model current-model
-                            :to-provider provider
-                            :to-model model
-                            :reason "unresolved"
-                            :attempt provider-attempt
-                            :detail (princ-to-string refusal))
-                           (notify-turn-facts-committed))
+                         (record-fallback provider model "unresolved" :detail (princ-to-string refusal))
                          (try-fallback e)))))))
              (announce-retry (e scope delay detail attempt limit continuation)
                ;; One retry, announced twice over. The durable fact carries
@@ -3025,15 +3010,9 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                ;; its estimate both changed.
                (let ((steps 0))
                  (loop
-                   (let* ((config context.provider-config)
-                          (provider-id config.provider)
-                          (model-id config.model)
-                          (estimate (round (* (compiled-context-estimated-tokens context)
-                                              (context-estimate-ratio provider-id
-                                                                      model-id))))
+                   (let* ((estimate (scaled-estimate))
                           (decision (context-pressure-decision
-                                     estimate
-                                     (effective-context-budget config))))
+                                     estimate (effective-context-budget context.provider-config))))
                      (case (getf decision :status)
                        (:unknown
                         (note-phase "context-pressure status=unknown estimate=~d" estimate)
@@ -3076,12 +3055,7 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                    (effective-max-output-tokens context)
                  (when (and shrunk-p (integerp cap)
                             (< cap +min-usable-output-tokens+))
-                   (let* ((config context.provider-config)
-                          (provider-id config.provider)
-                          (model-id config.model)
-                          (estimate (round (* (compiled-context-estimated-tokens context)
-                                              (context-estimate-ratio provider-id
-                                                                      model-id)))))
+                   (let ((config context.provider-config) (estimate (scaled-estimate)))
                      (note-phase
                       "output-room status=refused cap=~d estimate=~d budget=~a"
                       cap estimate (effective-context-budget config))
@@ -3196,9 +3170,7 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                                        ;; merge a finished continuation
                                        ;; gets, and says where the join is.
                                        (when (continuing-p)
-                                         (let ((prefix (if (plusp (length sealed-reasoning))
-                                                           (format nil "~a~%" sealed-reasoning)
-                                                           "")))
+                                         (let ((prefix (seal-prefix)))
                                            (setf (nlk:turn-cancelled-condition-partial-continued-from
                                                   condition)
                                                  (list :reasoning (length prefix)
@@ -3429,13 +3401,8 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
              ;; over its window, and our calibrated estimate of it bounds
              ;; the window from above (estimate-grade — a later proven
              ;; floor beats it).
-             (let ((provider-id config.provider) (model-id config.model))
-               (when (nlk:store-open-p)
-                 (nlk:observe-context-window-ceiling
-                  provider-id model-id
-                  (max 1 (round (* (compiled-context-estimated-tokens context)
-                                   (context-estimate-ratio provider-id
-                                                           model-id)))))))
+             (when (nlk:store-open-p)
+               (nlk:observe-context-window-ceiling config.provider config.model (max 1 (scaled-estimate))))
              ;; One shared recovery step (terminal turn, else live-turn
              ;; rounds); nothing evictable means the rejection stands.
              ;; Step until it fits, not once: with an unknown window the
