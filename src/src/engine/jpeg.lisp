@@ -770,14 +770,19 @@ tables, CMYK and YCCK as PIL turns Adobe's inverted CMYK into RGB."
         (let ((r1 (svref rows 1)) (r2 (svref rows 2))
               (crr *jpeg-cr-red*) (cbb *jpeg-cb-blue*) (crg *jpeg-cr-green*) (cbg *jpeg-cb-green*))
           (declare (type (simple-array (unsigned-byte 8) (*)) r1 r2))
+          (macrolet ((ycc (yy cb cr &optional invert)
+                       ;; jdcolor.c's red, green and blue of YY CB CR, each 255 less itself when INVERT
+                       (flet ((side (form) (if invert `(- 255 ,form) form)))
+                         `(values (%jpeg-clamp ,(side `(+ ,yy (aref crr ,cr))))
+                                  (%jpeg-clamp ,(side `(+ ,yy (ash (+ (aref cbg ,cb) (aref crg ,cr)) -16))))
+                                  (%jpeg-clamp ,(side `(+ ,yy (aref cbb ,cb))))))))
           (case space
             (:ycc
              (dotimes (x width)
-               (let ((yy (aref r0 x)) (cb (aref r1 x)) (cr (aref r2 x)) (o (+ at (* 3 x))))
+               (let ((o (+ at (* 3 x))))
                  (declare (type fixnum o))
-                 (setf (aref out o) (%jpeg-clamp (+ yy (aref crr cr)))
-                       (aref out (+ o 1)) (%jpeg-clamp (+ yy (ash (+ (aref cbg cb) (aref crg cr)) -16)))
-                       (aref out (+ o 2)) (%jpeg-clamp (+ yy (aref cbb cb)))))))
+                 (setf (values (aref out o) (aref out (+ o 1)) (aref out (+ o 2)))
+                       (ycc (aref r0 x) (aref r1 x) (aref r2 x))))))
             (:rgb
              (dotimes (x width)
                (let ((o (+ at (* 3 x))))
@@ -796,11 +801,8 @@ tables, CMYK and YCCK as PIL turns Adobe's inverted CMYK into RGB."
                    (let ((o (+ at (* 3 x))) (k (aref r3 x)) (c (aref r0 x)) (m (aref r1 x)) (ye (aref r2 x)))
                      (declare (type fixnum o) (type (unsigned-byte 8) c m ye))
                      (when ycck
-                       (let ((yy c) (cb m) (cr ye))
-                         (setf c (%jpeg-clamp (- 255 (+ yy (aref crr cr))))
-                               m (%jpeg-clamp (- 255 (+ yy (ash (+ (aref cbg cb) (aref crg cr)) -16))))
-                               ye (%jpeg-clamp (- 255 (+ yy (aref cbb cb)))))))
-                     (setf (aref out o) (ink c k) (aref out (+ o 1)) (ink m k) (aref out (+ o 2)) (ink ye k)))))))))))
+                       (setf (values c m ye) (ycc c m ye t)))
+                     (setf (aref out o) (ink c k) (aref out (+ o 1)) (ink m k) (aref out (+ o 2)) (ink ye k))))))))))))
   out)
 
 (defun %jpeg-colour (frame space)
@@ -889,7 +891,5 @@ read -- and for any other error inside the decoder, so a file no one
 foresaw costs the picture, never the turn."
   (handler-case (multiple-value-bind (data width height channels) (jpeg-decode octets)
                   (%make-pixels width height channels data))
-    (jpeg-malformed (e)
-      (error 'image-unfit :reason (format nil "the JPEG does not decode here: ~a" (jpeg-malformed-reason e))))
     (error (e)
       (error 'image-unfit :reason (format nil "the JPEG does not decode here: ~a" e)))))
