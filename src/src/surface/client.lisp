@@ -2978,21 +2978,13 @@ session the shell ended on, or NIL when it never attached."
       (spawn "gateway-client-reconnector"
         (loop with delay = *sync-backoff-base-seconds*
               with failures = 0
-              with outage-started = nil
-              with failure-reported = nil
               with resurrect-attempts = 0
-              with last-resurrect = nil
-              with shutdown-reported = nil
-              with stopping-reported = nil
-              with stopping-since = nil
-              ;; The session ensure of the lap in flight: (DONE . OUTCOME),
+              ;; ENSURE is the session ensure of the lap in flight: (DONE . OUTCOME),
               ;; OUTCOME :ENSURED, the condition it failed with, or NIL
-              ;; while it runs.
-              with ensure = nil
-              with ensure-reported = nil
-              with unresolved-since = nil
-              with unresolved-reported = nil
-              with starting-reported = nil
+              ;; while it runs. Every other flag and stamp starts NIL.
+              with (outage-started failure-reported last-resurrect shutdown-reported
+                    stopping-reported stopping-since ensure ensure-reported
+                    unresolved-since unresolved-reported starting-reported) = nil
               ;; An attach ends the outage: the next one walks the ladder from its start.
               with reset-outage = (lambda ()
                                     (setf delay *sync-backoff-base-seconds* failures 0
@@ -3521,9 +3513,12 @@ models -- so a shell never builds the list itself.")
 (defun gateway-models-facts (body)
   "BODY, a GET /api/gateway/models answer, as *GATEWAY-MODELS* holds it;
 :UNREPORTED when the answer carries no providers field at all."
-  (flet ((ids (key)
+  (flet ((ids (key &optional pairs)
+           ;; The ids whose provider holds KEY; with PAIRS, (ID . VALUE) where VALUE is a string.
            (loop for provider across (or (gethash "providers" body) #())
-                 when (gethash key provider) collect (gethash "id" provider))))
+                 for value = (gethash key provider)
+                 when (if pairs (stringp value) value)
+                   collect (if pairs (cons (gethash "id" provider) value) (gethash "id" provider)))))
     (list :rows (build-models-catalog-picker-rows
                  (append
                   (loop for row across (or (gethash "models" body) #())
@@ -3538,14 +3533,10 @@ models -- so a shell never builds the list itself.")
           :listable (ids "listable")
           :local (ids "local")
           ;; (ID . NAME) for each provider its folder names (OFFERED-PROVIDER-NAME)
-          :names (loop for provider across (or (gethash "providers" body) #())
-                       for name = (gethash "name" provider)
-                       when (stringp name) collect (cons (gethash "id" provider) name))
+          :names (ids "name" t)
           ;; (ID . WHY) for each provider no turn can run on there, WHY the
           ;; gateway's words (PROVIDER-TURN-REFUSAL reads them).
-          :refusals (loop for provider across (or (gethash "providers" body) #())
-                          for why = (gethash "refusal" provider)
-                          when (stringp why) collect (cons (gethash "id" provider) why))
+          :refusals (ids "refusal" t)
           ;; Each provider a folder not installed there serves, which picking
           ;; installs (PROVIDER-OFFERS' plists).
           :offers (loop for offer across (or (gethash "offers" body) #())
