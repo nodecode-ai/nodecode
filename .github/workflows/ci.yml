@@ -5,6 +5,8 @@ name: CI
 #   linux    lint, the release tarball (pack.sh), the core test suite
 #   macos    the Mac half of the release, driven over ssh (pack-macos.sh)
 #   windows  the release's Windows half: build-windows.ps1 and both smokes
+#   proofs   every Lean proof under proofs/, strict and on the classical
+#            axioms only (`just proofs')
 # The scripts live in src/tools/ci-*, so a job is one step and the same check
 # runs by hand on the same machine.
 #
@@ -34,6 +36,16 @@ jobs:
       - uses: actions/checkout@v4
       - name: Lint, build the release tarball, run the core suite
         run: src/tools/ci-linux.sh
+
+  proofs:
+    name: Proofs
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, nc-linux]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check every Lean proof under proofs/
+        run: src/tools/ci-proofs.sh
 
   macos:
     name: macOS
