@@ -534,6 +534,8 @@ of stacking."
      (:file "engine/context-test")
      ;; tool-call-id-test follows turn-test: it drives turn-test's canned SSE helpers.
      (:file "engine/tool-call-id-test")
+     ;; wire-pairing-test pins proofs/WirePairing.lean's traces on the fold.
+     (:file "engine/wire-pairing-test")
      ;; loop-guard-test follows turn-test: its round gates drive turn-test's
      ;; canned SSE helpers.
      (:file "engine/loop-guard-test")
