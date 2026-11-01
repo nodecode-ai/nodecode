@@ -126,7 +126,7 @@ answered), what was SAID above the list ((TEXT TONE)), the generation
 STACKED, one view at a time."
   (changes #()) (days #()) (now nil) (version nil) (follows nil) (edits '()) (failed nil)
   (focus :pane) (at 0) (day 0) (filter :all) (query "" :type string) (top 0) (rail-top 0)
-  (ask nil) (said nil) (asked nil) (stacked nil))
+  (ask nil) (said nil) (asked nil))
 
 (nlk:access (history generations-sheet))
 
@@ -530,24 +530,17 @@ edits that hold it kept first; d discards them, then goes."
 
 (defun generations-key (model history key &key ctrl alt shift)
   "Every key the shell's chords leave the open sheet."
-  (let ((typed (and (characterp key) (not ctrl) (not alt))))
-    (cond
-      (history.ask (history-ask-key model history key))
-      ;; Typing searches every change; Space is a key of its own until a
-      ;; query is going.
-      ((or (and typed (graphic-char-p key) (char/= key #\Space))
-           (and typed (eql key #\Space) (plusp (length history.query)))
-           (and (plusp (length history.query))
-                (or (eq key :backspace)
-                    (and ctrl (characterp key) (member key '(#\u #\w) :test #'char-equal)))))
-       (when-let (query (edit-text-field history.query key :ctrl ctrl :alt alt
-                                                           :max *max-dialog-search-chars*))
-         (history-search history query)))
-      ((eq key :tab) (history-step-filter history (if shift -1 1)))
-      ((eq history.focus :banner) (history-banner-key model history key))
-      ((plusp (length history.query)) (history-query-key model history key))
-      ((eq history.focus :rail) (history-rail-key model history key))
-      (t (history-pane-key model history key)))))
+  (cond
+    (history.ask (history-ask-key model history key))
+    ;; Typing searches every change; Space is a key of its own until a
+    ;; query is going.
+    ((sheet-type-query history.query key ctrl alt (lambda (query) (history-search history query))
+                       :space (plusp (length history.query))))
+    ((eq key :tab) (history-step-filter history (if shift -1 1)))
+    ((eq history.focus :banner) (history-banner-key model history key))
+    ((plusp (length history.query)) (history-query-key model history key))
+    ((eq history.focus :rail) (history-rail-key model history key))
+    (t (history-pane-key model history key))))
 
 (defun generations-paste (model history text)
   "A paste lands in the query."
@@ -795,10 +788,7 @@ day's head at the top."
                     (setf at (canvas-put canvas at r (clip-text-to-width words (- (+ px pw) at)) ink))
                     (when (< at (+ px pw))
                       (canvas-put canvas at r (make-string (- (+ px pw) at) :initial-element #\─) ink))))))
-      (when (plusp offset)
-        (canvas-put canvas (+ px pw 1) top "▴" (sheet-ink :muted :ground pane)))
-      (when (< (+ offset rows) (length lines))
-        (canvas-put canvas (+ px pw 1) (+ top rows -1) "▾" (sheet-ink :muted :ground pane))))))
+      (paint-scroll-marks canvas (+ px pw 1) top (+ top rows -1) offset rows (length lines) pane))))
 
 (defun paint-history-chips (history canvas r px pw ground)
   "The filters side by side on R, the one shown filled, each with its count."
@@ -894,163 +884,138 @@ the tab the list hangs from."
                             (declare (ignore model))
                             (setf history.query "" history.ask nil history.said nil history.focus :rail
                                   history.day d)))))
-    (when (plusp offset)
-      (canvas-put canvas (- width 2) top "▴" (sheet-ink :muted :ground rail)))
-    (when (< (+ offset rows) (length days))
-      (canvas-put canvas (- width 2) (+ top rows -1) "▾" (sheet-ink :muted :ground rail)))))
+    (paint-scroll-marks canvas (- width 2) top (+ top rows -1) offset rows (length days) rail)))
 
 (defun paint-history-wide (history canvas edges)
   "The wide sheet: the days in a rail beside the changes. => the caret's
 cell, or NIL."
-  (let* ((width canvas.width)
-         (rail-width (if (>= width 104) 24 21))
-         (pane (sheet-ground :sheet))
-         (rail (sheet-ground :sheet-rail))
-         (field (sheet-ground :composer)))
-    (multiple-value-bind (top inner) (paint-lanes canvas edges `((0 ,rail-width ,rail)
-                                                                 (,rail-width ,(- width rail-width) ,pane)))
-      (let* ((tight (< inner 22))
-             (px (+ rail-width 3))
-             (pw (- width rail-width 6))
-             (title-row (+ top (if tight 0 1)))
-             (hint-row (+ top inner (if tight -1 -2)))
-             (visible (history-visible history))
-             (focus (history-focus history visible))
-             (current (history-current history))
-             (changes history.changes)
-             (cursor nil)
-             (r (+ title-row 2)))
-        (canvas-put canvas 3 title-row "Generations" (sheet-ink :title :ground rail :bold t))
-        (paint-history-days history canvas (+ title-row 2) (- hint-row 2 title-row 2) rail-width rail pane
-                            focus current)
-        (when (plusp (length changes))
-          (canvas-put canvas 3 (1- hint-row)
-                      (clip-text-to-width (format nil "~d sealed" (history-change-to (aref changes 0)))
-                                          (- rail-width 4))
-                      (sheet-ink :muted :ground rail))
-          (canvas-put canvas 3 hint-row
-                      (clip-text-to-width (format nil "since ~a" (nth-value 1 (local-date (history-change-first-at
-                                                                                            (aref changes (1- (length changes)))))))
-                                          (- rail-width 4))
-                      (sheet-ink :muted :ground rail)))
-        ;; the search field
-        (canvas-fill canvas (1- px) title-row (+ pw 2) 1 (sheet-ink nil :ground field))
-        (if (plusp (length history.query))
-            (setf cursor (cons (canvas-put canvas px title-row (clip-tail history.query (1- pw))
-                                           (sheet-ink :composer :ground field))
-                               title-row))
-            (canvas-put canvas px title-row (clip-text-to-width "Search changes, cells, sessions, #numbers" (1- pw))
-                        (sheet-ink :muted :ground field)))
-        (unless tight
-          (paint-history-chips history canvas r px pw pane)
-          (incf r 2))
-        (setf r (paint-history-notes history canvas r px pw pane tight))
-        (multiple-value-bind (card keys) (and history.ask (ask-card history pw))
-          (let* ((room (max 0 (- hint-row r 4)))
-                 (card (and card (subseq card 0 (min (length card) room))))
-                 (list-end (if card (- hint-row (length card) 3) (- hint-row 4))))
-            (multiple-value-bind (lines focus-line) (history-lines history visible focus pw t)
-              (if lines
-                  (paint-history-list history canvas lines focus-line r (1+ (- list-end r)) px pw focus current t)
-                  (when-let (text (history-empty-text history))
-                    (canvas-put canvas px r (clip-text-to-width text pw) (sheet-ink :muted :ground pane)))))
-            (if card
-                (paint-ask canvas (- hint-row 1 (length card)) px pw card)
-                (paint-segs canvas (- hint-row 2) px pw (history-bottom history focus current) pane))
-            (paint-keys history canvas hint-row px (+ px pw) (if history.ask keys (history-keys history visible))
-                        history.flash pane)))
-        cursor))))
+  (with-wide-sheet (canvas edges (if (>= width 104) 24 21))
+    (let* ((tight (< inner 22))
+           (title-row (+ top (if tight 0 1)))
+           (hint-row (+ top inner (if tight -1 -2)))
+           (visible (history-visible history))
+           (focus (history-focus history visible))
+           (current (history-current history))
+           (changes history.changes)
+           (cursor nil)
+           (r (+ title-row 2)))
+      (canvas-put canvas 3 title-row "Generations" (sheet-ink :title :ground rail :bold t))
+      (paint-history-days history canvas (+ title-row 2) (- hint-row 2 title-row 2) rail-width rail pane
+                          focus current)
+      (when (plusp (length changes))
+        (canvas-put canvas 3 (1- hint-row)
+                    (clip-text-to-width (format nil "~d sealed" (history-change-to (aref changes 0)))
+                                        (- rail-width 4))
+                    (sheet-ink :muted :ground rail))
+        (canvas-put canvas 3 hint-row
+                    (clip-text-to-width (format nil "since ~a" (nth-value 1 (local-date (history-change-first-at
+                                                                                          (aref changes (1- (length changes)))))))
+                                        (- rail-width 4))
+                    (sheet-ink :muted :ground rail)))
+      ;; the search field
+      (setf cursor (paint-search-field canvas px title-row pw history.query "Search changes, cells, sessions, #numbers" field))
+      (unless tight
+        (paint-history-chips history canvas r px pw pane)
+        (incf r 2))
+      (setf r (paint-history-notes history canvas r px pw pane tight))
+      (multiple-value-bind (card keys) (and history.ask (ask-card history pw))
+        (let* ((room (max 0 (- hint-row r 4)))
+               (card (and card (subseq card 0 (min (length card) room))))
+               (list-end (if card (- hint-row (length card) 3) (- hint-row 4))))
+          (multiple-value-bind (lines focus-line) (history-lines history visible focus pw t)
+            (if lines
+                (paint-history-list history canvas lines focus-line r (1+ (- list-end r)) px pw focus current t)
+                (when-let (text (history-empty-text history))
+                  (canvas-put canvas px r (clip-text-to-width text pw) (sheet-ink :muted :ground pane)))))
+          (if card
+              (paint-ask canvas (- hint-row 1 (length card)) px pw card)
+              (paint-segs canvas (- hint-row 2) px pw (history-bottom history focus current) pane))
+          (paint-keys history canvas hint-row px (+ px pw) (if history.ask keys (history-keys history visible))
+                      history.flash pane)))
+      cursor)))
 
 (defun paint-history-stacked (history canvas edges)
   "The narrow sheet: the days, or the changes, or a query's finds, one view
 at a time. => the caret's cell, or NIL."
-  (let* ((width canvas.width)
-         (pane (sheet-ground :sheet)))
-    (multiple-value-bind (top inner) (paint-lanes canvas edges `((0 ,width ,pane)))
-      (let* ((pad (if (>= width 60) 3 2))
-             (px pad)
-             (pw (- width (* 2 pad)))
-             (pad-row (if (and edges (>= inner 20)) 1 0))
-             (header-row (+ top pad-row))
-             (hint-row (- (+ top inner) 1 pad-row))
-             (visible (history-visible history))
-             (focus (history-focus history visible))
-             (current (history-current history))
-             (days-view (and (member history.focus '(:rail :banner)) (zerop (length history.query))))
-             (cursor nil)
-             (r (+ header-row 2)))
-        (flet ((right (text)
-                 (when (< (+ (text-display-width text) 16) pw)
-                   (canvas-put canvas (- (+ px pw) (text-display-width text)) header-row text
-                               (sheet-ink :muted :ground pane)))))
-          (cond
-            ((plusp (length history.query))
-             (let* ((count (length visible))
-                    (at (canvas-put canvas px header-row "Search " (sheet-ink :muted :ground pane))))
-               (setf cursor (cons (canvas-put canvas at header-row (clip-tail history.query (max 1 (- pw 22)))
-                                              (sheet-ink :foreground :ground pane))
-                                  header-row))
-               (right (if (plusp count) (format nil "~d match~:[es~;~]" count (= count 1)) "no match"))))
-            (days-view
-             (canvas-put canvas px header-row "Generations" (sheet-ink :title :ground pane :bold t))
-             (right "type to search"))
-            (t
-             (let* ((chosen (history-chosen-day history focus))
-                    (at (canvas-put canvas px header-row "Generations › " (sheet-ink :muted :ground pane))))
-               (sheet-hit history header-row px at
-                          (lambda (model history)
-                            (declare (ignore model))
-                            (setf history.day (history-chosen-day history (history-focus history))
-                                  history.focus :rail)))
-               (when (plusp (length history.days))
-                 (canvas-put canvas at header-row
-                             (clip-text-to-width (history-day-label (aref history.days chosen)) (max 1 (- pw 30)))
-                             (sheet-ink :title :ground pane :bold t))
-                 (right (format nil "‹ ~d/~d ›" (1+ chosen) (length history.days))))))))
-        (when (>= inner 18)
-          (paint-history-chips history canvas r px pw pane)
-          (incf r 2))
-        (when (>= inner 14)
-          (setf r (paint-history-notes history canvas r px pw pane nil)))
-        (multiple-value-bind (card keys) (and history.ask (ask-card history pw))
-          (let* ((gap (if (>= inner 16) 1 0))
-                 (bottom-row (- hint-row 1 gap))
-                 (room (max 0 (- hint-row r 4)))
-                 (card (and card (subseq card 0 (min (length card) room))))
-                 (list-end (if card (- hint-row (length card) 3) (- bottom-row 1 gap)))
-                 (rows (1+ (- list-end r))))
-            (if days-view
-                (let ((offset (max 0 (min history.rail-top history.day) (- history.day rows -1))))
-                  (setf history.rail-top offset)
-                  (loop for d from offset below (min (length history.days) (+ offset rows))
-                        for y from r
-                        for day = (aref history.days d)
-                        do (let* ((on (and (= d history.day) (eq history.focus :rail)))
-                                  (ground (if on (sheet-ground :sheet-focus) pane))
-                                  (count (princ-to-string (day-count history d))))
-                             (when on (canvas-fill canvas (- px 2) y (+ pw 4) 1 (sheet-ink nil :ground ground)))
-                             (canvas-put canvas px y (clip-text-to-width day.long (- pw 8))
-                                         (sheet-ink (cond (on :dialog-accent)
-                                                          ((day-refused-p history d) :muted)
-                                                          (t :system))
-                                                    :ground ground :bold on))
-                             (canvas-put canvas (- (+ px pw) (length count)) y count (sheet-ink :muted :ground ground))
-                             (sheet-hit history y (- px 2) (+ px pw 2)
-                                        (lambda (model history)
-                                          (declare (ignore model))
-                                          (if (and (= d history.day) (eq history.focus :rail))
-                                              (history-open-day history d)
-                                              (setf history.day d history.focus :rail history.said nil)))))))
-                (multiple-value-bind (lines focus-line) (history-lines history visible focus pw nil)
-                  (if lines
-                      (paint-history-list history canvas lines focus-line r rows px pw focus current nil)
-                      (when-let (text (history-empty-text history))
-                        (canvas-put canvas px r (clip-text-to-width text pw) (sheet-ink :muted :ground pane))))))
-            (cond (card (paint-ask canvas (- hint-row 1 (length card)) px pw card))
-                  ((>= inner 12) (paint-segs canvas bottom-row px pw (history-bottom history focus current) pane)))
-            (paint-keys history canvas hint-row px (+ px pw) (if history.ask keys (history-keys history visible))
-                        history.flash pane)))
-        cursor))))
+  (with-stacked-sheet (canvas edges)
+    (let* ((visible (history-visible history))
+           (focus (history-focus history visible))
+           (current (history-current history))
+           (days-view (and (member history.focus '(:rail :banner)) (zerop (length history.query))))
+           (cursor nil)
+           (r (+ header-row 2)))
+      (flet ((right (text)
+               (when (< (+ (text-display-width text) 16) pw)
+                 (canvas-put canvas (- (+ px pw) (text-display-width text)) header-row text
+                             (sheet-ink :muted :ground pane)))))
+        (cond
+          ((plusp (length history.query))
+           (let* ((count (length visible))
+                  (at (canvas-put canvas px header-row "Search " (sheet-ink :muted :ground pane))))
+             (setf cursor (cons (canvas-put canvas at header-row (clip-tail history.query (max 1 (- pw 22)))
+                                            (sheet-ink :foreground :ground pane))
+                                header-row))
+             (right (if (plusp count) (format nil "~d match~:[es~;~]" count (= count 1)) "no match"))))
+          (days-view
+           (canvas-put canvas px header-row "Generations" (sheet-ink :title :ground pane :bold t))
+           (right "type to search"))
+          (t
+           (let* ((chosen (history-chosen-day history focus))
+                  (at (canvas-put canvas px header-row "Generations › " (sheet-ink :muted :ground pane))))
+             (sheet-hit history header-row px at
+                        (lambda (model history)
+                          (declare (ignore model))
+                          (setf history.day (history-chosen-day history (history-focus history))
+                                history.focus :rail)))
+             (when (plusp (length history.days))
+               (canvas-put canvas at header-row
+                           (clip-text-to-width (history-day-label (aref history.days chosen)) (max 1 (- pw 30)))
+                           (sheet-ink :title :ground pane :bold t))
+               (right (format nil "‹ ~d/~d ›" (1+ chosen) (length history.days))))))))
+      (when (>= inner 18)
+        (paint-history-chips history canvas r px pw pane)
+        (incf r 2))
+      (when (>= inner 14)
+        (setf r (paint-history-notes history canvas r px pw pane nil)))
+      (multiple-value-bind (card keys) (and history.ask (ask-card history pw))
+        (let* ((gap (if (>= inner 16) 1 0))
+               (bottom-row (- hint-row 1 gap))
+               (room (max 0 (- hint-row r 4)))
+               (card (and card (subseq card 0 (min (length card) room))))
+               (list-end (if card (- hint-row (length card) 3) (- bottom-row 1 gap)))
+               (rows (1+ (- list-end r))))
+          (if days-view
+              (let ((offset (max 0 (min history.rail-top history.day) (- history.day rows -1))))
+                (setf history.rail-top offset)
+                (loop for d from offset below (min (length history.days) (+ offset rows))
+                      for y from r
+                      for day = (aref history.days d)
+                      do (let* ((on (and (= d history.day) (eq history.focus :rail)))
+                                (ground (if on (sheet-ground :sheet-focus) pane))
+                                (count (princ-to-string (day-count history d))))
+                           (when on (canvas-fill canvas (- px 2) y (+ pw 4) 1 (sheet-ink nil :ground ground)))
+                           (canvas-put canvas px y (clip-text-to-width day.long (- pw 8))
+                                       (sheet-ink (cond (on :dialog-accent)
+                                                        ((day-refused-p history d) :muted)
+                                                        (t :system))
+                                                  :ground ground :bold on))
+                           (canvas-put canvas (- (+ px pw) (length count)) y count (sheet-ink :muted :ground ground))
+                           (sheet-hit history y (- px 2) (+ px pw 2)
+                                      (lambda (model history)
+                                        (declare (ignore model))
+                                        (if (and (= d history.day) (eq history.focus :rail))
+                                            (history-open-day history d)
+                                            (setf history.day d history.focus :rail history.said nil)))))))
+              (multiple-value-bind (lines focus-line) (history-lines history visible focus pw nil)
+                (if lines
+                    (paint-history-list history canvas lines focus-line r rows px pw focus current nil)
+                    (when-let (text (history-empty-text history))
+                      (canvas-put canvas px r (clip-text-to-width text pw) (sheet-ink :muted :ground pane))))))
+          (cond (card (paint-ask canvas (- hint-row 1 (length card)) px pw card))
+                ((>= inner 12) (paint-segs canvas bottom-row px pw (history-bottom history focus current) pane)))
+          (paint-keys history canvas hint-row px (+ px pw) (if history.ask keys (history-keys history visible))
+                      history.flash pane)))
+      cursor)))
 
 (defparameter +generations-sheet-size+ '(112 32)
   "The columns and rows the sheet asks for: what a wide window gives it.")
@@ -1058,17 +1023,7 @@ at a time. => the caret's cell, or NIL."
 (defun generations-paint (model history width height)
   "The sheet for a WIDTH x HEIGHT frame: wide from 84 columns, the days
 beside the changes; narrower, one view at a time."
-  (multiple-value-bind (x y w h edges)
-      (sheet-box width height (first +generations-sheet-size+) (second +generations-sheet-size+)
-                 :whole (chat-model-dialog-fullscreen model))
-    (let ((canvas (make-sheet-canvas w h)))
-      (setf history.hits '()
-            history.stacked (< w 84))
-      (let ((caret (if history.stacked
-                       (paint-history-stacked history canvas edges)
-                       (paint-history-wide history canvas edges))))
-        (values (canvas-rows canvas) x y
-                (and caret (cons (+ x (car caret)) (+ y (cdr caret)))))))))
+  (paint-sheet model history width height +generations-sheet-size+ #'paint-history-wide #'paint-history-stacked))
 
 (defun slash-generations-op (model args &aux (tokens (split-words (or args ""))))
   "/generations on a shell: the sheet at once over the shell, the history
@@ -1199,29 +1154,27 @@ there already."
                               :summary "Nothing moves: the folder stands here." :hint "esc back"
                               :empty-label "Pick another change to go to.")
                  nil))
-        (edits
-         (answer (list-dialog :title (format nil "~@(~a~) to ~a?" go stamp) :context context
-                              :summary (cost-words history index current) :tone :warn
-                              :hint (format nil "enter ~a  esc stay" go)
-                              :rows (append
-                                     (list (list :label (format nil "~a, and going back would lose ~:[it~;them~]."
-                                                                (edits-words edits)
-                                                                (or (rest edits) (/= 1 (cdr (first edits)))))))
-                                     moves
-                                     (list (runs "Keep the edits first, as a change you can come back to" "keep")
-                                           (runs "Discard the edits into git stash first" "discard"))))
-                 (format nil "/generations ~d keep keeps the edits first, as a change you can come back to; ~
-                              /generations ~d discard sets them aside in git stash; then it goes."
-                         number number)))
+        ;; with edits standing, the edits' line first and a way to keep or discard them
         (t
          (answer (list-dialog :title (format nil "~@(~a~) to ~a?" go stamp) :context context
                               :summary (cost-words history index current) :tone :warn
                               :hint (format nil "enter ~a  esc stay" go)
                               :rows (append
+                                     (when edits
+                                       (list (list :label (format nil "~a, and going back would lose ~:[it~;them~]."
+                                                                  (edits-words edits)
+                                                                  (or (rest edits) (/= 1 (cdr (first edits))))))))
                                      moves
-                                     (list (list :label "Sessions, memory and settings stay; nodecode restarts on it once nothing is running.")
-                                           (runs (format nil "~@(~a~) to #~d" go number) "go"))))
-                 (format nil "/generations ~d go does it." number)))))))
+                                     (if edits
+                                         (list (runs "Keep the edits first, as a change you can come back to" "keep")
+                                               (runs "Discard the edits into git stash first" "discard"))
+                                         (list (list :label "Sessions, memory and settings stay; nodecode restarts on it once nothing is running.")
+                                               (runs (format nil "~@(~a~) to #~d" go number) "go")))))
+                 (if edits
+                     (format nil "/generations ~d keep keeps the edits first, as a change you can come back to; ~
+                                  /generations ~d discard sets them aside in git stash; then it goes."
+                             number number)
+                     (format nil "/generations ~d go does it." number))))))))
 
 (defun history-go-words (number how)
   "/generations NUMBER HOW without a shell: the uncommitted edits that hold

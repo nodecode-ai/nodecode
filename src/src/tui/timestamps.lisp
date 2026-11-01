@@ -144,28 +144,18 @@ line ends on blanked, column for column: the shell's stamp, not the
 message's words, so a copy leaves it behind."
   (multiple-value-bind (top bottom left) (transcript-lane model)
     (declare (ignore bottom))
-    (bind (((_ _ _ top-pad) (transcript-band-metrics model))
-           ((row from to) (message-timestamp-span
-                           model (band-window-row-index (chat-model-band model) (- frame-row top top-pad)))))
-      (if row
-          (let ((start (plain-column-index text (+ left from)))
-                (end (plain-column-index text (+ left to 1))))
-            (concatenate 'string (subseq text 0 start)
-                         (make-string (- end start) :initial-element #\Space)
-                         (subseq text end)))
-          text))))
+    (bind (((_ _ _ top-pad) (transcript-band-metrics model)))
+      (without-line-clock model (band-window-row-index (chat-model-band model) (- frame-row top top-pad))
+                          text left))))
 
-(defun without-line-clock (model line text)
+(defun without-line-clock (model line text &optional (left 0))
   "TEXT, transcript LINE's plain text, with the clock a message's first line
 ends on blanked, column for column -- WITHOUT-MESSAGE-CLOCK for a line read
-off the transcript rather than the frame."
+off the transcript rather than the frame, LEFT the columns before it."
   (multiple-value-bind (row from to) (message-timestamp-span model line)
     (if row
-        (let ((start (plain-column-index text from))
-              (end (plain-column-index text (1+ to))))
-          (concatenate 'string (subseq text 0 start)
-                       (make-string (- end start) :initial-element #\Space)
-                       (subseq text end)))
+        (fill (copy-seq text) #\Space :start (plain-column-index text (+ left from))
+                                      :end (plain-column-index text (+ left to 1)))
         text)))
 
 (defun message-timestamp-tooltip-rows (model row)
