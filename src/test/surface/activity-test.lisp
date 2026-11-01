@@ -88,7 +88,7 @@ the shell's own folder unless DIRECTORY says otherwise."
     ;; Then a turn runs: the start reaches the attached peer, the same facts
     ;; again move nothing, and the settle takes the session off the map.
     (let* ((turn (nlk:admit-turn "act-wire" "act-wire-cmd" "hello"))
-           (frames (frames-while (ws port :subscribe '("act-wire"))
+           (frames (frames-while (ws port :subscribe '("act-wire") :await-subscription t)
                      (nle::publish-turn-facts "act-wire" 0)
                      (nle::publish-turn-facts "act-wire" 0)
                      (nlk:complete-turn turn nil)
