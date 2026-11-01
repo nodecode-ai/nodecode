@@ -10,9 +10,11 @@ name: CI
 # The scripts live in src/tools/ci-*, so a job is one step and the same check
 # runs by hand on the same machine.
 #
-# The repository is public, so a pull request from a fork never runs here:
-# its code would run on our machines. Those jobs show as skipped; a
-# maintainer pushes the branch into this repository to build it.
+# The repository is public, so a pull request from a fork never runs on our
+# machines: its code would run there. Linux, macOS and Windows show as
+# skipped; a maintainer pushes the branch into this repository to build it.
+# Proofs runs on every run all the same: Lean needs no machine of ours and no
+# secret, so a fork's proofs are checked on a GitHub-hosted runner.
 on:
   push:
     branches: [main]
@@ -39,8 +41,9 @@ jobs:
 
   proofs:
     name: Proofs
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, nc-linux]
+    # Ours on nc-linux, whose ~/.elan keeps the toolchain between runs; a
+    # fork's on a fresh GitHub-hosted runner, where ci-proofs.sh installs elan.
+    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted", "nc-linux"]') || 'ubuntu-24.04' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
