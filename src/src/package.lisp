@@ -55,6 +55,7 @@ renderer, the program loop.")
    #:kitty-graphics-msg-p #:kitty-graphics-msg-ok-p #:make-kitty-graphics-msg
    #:truecolor-msg-p #:truecolor-msg-ok-p #:make-truecolor-msg
    #:background-msg-p #:background-msg-rgb #:make-background-msg
+   #:color-scheme-msg-p #:color-scheme-msg-scheme #:make-color-scheme-msg
    #:terminal-io-msg-p #:terminal-io-msg-thunk #:make-terminal-io-msg
    ;; --- the declarative view: CURSOR, its constructor, predicate and
    ;; readers are exported by DEFINE-RECORD at the declaration ---

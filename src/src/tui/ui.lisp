@@ -12695,6 +12695,13 @@ from the ones COLLECT-DURING-WAIT hid inside provider wait."
          (engage-theme)
          (render-state model)))
 
+      ;; The terminal turned between light and dark (DEC 2031): its
+      ;; background moved under a theme that leaves the canvas to it, so ask
+      ;; again. Asked only at launch, a shell started in the dark kept dark-
+      ;; canvas ink on the light background it woke up to.
+      ((nlt:color-scheme-msg-p msg)
+       (return-from update (values model (nlt:terminal-io-cmd #'nlt:request-background))))
+
       ;; Mouse wheel: the overlay under the pointer owns the notch — an open
       ;; dialog's list scrolls with the highlight staying under the cursor, the
       ;; composer dropdown moves its selection — and otherwise the transcript

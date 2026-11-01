@@ -168,6 +168,11 @@ claimed.")
   :documentation "The terminal's answer to the background query (OSC 11):
 RGB, its background colour.")
 
+(defmessage color-scheme-msg
+  ((scheme :initarg :scheme :initform nil :reader color-scheme-msg-scheme))
+  :documentation "The terminal's report that its colour scheme turned (DEC
+2031, CSI ? 997 ; 1 n or 2 n): SCHEME, :DARK or :LIGHT.")
+
 ;;; A command that must write escape bytes (the clipboard fallback, the
 ;;; graphics query) answers this so the write is serialized with rendering
 ;;; instead of racing it from the worker.
@@ -182,7 +187,8 @@ thread.")
 (define-message-vocabulary
   key-press-msg paste-msg window-size-msg
   mouse-click-msg mouse-release-msg mouse-motion-msg mouse-wheel-msg
-  tick-msg quit-msg kitty-graphics-msg truecolor-msg background-msg terminal-io-msg)
+  tick-msg quit-msg kitty-graphics-msg truecolor-msg background-msg color-scheme-msg
+  terminal-io-msg)
 
 ;;; --- the declarative view ------------------------------------------------
 
