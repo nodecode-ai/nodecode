@@ -8,9 +8,6 @@ Third-party attribution:
   are derived from cl-tuition, Anthony Green's Common Lisp port of charmbracelet's
   bubbletea, bubbles and lipgloss (MIT). The derivation record and the full license
   text sit in src/src/term/NOTICE.
-- The WebP decoder (src/src/engine/webp.lisp) is ported from Go's golang.org/x/image
-  packages vp8, vp8l and webp (BSD-3-Clause, Copyright 2009 The Go Authors). The
-  license text sits at the end of that file.
 - The JPEG decoder (src/src/engine/jpeg.lisp) follows the Independent JPEG Group's
   libjpeg, as libjpeg-turbo runs it, step for step (IJG License). This software is
   based in part on the work of the Independent JPEG Group.
