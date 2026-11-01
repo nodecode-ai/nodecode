@@ -317,6 +317,15 @@ flags (a FIX); refused for any other, so no entry a turn runs on goes."
   (refuse-section-write (list "providers" (first row)) :remove)
   (config-set (list "providers" (first row)) :remove))
 
+(defun request-url-vars (request)
+  "The {NAME: VALUE} object a keys request carries under vars -- the ${NAME}
+blanks of the provider's catalog address /models asked for -- as the alist
+PROVIDER-KEY-CHECK and SAVE-PROVIDER-API-KEY take; a member that is not a
+string is dropped."
+  (when-let (object (json-value request :object "vars"))
+    (loop for name being the hash-keys of object using (hash-value value)
+          when (and (stringp name) (stringp value)) collect (cons name value))))
+
 (define-gateway-route handle-gateway-keys-http (env)
   "GET /api/gateway/keys — every provider this home names and where its key
 comes from (KEYS-JSON). POST {provider, key} saves KEY to auth.json the way
@@ -333,22 +342,25 @@ a shell's /models asks it here, where a cell's lane and its address run."
     (when (eq (getf env :request-method) :post)
       (let* ((request (gateway-request-json env))
              (provider (json-value request :string "provider"))
-             (key (json-value request :string "key")))
+             (key (json-value request :string "key"))
+             (vars (request-url-vars request)))
         (require-non-empty (list provider) "provider must be a non-empty string" :required t)
         (cond
           ((eq t (gethash "forget" request))
            (forget-provider-entry provider))
           ((eq t (gethash "check" request))
-           (multiple-value-bind (verdict words) (and key (provider-key-check provider (nlk:trimmed key)))
+           (multiple-value-bind (verdict words)
+               (and key (provider-key-check provider (nlk:trimmed key) :vars vars))
              (setf checked (json-object "verdict" (if verdict (string-downcase verdict) "none")
                                         :opt "words" words))))
           (t
-           (multiple-value-bind (verdict words) (and key (provider-key-check provider (nlk:trimmed key)))
+           (multiple-value-bind (verdict words)
+               (and key (provider-key-check provider (nlk:trimmed key) :vars vars))
              (when (member verdict '(:refused :unreachable))
                (error 'nlk:protocol-error :code :key_refused :field "key"
                                           :message (format nil "~a; nothing was saved" words)))
              (setf unchecked (and (eq verdict :unchecked) words))
-             (save-provider-api-key provider key))))))
+             (save-provider-api-key provider key :vars vars))))))
     (or checked (keys-json unchecked))))
 
 ;;; --- the cells ---------------------------------------------------------------------

@@ -468,7 +468,7 @@
   ;; where the cells run (OpenCode Go's cell gives Go's), and the check is the
   ;; organism's. Nothing is saved: the shell saves what the verdict lets it.
   (with-saved-globals ((nle::*provider-models-cache-path* nil) (nle::*models-catalog-path* nil))
-    (with-stubbed-fdefinition (nle::provider-key-check (provider key)
+    (with-stubbed-fdefinition (nle::provider-key-check (provider key &key vars)
                                 (if (equal key "sk-good")
                                     (values :works nil)
                                     (values :refused (format nil "~a refused this key (HTTP 401)" provider))))
@@ -490,7 +490,7 @@
     (with-frame-model (model 80 24 :session-id "connect-sink-shell")
       (let ((asked '()) (said nil) (nle::*serving* nil))
         (clrhash nle::*key-checks*)
-        (with-stubbed-fdefinitions ((nle::provider-key-check (provider key)
+        (with-stubbed-fdefinitions ((nle::provider-key-check (provider key &key vars)
                                       (error "a shell checked ~a with ~a itself" provider key))
                                     (nle::gateway-model-http-call (model method path body &rest keys)
                                       (push (list method path (and body (nlk:json-value body :boolean "check")))
