@@ -314,7 +314,8 @@
             "organism.cells",
             "model_changed",
             "session_titled",
-            "commands_changed"
+            "commands_changed",
+            "session_list_changed"
           ]
         }
       },

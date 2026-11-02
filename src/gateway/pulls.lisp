@@ -8,7 +8,9 @@
 ;;;; A key with no fresh answer is queued, and one worker asks GitHub a single
 ;;;; GraphQL query per repository for every queued branch of it, then writes
 ;;;; the answers back. The list never waits on GitHub: a cold key reads null,
-;;;; and the next read of the list draws the answer.
+;;;; and an answer that changes a row tells every attached client
+;;;; (session_list_changed), which reads the list again. A push moves the
+;;;; branch's remote-tracking ref, and the next read asks again at once.
 
 (in-package #:nodecode.evolved)
 
@@ -41,11 +43,40 @@ before the first ask.")
 (defparameter +pull-request-settle+ 0.2
   "Seconds a starting worker waits before it takes the queue.")
 
-(defun pull-request-fresh-seconds (pull)
+(defvar *pull-request-stamps* (make-hash-table :test #'equal)
+  "(REPO BRANCH COMMON-DIR) -> (STAMP FOLDER READ-AT): what the remotes of the
+checkout at COMMON-DIR hold for BRANCH as last read (FOLDER-PUSH-STAMP), the
+folder a row read it off, and when a row last did. A push or a fetch moves
+it, and whoever sees it moved -- a read, or the worker re-reading the
+checkouts rows read lately -- has GitHub asked again.")
+
+(defvar *pull-requests-wake* (bt2:make-condition-variable :name "pull requests queued")
+  "Notified when a key is queued while the worker waits out a step.")
+
+(defparameter +pull-request-watch-for+ 120
+  "Seconds after a row's read the worker keeps re-reading its checkout's refs,
+every +PULL-REQUEST-FOLLOW-STEP+: a page reads the list every half minute, so
+while one is open a push is seen within a step, not at its next read.")
+
+(defvar *pull-request-follows* (make-hash-table :test #'equal)
+  "(REPO . BRANCH) -> the unix time until which a branch a read just saw
+pushed, still with no pull request, is asked again every
++PULL-REQUEST-FOLLOW-STEP+ seconds by the worker itself, no read waited for:
+the step after a push is most often to open its pull request.")
+
+(defparameter +pull-request-follow-step+ 5
+  "Seconds between the worker's asks about a branch it follows.")
+
+(defparameter +pull-request-follow-for+ 120
+  "Seconds a branch is followed after a read saw it pushed.")
+
+(defun pull-request-fresh-seconds (pull &optional pushed)
   "How long the answer PULL stays fresh: an open or draft pull request a
-minute, its checks still moving; none five minutes, one may open; a merged or
-closed one half an hour."
-  (cond ((null pull) 300)
+minute, its checks still moving; none half a minute on a PUSHED branch, the
+next step on one is to open its pull request, and five minutes on one that is
+not, or is its repository's default; a merged or closed one half an hour."
+  (cond ((and (null pull) pushed) 30)
+        ((null pull) 300)
         ((member (getf pull :state) '("open" "draft") :test #'equal) 60)
         (t 1800)))
 
@@ -139,6 +170,49 @@ origin remote's, else the first remote on github.com; NIL when none is."
             (append (remove "origin" remotes :key #'car :test-not #'equal)
                     (remove "origin" remotes :key #'car :test #'equal))))))
 
+(defun commit-id-p (line)
+  "Whether LINE is a whole commit id: 40 hex digits, or 64 in a SHA-256
+repository."
+  (and (member (length line) '(40 64)) (every (lambda (c) (digit-char-p c 16)) line)))
+
+(defun packed-ref (common-dir ref)
+  "The commit packed-refs in the repository at COMMON-DIR names for REF, or NIL."
+  (with-open-file (in (merge-pathnames "packed-refs" common-dir) :if-does-not-exist nil)
+    (when in
+      (loop for line = (read-line in nil)
+            while line
+            for space = (position #\Space line)
+            when (and space (commit-id-p (subseq line 0 space))
+                      (string= ref (string-right-trim '(#\Return) (subseq line (1+ space)))))
+              return (subseq line 0 space)))))
+
+(defun repository-ref (common-dir ref)
+  "The line the repository at COMMON-DIR keeps for REF (`refs/...'): its loose
+file's -- a commit, or `ref: ...' for a symbolic one -- else packed-refs'
+commit; NIL when it has none."
+  (or (first-line-of (merge-pathnames (uiop:parse-unix-namestring ref) common-dir))
+      (packed-ref common-dir ref)))
+
+(defun folder-push-stamp (folder branch)
+  "(values STAMP DEFAULT-P) for BRANCH of FOLDER's checkout: STAMP the commit
+each remote held for it when last pushed or fetched, ((REMOTE . COMMIT) ...),
+NIL when no remote has it -- never pushed; DEFAULT-P whether it is its
+repository's default branch, the one a remote's HEAD names (main or master
+when none does), whose pull requests are rare."
+  (when-let (common (nth-value 1 (folder-git-dirs folder)))
+    (let ((remotes (mapcar #'car (checkout-remote-urls common)))
+          (named nil))
+      (values (loop for remote in remotes
+                    for commit = (repository-ref common (format nil "refs/remotes/~a/~a" remote branch))
+                    for head = (repository-ref common (format nil "refs/remotes/~a/HEAD" remote))
+                    when (and head (uiop:string-prefix-p "ref: " head))
+                      do (push (subseq head (+ 5 (length (format nil "refs/remotes/~a/" remote)))) named)
+                    when (and commit (commit-id-p commit))
+                      collect (cons remote commit))
+              (if named
+                  (and (member branch named :test #'equal) t)
+                  (and (member branch '("main" "master") :test #'equal) t))))))
+
 ;;; --- asking GitHub ----------------------------------------------------------
 
 (defun gh-hosts-path ()
@@ -215,7 +289,9 @@ when the head commit has none."
 (defun github-pull-requests (repo branches &aux (token (github-token)) (slash (position #\/ repo)))
   "One GraphQL ask about BRANCHES of REPO (`owner/name'): an alist (BRANCH .
 PULL), PULL the newest pull request whose head is BRANCH (PULL-REQUEST-OF) or
-NIL for none; :FAILED when there is no token or no answer."
+NIL for none; :FAILED when there is no token or no answer. Asked at
+$GITHUB_GRAPHQL_URL when set, the name GitHub's own runners give the
+endpoint, else api.github.com."
   (if (null token)
       :failed
       (let ((variables (make-hash-table :test #'equal)))
@@ -224,7 +300,7 @@ NIL for none; :FAILED when there is no token or no answer."
         (loop for branch in branches for i from 0
               do (setf (gethash (format nil "b~d" i) variables) branch))
         (multiple-value-bind (body status)
-            (http-fetch "https://api.github.com/graphql"
+            (http-fetch (or (uiop:getenvp "GITHUB_GRAPHQL_URL") "https://api.github.com/graphql")
                         :content (nlk:encode-json-object
                                   (make-json-object "query" (pull-requests-query (length branches))
                                                     "variables" variables))
@@ -244,44 +320,126 @@ NIL for none; :FAILED when there is no token or no answer."
 
 ;;; --- the cache and its worker -----------------------------------------------
 
-(defun store-pull-requests (repo batch answer &aux (now (nlk:unix-now)))
+(defun note-push-stamp (key seen stamp default-p &key folder (now (nlk:unix-now)))
+  "Under *PULL-REQUESTS-LOCK*: hold STAMP as what the checkout SEEN names has
+for KEY's branch -- FOLDER, when given, a row's read just now. Answers T when
+STAMP moved from what was held: KEY is queued then, and followed while it has
+no pull request and is pushed and not the default (DEFAULT-P)."
+  (multiple-value-bind (entry known) (gethash seen *pull-request-stamps*)
+    (let ((moved (and known (not (equal (first entry) stamp))))
+          (pushed (and stamp (not default-p))))
+      (setf (gethash seen *pull-request-stamps*)
+            (list stamp (or folder (second entry)) (if folder now (third entry))))
+      (when moved
+        (setf (gethash key *pull-requests-queued*) (or (gethash key *pull-requests-queued*) pushed))
+        (when (and pushed (null (first (gethash key *pull-requests*))))
+          (setf (gethash key *pull-request-follows*) (+ now +pull-request-follow-for+))))
+      moved)))
+
+(defun watched-checkouts (now)
+  "Under the lock: (KEY SEEN FOLDER) for each checkout a row read within
++PULL-REQUEST-WATCH-FOR+ of NOW."
+  (loop for seen being the hash-keys of *pull-request-stamps* using (hash-value entry)
+        for (nil folder read-at) = entry
+        when (and read-at (< (- now read-at) +pull-request-watch-for+))
+          collect (list (cons (first seen) (second seen)) seen folder)))
+
+(defun reread-push-stamps ()
+  "Read again the refs of every checkout a row read lately: a push seen here
+is asked about at once and followed, no read waited for."
+  (loop for (key seen folder) in (bt2:with-lock-held (*pull-requests-lock*)
+                                   (watched-checkouts (nlk:unix-now)))
+        ;; A checkout that cannot be read now is passed over, not taken for
+        ;; one no remote holds.
+        for read = (ignore-errors (multiple-value-list (folder-push-stamp folder (cdr key))))
+        when read
+          do (bt2:with-lock-held (*pull-requests-lock*)
+               (note-push-stamp key seen (first read) (second read)))))
+
+(defun announce-pull-requests-moved ()
+  "Tell every attached client a row's pull request reads differently now:
+one session_list_changed frame, and a page reads the list again."
+  ;; A frame no client took is no loss: the list's own next read draws it.
+  (ignore-errors
+   (broadcast-organism "session_list_changed" (make-json-object "reason" "pr"))))
+
+(defun store-pull-requests (repo batch answer &aux (now (nlk:unix-now)) (moved nil))
   "Hold ANSWER -- an alist (BRANCH . PULL), or :FAILED -- for BATCH, the
-branches of REPO it was asked about."
+branches of REPO it was asked about, each (BRANCH . PUSHED) as queued; when
+an answer differs from what the rows read, every client is told."
   (bt2:with-lock-held (*pull-requests-lock*)
-    (dolist (branch batch)
-      (let ((key (cons repo branch)))
-        (setf (gethash key *pull-requests*)
-              (if (consp answer)
-                  (let ((pull (cdr (assoc branch answer :test #'equal))))
-                    (list pull now (pull-request-fresh-seconds pull)))
-                  ;; No answer: what was held stays, asked again in ten minutes.
-                  (list (first (gethash key *pull-requests*)) now 600)))))))
+    (loop for (branch . pushed) in batch
+          for key = (cons repo branch)
+          for held = (first (gethash key *pull-requests*))
+          do (setf (gethash key *pull-requests*)
+                   (if (consp answer)
+                       (let ((pull (cdr (assoc branch answer :test #'equal))))
+                         (unless (equal pull held) (setf moved t))
+                         (when pull (remhash key *pull-request-follows*))
+                         (list pull now (pull-request-fresh-seconds pull pushed)))
+                       ;; No answer: what was held stays, asked again in ten minutes.
+                       (list held now 600)))))
+  (when moved (announce-pull-requests-moved)))
 
 (defun take-queued-pull-requests ()
-  "The queued keys, the queue emptied; with none, the worker leaves in the
-same step, so a key queued after it finds no worker and starts one."
+  "(values KEYS FOLLOWING): the queued keys, each ((REPO . BRANCH) . PUSHED),
+the queue emptied, and whether a branch is still followed, the follows past
+their time dropped. With neither, the worker leaves in the same step, so a
+key queued after it finds no worker and starts one."
   (bt2:with-lock-held (*pull-requests-lock*)
-    (let ((keys (loop for key being the hash-keys of *pull-requests-queued* collect key)))
+    (let ((keys (loop for key being the hash-keys of *pull-requests-queued*
+                        using (hash-value pushed)
+                      collect (cons key pushed)))
+          (now (nlk:unix-now)))
       (clrhash *pull-requests-queued*)
-      (unless keys (setf *pull-requests-worker* nil))
-      keys)))
+      (loop for key being the hash-keys of *pull-request-follows* using (hash-value until)
+            when (<= until now) collect key into done
+            finally (dolist (key done) (remhash key *pull-request-follows*)))
+      (let ((following (plusp (hash-table-count *pull-request-follows*)))
+            (watching (and (watched-checkouts now) t)))
+        (unless (or keys following watching) (setf *pull-requests-worker* nil))
+        (values keys following watching)))))
+
+(defun queue-followed-pull-requests ()
+  "Queue every branch the worker follows, as pushed."
+  (bt2:with-lock-held (*pull-requests-lock*)
+    (loop for key being the hash-keys of *pull-request-follows*
+          do (setf (gethash key *pull-requests-queued*) t))))
+
+(defun ask-pull-requests (keys)
+  "Ask GitHub about KEYS, each ((REPO . BRANCH) . PUSHED), a repository and a
+batch at a time, and hold the answers."
+  (dolist (repo (remove-duplicates (mapcar #'caar keys) :test #'equal))
+    (loop with branches = (loop for ((r . b) . pushed) in keys
+                                when (equal r repo) collect (cons b pushed))
+          while branches
+          do (let ((batch (subseq branches 0 (min +pull-request-batch+ (length branches)))))
+               (setf branches (nthcdr (length batch) branches))
+               (store-pull-requests
+                repo batch (ignore-errors (funcall *pull-request-fetcher* repo (mapcar #'car batch))))))))
 
 (defun drain-pull-requests ()
-  "Ask about every queued key, a repository and a batch at a time, until the
-queue stands empty: the worker's whole life."
+  "Ask about every queued key, a repository and a batch at a time, and every
+followed branch each +PULL-REQUEST-FOLLOW-STEP+, until the queue stands empty
+and nothing is followed: the worker's whole life."
   ;; One list read queues every row's key within a few milliseconds; the
   ;; settle lets them all ride the first ask instead of a key at a time.
   (sleep +pull-request-settle+)
   (unwind-protect
-       (loop for keys = (take-queued-pull-requests)
-             while keys
-             do (dolist (repo (remove-duplicates (mapcar #'car keys) :test #'equal))
-                  (loop with branches = (loop for (r . b) in keys when (equal r repo) collect b)
-                        while branches
-                        do (let ((batch (subseq branches 0 (min +pull-request-batch+ (length branches)))))
-                             (setf branches (nthcdr (length batch) branches))
-                             (store-pull-requests
-                              repo batch (ignore-errors (funcall *pull-request-fetcher* repo batch)))))))
+       (flet ((clock () (/ (get-internal-real-time) internal-time-units-per-second)))
+         (loop with due = (+ (clock) +pull-request-follow-step+)
+               do (multiple-value-bind (keys following watching) (take-queued-pull-requests)
+                    (cond (keys (ask-pull-requests keys))
+                          ((not (or following watching)) (return))
+                          ((>= (clock) due)
+                           (setf due (+ (clock) +pull-request-follow-step+))
+                           (queue-followed-pull-requests)
+                           (reread-push-stamps))
+                          ;; A step's rest, cut short by a key a read queues.
+                          (t (bt2:with-lock-held (*pull-requests-lock*)
+                               (when (zerop (hash-table-count *pull-requests-queued*))
+                                 (bt2:condition-wait *pull-requests-wake* *pull-requests-lock*
+                                                     :timeout (max 0.01 (- due (clock)))))))))))
     (bt2:with-lock-held (*pull-requests-lock*)
       (when (eq *pull-requests-worker* (bt2:current-thread))
         (setf *pull-requests-worker* nil)))))
@@ -292,15 +450,25 @@ queue stands empty: the worker's whole life."
 (:number :state :url :checks) or NIL -- queuing a fresh ask when that answer
 is stale or missing. Never waits on GitHub."
   (when branch
-    (let ((key (cons repo branch)) (now (nlk:unix-now)))
-      (bt2:with-lock-held (*pull-requests-lock*)
-        (destructuring-bind (&optional pull checked-at fresh-for) (gethash key *pull-requests*)
-          (when (or (null checked-at) (> (- now checked-at) fresh-for))
-            (setf (gethash key *pull-requests-queued*) t)
+    (multiple-value-bind (stamp default-p) (folder-push-stamp folder branch)
+      (let ((key (cons repo branch)) (now (nlk:unix-now))
+            (seen (list repo branch (nth-value 1 (folder-git-dirs folder)))))
+        (bt2:with-lock-held (*pull-requests-lock*)
+          (destructuring-bind (&optional pull checked-at fresh-for) (gethash key *pull-requests*)
+            ;; The stamp first, always: pushed or fetched since it was last
+            ;; read, the key is queued (and followed) there.
+            (when (or (note-push-stamp key seen stamp default-p :folder folder :now now)
+                      (null checked-at) (> (- now checked-at) fresh-for))
+              (setf (gethash key *pull-requests-queued*)
+                    (or (gethash key *pull-requests-queued*) (and stamp (not default-p))))
+              (when *pull-requests-worker*
+                (bt2:condition-notify *pull-requests-wake*)))
+            ;; Even with nothing to ask, the worker watches this checkout's
+            ;; refs for a while (REREAD-PUSH-STAMPS).
             (unless *pull-requests-worker*
               (setf *pull-requests-worker*
-                    (bt2:make-thread #'drain-pull-requests :name "pull requests"))))
-          pull)))))
+                    (bt2:make-thread #'drain-pull-requests :name "pull requests")))
+            pull))))))
 
 (defun session-pull-request-json (folder)
   "FOLDER's pull request as a session row's `pr': {number, state, url,

@@ -295,7 +295,13 @@ table, so the two directions cannot drift apart.")
     ;; commands every shell read at attach are stale; the client refetches
     ;; them off the loop thread. Never replayed -- GET /api/gateway/slash is
     ;; the one authority and a fresh shell reads it at attach.
-    "commands_changed")
+    "commands_changed"
+    ;; Live-only, unsequenced, session-less: the session list reads
+    ;; differently than a client last read it, for something no turn moved --
+    ;; {reason}, "pr" when GitHub's answer on a row's pull request changed
+    ;; (pulls.lisp STORE-PULL-REQUESTS); a page reads the list again. Never
+    ;; replayed -- GET /api/gateway/sessions is the one authority.
+    "session_list_changed")
   "Every session-less frame kind carried outside session sequencing.
 ONE LIST, BOTH DIRECTIONS: ENCODE-UNSEQUENCED-FRAME and the gateway's
 BROADCAST-ORGANISM write exactly these kinds, and PROJECTION-KIND admits
