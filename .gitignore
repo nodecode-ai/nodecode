@@ -102,12 +102,13 @@ worklog/
 testing/
 
 /.nodecode
-/src/.nodecode/workspace_snapshots
 *.pid
 
 # every shipped cell: its source is nodecode-ai/cells, laid down here by
-# src/tools/build/pull-cells.sh at the pin in src/cells/bundle.json
-/src/cells/*/
+# tools/build/pull-cells.sh at the pin in cells/bundle.json
+/cells/*/
+# and what `just release' compiles them into
+/fasl/
 
 # Internal notes and agent rules are kept outside the repository; a checkout
 # may carry symlinks to them, never the files.
@@ -117,5 +118,31 @@ testing/
 /CLAUDE.md
 /ONBOARD.md
 /local.just
-/src/NORTH.md
-/src/PLAN.md
+/NORTH.md
+/PLAN.md
+
+# Compiled output. ASDF writes fasls to its cache by default, but a local
+# build or a --script run can drop them beside the source.
+*.fasl
+*.fas
+*.lib
+*.o
+*.so
+
+# Image snapshots and genome generations (A6). These are build products of the
+# organism's own evolution, not source. The genome text file is the diffable
+# lineage; cores are large and machine-specific.
+*.core
+generations/
+
+# Durable transcript store (A3).
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Unix socket endpoints (A1).
+*.sock
+
+# Local operator scratch.
+.scratch/
