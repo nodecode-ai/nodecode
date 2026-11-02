@@ -9,6 +9,10 @@
 # release build runs beside the suite rather than before it:
 #
 #   lint     `just lint': every .lisp and .asd under src/.
+#   install  install-test.sh: the installer against fake releases in scratch
+#            homes -- the unit refresh, the pointer, the lock, a kept or
+#            broken lay-out, the glibc floor, what it refuses, and the older
+#            releases a link removes. Seconds, and nothing else runs it.
 #   release  `just tarball HEAD OUT': pack.sh builds the committed revision the
 #            way a release does -- the patched SBCL, quicklisp on the pinned
 #            dist, the shipped cells, the gate that refuses an account's home
@@ -65,6 +69,10 @@ step lint
 # shellcheck disable=SC2046
 just lint $(git ls-files -- 'src/*.lisp' 'src/*.asd' | LC_ALL=C sort)
 done_step lint
+
+step install
+sh src/tools/install/install-test.sh
+done_step install
 
 # The release build and the suite run on one SBCL and quicklisp, whose cache
 # key is this revision's build.sh and patches. When that SBCL is already built
