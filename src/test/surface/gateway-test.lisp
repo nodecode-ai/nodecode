@@ -1031,6 +1031,45 @@ answered as octets. => (values BODY STATUS HEADERS)."
             :headers `(("authorization" . "Bearer test-token")
                        ,@(when type (list (cons "content-type" type))))))
 
+(deftest a-session-create-refusing-its-target-still-creates-the-session
+    (let ((calls '()) (refused nil) (nle::*workspace-directory* "/the/shell")))
+  (with-stubbed-fdefinition (nle::gateway-http-session-request (port method path body token)
+                              (push body calls)
+                              (cond ((eq method :get)
+                                     (error 'nle::gateway-http-error :status 404 :code "unknown_session" :detail "missing"))
+                                    ((gethash "model" body)
+                                     (error 'nle::gateway-http-error :status 400 :code "unknown_provider" :detail "no x"))
+                                    (t body)))
+    (is (equal "s-a" (nle::ensure-gateway-session "s-a" 1 "t" :target '(:model "x/y")
+                                                  :on-refusal (lambda (refusal) (setf refused refusal)))))
+    (is (equal "x/y" (gethash "model" (second calls))) "the create carries the target")
+    (is (equal "unknown_provider" (nle::gateway-http-error-code refused)) "its refusal is handed on")
+    (is (null (gethash "model" (first calls))) "and the session is created without it")))
+
+(deftest a-create-that-reads-no-target-refuses-a-spec-it-would-misread
+    (let ((nle::*workspace-directory* "/the/shell")))
+  ;; An older organism's create answers without a target: a spec it would take
+  ;; as one model id is refused before anything runs, explicit members pass,
+  ;; and a newer organism's reading is handed on.
+  (flet ((ensure (target &optional said)
+           (let ((refused nil) (read :none))
+             (with-stubbed-fdefinition (nle::gateway-http-session-request (port method path body token)
+                                         (cond ((eq method :get)
+                                                (error 'nle::gateway-http-error :status 404
+                                                       :code "unknown_session" :detail "missing"))
+                                               (said (setf (gethash "target" body) said) body)
+                                               (t body)))
+               (nle::ensure-gateway-session "s-a" 1 "t" :target target
+                                            :on-refusal (lambda (r) (setf refused (nle::gateway-http-error-code r)))
+                                            :on-target (lambda (plist) (setf read plist))))
+             (list refused read))))
+    (is (equal '("target_unread" :none) (ensure '(:model "openai-codex/gpt-6.1-sol"))) "a provider prefix")
+    (is (equal '("target_unread" :none) (ensure '(:provider "p" :model "m:high"))) "a rung suffix")
+    (is (equal '(nil :none) (ensure '(:provider "p" :model "vendor/m:free"))) "explicit members pass")
+    (is (equal '(nil :none) (ensure '(:model "m" :effort "low"))) "as does a bare id")
+    (is (equal '(nil (:provider "p" :model "m" :effort "high"))
+               (ensure '(:model "p/m:high") (nle::json-object "provider" "p" "model" "m" "effort" "high"))))))
+
 (deftest gateway-http-auth-and-exact-session-identity (with-temp-gateway (port))
   (is-route (port :post "/api/gateway/sessions" :body "{}") 400
             "missing session id is invalid" "invalid_request")
@@ -2982,6 +3021,54 @@ request."
           (is (row-carrying "effort_unsupported" (%peer-frames state)) "as is a rung the target lacks")
           (is (= 0 calls) "neither admitted a turn")
           (is-model-pin "pin-refused" nil nil "and neither pinned" "the session"))))))
+
+(deftest a-session-created-on-a-target-runs-on-it-alone ()
+  ;; A launch's --model: the create pins the new session alone, and a target
+  ;; refused mints no session.
+  (with-selection-gateway (path port "other" :pinned t)
+    (with-stubbed-fdefinition (nle::check-effort (provider model effort)
+                                (when (equal effort "turbo")
+                                  (nle::refuse-effort "~a/~a has no such rung" provider model))
+                                effort)
+      (with-gateway-http (port :post "/api/gateway/sessions"
+                          :body "{\"session_id\":\"on-target\",\"model\":\"cheap-model:low\"}")
+        (is (= 200 status) "the session is created")
+        (is (equalp (nle::json-object "provider" "openai-completions" "model" "cheap-model" "effort" "low")
+                    (gethash "target" body))))
+      (is-model-pin "on-target" "openai-completions" "cheap-model" "pinned to the model it named" "on the default's lane")
+      (is (equal "low" (nlk:session-model-effort "on-target")) "at the effort its spec named")
+      (is (equal "boot-model" (config-pin path "default_model" "model")) "the config's default stays")
+      (is (equal "boot-model" nle::*model*) "as does the image's")
+      (with-gateway-http (port :post "/api/gateway/sessions" :body "{\"session_id\":\"plain\"}")
+        (is (null (gethash "target" body)) "a create naming no target says none back"))
+      (is (null (nlk:session-model-selection "plain")) "and pins nothing: it follows the default")
+      (is-route (port :post "/api/gateway/sessions"
+                      :body "{\"session_id\":\"off\",\"provider\":\"no-such-lane\",\"model\":\"m\"}")
+                400 "an unknown provider is refused" "unknown_provider")
+      (is-route (port :post "/api/gateway/sessions"
+                      :body "{\"session_id\":\"off\",\"model\":\"cheap-model\",\"effort\":\"turbo\"}")
+                400 "as is a rung the model lacks" "effort_unsupported")
+      (is (not (nlk:session-exists-p "off")) "neither minted a session"))))
+
+(deftest a-target-spec-splits-only-what-names-a-provider-or-a-rung ()
+  (with-model-selection-config (path)
+    (with-stubbed-fdefinitions ((nle::model-listed-p (provider model)
+                                  (member model '("coding-router:high" "openai-completions/listed") :test #'equal))
+                                (nle::provider-auth-state (provider)
+                                  (if (member provider '("keyed" "openai-completions") :test #'equal) :api-key :none))
+                                (nle::configured-provider-lane (name) (member name '("openai-completions" "keyed" "catalog")
+                                                                               :test #'equal)))
+      (is-table (spec provider model effort)
+        (equal (list provider model effort) (multiple-value-list (apply #'nle::target-from-spec spec)))
+        ('(nil "openai-completions/cheap-model:high" nil) "openai-completions" "cheap-model" "high")
+        ('(nil "no-such-lane/deepseek-r1:free" nil) nil "no-such-lane/deepseek-r1:free" nil)
+        ('(nil "llama3:8b" nil) nil "llama3:8b" nil)
+        ('(nil "openai-completions/listed" nil) nil "openai-completions/listed" nil)
+        ('(nil "keyed/m" nil) "keyed" "m" nil)
+        ('(nil "catalog/m" nil) nil "catalog/m" nil)
+        ('(nil "openai-completions/coding-router:high" nil) "openai-completions" "coding-router:high" nil)
+        ('("openai-completions" "openai-completions/m" nil) "openai-completions" "openai-completions/m" nil)
+        ('(nil "m:high" "low") nil "m:high" "low")))))
 
 (deftest an-admission-refused-after-the-pin-takes-the-pin-back
     (with-session-store ("pin-undo"))

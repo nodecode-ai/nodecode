@@ -448,6 +448,11 @@ RUN-CHECKED, newest first: nothing runs and nothing is moved."
       ('("nodecode" "resume" "s-ABC" "--profile" "writer")))
     (is (= 1 (count "-p" (nth-value 1 (nlk:profile-switch "coder" '("nodecode" "-p" "writer")))
                     :test #'string=)))
+    ;; What the launch asked of its first session was sent there: the other
+    ;; profile's fresh session would only run the prompt again.
+    (is (equal '("/opt/nodecode/current/nodecode" "-p" "coder" "--ephemeral")
+               (nth-value 1 (nlk:profile-switch "coder" '("nodecode" "--model" "m" "--ephemeral" "--prompt-file" "f"
+                                                       "--" "-p" "x")))))
     ;; The three refusals.
     (let ((unknown (refusal-text nlk:profile-error (nlk:profile-switch "codr"))))
       (is (search "no profile \"codr\"" unknown) "an unknown profile refuses")
