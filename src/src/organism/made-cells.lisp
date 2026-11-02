@@ -74,6 +74,26 @@ listed; a listed file that is gone leaves it. Takes *LAYER-LOCK*. => the
       (write-layer-system path name file-name))
     path))
 
+(defun list-written-cell-file (path)
+  "When PATH, a Lisp file just written, sits in a folder of kept code under
+*CELLS-DIRECTORY* -- the layer or a made cell -- whose .asd does not list it,
+list it there, last: a file written by hand loads at the next start, as the
+definitions kept beside it do. => the folder's name when it listed it."
+  ;; Before this the write loaded the file live and the next start never
+  ;; read it: the cell's command answered until a restart, then was gone.
+  (let* ((directory (uiop:pathname-directory-pathname path))
+         (name (folder-name directory))
+         (system (and *cells-directory* (layer-system-file name))))
+    (when (and (equal (pathname-type path) "lisp")
+               *cells-directory*
+               (equal (ignore-errors (truename (uiop:pathname-parent-directory-pathname directory)))
+                      (ignore-errors (truename *cells-directory*)))
+               (eq (kept-folder-kind directory) :code)
+               (probe-file system)
+               (not (search (format nil "(:file ~s)" (pathname-name path)) (read-text system))))
+      (add-cell-component directory (pathname-name path))
+      name)))
+
 (defun new-cell (name &key description (session-id *scribe-session-id*))
   "Make the cell NAME, which DESCRIPTION says the use of: write its folder,
 <identity>-NAME/ under *CELLS-DIRECTORY* (CELL-DIRECTORY), an .asd declaring

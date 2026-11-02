@@ -652,6 +652,8 @@ names is defined here (MAKE-DEFINITIONS-LIVE)."
                            *staged-source-root*
                            (ignore-errors (probe-file *cells-directory*)))))
       (bind ((text (uiop:read-file-string truename :external-format :utf-8))
+             ;; a file written by hand into a folder of kept code joins its load order
+             (joined (and (not only) (list-written-cell-file truename)))
              (before (and (not only) before))
              ;; the same diff the upgrade classifier reads: CHANGES the definitions
              ;; new or moved since BEFORE, GONE the ones the file lost, DIFFERS
@@ -684,7 +686,10 @@ names is defined here (MAKE-DEFINITIONS-LIVE)."
                                    (subseq labels 0 (min 8 (length labels)))
                                    (and (plusp rest) rest))))
                     (when-let (parts (remove nil
-                                             (list (when live (format nil "live here: ~a" (listed live)))
+                                             (list (when joined
+                                                     (format nil "listed in ~a.asd, so it loads at every start"
+                                                             joined))
+                                                   (when live (format nil "live here: ~a" (listed live)))
                                                    (when (plusp told)
                                                      (format nil "sent to ~d shell~:p" told))
                                                    (when held

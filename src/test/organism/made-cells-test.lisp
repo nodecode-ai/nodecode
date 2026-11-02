@@ -139,6 +139,19 @@ report of loaded cells put back after."
   (is (search "(defmacro mc-point" (nlk:read-text (layer-file "mc-point"))) "the macro took the defun's file")
   (is (search "(defclass mc-point" (nlk:read-text (layer-file "mc-point-defclass"))) "the class kept its own"))
 
+(deftest made-cell-a-file-written-into-it-joins-its-load-order (with-made-cell-fixture ())
+  ;; a write loads a file live; the cell's .asd must list it too, or the
+  ;; next start never reads it
+  (make-test-cell "bell")
+  (let* ((directory (nlk:cell-directory "bell"))
+         (path (merge-pathnames "ring.lisp" directory))
+         (asd (merge-pathnames "tester-bell.asd" directory)))
+    (nlk:write-file-atomically path (format nil "(in-package #:tester-bell)~%(defun mc-ring () :ring)~%"))
+    (is (search "listed in tester-bell.asd" (or (nlk::load-source path) "")))
+    (is (search "(:file \"ring\")" (nlk:read-text asd)))
+    (is (not (search "listed in" (or (nlk::load-source path) ""))) "listed once")
+    (is (= 1 (/ (length (ppcre:all-matches "\\(:file \"ring\"\\)" (nlk:read-text asd))) 2)))))
+
 (deftest made-cell-refuses-a-bad-name-and-a-taken-folder (with-made-cell-fixture ())
   (flet ((refused (thunk)
            (handler-case (let ((*standard-output* (make-broadcast-stream))) (funcall thunk) nil)
