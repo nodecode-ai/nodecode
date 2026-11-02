@@ -9,8 +9,8 @@
 ;;;; applied to them, diffed against the previous frame, and written inside a
 ;;;; synchronized update so the terminal shows no tearing. The mode
 ;;;; transitions between the two view-states go first, the image placements
-;;;; are diffed after the cells, and the cursor is placed and shown, or
-;;;; hidden, last.
+;;;; are diffed after the cells, and the cursor, hidden for the whole paint,
+;;;; is placed and shown last, before the update closes.
 
 (in-package #:nodecode.term)
 
@@ -82,18 +82,25 @@ DEADLINE-MS."
                                            *frame-scratch* width height))))
     (nlk:when-let (overlay view.overlay)
       (funcall overlay new))
-    (format stream "~C[?2026h~C[H" #\Escape #\Escape)
+    ;; The cursor hides before the paint moves it and shows only once it is
+    ;; parked, all inside the update. A terminal that holds the update shows
+    ;; the frame whole either way; but ConPTY re-emits a console's output on
+    ;; its own schedule and cuts it where it likes, so on Windows any point
+    ;; of the paint can reach the screen. Shown through the paint, the cursor
+    ;; was drawn on whatever cell the frame wrote last (a spinner, a
+    ;; countdown) and then jumped back: the caret flickered, and so did
+    ;; everything that moves.
+    (format stream "~C[?2026h~C[?25l~C[H" #\Escape #\Escape #\Escape)
     (render-diff renderer.last-buffer new stream)
     (setf renderer.last-images
           (%render-image-placements renderer.last-images
                                     view.images
                                     stream
                                     :force (null renderer.last-buffer)))
-    (format stream "~C[?2026l" #\Escape)
-    (nlk:if-let (cursor view.cursor)
+    (nlk:when-let (cursor view.cursor)
       (format stream "~C[~D;~DH~C[?25h" #\Escape
-              (1+ cursor.y) (1+ cursor.x) #\Escape)
-      (format stream "~C[?25l" #\Escape))
+              (1+ cursor.y) (1+ cursor.x) #\Escape))
+    (format stream "~C[?2026l" #\Escape)
     (force-output stream)
     ;; The frame is on the terminal: the count a launcher's hand-over waits
     ;; on before it replaces itself with a successor that will be told it
