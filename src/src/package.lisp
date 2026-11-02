@@ -306,6 +306,9 @@ renderer, the program loop.")
    #:knowledge-surface #:knowledge-search #:knowledge-rows #:knowledge-meter
    #:knowledge-help-text #:note-knowledge-use #:knowledge-ledger-lines #:knowledge-stats #:import-session
    #:mark-index-refresh #:pin-index-section
+   ;; --- made cells: a folder of kept code beside the layer (made-cells.lisp) ---
+   #:kept-folder-kind #:new-cell #:enter-cell #:leave-cell #:current-cell
+   #:cell-directory #:add-cell-component
    ;; --- provisional definitions: the stack as evidence (provisional.lisp) ---
    ;; A redefinition of a name the caller is standing on is held until it
    ;; has run once; the boot snapshot is what a revert puts back.

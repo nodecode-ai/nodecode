@@ -1,0 +1,114 @@
+;;;; made-cells-test.lisp --- a cell the organism makes when asked for one.
+;;;;
+;;;; SPDX-License-Identifier: MIT
+;;;;
+;;;; What is proved here: NEW-CELL writes a folder of kept code beside the
+;;;; layer, commits and loads it, and makes it the session's current cell;
+;;;; what that session keeps then lands in the cell and not the layer, the
+;;;; eval's output naming the cell; LEAVE-CELL sends the next keep back to
+;;;; the layer, while a name the cell holds stays in it from any session; a
+;;;; name kept into a cell leaves the layer, so it loads from one folder;
+;;;; forgetting takes a cell's file and its .asd entry out; ENTER-CELL takes a
+;;;; made cell up again after a restart, and a memory is still knowledge; a
+;;;; bad name and a taken folder are refused.
+
+(in-package #:nodecode.test)
+
+(defmacro with-made-cell-fixture (() &body body)
+  "BODY over WITH-KNOWLEDGE-FIXTURE's folder, no session in a cell, and the
+report of loaded cells put back after."
+  `(with-knowledge-fixture ()
+     (with-saved-globals ((nlk::*cells* nlk::*cells*))
+       (clrhash nlk::*session-cells*)
+       (nlk:with-cleanup ((clrhash nlk::*session-cells*))
+         ,@body))))
+
+(defun make-test-cell (name &optional (session "s-cell"))
+  "NEW-CELL NAME for SESSION, what it prints dropped. => the folder."
+  (let ((nlk:*scribe-session-id* session))
+    (let ((*standard-output* (make-broadcast-stream)))
+      (nlk:new-cell name))))
+
+(defun cell-file (cell name)
+  "NAME.lisp in the fixture's made cell CELL, when it is there."
+  (probe-file (merge-pathnames (format nil "tester-~a/~a.lisp" cell name) nlk::*cells-directory*)))
+
+(defun layer-file (name)
+  "NAME.lisp in the fixture's layer, when it is there."
+  (probe-file (merge-pathnames (format nil "~a.lisp" name) (nlk:layer-directory))))
+
+(deftest made-cell-takes-what-its-session-keeps (with-made-cell-fixture ())
+  (is (search "[weather: made"
+              (with-output-to-string (*standard-output*)
+                (let ((nlk:*scribe-session-id* "s-cell"))
+                  (nlk:new-cell "weather" :description "Weather where the operator is.")))))
+  (let ((directory (nlk:cell-directory "weather")))
+    (is (equal (merge-pathnames "tester-weather/" nlk::*cells-directory*) directory))
+    (is (eq :code (nlk:kept-folder-kind directory)) "a folder of kept code")
+    (is (search "Weather where the operator is."
+                (nlk:read-text (merge-pathnames "tester-weather.asd" directory))))
+    (is (search "new cell weather — session s-cell" (knowledge-git "tester-weather" "log" "--format=%s" "-1")))
+    (is (nlk:find-cell "tester-weather") "loaded, on the report"))
+  (is (equal "weather" (nlk:current-cell "s-cell")))
+  (is (null (nlk:current-cell "s-other")) "another session's code stays the layer's")
+  (is (search "[weather: kept mc-forecast]"
+              (keep-definition-text "(defun mc-forecast () \"Tomorrow's.\" :sunny)" :session "s-cell")))
+  (is (cell-file "weather" "mc-forecast"))
+  (is (search "(:file \"mc-forecast\")"
+              (nlk:read-text (merge-pathnames "tester-weather/tester-weather.asd" nlk::*cells-directory*))))
+  (is (string= "" (knowledge-git "tester-weather" "status" "--porcelain")) "committed whole")
+  (is (null (uiop:directory-exists-p (nlk:layer-directory))) "the layer gained nothing")
+  (is (eq :sunny (funcall (find-symbol "MC-FORECAST" '#:nodecode.evolved))) "and it runs"))
+
+(deftest made-cell-leave-sends-new-code-to-the-layer-and-held-names-stay (with-made-cell-fixture ())
+  (make-test-cell "clock")
+  (keep-definition-text "(defun mc-tick () \"One.\" 1)" :session "s-cell")
+  (is (equal "clock" (nlk:leave-cell "s-cell")))
+  (is (null (nlk:current-cell "s-cell")))
+  (is (search "[layer: kept mc-other]" (keep-definition-text "(defun mc-other () \"Two.\" 2)" :session "s-cell")))
+  (is (layer-file "mc-other"))
+  (let ((said (keep-definition-text "(defun mc-tick () \"One, again.\" 11)" :session "s-later")))
+    (is (search "[clock: kept mc-tick]" said) "a name the cell holds stays in it, from any session"))
+  (is (null (layer-file "mc-tick"))))
+
+(deftest made-cell-a-name-kept-into-a-cell-leaves-the-layer (with-made-cell-fixture ())
+  (keep-definition-text "(defun mc-built () \"Built before the cell.\" :old)" :session "s-cell")
+  (is (layer-file "mc-built"))
+  (make-test-cell "built")
+  (let ((said (keep-definition-text "(defun mc-built () \"Built, now the cell's.\" :new)" :session "s-cell")))
+    (is (search "[built: kept mc-built]" said))
+    (is (search "[layer: moved mc-built to built]" said)))
+  (is (cell-file "built" "mc-built"))
+  (is (null (layer-file "mc-built")) "one home: no second copy loads after it")
+  (is (null (search "mc-built" (nlk:read-text (nlk::layer-system-file))))))
+
+(deftest made-cell-forgetting-takes-the-file-and-its-entry-out (with-made-cell-fixture ())
+  (make-test-cell "gone")
+  (keep-definition-text "(defun mc-gone () \"Soon gone.\" 0)" :session "s-cell")
+  (is (search "[gone: forgot mc-gone]" (keep-definition-text "(fmakunbound 'mc-gone)" :session "s-cell")))
+  (is (null (cell-file "gone" "mc-gone")))
+  (is (null (search "mc-gone" (nlk:read-text (merge-pathnames "tester-gone/tester-gone.asd"
+                                                                nlk::*cells-directory*))))))
+
+(deftest made-cell-enter-takes-it-up-again-and-a-memory-stays-knowledge (with-made-cell-fixture ())
+  (make-test-cell "notes")
+  (clrhash nlk::*session-cells*)          ; what a restart forgets
+  (is (null (nlk:current-cell "s-new")))
+  (is (equal (nlk:cell-directory "notes") (nlk:enter-cell "notes" "s-new")))
+  (is (search "[notes: kept mc-note]" (keep-definition-text "(defun mc-note () \"A note.\" t)" :session "s-new")))
+  (is (search "[memory: kept mc-fact]"
+              (keep-definition-text "(define-memory mc-fact \"A fact, not code.\" :type :reference)" :session "s-new")))
+  (is (kept-text "mc-fact") "knowledge is the knowledge cell's, in a cell or not"))
+
+(deftest made-cell-refuses-a-bad-name-and-a-taken-folder (with-made-cell-fixture ())
+  (flet ((refused (thunk)
+           (handler-case (let ((*standard-output* (make-broadcast-stream))) (funcall thunk) nil)
+             (error (condition) (princ-to-string condition)))))
+    (is (search "lowercase letters" (refused (lambda () (nlk:new-cell "Tokyo Time")))))
+    (is (search "memory names" (refused (lambda () (nlk:new-cell "memory")))))
+    (ensure-directories-exist (merge-pathnames "nodecode-hand/" nlk::*cells-directory*))
+    (let ((said (refused (lambda () (nlk:new-cell "hand")))))
+      (is (search "pick another name" said) "a shipped or hub cell's folder answers to the name"))
+    (make-test-cell "twice")
+    (is (search "(enter-cell \"twice\")" (refused (lambda () (nlk:new-cell "twice")))))
+    (is (search "no cell absent was made here" (refused (lambda () (nlk:enter-cell "absent")))))))
