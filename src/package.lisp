@@ -284,7 +284,8 @@ renderer, the program loop.")
    #:hub-cells #:read-hub-index #:*hub-index-url* #:*community-index-url*
    #:*cell-switch-seconds* #:cell-switch-deadline
    #:missing-shipped-cells #:install-cell #:uninstall-cell
-   #:installed-cell-p #:load-cell #:definitions-before #:report-unkept-changes #:folder-name
+   #:installed-cell-p #:load-cell #:note-cell-start #:definitions-before #:report-unkept-changes #:folder-name
+   #:every-cell-folder #:cell-parkable-p #:cell-parked-p #:park-cell #:unpark-cell
    ;; what a peripheral is made of, and what it runs on (cells.lisp)
    #:define-peripheral #:worker-start #:worker-poke
    #:worker-stop #:find-session-cwd #:session-project-root
@@ -306,6 +307,9 @@ renderer, the program loop.")
    #:knowledge-surface #:knowledge-search #:knowledge-rows #:knowledge-meter
    #:knowledge-help-text #:note-knowledge-use #:knowledge-ledger-lines #:knowledge-stats #:import-session
    #:mark-index-refresh #:pin-index-section
+   ;; --- made cells: a folder of kept code beside the layer (made-cells.lisp) ---
+   #:kept-folder-kind #:new-cell #:enter-cell #:leave-cell #:current-cell
+   #:cell-directory #:add-cell-component #:move-to-cell
    ;; --- provisional definitions: the stack as evidence (provisional.lisp) ---
    ;; A redefinition of a name the caller is standing on is held until it
    ;; has run once; the boot snapshot is what a revert puts back.

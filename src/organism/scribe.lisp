@@ -218,9 +218,43 @@ specializers joined on, so each method has its own file."
             (mapcar #'slug (getf key :qualifiers))
             (mapcar #'slug (getf key :specializers)))))
 
+(defun definition-namespace (operator)
+  "What a definition by OPERATOR, an operator's name, names: :FUNCTION,
+:VARIABLE or :TYPE for the standard operators that share one -- a DEFMACRO
+of a DEFUN's name takes its place -- else OPERATOR itself, so a DEFUN and a
+DEFINE-CELL of one name are two definitions."
+  (cond ((member operator '("DEFUN" "DEFMACRO" "DEFGENERIC") :test #'string=) :function)
+        ((member operator '("DEFVAR" "DEFPARAMETER" "DEFCONSTANT" "DEFINE-SYMBOL-MACRO")
+                 :test #'string=)
+         :variable)
+        ((member operator '("DEFCLASS" "DEFSTRUCT" "DEFTYPE" "DEFINE-CONDITION") :test #'string=)
+         :type)
+        (t operator)))
+
 (defun definition-path (key directory)
-  "The file in DIRECTORY a definition of KEY is kept in (DEFINITION-FILE-NAME)."
-  (merge-pathnames (format nil "~a.lisp" (definition-file-name key)) directory))
+  "The file in DIRECTORY a definition of KEY is kept in: DEFINITION-FILE-NAME's,
+unless that file holds another kind of definition of the same name, which
+keeps it -- a cell's DEFUN TOKYO-TIME and its DEFINE-CELL TOKYO-TIME -- and
+then the name with KEY's operator joined on, tokyo-time-define-cell.lisp."
+  ;; Before this a second kind of one name overwrote the first's file, and
+  ;; the first was gone at the next boot. A key with no operator (a
+  ;; knowledge cell's lookup by name) is the plain file.
+  (let ((plain (merge-pathnames (format nil "~a.lisp" (definition-file-name key)) directory))
+        (operator (getf key :operator)))
+    (if (null operator)
+        plain
+        (let ((own (merge-pathnames (format nil "~a-~(~a~).lisp" (definition-file-name key) operator)
+                                    directory)))
+          (cond ((probe-file own) own)
+                ((and (probe-file plain)
+                      (let ((there (mapcar #'first (file-definitions plain))))
+                        (and there
+                             (notany (lambda (found)
+                                       (equal (definition-namespace (getf found :operator))
+                                              (definition-namespace operator)))
+                                     there))))
+                 own)
+                (t plain))))))
 
 ;;; --- the scanner ----------------------------------------------------------
 
@@ -688,7 +722,16 @@ rewrites."
              (let ((*package* (find-package :asdf-user)) (*read-eval* nil))
                (uiop:read-file-forms path)))))
 
-(defun fresh-layer-system (name &key knowledge &aux (*package* (find-package :asdf-user)))
+(defun layer-system-blurb (name)
+  "The header line of the .asd of NAME, a folder of kept code: the layer's,
+or a cell the organism made (made-cells.lisp). A FORMAT control string."
+  (if (string= name (layer-name))
+      "the organism's own layer. Generated at each definition; ~
+       edit freely, the component list is the load order."
+      "a cell the organism made, its definitions one per file. ~
+       Generated at each definition; edit freely, the component list is the load order."))
+
+(defun fresh-layer-system (name &key knowledge description &aux (*package* (find-package :asdf-user)))
   ;; A knowledge cell is a layer that says so in :properties and lists no
   ;; component: the loader records it and never loads it, and a build from
   ;; before knowledge cells loads an empty layer, quietly.
@@ -699,7 +742,8 @@ rewrites."
                (format nil "~a: memories and skills, one definition per file, read by the index and never loaded." name))
        (format nil "(defsystem ~s :description ~s :class nodecode.kernel:layer :depends-on (\"nodecode\") :serial t :components ())"
                name
-               (format nil "~a's layer: the organism's own definitions, one per file, over the shipped source." name)))))
+               (or description
+                   (format nil "~a's layer: the organism's own definitions, one per file, over the shipped source." name))))))
 
 (defun knowledge-system-file (directory)
   (merge-pathnames (format nil "~a.asd" (folder-name directory)) directory))
@@ -752,8 +796,7 @@ FILE-NAME, when given, is added if absent."
           (getf plist :depends-on) (getf fresh :depends-on)
           (getf plist :components) (append components (and file-name (not present)
                                                              (list (list :file file-name)))))
-    (write-system-file path name "the organism's own layer. Generated at each definition; ~
-                                  edit freely, the component list is the load order."
+    (write-system-file path name (layer-system-blurb name)
                        (list* (first form) (second form) plist))))
 
 (defun git-in-layer (directory &rest args)
@@ -772,17 +815,23 @@ FILE-NAME, when given, is added if absent."
             (failed (format nil "git ~{~a~^ ~} ran past 120 s and was killed" args))
             (values (stripped out) code (stripped err)))))))
 
-(defun git-exclude-dot-directories (directory &aux (git (merge-pathnames ".git/" directory)))
+(defun git-exclude-dot-directories (directory)
   "DIRECTORY's .git/info/exclude keeps every dot-directory out of its
-history -- another cell's ledger, an editor's state -- the line appended
-once and never twice. Nothing without a repository. Best effort."
+history -- another cell's ledger, an editor's state (GIT-EXCLUDE-LINE)."
+  (git-exclude-line directory ".*/"))
+
+(defun git-exclude-line (directory line &aux (git (merge-pathnames ".git/" directory)))
+  "DIRECTORY's .git/info/exclude keeps the paths LINE matches out of its
+history, the line appended once and never twice. Nothing without a
+repository. Best effort."
   (when (probe-file git)
     (ignore-errors
      (let* ((path (merge-pathnames "info/exclude" git))
             (text (or (read-text path) "")))
-       ;; the line after TEXT's last, on a line of its own (~&)
-       (unless (search ".*/" text)
-         (write-file-atomically path (format nil "~a~&.*/~%" text) :mode :keep))))))
+       (unless (member line (uiop:split-string text :separator '(#\Newline #\Return)) :test #'string=)
+         (ensure-directories-exist path)
+         ;; the line after TEXT's last, on a line of its own (~&)
+         (write-file-atomically path (format nil "~a~&~a~%" text line) :mode :keep))))))
 
 (defun git-commit-all (directory message &key notice (only nil only-p))
   "Stage DIRECTORY whole, or ONLY the files a caller wrote or deleted in it,
@@ -967,14 +1016,26 @@ now keeps -- each in act order once the acts are done."
 
 (access (kept kept-folder))
 
-(defun definition-folder (key form &optional (folders (definition-folders)))
+(defun definition-folder (key form &optional (folders (definition-folders))
+                                             (session-id *scribe-session-id*))
   "=> (values DIRECTORY KNOWLEDGE-P): the folder the definition KEY, FORM's
-own, is kept in. Code is the layer's. A memory or a prose skill
+own, is kept in. Code is the made cell of FOLDERS already holding KEY's
+file, else the cell SESSION-ID made or entered (CURRENT-CELL-DIRECTORY,
+made-cells.lisp), else the layer's. A memory or a prose skill
 (KNOWLEDGE-FORM-P) is the :cell FORM names, else the knowledge cell of
 FOLDERS already holding KEY's file, else the organism's own
 (KNOWLEDGE-DIRECTORY)."
   (if (not (knowledge-form-p form))
-      (values (layer-directory) nil)
+      (values (or (find-if (lambda (directory)
+                             (and (string/= (folder-name directory) (layer-name))
+                                  (probe-file (definition-path key directory))
+                                  (eq (kept-folder-kind directory) :code)
+                                  (member key (mapcar #'first (file-definitions (definition-path key directory)))
+                                          :test #'equal)))
+                           folders)
+                  (current-cell-directory session-id)
+                  (layer-directory))
+              nil)
       (let ((cell (getf (knowledge-form-options form) :cell)))
         (values (cond ((stringp cell) (knowledge-directory cell))
                       ((find-if (lambda (directory)
@@ -1133,7 +1194,8 @@ out of every one."
                                           (lambda ()
                                             (delete-file path)
                                             (unless kept.knowledge
-                                              (write-layer-system (layer-system-file) (layer-name)))))
+                                              (let ((name (folder-name kept.directory)))
+                                                (write-layer-system (layer-system-file name) name)))))
                      (forget-knowledge-file path)
                      (push path kept.removed)
                      keys))
@@ -1144,7 +1206,7 @@ out of every one."
                     ;; a forget reads the folders as they stand
                     (unless (eq kind :define) (write-held))
                     (if (eq kind :define)
-                        (multiple-value-bind (directory knowledge) (definition-folder key sub (listed-folders))
+                        (multiple-value-bind (directory knowledge) (definition-folder key sub (listed-folders) session-id)
                           ;; a folder this call already wrote to has passed
                           (if (and knowledge (not (touched directory))
                                    (asd-files directory) (not (knowledge-folder-p directory)))
@@ -1196,8 +1258,9 @@ out of every one."
                                             (unless kept.written (ensure-knowledge-system directory))
                                             (hold path content))
                                            (t (write-file-atomically path content)
-                                              (write-layer-system (layer-system-file) (layer-name)
-                                                                  (definition-file-name key)))))))
+                                              (let ((name (folder-name directory)))
+                                                (write-layer-system (layer-system-file name) name
+                                                                    (pathname-name path))))))))
                                 ;; a folder this write made is one the next member may move a name out of
                                 (unless (find (folder-name directory) (listed-folders)
                                               :key #'folder-name :test #'string=)
@@ -1206,24 +1269,32 @@ out of every one."
                                 (push path kept.written)
                                 (push key kept.defined)
                                 (push key defined)
-                                ;; one home per name: a memory or a skill kept here leaves every other folder
-                                (when (knowledge-operator-p (getf key :operator))
-                                  (dolist (other (listed-folders))
+                                ;; one home per name: a memory or a skill kept here leaves every other
+                                ;; folder, and code kept in a made cell leaves the layer and every other
+                                ;; cell of code, or two folders would load it and the later one win
+                                (let ((code (not (knowledge-operator-p (getf key :operator)))))
+                                  (dolist (other (if (and code (not knowledge) (string= (folder-name directory) (layer-name)))
+                                                     '() ; the layer is no move's target: a held name stays where it is held
+                                                     (listed-folders)))
                                     (let ((file (definition-path key other)))
                                       (when (and (string/= (folder-name other) (folder-name directory))
                                                  (probe-file file)
                                                  (find-if (lambda (found)
-                                                            (and (knowledge-operator-p (getf found :operator))
-                                                                 (string= (getf found :name) (getf key :name))))
+                                                            (if code
+                                                                (and (equal found key) (eq (kept-folder-kind other) :code))
+                                                                (and (knowledge-operator-p (getf found :operator))
+                                                                     (string= (getf found :name) (getf key :name)))))
                                                           (mapcar #'first (file-definitions file))))
-                                        (let ((away (folder other (string/= (folder-name other) (layer-name)))))
+                                        (let ((away (folder other (eq (kept-folder-kind other) :knowledge))))
                                           (forget-file away file '())
-                                          (push (cons key (if knowledge (folder-label directory) "layer"))
+                                          (push (cons key (if (string= (folder-name directory) (layer-name))
+                                                              "layer"
+                                                              (folder-label directory)))
                                                 (kept-folder-moved away))))))))))
                         ;; every folder a definition is kept in; a knowledge cell's one file per name
                         (let ((name (name-designator-string (literal-designator (second sub)))))
                           (dolist (directory (listed-folders))
-                            (let ((knowledge (string/= (folder-name directory) (layer-name))))
+                            (let ((knowledge (eq (kept-folder-kind directory) :knowledge)))
                               (multiple-value-bind (files shared)
                                   (forgotten-layer-files
                                    sub directory
@@ -1273,7 +1344,7 @@ folder, say so on the eval's output, and record it: the durable facts, the
 ledger lines unless LEDGER is NIL, the layer's revision."
   (let* ((directory kept.directory)
          (name (folder-name directory))
-         (label (if kept.knowledge (folder-label directory) "layer"))
+         (label (if (string= name (layer-name)) "layer" (folder-label directory)))
          (forgot (distinct (mapcar #'definition-key-label kept.forgotten)))
          (moved (loop for (key . to) in kept.moved
                       collect (format nil "~a to ~a" (definition-key-label key) to)))
@@ -1314,8 +1385,8 @@ ledger lines unless LEDGER is NIL, the layer's revision."
                                           path
                                           (list (cons (getf key :operator)
                                                       (definition-key-label key))))))))
-              (format t "~&[layer: kept ~{~a~^, ~}~@[; sent to ~d shell~:p~]]~%"
-                      labels (and (plusp told) told))))))
+              (format t "~&[~a: kept ~{~a~^, ~}~@[; sent to ~d shell~:p~]]~%"
+                      label labels (and (plusp told) told))))))
     (dolist (note notes)
       (format t "~&[~a: ~a]~%" label note))
     (when ledger

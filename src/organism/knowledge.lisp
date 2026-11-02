@@ -43,6 +43,16 @@ carrying (:knowledge . t) in :properties."
   (and directory (uiop:directory-exists-p directory)
        (cell-folder-knowledge-p (make-cell-folder (uiop:ensure-directory-pathname directory)))))
 
+(defun kept-folder-kind (directory)
+  "What DIRECTORY keeps, read from its .asd as data: :KNOWLEDGE for a
+knowledge cell, :CODE for a LAYER system that is none -- the layer, or a cell
+the organism made (made-cells.lisp) -- else NIL, a folder the scribe never
+writes to."
+  (when (and directory (uiop:directory-exists-p directory))
+    (let ((systems (cell-folder-systems (make-cell-folder (uiop:ensure-directory-pathname directory)))))
+      (cond ((some #'declared-system-knowledge systems) :knowledge)
+            ((some #'declared-system-layer systems) :code)))))
+
 (defun knowledge-directory (&optional (name (format nil "~a-memory" (layer-name))))
   "The knowledge cell NAME under *CELLS-DIRECTORY*, the organism's own by
 default: <identity>-memory. Nothing is created here."
@@ -50,14 +60,15 @@ default: <identity>-memory. Nothing is created here."
 
 (defun definition-folders ()
   "The folders the organism's definitions are kept in: the layer when it is
-there, then every knowledge cell, by name."
+there, then every knowledge cell and every cell of code it made, by name."
   (when *cells-directory*
     (let ((layer (layer-directory)))
       (append (and (uiop:directory-exists-p layer) (list layer))
               (remove-if (lambda (directory)
                            (or (string= (folder-name directory) (layer-name))
-                               (not (knowledge-folder-p directory))))
-                         (cell-folders))))))
+                               (not (kept-folder-kind directory))))
+                         ;; a parked cell still holds its names: a keep of one goes back to it
+                         (every-cell-folder))))))
 
 (defun folder-label (directory &aux (name (folder-name directory))
                                     (own (format nil "~a-" (layer-name))))

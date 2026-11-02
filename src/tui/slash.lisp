@@ -163,11 +163,12 @@
         ;; cells routes (tui/cells-sheet.lisp OPEN-CELLS-DIALOG), headless the
         ;; report's lines over (nlk:cells).
         (make-slash-command "cells"
-                            "Every cell: turn one on or off, see why one failed"
-                            :usage "/cells" :op 'open-cells-dialog :headless 'headless-cells
+                            "Every cell: turn one on or off, see why one failed, make a new one"
+                            :usage "/cells [new [NAME | WHAT IT DOES] | SEARCH]" :dispatch :args :op 'slash-cells-op
+                            :headless 'headless-cells :completer '("new")
                             :session nil
                             :help-detail
-                            "A sheet in the middle of the window: Home lists this machine's cells, those that need a look first, then the ones shipped with nodecode, from the hub, your own and the ones off; Hub lists the hub's. The chosen one is laid open beside the list: what it is for, every failure and skipped file whole, the commands it adds, its settings, whether it runs, its folder. Space turns it on or off; a hub cell says where it comes from first, and a second Space installs it. Enter opens its settings; Left and Right, or Tab, switch Home and Hub; typing searches both; Esc closes.")
+                            "A sheet in the middle of the window: Home lists this machine's cells, those that need a look first, then the ones shipped with nodecode, from the hub, your own and the ones off; Hub lists the hub's. The chosen one is laid open beside the list: what it is for, every failure and skipped file whole, the commands it adds, its settings, whether it runs, its folder. Space turns it on or off; a hub cell says where it comes from first, and a second Space installs it. Enter opens its settings; Left and Right, or Tab, switch Home and Hub; typing searches both; Esc closes. Home's first row, + New cell, and /cells new leave “Make a cell that ” in the composer (/cells new NAME names it; more words say what it does): finish the sentence and the agent asks what it still needs, then builds it as a cell of its own, on at once. /cells WORDS opens the sheet searching them.")
         ;; The sealed generations (organism/generation.lisp): on a shell the
         ;; history sheet over the gateway's routes (tui/generations.lisp
         ;; SLASH-GENERATIONS-OP), Enter asking in place before the restore;

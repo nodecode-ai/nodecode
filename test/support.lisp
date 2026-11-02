@@ -664,11 +664,11 @@ the scan's memo dropped on both sides."
   "The text of NAME.lisp in the fixture's CELL, or NIL."
   (nlk:read-text (merge-pathnames (format nil "~a/~a.lisp" cell name) nlk::*cells-directory*)))
 
-(defun keep-definition-text (text &key session)
+(defun keep-definition-text (text &key session (package '#:nodecode.evolved))
   "Evaluate TEXT, one toplevel form, the way the eval seam does -- read in
-EVOLVED, evaluated, recorded with its own bytes -- under SESSION. => what the
-scribe printed."
-  (let* ((*package* (find-package '#:nodecode.evolved))
+PACKAGE (EVOLVED), evaluated, recorded with its own bytes -- under SESSION.
+=> what the scribe printed."
+  (let* ((*package* (find-package package))
          (form (let ((*read-eval* nil)) (read-from-string text))))
     (with-output-to-string (*standard-output*)
       (eval form)
