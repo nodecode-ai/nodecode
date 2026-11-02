@@ -29,10 +29,13 @@ set -euo pipefail
 REV="${1:-HEAD}"
 OUT="${2:-dist}"
 
-repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+tools="$(dirname "$here")"
+repo="$(git -C "$here" rev-parse --show-toplevel)"
+. "$here/layout.sh"
 cd "$repo"
 
-. "$repo/src/tools/release/publish-config.sh"
+. "$here/publish-config.sh"
 host="$(publish_setting NODECODE_WINBOX_HOST)" || exit 1
 winbox="${NODECODE_WINBOX_DIR:-nodecode-winbox}"
 case "$winbox" in
@@ -96,16 +99,17 @@ done
 mkdir -p "$work/nodecode"
 git archive "$commit" | tar -x -C "$work/nodecode"
 tree="$work/nodecode"
-"$repo/src/tools/build/pull-cells.sh" "$tree/src/cells"
-[ -s "$tree/src/cells/bundle.json" ] || { echo "pack-windows: no bundle.json under $tree/src/cells" >&2; exit 1; }
-[ -n "$(find "$tree/src/cells" -mindepth 2 -name .bundle -print -quit)" ] || {
-  echo "pack-windows: pull-cells laid down no cell under $tree/src/cells" >&2
+sys="$(layout_system "$tree")"   # src/ before the move, the root after (layout.sh)
+"$tools/build/pull-cells.sh" "$sys/cells"
+[ -s "$sys/cells/bundle.json" ] || { echo "pack-windows: no bundle.json under $sys/cells" >&2; exit 1; }
+[ -n "$(find "$sys/cells" -mindepth 2 -name .bundle -print -quit)" ] || {
+  echo "pack-windows: pull-cells laid down no cell under $sys/cells" >&2
   exit 1
 }
 
 tar -cf - -C "$work" nodecode | on_host "cat > $winbox/shared/nodecode-src.tar"
 printf '%s\n' "$label" | on_host "cat > $winbox/shared/release-rev.txt"
-on_host "cat > $winbox/release-windows.ps1" < "$repo/src/tools/release/release-windows.ps1"
+on_host "cat > $winbox/release-windows.ps1" < "$here/release-windows.ps1"
 # A zip left by an earlier run must not be mistaken for this run's: the guest
 # stages both files again, and the verdict line below is required either way.
 on_host "rm -f $winbox/shared/$name.zip $winbox/shared/$name.zip.sha256"
@@ -139,10 +143,13 @@ sidecar_sha="$(cut -d' ' -f1 < "$archive.sha256")"
 # zip is a copy of a copy, and the cell folders inside it are the ones a user's
 # organism offers: a release that ships without them installs an organism that
 # can offer no cell at all (SHIPPED-CELLS-DIRECTORY reads <source>\..\cells\).
-python3 - "$archive" "$tree" <<'PY'
+python3 - "$archive" "$tree" "${sys#"$tree"}" <<'PY'
 import hashlib, os, sys, zipfile
 
 archive, tree = sys.argv[1], sys.argv[2]
+# The tree's system folder from its root: 'src' before the move, '' after
+# (layout.sh). The zip is laid out the old way either way: src/src/, src/cells/.
+system = os.path.join(tree, sys.argv[3].strip('/'))
 
 
 def digest(reader):
@@ -160,8 +167,8 @@ with zipfile.ZipFile(archive) as z:
         sys.exit('pack-windows: the zip carries one name twice')
 
     wanted = []
-    for base, prune_tests in (('src/src', False), ('src/cells', True)):
-        for dirpath, dirnames, filenames in os.walk(os.path.join(tree, base)):
+    for base, prune_tests in (('src', False), ('cells', True)):
+        for dirpath, dirnames, filenames in os.walk(os.path.join(system, base)):
             if prune_tests:
                 dirnames[:] = [d for d in dirnames if d != 'test']
             for f in filenames:
@@ -169,17 +176,17 @@ with zipfile.ZipFile(archive) as z:
                 # .bundle markers are the tree's proof, not the zip's.
                 if prune_tests and f.startswith('.'):
                     continue
-                wanted.append(os.path.relpath(os.path.join(dirpath, f), tree).replace(os.sep, '/'))
+                wanted.append(os.path.relpath(os.path.join(dirpath, f), system).replace(os.sep, '/'))
 
-    missing = [rel for rel in wanted if rel not in entries]
+    missing = [rel for rel in wanted if 'src/' + rel not in entries]
     if missing:
         sys.exit('pack-windows: %d of %d tree files are not in the zip, first %s'
                  % (len(missing), len(wanted), missing[:5]))
     differ = []
     for rel in wanted:
-        with open(os.path.join(tree, rel), 'rb') as f:
+        with open(os.path.join(system, rel), 'rb') as f:
             here = digest(f)
-        with z.open(entries[rel]) as f:
+        with z.open(entries['src/' + rel]) as f:
             there = digest(f)
         if here != there:
             differ.append(rel)
@@ -191,7 +198,7 @@ with zipfile.ZipFile(archive) as z:
     # the tarball -- a running organism stages its own update through it.
     if 'install.ps1' not in entries:
         sys.exit('pack-windows: the zip carries no install.ps1')
-    with open(os.path.join(tree, 'src/tools/install/install.ps1'), 'rb') as f:
+    with open(os.path.join(system, 'tools/install/install.ps1'), 'rb') as f:
         here = digest(f)
     with z.open(entries['install.ps1']) as f:
         there = digest(f)
@@ -213,7 +220,7 @@ PY
 # against the zip that was just proved against the tree (pack-windows-zst.sh
 # hashes every file of one out of the other). The zip ships beside it, because
 # an installer older than the tar.zst arm reads only the zip.
-"$repo/src/tools/release/pack-windows-zst.sh" "$archive"
+"$here/pack-windows-zst.sh" "$archive"
 
 echo "pack-windows: $name.zip sha256 $local_sha"
 echo "pack-windows: the sandbox's own log is $log"

@@ -50,6 +50,8 @@ unset NODECODE_HOME SBCL_HOME CPATH LIBRARY_PATH || true
 mkdir -p "$HOME" "$B/bin" "$run/dl"
 step() { printf '\n== %s (%ss)\n' "$1" "$SECONDS"; }
 cd "$repo"
+# The system folder: src/ before the move, the root after (layout.sh).
+if [ -f src/nodecode.asd ]; then sys=src; else sys=.; fi
 [ "$(git rev-parse --short=9 HEAD)" = "$label" ] || { echo "mac: the tree is not $label" >&2; exit 1; }
 
 step 'Homebrew zstd and openssl@3, present (nothing is installed)'
@@ -79,7 +81,7 @@ step 'the patched SBCL'
 # The release starts on macOS 15 and later: build.sh sets that floor (for
 # clang too); a cached runtime above it is rebuilt below.
 minos_of() { vtool -show-build "$1" 2>/dev/null | awk '$1 == "minos" { print $2; exit }'; }
-key="$(cat src/tools/build/sbcl/build.sh src/tools/build/sbcl/patches/* | shasum -a 256 | cut -d' ' -f1)"
+key="$(cat "$sys"/tools/build/sbcl/build.sh "$sys"/tools/build/sbcl/patches/* | shasum -a 256 | cut -d' ' -f1)"
 runtime_minos="$(minos_of "$B/sbcl/bin/sbcl" || true)"
 if [ ! -x "$B/sbcl/bin/sbcl" ] || [ "$(cat "$B/sbcl/.key" 2>/dev/null || true)" != "$key" ] \
    || [ -z "$runtime_minos" ] || [ "${runtime_minos%%.*}" -gt 15 ]; then
@@ -101,7 +103,7 @@ if [ ! -x "$B/sbcl/bin/sbcl" ] || [ "$(cat "$B/sbcl/.key" 2>/dev/null || true)" 
   chmod 0755 "$run/hostbin/sbcl"
   "$run/hostbin/sbcl" --version
   rm -rf "$B/sbcl"
-  PATH="$run/hostbin:$PATH" sh src/tools/build/sbcl/build.sh "$B/sbcl" "$run/sbcl-build"
+  PATH="$run/hostbin:$PATH" sh "$sys"/tools/build/sbcl/build.sh "$B/sbcl" "$run/sbcl-build"
   runtime_minos="$(minos_of "$B/sbcl/bin/sbcl")"
   echo "minos sbcl runtime $runtime_minos"
   [ -n "$runtime_minos" ] && [ "${runtime_minos%%.*}" -le 15 ] || {
@@ -116,7 +118,7 @@ export PATH="$B/sbcl/bin:$PATH" SBCL_HOME="$B/sbcl/lib/sbcl"
 sbcl --version
 
 step 'the stack scrub'
-sbcl --control-stack-size 8MB --non-interactive --no-sysinit --no-userinit --load src/tools/build/sbcl/stack-check.lisp
+sbcl --control-stack-size 8MB --non-interactive --no-sysinit --no-userinit --load "$sys"/tools/build/sbcl/stack-check.lisp
 
 step 'quicklisp on the pinned dist'
 dist=2026-01-01
@@ -132,7 +134,7 @@ RC
 sbcl --noinform --non-interactive \
   --eval "(unless (equal (ql-dist:version (ql-dist:find-dist \"quicklisp\")) \"$dist\") (ql-dist:install-dist \"http://beta.quicklisp.org/dist/quicklisp/$dist/distinfo.txt\" :replace t :prompt nil))" \
   --eval '(format t "~&dist ~a~%" (ql-dist:version (ql-dist:find-dist "quicklisp")))'
-( cd src && sbcl --dynamic-space-size 4096 --control-stack-size 8MB --noinform --non-interactive \
+( cd "$sys" && sbcl --dynamic-space-size 4096 --control-stack-size 8MB --noinform --non-interactive \
     --eval '(push (truename ".") asdf:*central-registry*)' \
     --eval '(ql:quickload "nodecode" :silent t)' \
     --eval '(format t "~&dependencies present~%")' )
@@ -166,7 +168,7 @@ case "$version" in *"+$label"*) ;; *) echo "mac: the binary says '$version', not
 # stops it on the way out.
 step 'the release feed leaves a silent connection (beside the steps below)'
 feed_log="$run/feed-proof.log"
-OPENSSL=/opt/homebrew/opt/openssl@3/bin/openssl python3 src/tools/check/feed-proof.py "$dir/nodecode" >"$feed_log" 2>&1 &
+OPENSSL=/opt/homebrew/opt/openssl@3/bin/openssl python3 "$sys"/tools/check/feed-proof.py "$dir/nodecode" >"$feed_log" 2>&1 &
 feed_pid=$!
 stop_feed() {
   if [ -n "$feed_pid" ] && kill -0 "$feed_pid" 2>/dev/null; then

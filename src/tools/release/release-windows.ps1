@@ -93,9 +93,12 @@ Remove-Item -Recurse -Force (Join-Path $env:LOCALAPPDATA 'nodecode\peripherals')
 # --- the tree ----------------------------------------------------------------
 $tree = Join-Path $Work 'nodecode'
 tar -xf (Join-Path $Share 'nodecode-src.tar') -C $Work
-if (-not (Test-Path (Join-Path $tree 'src\nodecode.asd'))) { throw "no nodecode tree under $Work after the extract" }
-$cells = @(Get-ChildItem (Join-Path $tree 'src\cells') -Directory -ErrorAction SilentlyContinue)
-if ($cells.Count -lt 2 -or -not (Test-Path (Join-Path $tree 'src\cells\bundle.json'))) {
+# The system folder: src\ before the move, the tree's root after (layout.sh).
+# The zip is laid out the old way either way: src\src, src\cells, src\nodecode.asd.
+$sys = if (Test-Path (Join-Path $tree 'src\nodecode.asd')) { Join-Path $tree 'src' } else { $tree }
+if (-not (Test-Path (Join-Path $sys 'nodecode.asd'))) { throw "no nodecode tree under $Work after the extract" }
+$cells = @(Get-ChildItem (Join-Path $sys 'cells') -Directory -ErrorAction SilentlyContinue)
+if ($cells.Count -lt 2 -or -not (Test-Path (Join-Path $sys 'cells\bundle.json'))) {
   throw 'the archive carries no shipped cells: an installed organism could offer none'
 }
 Write-Host "release-windows: $($cells.Count) shipped cells under $tree"
@@ -104,7 +107,7 @@ $env:NODECODE_BUILD_COMMIT = $label
 Push-Location $tree
 try {
   Write-Host 'release-windows: === build ==='
-  & (Join-Path $tree 'src\tools\release\build-windows.ps1')
+  & (Join-Path $sys 'tools\release\build-windows.ps1')
   if ($LASTEXITCODE -ne 0) { throw "build-windows.ps1 failed ($LASTEXITCODE)" }
 } finally { Pop-Location }
 
@@ -229,14 +232,14 @@ New-Item -ItemType Directory -Force $stage | Out-Null
 Copy-Item (Join-Path $tree 'nodecode.exe'), (Join-Path $tree 'libsqlite3.dll'),
           (Join-Path $tree 'libssl-3-x64.dll'), (Join-Path $tree 'libcrypto-3-x64.dll'),
           (Join-Path $tree 'nodecode-launcher.exe') $stage
-Copy-Item (Join-Path $tree 'src\tools\install\install.ps1') $stage
+Copy-Item (Join-Path $sys 'tools\install\install.ps1') $stage
 New-Item -ItemType Directory -Force (Join-Path $stage 'src') | Out-Null
-Copy-Item -Recurse (Join-Path $tree 'src\src') (Join-Path $stage 'src\src')
-Copy-Item -Recurse (Join-Path $tree 'src\cells') (Join-Path $stage 'src\cells')
+Copy-Item -Recurse (Join-Path $sys 'src') (Join-Path $stage 'src\src')
+Copy-Item -Recurse (Join-Path $sys 'cells') (Join-Path $stage 'src\cells')
 # A cell's gates are the maintainer's, not the user's, and the folder loads
 # without them (pack.sh prunes the same directories).
 Get-ChildItem (Join-Path $stage 'src\cells') -Recurse -Directory -Filter test | Remove-Item -Recurse -Force
-Copy-Item (Join-Path $tree 'src\nodecode.asd') (Join-Path $stage 'src\nodecode.asd')
+Copy-Item (Join-Path $sys 'nodecode.asd') (Join-Path $stage 'src\nodecode.asd')
 
 # The gate: the build account's home is written nowhere in the program a
 # stranger runs (SBCL keeps every build path in the image).
