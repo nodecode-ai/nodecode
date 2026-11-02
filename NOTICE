@@ -4,17 +4,17 @@ Copyright 2025-2026 Nodecode AI
 Licensed under the MIT License — see LICENSE.
 
 Third-party attribution:
-- The terminal core (src/src/term/) and the composer editor (src/src/tui/editor.lisp)
+- The terminal core (src/term/) and the composer editor (src/tui/editor.lisp)
   are derived from cl-tuition, Anthony Green's Common Lisp port of charmbracelet's
   bubbletea, bubbles and lipgloss (MIT). The derivation record and the full license
-  text sit in src/src/term/NOTICE.
-- The WebP decoder (src/src/engine/image/webp.lisp) is ported from Go's golang.org/x/image
+  text sit in src/term/NOTICE.
+- The WebP decoder (src/engine/image/webp.lisp) is ported from Go's golang.org/x/image
   packages vp8, vp8l and webp (BSD-3-Clause, Copyright 2009 The Go Authors). The
   license text sits at the end of that file.
-- The JPEG decoder (src/src/engine/image/jpeg.lisp) follows the Independent JPEG Group's
+- The JPEG decoder (src/engine/image/jpeg.lisp) follows the Independent JPEG Group's
   libjpeg, as libjpeg-turbo runs it, step for step (IJG License). This software is
   based in part on the work of the Independent JPEG Group.
-- The reasoning-loop guard (src/src/engine/loop-guard.lisp) ports the detector and
+- The reasoning-loop guard (src/engine/loop-guard.lisp) ports the detector and
   thresholds of oh-my-pi's thinking-loop guard (packages/ai/src/utils/thinking-loop.ts,
   https://github.com/can1357/oh-my-pi), MIT, Copyright (c) 2025 Mario Zechner,
   2025-2026 Can Bölük, 2026 Stencil Labs, Inc., under the same terms as LICENSE.

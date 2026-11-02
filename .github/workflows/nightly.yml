@@ -1,7 +1,7 @@
 name: Nightly
 
 # Once a night, what main costs a person, measured where a pull request's
-# minutes would not pay for it (src/tools/ci/ci-nightly.sh):
+# minutes would not pay for it (tools/ci/ci-nightly.sh):
 #   latency    main against main a day before, built as the release is and
 #              driven in a terminal as a person drives it, in interleaved
 #              rounds: keys, Enter, first token, the wheel, the session list,
@@ -21,9 +21,9 @@ on:
   pull_request:
     paths:
       - .github/workflows/nightly.yml
-      - src/tools/ci/ci-nightly.sh
-      - src/tools/check/latency.*
-      - src/tools/check/footprint.py
+      - tools/ci/ci-nightly.sh
+      - tools/check/latency.*
+      - tools/check/footprint.py
 
 permissions:
   contents: read
@@ -45,7 +45,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Latency and memory, against main a day before
-        run: src/tools/ci/ci-nightly.sh
+        run: tools/ci/ci-nightly.sh
         env:
           NIGHTLY_BASE: ${{ inputs.base }}
           CI_OUT: ${{ runner.temp }}/nightly

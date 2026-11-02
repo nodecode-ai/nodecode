@@ -28,9 +28,9 @@ default:
 # --- core ---------------------------------------------------------------------
 
 # Does nothing when every pinned cell is already in place.
-# Fetch the shipped cells pinned in src/cells/bundle.json.
+# Fetch the shipped cells pinned in cells/bundle.json.
 cells-pull:
-    @src/tools/build/pull-cells.sh
+    @tools/build/pull-cells.sh
 
 # Compile the organism.
 build: cells-pull
@@ -46,20 +46,20 @@ test:
         --eval '(asdf:test-system :nodecode)'
 
 # Parens, layout, and IS prose on a line of its own; with no FILES, every
-# .lisp and .asd under src/ but the cells pulled into src/cells/, which are
+# .lisp and .asd under src/ but the cells pulled into cells/, which are
 # no revision of this repository (CI's lint and `loc' leave them out too).
 # Check Lisp structure.
 lint *files:
     @set -euo pipefail; \
       files="{{files}}"; \
       if [ -z "$files" ]; then \
-        files="$(find src -path 'src/cells/*' -prune -o -name '.*' -prune -o \( -name '*.lisp' -o -name '*.asd' \) -print | LC_ALL=C sort | tr '\n' ' ')"; \
+        files="$(find src -path 'cells/*' -prune -o -name '.*' -prune -o \( -name '*.lisp' -o -name '*.asd' \) -print | LC_ALL=C sort | tr '\n' ' ')"; \
       fi; \
-      sbcl --script src/tools/check/lint-structure.lisp $files
+      sbcl --script tools/check/lint-structure.lisp $files
 
 # Hold HEAD's Common Lisp code lines (tokei) to this ceiling. Lower it when
 # the code shrinks; raise it only with the reason in the commit. Cells pulled
-# into src/cells/ are in no revision here and stay out of the count.
+# into cells/ are in no revision here and stay out of the count.
 loc_ceiling := "104852"
 
 # Fail when HEAD's Lisp code lines exceed loc_ceiling.
@@ -100,18 +100,18 @@ check: lint loc build test
 # Lean, at the version proofs/lean-toolchain pins, checks each proofs/*.lean
 # with warnings as errors, so a `sorry' fails; then every theorem must rest on
 # no axiom beyond propext, Classical.choice and Quot.sound, so an `axiom' of
-# the file's own or a native_decide fails too (src/tools/check/proofs.sh). A new
+# the file's own or a native_decide fails too (tools/check/proofs.sh). A new
 # file is checked once it is there; CI runs this on every change.
 # Check every Lean proof under proofs/ (needs elan).
 proofs:
-    @src/tools/check/proofs.sh
+    @tools/check/proofs.sh
 
 # Each hot path -- a keystroke, a page and a streamed word in a long
 # conversation, a turn appended to a long session, the wire fold, a session's
 # replay, the sessions listing, a JSON round trip, laying out a long answer
 # and long tool output -- runs at three sizes a heavy day reaches, and the
 # slope of its cost against the size is held to its contract in
-# src/perf/scaling.lisp: flat for what a person does inside a conversation,
+# perf/scaling.lisp: flat for what a person does inside a conversation,
 # linear for what reads all of it. Slopes are ratios inside one process, so a
 # slower or busier box does not move them and no second build is needed; a
 # breach must reproduce once before it fails. Exits 1 on a breach, 2 when the
@@ -144,12 +144,12 @@ release: cells-pull
         { printf 'release: the dump left no executable ./nodecode\n' >&2; exit 1; }; \
       printf 'just release complete: ./nodecode\n'; \
       if [ "$(uname -s)" = Darwin ]; then \
-        cc -O2 -Wall -o nodecode-launcher src/tools/build/launcher.c; \
+        cc -O2 -Wall -o nodecode-launcher tools/build/launcher.c; \
         codesign --force --sign - --identifier ai.nodecode.launcher nodecode-launcher; \
       fi; \
       if [ -z "${NODECODE_BUILD_COMMIT:-}" ]; then \
         rm -rf src/fasl; \
-        src/tools/build/compile-cells.sh ./nodecode src/cells src/fasl || \
+        tools/build/compile-cells.sh ./nodecode src/cells src/fasl || \
           printf 'release: a shipped cell did not compile; a launch compiles what is missing\n' >&2; \
         ./nodecode warm; \
       fi
@@ -158,7 +158,7 @@ release: cells-pull
 # box (x86_64-linux, arm64-darwin): SBCL cannot cross-compile.
 # Pack a committed revision as a tarball that runs without SBCL.
 tarball rev="HEAD" out="dist":
-    @src/tools/release/pack.sh {{rev}} {{out}}
+    @tools/release/pack.sh {{rev}} {{out}}
 
 # Structural duplicates under src/, ranked by what collapsing each cluster
 # would reclaim.
@@ -180,16 +180,16 @@ footprint_ceilings := "--max-boot-mb 180 --max-turn-mb 145 --max-growth-mb 15 --
 # A scratch home with every shipped cell, a mock provider, the shell in tmux.
 # Hold the shell to the memory ceilings (~3 min, Linux).
 footprint:
-    @python3 src/tools/check/footprint.py ./nodecode --turns 40 {{footprint_ceilings}}
+    @python3 tools/check/footprint.py ./nodecode --turns 40 {{footprint_ceilings}}
 
 # Fail when this checkout costs more than BASE where a person waits: the TUI's
-# keys and paging, the gateway's start, streamed turns (src/tools/check/), or
+# keys and paging, the gateway's start, streamed turns (tools/check/), or
 # when a hot path's cost grows faster than its contract (`just scaling').
 # Exits 1 when either finds a regression, else 2 or more when one cannot
 # measure, else 0.
 # Measure this checkout against BASE, and every hot path's growth.
 perf base="origin/main":
-    @a=0; python3 src/tools/check/perf-gate.py {{base}} || a=$?; \
+    @a=0; python3 tools/check/perf-gate.py {{base}} || a=$?; \
       s=0; {{just_executable()}} --justfile {{justfile()}} scaling || s=$?; \
       if [ "$a" = 1 ] || [ "$s" = 1 ]; then exit 1; fi; \
       exit $(( a > s ? a : s ))
@@ -198,62 +198,62 @@ perf base="origin/main":
 # release is, then driven as a person drives the shell, in a terminal, in
 # interleaved rounds: boot, typing, streamed turns, the wheel, the session
 # list. Fails when this checkout is slower or holds more memory than BASE
-# past a metric's tolerance with 95% confidence (src/tools/check/latency.py).
+# past a metric's tolerance with 95% confidence (tools/check/latency.py).
 # The Nightly runs it on main against main a day before (ci/ci-nightly.sh).
 # Hold what a person waits on to BASE's, on the clock (~8 min, Linux).
 latency base="origin/main":
-    @src/tools/check/latency.sh {{base}}
+    @tools/check/latency.sh {{base}}
 
 # The gateway must leave a release feed that goes silent without closing,
 # and act on the next label.
 # Prove a silent release feed is left (~90 s).
 feed-proof:
-    @python3 src/tools/check/feed-proof.py ./nodecode
+    @python3 tools/check/feed-proof.py ./nodecode
 
 # TARBALL is `just tarball's output; --from takes a tarball, a label or
 # stable (the default: what users run now), --keep the scratch.
 # Upgrade a running gateway of the last release onto TARBALL (~1 min).
 upgrade-proof tarball *args:
-    @python3 src/tools/qa/upgrade-proof.py {{tarball}} {{args}}
+    @python3 tools/qa/upgrade-proof.py {{tarball}} {{args}}
 
 # Packs HEAD unless TARBALL is HEAD already packed, then packs the refused
 # release itself (one commit in the object store, no branch).
 # Upgrade a running gateway of HEAD onto a release it refuses live (~2 min).
 upgrade-proof-refused *tarball:
-    @src/tools/qa/upgrade-proof-refused.sh {{tarball}}
+    @tools/qa/upgrade-proof-refused.sh {{tarball}}
 
 # A loopback Discord, a scripted model and two installed releases.
 # Keep a Discord bot answering through an upgrade onto TARBALL and a handoff (~3 min).
 upgrade-discord-proof tarball *args:
-    @python3 src/tools/qa/upgrade-discord-proof.py {{tarball}} {{args}}
+    @python3 tools/qa/upgrade-discord-proof.py {{tarball}} {{args}}
 
 # A loopback Discord and a scripted model; --list names the scenarios,
 # --only NAME,... runs some.
 # Run the Discord cell end to end (a few minutes).
 discord-qa *args:
-    @python3 src/tools/qa/discord-qa.py ./nodecode {{args}}
+    @python3 tools/qa/discord-qa.py ./nodecode {{args}}
 
 # A loopback Telegram Bot API and the same scripted model; --list names the
 # scenarios, --only NAME,... runs some.
 # Run the Telegram cell end to end (a few minutes).
 telegram-qa *args:
-    @python3 src/tools/qa/telegram-qa.py ./nodecode {{args}}
+    @python3 tools/qa/telegram-qa.py ./nodecode {{args}}
 
 # A loopback Slack -- the Web API and the Socket Mode link -- and the same
 # scripted model; --list names the scenarios, --only NAME,... runs some.
 # Run the Slack cell end to end (about a minute).
 slack-qa *args:
-    @python3 src/tools/qa/slack-qa.py ./nodecode {{args}}
+    @python3 tools/qa/slack-qa.py ./nodecode {{args}}
 
 # Watched through the rows a browser reads; --sessions N for more, --serve
 # keeps the gateway up.
 # Load background evaluations (~30 s).
 exec-stress *args:
-    @python3 src/tools/check/exec-stress.py ./nodecode {{args}}
+    @python3 tools/check/exec-stress.py ./nodecode {{args}}
 
 # --- cells --------------------------------------------------------------------
 
-# Every directory under src/cells/ that carries an .asd registers with ASDF,
+# Every directory under cells/ that carries an .asd registers with ASDF,
 # the way the organism's folder loader registers ~/.nodecode/cells/<name>/.
 cell_registry := "(progn (push (truename \".\") asdf:*central-registry*) (dolist (asd (directory \"cells/**/*.asd\")) (push (make-pathname :name nil :type nil :defaults asd) asdf:*central-registry*)))"
 

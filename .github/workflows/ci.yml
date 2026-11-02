@@ -13,8 +13,8 @@ name: CI
 #            writes to its terminal: bytes and frames per key, scroll and idle
 #            stretch (`just perf BASE')
 #   scaling  after linux: every hot path's cost at three sizes, its growth
-#            held to its contract (`just scaling'; src/perf/scaling.lisp)
-# The scripts live in src/tools/ci/, so a job is one step and the same check
+#            held to its contract (`just scaling'; perf/scaling.lisp)
+# The scripts live in tools/ci/, so a job is one step and the same check
 # runs by hand on the same machine.
 #
 # The repository is public, so a pull request from a fork never runs on our
@@ -44,7 +44,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Lint, build the release tarball, run the core suite
-        run: src/tools/ci/ci-linux.sh
+        run: tools/ci/ci-linux.sh
 
   scaling:
     name: Scaling
@@ -57,7 +57,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Hold every hot path's growth to its contract
-        run: src/tools/ci/ci-scaling.sh
+        run: tools/ci/ci-scaling.sh
 
   proofs:
     name: Proofs
@@ -68,7 +68,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Check every Lean proof under proofs/
-        run: src/tools/ci/ci-proofs.sh
+        run: tools/ci/ci-proofs.sh
 
   perf:
     name: Perf
@@ -84,7 +84,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Hold this revision to its base where a person waits
-        run: src/tools/ci/ci-perf.sh
+        run: tools/ci/ci-perf.sh
         env:
           PERF_BASE: ${{ github.event_name == 'push' && github.event.before || '' }}
           CI_OUT: ${{ runner.temp }}/perf
@@ -104,7 +104,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build, pack and smoke the Mac release
-        run: src/tools/ci/ci-macos.sh
+        run: tools/ci/ci-macos.sh
 
   windows:
     name: Windows

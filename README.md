@@ -165,7 +165,7 @@ Turn one on with Space in `/cells`, or `nodecode add nc://NAME`:
 | `guard` | Refuses risky shell commands before they run |
 | `qa` | Anonymous usage counts, one page a week, sent only if you say so |
 
-More, from Nodecode and the community, are at [nodecode.ai/cells](https://nodecode.ai/cells/browse). To write your own, ask Nodecode, or read the [Cell API](https://nodecode.ai/docs/cell-api) and [src/CELLS.md](src/CELLS.md).
+More, from Nodecode and the community, are at [nodecode.ai/cells](https://nodecode.ai/cells/browse). To write your own, ask Nodecode, or read the [Cell API](https://nodecode.ai/docs/cell-api) and [docs/CELLS.md](docs/CELLS.md).
 
 ## More
 
@@ -242,7 +242,7 @@ just release     # pull the shipped cells, dump ./nodecode
 ./nodecode
 ```
 
-`just check` runs lint, the line-count ceiling, build and test. A source build doesn't update itself: pull and run `just release` again. To work on Nodecode itself, start with [src/README.md](src/README.md).
+`just check` runs lint, the line-count ceiling, build and test. A source build doesn't update itself: pull and run `just release` again. To work on Nodecode itself, start with [docs/README.md](docs/README.md).
 
 </details>
 

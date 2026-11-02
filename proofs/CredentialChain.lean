@@ -1,5 +1,5 @@
 /-
-Credential chain: RESOLVE-PROVIDER-CREDENTIAL (src/src/engine/provider.lisp),
+Credential chain: RESOLVE-PROVIDER-CREDENTIAL (src/engine/provider.lisp),
 the key a request to a provider sends.
 
 The tiers, first to last: the operator's config (NODECODE_API_KEY, the
@@ -350,7 +350,7 @@ theorem probe_runs_nothing (w : World) (c : Text)
   simp only [resolve, chain, h0, hp, ite_true]
 
 /-! ### 5. Decided traces, pinned on the real function by
-`the-credential-chain-runs-credentialchain-lean-s-traces` (src/test/engine/turn-test.lisp) -/
+`the-credential-chain-runs-credentialchain-lean-s-traces` (test/engine/turn-test.lisp) -/
 
 theorem trace_blank_store :
     resolve { store := some "   ".toList, env := some "sk-env".toList } = .key .env "sk-env".toList := by
