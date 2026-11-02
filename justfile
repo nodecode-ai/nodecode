@@ -39,8 +39,9 @@ build: cells-pull
         --eval '(asdf:load-system :nodecode)' \
         --eval '(format t "~&just build complete~%")'
 
-# Run the core test suite.
-test:
+# Run the core test suite. It pulls the pinned cells first, as CI does: the
+# suite reads the shipped cells' listing, which an empty cells/ fails.
+test: cells-pull
     @set -euo pipefail; {{sbcl}} \
         --eval '(push (truename ".") asdf:*central-registry*)' \
         --eval '(asdf:test-system :nodecode)'
