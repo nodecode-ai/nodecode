@@ -76,7 +76,7 @@ loc:
         printf 'loc: no HEAD to measure.\n' >&2; exit 2; }; \
       tree="$(mktemp -d)"; trap 'rm -rf "$tree"' EXIT; \
       git archive HEAD {{code_paths}} | tar -x -C "$tree"; \
-      measure() { tokei "$@" --types 'Common Lisp' | awk '$1 == "Common" && $2 == "Lisp" { print $5 }'; }; \
+      measure() { tokei -t 'Common Lisp' "$@" | awk '$1 == "Common" && $2 == "Lisp" { print $5 }'; }; \
       code="$(cd "$tree" && measure {{code_paths}})"; \
       live="$(measure {{code_paths}})"; \
       ceiling={{loc_ceiling}}; \
