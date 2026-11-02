@@ -532,6 +532,26 @@ or holds no word, so the next prompt names the session."
                                   '') end"
             payload text text)))
 
+(defun directory-answer-sql (payload)
+  "An answer PAYLOAD's first line that says something, its bold and code
+marks dropped and its heading, quote or list mark trimmed, bounded to 160
+characters -- what a session's row in a list shows of its newest answer;
+NULL when the answer holds no text (a round of tool calls alone), so the
+answer before it stands."
+  (let ((text (format nil "replace(replace(ltrim(json_extract(~a, '$.message.content'), ~
+                                              ' ' || char(9, 10, 13)), ~
+                                        '**', ''), ~
+                                '`', '')"
+                      payload)))
+    (format nil "case when json_type(~a, '$.message.content') = 'text' ~
+                      then nullif(rtrim(ltrim(substr(~a, 1, ~
+                                                     min(160, coalesce(nullif(instr(~a, char(10)), 0) - 1, ~
+                                                                      160))), ~
+                                              '#>*- ' || char(9)), ~
+                                        ' ' || char(9, 13)), ~
+                                  '') end"
+            payload text text)))
+
 (defparameter +directory-turn-kinds+
   (list +kind-turn-started+ +kind-turn-completed+ +kind-turn-failed+ +kind-turn-cancelled+)
   "The facts that begin and end a turn: the newest of them is the session's
@@ -550,7 +570,10 @@ newest turn and where it stands, in the directory's TURN_ID and TURN_KIND.")
    ;; (MAKE-INVOCATION-SOURCE) -- NULL until that turn lands. TURN_ID and
    ;; TURN_KIND are the session's newest turn and the fact that began or
    ;; ended it (+DIRECTORY-TURN-KINDS+); WAITS and WAITS_TURN the newest
-   ;; session.waits mark's question and the turn that put it.
+   ;; session.waits mark's question and the turn that put it. PROVIDER and
+   ;; MODEL are the ones its newest provider request named, so a running
+   ;; turn's show before it answers; ANSWER is its newest answer's first line
+   ;; that says something (DIRECTORY-ANSWER-SQL).
    "create table if not exists session_directory (
       session_id text primary key,
       created_at text,
@@ -565,7 +588,10 @@ newest turn and where it stands, in the directory's TURN_ID and TURN_KIND.")
       turn_id text,
       turn_kind text,
       waits text,
-      waits_turn text) without rowid"
+      waits_turn text,
+      provider text,
+      model text,
+      answer text) without rowid"
    ;; In order: the row exists before a kind's own update reaches it.
    (format nil "create trigger if not exists session_directory_follows_the_log
       after insert on events when new.session_id is not null
@@ -599,6 +625,12 @@ newest turn and where it stands, in the directory's TURN_ID and TURN_KIND.")
            set waits = coalesce(json_extract(new.payload, '$.question'), ''),
                waits_turn = new.turn_id
          where session_id = new.session_id and new.kind = '~a';
+        update session_directory
+           set provider = coalesce(nullif(json_extract(new.payload, '$.provider'), ''), provider),
+               model = coalesce(nullif(json_extract(new.payload, '$.model'), ''), model)
+         where session_id = new.session_id and new.kind = '~a';
+        update session_directory set answer = coalesce(~a, answer)
+         where session_id = new.session_id and new.kind = '~a';
         update session_directory set prompt = null
          where session_id = new.session_id and ~a;
       end"
@@ -608,13 +640,15 @@ newest turn and where it stands, in the directory's TURN_ID and TURN_KIND.")
            +kind-assistant-completed+
            (directory-text-sql "new.invocation_json" "$.source.kind") +kind-turn-started+
            +directory-turn-kinds+ +kind-session-waits+
+           +kind-provider-request+ (directory-answer-sql "new.payload") +kind-assistant-completed+
            (directory-retract-to-root-sql "new"))
    ;; The fill: every field as the trigger would have left it. The empty
    ;; directory is asked once, before the walk, so an open whose directory
    ;; stands reads one page of it.
    (format nil "insert or ignore into session_directory
         (session_id, created_at, cwd, parent, anchor_turn_id, title, prompt,
-         updated_at, message_count, source, turn_id, turn_kind, waits, waits_turn)
+         updated_at, message_count, source, turn_id, turn_kind, waits, waits_turn,
+         provider, model, answer)
       select session_id, occurred_at,
              coalesce((select json_extract(v.payload, '$.cwd') from events v
                         where v.session_id = events.session_id and v.kind = '~a'
@@ -650,7 +684,19 @@ newest turn and where it stands, in the directory's TURN_ID and TURN_KIND.")
                order by w.log_position desc limit 1),
              (select w.turn_id from events w
                where w.session_id = events.session_id and w.kind = '~:*~a'
-               order by w.log_position desc limit 1)
+               order by w.log_position desc limit 1),
+             (select json_extract(p.payload, '$.provider') from events p
+               where p.session_id = events.session_id and p.kind = '~a'
+                 and length(json_extract(p.payload, '$.provider')) > 0
+               order by p.log_position desc limit 1),
+             (select json_extract(p.payload, '$.model') from events p
+               where p.session_id = events.session_id and p.kind = '~:*~a'
+                 and length(json_extract(p.payload, '$.model')) > 0
+               order by p.log_position desc limit 1),
+             (select ~a from events a
+               where a.session_id = events.session_id and a.kind = '~a'
+                 and ~a is not null
+               order by a.log_position desc limit 1)
         from events
        where kind = '~a' and aggregate_type = 'session'
          and not exists (select 1 from session_directory)"
@@ -661,6 +707,8 @@ newest turn and where it stands, in the directory's TURN_ID and TURN_KIND.")
            +kind-input-committed+ +kind-assistant-completed+
            (directory-text-sql "s.invocation_json" "$.source.kind") +kind-turn-started+
            +directory-turn-kinds+ +kind-session-waits+
+           +kind-provider-request+
+           (directory-answer-sql "a.payload") +kind-assistant-completed+ (directory-answer-sql "a.payload")
            +kind-session-created+))
   "The directory's table, the trigger that keeps it, and its fill from the log.")
 

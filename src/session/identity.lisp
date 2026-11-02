@@ -408,12 +408,13 @@ turn that put it; NIL when none did."
   ;; is a function of the log. => list of plists.
   (when-store-handle (handle)
     (loop for (session-id created-at cwd title updated-at message-count parent-raw anchor-raw
-               source prompt turn-id turn-kind waits waits-turn)
+               source prompt turn-id turn-kind waits waits-turn provider model answer)
             in (sql-rows handle
                          "select session_id, created_at, cwd,
                                  coalesce(title, prompt, ''), updated_at,
                                  message_count, parent, anchor_turn_id, source, prompt,
-                                 turn_id, turn_kind, waits, waits_turn
+                                 turn_id, turn_kind, waits, waits_turn,
+                                 provider, model, answer
                             from session_directory
                            where created_at is not null
                            order by updated_at desc, session_id")
@@ -449,7 +450,13 @@ turn that put it; NIL when none did."
                         :waits (and (stringp waits)
                                     (equal waits-turn turn-id)
                                     (equal turn-kind +kind-turn-completed+)
-                                    waits)))))
+                                    waits)
+                        ;; The provider and model its newest provider
+                        ;; request named, and its newest answer's first line
+                        ;; that says something; NIL before either.
+                        :provider (and (stringp provider) provider)
+                        :model (and (stringp model) model)
+                        :answer (and (stringp answer) answer)))))
 
 (defun session-tree-order (entries &key expanded &aux (by-id (make-hash-table :test #'equal))
                                                       (children (make-hash-table :test #'equal))

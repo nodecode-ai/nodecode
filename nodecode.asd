@@ -666,6 +666,9 @@ of stacking."
      ;; fixtures store/sessions-test seeds.
      (:file "gateway/sessions-files-test")
      (:file "gateway/health-test")
+     ;; session-rows-test reads the directory the store fixtures keep, and
+     ;; the branch of a git checkout it makes.
+     (:file "gateway/session-rows-test")
      (:file "tui/status-test")
      (:file "organism/update-test")
      (:file "gateway/control-test")
