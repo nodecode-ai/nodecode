@@ -94,8 +94,10 @@ for the many bars and rows that paint one run of text in one tone."
    ;; every key; the frame overlays it above the composer like the slash
    ;; dropdown (the Zig dialog family: /tree, /sessions, pickers).
    (dialog :initform nil :accessor chat-model-dialog)
-   ;; `nodecode setup' asked for the setup wizard on the first frame; the
-   ;; first-run detector (SETUP-REQUIRED-P, setup.lisp) opens it unasked.
+   ;; `nodecode setup' asked for the setup wizard on the first frame -- or
+   ;; `nodecode gateway setup' for a channel's setup sheet, (:channel-setup
+   ;; CHANNEL); the first-run detector (SETUP-REQUIRED-P, setup.lisp) opens
+   ;; the wizard unasked.
    (setup-requested :initarg :setup-requested :initform nil
                     :accessor chat-model-setup-requested)
    ;; The setup walk in progress (setup.lisp SETUP-RUN), or NIL: set where a

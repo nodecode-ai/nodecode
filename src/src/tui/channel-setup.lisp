@@ -206,7 +206,19 @@ under the step instead, in the organism's words."
   "Read the channel cells on offer, then set up the one named, or ask which."
   (channel-setup-ask
    model setup
-   (lambda () (channel-setup-call setup :get "/api/gateway/cells"))
+   (lambda ()
+     ;; Opened on a shell's first frame (`nodecode gateway setup'), the organism
+     ;; may still be coming up -- no endpoint published (a 503), or one not
+     ;; answering yet: its first read waits for it, up to a minute; any other
+     ;; refusal is said at once.
+     (loop with deadline = (+ (get-universal-time) 60)
+           do (handler-case (return (channel-setup-call setup :get "/api/gateway/cells"))
+                (gateway-http-error (condition)
+                  (if (or (/= 503 (gateway-http-error-status condition)) (>= (get-universal-time) deadline))
+                      (error condition)
+                      (sleep 0.5)))
+                (error (condition)
+                  (if (>= (get-universal-time) deadline) (error condition) (sleep 0.5))))))
    (lambda (model answer)
      (setf setup.cells (loop for row across (or (json-array answer "cells") #())
                              for name = (json-value row :string "name")

@@ -436,7 +436,8 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE)."
   ;; `--store' named; EPHEMERAL whether the shell boots a throwaway store of
   ;; its own, which excludes the other three ways of naming one; SETUP whether
   ;; the shell opens the setup wizard on its first frame, T for `setup' and
-  ;; the import request plist (:import WORLD ...) for `import'; PROFILE the
+  ;; the import request plist (:import WORLD ...) for `import', or a channel's
+  ;; setup sheet, (:channel-setup CHANNEL) for `gateway setup [CHANNEL]'; PROFILE the
   ;; profile `-p NAME' or `--profile NAME' named, anywhere on the line;
   ;; PRISTINE whether `--pristine' asked for generation 0, the binary alone.
   ;;
@@ -523,6 +524,16 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE)."
                       (launch-usage-error "--cursor resumes a session past a log position: ~
                                              nodecode rpc SESSION-ID --cursor N"))
                     (setf child (list :rpc session cursor))))
+                 ;; `gateway setup [CHANNEL]' is the shell, opened straight on
+                 ;; the channel's setup sheet; `gateway setup --help' is the
+                 ;; gateway verbs' help, like every verb's.
+                 ((and (string= name "gateway") (equal (first args) "setup")
+                       (notany #'nlk:help-flag-p (rest args)))
+                  (pop args)
+                  (setf setup (list :channel-setup
+                                    (and args (not (uiop:string-prefix-p "-" (first args))) (pop args))))
+                  (when (and args (not (uiop:string-prefix-p "-" (first args))))
+                    (launch-usage-error "gateway setup takes one CHANNEL: nodecode gateway setup discord")))
                  ;; `gateway run' is the gateway itself: the headless owner
                  ;; that waits for the store instead of losing it.
                  ((and (string= name "gateway") (equal (first args) "run"))
@@ -563,7 +574,9 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE)."
         (launch-usage-error "--ephemeral chooses the store; --store PATH names one yourself")))
     (when (and setup serve)
       (launch-usage-error "~a is a shell's verb: a headless owner has no wizard"
-                          (if (consp setup) "import" "setup")))
+                          (cond ((and (consp setup) (eq (first setup) :channel-setup)) "gateway setup")
+                                ((consp setup) "import")
+                                (t "setup"))))
     (when (and child (eq (first child) :rpc) (or serve session-id setup))
       (launch-usage-error "rpc is a command of its own: nodecode [-p NAME] rpc ~a"
                           (nlk:verb-arguments (nlk:find-verb "rpc" *launch-verbs*))))
