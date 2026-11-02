@@ -97,10 +97,15 @@ in -- providers, tools, rooms -- else the index's own name."
           (t "More"))))
 
 (defun cells-items (cells &aux (query (string-trim " " cells.query)))
-  "The list as it shows, each item (:HEAD LABEL TONE COUNT) or (:CELL NAME):
-the tab's cells under their heads, by label; under a query, what it finds
-in both, Home's first and a name once."
-  (let ((items '()) (listed '()))
+  "The list as it shows, each item (:NEW), (:HEAD LABEL TONE COUNT) or (:CELL
+NAME): Home's `+ New cell' row first, then the tab's cells under their
+heads, by label; under a query, what it finds in both, Home's first and a
+name once, the new row when its words match."
+  (let ((items (when (if (plusp (length query))
+                         (search query "new cell" :test #'char-equal)
+                         (eq cells.tab :home))
+                 (list (list :new))))
+        (listed '()))
     (flet ((group (label tone rows)
              (when-let (rows (sort (remove-if (lambda (row) (member (row-name row) listed :test #'equal)) rows)
                                    #'string-lessp :key (lambda (row) (json-value row :string "label"))))
@@ -123,12 +128,40 @@ in both, Home's first and a name once."
     (nreverse items)))
 
 (defun cells-names (items)
-  (loop for item in items when (eq :cell (first item)) collect (second item)))
+  "What the keys can choose among ITEMS: each cell's name, and :NEW for the
+new row."
+  (loop for (kind name) in items
+        when (eq kind :cell) collect name
+        when (eq kind :new) collect :new))
 
 (defun cells-focus (cells names)
   "The name of the cell the keys act on: the one chosen while the list
-shows it, else its first."
-  (if (member cells.chosen names :test #'equal) cells.chosen (first names)))
+shows it, else its first cell -- the new row only when there is none, so
+the sheet opens on a cell and Space never starts one."
+  (cond ((member cells.chosen names :test #'equal) cells.chosen)
+        ((find-if #'stringp names))
+        (t (first names))))
+
+(defun cell-sentence (name what)
+  "The sentence a new cell starts from: `Make a cell that ', NAME and WHAT it
+does in it when given."
+  (format nil "Make a cell ~@[named ~a ~]that ~@[~a~]" name what))
+
+(defun cells-new (model &optional name what)
+  "Start a cell by talking: close the sheet and leave the composer reading
+`Make a cell that ' (CELL-SENTENCE), for the operator to finish. The agent
+asks what it still needs and builds it as a cell of its own, on at once."
+  (dismiss-dialog model nil)
+  (replace-composer-text model (cell-sentence name what))
+  nil)
+
+(defun cells-new-words (words)
+  "WORDS after /cells new as (values NAME WHAT): one word names the cell;
+more say what it does."
+  (let ((words (string-trim " " words)))
+    (cond ((zerop (length words)) (values nil nil))
+          ((find #\Space words) (values nil words))
+          (t (values words nil)))))
 
 ;;; --- calls, off the loop --------------------------------------------------------
 
@@ -236,6 +269,7 @@ first, in place, and a second Space installs it at the commit read."
       ((and asked (eq key :escape)))
       ;; typing searches; Space stays the switch
       ((sheet-type-query cells.query key ctrl alt (lambda (query) (cells-search cells query))))
+      ((and (eq name :new) (member key '(#\Space :enter))) (cells-new model))
       ((eql key #\Space) (when name (cells-space model cells name)))
       ((eq key :escape)
        (cond ((plusp (length cells.query)) (cells-search cells ""))
@@ -465,12 +499,13 @@ row that opens or closes a slab. Errors and refusals are said whole."
 
 (defun cells-keys (cells name)
   "The keys that act where the operator is, in the order the key row names them."
-  (let* ((cell (and name (cell-of cells name)))
+  (let* ((cell (and (stringp name) (cell-of cells name)))
          (on (and cell (json-value cell :boolean "on"))))
     (if (and name (equal cells.asked name))
         '(("space" "install it") ("esc" "leave it"))
         (append
-         (cond ((null cell) nil)
+         (cond ((eq name :new) '(("enter" "describe it")))
+               ((null cell) nil)
                ((cell-offered-p cell) '(("space" "install")))
                ((cell-fixed-p cell) nil)
                (t (list (list "space" (if on "turn off" "turn on")))))
@@ -574,6 +609,7 @@ head with it when there is room."
                         (let ((end (canvas-put canvas (+ x 3) r (clip-text-to-width label (max 1 (- width 9)))
                                                (sheet-ink tone :ground ground :bold t))))
                           (canvas-put canvas (+ end 2) r (princ-to-string count) (sheet-ink :muted :ground ground)))))
+               (:new (paint-new-cell-row cells canvas r x width (eq name :new) ground))
                (:cell (paint-cells-row cells canvas r x width (second line) (equal name (second line)) ground))))
     (paint-scroll-marks canvas (+ x width -1) top (+ top rows -1) offset rows (length lines) ground)))
 
@@ -616,10 +652,47 @@ switch at the right."
                  (when action (sheet-hit cells r x end action))
                  (setf x end))))))
 
+(defparameter +new-cell-lines+
+  '("Say what it should do. The agent asks what it still needs, builds it as a cell of its own and turns it on here, with no restart."
+    "Enter leaves “Make a cell that ” in the composer: finish the sentence."
+    "Anywhere else: /cells new [NAME], or just ask for one.")
+  "What the pane says of the new row, a paragraph each.")
+
+(defun paint-new-cell-row (cells canvas r x width chosen ground)
+  "The `+ New cell' row on R from X, WIDTH wide, lifted when CHOSEN: a click
+starts one."
+  (let* ((lift (sheet-ground :sheet-focus))
+         (here (if chosen lift ground)))
+    (when chosen
+      (canvas-fill canvas x r width 1 (sheet-ink nil :ground lift))
+      (when (eq (effective-color-profile) :none) (canvas-put canvas x r "›" nil)))
+    (canvas-put canvas (+ x 2) r "+ " (sheet-ink :dialog-accent :ground here :bold t))
+    (canvas-put canvas (+ x 5) r (clip-text-to-width "New cell" (max 1 (- width 8)))
+                (sheet-ink (if chosen :dialog-accent :foreground) :ground here :bold chosen))
+    (sheet-hit cells r x (+ x width) (lambda-ignoring (model cells) (cells-new model)))))
+
+(defun paint-new-cell-pane (canvas top bottom px pw)
+  "The new row laid open from TOP to BOTTOM in the pane at PX, PW wide: its
+band, then how a cell is made by talking."
+  (let* ((pane (sheet-ground :sheet))
+         (lift (sheet-ground :sheet-focus))
+         (at (canvas-put canvas px top (clip-text-to-width " New cell " pw) (sheet-ink :title :ground lift :bold t))))
+    (loop for step from 1 to 8
+          while (< at (+ px pw))
+          do (setf at (canvas-put canvas at top " " (sheet-ink nil :ground (blend-rgb pane lift (round (* 100 step) 9))))))
+    (loop with r = (+ top 2)
+          for paragraph in +new-cell-lines+
+          do (dolist (line (wrapped-lines paragraph pw))
+               (when (<= r bottom) (canvas-put canvas px r line (sheet-ink :foreground :ground pane)))
+               (incf r))
+             (incf r))))
+
 (defun paint-cell-pane (cells canvas name top bottom px pw)
   "The cell NAME laid open from TOP to BOTTOM in the pane at PX, PW wide:
-its band, then what it says, scrolled from PANE-TOP; with no cell, why the
-list could not be read."
+its band, then what it says, scrolled from PANE-TOP; the new row, how one
+is made; with no cell, why the list could not be read."
+  (when (eq name :new)
+    (return-from paint-cell-pane (paint-new-cell-pane canvas top bottom px pw)))
   (let ((pane (sheet-ground :sheet)))
     (if (null name)
         (when-let (failure (or cells.failed (and (eq cells.tab :hub) cells.hub-failed)))
@@ -689,7 +762,8 @@ the caret's cell, or NIL."
            (sheet-hit cells header-row px at
                       (lambda-ignoring (model cells) (setf cells.open nil)))
            (canvas-put canvas at header-row
-                       (clip-text-to-width (json-value (cell-of cells name) :string "label") (max 1 (- (+ px pw) at)))
+                       (clip-text-to-width (if (eq name :new) "New cell" (json-value (cell-of cells name) :string "label"))
+                                           (max 1 (- (+ px pw) at)))
                        (sheet-ink :title :ground pane :bold t))))
         ((plusp (length cells.query))
          (setf cursor (paint-search-line canvas px header-row pw cells.query pane 8)))
@@ -722,3 +796,15 @@ hub's index read off the loop."
     (setf (chat-model-dialog model) cells)
     (cells-read model cells)
     nil))
+
+(defun slash-cells-op (model args &aux (words (string-trim " " (or args ""))))
+  "/cells: the sheet; /cells new [NAME]: a cell started by talking (CELLS-NEW);
+/cells WORDS: the sheet searching WORDS."
+  (let ((space (position #\Space words)))
+    (if (string-equal "new" (subseq words 0 space))
+        (multiple-value-bind (name what) (cells-new-words (if space (subseq words space) ""))
+          (cells-new model name what))
+        (progn (open-cells-dialog model)
+               (when (plusp (length words))
+                 (cells-search (chat-model-dialog model) words))
+               nil))))
