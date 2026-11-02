@@ -47,6 +47,15 @@ of LINES on a line of its own after it; an OLD of \"\" replaces nothing."
   (upgrade-tree "src/src/a.lisp"
                 (format nil "~a~{~a~%~}" (replace-once *upgrade-old-a* old new) lines)))
 
+(defun upgrade-moved-tree (text &rest files)
+  "A tree whose one file is a.lisp's successor at m/a.lisp, TEXT, then FILES
+-- PATH TEXT pairs -- beside it: a folder move as git mv makes it."
+  (list* (cons "src/src/m/a.lisp" (if (listp text) (apply #'upgrade-source text) text))
+         (cons "src/nodecode.asd"
+               "(defsystem \"upg\" :depends-on (\"uiop\") :components ((:file \"m/a\")))")
+         (loop for (path file) on files by #'cddr
+               collect (cons path (if (listp file) (apply #'upgrade-source file) file)))))
+
 (defun write-upgrade-tree (root files)
   "Write FILES — (RELATIVE-PATH . TEXT) ... — under ROOT; answers ROOT."
   (dolist (file files root)
@@ -127,6 +136,41 @@ of LINES on a line of its own after it; an OLD of \"\" replaces nothing."
    (upgrade-tree "src/src/b.lisp" '("nodecode.evolved" "(defun upg-v () 1)"))
    (upgrade-tree)
    '(:verdict :hot :gone ("upg-v") :files (:changed 0 :added 0 :removed 1 :unloaded 0)))
+  ;; a definition is its package and key, not its file: a file moved as it
+  ;; was moves every definition in it, and none is gone or evaluated again
+  (moved-file-is-nothing-to-do nil
+   (upgrade-moved-tree *upgrade-old-a*)
+   '(:verdict :hot :hot nil :held nil :gone nil :dependents nil
+     :files (:changed 0 :added 1 :removed 1 :unloaded 0)))
+  (moved-and-changed-defun-is-hot nil
+   (upgrade-moved-tree (replace-once *upgrade-old-a* "(defun upg-f () 1)" "(defun upg-f () 3)"))
+   '(:verdict :hot :hot (("m/a.lisp" ("DEFUN" . "upg-f"))) :gone nil))
+  ;; against the text it left, so a moved definition holds as a kept one does
+  (moved-and-changed-defstruct-restarts nil
+   (upgrade-moved-tree (replace-once *upgrade-old-a* "(defstruct upg-s a)" "(defstruct upg-s a b)"))
+   '(:verdict :restart :held (("upg-s" . "defstruct leaves every live instance obsolete"))))
+  ;; a moved macro that changed carries its users wherever they went
+  (moved-and-changed-macro-carries-its-users nil
+   (upgrade-moved-tree (replace-once *upgrade-old-a* "(defmacro upg-m (x) `(list ,x))"
+                                     "(defmacro upg-m (x) `(vector ,x))"))
+   '(:verdict :hot :hot (("m/a.lisp" ("DEFMACRO" . "upg-m") ("DEFUN" . "upg-g")))
+     :dependents ("upg-g")))
+  (moved-and-cut-defun-is-gone nil
+   (upgrade-moved-tree (replace-once *upgrade-old-a* (format nil "(defun upg-h () 2)~%") ""))
+   '(:verdict :hot :hot nil :gone ("upg-h")))
+  (defun-moved-to-another-file-is-not-gone nil
+   (append (upgrade-a-with (format nil "(defun upg-f () 1)~%") "")
+           (list (cons "src/src/c.lisp" (upgrade-source "nodecode.evolved" "(defun upg-f () 1)"))))
+   '(:verdict :hot :hot nil :gone nil :files (:changed 1 :added 1 :removed 0 :unloaded 0)))
+  ;; the same boot forms in a new file are not new boot state; new ones are
+  (moved-file-with-boot-forms-holds-nothing
+   (upgrade-tree "src/src/b.lisp" '("nodecode.evolved" "(defvar *upg-list* nil)" "(push 1 *upg-list*)"))
+   (upgrade-moved-tree *upgrade-old-a*
+                       "src/src/m/b.lisp" '("nodecode.evolved" "(defvar *upg-list* nil)" "(push 1 *upg-list*)"))
+   '(:verdict :hot :held nil :hot nil :gone nil))
+  (moved-file-with-new-boot-forms-restarts nil
+   (upgrade-moved-tree (concatenate 'string *upgrade-old-a* (format nil "(push 1 *upg-list*)~%")))
+   '(:verdict :restart :held (("m/a.lisp" . "changes outside any definition are boot state"))))
   (defgeneric-lambda-list-move-restarts nil
    (upgrade-a-with "(defgeneric upg-gen (a))" "(defgeneric upg-gen (a b))")
    '(:verdict :restart :held (("upg-gen" . "a generic's lambda list moved under its methods"))))
