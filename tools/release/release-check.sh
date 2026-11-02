@@ -13,13 +13,16 @@
 # commit=, label= and version= to $GITHUB_OUTPUT when the workflow sets it.
 set -euo pipefail
 
-repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+tools="$(dirname "$here")"
+repo="$(git -C "$here" rev-parse --show-toplevel)"
+. "$here/layout.sh"
 cd "$repo"
 
 commit="$(git rev-parse 'HEAD^{commit}')"
 # Nine digits, explicitly: --short alone sizes itself by the clone (pack.sh).
 label="$(git rev-parse --short=9 "$commit")"
-version="$(git show "$commit:src/nodecode.asd" | sed -n 's/^ *:version "\([0-9][0-9A-Za-z.-]*\)".*/\1/p' | head -n 1)"
+version="$(git show "$commit:$(layout_asd_at "$commit")" | sed -n 's/^ *:version "\([0-9][0-9A-Za-z.-]*\)".*/\1/p' | head -n 1)"
 [ -n "$version" ] || { echo "release: src/nodecode.asd at $label declares no :version" >&2; exit 1; }
 
 if [ "${GITHUB_REF_TYPE:-}" = tag ]; then

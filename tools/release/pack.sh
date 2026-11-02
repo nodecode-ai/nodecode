@@ -35,7 +35,10 @@ set -euo pipefail
 REV="${1:-HEAD}"
 OUT="${2:-dist}"
 
-repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+tools="$(dirname "$here")"
+repo="$(git -C "$here" rev-parse --show-toplevel)"
+. "$here/layout.sh"
 cd "$repo"
 
 os="$(uname -s | tr '[:upper:]' '[:lower:]')"
@@ -73,9 +76,12 @@ trap 'rm -rf "$work" "${XDG_CACHE_HOME:-$HOME/.cache}"/common-lisp/*"$work"' EXI
 # which is also what keeps the operator's own cell symlinks out. Two of them
 # point at the directory they sit in, and a recursive copy of one never ends.
 git archive "$REV" | tar -x -C "$work"
+# The revision's system folder -- src/ before the move, the root after
+# (layout.sh); the release below is laid out the one way either way.
+sys="$(layout_system "$work")"
 # The shipped cells are in no revision of this repository: they come from
 # nodecode-ai/cells at the pin in src/cells/bundle.json (pull-cells.sh).
-"$repo/src/tools/build/pull-cells.sh" "$work/src/cells"
+"$tools/build/pull-cells.sh" "$sys/cells"
 # ...which also means the build tree has no .git, so the image cannot ask git
 # what it was built from: every released build reported a bare `0.0.1' while a
 # build from the checkout reported 0.0.1+<commit>. The revision is known right
@@ -124,11 +130,11 @@ fi
 # and patches -- this revision's copies -- with the box's sbcl as the host,
 # tested where the patches touch the runtime, and kept under the cache.
 if [ "$os" = linux ]; then
-  key="$(cat "$work/src/tools/build/sbcl/build.sh" "$work"/src/tools/build/sbcl/patches/* | sha256sum | cut -d' ' -f1)"
+  key="$(cat "$sys/tools/build/sbcl/build.sh" "$sys"/tools/build/sbcl/patches/* | sha256sum | cut -d' ' -f1)"
   sbcl="${XDG_CACHE_HOME:-$HOME/.cache}/nodecode-sbcl/$key"
   if [ ! -x "$sbcl/bin/sbcl" ]; then
     rm -rf "$sbcl.new"
-    sh "$work/src/tools/build/sbcl/build.sh" "$sbcl.new" "$work/.sbcl-build"
+    sh "$sys/tools/build/sbcl/build.sh" "$sbcl.new" "$work/.sbcl-build"
     glibc_within_floor "$sbcl.new/bin/sbcl" 'the SBCL runtime' || exit 1
     ( cd "$work"/.sbcl-build/sbcl-*/tests && sh run-tests.sh exhaust.impure.lisp gc.impure.lisp gc-threads.impure.lisp \
         fcb-threads.impure.lisp dynamic-extent.pure.lisp make-thread.pure.lisp interrupt-consing.impure.lisp \
@@ -149,7 +155,7 @@ if [ "$os" = linux ]; then
     '  (when (probe-file quicklisp-init) (load quicklisp-init)))' > "$HOME/.sbclrc"
   sbcl --noinform --non-interactive \
     --eval "(unless (equal (ql-dist:version (ql-dist:find-dist \"quicklisp\")) \"$dist\") (ql-dist:install-dist \"http://beta.quicklisp.org/dist/quicklisp/$dist/distinfo.txt\" :replace t :prompt nil))"
-  ( cd "$work/src" && sbcl --dynamic-space-size 4096 --control-stack-size 8MB --noinform --non-interactive \
+  ( cd "$sys" && sbcl --dynamic-space-size 4096 --control-stack-size 8MB --noinform --non-interactive \
       --eval '(push (truename ".") asdf:*central-registry*)' --eval '(ql:quickload "nodecode" :silent t)' >/dev/null )
 fi
 
@@ -177,9 +183,9 @@ fi
 if [ "$os" = linux ]; then
   glibc_within_floor "$stage/nodecode" nodecode || exit 1
 fi
-cp -r "$work/src/src"        "$stage/src/src"
-cp -r "$work/src/cells"     "$stage/src/cells"
-cp "$work/src/nodecode.asd"  "$stage/src/nodecode.asd"
+cp -r "$sys/src"        "$stage/src/src"
+cp -r "$sys/cells"     "$stage/src/cells"
+cp "$sys/nodecode.asd"  "$stage/src/nodecode.asd"
 
 # A cell's gates are the maintainer's, not the tester's, and the cell
 # loads without them: its .asd declares the test slice as a separate system,
@@ -193,15 +199,15 @@ find "$stage/src/cells" -type d -name test -prune -exec rm -rf {} +
 # fasl directory made, every shipped folder linked into a scratch home, the
 # image's `trial' verb run there -- its load is the compile, and its score is
 # the gate: a folder that fails to load does not ship.
-if ! "$repo/src/tools/build/compile-cells.sh" "$stage/nodecode" "$stage/src/cells" "$stage/src/fasl"; then
+if ! "$tools/build/compile-cells.sh" "$stage/nodecode" "$stage/src/cells" "$stage/src/fasl"; then
   echo "pack: refusing, a shipped cell does not load against this build" >&2
   exit 1
 fi
 
-cp "$repo/src/tools/release/README.alpha.txt" "$stage/README.txt"
+cp "$here/README.alpha.txt" "$stage/README.txt"
 # The installer travels too: a running organism stages the next release
 # through it (`nodecode update' runs it with --stage, then --link).
-cp "$work/src/tools/install/install.sh"  "$stage/install.sh"
+cp "$sys/tools/install/install.sh"  "$stage/install.sh"
 
 # A symlink that leaves the tree is a broken file on the other box, and one
 # that points at its own parent loops tar. Neither may be in a release.

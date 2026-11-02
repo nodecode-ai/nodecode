@@ -37,10 +37,13 @@ set -euo pipefail
 REV="${1:-HEAD}"
 OUT="${2:-dist}"
 
-repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+tools="$(dirname "$here")"
+repo="$(git -C "$here" rev-parse --show-toplevel)"
+. "$here/layout.sh"
 cd "$repo"
 
-. "$repo/src/tools/release/publish-config.sh"
+. "$here/publish-config.sh"
 mac="$(publish_setting NODECODE_MACOS_HOST)" || exit 1
 # The Mac builds under a root that names nobody, never under the account's
 # home: SBCL writes every path it compiles or loads into the image and the
@@ -215,9 +218,9 @@ git -C "$ship/repo" -c advice.detachedHead=false checkout -q FETCH_HEAD
 # pin names, laid down here the way pack.sh lays them down there.
 mkdir -p "$work/tree"
 git archive "$commit" | tar -x -C "$work/tree"
-"$repo/src/tools/build/pull-cells.sh" "$work/tree/src/cells" >/dev/null
+"$tools/build/pull-cells.sh" "$(layout_system "$work/tree")/cells" >/dev/null
 
-cp "$repo/src/tools/release/mac-build.sh" "$ship/mac.sh"
+cp "$here/mac-build.sh" "$ship/mac.sh"
 chmod 0755 "$ship/mac.sh"
 
 rm -f "$archive" "$archive.sha256"
@@ -229,10 +232,13 @@ tar -C "$ship" -cf - repo mac.sh |
 # proof, for a tarball): every file of src/src and of the shipped cells, the
 # system definition and the installer, hashed against the tree sent.
 prove_tree() {
-python3 - "$archive" "$work/tree" "$name" <<'PY'
+python3 - "$archive" "$work/tree" "$name" "$(layout_system "$work/tree")" <<'PY'
 import hashlib, os, sys, tarfile
 
 archive, tree, name = sys.argv[1], sys.argv[2], sys.argv[3]
+# The tree's system folder (layout.sh: src/ before the move, the root after);
+# the tarball is laid out the old way either way.
+system = sys.argv[4]
 with tarfile.open(archive) as t:
     members = {m.name: m for m in t.getmembers()}
     links = [n for n, m in members.items() if m.issym() or m.islnk()]
@@ -242,21 +248,21 @@ with tarfile.open(archive) as t:
     if junk:
         sys.exit('pack-macos: the tarball carries AppleDouble files, first %s' % junk[:3])
     wanted = []
-    for base, prune_tests in (('src/src', False), ('src/cells', True)):
-        for dirpath, dirnames, filenames in os.walk(os.path.join(tree, base)):
+    for base, prune_tests in (('src', False), ('cells', True)):
+        for dirpath, dirnames, filenames in os.walk(os.path.join(system, base)):
             if prune_tests:
                 dirnames[:] = [d for d in dirnames if d != 'test']
             for f in filenames:
-                wanted.append(os.path.relpath(os.path.join(dirpath, f), tree))
-    wanted += ['src/nodecode.asd']
-    pairs = [(rel, rel) for rel in wanted] + [('src/tools/install/install.sh', 'install.sh')]
+                wanted.append(os.path.relpath(os.path.join(dirpath, f), system))
+    wanted += ['nodecode.asd']
+    pairs = [(rel, 'src/' + rel) for rel in wanted] + [('tools/install/install.sh', 'install.sh')]
     missing, differ = [], []
     for here_rel, there_rel in pairs:
         member = members.get('%s/%s' % (name, there_rel))
         if member is None or not member.isfile():
             missing.append(there_rel)
             continue
-        with open(os.path.join(tree, here_rel), 'rb') as f:
+        with open(os.path.join(system, here_rel), 'rb') as f:
             here = hashlib.sha256(f.read()).hexdigest()
         there = hashlib.sha256(t.extractfile(member).read()).hexdigest()
         if here != there:

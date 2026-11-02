@@ -19,7 +19,10 @@ set -euo pipefail
 REV="${1:-HEAD}"
 OUT="${2:-dist}"
 
-repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+tools="$(dirname "$here")"
+repo="$(git -C "$here" rev-parse --show-toplevel)"
+. "$here/layout.sh"
 cd "$repo"
 
 commit="$(git rev-parse "$REV^{commit}")"
@@ -68,7 +71,7 @@ base_url="${base_url%/}"
 # a version already tagged at another commit stops the publish here, before any
 # arm packs: bump :version in src/nodecode.asd first.
 github_repo="$(publish_setting NODECODE_PUBLISH_GITHUB_REPO)" || exit 1
-version="$(git show "$commit:src/nodecode.asd" | sed -n 's/^ *:version "\([0-9][0-9A-Za-z.-]*\)".*/\1/p' | head -n 1)"
+version="$(git show "$commit:$(layout_asd_at "$commit")" | sed -n 's/^ *:version "\([0-9][0-9A-Za-z.-]*\)".*/\1/p' | head -n 1)"
 [ -n "$version" ] || { echo "publish: src/nodecode.asd at $label declares no :version" >&2; exit 1; }
 tag="v$version"
 gh api "repos/$github_repo" --jq .full_name > /dev/null || {
@@ -83,10 +86,10 @@ if [ -n "$tagged" ] && [ "$tagged" != "$commit" ]; then
   exit 1
 fi
 echo "publish: $label is nodecode $version, tagged $tag"
-authority_installer="${NODECODE_PUBLISH_INSTALLER_PATH:-$repo/src/tools/install/install.sh}"
+authority_installer="${NODECODE_PUBLISH_INSTALLER_PATH:-$(layout_system "$repo")/tools/install/install.sh}"
 # The Windows arm is served beside the shell one and reads the same pointer,
 # so it follows the same authority/mirror discipline.
-authority_ps1="${NODECODE_PUBLISH_PS1_PATH:-$repo/src/tools/install/install.ps1}"
+authority_ps1="${NODECODE_PUBLISH_PS1_PATH:-$(layout_system "$repo")/tools/install/install.ps1}"
 # The site builds its image from this branch of the repository the local
 # clone tracks; the installers are mirrored there, never into the clone.
 # NODECODE_PUBLISH_SITE_REMOTE names that repository directly, for a publisher
@@ -190,14 +193,23 @@ fetch() {
 # every platform, written here: this host has the history, a sandbox tree
 # is one commit deep.
 changes="$OUT/changes-$label"
-# The installers lived at src/tools/install.sh and install.ps1 before they
-# moved into src/tools/install/: both paths count, so the commits before the
-# move keep their mark.
+# What ships has two spellings (layout.sh): under src/ until the move put the
+# system at the root -- the commit that added the root nodecode.asd -- and at
+# the root since. Each stretch of history is read with its own, so the commits
+# before the move keep their mark.
 declare -A ships=()
+move="$(git log --no-renames --diff-filter=A --format=%H -n 1 "$commit" -- nodecode.asd)"
+ships_since() { # REV RANGE
+  local specs; mapfile -t specs < <(layout_ships_at "$1")
+  git log --format=%H -n 200 "$2" -- "${specs[@]}"
+}
 while read -r hash; do ships[$hash]=1; done < <(
-  git log --format=%H -n 200 "$commit" -- src/src src/cells src/nodecode.asd resources \
-    src/tools/install/install.sh src/tools/install/install.ps1 src/tools/install.sh src/tools/install.ps1 \
-    ':(exclude,glob)src/cells/**/test/**')
+  if [ -n "$move" ]; then
+    ships_since "$commit" "$move^..$commit"
+    ships_since "$move^" "$move^"
+  else
+    ships_since "$commit" "$commit"
+  fi)
 git log --format='%H %s' -n 200 "$commit" | while read -r hash subject; do
   if [ -n "${ships[$hash]:-}" ]; then
     printf '%s %s\n' "${hash:0:9}" "${subject%% -- *}"

@@ -24,7 +24,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $src = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$repo = Split-Path -Parent $src
+# The tree's root: the system folder's parent before the move, the system
+# folder itself after (layout.sh), where the binaries land either way.
+$parent = Split-Path -Parent $src
+$repo = if (Test-Path (Join-Path $parent 'src\nodecode.asd')) { $parent } else { $src }
 
 function Find-Sbcl {
   $onPath = Get-Command sbcl.exe -ErrorAction SilentlyContinue
