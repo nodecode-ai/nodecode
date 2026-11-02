@@ -7,7 +7,7 @@ release, the installers and the live QA. One folder per job:
 ci/       the CI entry points, one script per runner (ci.yml, release.yml)
 check/    what `just check` and CI measure: structural lint, the bloat
           ledger, the proofs gate, test slices, footprint, feed and exec
-          stress
+          stress, latency on the clock against a base (`just latency')
 build/    what turns a checkout into a binary: the cells pull and compile,
           the SBCL runtime and its patches, the launchers
 release/  packing and publishing, and their rehearsals: pack*, publish*,
