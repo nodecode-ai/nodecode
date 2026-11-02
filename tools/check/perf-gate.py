@@ -67,7 +67,7 @@ import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPO = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
+REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
 BENCH = os.path.join(HERE, "perf-bench.lisp")
 WORKLOADS = ["tui", "boot", "turns"]
 METRICS = ["instructions", "consed", "cpu", "wall"]
