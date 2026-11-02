@@ -9,6 +9,11 @@
 # release build runs beside the suite rather than before it:
 #
 #   lint     `just lint': every .lisp and .asd of the organism's own code.
+#   docs     docs-check.py: the pages nodecode.ai/docs renders from docs/ --
+#            the nav, frontmatter, links and anchors, pictures, and every
+#            source path a page names, so a code move that strands a page
+#            fails here and not on the site. Seconds, once the cells are
+#            pulled (the suite pulls them anyway).
 #   install  install-test.sh: the installer against fake releases in scratch
 #            homes -- the unit refresh, the pointer, the lock, a kept or
 #            broken lay-out, the glibc floor, what it refuses, and the older
@@ -69,6 +74,11 @@ step lint
 # shellcheck disable=SC2046
 just lint $(git ls-files -- nodecode.asd nodecode-perf.asd src test tools perf | grep -E '\.(lisp|asd)$' | LC_ALL=C sort)
 done_step lint
+
+step docs
+tools/build/pull-cells.sh
+python3 tools/check/docs-check.py
+done_step docs
 
 step install
 sh tools/install/install-test.sh
