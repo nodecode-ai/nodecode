@@ -1,7 +1,7 @@
 /-
 Retry ladder: how long one provider call can go without content, as
-src/src/engine/turn.lisp (the ladder in CALL-PROVIDER's round) and
-src/src/engine/provider.lisp (PROVIDER-RETRY-DELAY, the idle clock and the
+src/engine/turn.lisp (the ladder in CALL-PROVIDER's round) and
+src/engine/provider.lisp (PROVIDER-RETRY-DELAY, the idle clock and the
 content clock) bound it.
 
 1. Budget. A request-scope failure (no 200 head) spends the request budget R,

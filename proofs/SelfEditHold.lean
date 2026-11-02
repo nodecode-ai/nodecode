@@ -1,5 +1,5 @@
 /-
-Self-edit hold: what src/src/organism/provisional.lisp guarantees when an
+Self-edit hold: what src/organism/provisional.lisp guarantees when an
 eval redefines a function that is running on the stack it was dispatched
 from. Without it, a definition that cannot run is written to the layer
 before it runs, every later turn dies at the top of the loop, and the
@@ -27,7 +27,7 @@ restart that should heal the image loads the same cut again.
    wrote the other, broken, name with it.
 
 The decided traces and the shape table are the ones
-src/test/organism/provisional-test.lisp pins on the real functions.
+test/organism/provisional-test.lisp pins on the real functions.
 
 Checked by `just proofs` (Lean 4, core only).
 -/
