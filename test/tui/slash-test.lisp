@@ -1542,6 +1542,22 @@ last row runs /rows drop NAME."
       (ensure-directories-exist (merge-pathnames "nodecode-web/" folder))
       (is-carrying (text (nle::web-text '())) "has not loaded it" "restart" (:absent "/setup")))))
 
+(deftest web-print-answers-the-link-alone-and-opens-nothing
+    (with-temp-trees ((folder "web-print")))
+  ;; The desktop app asks `nodecode web --print' each time it looks for the
+  ;; organism: the link is the whole answer, and no browser tab opens.
+  (let ((opened '()))
+    (with-stubbed-fdefinitions ((nle::organism-port () 4321)
+                                (nle::gateway-configured-operator-token () "tok")
+                                (nlk:http (&rest request) (values "" 200))
+                                (nle::open-target (uri) (push uri opened) t))
+      (with-saved-globals ((nlk::*cells-directory* folder))
+        (is (equal '("http://127.0.0.1:4321/web/#t=tok" 0 :output)
+                   (multiple-value-list (nle::web-text '("--print")))))
+        (is (null opened) "--print opens nothing")
+        (is-carrying (text (nle::web-text '())) "http://127.0.0.1:4321/web/#t=tok" "opened in your browser")
+        (is (equal '("http://127.0.0.1:4321/web/#t=tok") opened) "a bare `web' still opens it")))))
+
 ;;; --- claim 11: /context rendering ------------------------------------------
 
 (defmacro is-context-report ((&rest arguments) &body checks)

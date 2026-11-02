@@ -355,7 +355,8 @@ Zig launcher gives the same thing."
                   :label "rollback N" :arguments "N"
                   :detail "Every folder goes back to what generation N recorded: the layer takes one commit whose tree is N's (its history kept, so forward is the same verb), a hub cell is cloned at N's pin, the binary and its shipped folders stay on the release that runs -- updates keep coming, forward, over the restored folder -- folders N had are installed and ones it never had are taken out where the installer put them; a plain folder whose content differs refuses the whole restore by name. With the organism running it converges and exits once no turn is in flight, and the next launch runs N; with none running, the next launch does. (rollback N) inside the shell does the same.")
    (nlk:make-verb "web" "open this home's organism in a browser tab"
-                  :detail "Prints the page's link and opens it where there is a display. The operator token rides after the link's #, which a browser never sends to a server: keep the link to yourself. Needs the organism running (nodecode, or nodecode gateway on) and the web cell: turn web on in /cells.")
+                  :arguments "[--print]"
+                  :detail "Prints the page's link and opens it where there is a display. The operator token rides after the link's #, which a browser never sends to a server: keep the link to yourself. Needs the organism running (nodecode, or nodecode gateway on) and the web cell: turn web on in /cells. --print prints the link alone and opens nothing: the line a program reads, the desktop app among them.")
    (nlk:make-verb "resume" "open the shell on that session" :arguments "SESSION-ID" :terminal t)
    (nlk:make-verb "rpc" "drive this home's organism from a program: JSON lines in and out"
                   :label "rpc [SESSION-ID]"
@@ -1282,7 +1283,8 @@ where there is a display. => (values ANSWER CODE STREAM)."
       (values (nlk:verb-help-text (nlk:find-verb "web" *launch-verbs*) :command "nodecode")
               0 :output)))
   (let ((port (organism-port))
-        (token (gateway-configured-operator-token)))
+        (token (gateway-configured-operator-token))
+        (print-only (member "--print" words :test #'string=)))
     (cond
       ((null port)
        (values "nodecode is not running for this home: start it with `nodecode' (or `nodecode gateway on' to keep it running), then run this again"
@@ -1299,6 +1301,11 @@ where there is a display. => (values ANSWER CODE STREAM)."
       ((null token) (values "this home has no operator token" 1 :error))
       (t
        (let ((link (format nil "http://127.0.0.1:~d/web/#t=~a" port token)))
-         (values (format nil "~a~%~:[no display here: open the link in a browser on this machine~;opened in your browser~]; it carries the operator token, so keep it to yourself"
-                         link (eq t (open-target link)))
-                 0 :output))))))
+         ;; --print: a program asked, which shows the page itself; on macOS
+         ;; and Windows a desktop is always there, so the opener would open a
+         ;; tab beside it every time it asked.
+         (if print-only
+             (values link 0 :output)
+             (values (format nil "~a~%~:[no display here: open the link in a browser on this machine~;opened in your browser~]; it carries the operator token, so keep it to yourself"
+                             link (eq t (open-target link)))
+                     0 :output)))))))
