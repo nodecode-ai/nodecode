@@ -1202,41 +1202,68 @@ is gone."
       (let ((count (sb-unix:unix-read (nlt:tty-fd) (sb-sys:vector-sap buffer) 16)))
         (setup-key-of (subseq buffer 0 (max 0 (or count 0))))))))
 
-(defun setup-pick-lines (title choices picked cursor &key (rows 20))
-  "The picker over CHOICES ((ID . LABEL) ...) as lines: TITLE, its keys,
-the row picking all, then the choices under the server each label names,
-the ids in PICKED ticked, the CURSOR row (0, the all row) pointed at, at
-most ROWS choices shown around it."
+(defun setup-pick-rows (choices picked cursor &key (rows 20))
+  "The checklist over CHOICES ((ID . LABEL) ...) as rows to draw, top down:
+(:ALL POINTED TICKED COUNT), (:HEAD SERVER), (:CHOICE POINTED TICKED NAME
+AFTER NESTED INDEX), (:MORE COUNT) -- the ids in PICKED ticked, the CURSOR
+row (0, the all row) pointed at, at most ROWS choices shown around it. A
+label's tail (`#general  Home') heads a group when two or more share it, a
+server's channels, them NESTED under it; a lone one rides AFTER its name."
   (let* ((count (length choices))
          (top (max 0 (min (- cursor (floor rows 2)) (- count rows))))
          (end (min count (+ top rows)))
-         (lines (list (format nil "  ↑↓ move · space pick · a all · Enter done · Esc keep it") title)))
-    (flet ((row (pointed ticked text &optional (indent 2))
-             (push (format nil "~a~:[  ~;› ~][~:[ ~;x~]] ~a"
-                           (make-string indent :initial-element #\Space) pointed ticked text)
-                   lines)))
-      (row (zerop cursor) (and choices (every (lambda (choice) (member (car choice) picked :test #'equal)) choices))
-           (format nil "all ~d" count))
-      (when (plusp top) (push (format nil "      … ~d more above" top) lines))
-      ;; A label's tail (`#general  Home') heads a group when two or more
-      ;; share it, a server's channels; a lone one rides after its name.
-      (loop with group = nil
-            with tails = (mapcar (lambda (choice)
-                                   (let ((cut (search "  " (cdr choice))))
-                                     (and cut (subseq (cdr choice) (+ cut 2)))))
-                                 choices)
-            for index from top below end
-            for (id . label) = (nth index choices)
-            for tail = (nth index tails)
-            for heading = (and tail (< 1 (count tail tails :test #'equal)))
-            do (when (and heading (not (equal tail group)))
-                 (setf group tail)
-                 (push (format nil "    ~a" tail) lines))
-               (row (= cursor (1+ index)) (member id picked :test #'equal)
-                    (format nil "~a~:[~@[  ~a~]~;~*~]" (gateway-setup-choice-name label) heading tail)
-                    (if heading 4 2)))
-      (when (< end count) (push (format nil "      … ~d more below" (- count end)) lines)))
-    (nreverse lines)))
+         (tails (mapcar (lambda (choice)
+                          (let ((cut (search "  " (cdr choice))))
+                            (and cut (subseq (cdr choice) (+ cut 2)))))
+                        choices))
+         (out (list (list :all (zerop cursor)
+                          (and choices (every (lambda (choice) (member (car choice) picked :test #'equal)) choices))
+                          count))))
+    (when (plusp top) (push (list :more top) out))
+    (loop with group = nil
+          for index from top below end
+          for (id . label) = (nth index choices)
+          for tail = (nth index tails)
+          for heading = (and tail (< 1 (count tail tails :test #'equal)))
+          do (when (and heading (not (equal tail group)))
+               (setf group tail)
+               (push (list :head tail) out))
+             (push (list :choice (= cursor (1+ index)) (and (member id picked :test #'equal) t)
+                         (gateway-setup-choice-name label) (and (not heading) tail) heading index)
+                   out))
+    (when (< end count) (push (list :more (- count end)) out))
+    (nreverse out)))
+
+(defun setup-pick-toggle (choices picked cursor)
+  "PICKED with the CURSOR row of the checklist over CHOICES flipped: the all
+row (0) ticks every one, or none when every one is ticked."
+  (if (zerop cursor)
+      (if (every (lambda (choice) (member (car choice) picked :test #'equal)) choices)
+          '()
+          (mapcar #'car choices))
+      (let ((id (car (nth (1- cursor) choices))))
+        (if (member id picked :test #'equal)
+            (remove id picked :test #'equal)
+            (cons id picked)))))
+
+(defun setup-pick-lines (title choices picked cursor &key (rows 20))
+  "The picker over CHOICES ((ID . LABEL) ...) as lines: TITLE, its keys,
+then SETUP-PICK-ROWS as the terminal walk draws them."
+  (list* title
+         "  ↑↓ move · space pick · a all · Enter done · Esc keep it"
+         (loop for (kind . row) in (setup-pick-rows choices picked cursor :rows rows)
+               collect (flet ((box (pointed ticked text indent)
+                                (format nil "~a~:[  ~;› ~][~:[ ~;x~]] ~a"
+                                        (make-string indent :initial-element #\Space) pointed ticked text)))
+                         (ecase kind
+                           (:all (destructuring-bind (pointed ticked count) row
+                                   (box pointed ticked (format nil "all ~d" count) 2)))
+                           (:head (format nil "    ~a" (first row)))
+                           (:more (format nil "      … ~d more" (first row)))
+                           (:choice (destructuring-bind (pointed ticked name after nested index) row
+                                      (declare (ignore index))
+                                      (box pointed ticked (format nil "~a~@[  ~a~]" name after)
+                                           (if nested 4 2)))))))))
 
 (defun setup-pick (screen title choices picked &key (read-key #'setup-read-key) (rows 20))
   "Let the operator pick any of CHOICES ((ID . LABEL) ...) on SCREEN's
@@ -1250,11 +1277,7 @@ as it would anywhere else."
              (setup-screen-rewind screen mark)
              (dolist (line (setup-pick-lines title choices picked cursor :rows rows))
                (write-line (setup-screen-fit screen line) screen))
-             (force-output screen))
-           (toggle-all ()
-             (setf picked (if (every (lambda (choice) (member (car choice) picked :test #'equal)) choices)
-                              '()
-                              (mapcar #'car choices)))))
+             (force-output screen)))
       (setup-screen-control screen "[?25l")
       (unwind-protect
            (loop
@@ -1262,13 +1285,8 @@ as it would anywhere else."
              (case (funcall read-key)
                (:up (setf cursor (max 0 (1- cursor))))
                (:down (setf cursor (min (length choices) (1+ cursor))))
-               (:all (toggle-all))
-               (:space (if (zerop cursor)
-                           (toggle-all)
-                           (let ((id (car (nth (1- cursor) choices))))
-                             (setf picked (if (member id picked :test #'equal)
-                                              (remove id picked :test #'equal)
-                                              (cons id picked))))))
+               (:all (setf picked (setup-pick-toggle choices picked 0)))
+               (:space (setf picked (setup-pick-toggle choices picked cursor)))
                (:enter (return (remove-if-not (lambda (id) (member id picked :test #'equal))
                                               (mapcar #'car choices))))
                (:escape (return :keep))
