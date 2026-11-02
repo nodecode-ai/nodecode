@@ -2839,7 +2839,41 @@ added, 0 replaced)'."
       (:disabled (error "the shared config is not writable in this process (no config path)"))
       (:failed (error "config-set ~{~a~^.~}: ~a" (config-path path) detail)))))
 
-(defun select-default-model (&key provider model endpoint &aux (next (or provider *provider*)))
+(defvar *default-target-shadowed* nil
+  "True where *PROVIDER*, *MODEL* and *REASONING-EFFORT* are bound to a turn's
+own target -- inside RUN, and in an eval that turn dispatched -- rather than
+read as this image's default.")
+
+(defun call-with-image-default-target (thunk &aux (specials '(*provider* *model* *reasoning-effort* *endpoint*)))
+  "THUNK's values, THUNK run on this image's own default target: where a turn's
+target shadows it (*DEFAULT-TARGET-SHADOWED*), the global values of *PROVIDER*,
+*MODEL*, *REASONING-EFFORT* and *ENDPOINT*, and what THUNK sets lands on them."
+  ;; A turn binds its session's target (RUN) and an eval carries it to its
+  ;; thread (BACKGROUND-CAPABLE-EVAL's ambient), so inside either these names
+  ;; read the target the turn runs on. A pick made there -- (select-model ...)
+  ;; or (slash "/models ...") from a form -- still means the image's default:
+  ;; read under the turn's binding it would compare against the session's
+  ;; lane, and set under it the move would end with the form. Only what THUNK
+  ;; changed is written back, so a pick made on another thread meanwhile is
+  ;; not undone; a THUNK that signals writes nothing, as a refused pick moves
+  ;; nothing. Anywhere else -- a gateway thread, a caller that bound these
+  ;; names itself to scope a pick -- THUNK runs on the bindings it was given.
+  (if (not *default-target-shadowed*)
+      (funcall thunk)
+      (let ((before (mapcar #'sb-ext:symbol-global-value specials)))
+        (progv (cons '*default-target-shadowed* specials) (cons nil before)
+          (multiple-value-prog1 (funcall thunk)
+            (loop for special in specials
+                  for old in before
+                  for new = (symbol-value special)
+                  unless (eq new old)
+                    do (setf (sb-ext:symbol-global-value special) new)))))))
+
+(defmacro with-image-default-target (&body body)
+  "Run BODY on this image's own default target (CALL-WITH-IMAGE-DEFAULT-TARGET)."
+  `(call-with-image-default-target (lambda () ,@body)))
+
+(defun select-default-model (&key provider model endpoint)
   "Make (PROVIDER MODEL) this image's default selection and the shared config's,
 in that order; ENDPOINT, when given, is the address it rides."
   ;; => (values PROVIDER MODEL OUTCOME DETAIL), the two effective ids
@@ -2861,19 +2895,21 @@ in that order; ENDPOINT, when given, is the address it rides."
   ;; ENDPOINT -- the gateway op's -- or the override the pick keeps is the
   ;; address, so only the lane is asked then. It is process-lifetime only:
   ;; the durable per-lane endpoint is providers.<id>.base_url.
-  (check-model-id next (or model *model*))
-  (if (or endpoint (and *endpoint* (equal next *provider*)))
-      (find-provider-lane next)
-      (provider-endpoint next))
-  (unless (equal next *provider*)
-    (setf *provider* next
-          ;; A lane switch invalidates an override that named the old
-          ;; lane's endpoint. Staying on the lane leaves the override alone.
-          *endpoint* nil))
-  (when endpoint (setf *endpoint* endpoint))
-  (when model (setf *model* model))
-  (multiple-value-call #'values *provider* *model*
-    (persist-shared-model-pin "default_model" *provider* *model*)))
+  (with-image-default-target
+    (let ((next (or provider *provider*)))
+      (check-model-id next (or model *model*))
+      (if (or endpoint (and *endpoint* (equal next *provider*)))
+          (find-provider-lane next)
+          (provider-endpoint next))
+      (unless (equal next *provider*)
+        (setf *provider* next
+              ;; A lane switch invalidates an override that named the old
+              ;; lane's endpoint. Staying on the lane leaves the override alone.
+              *endpoint* nil))
+      (when endpoint (setf *endpoint* endpoint))
+      (when model (setf *model* model))
+      (multiple-value-call #'values *provider* *model*
+        (persist-shared-model-pin "default_model" *provider* *model*)))))
 
 (defun select-default-effort (effort)
   "Make EFFORT — a rung, or NIL for the model's own reasoning — the effort
@@ -2885,9 +2921,10 @@ shared config's general.default_model.effort, in that order."
   ;; alone is a pin missing its provider, which the seed refuses. => (values
   ;; OUTCOME DETAIL), PERSIST-SHARED-CONFIG's answer, NIL with no pin to write
   ;; into.
-  (setf *reasoning-effort* effort)
-  (when (json-value (read-shared-config) :object "general" "default_model")
-    (persist-shared-config (list "general" "default_model" "effort") (or effort :remove))))
+  (with-image-default-target
+    (setf *reasoning-effort* effort)
+    (when (json-value (read-shared-config) :object "general" "default_model")
+      (persist-shared-config (list "general" "default_model" "effort") (or effort :remove)))))
 
 (defun present-text (value &aux (trimmed (and (stringp value) (nlk:trimmed value))))
   "VALUE trimmed, or NIL when it is no string or is blank after the trim: a
