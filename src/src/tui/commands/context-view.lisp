@@ -548,6 +548,11 @@ restarts, and the pick is the default new sessions start on."
                               (getf facts :pin-provider)
                               (or (getf facts :pin-model) "(lane default)")))))
           (let ((object (session-control-call model :post "model" :body (model-pick-body tokens))))
+            ;; The pick is this session's target now: a launch's held one
+            ;; would only be refused against it (a begun session keeps its
+            ;; own), so it goes.
+            (when (held-launch-target model)
+              (setf model.launch-target nil model.launch-refusal nil))
             ;; The accepted selection moved the session's target, so the
             ;; cached facts — identity, pin provenance and the effort resolved
             ;; against the old target — are all stale together.

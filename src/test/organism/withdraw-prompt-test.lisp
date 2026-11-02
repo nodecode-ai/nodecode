@@ -145,7 +145,7 @@ when given, its withdrawal and submissions recorded rather than sent."
                 (nle::send-steer-turn (ws session-id turn-id prompt &key command-id images)
                   (push prompt steers))
                 (nle::send-start-turn (ws session-id prompt &key command-id
-                                                        correlation-id images)
+                                                        correlation-id images target)
                   (push prompt steers)))
              ,@body))))))
 

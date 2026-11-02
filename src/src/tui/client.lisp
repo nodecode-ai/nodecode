@@ -33,6 +33,24 @@
      (pending-command-id :initform nil :accessor gateway-model-pending-command-id)
      (pending-correlation-id :initform nil :accessor gateway-model-pending-correlation-id)
      (pending-prompt :initform nil :accessor gateway-model-pending-prompt)
+     ;; The target a launch named (`nodecode --provider P --model M --effort
+     ;; E', #141): plist (:SESSION-ID :PROVIDER :MODEL :EFFORT), held until
+     ;; that session's first turn is admitted. Every create of the session
+     ;; carries it -- the re-create after an organism lost it standing by
+     ;; too -- and so does every start_turn until then, so an organism whose
+     ;; create reads no target still pins it at admission
+     ;; (HELD-LAUNCH-TARGET). A pick in the shell replaces it.
+     (launch-target :initform nil :accessor gateway-model-launch-target)
+     ;; The launch's first prompt (`-- PROMPT', `--prompt-file FILE'),
+     ;; plist (:SESSION-ID :COMPOSER): it waits in the composer, shown as
+     ;; typed, and goes through Enter's start leg once the session's
+     ;; replay is in place (SEND-LAUNCH-PROMPT). An edit makes it the
+     ;; operator's: it is then never sent by itself.
+     (launch-prompt :initform nil :accessor gateway-model-launch-prompt)
+     ;; The organism's refusal of the launch's target, (CODE . DETAIL), from
+     ;; the session's create; said once the shell is live, and nothing is
+     ;; sent by itself while it stands.
+     (launch-refusal :initform nil :accessor gateway-model-launch-refusal)
      (replay-pending-turn-id :initform nil :accessor gateway-model-replay-pending-turn-id)
      ;; The state a replay in flight folds into, out of sight, until its last
      ;; chunk puts it in place (SHOW-REPLAYED-STATE).
@@ -201,17 +219,27 @@ the first attach, and once the gateway or the socket hung it up."
             command.correlation-id)))
 
 (defun send-start-turn (ws session-id prompt &key command-id correlation-id
-                                                  images)
+                                                  images target)
   "Send start_turn, optionally reusing stable identifiers after reconnect."
   ;; IMAGES, when present, is a list of (MEDIA-TYPE . BASE64) staged
   ;; attachments; the codec (protocol.lisp) carries them as image items in the
-  ;; wire content array, after the prompt's text item.
+  ;; wire content array, after the prompt's text item. TARGET, a plist
+  ;; (:PROVIDER :MODEL :EFFORT), names what a session not yet begun runs on
+  ;; (the gateway's PIN-START-TURN-TARGET); a member it lacks is not sent.
   (send-gateway-command ws :start-turn
                         (json-object "session_id" session-id
                                      "prompt" prompt
                                      "generate_response" t
-                                     :opt "images" images)
+                                     :opt "images" images
+                                     (:getf target :opt "provider" "model" "effort"))
                         :command-id command-id :correlation-id correlation-id))
+
+(defun held-launch-target (model)
+  "The target the launch named, as a plist (:PROVIDER :MODEL :EFFORT), while
+MODEL's session is the one it launched on and that session's first turn is
+not yet admitted; else NIL."
+  (let ((held model.launch-target))
+    (and held (equal (getf held :session-id) model.session-id) held)))
 
 (defun send-cancel-turn (ws session-id turn-id &key retract)
   "Cancel exactly TURN-ID, never merely the session's current turn."
@@ -1119,6 +1147,19 @@ attached session's, the one this shell's stop acts on."
                          :error-p t))
            (t
             (note-turn-flight-settled model)
+            ;; A refused start_turn never became a turn, so the prompt comes
+            ;; home: back in the composer as typed (text, pastes, images)
+            ;; when the composer is empty, else in the recall ring Up reads,
+            ;; where every submit already put it. A launch prompt was never
+            ;; typed, so without this it would be gone.
+            (let ((stash model.retract-stash))
+              (when (and stash (string= command "start_turn")
+                         (equal (getf stash :command-id) (or command-id model.pending-command-id))
+                         (zerop (length (string-trim '(#\Space #\Tab #\Newline)
+                                                     (or (editor-value model.editor) "")))))
+                (replace-composer-text model (or (getf stash :text) ""))
+                (setf model.pastes (getf stash :pastes)
+                      model.pending-images (getf stash :images))))
             (clear-retract-stash model)
             ;; The prompt row Enter painted announced a turn that will
             ;; never exist: it goes, the notice says why.
@@ -1220,6 +1261,11 @@ turn.started fact (`turn_started_at_ms'), or NIL without one."
   ;; the id was unknown, send that retracting cancel now — WS ordering puts it
   ;; behind the admission, so it always addresses a real turn.
   (setf model.active-turn-id (and (stringp turn-id) turn-id))
+  ;; The session's first turn is admitted, and it pinned the launch's target:
+  ;; the session keeps it from here (PIN-START-TURN-TARGET), so it is no
+  ;; longer this shell's to carry.
+  (when (and (stringp turn-id) (held-launch-target model))
+    (setf model.launch-target nil))
   (let ((stash model.retract-stash))
     (when (and stash (stringp turn-id) (null (getf stash :turn-id))
                (equal (getf stash :command-id)
@@ -1325,7 +1371,96 @@ leaves the transcript, the flight settles, and the notice says why."
                           model.session-id
                           model.pending-prompt
                           :command-id pending
-                          :correlation-id model.pending-correlation-id))))))
+                          :correlation-id model.pending-correlation-id
+                          ;; The resend carries the target the first send
+                          ;; did: an organism that restarted under it holds
+                          ;; the session again unpinned.
+                          :target (held-launch-target model)))))))
+
+(defun start-composer-turn (model text)
+  "Enter's start leg: send TEXT, the composer's prompt, as this session's
+next turn (start_turn), its pastes expanded and its staged images riding,
+with the target a launch named while the session's first turn is not yet
+admitted (HELD-LAUNCH-TARGET). The prompt row paints at once; the stash keeps
+the composer as typed for a retraction or a refusal to hand back."
+  (let ((command-id (nlk:make-durable-id "command"))
+        (correlation-id (nlk:make-durable-id "correlation"))
+        ;; Collapsed [Paste #N] markers expand into the outgoing
+        ;; prompt; staged images ride the command. History keeps the
+        ;; readable marker form, so the stash reads them here, before
+        ;; the submit empties the composer.
+        (pastes model.pastes))
+    (send-composer-prompt
+     model text
+     (lambda (prompt images)
+       (setf model.turn-in-flight t
+             ;; A fresh submit restarts the live-bar clock and retires
+             ;; the previous turn's activity stamp.
+             model.turn-started-at (get-internal-real-time)
+             model.turn-activity nil
+             model.pending-command-id command-id
+             model.pending-correlation-id correlation-id
+             model.pending-prompt prompt
+             ;; The composer as typed, kept until the turn settles: a
+             ;; retraction hands it back whole (RESTORE-RETRACTED-COMPOSER).
+             model.retract-stash
+             (list :text text
+                   :pastes pastes
+                   :images images
+                   :command-id command-id
+                   :turn-id nil)
+             model.retract-requested nil
+             ;; The prompt shows the moment Enter lands, at the
+             ;; tail where its durable fact will rest: a live-only
+             ;; row keyed by this command id, which that fact
+             ;; hydrates in place (INGEST-MESSAGE-FACT). Painted
+             ;; before the send, so the frame after Enter never
+             ;; waits on the loopback round trip.
+             model.state
+             (ingest-submitted-prompt model.state prompt
+                                      :prompt-id command-id))
+       ;; A transport that refuses takes the row back before the
+       ;; refusal lands as the delivery-uncertain notice: a re-send
+       ;; after reconnect appends its own fact row. A frame the sync
+       ;; bound refuses never left: nothing is pending, nothing is
+       ;; in flight, and there is no stash to hand back later.
+       (handler-bind ((error (lambda (condition)
+                               (setf model.state
+                                     (drop-submitted-prompt model.state command-id))
+                               (when (typep condition 'nlk:frame-too-large)
+                                 (clear-pending-command model)
+                                 ;; The flight settles; any turn id armed stays.
+                                 (setf model.turn-in-flight nil model.turn-started-at nil
+                                       model.turn-activity nil)
+                                 (clear-retract-stash model)))))
+         (send-start-turn model.ws
+                          model.session-id prompt
+                          :command-id command-id
+                          :correlation-id correlation-id
+                          :images images
+                          :target (held-launch-target model)))))))
+
+(defun send-launch-prompt (model)
+  "The launch's first prompt, once MODEL's session stands replayed: sent
+through Enter's start leg as if typed (START-COMPOSER-TURN), carrying the
+launch's target. Spent the first time it is decided, sent or not."
+  ;; Not sent, and said: a target the organism refused (the prompt waits in
+  ;; the composer while a pick is made), and a turn already running on a
+  ;; session resumed with a prompt (Enter steers it, Tab queues behind it).
+  ;; Not sent, silently: a composer the operator edited -- the prompt is his
+  ;; now -- and a shell that moved to another session first.
+  (when-let (refusal (shiftf model.launch-refusal nil))
+    (show-status model (format nil "The launch's model was refused: ~a. Nothing ran: /models picks another~:[~;, and the prompt waits in the composer~]"
+                               (string-right-trim ". " (cdr refusal)) model.launch-prompt)
+                 :error-p t)
+    (setf model.launch-prompt nil))
+  (when-let (launch (shiftf model.launch-prompt nil))
+    (let ((text (getf launch :composer)))
+      (cond ((not (equal (getf launch :session-id) model.session-id)))
+            ((not (equal (editor-value model.editor) text)))
+            ((or model.turn-in-flight model.pending-command-id)
+             (show-status model "A turn is running: the prompt waits in the composer (Enter steers it, Tab queues it)"))
+            (t (start-composer-turn model text))))))
 
 (defun send-composer-prompt (model text send)
   "The one composer-submit ritual, shared by Tab's mid-turn queue submit and

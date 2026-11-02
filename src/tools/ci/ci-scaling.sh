@@ -6,7 +6,7 @@
 # Run from a checkout's root (the CI workflow runs it on the Linux runner once
 # the Linux job is green, so the box is not also running a suite of twelve
 # shards; any Linux box with sbcl, just and git does). It runs the gate `just
-# perf' runs -- src/perf/scaling.lisp -- on the SBCL and quicklisp the Linux
+# scaling' runs -- src/perf/scaling.lisp -- on the SBCL and quicklisp the Linux
 # job's release build keeps under NODECODE_BUILD_HOME, with the shipped cells
 # pulled into the checkout, as the suite runs.
 #

@@ -114,13 +114,13 @@ proofs:
 # src/perf/scaling.lisp: flat for what a person does inside a conversation,
 # linear for what reads all of it. Slopes are ratios inside one process, so a
 # slower or busier box does not move them and no second build is needed; a
-# breach must reproduce once before it fails. BASE is accepted for a gate
-# that compares two revisions; the growth contracts need none.
+# breach must reproduce once before it fails. Exits 1 on a breach, 2 when the
+# gate cannot load. `just perf' runs it after its comparison with a base.
 # Hold every hot path's growth to its contract.
-perf *base:
+scaling:
     @set -euo pipefail; cd src && {{sbcl}} \
         --eval '(push (truename ".") asdf:*central-registry*)' \
-        --eval '(asdf:load-system :nodecode-perf)' \
+        --eval '(handler-case (asdf:load-system :nodecode-perf) (error (e) (format *error-output* "scaling: cannot load the gate: ~a~%" e) (sb-ext:exit :code 2 :abort t)))' \
         --eval '(sb-ext:exit :code (min 1 (nodecode.perf.scaling:run-scaling)))'
 
 # The heap set here is the binary's for good:
@@ -181,6 +181,18 @@ footprint_ceilings := "--max-boot-mb 95 --max-turn-mb 105 --max-growth-mb 15 --m
 # Hold the shell to the memory ceilings (~3 min, Linux).
 footprint:
     @python3 src/tools/check/footprint.py ./nodecode --turns 40 {{footprint_ceilings}}
+
+# Fail when this checkout costs more than BASE where a person waits: the TUI's
+# keys and paging, the gateway's start, streamed turns (src/tools/check/), or
+# when a hot path's cost grows faster than its contract (`just scaling').
+# Exits 1 when either finds a regression, else 2 or more when one cannot
+# measure, else 0.
+# Measure this checkout against BASE, and every hot path's growth.
+perf base="origin/main":
+    @a=0; python3 src/tools/check/perf-gate.py {{base}} || a=$?; \
+      s=0; {{just_executable()}} --justfile {{justfile()}} scaling || s=$?; \
+      if [ "$a" = 1 ] || [ "$s" = 1 ]; then exit 1; fi; \
+      exit $(( a > s ? a : s ))
 
 # The gateway must leave a release feed that goes silent without closing,
 # and act on the next label.
