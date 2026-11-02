@@ -3378,7 +3378,11 @@ a lane. RELATION beside them is how the row hangs under its parent — an
 `inherited' fork or a `detached' node (SESSION-RELATION) — absent on a
 session that began on its own. SOURCE is the source kind of the request that
 began the session (NLK:SESSION-SOURCE-KIND), null before its first turn.
-PROMPT is the first prompt's line that says something, null before one."
+PROMPT is the first prompt's line that says something, null before one.
+PROVIDER and MODEL are what its newest provider request named, LAST_ANSWER
+its newest answer's first line that says something, each null before one;
+BRANCH is the branch its folder's checkout has out (FOLDER-BRANCH, which
+the PR lookup reads too), null on a detached HEAD or outside a checkout."
   (make-json-object
    "id" (getf entry :id)
    "relation" (session-relation (getf entry :parent) (getf entry :anchor-turn-id))
@@ -3395,7 +3399,11 @@ PROMPT is the first prompt's line that says something, null before one."
    "lanes" (map 'vector (lambda (open) (and open t)) (getf entry :lanes))
    "fork" (and (getf entry :fork) t)
    "waits" (session-waits-json entry)
-   "pr" (session-pull-request-json (getf entry :working-directory))))
+   "pr" (session-pull-request-json (getf entry :working-directory))
+   "provider" (or (getf entry :provider) :null)
+   "model" (or (getf entry :model) :null)
+   "last_answer" (or (getf entry :answer) :null)
+   "branch" (or (folder-branch (getf entry :working-directory)) :null)))
 
 (defun session-waits-json (entry &aux (waits (getf entry :waits)))
   "What the session of directory ENTRY waits on the person it answers for:
