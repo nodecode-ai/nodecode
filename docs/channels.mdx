@@ -1,0 +1,85 @@
+---
+title: Channels
+summary: "Put Nodecode in Discord, Telegram or Slack: one command from the bot's token to a connected bot, who it answers, and where to change it."
+---
+
+```sh
+nodecode gateway setup discord    # or telegram, slack
+```
+
+The command lists the steps to take on the platform's side, takes the bot's token, asks who the bot should answer, and starts the bot. The bot runs inside Nodecode, so if Nodecode is not running, the command offers to turn the gateway on first.
+
+## On Discord's side
+
+<Stages>
+<Stage name="App">
+Go to discord.com/developers/applications and click New Application.
+
+<Window name="channels-new-app" />
+</Stage>
+<Stage name="Token">
+On the Bot page, click Reset Token, then Copy.
+
+<Window name="channels-token" />
+</Stage>
+<Stage name="Intent">
+Turn on Message Content Intent and save. If it stays off, the bot sees only the messages that mention it.
+
+<Window name="channels-intent" />
+</Stage>
+<Stage name="Invite">
+Under OAuth2 > URL Generator, tick the scopes `bot` and `applications.commands`, then the permissions View Channels, Send Messages, Read Message History, Add Reactions and Attach Files.
+
+<Window name="channels-scopes" />
+
+Open the URL it generates and pick your server.
+
+<Window name="channels-add-to-server" />
+</Stage>
+</Stages>
+
+{/* source: src/tui/channel-setup.lisp */}
+## In the terminal
+
+<Transcript name="setup-discord" />
+
+Nodecode does not echo the token as you paste it. It keeps the token in a private file, never in the config, and checks it right away. You pick channels by number from the ones the bot can see. The bot will not start until you allow at least one channel, user or role.
+
+<Mistakes>
+<Mistake>
+<What>A wrong or reset token</What>
+<Why>`token: unauthorized (401): the token is wrong or revoked; reset it on the Bot page of the developer portal and save the new one`</Why>
+<Instead>Reset the token and run the same command again. It picks up from what it already saved.</Instead>
+</Mistake>
+</Mistakes>
+
+## In Discord
+
+Mention the bot in one of the channels you picked. It replies in a thread.
+
+<Window name="channels-answer" />
+
+{/* source: cells/channels/kit/status.lisp */}
+## Who it answers
+
+The bot answers only the channels, users and roles you picked, and in a channel only when someone mentions it. If a stranger messages it directly, it replies with a pairing code, and `/channels pair CODE` lets that person in. See [Safety and trust](/security).
+
+## Change it later
+
+| Where | How |
+| --- | --- |
+| Terminal | Run `nodecode gateway setup discord` again |
+| Shell | `/settings` > Channels, for Discord and Telegram |
+| Web page | `nodecode web` > Control > Channels |
+| A session | Say `set up discord` |
+
+`/channels` shows the state of each channel. `/channels paired` lists the people you let in, and `/channels unpair USER-ID` removes one.
+
+## More channels
+
+Matrix, email, WhatsApp, iMessage and X channels are cells on the hub (<CellsTab />). Add one first, then set it up with the same command:
+
+```sh
+nodecode add nc://channel-matrix
+nodecode gateway setup matrix
+```

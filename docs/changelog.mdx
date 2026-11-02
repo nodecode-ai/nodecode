@@ -1,0 +1,74 @@
+---
+title: Changelog
+summary: "The release each platform runs on the stable channel, how to see your own build, and what changed."
+---
+
+{/* source: src/tools/publish.sh */}
+## Stable today
+
+| Platform | Pointer | Release | Published |
+| --- | --- | --- | --- |
+| Linux x86_64 | `stable-x86_64-linux` | `9608b582e` | 2026-10-22 |
+| Windows x86_64 | `stable-x86_64-windows` | `9608b582e` | 2026-10-22 |
+| macOS Apple Silicon | `stable-arm64-darwin` | `9608b582e` | 2026-10-22 |
+
+A release label is the commit it was built from. The installer and the updater read the same pointer, at `https://nodecode.ai/dl/`. All three platforms run the same release.
+
+{/* source: nodecode.asd */}
+## Your build
+
+```sh
+nodecode --version
+```
+
+```output
+nodecode 0.0.1+9608b582e
+```
+
+The release label follows the `+`. An installed build moves to a new release by itself. `nodecode update` moves it now. See [Updates](/updates).
+
+{/* source: src/tools/publish.sh */}
+## 9608b582e
+
+Linux, macOS and Windows, 2026-10-22. Changes since `5d5868b3f`, across the releases `16fe8d3ea`, `0a3bd0b25`, `e9e976491`, `3eefcdb3a`, `ce5d03395`, `2af1ec8b5`, `6903f0459` and `797e402c9`. macOS gets every change since `dc14c36f5` with it, add-ons becoming cells among them.
+
+- `nodecode login` signs this machine in to your nodecode.ai account in a browser, for a subscription or API credits. `/login` does the same in the shell. The footer shows the account's meter, and `/usage` leads with it. `nodecode machine link` links a machine with a code from its Machines page.
+- Installs come from `https://nodecode.ai/dl`. Linux runs on glibc 2.34 and newer again: Ubuntu 22.04, Debian 12. Installing a release already laid out downloads nothing. Two installs into one home take turns.
+- Windows: the download shows its progress, and `nodecode` runs in the window it was installed from. Only the release in use and the one before it are kept.
+- Setup says what it finds in its own dialog, never the chat, and ends on a last page: `Start`, or `Change provider or key` and `Start anyway` over a caveat, and `Details` when an import ran. A caveat skipped stays in the footer as `1 setup issue`.
+- `/models` has a fourth tab, Backup: the models a failing turn moves on to, in order, with `Test backups` and the triggers. `/models backups` opens it. A model that is slow to send its first token is left for its backup after `failover.first_token_seconds`, 60 unless set. A chain that runs out names every model it tried, each with what its provider said.
+- `/import OWNER/REPO` takes a repository's skills and MCP servers, pinned at a commit. `/import --sources` lists them and `/import --remove LABEL` takes one out. Claude Code's subagent transcripts no longer import as conversations.
+- Updates only move forward, and only between turns. A rollback puts back your own side and holds nothing; `nodecode update VERSION` holds a home at a release until a bare `nodecode update`.
+- The web page's Control is now Settings. The footer's Gateway link opens the page on Sessions, and a session's row says what it waits on you for.
+- Every menu's buttons answer the mouse. The home screen shows the mark, the version and a tip.
+- The model can split an ask into up to four forks of its session that run at once.
+- Slack ships beside Discord and Telegram. The goal cell ships: `/goal CONDITION` keeps a session taking turns until a check passes, a command that exits 0 or a judge that says it is met. The cyber-security cell ships: the latest breaches with the fix for each, and a check of a server or website.
+- In a chat room, `/generations` answers with one card instead of its whole listing.
+
+{/* source: src/tools/publish.sh */}
+## 5d5868b3f
+
+Linux and Windows, 2026-10-16. Changes since `8490b4803`.
+
+- The background gateway is on by default. The first boot of `~/.nodecode/` or a named profile runs it as a user service, up at every login. `/settings` > System > Gateway, or `nodecode gateway off`, turns it off.
+- `nodecode generations` lists the sealed generations. `nodecode rollback N` and `/generations` restore one. `--pristine` runs generation 0: the binary alone, no folder loaded.
+- `nodecode rpc` drives this home's organism from a program: JSON lines in and out. `nodecode login` links this machine to your nodecode.ai account.
+- `/settings` puts every setting on one sheet. Typing searches every setting. Latest changes lists what the release changed.
+- `/status` is a read-only overview of the serving organism.
+- `/models` shows or changes the main and auxiliary models, on two tabs, and connects a new provider. `/model-aux` and `/connect` are gone.
+
+{/* source: src/tools/publish.sh */}
+## 8490b4803
+
+Linux and Windows, 2026-10-06. Changes since `dc14c36f5`.
+
+- Add-ons are now cells. `~/.nodecode/addons/` is `~/.nodecode/cells/`, and `/addons` is `/cells`. This build does not read an `addons/` folder an earlier release left.
+- The shell starts the organism as its own `nodecode serve` process. Keys, the screen and Esc stay quick while an eval keeps it busy, and Esc says `stopping…` at once.
+- A relaunch after a quit, or after `pkill nodecode`, connects in under a second.
+- A `/think` pick is the effort every new session starts at, as a `/models` pick is its model. A session's own pick outranks it.
+- On the `openai-responses` dialect, every reasoning item of an answer is kept and sent back in order, not only the last.
+- A boot hands the layer files it could not load to the model, in a session named `layer`. An update removes installed cells the new build no longer ships.
+- Windows: `nodecode` runs in an elevated shell after an update.
+- Telegram: answers render as Markdown. A turn's card is a rich message, its steps a checklist, with Stop and Details inside it.
+
+Earlier releases are not listed.

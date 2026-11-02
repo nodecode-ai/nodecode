@@ -1,0 +1,70 @@
+---
+title: Safety and trust
+summary: "What protects the machine, and what Nodecode does not protect."
+---
+
+Nodecode has no sandbox. Read the limits before you connect a channel or run unattended.
+
+{/* source: src/gateway/gateway.lisp */}
+## Protections
+
+| Protection | What it does |
+| --- | --- |
+| Loopback gateway | The gateway, the local server shells attach to, listens on `127.0.0.1`. |
+| Host check | A request whose `Host` is not `127.0.0.1` or `localhost` gets 403. |
+| Origin check | A socket opened by a page of another origin gets 403. |
+| Operator token | Every `/api/gateway/` route needs `Authorization: Bearer TOKEN`. `/healthz` needs none. |
+| Cell routes | A route a cell serves on the gateway's port needs the same token, unless the cell marks it public: a browser page, a webhook, a sign-in callback. A public route is responsible for its own checks. |
+| File modes | Secrets are readable by you alone. See the table below. |
+| Kernel lock | The kernel, the locked core, refuses redefinition of its names. |
+| Secret redaction | `config-get` shows a secret as `[set]`. `config-set` refuses to write `[set]` back. |
+| Channel allowlists | A Discord, Slack or Telegram bot refuses to start without an allowlist. |
+| Channel tokens | A bot token is named by a `*_env` or `*_file` key. Inline tokens are not read. |
+
+| Token source | Order |
+| --- | --- |
+| `NODECODE_GATEWAY_OPERATOR_TOKEN`, then `NODECODE_OPERATOR_TOKEN` | 1 |
+| `~/.nodecode/operator-token`: 32 random bytes as hex, made on first boot | 2 |
+| `gateway.operator_token` in the config | 3 |
+
+`nodecode web` prints a link that carries the token after `#`. A browser never sends that part to a server. Keep the link to yourself.
+
+| Path | Mode |
+| --- | --- |
+| `~/.nodecode/` | 0700, set when the store opens |
+| `operator-token`, `auth.json`, files in `secrets/`, `link/state.json` | 0600 |
+| `backups/` | 0700. Each archive: 0600. |
+| `config.jsonc` | No mode is forced. A write keeps the mode the file has. |
+
+<Note head="Redaction is a courtesy">Redaction keeps secrets out of the transcript. Eval can still read `auth.json` and `secrets/` directly.</Note>
+
+The model can lower the kernel lock itself with `lower-floor`. The store records who asked and why.
+
+{/* source: src/session/snapshot.lisp */}
+## Not protected
+
+| Fact | Consequence |
+| --- | --- |
+| Eval has full host authority. | The model can read, write and run anything your user can. |
+| A new process isolates a crash only. | It does not stop file or network damage. |
+| Cell folders are full-authority code. | A folder under `~/.nodecode/cells/` loads in every Nodecode process. Nothing asks first. |
+| The guard is not a sandbox. | It refuses known spellings. Any other spelling runs. |
+| Built-in guard rules are gated. | A file edit that mentions `rm -rf` is not refused. |
+| Channel messages run with full host authority. | Anyone on an allowlist can drive eval on this machine. |
+| Writes outside the session's folder are not snapshotted. | `/undo` cannot restore them. |
+
+For unattended work, supply containment outside Nodecode: a container or a host policy.
+
+{/* source: cells/channels/kit/config.lisp */}
+## Safe baseline
+
+1. Run Nodecode on a machine you trust. Leave the gateway on loopback.
+2. Turn the background gateway off until you mean to run unattended: `/settings` > System > Gateway, or `nodecode gateway off`. It is on from the first boot of `~/.nodecode/` or a named profile. Sessions, schedules and bots then go on with no shell open, and it comes back at every login.
+3. Keep the `nodecode web` link and the `operator-token` file private.
+4. Give every channel an allowlist of users, channels or chats.
+5. Keep `require_mention` on in channels.
+6. Name channel tokens with `*_env` or `*_file`.
+7. Install the guard cell. Read its refusals before you work around them.
+8. Install cells only from sources you trust. Read the code first.
+9. Use `nodecode --ephemeral` for trials. It isolates the store only.
+10. Run inside a container before you let Nodecode change things unattended.
