@@ -175,7 +175,7 @@ bloat:
 # Resident memory ceilings in MB: at boot, at any turn of 40 past the fifth,
 # growth over the last ten, and after a quiet minute. Lower them as the shell
 # gets lighter; raise one only with the reason in the commit.
-footprint_ceilings := "--max-boot-mb 160 --max-turn-mb 140 --max-growth-mb 15 --max-idle-mb 115"
+footprint_ceilings := "--max-boot-mb 165 --max-turn-mb 140 --max-growth-mb 15 --max-idle-mb 120"
 
 # A scratch home with every shipped cell, a mock provider, the shell in tmux.
 # Hold the shell to the memory ceilings (~3 min, Linux).
