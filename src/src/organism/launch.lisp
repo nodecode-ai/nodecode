@@ -770,6 +770,22 @@ own, for as long as this process lives. Idempotent per process."
                                          (min *launch-image-idle-period* (* 2 period))
                                          *launch-image-period*)))))))))
 
+;;; A warm launch image runs from the cache, so the kernel's list of what runs
+;;; names the cache file, never the release this image descends from: the
+;;; folder whose executable every child it spawns runs (ORGANISM-COMMAND).
+;;; The installer removes every older release nothing runs from or holds open
+;;; (install.sh, prune_releases); held open here, the origin's release is on
+;;; that list for as long as this image runs.
+(defvar *origin-hold* nil
+  "A stream open on the origin executable while this warm image runs, or NIL.")
+
+(defun hold-origin ()
+  "Open this warm image's origin executable for the rest of its life, so its
+release reads as in use. => the stream, or NIL when it will not open."
+  (or *origin-hold*
+      (setf *origin-hold*
+            (ignore-errors (open (origin-pathname) :element-type '(unsigned-byte 8))))))
+
 (defun boot-cells (&key spawn hand-over receipt)
   "Load the folder — through the warm-image cache when a published image
 matches its current key — and answer the records. Under RECEIPT (a serve)
@@ -807,6 +823,7 @@ if this one dies before it serves."
      *cells*)
     (*image-folder-key*
      (nlk:note-boot-phase "warm-image")
+     (hold-origin)
      ;; The launcher that exec'd this image wrote its receipt under THIS key:
      ;; the walk this process would repeat already ran, in this pid, and
      ;; answered the key of the folder on disk — so the folder is current by

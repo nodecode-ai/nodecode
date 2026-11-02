@@ -224,3 +224,44 @@ for label in .. . ../up a/b; do
   grep -q 'downloading' "$root/output-vouch-label" && vfail "the label $label reached the download"
 done
 printf '%s\n' 'install-test: no sha256 sidecar, a plain http host or a label like .. is refused before anything is laid out'
+
+# --- older releases are removed ----------------------------------------------
+# Every update laid its release out beside the last one and none was ever
+# removed: a home that followed the channel held 84 of them, 7.6 GB. A link
+# keeps the release it names, the one `current' named before, one laid out
+# within the hour and any a process runs from or holds open (a warm launch
+# image holds its origin's executable); every other release folder goes, with
+# the lay-outs and removals an install that died left behind. A folder that is
+# no release label is never touched.
+prune="$root/install-prune"; mkdir -p "$prune"
+laid() { # LABEL: a release folder that answers, laid out long ago
+  mkdir -p "$prune/$1/src"
+  printf '%s\n' '#!/bin/sh' 'case "${1:-}" in' '  --help) printf "%s\\n" "usage: nodecode" ;;' '  *) exit 1 ;;' 'esac' > "$prune/$1/nodecode"
+  chmod +x "$prune/$1/nodecode"
+  touch -t 202001010000 "$prune/$1"
+}
+for label in 1111111 2222222 3333333 4444444 5555555 6666666 7777777 8888888 notes; do laid "$label"; done
+ln -sfn 2222222 "$prune/current"                  # 2222222 is the way back
+cp "$(command -v sleep)" "$prune/3333333/nodecode"  # 3333333 runs a process
+"$prune/3333333/nodecode" 30 & runs=$!
+sh -c 'exec 9< "$1"; exec sleep 30' sh "$prune/4444444/nodecode" & holds=$!  # 4444444 is held open
+touch "$prune/5555555"                             # 5555555 was laid out just now
+mkdir "$prune/abcdef0.new" "$prune/abcdef1.prune-42" # what a dead install left
+sleep 0.2
+pfail() { printf 'install-test: %s\n' "$1" >&2; cat "$root/output-prune" >&2; kill "$runs" "$holds" 2>/dev/null; exit 1; }
+PATH="$fake_bin:$PATH" HOME="$bare" NODECODE_HOME="$prune" NODECODE_STAGE=link NODECODE_VERSION=7777777 \
+  sh "$(dirname "$0")/install.sh" --no-modify-path > "$root/output-prune" 2>&1 || pfail 'the link that prunes failed'
+kill "$runs" "$holds" 2>/dev/null || true
+[ "$(readlink "$prune/current")" = 7777777 ] || pfail 'current does not name the release linked'
+for label in 7777777 2222222 3333333 4444444 5555555 notes; do
+  [ -x "$prune/$label/nodecode" ] || pfail "$label was removed"
+done
+for label in 1111111 6666666 8888888 abcdef0.new abcdef1.prune-42; do
+  [ ! -e "$prune/$label" ] || pfail "$label was kept"
+done
+set -- "$prune"/*.prune-*; [ ! -e "$1" ] || pfail "a removal was left aside: $1"
+grep -q 'removed 5 older release folder(s); kept 7777777 and 2222222' "$root/output-prune" || pfail 'the removal was not said'
+grep -q 'kept 3333333: something runs from it' "$root/output-prune" || pfail 'the running release was not said'
+grep -q 'kept 4444444: something runs from it' "$root/output-prune" || pfail 'the held release was not said'
+[ ! -e "$prune/.install-lock" ] || pfail 'the install lock was left behind'
+printf '%s\n' 'install-test: a link removes older releases but the way back, a fresh one and any in use'
