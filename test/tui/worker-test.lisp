@@ -2,18 +2,31 @@
 ;;;; SPDX-License-Identifier: MIT
 (in-package #:nodecode.test)
 
+(defun worker-guard-quicklisp-setup ()
+  "The setup.lisp of the quicklisp this image loaded its dependencies from, or NIL."
+  (let* ((ql (find-package "QL"))
+         (home (and ql (find-symbol "*QUICKLISP-HOME*" ql))))
+    (when (and home (boundp home))
+      (probe-file (merge-pathnames "setup.lisp" (symbol-value home))))))
+
 (defun worker-guard-child (body &key (guard t))
-  "BODY in a disposable, debugger-disabled SBCL; never fail the test image."
-  (let ((path (merge-pathnames "probe.lisp" (temp-path "worker-guard"))))
+  "BODY in a disposable, debugger-disabled SBCL; never fail the test image.
+The child loads the dependencies from the quicklisp this image used, never
+the account's ~/.sbclrc: another quicklisp there has no compiled copy in the
+cache, and compiling every dependency runs the child past its bound."
+  (let ((path (merge-pathnames "probe.lisp" (temp-path "worker-guard")))
+        (setup (worker-guard-quicklisp-setup)))
     (nlk:with-cleanup ((when (probe-file path) (delete-file path)))
       (ensure-directories-exist path)
       (with-open-file (out path :direction :output :if-exists :supersede)
+        (when setup (format out "(load ~s)~%" (namestring setup)))
         (format out "(require :asdf)~%(push ~s asdf:*central-registry*)~%(asdf:load-system :nodecode)~%"
                 (namestring (asdf:system-source-directory :nodecode)))
         (when guard (write-line "(nle::install-worker-error-guard)" out))
         (write-line body out))
-      (nlk:run-bounded (list (namestring sb-ext:*runtime-pathname*)
-                             "--noinform" "--non-interactive" "--load" (namestring path))
+      (nlk:run-bounded `(,(namestring sb-ext:*runtime-pathname*) "--noinform"
+                         ,@(when setup '("--no-userinit"))
+                         "--non-interactive" "--load" ,(namestring path))
                        :seconds 30))))
 
 (defmacro deftest-worker (name source &body checks)
