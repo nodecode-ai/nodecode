@@ -4749,6 +4749,118 @@ and the DELIVERY its handler declares."
     ("one first prompt" (launch-refusal "--prompt-file" "/x" "--" "hi"))
     ("cannot be read" (launch-refusal "--prompt-file" "/nonexistent/p.md"))))
 
+(deftest a-launch-carries-its-files-pi-s-way ()
+  ;; @FILE, pi's form (cli/file-processor.ts): blocks named by the absolute
+  ;; path, in order, ahead of the prompt; an image rides beside its block.
+  (with-temp-directory (dir "launch-files")
+    (flet ((file (name contents)
+             (let ((path (merge-pathnames name dir)))
+               (with-open-file (out path :direction :output :element-type '(unsigned-byte 8) :if-exists :supersede)
+                 (write-sequence (coerce contents '(vector (unsigned-byte 8))) out))
+               (uiop:native-namestring path)))
+           (octets (text) (coerce (sb-ext:string-to-octets text :external-format :utf-8) 'list)))
+      (let ((notes (file "notes.md" (append '(#xEF #xBB #xBF) (octets (format nil "é line~%~%")))))
+            (empty (file "empty.txt" '()))
+            (png (file "shot.png" '(#x89 #x50 #x4E #x47 #x0D #x0A #x1A #x0A 0 0 0 13)))
+            (binary (file "blob.bin" '(1 2 0 255 254)))
+            (folder (uiop:native-namestring dir)))
+        (let ((asked (launch-asks (concatenate 'string "@" notes) (concatenate 'string "@" empty)
+                                  (concatenate 'string "@" png) "--" "what" "is" "this"))
+              (want (list :prompt (format nil "<file name=\"~a\">~%é line~%</file>~%<file name=\"~a\">[Image #1]</file>~%~%what is this"
+                                          notes png)
+                          :images (list (cons "image/png" (cl-base64:usb8-array-to-base64-string
+                                                           (coerce '(#x89 #x50 #x4E #x47 #x0D #x0A #x1A #x0A 0 0 0 13)
+                                                                   '(vector (unsigned-byte 8)))))))))
+          ;; The byte order mark and the trailing newlines go; the empty file adds nothing.
+          (is (equal want asked)))
+        (is (equal (list :model "m" :prompt (format nil "<file name=\"~a\">~%é line~%</file>" notes))
+                   (launch-asks "--model" "m" (concatenate 'string "@" notes))) "files alone are the prompt")
+        (is (equal '(:prompt "mail @bob") (launch-asks "--" "mail" "@bob")) "after -- an @ is the prompt's")
+        (let ((joined (launch-asks (concatenate 'string "@" notes) "--prompt-file"
+                                   (file "p.txt" (octets (format nil "x~%"))))))
+          (is (equal (list :prompt (format nil "<file name=\"~a\">~%é line~%</file>~%~%x" notes)) joined) "with --prompt-file"))
+        (let ((nle::*image-max-bytes* 8))
+          (is (search "MB image; one rides at most" (launch-refusal (concatenate 'string "@" png)))))
+        (is-table (in in2) (search in in2)
+          ("needs a FILE right after it" (launch-refusal "@"))
+          ("there is no file" (launch-refusal (concatenate 'string "@" folder "nope.md")))
+          ("is a folder" (launch-refusal (concatenate 'string "@" folder)))
+          ("neither UTF-8 text nor an image" (launch-refusal (concatenate 'string "@" binary)))
+          ("is the shell's" (launch-refusal "serve" (concatenate 'string "@" notes))))
+        (let ((read (with-open-file (in notes :element-type '(unsigned-byte 8)) (nle::launch-octets in 4))))
+          (is (eq :too-large read) "a file past the bound is never read whole"))
+        ;; A turn's own measure (START-TURN's INPUT-TOO-LARGE), said before boot.
+        (let ((nle::*max-input-characters* 30)
+              (words "a prompt longer than thirty characters"))
+          (is (search (format nil "comes to ~d characters (the prompt ~:*~d); a turn takes at most 30" (length words))
+                      (launch-refusal "--" words)))
+          (is (search (format nil "(@~a 6, the prompt 2)" notes)
+                      (launch-refusal (concatenate 'string "@" notes) "--" "go"))))
+        #-win32
+        (progn
+          (is (search "is not a plain file" (launch-refusal "@/dev/null")))
+          (is (search "the launch's own stdio" (launch-refusal "@/dev/fd/0")))
+          ;; <(git diff): a pipe named /dev/fd/N, drained, then kept on N as
+          ;; stdin is, so an image this process execs into reads it again.
+          (multiple-value-bind (in out) (sb-posix:pipe)
+            (unwind-protect
+                 (let ((word (format nil "@/dev/fd/~d" in))
+                       (want (list :prompt (format nil "<file name=\"/dev/fd/~d\">~%+x~%</file>" in))))
+                   (sb-unix:unix-write out (sb-ext:string-to-octets (format nil "+x~%")) 0 3)
+                   (sb-posix:close out)
+                   (setf out nil)
+                   (is (equal want (launch-asks word)) "read to its end")
+                   (is (equal want (launch-asks word)) "and again, whole"))
+              (sb-posix:close in)
+              (when out (sb-posix:close out)))))))))
+
+#-win32
+(deftest piped-text-leads-the-launch-and-survives-an-exec ()
+  ;; `git diff | nodecode -- review': the pipe is read once, kept on stdin as
+  ;; a file every successor image reads from its start, and forgotten by a
+  ;; profile switch.
+  (multiple-value-bind (in out) (sb-posix:pipe)
+    (unwind-protect
+         (let ((text (format nil "diff --git a b~%+x~%~%")))
+           (sb-unix:unix-write out (sb-ext:string-to-octets text) 0 (length text))
+           (sb-posix:close out)
+           (setf out nil)
+           (is (eq :pipe (nlk::stdin-kind in)))
+           (is (equal text (sb-ext:octets-to-string (nlk::piped-input-octets 1000 in))) "read to its end")
+           (is (eq :file (nlk::stdin-kind in)) "then kept on the descriptor as a file")
+           (let ((again (sb-ext:octets-to-string (nlk::piped-input-octets 1000 in))))
+             (is (equal text again) "which the next image reads again, whole"))
+           (is (eq :too-large (nlk::piped-input-octets 4 in)) "past the bound it is refused")
+           (nlk::forget-piped-input in)
+           (is (null (nlk::stdin-kind in)) "a switch leaves /dev/null in its place")
+           (is (null (nlk::piped-input-octets 1000 in)) "where nothing is read"))
+      (sb-posix:close in)
+      (when out (sb-posix:close out))))
+  ;; Stdin's text leads, ahead of the files and the prompt, a blank line
+  ;; between: pi glues them (`hello' `summarize' -> `hellosummarize').
+  (flet ((piped (text launch)
+           (with-stubbed-fdefinitions
+               ((nlk::piped-input-octets (limit &optional fd)
+                  (and text (sb-ext:string-to-octets text :external-format :utf-8))))
+             (nle::piped-launch launch))))
+    (is (equal '(:prompt "hello" :model "m") (piped (format nil "hello~%") '(:model "m"))))
+    (is (equal (list :prompt (format nil "hello~%~%summarize") :model "m")
+               (piped "hello" '(:model "m" :prompt "summarize"))))
+    (is (equal '(:model "m") (piped (format nil "  ~%") '(:model "m"))) "blanks add nothing")
+    (is (null (piped nil nil)) "nor does a terminal")
+    (let ((nle::*max-input-characters* 10))
+      (is (search "comes to 15 characters (stdin 5, the line's files and prompt 8)"
+                  (refusal-text nle::launch-usage-error (piped "hello" '(:prompt "go there"))))))
+    (let ((small '(:prompt "look" :images (("image/png" . "iVBORw0KGgo="))))
+          (large (list :prompt "look" :images (list (cons "image/png" (make-string (* 17 1024 1024) :initial-element #\A))))))
+      (is (null (nle::launch-frame-refusal small)) "a frame within the bound goes")
+      (is (search "cannot go out" (nle::launch-frame-refusal large)) "one past it is refused before boot"))
+    (is (search "not UTF-8 text" (refusal-text nle::launch-usage-error
+                                               (with-stubbed-fdefinitions
+                                                   ((nlk::piped-input-octets (limit &optional fd)
+                                                      (coerce '(255 0) '(vector (unsigned-byte 8)))))
+                                                 (nle::piped-launch nil)))))))
+
 (deftest launch-arguments-parse-and-refuse ()
   (is (equal '(nil nil nil nil nil nil nil) (launch-plan)) "bare: attach to or own the default store")
   (is (equal '(t nil nil "/tmp/x.db" nil nil nil) (launch-plan "serve" "--store" "/tmp/x.db")))

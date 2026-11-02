@@ -452,7 +452,10 @@ RUN-CHECKED, newest first: nothing runs and nothing is moved."
     ;; profile's fresh session would only run the prompt again.
     (is (equal '("/opt/nodecode/current/nodecode" "-p" "coder" "--ephemeral")
                (nth-value 1 (nlk:profile-switch "coder" '("nodecode" "--model" "m" "--ephemeral" "--prompt-file" "f"
-                                                       "--" "-p" "x")))))
+                                                       "@notes.md" "--" "-p" "x" "@y")))))
+    ;; A kept word's value stays, an @ or not.
+    (is (equal '("/opt/nodecode/current/nodecode" "-p" "coder" "--store" "@odd.db" "resume" "@s")
+               (nth-value 1 (nlk:profile-switch "coder" '("nodecode" "--store" "@odd.db" "resume" "@s" "@f")))))
     ;; The three refusals.
     (let ((unknown (refusal-text nlk:profile-error (nlk:profile-switch "codr"))))
       (is (search "no profile \"codr\"" unknown) "an unknown profile refuses")
