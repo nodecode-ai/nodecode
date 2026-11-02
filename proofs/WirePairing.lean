@@ -1,5 +1,5 @@
 /-
-Wire pairing: WIRE-MESSAGES-FROM-EVENTS (src/src/engine/context.lisp) folds a
+Wire pairing: WIRE-MESSAGES-FROM-EVENTS (src/engine/context.lisp) folds a
 session's durable facts into the messages a provider receives. A provider
 refuses the whole request when a tool message answers no call of the
 assistant message before it, when a call has no tool message before the next
