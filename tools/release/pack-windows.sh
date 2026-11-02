@@ -7,7 +7,7 @@
 # Run through `just windows'. SBCL cannot cross-compile and the release waits
 # on no CI lane, so the Windows zip is packed the way pack.sh packs the POSIX
 # tarball -- from `git archive REV', the shipped cells pulled in from
-# src/cells/bundle.json, named nodecode-<label>-x86_64-windows.zip -- with the
+# cells/bundle.json, named nodecode-<label>-x86_64-windows.zip -- with the
 # compiler running on a Windows machine instead of this one. That machine is
 # the winbox container on NODECODE_WINBOX_HOST (a publish setting, like
 # NODECODE_MACOS_HOST), never the publishing machine: a Windows guest is a
@@ -31,7 +31,7 @@ OUT="${2:-dist}"
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 tools="$(dirname "$here")"
-repo="$(git -C "$here" rev-parse --show-toplevel)"
+repo="$(cd "$here/../.." && pwd)"
 . "$here/layout.sh"
 cd "$repo"
 
@@ -94,7 +94,7 @@ done
 
 # The build tree is the revision, not the checkout (pack.sh's note), plus the
 # shipped cells -- which no revision of this repository carries: they come from
-# the pin in src/cells/bundle.json and mark themselves (.bundle), so a folder
+# the pin in cells/bundle.json and mark themselves (.bundle), so a folder
 # that was never pulled is visible to the proof below.
 mkdir -p "$work/nodecode"
 git archive "$commit" | tar -x -C "$work/nodecode"

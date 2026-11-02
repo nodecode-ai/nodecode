@@ -7,9 +7,9 @@
 # Run through `just macos'. SBCL cannot cross-compile and the release waits on
 # no CI lane, so the Apple Silicon tarball is packed the way pack.sh packs the
 # Linux one -- `just tarball' of the committed revision, the shipped cells
-# pulled in from src/cells/bundle.json, named nodecode-<label>-arm64-darwin --
+# pulled in from cells/bundle.json, named nodecode-<label>-arm64-darwin --
 # on a Mac this box reaches over ssh (NODECODE_MACOS_HOST, a publish setting:
-# publish-config.sh). The Mac half is src/tools/release/mac-build.sh, sent with the
+# publish-config.sh). The Mac half is tools/release/mac-build.sh, sent with the
 # revision -- the Mac CI job runs the same script (ci-macos.sh); it is what
 # the retired macOS lane ran
 # (533bb5ad6^:.github/workflows/macos.yml): the patched SBCL and its tests, the
@@ -39,7 +39,7 @@ OUT="${2:-dist}"
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 tools="$(dirname "$here")"
-repo="$(git -C "$here" rev-parse --show-toplevel)"
+repo="$(cd "$here/../.." && pwd)"
 . "$here/layout.sh"
 cd "$repo"
 

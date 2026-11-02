@@ -34,7 +34,8 @@ case "$mode" in
   *) echo "release: the mode is publish or rehearse, not '$mode'" >&2; exit 2 ;;
 esac
 
-repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo="$(cd "$here/../.." && pwd)"
 cd "$repo"
 commit="$(git rev-parse 'HEAD^{commit}')"
 label="$(git rev-parse --short=9 "$commit")"
@@ -67,7 +68,7 @@ done
 [ -z "$stray" ] || { echo "release: $dist holds what no build job of $label made:$stray" >&2; exit 1; }
 zst="$dist/nodecode-$label-x86_64-windows.tar.zst"
 if [ ! -s "$zst" ]; then
-  src/tools/release/pack-windows-zst.sh --here "$dist/nodecode-$label-x86_64-windows.zip"
+  "$here"/pack-windows-zst.sh --here "$dist/nodecode-$label-x86_64-windows.zip"
 fi
 
 # --- the credentials, in a folder of the run's own ----------------------------
@@ -119,7 +120,7 @@ export NODECODE_PUBLISH_CONFIG="$priv/publish.env"
 grep -q '^NODECODE_GIT_COMMIT_HELPER=' "$priv/publish.env" \
   || export NODECODE_GIT_COMMIT_HELPER="${NODECODE_GIT_COMMIT_HELPER:-$priv/bin/commit-owned}"
 
-. src/tools/release/publish-config.sh
+. "$here"/publish-config.sh
 host="$(publish_setting NODECODE_PUBLISH_HOST)"
 remote_dir="$(publish_setting NODECODE_PUBLISH_REMOTE_DIR)"
 web_container="$(publish_setting NODECODE_PUBLISH_WEB_CONTAINER)"
@@ -129,7 +130,7 @@ github_repo="$(publish_setting NODECODE_PUBLISH_GITHUB_REPO)"
 if [ "$mode" = publish ]; then
   # Not exec: the trap must still clear the credentials when it returns.
   rc=0
-  src/tools/release/publish.sh "$commit" "$dist" || rc=$?
+  "$here"/publish.sh "$commit" "$dist" || rc=$?
   exit "$rc"
 fi
 

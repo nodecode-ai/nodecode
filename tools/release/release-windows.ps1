@@ -3,7 +3,7 @@
   Pack the Windows release inside the local Windows sandbox.
 
 .DESCRIPTION
-  The guest half of `just windows'. src/tools/release/pack-windows.sh drives it through
+  The guest half of `just windows'. tools/release/pack-windows.sh drives it through
   ~/nodecode-winbox/win: the host puts a git archive of the release revision --
   its shipped cells pulled in -- at \\host.lan\Data\nodecode-src.tar and the
   nine-digit label in release-rev.txt. This script builds nodecode.exe from

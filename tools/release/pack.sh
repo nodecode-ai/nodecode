@@ -37,7 +37,7 @@ OUT="${2:-dist}"
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 tools="$(dirname "$here")"
-repo="$(git -C "$here" rev-parse --show-toplevel)"
+repo="$(cd "$here/../.." && pwd)"
 . "$here/layout.sh"
 cd "$repo"
 
@@ -80,7 +80,7 @@ git archive "$REV" | tar -x -C "$work"
 # (layout.sh); the release below is laid out the one way either way.
 sys="$(layout_system "$work")"
 # The shipped cells are in no revision of this repository: they come from
-# nodecode-ai/cells at the pin in src/cells/bundle.json (pull-cells.sh).
+# nodecode-ai/cells at the pin in cells/bundle.json (pull-cells.sh).
 "$tools/build/pull-cells.sh" "$sys/cells"
 # ...which also means the build tree has no .git, so the image cannot ask git
 # what it was built from: every released build reported a bare `0.0.1' while a
@@ -175,7 +175,7 @@ if [ "$os" = darwin ]; then
   for bin in nodecode nodecode-launcher; do
     minos="$(vtool -show-build "$stage/$bin" 2>/dev/null | awk '$1 == "minos" { print $2; exit }')"
     [ -n "$minos" ] && [ "${minos%%.*}" -le "$floor" ] || {
-      echo "pack: refusing, $bin needs macOS ${minos:-unknown}; the release floor is $floor (src/tools/build/sbcl/build.sh builds its runtime)" >&2
+      echo "pack: refusing, $bin needs macOS ${minos:-unknown}; the release floor is $floor (tools/build/sbcl/build.sh builds its runtime)" >&2
       exit 1
     }
   done

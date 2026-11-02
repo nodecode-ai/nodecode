@@ -6,7 +6,7 @@
   Run from anywhere on a Windows machine with SBCL (x86-64) on PATH and Git
   for Windows installed. Installs quicklisp for the current user when it is
   missing, fetches libsqlite3.dll beside the tree when it is missing, loads
-  src/tools/release/windows-release.lisp in a fresh SBCL with the release heap
+  tools/release/windows-release.lisp in a fresh SBCL with the release heap
   settings, then lays the three DLLs the image loads at run time beside the
   executable: libsqlite3.dll and the OpenSSL pair Git for Windows carries.
   The result is <repo>\nodecode.exe plus its DLLs — the same files

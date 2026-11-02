@@ -15,20 +15,21 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 tools="$(dirname "$here")"
-repo="$(git -C "$here" rev-parse --show-toplevel)"
+repo="$(cd "$here/../.." && pwd)"
 . "$here/layout.sh"
 cd "$repo"
 
 commit="$(git rev-parse 'HEAD^{commit}')"
 # Nine digits, explicitly: --short alone sizes itself by the clone (pack.sh).
 label="$(git rev-parse --short=9 "$commit")"
-version="$(git show "$commit:$(layout_asd_at "$commit")" | sed -n 's/^ *:version "\([0-9][0-9A-Za-z.-]*\)".*/\1/p' | head -n 1)"
-[ -n "$version" ] || { echo "release: src/nodecode.asd at $label declares no :version" >&2; exit 1; }
+asd="$(layout_asd_at "$commit")"
+version="$(git show "$commit:$asd" | sed -n 's/^ *:version "\([0-9][0-9A-Za-z.-]*\)".*/\1/p' | head -n 1)"
+[ -n "$version" ] || { echo "release: $asd at $label declares no :version" >&2; exit 1; }
 
 if [ "${GITHUB_REF_TYPE:-}" = tag ]; then
   tag="${GITHUB_REF_NAME:?the run names no tag}"
   [ "$tag" = "v$version" ] || {
-    echo "release: $tag names $label, whose src/nodecode.asd declares $version: tag it v$version, or bump :version and tag that commit" >&2
+    echo "release: $tag names $label, whose $asd declares $version: tag it v$version, or bump :version and tag that commit" >&2
     exit 1
   }
 fi

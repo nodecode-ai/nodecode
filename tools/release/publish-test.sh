@@ -2,10 +2,11 @@
 # publish-test.sh --- hermetic regression for the nodecode.ai/dl publisher.
 set -eu
 
-repo="$(cd "$(dirname "$0")/../../.." && pwd)"
+here="$(cd "$(dirname "$0")" && pwd)"
+repo="$(cd "$here/../.." && pwd)"
 cd "$repo"
-[ -x "$repo/src/tools/release/publish.sh" ] || {
-  echo 'publish-test: src/tools/release/publish.sh is not executable' >&2
+[ -x "$repo/tools/release/publish.sh" ] || {
+  echo 'publish-test: tools/release/publish.sh is not executable' >&2
   exit 1
 }
 root="$(mktemp -d)"
@@ -180,6 +181,8 @@ case "${1:-}" in
          *) printf '%s\n' 'aaaaaaaaa1111111111111111111111111111111 channels: a card -- the why' \
                            'bbbbbbbbb2222222222222222222222222222222 docs: a page' ;;
        esac ;;
+  # The sandbox is the moved layout: the system definition sits at the root.
+  cat-file) case "$*" in *:src/nodecode.asd) exit 1 ;; esac ;;
   *) exit 0 ;;
 esac
 EOF
@@ -194,13 +197,14 @@ chmod 0755 "$fake_bin"/*
 sandbox="$root/repo"
 # marketplace/ is the operator's local clone of the site; site-remote/ is its
 # origin, the branch the site builds its image from.
-mkdir -p "$sandbox/src/tools/release" "$sandbox/src/tools/install" "$sandbox/marketplace/web/public" "$sandbox/site-remote/web/public"
-cp "$repo/src/tools/release/publish.sh" "$sandbox/src/tools/release/publish.sh"
-cp "$repo/src/tools/release/publish-config.sh" "$sandbox/src/tools/release/publish-config.sh"
-cp "$repo/src/tools/release/mirror-installers.sh" "$sandbox/src/tools/release/mirror-installers.sh"
-printf '%s\n' '#!/bin/sh' '# reads the channel pointer' > "$sandbox/src/tools/install/install.sh"
+mkdir -p "$sandbox/tools/release" "$sandbox/tools/install" "$sandbox/marketplace/web/public" "$sandbox/site-remote/web/public"
+cp "$repo/tools/release/publish.sh" "$sandbox/tools/release/publish.sh"
+cp "$repo/tools/release/publish-config.sh" "$sandbox/tools/release/publish-config.sh"
+cp "$repo/tools/release/layout.sh" "$sandbox/tools/release/layout.sh"
+cp "$repo/tools/release/mirror-installers.sh" "$sandbox/tools/release/mirror-installers.sh"
+printf '%s\n' '#!/bin/sh' '# reads the channel pointer' > "$sandbox/tools/install/install.sh"
 printf '%s\n' '#!/bin/sh' '# an older copy of the installer' > "$sandbox/marketplace/web/public/install.sh"
-printf '%s\n' '# reads the channel pointer' > "$sandbox/src/tools/install/install.ps1"
+printf '%s\n' '# reads the channel pointer' > "$sandbox/tools/install/install.ps1"
 printf '%s\n' '# an older copy of the installer' > "$sandbox/marketplace/web/public/install.ps1"
 cp "$sandbox/marketplace/web/public/install.sh" "$sandbox/marketplace/web/public/install.ps1" "$sandbox/site-remote/web/public/"
 
@@ -221,10 +225,10 @@ publish() {
   PUBLISH_TEST_GH="$root/$2-gh" \
   PUBLISH_TEST_GH_STATE="$root/gh-state" \
   NODECODE_PUBLISH_GITHUB_REPO=test/nodecode \
-  PUBLISH_TEST_INSTALLER="$sandbox/src/tools/install/install.sh" \
-  PUBLISH_TEST_PS1="$sandbox/src/tools/install/install.ps1" \
-  NODECODE_PUBLISH_INSTALLER_PATH="$sandbox/src/tools/install/install.sh" \
-  NODECODE_PUBLISH_PS1_PATH="$sandbox/src/tools/install/install.ps1" \
+  PUBLISH_TEST_INSTALLER="$sandbox/tools/install/install.sh" \
+  PUBLISH_TEST_PS1="$sandbox/tools/install/install.ps1" \
+  NODECODE_PUBLISH_INSTALLER_PATH="$sandbox/tools/install/install.sh" \
+  NODECODE_PUBLISH_PS1_PATH="$sandbox/tools/install/install.ps1" \
   NODECODE_PUBLISH_MARKETPLACE_DIR="${PUBLISH_TEST_MARKETPLACE:-$sandbox/marketplace}" \
   NODECODE_GIT_COMMIT_HELPER="$fake_bin/commit-owned" \
   NODECODE_PUBLISH_CONFIG="$root/no-publish-config" \
@@ -232,7 +236,7 @@ publish() {
   NODECODE_PUBLISH_APP_DIR=app NODECODE_PUBLISH_COMPOSE_FILE=compose.yml \
   NODECODE_PUBLISH_ENV_FILE=.env NODECODE_PUBLISH_WEB_CONTAINER=web \
   NODECODE_PUBLISH_BASE_URL=https://test.invalid \
-    bash "$sandbox/src/tools/release/publish.sh" HEAD "$1" > "$root/$2-output" 2> "$root/$2-errors"
+    bash "$sandbox/tools/release/publish.sh" HEAD "$1" > "$root/$2-output" 2> "$root/$2-errors"
 }
 
 fail() {
@@ -288,7 +292,7 @@ grep -q 'install.ps1 is live at https://test.invalid/install.ps1' "$root/full-ou
 grep -q 'release: public installer follows authority' "$root/full-commits"
 grep -q -- '--path web/public/install.sh' "$root/full-commits"
 grep -q -- '--path web/public/install.ps1' "$root/full-commits"
-if grep -q -- '--path src/tools/install/install.sh' "$root/full-commits"; then
+if grep -q -- '--path tools/install/install.sh' "$root/full-commits"; then
   fail 'publish still commits to the authority installer'
 fi
 [ -f "$root/flaky-502" ] || fail 'the 502 retry path was not exercised'
@@ -338,7 +342,7 @@ printf '%s\n' 'publish-test: NODECODE_PUBLISH_SITE_REMOTE stands in for a clone 
 if PUBLISH_TEST_TAGGED=ccccccccc3333333333333333333333333333333 publish fresh-tagged tagged; then
   fail 'a version tagged at another commit still published'
 fi
-grep -q 'v9.9.9 is already released at ccccccccc; bump :version in src/nodecode.asd' "$root/tagged-errors" \
+grep -q 'v9.9.9 is already released at ccccccccc; bump :version in nodecode.asd' "$root/tagged-errors" \
   || fail "the released version was not named: $(cat "$root/tagged-errors")"
 [ ! -s "$root/tagged-scp" ] || fail "a released version still shipped: $(tr '\n' ' ' < "$root/tagged-scp")"
 [ ! -e "$sandbox/fresh-tagged/nodecode-latest999-x86_64-linux.tar.gz" ] || fail 'an arm packed a version already released'
@@ -421,7 +425,7 @@ chmod +x "$pw_bin/podman" "$pw_bin/ssh"
 pack_windows() {
   env -u NODECODE_WINBOX_HOST PATH="$pw_bin:$PATH" NODECODE_PUBLISH_CONFIG="$root/pw-empty.env" \
     PW_TEST_PODMAN="$root/pw-podman" PW_TEST_SSH="$root/pw-ssh" "$@" \
-    bash "$repo/src/tools/release/pack-windows.sh" HEAD "$root/pw-out" 2> "$root/pw-errors"
+    bash "$repo/tools/release/pack-windows.sh" HEAD "$root/pw-out" 2> "$root/pw-errors"
 }
 : > "$root/pw-podman"; : > "$root/pw-ssh"
 if pack_windows; then fail 'pack-windows ran without NODECODE_WINBOX_HOST'; fi

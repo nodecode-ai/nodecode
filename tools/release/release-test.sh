@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # release-test.sh --- hermetic checks of the Release workflow's scripts.
 #
-# release-check.sh releases a tag only when src/nodecode.asd declares its
+# release-check.sh releases a tag only when nodecode.asd declares its
 # version and main carries its commit. release-publish.sh's rehearsal takes
 # the three archives only with their sidecars and nothing else beside them,
 # packs the Windows tar.zst, reaches the publish host only through a config of
@@ -9,7 +9,8 @@
 # ssh and gh are fakes, the site repository a local one.
 set -euo pipefail
 
-repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo="$(cd "$here/../.." && pwd)"
 root="$(mktemp -d)"
 trap 'rm -rf "$root"' EXIT
 fail() { echo "release-test: $1" >&2; exit 1; }
@@ -21,14 +22,14 @@ origin="$root/origin.git"
 work="$root/work"
 git init -q --bare "$origin"
 git init -q -b main "$work"
-mkdir -p "$work/src/tools/release"
-printf '%s\n' '(defsystem "nodecode"' '  :version "1.2.3")' > "$work/src/nodecode.asd"
+mkdir -p "$work/tools/release"
+printf '%s\n' '(defsystem "nodecode"' '  :version "1.2.3")' > "$work/nodecode.asd"
 git_c -C "$work" add -A
 git_c -C "$work" commit -qm one
 git -C "$work" remote add origin "$origin"
 git -C "$work" push -q origin main
-for f in release-check.sh release-publish.sh publish-config.sh pack-windows-zst.sh; do
-  cp "$repo/src/tools/release/$f" "$work/src/tools/release/$f"
+for f in layout.sh release-check.sh release-publish.sh publish-config.sh pack-windows-zst.sh; do
+  cp "$repo/tools/release/$f" "$work/tools/release/$f"
 done
 label="$(git -C "$work" rev-parse --short=9 HEAD)"
 
@@ -38,11 +39,11 @@ label="$(git -C "$work" rev-parse --short=9 HEAD)"
 while read -r script; do
   script_mode="$(git -C "$repo" ls-files -s -- "$script" | cut -d' ' -f1)"
   [ "$script_mode" = 100755 ] || fail "$script is $script_mode in git; release.yml runs it by path"
-done < <(grep -o -E '(^|[ "])src/tools/[a-z0-9/-]+\.sh' "$repo/.github/workflows/release.yml" | tr -d ' "' | sort -u)
+done < <(grep -o -E '(^|[ "])tools/[a-z0-9/-]+\.sh' "$repo/.github/workflows/release.yml" | tr -d ' "' | sort -u)
 say 'every script release.yml runs by path is executable in git'
 
 # --- release-check.sh -----------------------------------------------------------
-check() { (cd "$work" && env "$@" bash src/tools/release/release-check.sh) > "$root/check-out" 2>&1; }
+check() { (cd "$work" && env "$@" bash tools/release/release-check.sh) > "$root/check-out" 2>&1; }
 check GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v1.2.3 GITHUB_OUTPUT="$root/gh-output" \
   || fail "a matching tag on main was refused: $(cat "$root/check-out")"
 grep -qx 'version=1.2.3' "$root/gh-output" || fail 'the version was not written for the workflow'
@@ -50,7 +51,7 @@ grep -qx "label=$label" "$root/gh-output" || fail 'the nine-digit label was not 
 say 'a tag that matches the asd, on main, is released'
 
 if check GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v1.2.4; then fail 'a tag the asd does not declare was released'; fi
-grep -q 'v1.2.4 names .*whose src/nodecode.asd declares 1.2.3' "$root/check-out" \
+grep -q 'v1.2.4 names .*whose nodecode.asd declares 1.2.3' "$root/check-out" \
   || fail "the disagreeing tag was not named: $(cat "$root/check-out")"
 say 'a tag the asd does not declare is refused'
 
@@ -80,10 +81,10 @@ with zipfile.ZipFile(sys.argv[1], 'w') as z:
     z.writestr('nodecode/README.txt', b'read me\n')
 PY
 cp "$packdir/one/nodecode-$label-x86_64-windows.zip" "$packdir/two/"
-bash "$work/src/tools/release/pack-windows-zst.sh" --here "$packdir/one/nodecode-$label-x86_64-windows.zip" > "$root/pack-out" 2>&1 \
+bash "$work/tools/release/pack-windows-zst.sh" --here "$packdir/one/nodecode-$label-x86_64-windows.zip" > "$root/pack-out" 2>&1 \
   || fail "the first pack failed: $(cat "$root/pack-out")"
 sleep 1.1
-(umask 0077 && bash "$work/src/tools/release/pack-windows-zst.sh" --here "$packdir/two/nodecode-$label-x86_64-windows.zip") > "$root/pack-out" 2>&1 \
+(umask 0077 && bash "$work/tools/release/pack-windows-zst.sh" --here "$packdir/two/nodecode-$label-x86_64-windows.zip") > "$root/pack-out" 2>&1 \
   || fail "the second pack failed: $(cat "$root/pack-out")"
 [ "$(cut -d' ' -f1 < "$packdir/one/nodecode-$label-x86_64-windows.tar.zst.sha256")" = \
   "$(cut -d' ' -f1 < "$packdir/two/nodecode-$label-x86_64-windows.tar.zst.sha256")" ] \
@@ -138,7 +139,7 @@ rehearse() {
     PUBLISH_SSH_CONFIG="$(printf '%s\n' 'Host pubhost' '  HostName pub.invalid' '  User pub')" \
     PUBLISH_SSH_KEY='host key' PUBLISH_KNOWN_HOSTS='pub.invalid ssh-ed25519 AAAAtest' \
     SITE_DEPLOY_KEY='site key' GH_TOKEN=token "$@" \
-    bash src/tools/release/release-publish.sh "${mode:-rehearse}" "$dist") > "$root/rehearse-out" 2>&1
+    bash tools/release/release-publish.sh "${mode:-rehearse}" "$dist") > "$root/rehearse-out" 2>&1
 }
 
 make_dist
@@ -176,19 +177,19 @@ if rehearse RELEASE_TEST_SSH_EXIT=1; then fail 'a host that does not answer pass
 # v0.1.3 (2026-10-28) was the first tag whose installers changed, and its
 # publish died at the mirror: no NODECODE_GIT_COMMIT_HELPER in the run. The
 # publish here is the real mirror-installers.sh against the local site.
-cp "$repo/src/tools/release/mirror-installers.sh" "$work/src/tools/release/mirror-installers.sh"
-cat > "$work/src/tools/release/publish.sh" <<'EOF'
+cp "$repo/tools/release/mirror-installers.sh" "$work/tools/release/mirror-installers.sh"
+cat > "$work/tools/release/publish.sh" <<'EOF'
 #!/usr/bin/env bash
 # A publish.sh of nothing but the installer mirror, the step the helper serves.
 set -euo pipefail
-. src/tools/release/publish-config.sh
+. tools/release/publish-config.sh
 d="$(mktemp -d)"
 printf 'echo sh installer\n' > "$d/install.sh"
 printf 'Write-Host ps1 installer\n' > "$d/install.ps1"
-bash src/tools/release/mirror-installers.sh "$(publish_setting NODECODE_PUBLISH_SITE_REMOTE)" main \
+bash tools/release/mirror-installers.sh "$(publish_setting NODECODE_PUBLISH_SITE_REMOTE)" main \
   "$d/install.sh" "$d/install.ps1" 'release: test installers'
 EOF
-chmod 0755 "$work/src/tools/release/publish.sh"
+chmod 0755 "$work/tools/release/publish.sh"
 make_dist
 mode=publish rehearse || fail "a publish whose installers changed did not mirror them: $(cat "$root/rehearse-out")"
 [ "$(git -C "$site" show main:web/public/install.ps1)" = 'Write-Host ps1 installer' ] \

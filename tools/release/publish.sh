@@ -21,7 +21,7 @@ OUT="${2:-dist}"
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 tools="$(dirname "$here")"
-repo="$(git -C "$here" rev-parse --show-toplevel)"
+repo="$(cd "$here/../.." && pwd)"
 . "$here/layout.sh"
 cd "$repo"
 
@@ -71,8 +71,9 @@ base_url="${base_url%/}"
 # a version already tagged at another commit stops the publish here, before any
 # arm packs: bump :version in src/nodecode.asd first.
 github_repo="$(publish_setting NODECODE_PUBLISH_GITHUB_REPO)" || exit 1
-version="$(git show "$commit:$(layout_asd_at "$commit")" | sed -n 's/^ *:version "\([0-9][0-9A-Za-z.-]*\)".*/\1/p' | head -n 1)"
-[ -n "$version" ] || { echo "publish: src/nodecode.asd at $label declares no :version" >&2; exit 1; }
+asd="$(layout_asd_at "$commit")"
+version="$(git show "$commit:$asd" | sed -n 's/^ *:version "\([0-9][0-9A-Za-z.-]*\)".*/\1/p' | head -n 1)"
+[ -n "$version" ] || { echo "publish: $asd at $label declares no :version" >&2; exit 1; }
 tag="v$version"
 gh api "repos/$github_repo" --jq .full_name > /dev/null || {
   echo "publish: GitHub does not answer for $github_repo (gh auth status), so $tag could not be listed. Nothing moves." >&2
@@ -82,7 +83,7 @@ gh api "repos/$github_repo" --jq .full_name > /dev/null || {
 # it, so only an answer that succeeded names a commit.
 tagged="$(gh api "repos/$github_repo/commits/$tag" --jq .sha 2> /dev/null)" || tagged=""
 if [ -n "$tagged" ] && [ "$tagged" != "$commit" ]; then
-  echo "publish: $tag is already released at ${tagged:0:9}; bump :version in src/nodecode.asd for $label. Nothing moves." >&2
+  echo "publish: $tag is already released at ${tagged:0:9}; bump :version in $asd for $label. Nothing moves." >&2
   exit 1
 fi
 echo "publish: $label is nodecode $version, tagged $tag"

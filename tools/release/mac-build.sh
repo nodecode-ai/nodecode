@@ -73,7 +73,7 @@ if ! "$B/bin/just" --version 2>/dev/null | grep -qx "just $just_version"; then
 fi
 just --version
 
-# The release is dumped on SBCL 2.6.8 plus src/tools/build/sbcl/patches (build.sh),
+# The release is dumped on SBCL 2.6.8 plus tools/build/sbcl/patches (build.sh),
 # rebuilt when those change, and SBCL's own tests for what the patches touch
 # run on every fresh build. Its host is Homebrew's SBCL bottle, unpacked here
 # and pointed at the zstd that is present: fetched, never installed.
