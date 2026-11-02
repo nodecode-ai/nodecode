@@ -1,0 +1,41 @@
+{
+  "groups": [
+    {
+      "name": "Getting started",
+      "pages": [
+        { "slug": "", "title": "Overview", "summary": "What Nodecode is, and the reference in reading order." },
+        "install",
+        "quickstart",
+        "first-run",
+        "pricing",
+        "support",
+        "troubleshooting",
+        "faq",
+        "changelog"
+      ]
+    },
+    {
+      "name": "Use",
+      "pages": [
+        { "fold": "Shell", "pages": ["shell", "sessions", "slash-commands", "cli"] },
+        { "fold": "Configuration", "pages": ["models", "config", "environment", "files", "instructions", "profiles"] },
+        { "fold": "Operations", "pages": ["updates", "security", "gateway", "channels", "rpc", "operations"] }
+      ]
+    },
+    {
+      "name": "How it works",
+      "pages": [
+        "organism",
+        "eval",
+        "context"
+      ]
+    },
+    {
+      "name": "Cells",
+      "pages": [
+        "cells",
+        "cell-api"
+      ]
+    }
+  ]
+}
