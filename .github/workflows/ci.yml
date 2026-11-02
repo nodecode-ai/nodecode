@@ -9,7 +9,9 @@ name: CI
 #            axioms only (`just proofs')
 #   perf     after linux: this revision against its base on the TUI's keys
 #            and paging, the gateway's start and streamed turns -- user-space
-#            instructions, bytes consed, CPU and wall time (`just perf BASE')
+#            instructions, bytes consed, CPU and wall time, and what the TUI
+#            writes to its terminal: bytes and frames per key, scroll and idle
+#            stretch (`just perf BASE')
 #   scaling  after linux: every hot path's cost at three sizes, its growth
 #            held to its contract (`just scaling'; src/perf/scaling.lisp)
 # The scripts live in src/tools/ci/, so a job is one step and the same check
