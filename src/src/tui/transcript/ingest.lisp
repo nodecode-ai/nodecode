@@ -690,13 +690,23 @@ MESSAGE-COUNT / RETAINED-MESSAGE-COUNT."
   "Stamp POSITION onto every row the fold has not yet attributed — called
 after each event folds, so rows carry the durable position that produced
 them (the eviction divider's placement input)."
-  ;; The lanes are walked where they stand: TRANSCRIPT-ROWS conses a copy of
-  ;; the whole history, and this runs once per folded fact.
+  ;; This runs once per folded fact, so the history lane is walked only past
+  ;; the cons its mark says is stamped through (HISTORY-LANE-MARK): a row
+  ;; keeps the position it was given, and the rows before that cons are the
+  ;; ones the last walk stamped. The tail window is a few rows.
   (when (and (hash-table-p state) (integerp position))
-    (dolist (lane '("history_rows" "tail_rows"))
-      (dolist (row (gethash lane state '()))
-        (unless row.log-position
-          (setf row.log-position position)))))
+    (let* ((mark (history-lane-mark state))
+           (from (if (lane-mark-stamped mark)
+                     (cdr (lane-mark-stamped mark))
+                     (lane-mark-head mark))))
+      (loop for cell on from
+            do (unless (transcript-row-log-position (car cell))
+                 (setf (transcript-row-log-position (car cell)) position))
+               (setf (lane-mark-stamped mark) cell
+                     (lane-mark-last mark) cell)))
+    (dolist (row (gethash "tail_rows" state '()))
+      (unless row.log-position
+        (setf row.log-position position))))
   state)
 
 (defmacro define-fold (class ingest (&rest arguments) &rest fields)

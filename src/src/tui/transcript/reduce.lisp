@@ -158,6 +158,46 @@ the whole history."
       (setf (gethash key state) (remove-if predicate (gethash key state '())))))
   state)
 
+;;; A long session's history lane is thousands of rows, and two things touch
+;;; it on every fact a fold takes: a promoted row goes on its end, and the
+;;; rows the fact produced get its log position (STAMP-UNPOSITIONED-ROWS).
+;;; Walking the lane for either made opening a session quadratic in its
+;;; length. The lane only ever grows at its end in place; any other change
+;;; writes a fresh list (REMOVE, a divider rested inside it, a push), so a
+;;; lane whose first cons is the one a mark was taken on still holds every
+;;; cons the mark has seen, unchanged: the mark keeps where the lane ends
+;;; and how far its rows are all stamped, and a fresh list is read from its
+;;; head once.
+
+(defstruct (lane-mark (:constructor make-lane-mark (head)))
+  "Where a state's history lane, first cons HEAD, ends (LAST) and the cons
+through which every row carries a log position (STAMPED)."
+  head (last nil) (stamped nil))
+
+(defvar *lane-marks* (make-hash-table :test #'eq :weakness :key :synchronized t)
+  "Each fold state's LANE-MARK for its history lane, gone with the state.")
+
+(defun history-lane-mark (state)
+  "STATE's mark for the history lane it holds now: the one taken on this
+lane, or a fresh one when the lane is a new list."
+  (let ((head (gethash "history_rows" state '()))
+        (mark (gethash state *lane-marks*)))
+    (if (and mark (eq head (lane-mark-head mark)))
+        mark
+        (setf (gethash state *lane-marks*) (make-lane-mark head)))))
+
+(defun append-history-rows (state rows)
+  "Put ROWS, a fresh list, on the end of STATE's history lane, in place. => STATE."
+  (when rows
+    (let ((mark (history-lane-mark state)))
+      (if (null (lane-mark-head mark))
+          (setf (gethash "history_rows" state) rows
+                (gethash state *lane-marks*) (make-lane-mark rows))
+          ;; LAST from the mark's end walks only what was put on behind it.
+          (setf (cdr (last (or (lane-mark-last mark) (lane-mark-head mark)))) rows))
+      (setf (lane-mark-last (gethash state *lane-marks*)) (last rows))))
+  state)
+
 (defun append-tail-row (state row)
   "Append ROW to the tail window, promoting the oldest row on overflow."
   ;; History grows in place: the lane is the state's alone (TRANSCRIPT-ROWS
@@ -165,9 +205,7 @@ the whole history."
   ;; replay's fold quadratic in its rows.
   (let ((tail (append (gethash "tail_rows" state '()) (list row))))
     (loop while (> (length tail) 16) ; the Zig max_tail_rows bound
-          do (setf (gethash "history_rows" state)
-                   (nconc (gethash "history_rows" state '())
-                          (list (pop tail)))))
+          do (append-history-rows state (list (pop tail))))
     (setf (gethash "tail_rows" state) tail))
   row)
 
@@ -200,11 +238,9 @@ fact confirmed."
   ;; Runs when a turn reaches a terminal fact, and when the local UI observes
   ;; completion outside the fold.
   (when (hash-table-p state)
-    (setf (gethash "history_rows" state)
-          (nconc (gethash "history_rows" state '())
-                 (remove-if-not #'transcript-row-hydrated
-                                (copy-list (gethash "tail_rows" state '()))))
-          (gethash "tail_rows" state) '()))
+    (append-history-rows state (remove-if-not #'transcript-row-hydrated
+                                              (copy-list (gethash "tail_rows" state '()))))
+    (setf (gethash "tail_rows" state) '()))
   state)
 
 (defmacro define-ingest (name (st &rest args) &body body)
