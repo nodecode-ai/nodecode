@@ -90,10 +90,9 @@ fi
 
 step 'core suite'
 src/tools/build/pull-cells.sh
-# The suite runs under the account's own HOME (its home-naming tests assert
-# that), and each shard's NODECODE_HOME sits inside it: the startup tests
-# resolve the store from $HOME and expect the home under it, as on a person's
-# box.
+# The suite runs under the account's own HOME, and each shard's NODECODE_HOME
+# sits inside it: the startup tests resolve the store from $HOME and expect
+# the home under it, as on a person's box.
 suite_home="$(mktemp -d "$HOME/.nodecode-ci-suite.XXXXXX")"
 trap 'rm -rf "$scratch" "$suite_home"; [ -n "$release_pid" ] && kill "$release_pid" 2>/dev/null' EXIT
 mkdir -p "$scratch/cache"
