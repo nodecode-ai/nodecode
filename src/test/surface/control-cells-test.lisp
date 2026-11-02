@@ -139,17 +139,50 @@
         (is (nlk:json-value row :text "from") "a shipped folder is a link to where it ships from"))
       (is (equal "Mine, and it says so" (nlk:json-value (switch-row body "nl-sw-mine") :string "description"))))))
 
-(deftest control-cells-off-refuses-the-operators-own-folder-and-what-an-advice-keeps
+(deftest control-cells-off-parks-the-operators-own-folder-and-on-loads-it-again
     (with-switch-fixture (port base top))
-  (let ((own (merge-pathnames "nl-sw-mine/nl-sw-mine.asd" nlk::*cells-directory*)))
+  ;; A folder of the operator's own holds the only copy of its work: off
+  ;; never takes it out. It parks it -- the folder whole, the boot passing
+  ;; over it -- and on loads it again.
+  (let* ((root nlk::*cells-directory*)
+         (own (merge-pathnames "nl-sw-mine/nl-sw-mine.asd" root))
+         (marker (merge-pathnames "nl-sw-mine/.off" root))
+         (booted (lambda () (mapcar #'nlk:folder-name (nlk::cell-folders root)))))
     (write-temp-file own "(defsystem \"nl-sw-mine\")")
     (with-gateway-http (port :get "/api/gateway/cells")
       (is-present (row (switch-row body "nl-sw-mine")) "the operator's own folder is listed"
-        (is-shape row ((:string "source") "own") ((:any "on") is))))
-    (with-gateway-http (port :post "/api/gateway/cells" :body (switch-body "nl-sw-mine" nil))
-      (is (= 400 status))
-      (is (search "your own folder" (nlk:json-value body :string "error" "message")) "never the page's to remove"))
-    (is (probe-file own) "and it is left where it is"))
+        (is-shape row ((:string "source") "own") ((:any "on") is))
+        (is (nlk:json-value row :boolean "parks") "and says off would park it")))
+    (with-gateway-http (port :post "/api/gateway/cells" :body (switch-body "nl-sw-mine" nil) :status 200)
+      (is (search "its folder stays as it is" (nlk:json-value body :string "text")) "off says what it kept")
+      (is-present (row (switch-row body "nl-sw-mine")) "a parked folder is still listed"
+        (is (equal "own" (nlk:json-value row :string "source")))
+        (is (not (nlk:json-value row :any "on")) "off")))
+    (is (probe-file own) "the folder is left whole")
+    (is (probe-file marker) "with the off marker in it")
+    (is (not (member "nl-sw-mine" (funcall booted) :test #'string=)) "which the next boot passes over")
+    (is (member "nl-sw-mine" (mapcar #'nlk:folder-name (nlk:every-cell-folder root)) :test #'string=))
+    (with-gateway-http (port :post "/api/gateway/cells" :body (switch-body "nl-sw-mine" t) :status 200)
+      (is-present (row (switch-row body "nl-sw-mine")) "on again"
+        (is (nlk:json-value row :any "on"))))
+    (is (not (probe-file marker)) "on takes the marker out")
+    (is (member "nl-sw-mine" (funcall booted) :test #'string=) "so the next boot loads it")
+    (is (nlk:find-cell "nl-sw-mine") "and this image has it now")))
+
+(deftest control-cells-off-refuses-the-organisms-layer-and-what-an-advice-keeps
+    (with-switch-fixture (port base top))
+  ;; The layer the organism writes to is never parked: it is what keeps.
+  (with-saved-globals ((nlk::*layer-name* "nl-sw-layer"))
+    (let ((layer (merge-pathnames "nl-sw-layer/nl-sw-layer.asd" nlk::*cells-directory*)))
+      (write-temp-file layer "(defsystem \"nl-sw-layer\")")
+      (with-gateway-http (port :get "/api/gateway/cells")
+        (is-present (row (switch-row body "nl-sw-layer")) "the layer is listed"
+          (is (not (nlk:json-value row :any "parks")) "with no switch")))
+      (with-gateway-http (port :post "/api/gateway/cells" :body (switch-body "nl-sw-layer" nil))
+        (is (= 400 status))
+        (is (search "your own folder" (nlk:json-value body :string "error" "message")) "never the page's to remove"))
+      (is (probe-file layer) "and it is left where it is")
+      (is (not (probe-file (merge-pathnames "nl-sw-layer/.off" nlk::*cells-directory*))) "unparked")))
   ;; A cell that must stay for a reason of its own says so through advice.
   (nlk:with-cleanup ((nle:unhook 'nle::cell-off-refusal "control-cells-test"))
     (nle:hook 'nle::cell-off-refusal "control-cells-test"

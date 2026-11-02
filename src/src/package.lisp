@@ -285,6 +285,7 @@ renderer, the program loop.")
    #:*cell-switch-seconds* #:cell-switch-deadline
    #:missing-shipped-cells #:install-cell #:uninstall-cell
    #:installed-cell-p #:load-cell #:note-cell-start #:definitions-before #:report-unkept-changes #:folder-name
+   #:every-cell-folder #:cell-parkable-p #:cell-parked-p #:park-cell #:unpark-cell
    ;; what a peripheral is made of, and what it runs on (cells.lisp)
    #:define-peripheral #:worker-start #:worker-poke
    #:worker-stop #:find-session-cwd #:session-project-root

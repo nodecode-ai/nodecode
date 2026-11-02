@@ -192,6 +192,17 @@ other route reaches the real call."
         (is (sheet-row model "Sessions that join a board read each other's posts"))
         (is (sheet-row model "Adds" "known once it loads"))))))
 
+(deftest cells-an-own-folder-that-parks-has-a-switch ()
+  ;; An organism that parks an own folder says so on its row (parks); a row
+  ;; without it -- the layer, a knowledge cell, an older organism -- keeps
+  ;; the fixed `your own folder'.
+  (let ((parks (cell-row-json "weather" :source "own" :parks t))
+        (layer (cell-row-json "harness" :source "own")))
+    (is (not (nle::cell-fixed-p parks)) "off parks it, so it switches")
+    (is (nle::cell-fixed-p layer) "one that does not park stays")
+    (is (search "off keeps it here" (first (first (nle::cell-source-segs parks)))) "saying what off keeps")
+    (is (search "never takes it out" (first (first (nle::cell-source-segs layer)))))))
+
 (deftest cells-space-turns-a-cell-on-or-off-and-says-what-came-of-it ()
   ;; Space turns the chosen cell on or off through the organism; the listing
   ;; it answers lands under the same query, on the same cell, with its

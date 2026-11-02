@@ -59,10 +59,18 @@ offers it."
   "Whether CELL is the hub's to install: offered there, and not on."
   (and (json-value cell :boolean "hub") (not (json-value cell :boolean "on"))))
 
+(defun cell-own-fixed-p (cell)
+  "Whether CELL is the operator's own folder that off would not park: the
+layer the organism writes to, a knowledge cell, or a row from an organism
+that parks no folder."
+  (and (equal "own" (json-value cell :string "source"))
+       (not (json-value cell :boolean "parks"))))
+
 (defun cell-fixed-p (cell)
-  "Whether /cells cannot turn CELL off: the operator's own folder, or one
+  "Whether /cells cannot turn CELL off: the operator's own folder it cannot
+park (the layer, a knowledge cell, or an organism that parks none), or one
 others stand on."
-  (or (equal "own" (json-value cell :string "source"))
+  (or (cell-own-fixed-p cell)
       (and (json-value cell :boolean "on") (json-value cell :text "kept"))))
 
 (defun cell-match-p (row query)
@@ -375,6 +383,8 @@ something to say, running, waiting to load -- or NIL."
                                 (and (json-value cell :text "commit") (short-commit (json-value cell :string "commit")))))
                        ((json-value cell :boolean "hub")
                         (if (equal "community" (json-value cell :string "index")) "On the community hub" "On the hub"))
+                       ((and (equal source "own") (json-value cell :boolean "parks"))
+                        "Your own folder: off keeps it here and the next boot skips it")
                        ((equal source "own") "Your own folder: /cells never takes it out")
                        (t "Its folder is gone from this home"))
                  :muted))
@@ -625,7 +635,7 @@ it is filled; install for a hub cell; for one /cells cannot turn off, why."
       (cond ((cell-offered-p cell)
              (list (append (held " install " (sheet-ink (if (equal cells.asked name) :sheet-chip-on :sheet-chip-set)))
                            (list flip))))
-            ((equal "own" (json-value cell :string "source"))
+            ((cell-own-fixed-p cell)
              (list (free "your own folder" nil)))
             ((cell-fixed-p cell)
              (list (append (held " on " (sheet-ink :sheet-chip)) (list nil)) (free "  kept on" nil)))

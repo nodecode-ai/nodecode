@@ -815,17 +815,23 @@ FILE-NAME, when given, is added if absent."
             (failed (format nil "git ~{~a~^ ~} ran past 120 s and was killed" args))
             (values (stripped out) code (stripped err)))))))
 
-(defun git-exclude-dot-directories (directory &aux (git (merge-pathnames ".git/" directory)))
+(defun git-exclude-dot-directories (directory)
   "DIRECTORY's .git/info/exclude keeps every dot-directory out of its
-history -- another cell's ledger, an editor's state -- the line appended
-once and never twice. Nothing without a repository. Best effort."
+history -- another cell's ledger, an editor's state (GIT-EXCLUDE-LINE)."
+  (git-exclude-line directory ".*/"))
+
+(defun git-exclude-line (directory line &aux (git (merge-pathnames ".git/" directory)))
+  "DIRECTORY's .git/info/exclude keeps the paths LINE matches out of its
+history, the line appended once and never twice. Nothing without a
+repository. Best effort."
   (when (probe-file git)
     (ignore-errors
      (let* ((path (merge-pathnames "info/exclude" git))
             (text (or (read-text path) "")))
-       ;; the line after TEXT's last, on a line of its own (~&)
-       (unless (search ".*/" text)
-         (write-file-atomically path (format nil "~a~&.*/~%" text) :mode :keep))))))
+       (unless (member line (uiop:split-string text :separator '(#\Newline #\Return)) :test #'string=)
+         (ensure-directories-exist path)
+         ;; the line after TEXT's last, on a line of its own (~&)
+         (write-file-atomically path (format nil "~a~&~a~%" text line) :mode :keep))))))
 
 (defun git-commit-all (directory message &key notice (only nil only-p))
   "Stage DIRECTORY whole, or ONLY the files a caller wrote or deleted in it,

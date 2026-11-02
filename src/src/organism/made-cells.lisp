@@ -135,3 +135,61 @@ peripheral mark, so a DEFINE-CELL kept beside it is a cell that starts."
                (in-package #:~(~a~))~%~%~
                (define-peripheral ~(~a~) :not-running t)~%"
           name system name system system name))
+;;; --- off, and on again ------------------------------------------------------------
+;;; A folder the installer put in the cells folder goes when /cells turns it
+;;; off: another copy is a click away. The operator's own -- a cell made here
+;;; or written by hand -- holds the only copy of its work, so off parks it
+;;; instead: the off marker (+OFF-MARKER+) goes into the folder, the boot
+;;; passes over it (CELL-FOLDERS), /cells lists it off, and on takes the
+;;; marker out and loads it again. Its code stays loaded in this image until a
+;;; restart, as every cell's does. The layer the organism writes to and a
+;;; knowledge cell, which loads nothing, are never parked.
+
+(defun operator-folder (name &optional (root *cells-directory*))
+  "The folder NAME under ROOT when it is a cell folder the installer did not
+put there, else NIL."
+  (let ((directory (and root (merge-pathnames (format nil "~a/" name) root))))
+    (and directory (uiop:directory-exists-p directory) (asd-files directory)
+         (not (installer-put-p name root))
+         directory)))
+
+(defun cell-parkable-p (name &optional (root *cells-directory*))
+  "Whether /cells turns the folder NAME under ROOT off by parking it: the
+operator's own folder (OPERATOR-FOLDER), neither the layer the organism
+writes to nor a knowledge cell."
+  (let ((directory (operator-folder name root)))
+    (and directory
+         (string/= name (layer-name))
+         (not (eq (kept-folder-kind directory) :knowledge)))))
+
+(defun cell-parked-p (name &optional (root *cells-directory*))
+  "Whether the operator's own folder NAME under ROOT is parked: there, and
+passed over by every boot until /cells turns it on."
+  (let ((directory (operator-folder name root)))
+    (and directory (folder-parked-p directory))))
+
+(defun park-cell (name &optional (root *cells-directory*))
+  "Turn the operator's own folder NAME off without touching its work: the off
+marker in it, kept out of its repository's history, so the next boot passes
+over it; a session whose current cell it was keeps to the layer again.
+=> the folder. Refused for a folder CELL-PARKABLE-P refuses."
+  (unless (cell-parkable-p name root)
+    (error "~a is not a folder of your own /cells can turn off" name))
+  (let ((directory (operator-folder name root)))
+    (write-file-atomically (merge-pathnames +off-marker+ directory)
+                           (format nil "Turned off in /cells. Its folder stays as it is; no boot loads it ~
+                                        until /cells turns it on again.~%"))
+    (git-exclude-line directory +off-marker+)
+    (maphash (lambda (session folder)
+               (when (string= folder name)
+                 (remhash session *session-cells*)))
+             *session-cells*)
+    directory))
+
+(defun unpark-cell (name &optional (root *cells-directory*))
+  "Take the off marker out of the operator's own folder NAME, so the boot
+loads it again. => the folder, or NIL when it was not parked."
+  (let ((directory (operator-folder name root)))
+    (when (and directory (folder-parked-p directory))
+      (delete-file (merge-pathnames +off-marker+ directory))
+      directory)))

@@ -833,12 +833,26 @@ fasl per file named by the file's text.")
           when (probe-file (uiop:parse-native-namestring (concatenate 'string native name)))
             collect it))
 
-(defun cell-folders (&optional (root *cells-directory*))
+(defun every-cell-folder (&optional (root *cells-directory*))
   "Subdirectories of ROOT carrying at least one .asd at their top level,
-sorted by name. A missing ROOT is an empty folder, not an error."
+sorted by name, a parked one among them (FOLDER-PARKED-P). A missing ROOT
+is an empty folder, not an error."
   (when (and root (probe-file root))
     (sort (remove-if-not #'asd-files (uiop:subdirectories root)) #'string<
           :key #'folder-name)))
+
+(defun cell-folders (&optional (root *cells-directory*))
+  "The cell folders under ROOT a boot loads, sorted by name: EVERY-CELL-FOLDER
+but a parked one, which /cells turned off and keeps (made-cells.lisp)."
+  (remove-if #'folder-parked-p (every-cell-folder root)))
+
+(defparameter +off-marker+ ".off"
+  "The file that parks the operator's own folder under the cells folder: it
+stays, whole, and no boot loads it until /cells turns it on again.")
+
+(defun folder-parked-p (directory)
+  "Whether the folder DIRECTORY carries the off marker (+OFF-MARKER+)."
+  (and (probe-file (merge-pathnames +off-marker+ (uiop:ensure-directory-pathname directory))) t))
 
 (defun folder-name (directory)
   "The last name on DIRECTORY's path: `b' for /a/b/, and for /a/b."

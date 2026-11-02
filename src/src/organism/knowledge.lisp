@@ -67,7 +67,8 @@ there, then every knowledge cell and every cell of code it made, by name."
               (remove-if (lambda (directory)
                            (or (string= (folder-name directory) (layer-name))
                                (not (kept-folder-kind directory))))
-                         (cell-folders))))))
+                         ;; a parked cell still holds its names: a keep of one goes back to it
+                         (every-cell-folder))))))
 
 (defun folder-label (directory &aux (name (folder-name directory))
                                     (own (format nil "~a-" (layer-name))))
