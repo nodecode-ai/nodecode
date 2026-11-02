@@ -7,6 +7,9 @@ name: CI
 #   windows  the release's Windows half: build-windows.ps1 and both smokes
 #   proofs   every Lean proof under proofs/, strict and on the classical
 #            axioms only (`just proofs')
+#   perf     after linux: this revision against its base on the TUI's keys
+#            and paging, the gateway's start and streamed turns -- user-space
+#            instructions, bytes consed, CPU and wall time (`just perf BASE')
 # The scripts live in src/tools/ci-*, so a job is one step and the same check
 # runs by hand on the same machine.
 #
@@ -49,6 +52,32 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check every Lean proof under proofs/
         run: src/tools/ci/ci-proofs.sh
+
+  perf:
+    name: Perf
+    # After Linux: its release build leaves the SBCL and quicklisp this job
+    # loads both trees on, and the box is no longer running the suite's
+    # shards beside the measurements.
+    needs: linux
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, nc-linux]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Hold this revision to its base where a person waits
+        run: src/tools/ci/ci-perf.sh
+        env:
+          PERF_BASE: ${{ github.event_name == 'push' && github.event.before || '' }}
+          CI_OUT: ${{ runner.temp }}/perf
+      - name: Keep the numbers
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf
+          path: ${{ runner.temp }}/perf/perf.json
+          if-no-files-found: ignore
 
   macos:
     name: macOS

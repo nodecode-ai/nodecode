@@ -165,6 +165,12 @@ footprint_ceilings := "--max-boot-mb 95 --max-turn-mb 105 --max-growth-mb 15 --m
 footprint:
     @python3 src/tools/check/footprint.py ./nodecode --turns 40 {{footprint_ceilings}}
 
+# Fail when this checkout costs more than BASE where a person waits: the TUI's
+# keys and paging, the gateway's start, streamed turns (src/tools/check/).
+# Measure this checkout against BASE.
+perf base="origin/main":
+    @python3 src/tools/check/perf-gate.py {{base}}
+
 # The gateway must leave a release feed that goes silent without closing,
 # and act on the next label.
 # Prove a silent release feed is left (~90 s).
