@@ -42,6 +42,8 @@ custom_providers:
   api_key: \"with \\\"quotes\\\"\"
 args: [\"-y\", \"@scope/pkg\", plain]
 inline: {a: 1, b: two}
+nested: {m: {k: 3}, z: 1}
+nested_seq: [1, [2, 3], \"a,b\"]
 note: |
   first line
   second line
@@ -68,6 +70,8 @@ folded: >-
       (is (equal "with \"quotes\"" (nlk:json-value (aref custom 1) :string "api_key"))))
     (is-shape config ("args" equalp #("-y" "@scope/pkg" "plain") "a flow sequence")
       ((:integer "inline" "a") eql 1 "a flow mapping") ((:string "inline" "b") "two")
+      ((:integer "nested" "m" "k") eql 3 "a flow mapping inside a flow mapping")
+      ("nested_seq" equalp #(1 #(2 3) "a,b") "a flow sequence inside a flow sequence")
       ("note" (format nil "first line~%second line~%") "a literal block")
       ("folded" "one two" "a folded block, stripped")))
   (is (zerop (hash-table-count (nik:read-yaml ""))) "an empty document is an empty object")
