@@ -226,13 +226,27 @@ the first attach, and once the gateway or the socket hung it up."
   ;; wire content array, after the prompt's text item. TARGET, a plist
   ;; (:PROVIDER :MODEL :EFFORT), names what a session not yet begun runs on
   ;; (the gateway's PIN-START-TURN-TARGET); a member it lacks is not sent.
-  (send-gateway-command ws :start-turn
-                        (json-object "session_id" session-id
-                                     "prompt" prompt
-                                     "generate_response" t
-                                     :opt "images" images
-                                     (:getf target :opt "provider" "model" "effort"))
+  (send-gateway-command ws :start-turn (start-turn-request session-id prompt :images images :target target)
                         :command-id command-id :correlation-id correlation-id))
+
+(defun start-turn-request (session-id prompt &key images target)
+  "The start_turn request SEND-START-TURN sends."
+  (json-object "session_id" session-id
+               "prompt" prompt
+               "generate_response" t
+               :opt "images" images
+               (:getf target :opt "provider" "model" "effort")))
+
+(defun start-turn-frame (prompt &key images target)
+  "The frame a fresh session's start_turn carrying PROMPT, IMAGES and TARGET
+encodes to, its identifiers made as the send makes them: what the launch
+measures before anything boots (LAUNCH-FRAME-REFUSAL)."
+  (encode-client-command
+   (make-gateway-command :kind :start-turn
+                         :command-id (nlk:make-durable-id "command")
+                         :correlation-id (nlk:make-durable-id "correlation")
+                         :request (start-turn-request (fresh-session-id) prompt
+                                                      :images images :target target))))
 
 (defun held-launch-target (model)
   "The target the launch named, as a plist (:PROVIDER :MODEL :EFFORT), while

@@ -355,7 +355,8 @@ Zig launcher gives the same thing."
                   :label "rollback N" :arguments "N"
                   :detail "Every folder goes back to what generation N recorded: the layer takes one commit whose tree is N's (its history kept, so forward is the same verb), a hub cell is cloned at N's pin, the binary and its shipped folders stay on the release that runs -- updates keep coming, forward, over the restored folder -- folders N had are installed and ones it never had are taken out where the installer put them; a plain folder whose content differs refuses the whole restore by name. With the organism running it converges and exits once no turn is in flight, and the next launch runs N; with none running, the next launch does. (rollback N) inside the shell does the same.")
    (nlk:make-verb "web" "open this home's organism in a browser tab"
-                  :detail "Prints the page's link and opens it where there is a display. The operator token rides after the link's #, which a browser never sends to a server: keep the link to yourself. Needs the organism running (nodecode, or nodecode gateway on) and the web cell: turn web on in /cells.")
+                  :arguments "[--print]"
+                  :detail "Prints the page's link and opens it where there is a display. The operator token rides after the link's #, which a browser never sends to a server: keep the link to yourself. Needs the organism running (nodecode, or nodecode gateway on) and the web cell: turn web on in /cells. --print prints the link alone and opens nothing: the line a program reads, the desktop app among them.")
    (nlk:make-verb "resume" "open the shell on that session" :arguments "SESSION-ID" :terminal t)
    (nlk:make-verb "rpc" "drive this home's organism from a program: JSON lines in and out"
                   :label "rpc [SESSION-ID]"
@@ -389,12 +390,15 @@ against.")
    (nlk:make-verb "--effort" "open the shell's fresh session at reasoning effort E"
                   :arguments "E" :label "--effort E"
                   :detail "--model MODEL:E says the same; this says it outright.")
+   (nlk:make-verb "@FILE" "add FILE to the shell's first prompt: its text, or an image"
+                  :arguments "" :label "@FILE..."
+                  :detail "Each @FILE ahead of `--' joins the first prompt in its order, after any text piped in and before the prompt itself: a text file as a <file name=\"PATH\"> block holding its text, an image (png, jpeg, gif or webp, 5 MB at most) attached to the message, its block naming it [Image #N]. PATH is the file's absolute path; a relative FILE is the caller's folder's, ~/ the home's, and @<(command) a command's output. Read before anything starts: a FILE that is missing, a folder, no plain file, neither UTF-8 text nor an image, or a first prompt past the 100,000 characters a turn takes refuses the launch; an empty one adds nothing. After `--' an @ is the prompt's own word.")
    (nlk:make-verb "--prompt-file" "send FILE's text as the shell's first prompt"
                   :arguments "FILE" :label "--prompt-file FILE"
                   :detail "Read before anything starts; one that cannot be read, or holds no text, refuses the launch. Its trailing newlines go, as $(cat FILE) drops them. Keeps a long prompt off the command line.")
    (nlk:make-verb "--" "send every word after it as the shell's first prompt"
                   :arguments "PROMPT..." :label "-- PROMPT..."
-                  :detail "The words join with one space; quote the prompt to keep it exactly. Nothing after it is read as a command or an option, -p and --help included. The prompt sends once the session stands, as if typed; edited in the composer before then, it waits there instead. nodecode resume SESSION-ID -- PROMPT sends it in that session.")
+                  :detail "The words join with one space; quote the prompt to keep it exactly. Nothing after it is read as a command or an option, -p and --help included. The prompt sends once the session stands, as if typed; edited in the composer before then, it waits there instead. nodecode resume SESSION-ID -- PROMPT sends it in that session. Text piped in -- git diff | nodecode -- review this, nodecode < notes.md -- leads the first prompt, ahead of any @FILE, and the shell still runs on the terminal.")
    (nlk:make-verb "--help" "this text" :aliases '("-h") :label "-h, --help")
    (nlk:make-verb "--version" "the version, and the commit it was built from"))
   "The executable's options, in help's order.")
@@ -465,10 +469,13 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
   ;; `-p NAME' or `--profile NAME' comes out wherever it sits (Hermes's rule).
   ;;
   ;; LAUNCH is what the line asks of the shell's session (#141), a plist
-  ;; (:PROVIDER :MODEL :EFFORT :PROMPT) or NIL: --provider, --model and
+  ;; (:PROVIDER :MODEL :EFFORT :PROMPT :IMAGES) or NIL: --provider, --model and
   ;; --effort, and the first prompt -- every word after the first `--', which
   ;; is cut off before any pass reads the line, so no word of a prompt is
-  ;; ever a profile, a help request or a command -- or --prompt-file's text.
+  ;; ever a profile, a help request or a command -- or --prompt-file's text,
+  ;; behind the @FILE words' blocks (LAUNCH-FILES), and IMAGES the image
+  ;; files among them as (MEDIA-TYPE . BASE64). Text piped into stdin is
+  ;; MAIN's to add, once the line is known to open a shell (PIPED-LAUNCH).
   (let ((cut (position "--" args :test #'string=)))
     (when cut
       (setf prompt (format nil "~{~a~^ ~}" (nthcdr (1+ cut) args))
@@ -498,7 +505,7 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
                                               args)))
                            ((member "--version" head :test #'string=) (list :version))))
       (return-from parse-launch-arguments (values nil child nil nil nil nil profile nil nil))))
-  (let (session-id store-path serve child ephemeral setup pristine target prompt-file)
+  (let (session-id store-path serve child ephemeral setup pristine target prompt-file files images)
     (flet ((value-for (refusal)
              ;; The word a flag or a verb takes, or REFUSAL when the line ends first.
              (or (pop args) (launch-usage-error refusal))))
@@ -506,6 +513,10 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
             for arg = (pop args)
             for name = (launch-name arg *launch-verbs* *launch-options*)
             do (cond
+                 ;; @FILE, pi's form: a file the first prompt carries. A
+                 ;; flag's value or a verb's word is its own, taken above.
+                 ((and (plusp (length arg)) (char= (char arg 0) #\@))
+                  (push (subseq arg 1) files))
                  ((string= name "serve") (setf serve t))
                  ;; (:login MODE): what the sign-in is for, NIL to ask on the terminal.
                  ((string= name "login")
@@ -606,13 +617,15 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
     (when (and child (eq (first child) :help))
       (return-from parse-launch-arguments
         (values nil child nil nil nil nil profile nil nil)))
+    (setf files (nreverse files))
     (when (and prompt prompt-file)
       (launch-usage-error "a launch sends one first prompt: -- PROMPT or --prompt-file FILE"))
-    (when (or target prompt prompt-file)
+    (when (or target prompt prompt-file files)
       (when (or serve child)
-        (launch-usage-error "~a is the shell's: nodecode [-p NAME] [--provider P] [--model M] [--effort E] -- PROMPT"
+        (launch-usage-error "~a is the shell's: nodecode [-p NAME] [--provider P] [--model M] [--effort E] [@FILE...] -- PROMPT"
                             (cond (target (format nil "--~(~a~)" (first target)))
                                   (prompt-file "--prompt-file")
+                                  (files (format nil "@~a" (first files)))
                                   (t "a first prompt"))))
       (when (and target session-id)
         (launch-usage-error "resume keeps the model ~a began on: /models in the shell picks another"
@@ -621,6 +634,10 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
     ;; the launch here, with nothing started.
     (when prompt-file
       (setf prompt (launch-prompt-file prompt-file)))
+    (when (or files prompt)
+      (multiple-value-bind (text image-files) (launch-files files prompt)
+        (setf prompt (launch-prompt-text text prompt)
+              images image-files)))
     (when ephemeral
       (when serve
         (launch-usage-error "--ephemeral is a shell's flag: a headless owner names its store with --store PATH"))
@@ -643,8 +660,8 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
                           (substitute #\Space #\- (string-downcase (first child)))))
     (values serve child session-id store-path ephemeral setup profile pristine
             (and (or target prompt)
-                 (loop for key in '(:provider :model :effort :prompt)
-                       for value = (if (eq key :prompt) prompt (getf target key))
+                 (loop for key in '(:provider :model :effort :prompt :images)
+                       for value = (case key (:prompt prompt) (:images images) (t (getf target key)))
                        when value append (list key value))))))
 
 (defun launch-prompt-file (file)
@@ -664,6 +681,187 @@ holds no text, is a LAUNCH-USAGE-ERROR."
       (launch-usage-error "--prompt-file ~a holds no prompt" file))
     text))
 
+(defun launch-prompt-text (&rest parts)
+  "The first prompt PARTS make, NIL ones left out, one blank line between
+two, or NIL when none is left."
+  ;; pi joins its parts with nothing (cli/initial-message.ts), so its piped
+  ;; `hello' and prompt `summarize' arrive as `hellosummarize'.
+  (let ((parts (remove nil parts)))
+    (and parts (format nil "~{~a~^~%~%~}" parts))))
+
+(defun launch-octets (stream limit)
+  "Every byte left on STREAM, or :TOO-LARGE once there are more than LIMIT."
+  ;; Read to its end rather than by its length, so a pipe reads too:
+  ;; @<(git diff) names one.
+  (let ((chunks '()) (total 0))
+    (loop for buffer = (make-array 65536 :element-type '(unsigned-byte 8))
+          for end = (read-sequence buffer stream)
+          while (plusp end)
+          do (incf total end)
+             (when (> total limit)
+               (return-from launch-octets :too-large))
+             (push (subseq buffer 0 end) chunks))
+    (let ((octets (make-array total :element-type '(unsigned-byte 8))) (start 0))
+      (dolist (chunk (nreverse chunks) octets)
+        (replace octets chunk :start1 start)
+        (incf start (length chunk))))))
+
+(defun launch-text (octets)
+  "OCTETS as text -- UTF-8, a leading byte order mark dropped -- or NIL when
+they are not: undecodable, or holding a NUL, as no text file does."
+  (let ((text (ignore-errors (sb-ext:octets-to-string octets :external-format :utf-8))))
+    (when (and text (not (find (code-char 0) text)))
+      (if (and (plusp (length text)) (char= (char text 0) (code-char #xFEFF)))
+          (subseq text 1)
+          text))))
+
+(defun launch-file-path (file)
+  "The absolute pathname @FILE names: a relative FILE the caller's folder's,
+~/ the home's."
+  (when (zerop (length file))
+    (launch-usage-error "@ needs a FILE right after it: nodecode @notes.md -- \"what to do with it\""))
+  (let ((home (and (or (string= file "~") (uiop:string-prefix-p "~/" file)
+                       #+win32 (uiop:string-prefix-p "~\\" file))
+                   (uiop:native-namestring (user-homedir-pathname)))))
+    (merge-pathnames (uiop:parse-native-namestring
+                      (if home (concatenate 'string home (subseq file (min 2 (length file)))) file))
+                     (uiop:ensure-directory-pathname (uiop:getcwd)))))
+
+(defun launch-read-limit ()
+  "The most bytes a launch reads of one file or of stdin: a turn's whole text
+at four bytes a character, or one image, whichever is more."
+  (max (* 4 (1+ *max-input-characters*)) *image-max-bytes*))
+
+(defun launch-too-long (prompt parts)
+  "Refuse PROMPT, a first prompt, when it is more than a turn takes
+(*MAX-INPUT-CHARACTERS*), naming PARTS, each (LABEL . CHARACTERS)."
+  ;; The gateway's own measure (START-TURN's INPUT-TOO-LARGE): said here,
+  ;; before anything boots, rather than as a rejected turn after.
+  (when (and prompt (> (length prompt) *max-input-characters*))
+    (launch-usage-error "the first prompt comes to ~:d characters (~{~a~^, ~}); a turn takes at most ~:d"
+                        (length prompt)
+                        (loop for (label . size) in parts collect (format nil "~a ~:d" label size))
+                        *max-input-characters*)))
+
+#-win32
+(defun launch-file-descriptor (name)
+  "The descriptor NAME, an @FILE's absolute path, names -- /dev/fd/N or
+/proc/self/fd/N, what a shell's <(command) passes -- or NIL."
+  (multiple-value-bind (match groups)
+      (ppcre:scan-to-strings "^/(?:dev|proc/self)/fd/(\\d{1,9})$" name)
+    (and match (parse-integer (aref groups 0)))))
+
+(defun launch-file-octets (file path name)
+  "The bytes @FILE, at PATH whose absolute name is NAME, holds -- or
+:TOO-LARGE past LAUNCH-READ-LIMIT."
+  ;; <(command) is a pipe the shell passes as /dev/fd/N: drained here, it is
+  ;; kept on N as stdin is (NLK::PIPED-INPUT-OCTETS), so an image this process
+  ;; execs into reads it again. Any other file that is no plain file -- a
+  ;; named pipe, a device, a socket -- could wait for ever, or never end.
+  (let ((descriptor #-win32 (launch-file-descriptor name) #+win32 nil)
+        (truename (probe-file path)))
+    (cond ((and descriptor (<= descriptor 2))
+           (launch-usage-error "@~a is the launch's own stdio; pipe text into nodecode instead" file))
+          (descriptor
+           (or (nlk::piped-input-octets (launch-read-limit) descriptor (format nil "@~a" file))
+               (launch-usage-error "@~a: no pipe or file is open there" file)))
+          ((null truename)
+           (launch-usage-error "@~a: there is no file ~a" file name))
+          ((and (null (pathname-name truename)) (null (pathname-type truename)))
+           (launch-usage-error "@~a is a folder; name a file in it" file))
+          ((not #-win32 (eql (ignore-errors (logand (sb-posix:stat-mode (sb-posix:stat name)) sb-posix:s-ifmt))
+                             sb-posix:s-ifreg)
+                #+win32 t)
+           (launch-usage-error "@~a is not a plain file; pipe a command's output into nodecode, or name it as <(command)" file))
+          (t
+           (let ((read (handler-case (with-open-file (in path :element-type '(unsigned-byte 8))
+                                       (launch-octets in (launch-read-limit)))
+                         (error (condition) condition))))
+             (if (typep read 'condition)
+                 (launch-usage-error "@~a cannot be read: ~a" file
+                                     (or (ignore-errors (plain-error-text read)) (type-of read)))
+                 read))))))
+
+(defun launch-files (files &optional prompt)
+  "The @FILE words' share of a first prompt => (values TEXT IMAGES PARTS):
+TEXT their <file name=\"PATH\"> blocks in order, PATH absolute, IMAGES the
+image files among them as (MEDIA-TYPE . BASE64), each named in its block by
+the composer's own [Image #N] marker, numbered from 1, and PARTS each text
+file's (@FILE . CHARACTERS). PROMPT, the words, is measured with them."
+  ;; pi's form (cli/file-processor.ts): a text file is its text in a block
+  ;; named by its absolute path, an image rides the message beside its
+  ;; block, and an empty file adds nothing. Unlike pi, a file that is not
+  ;; text never goes in as text. Refused before anything starts, as a
+  ;; LAUNCH-USAGE-ERROR: a FILE missing, a folder, no plain file, one
+  ;; neither UTF-8 text nor an image, an image past *IMAGE-MAX-BYTES* (the
+  ;; ceiling a pasted image file meets too), and text past what a turn takes.
+  (let ((blocks '()) (images '()) (parts '()))
+    (dolist (file files)
+      (let* ((path (launch-file-path file))
+             (name (uiop:native-namestring path))
+             (octets (launch-file-octets file path name))
+             (media-type (and (vectorp octets) (nlt:image-media-type octets))))
+        (cond ((and media-type (> (length octets) *image-max-bytes*))
+               (launch-usage-error "@~a is a ~,1f MB image; one rides at most ~d MB"
+                                   file (/ (length octets) 1048576.0) (floor *image-max-bytes* 1048576)))
+              (media-type
+               (push (cons media-type (cl-base64:usb8-array-to-base64-string octets)) images)
+               (push (format nil "<file name=\"~a\">[Image #~d]</file>" name (length images)) blocks))
+              ((eq octets :too-large)
+               (launch-usage-error "@~a is too large: a turn takes ~:d characters of text, an image ~d MB"
+                                   file *max-input-characters* (floor *image-max-bytes* 1048576)))
+              ((zerop (length octets)))
+              (t
+               (let ((text (or (launch-text octets)
+                               (launch-usage-error "@~a is neither UTF-8 text nor an image (png, jpeg, gif, webp)"
+                                                   file))))
+                 (setf text (string-right-trim '(#\Newline #\Return) text))
+                 (push (cons (format nil "@~a" file) (length text)) parts)
+                 (push (format nil "<file name=\"~a\">~%~a~%</file>" name text) blocks))))))
+    (let ((text (and blocks (format nil "~{~a~^~%~}" (nreverse blocks))))
+          (parts (nreverse parts)))
+      ;; The whole is what a turn measures, the blocks' own marks included.
+      (launch-too-long (launch-prompt-text text prompt)
+                       (append parts (and prompt (list (cons "the prompt" (length prompt))))))
+      (values text (nreverse images) parts))))
+
+(defun piped-launch (launch)
+  "LAUNCH with the text piped into stdin -- `git diff | nodecode', `nodecode
+< notes.md' -- leading its first prompt, ahead of the @FILE blocks and the
+prompt: pi's order. LAUNCH itself when nothing was piped, or only blanks."
+  ;; Read before anything boots, by the process the line opens a shell in;
+  ;; the shell draws on the terminal, never on stdin, so it stays interactive
+  ;; where pi falls to its print mode. NLK::PIPED-INPUT-OCTETS keeps what it
+  ;; read on stdin for an image this process execs into.
+  (let* ((octets (nlk::piped-input-octets (launch-read-limit)))
+         (rest (getf launch :prompt))
+         (text (cond ((null octets) nil)
+                     ((eq octets :too-large)
+                      (launch-usage-error "stdin holds more than a turn takes (~:d characters)"
+                                          *max-input-characters*))
+                     (t (or (launch-text octets)
+                            (launch-usage-error "stdin is not UTF-8 text; @FILE attaches an image"))))))
+    (setf text (and text (string-right-trim '(#\Newline #\Return) text)))
+    (cond ((not (and text (plusp (length (string-trim '(#\Space #\Tab #\Newline #\Return) text)))))
+           launch)
+          (t
+           (let ((prompt (launch-prompt-text text rest)))
+             (launch-too-long prompt (list* (cons "stdin" (length text))
+                                            (and rest (list (cons "the line's files and prompt" (length rest))))))
+             (list* :prompt prompt (alexandria:remove-from-plist launch :prompt)))))))
+
+(defun launch-frame-refusal (launch)
+  "Why LAUNCH's first prompt, its images with it, cannot go out as one sync
+frame, or NIL: the same measure Enter's send takes (NLK:CHECK-SYNC-FRAME-SIZE)."
+  (when (getf launch :images)
+    (handler-case (progn (nlk:check-sync-frame-size
+                          (start-turn-frame (getf launch :prompt) :images (getf launch :images)
+                                                                  :target launch))
+                         nil)
+      (nlk:frame-too-large (condition)
+        (format nil "the first prompt with its images cannot go out: ~a; attach fewer"
+                (nlk:protocol-error-message condition))))))
+
 (defun launch-help-text (&optional topic more)
   "`nodecode --help': the commands and the options, from the tables; or
 TOPIC's own help, a command's or an option's."
@@ -671,8 +869,8 @@ TOPIC's own help, a command's or an option's."
   ;; (NLK:PROFILE-COMMAND), MORE naming one of them.
   (cond
     ((null topic)
-     (format nil "usage: nodecode [-p NAME] [COMMAND] [OPTIONS] [-- PROMPT]~%~%~a~%~%commands~%~a~%options~%~a~%Run \"nodecode help COMMAND\" to read one command.~%"
-             "With no command, nodecode opens the shell on this home's organism, and starts the organism first when none is running. --model M -- PROMPT opens it on a fresh session running on M, its first prompt sent."
+     (format nil "usage: nodecode [-p NAME] [COMMAND] [OPTIONS] [@FILE...] [-- PROMPT]~%~%~a~%~%commands~%~a~%options~%~a~%Run \"nodecode help COMMAND\" to read one command.~%"
+             "With no command, nodecode opens the shell on this home's organism, and starts the organism first when none is running. --model M -- PROMPT opens it on a fresh session running on M, its first prompt sent; @FILE adds a file to that prompt, and text piped in leads it."
              (nlk:verbs-text *launch-verbs*)
              (nlk:verbs-text *launch-options*)))
     ((equal topic "profile")
@@ -844,6 +1042,16 @@ condition's report, exit 1."
         (write-line refusal *error-output*)
         (uiop:finish-outputs)
         (uiop:quit 2))
+      ;; Text piped into a shell's launch leads its first prompt: read here,
+      ;; once the line is known to open the shell and before any home, store
+      ;; or folder is touched, so stdin that cannot be had stops the launch
+      ;; with nothing started (PIPED-LAUNCH).
+      (unless (or child serve)
+        (setf launch (handler-case (piped-launch launch)
+                       (launch-usage-error (refusal)
+                         (usage-quit (princ-to-string refusal)))))
+        (when-let (refusal (launch-frame-refusal launch))
+          (usage-quit refusal)))
       ;; The home is settled before anything reads it. A named profile
       ;; re-resolves every startup parameter under its folder (the init
       ;; hook ran before argv was read); then the home this process ends
@@ -1075,7 +1283,8 @@ where there is a display. => (values ANSWER CODE STREAM)."
       (values (nlk:verb-help-text (nlk:find-verb "web" *launch-verbs*) :command "nodecode")
               0 :output)))
   (let ((port (organism-port))
-        (token (gateway-configured-operator-token)))
+        (token (gateway-configured-operator-token))
+        (print-only (member "--print" words :test #'string=)))
     (cond
       ((null port)
        (values "nodecode is not running for this home: start it with `nodecode' (or `nodecode gateway on' to keep it running), then run this again"
@@ -1092,6 +1301,11 @@ where there is a display. => (values ANSWER CODE STREAM)."
       ((null token) (values "this home has no operator token" 1 :error))
       (t
        (let ((link (format nil "http://127.0.0.1:~d/web/#t=~a" port token)))
-         (values (format nil "~a~%~:[no display here: open the link in a browser on this machine~;opened in your browser~]; it carries the operator token, so keep it to yourself"
-                         link (eq t (open-target link)))
-                 0 :output))))))
+         ;; --print: a program asked, which shows the page itself; on macOS
+         ;; and Windows a desktop is always there, so the opener would open a
+         ;; tab beside it every time it asked.
+         (if print-only
+             (values link 0 :output)
+             (values (format nil "~a~%~:[no display here: open the link in a browser on this machine~;opened in your browser~]; it carries the operator token, so keep it to yourself"
+                             link (eq t (open-target link)))
+                     0 :output)))))))

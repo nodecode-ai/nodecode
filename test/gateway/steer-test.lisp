@@ -165,8 +165,8 @@ in flight and TURN-ID names the admitted turn."
 
 (defmacro with-steer-shell ((model starts cancels &key submit accepted) &body body)
   "Run BODY over a temp store with MODEL a fresh shell on session \"s\" whose
-outgoing commands are recorded, not sent: STARTS collects (prompt command-id),
-CANCELS collects (turn-id retract)."
+outgoing commands are recorded, not sent: STARTS collects (prompt command-id
+target images), CANCELS collects (turn-id retract)."
   ;; SUBMIT, when given, is typed into the composer and entered first, and
   ;; ACCEPTED, when given, is the turn id the gateway then admits that start as.
   ;; The shell has a link that could carry them, or Enter would be refused
@@ -177,7 +177,7 @@ CANCELS collects (turn-id retract)."
          (with-stubbed-fdefinitions
              ((nle::send-start-turn (ws session-id prompt &key command-id
                                         correlation-id images target)
-                (push (list prompt command-id target) ,starts))
+                (push (list prompt command-id target images) ,starts))
               (nle::send-cancel-turn (ws session-id turn-id &key retract)
                 (push (list turn-id retract) ,cancels))
               (nle::send-subscribe (ws session-ids) nil))
@@ -425,6 +425,23 @@ STATUS, and the MEMBERS that ride it — the code, the message, the response."
     (nlt:init model)
     (is (equal "fix the bug" (nle::editor-value (nle::chat-model-editor model))) "INIT seats it in the composer")
     (is (equal "fix the bug" (getf (nle::gateway-model-launch-prompt model) :composer)) "to be sent from there")))
+
+(deftest a-launch-prompt-carries-its-file-images ()
+  ;; @FILE images (LAUNCH-FILES) stage as a pasted image does, their markers
+  ;; already in the prompt, and ride the start beside it.
+  (with-steer-shell (model starts cancels)
+    (let ((images '(("image/png" . "iVBORw0KGgo=") ("image/jpeg" . "/9j/4AA=")))
+          (prompt (format nil "<file name=\"/w/a.png\">[Image #1]</file>~%<file name=\"/w/b.jpg\">[Image #2]</file>~%~%what differs")))
+      (nle::seat-launch model "s" (list :prompt prompt :images images))
+      (is (equal images (nle::chat-model-pending-images model)) "the images wait staged")
+      (nle::send-launch-prompt model)
+      (is (equal prompt (first (first starts))) "the prompt goes out as given")
+      (is (equal images (fourth (first starts))) "its images with it, in order")
+      (is (null (nle::chat-model-pending-images model)) "and the stage is spent")))
+  (let ((model (make-instance 'nle::gateway-chat-model :session-id "s" :ws nil)))
+    (nle::seat-launch model "s" '(:prompt "<file name=\"/a.png\">[Image #1]</file>" :images (("image/png" . "x"))))
+    (nlt:init model)
+    (is (equal '(("image/png" . "x")) (nle::chat-model-pending-images model)) "seated after INIT too")))
 
 (deftest a-launch-prompt-waits-when-edited-or-refused-and-goes-out-exact ()
   (with-steer-shell (model starts cancels)
