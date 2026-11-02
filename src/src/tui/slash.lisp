@@ -219,9 +219,9 @@
         ;; shell over (nlk:gateway-text).
         (make-slash-command "gateway"
                             "The gateway: this organism kept running in the background, and at login"
-                            :usage "/gateway [on | off | restart | logs | help]"
+                            :usage "/gateway [on | off | restart | logs | setup [CHANNEL] | help]"
                             :dispatch nil :help-detail
-                            "Bare says where it stands — serving, waiting for this shell to close, off — and what it keeps running; `on' has the operating system run it (systemd on Linux, launchd on macOS) from now on and at every login, `off' stops it and this shell takes the organism over")
+                            "Bare says where it stands — serving, waiting for this shell to close, off — and what it keeps running; `on' has the operating system run it (systemd on Linux, launchd on macOS) from now on and at every login, `off' stops it and this shell takes the organism over; `setup discord' (or telegram, slack) sets a channel up step by step: the bot's token, a wait while it joins a server, then its channels and people picked from a checklist")
 
         ;; This organism in a browser tab: a shell over WEB-TEXT, what
         ;; `nodecode web' answers. The link carries the operator token, so
