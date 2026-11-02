@@ -69,9 +69,9 @@ fi
 
 # The footprint runs on this checkout's build: latency.sh left one, else it
 # is made here, the same way, without warming this machine's own image cache.
-if [ ! -x ./nodecode ] || [ ! -d src/fasl ]; then
-  if ! { NODECODE_BUILD_COMMIT="${head:0:9}" just release && rm -rf src/fasl \
-           && tools/build/compile-cells.sh ./nodecode src/cells src/fasl; } > "$out/build.log" 2>&1; then
+if [ ! -x ./nodecode ] || [ ! -d fasl ]; then
+  if ! { NODECODE_BUILD_COMMIT="${head:0:9}" just release && rm -rf fasl \
+           && tools/build/compile-cells.sh ./nodecode cells fasl; } > "$out/build.log" 2>&1; then
     tail -40 "$out/build.log" >&2
     echo "ci-nightly: the build of ${head:0:9} failed" >&2
     exit 2

@@ -17,7 +17,7 @@
 ;;;; cross-thread effect through is the core suite's AWAIT, by :TIMEOUT.
 ;;;;
 ;;;; This is development tooling, like the rest of tools/: nothing in
-;;;; src/src names it, no shipped cell loads it, and the organism never
+;;;; src/ names it, no shipped cell loads it, and the organism never
 ;;;; sees it. It reaches the image only as a component of nodecode/test,
 ;;;; the core test system every cell's /test system already depends on, so
 ;;;; each cell lane gets the one copy and no cell's .asd has to point

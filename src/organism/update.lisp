@@ -73,9 +73,9 @@ automatic updates its default (UPDATE-SETTINGS).")
           (name (if (eq (nlk:platform) :windows) "install.ps1" "install.sh")))
       (and runtime
            (or (probe-file (merge-pathnames name runtime))
-               (probe-file (merge-pathnames (format nil "src/tools/install/~a" name) runtime)))))
+               (probe-file (merge-pathnames (format nil "tools/install/~a" name) runtime)))))
   "The installer this build carries: install.sh (install.ps1 on Windows)
-beside the binary in a release, under src/tools/install/ in a checkout. NIL when
+beside the binary in a release, under tools/install/ in a checkout. NIL when
 neither is there.")
 
 (defun release-platform ()

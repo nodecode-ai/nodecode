@@ -28,7 +28,6 @@ trap 'rm -rf "$scratch"' EXIT
 tools/build/pull-cells.sh
 printf '(load "%s")\n' "$ql_setup" > "$scratch/sbclrc"
 mkdir -p "$scratch/home" "$scratch/cache"
-cd src
 NODECODE_HOME="$scratch/home" XDG_CACHE_HOME="$scratch/cache" \
   PATH="$sbcl_root/bin:$PATH" SBCL_HOME="$sbcl_root/lib/sbcl" \
   timeout 1500 sbcl --dynamic-space-size 4096 --control-stack-size 64MB --noinform --non-interactive \

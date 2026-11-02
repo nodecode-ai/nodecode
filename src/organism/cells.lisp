@@ -2867,9 +2867,11 @@ directory; NIL when PATH is not shaped like one."
 (defun release-folder-p (path)
   "Whether PATH is a folder of a release's tree as the installer lays one
 down: the organism's own system definition beside its cells/, and no
-repository around the tree, which a checkout has."
+repository around the tree, which a checkout has: at the root beside cells/,
+or around the src/ that held them in a tree from before the flat layout."
   (when-let (cells (nth-value 1 (shipped-relative path)))
     (and (probe-file (merge-pathnames "../nodecode.asd" cells))
+         (not (probe-file (merge-pathnames "../.git" cells)))
          (not (probe-file (merge-pathnames "../../.git" cells)))
          t)))
 

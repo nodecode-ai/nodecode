@@ -8,7 +8,7 @@
 # timed; a red one fails the run. Once this revision's SBCL is built, the
 # release build runs beside the suite rather than before it:
 #
-#   lint     `just lint': every .lisp and .asd under src/.
+#   lint     `just lint': every .lisp and .asd of the organism's own code.
 #   release  `just tarball HEAD OUT': pack.sh builds the committed revision the
 #            way a release does -- the patched SBCL, quicklisp on the pinned
 #            dist, the shipped cells, the gate that refuses an account's home
@@ -60,10 +60,10 @@ times=()
 done_step() { times+=("$1 $((SECONDS - step_start))s"); }
 
 step lint
-# The commit's own files: cells a previous run pulled into src/cells are no
-# revision of this repository.
+# The commit's own files, where `just lint' looks: cells a previous run
+# pulled into cells/ are no revision of this repository.
 # shellcheck disable=SC2046
-just lint $(git ls-files -- 'src/*.lisp' 'src/*.asd' | LC_ALL=C sort)
+just lint $(git ls-files -- nodecode.asd nodecode-perf.asd src test tools perf | grep -E '\.(lisp|asd)$' | LC_ALL=C sort)
 done_step lint
 
 # The release build and the suite run on one SBCL and quicklisp, whose cache
@@ -118,8 +118,8 @@ if ! git config user.email >/dev/null 2>&1; then
 fi
 sbcl_run() {
   # sbcl_run NODECODE_HOME XDG_CACHE_HOME FORM: one SBCL on the suite's SBCL
-  # and quicklisp, from src/, with the system loaded and FORM evaluated.
-  ( cd src && NODECODE_HOME="$1" XDG_CACHE_HOME="$2" \
+  # and quicklisp, from the root, with the system loaded and FORM evaluated.
+  ( NODECODE_HOME="$1" XDG_CACHE_HOME="$2" \
       PATH="$sbcl_root/bin:$PATH" SBCL_HOME="$sbcl_root/lib/sbcl" \
       timeout 5400 sbcl --dynamic-space-size 4096 --control-stack-size 64MB --noinform --non-interactive \
       --userinit "$scratch/sbclrc" --eval '(require :asdf)' --eval '(push (truename ".") asdf:*central-registry*)' \

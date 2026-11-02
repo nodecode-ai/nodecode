@@ -1,6 +1,6 @@
 ;;; test-subset.lisp --- the core suite's tests whose names contain any of
 ;;; the comma-separated NEEDLES (case-insensitive), in a scratch image:
-;;;   cd src && NEEDLES=capture,checkpoint sbcl --dynamic-space-size 4096 \
+;;;   NEEDLES=capture,checkpoint sbcl --dynamic-space-size 4096 \
 ;;;     --control-stack-size 8MB --noinform --non-interactive \
 ;;;     --load tools/check/test-subset.lisp
 ;;; The narrowest core lane when a change has an owner with a name; `just

@@ -26,7 +26,7 @@
 ;;;; revert, and lets two people's changes never touch the same file.
 ;;;;
 ;;;; The shipped source is read-only to the organism: humans
-;;;; edit every file under src/src; the organism writes only its layer. The
+;;;; edit every file under src/; the organism writes only its layer. The
 ;;;; read side here — DEFINITION-LOCATION, DEFINITION-TEXT — is how the
 ;;;; organism inspects itself on any machine, and the SHIPPED-DEFINITIONS
 ;;;; index is what tells an upgrade which overridden definitions changed

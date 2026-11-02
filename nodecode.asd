@@ -471,7 +471,7 @@ of stacking."
   ;; the binary lands at the repo root next to the Zig ./nodecode launcher.
   ;; Built via `just release`.
   :build-operation "program-op"
-  :build-pathname "../nodecode"
+  :build-pathname "nodecode"
   ;; warm.lisp runs the launch path once as the last act of the load, so
   ;; the dump carries warm dispatch caches instead of billing the
   ;; operator's first launch for them. Bin-only: the developer image and

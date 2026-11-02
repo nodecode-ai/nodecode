@@ -34,32 +34,37 @@ cells-pull:
 
 # Compile the organism.
 build: cells-pull
-    @set -euo pipefail; cd src && {{sbcl}} \
+    @set -euo pipefail; {{sbcl}} \
         --eval '(push (truename ".") asdf:*central-registry*)' \
         --eval '(asdf:load-system :nodecode)' \
         --eval '(format t "~&just build complete~%")'
 
 # Run the core test suite.
 test:
-    @set -euo pipefail; cd src && {{sbcl}} \
+    @set -euo pipefail; {{sbcl}} \
         --eval '(push (truename ".") asdf:*central-registry*)' \
         --eval '(asdf:test-system :nodecode)'
 
 # Parens, layout, and IS prose on a line of its own; with no FILES, every
-# .lisp and .asd under src/ but the cells pulled into cells/, which are
+# .lisp and .asd of the organism (src/, test/, tools/, perf/ and the two
+# systems at the root), never the cells pulled into cells/, which are
 # no revision of this repository (CI's lint and `loc' leave them out too).
 # Check Lisp structure.
 lint *files:
     @set -euo pipefail; \
       files="{{files}}"; \
       if [ -z "$files" ]; then \
-        files="$(find src -path 'cells/*' -prune -o -name '.*' -prune -o \( -name '*.lisp' -o -name '*.asd' \) -print | LC_ALL=C sort | tr '\n' ' ')"; \
+        files="$(find {{code_paths}} -name '.*' -prune -o \( -name '*.lisp' -o -name '*.asd' \) -print | LC_ALL=C sort | tr '\n' ' ')"; \
       fi; \
       sbcl --script tools/check/lint-structure.lisp $files
 
 # Hold HEAD's Common Lisp code lines (tokei) to this ceiling. Lower it when
 # the code shrinks; raise it only with the reason in the commit. Cells pulled
 # into cells/ are in no revision here and stay out of the count.
+# The organism's own code, where `lint' and `loc' look: never cells/, whose
+# pulled folders are in no revision of this repository.
+code_paths := "nodecode.asd nodecode-perf.asd src test tools perf"
+
 loc_ceiling := "104852"
 
 # Fail when HEAD's Lisp code lines exceed loc_ceiling.
@@ -70,14 +75,13 @@ loc:
       git rev-parse --verify HEAD >/dev/null 2>&1 || { \
         printf 'loc: no HEAD to measure.\n' >&2; exit 2; }; \
       tree="$(mktemp -d)"; trap 'rm -rf "$tree"' EXIT; \
-      git archive HEAD src | tar -x -C "$tree"; \
-      measure() { dir="$1"; shift; tokei "$dir" --types 'Common Lisp' "$@" | awk '$1 == "Common" && $2 == "Lisp" { print $5 }'; }; \
-      code="$(measure "$tree/src")"; \
-      bundled=""; for marker in $(find src/cells -name .bundle 2>/dev/null); do bundled="$bundled -e ${marker%/.bundle}"; done; \
-      live="$(measure src $bundled)"; \
+      git archive HEAD {{code_paths}} | tar -x -C "$tree"; \
+      measure() { tokei "$@" --types 'Common Lisp' | awk '$1 == "Common" && $2 == "Lisp" { print $5 }'; }; \
+      code="$(cd "$tree" && measure {{code_paths}})"; \
+      live="$(measure {{code_paths}})"; \
       ceiling={{loc_ceiling}}; \
       if [ -z "$code" ]; then \
-        printf 'loc: tokei found no Common Lisp under src/.\n' >&2; exit 2; fi; \
+        printf 'loc: tokei found no Common Lisp in {{code_paths}}.\n' >&2; exit 2; fi; \
       if [ "$live" != "$code" ]; then \
         printf 'loc: the working tree reads %s, %s of that uncommitted.\n' \
           "$live" "$((live - code))"; fi; \
@@ -118,7 +122,7 @@ proofs:
 # gate cannot load. `just perf' runs it after its comparison with a base.
 # Hold every hot path's growth to its contract.
 scaling:
-    @set -euo pipefail; cd src && {{sbcl}} \
+    @set -euo pipefail; {{sbcl}} \
         --eval '(push (truename ".") asdf:*central-registry*)' \
         --eval '(handler-case (asdf:load-system :nodecode-perf) (error (e) (format *error-output* "scaling: cannot load the gate: ~a~%" e) (sb-ext:exit :code 2 :abort t)))' \
         --eval '(sb-ext:exit :code (min 1 (nodecode.perf.scaling:run-scaling)))'
@@ -128,18 +132,17 @@ scaling:
 # own command line. The dump is forced: a dump killed mid-write leaves an
 # empty ./nodecode newer than every fasl, which ASDF would take as finished.
 # Then, unless NODECODE_BUILD_COMMIT marks a tarball build (pack.sh compiles
-# for the target box itself), the shipped cells compile into src/fasl and
+# for the target box itself), the shipped cells compile into fasl/ and
 # ./nodecode warms its launch image, so the next launch skips both. On macOS
 # the gateway's launcher is compiled and signed beside the binary.
 # Dump ./nodecode and warm its launch image.
 release: cells-pull
     @set -euo pipefail; \
-      cd src && sbcl --dynamic-space-size 8192 --control-stack-size 8MB --noinform --non-interactive \
+      sbcl --dynamic-space-size 8192 --control-stack-size 8MB --noinform --non-interactive \
         --eval '(require :asdf)' \
         --eval '(push (truename ".") asdf:*central-registry*)' \
         --eval '(push (truename "cells/context/") asdf:*central-registry*)' \
         --eval '(asdf:make :nodecode/bin :force (list "nodecode/bin"))'; \
-      cd ..; \
       test -s ./nodecode && test -x ./nodecode || \
         { printf 'release: the dump left no executable ./nodecode\n' >&2; exit 1; }; \
       printf 'just release complete: ./nodecode\n'; \
@@ -148,8 +151,8 @@ release: cells-pull
         codesign --force --sign - --identifier ai.nodecode.launcher nodecode-launcher; \
       fi; \
       if [ -z "${NODECODE_BUILD_COMMIT:-}" ]; then \
-        rm -rf src/fasl; \
-        tools/build/compile-cells.sh ./nodecode src/cells src/fasl || \
+        rm -rf fasl; \
+        tools/build/compile-cells.sh ./nodecode cells fasl || \
           printf 'release: a shipped cell did not compile; a launch compiles what is missing\n' >&2; \
         ./nodecode warm; \
       fi
@@ -164,7 +167,7 @@ tarball rev="HEAD" out="dist":
 # would reclaim.
 # Rank the code written twice.
 bloat:
-    @set -euo pipefail; cd src && {{sbcl}} \
+    @set -euo pipefail; {{sbcl}} \
         --eval '(push (truename ".") asdf:*central-registry*)' \
         --eval '(asdf:load-system :nodecode)' \
         --load tools/check/bloat.lisp \
@@ -259,7 +262,7 @@ cell_registry := "(progn (push (truename \".\") asdf:*central-registry*) (dolist
 
 # Load SYSTEMS in a scratch image.
 _cell-build +systems: cells-pull
-    @set -euo pipefail; cd src; args=(); \
+    @set -euo pipefail; args=(); \
       for s in {{systems}}; do args+=(--eval "(asdf:load-system :$s)"); done; \
       {{sbcl}} --eval '{{cell_registry}}' "${args[@]}" --eval '(format t "~&built {{systems}}~%")'
 
@@ -267,7 +270,7 @@ _cell-build +systems: cells-pull
 # over the shared test registry: the core suite loads for its fixtures, only
 # the cell's tests run.
 _cell-test runner +systems: cells-pull
-    @set -euo pipefail; cd src; args=(); \
+    @set -euo pipefail; args=(); \
       for s in {{systems}}; do args+=(--eval "(asdf:load-system :$s)"); done; \
       {{sbcl}} --eval '{{cell_registry}}' "${args[@]}" --eval '(funcall (uiop:find-symbol* :{{runner}} :nodecode.test))'
 
@@ -287,7 +290,7 @@ chrome-check: lint chrome-build chrome-test
 
 context-build: (_cell-build "nodecode-context")
 context-test: cells-pull
-    @set -euo pipefail; cd src && {{sbcl}} --eval '{{cell_registry}}' --eval '(asdf:test-system :nodecode-context)'
+    @set -euo pipefail; {{sbcl}} --eval '{{cell_registry}}' --eval '(asdf:test-system :nodecode-context)'
 context-check: lint context-build context-test
 
 cron-build: (_cell-build "nodecode-cron")

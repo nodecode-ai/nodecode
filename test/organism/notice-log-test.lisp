@@ -10,7 +10,7 @@
 ;;;; and what was said.
 ;;;;
 ;;;; Its own file on purpose: the board, the log and NOTICE are kernel
-;;;; surfaces, and the shared test files under test/surface/ are lanes of
+;;;; surfaces, and the shared test files under test/gateway/ are lanes of
 ;;;; their own on a dirty checkout.
 
 (in-package #:nodecode.test)

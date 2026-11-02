@@ -17,7 +17,7 @@ just release        # dump ./nodecode
 just <cell>-check   # one cell's lint, build and tests (just mcp-check, ...)
 ```
 
-By hand, from `src/`:
+By hand, from the repository root:
 
 ```sh
 sbcl --dynamic-space-size 8192 \
@@ -35,36 +35,41 @@ the whole organism. `--ephemeral` swaps only the store.
 ## Layout
 
 ```
+nodecode.asd       the system; its component list is the load order
+nodecode-perf.asd  the scaling gate (perf/)
 src/
-  nodecode.asd     the system; its component list is the load order
-  CELLS.md         the cell contract
-  UPGRADE.md       how a new build reaches a running organism
-  src/
-    package.lisp   every package: the kernel/evolved boundary, the terminal
+  package.lisp     every package: the kernel/evolved boundary, the terminal
                    core's, the import's, the facade and the test runner's
-    term/          terminal core under both shells (from cl-tuition, see NOTICE)
-    waist/         the declaration macros everything reads through: errors,
+  lib/             the declaration macros everything reads through: errors,
                    records, json, contracts, config sections, paths
-    wire/          invocation provenance and the gateway sync protocol
-    store/         store lifecycle, event log, state KV
-    session/       sessions, turns, workspace snapshots, checkpoints, recall
-    organism/      self-modification: gc, hooks, the layer, cells, knowledge,
-                   launch, profiles, upgrade, and warm.lisp, the release
-                   build's last load (nodecode/bin only)
-    engine/        provider lanes, context engine, turn loop, background exec
-      providers/   one file per provider wire
-      image/       decoders (WebP, JPEG, GIF) and FIT-IMAGE, an image as a
+  term/            terminal core under both shells (from cl-tuition, see NOTICE)
+  store/           store lifecycle, event log, state KV, backups
+  session/         sessions, turns, workspace snapshots, checkpoints, recall
+  organism/        self-modification: gc, hooks, the layer, cells, knowledge,
+                   launch, profiles, upgrade and update, and warm.lisp, the
+                   release build's last load (nodecode/bin only)
+  engine/          provider lanes, context engine, turn loop, background exec
+    providers/     one file per provider wire
+    image/         decoders (WebP, JPEG, GIF) and FIT-IMAGE, an image as a
                    provider takes it
-    import/        bringing in another agent's home and sessions
-    tui/           the shell: theme, editor, slash, keys, the model and its
-                   frame, the gateway client; transcript/ folds and lays out
-                   the log, commands/ runs the slash commands
-    surface/       gateway server, rpc, control routes, notify
-  test/            mirrors src/; support.lisp at the root
-  cells/           bundle.json pins the nodecode-ai/cells commit; just cells-pull
+  import/          bringing in another agent's home and sessions, and the
+                   worlds it reads them as
+  gateway/         the server every client attaches to: HTTP routes, the
+                   WebSocket sync protocol and its schema, control routes,
+                   notify, background work
+  client/          the gateway client the shells share
+  cli/             the command line: `nodecode ARGS' and `nodecode rpc'
+  tui/             the terminal shell: theme, editor, slash, keys, the model
+                   and its frame, setup, sign-in and status; transcript/ folds
+                   and lays out the log, commands/ runs the slash commands
+test/              mirrors src/; support.lisp at the root
+perf/              the scaling gate's contracts (`just scaling')
+cells/             bundle.json pins the nodecode-ai/cells commit; just cells-pull
                    fetches each cell into its own git-ignored folder
-  tools/           checks, build, release, installers and QA, one folder per job
+tools/             checks, build, release, installers and QA, one folder per job
                    (tools/README.md)
+docs/              this file, the cell contract (CELLS.md) and how a new build
+                   reaches a running organism (UPGRADE.md)
 ```
 
 Each concern has one owner and each owner one file. The `.asd` lists every

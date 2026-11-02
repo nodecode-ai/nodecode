@@ -514,7 +514,7 @@ renderer, the program loop.")
 (defpackage #:nodecode.import
   (:documentation "Another coding agent's home brought into this one: readers
 per artifact shape, worlds as data (NLK:*AGENT-WORLDS*), a plan of items, and
-each item landed through the seam that owns it (src/src/import/).")
+each item landed through the seam that owns it (src/import/).")
   (:use #:cl)
   (:nicknames #:nik)
   (:shadow #:import #:search)

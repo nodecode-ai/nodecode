@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # pull-cells.sh --- lay down the shipped cells: every folder the release builds in.
 #
-# usage: pull-cells.sh [CELLS_DIR]    (default: src/cells beside this script)
+# usage: pull-cells.sh [CELLS_DIR]    (default: cells/ at the root of this checkout)
 #
 # CELLS_DIR/bundle.json names a repository, the commit it is read at, and the
 # folders taken from it, each at the shipped path it takes here:
@@ -15,7 +15,7 @@
 # shipped name.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-cells="${1:-$here/src/cells}"
+cells="${1:-$here/cells}"
 manifest="$cells/bundle.json"
 test -f "$manifest" || { printf 'pull-cells: no %s\n' "$manifest" >&2; exit 2; }
 command -v git >/dev/null 2>&1 || { printf 'pull-cells: git is needed\n' >&2; exit 2; }

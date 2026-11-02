@@ -846,7 +846,7 @@ transcriptScrollbarThumb math verbatim."
 (defparameter *bundled-themes-json*
   (uiop:read-file-string
    (asdf:system-relative-pathname
-    "nodecode" "../resources/config/themes/default.json"))
+    "nodecode" "resources/config/themes/default.json"))
   "The shared bundled themes document, read at load so a dumped image carries
 its canvas and input-surface policy in the dumped image.")
 

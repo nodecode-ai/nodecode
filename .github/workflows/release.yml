@@ -122,7 +122,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build, smoke and zip the Windows release (release-windows.ps1)
         shell: powershell
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File src\tools\ci\ci-windows.ps1 -Root "$env:RUNNER_TEMP\nodecode-release"
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\ci\ci-windows.ps1 -Root "$env:RUNNER_TEMP\nodecode-release"
       - uses: actions/upload-artifact@v4
         with:
           name: release-x86_64-windows

@@ -46,7 +46,7 @@ Run git -C $repo -c core.autocrlf=false -c core.eol=lf archive --format=tar -o $
 Run tar -xf $headTar -C $tree
 
 # --- the shipped cells, as pull-cells.sh lays them down ----------------------
-$cells = Join-Path $tree 'src\cells'
+$cells = Join-Path $tree 'cells'
 $bundle = Get-Content (Join-Path $cells 'bundle.json') -Raw | ConvertFrom-Json
 if ($bundle.git -notmatch '^https://') { throw "bundle.json: git is not https: $($bundle.git)" }
 if ($bundle.commit -notmatch '^[0-9a-f]{40}$') { throw "bundle.json: commit is not 40 hex: $($bundle.commit)" }
@@ -83,7 +83,7 @@ Remove-Item -Recurse -Force $stage, $fetch, $headTar, $cellTar
 # So the half runs in a fresh console, its output streamed into the job log.
 $out = Join-Path $Root 'release-windows.out'
 $err = Join-Path $Root 'release-windows.err'
-$argv = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$(Join-Path $repo 'src\tools\release\release-windows.ps1')`"",
+$argv = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$(Join-Path $repo 'tools\release\release-windows.ps1')`"",
           '-Share', "`"$share`"", '-Work', "`"$(Join-Path $Root 'work')`"")
 $p = Start-Process -FilePath powershell.exe -ArgumentList $argv -RedirectStandardOutput $out -RedirectStandardError $err -PassThru
 $null = $p.Handle  # keeps the exit code readable after the process ends

@@ -132,11 +132,19 @@ def prune(days=7):
                 dirnames[:] = []
 
 
+def system_root(tree):
+    """Where TREE keeps nodecode.asd and its tools: the root since the flat
+    layout, src/ in a base from before it."""
+    if os.path.exists(os.path.join(tree, "nodecode.asd")):
+        return tree
+    return os.path.join(tree, "src")
+
+
 def cells(tree):
     # A base from before tools/ took one folder per job keeps it at the top.
-    script = os.path.join(tree, "src", "tools", "build", "pull-cells.sh")
+    script = os.path.join(system_root(tree), "tools", "build", "pull-cells.sh")
     if not os.path.exists(script):
-        script = os.path.join(tree, "src", "tools", "pull-cells.sh")
+        script = os.path.join(system_root(tree), "tools", "pull-cells.sh")
     r = subprocess.run([script], cwd=tree,
                        capture_output=True, text=True)
     if r.returncode != 0:
@@ -149,7 +157,7 @@ def sbcl_command(tree, forms):
     if os.environ.get("PERF_SBCL_USERINIT"):
         command += ["--userinit", os.environ["PERF_SBCL_USERINIT"]]
     command += ["--eval", "(require :asdf)",
-                "--eval", '(push (truename "%s/") asdf:*central-registry*)' % os.path.join(tree, "src"),
+                "--eval", '(push (truename "%s/") asdf:*central-registry*)' % system_root(tree),
                 "--eval", "(asdf:load-system :nodecode/test)"]
     for form in forms:
         command += ["--eval", form]

@@ -22,14 +22,20 @@ sha="$(git -C "$repo" rev-parse --verify --quiet "$base^{commit}")" \
   || { echo "latency: $base names no commit here" >&2; exit 2; }
 mkdir -p "$cache"
 
+# Where TREE keeps what the flat layout keeps at its root: nothing before
+# the names since that layout, src/ in a BASE from before it.
+layout() { [ -e "$1/nodecode.asd" ] || printf 'src/'; }
+
 # A build as the release makes it, without warming an image into this
 # machine's own cache: latency.py's scratch homes warm their own.
 build() { # TREE LABEL
-  local log="$1/.latency-build.log" compile=tools/build/compile-cells.sh
+  local log="$1/.latency-build.log" lay
+  lay="$(layout "$1")"
+  local compile="${lay}tools/build/compile-cells.sh"
   # A BASE from before tools/ took one folder per job keeps it at the top.
-  [ -e "$1/$compile" ] || compile=tools/compile-cells.sh
-  if ! ( cd "$1" && NODECODE_BUILD_COMMIT="$2" just release && rm -rf src/fasl \
-           && "$compile" ./nodecode src/cells src/fasl ) > "$log" 2>&1; then
+  [ -e "$1/$compile" ] || compile="${lay}tools/compile-cells.sh"
+  if ! ( cd "$1" && NODECODE_BUILD_COMMIT="$2" just release && rm -rf "${lay}fasl" \
+           && "$compile" ./nodecode "${lay}cells" "${lay}fasl" ) > "$log" 2>&1; then
     tail -40 "$log" >&2
     echo "latency: the build of $2 in $1 failed (log $log)" >&2
     return 1
@@ -47,7 +53,7 @@ if [ ! -x "$tree/nodecode" ] || [ ! -e "$tree/.latency-ok" ]; then
   git -C "$repo" archive "$sha" | tar -x -C "$tree.tmp"
   # The cells this checkout already pulled, where BASE pins the same ones;
   # pull-cells fetches whatever BASE pins differently.
-  if [ -d "$repo/src/cells" ]; then cp -an "$repo/cells/." "$tree.tmp/cells/"; fi
+  if [ -d "$repo/cells" ]; then cp -an "$repo/cells/." "$tree.tmp/$(layout "$tree.tmp")cells/"; fi
   echo "latency: building base ${sha:0:9}"
   build "$tree.tmp" "${sha:0:9}" || exit 2
   mv "$tree.tmp" "$tree"
