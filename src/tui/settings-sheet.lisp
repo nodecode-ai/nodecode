@@ -58,7 +58,8 @@ it is set, never what it holds."
                    ("recap_lines" . "Recap length") ("verification_repair_attempts" . "Verification retries")
                    ("session_budget" . "Conversations per import") ("share" . "Share diagnostics")
                    ("nodes" . "Team size") ("budget_tokens" . "Token budget")
-                   ("budget_seconds" . "Time budget") ("max_results" . "Results per search")
+                   ("budget_seconds" . "Time budget") ("budget_calls" . "Tool call budget")
+                   ("max_results" . "Results per search")
                    ("background" . "Keep Chrome in background"))
                  :test #'equal))
       ;; A secret taken by reference is two members: the variable holding it
