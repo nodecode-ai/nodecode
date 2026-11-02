@@ -1396,7 +1396,9 @@ last row runs /rows drop NAME."
 
 (deftest slash-catalog-carries-cells (let ((entry (nle::find-slash-command "cells"))))
   (is-present entry "/cells is in the catalog"
-    (is (string= "/cells" (nle::slash-command-usage entry))))
+    (is (string= "/cells [new [NAME | WHAT IT DOES] | SEARCH]" (nle::slash-command-usage entry)))
+    (is (eq :args (nle::slash-command-dispatch entry)) "the shell hands it the typed tail")
+    (is (equal '("new") (nle::slash-command-completer entry)) "new completes"))
   (is (null (nle::find-slash-command "persist")) "/persist is gone with the journal"))
 
 ;;; --- /generations: the sealed generations, and the way back to one ----------

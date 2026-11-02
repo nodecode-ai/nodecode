@@ -361,7 +361,9 @@ a shell's /models asks it here, where a cell's lane and its address run."
 ;;; Presence is consent: a cell is on while its folder is in the
 ;;; one folder. On is INSTALL-AND-LOAD-CELL over the folder and the offered
 ;;; ones it stands on, then its start; off takes
-;;; the folder out (UNINSTALL-CELL) and stops its peripheral. Code a folder
+;;; the folder out (UNINSTALL-CELL) and stops its peripheral. The operator's
+;;; own folder is never taken out: off parks it (NLK:PARK-CELL), kept whole
+;;; and passed over by the boot, and on loads it again. Code a folder
 ;;; loaded stays in this image until a restart, and a folder taken out does
 ;;; not start again (%START-CELLS): the page says which rows wait for the
 ;;; restart. The hub's index is the network's, read on a route of its own so
@@ -407,8 +409,10 @@ what it has to say."
       ""))
 
 (defun cell-row (name offer offers &aux (record (nlk:find-cell name))
-                                         (on (nlk:installed-cell-p name))
-                                         (folder (and on (merge-pathnames (format nil "~a/" name)
+                                         (present (nlk:installed-cell-p name))
+                                         ;; a parked folder is there, and off
+                                         (on (and present (not (nlk:cell-parked-p name))))
+                                         (folder (and present (merge-pathnames (format nil "~a/" name)
                                                                           nlk::*cells-directory*)))
                                          (truename (and folder (ignore-errors (truename folder))))
                                          (pin (if (and offer (nlk:offer-git offer))
@@ -429,9 +433,11 @@ the config section it declares."
                "description" (cond (offer (nlk:offer-description offer))
                                    (folder (folder-description folder))
                                    (t ""))
-               ;; a folder neither shipped nor the hub's is the operator's own, never switched here
-               "source" (cond (pin "hub") (offer "shipped") (on "own") (t "gone"))
+               ;; a folder neither shipped nor the hub's is the operator's own, never taken out here
+               "source" (cond (pin "hub") (offer "shipped") (present "own") (t "gone"))
                "on" on
+               ;; an own folder off parks, kept whole: the layer and a knowledge cell never switch
+               :opt "parks" (and present (not offer) (not pin) (nlk:cell-parkable-p name))
                :opt "git" (first pin) :opt "commit" (second pin) :opt "path" (third pin)
                ;; which of the hub's indexes lists it: Nodecode's own, or the community's
                :opt "index" (and offer (nlk:offer-index offer))
@@ -441,7 +447,7 @@ the config section it declares."
                                                      (remove name (nlk:offer-closure (list name) offers)
                                                              :test #'string=)))
                                (map 'vector #'cell-label others))
-               :opt "kept" (and on (or offer pin) (cell-off-refusal name))
+               :opt "kept" (and on (or offer pin (nlk:cell-parkable-p name)) (cell-off-refusal name))
                "loaded" (and record (eq record.state :loaded))
                :opt "kind" (and record (string-downcase record.kind))
                :opt "level" (and record (string-downcase (or (cell-level record) :loaded)))
@@ -486,7 +492,7 @@ after TEXT when a switch said what came of it."
    :opt "folder" (and root (namestring root))
    "cells" (map 'vector (lambda (name) (cell-row name (nlk:find-offer name offers) offers))
                  (append (mapcar #'nlk:offer-name offers)
-                         (sort (set-difference (union (mapcar #'nlk:folder-name (nlk::cell-folders root))
+                         (sort (set-difference (union (mapcar #'nlk:folder-name (nlk:every-cell-folder root))
                                                       (mapcar #'nlk:cell-name (nlk:cells))
                                                       :test #'string=)
                                                (mapcar #'nlk:offer-name offers) :test #'string=)
@@ -500,6 +506,11 @@ FAILURES a line per thing its load failed on, FRESH NIL when this image had
 loaded it already. Signals what the install refuses."
   ;; SWITCH-CELL-ON's step for each folder of the closure it turns on.
   (nlk:install-cell name :offers offers)
+  (load-cell-now name))
+
+(defun load-cell-now (name)
+  "Load the folder NAME into this image now (NLK:LOAD-CELL): => (values
+FAILURES FRESH), as INSTALL-AND-LOAD-CELL answers."
   (let ((records (nlk:load-cell name)))
     (values (loop for record in records
                   append (loop for (file . text) in (nlk:cell-failures record)
@@ -516,34 +527,41 @@ COMMIT, the pin a person read, is not the hub's now, and when the reads
 and the installs do not fit the deadline SECONDS leaves them."
   ;; A name the release does not ship is looked for on the hub (HUB-OFFERS-FOR).
   ;; INSTALL-CELL refuses a name on offer from neither and a folder whose
-  ;; dependencies this image cannot find.
+  ;; dependencies this image cannot find. The operator's own folder off was
+  ;; parked (NLK:PARK-CELL): on takes the marker out and loads it, no offer
+  ;; read.
   ;;
   ;; The reads and the installs run under one deadline, SECONDS less the
   ;; margin the loads, the starts and the answer keep (CELL-SWITCH-DEADLINE):
   ;; no step of them starts past it, so the answer reaches the waiter while
   ;; it waits and no install runs on after it stopped waiting. A failure
   ;; once the deadline has passed is said as the deadline's.
-  (nlk:with-wait-deadline (given)
-    (handler-bind ((error (lambda (condition)
-                            (when (and (nlk:wait-deadline-passed-p)
-                                       (not (typep condition 'nlk:protocol-error)))
-                              (nlk::protocol-refuse
-                               :refused "~a did not come on within ~d s~@[: ~a~]; ~:[nothing was installed~;~:*~{~a~^, ~} came on before the time ran out~]"
-                               (cell-label name) given (nlk:wait-deadline-reason condition)
-                               (mapcar #'cell-label (reverse done)))))))
-      (unless (nlk:find-offer name offers)
-        (setf offers (append offers (hub-offers-for name commit offers))))
-      (let ((entry (nlk:find-offer name offers)))
-        (when (and commit entry (not (equal commit (nlk:offer-commit entry))))
-          (nlk::protocol-refuse :refused "the hub moved ~a from ~a~@[ to ~a~] since it was read: nothing was installed; read it again"
-                                (cell-label name) commit (nlk:offer-commit entry))))
-      (setf names (or (nlk:offer-closure (list name) offers)
-                      (error "no cell named ~a is shipped or on the hub" name)))
-      (dolist (each names)
-        (setf failures (append failures
-                               (mapcar (lambda (line) (format nil "~a: ~a" (cell-label each) line))
-                                       (install-and-load-cell each offers))))
-        (push each done))))
+  (if (nlk:cell-parked-p name)
+      (progn (nlk:unpark-cell name)
+             (setf names (list name)
+                   failures (mapcar (lambda (line) (format nil "~a: ~a" (cell-label name) line))
+                                    (load-cell-now name))))
+      (nlk:with-wait-deadline (given)
+        (handler-bind ((error (lambda (condition)
+                                (when (and (nlk:wait-deadline-passed-p)
+                                           (not (typep condition 'nlk:protocol-error)))
+                                  (nlk::protocol-refuse
+                                   :refused "~a did not come on within ~d s~@[: ~a~]; ~:[nothing was installed~;~:*~{~a~^, ~} came on before the time ran out~]"
+                                   (cell-label name) given (nlk:wait-deadline-reason condition)
+                                   (mapcar #'cell-label (reverse done)))))))
+          (unless (nlk:find-offer name offers)
+            (setf offers (append offers (hub-offers-for name commit offers))))
+          (let ((entry (nlk:find-offer name offers)))
+            (when (and commit entry (not (equal commit (nlk:offer-commit entry))))
+              (nlk::protocol-refuse :refused "the hub moved ~a from ~a~@[ to ~a~] since it was read: nothing was installed; read it again"
+                                    (cell-label name) commit (nlk:offer-commit entry))))
+          (setf names (or (nlk:offer-closure (list name) offers)
+                          (error "no cell named ~a is shipped or on the hub" name)))
+          (dolist (each names)
+            (setf failures (append failures
+                                   (mapcar (lambda (line) (format nil "~a: ~a" (cell-label each) line))
+                                           (install-and-load-cell each offers))))
+            (push each done)))))
   (start-cells names)
   (broadcast-organism "organism.cells" (json-object "names" (coerce names 'vector)))
   (let ((record (nlk:find-cell name)))
@@ -557,12 +575,15 @@ stopped. => what came of it, in a sentence. Refused, saying why, while
 another folder stands on it or it is the operator's own."
   (when-let (why (cell-off-refusal name))
     (nlk::protocol-refuse :refused "~a stays on: ~a" (cell-label name) why))
-  (unless (nlk:uninstall-cell name)
-    (nlk::protocol-refuse :refused "~a is ~:[not in ~a~;your own folder in ~a: take it out yourself~]"
-                          (cell-label name) (nlk:installed-cell-p name) nlk::*cells-directory*))
-  (when (nlk:find-cell name)
-    (stop-cells (list name)))
-  (format nil "~a is off; its code stays loaded in this organism until a restart" (cell-label name)))
+  (let ((parked (and (nlk:cell-parkable-p name) (not (nlk:cell-parked-p name)) (nlk:park-cell name))))
+    (unless (or parked (nlk:uninstall-cell name))
+      (nlk::protocol-refuse :refused "~a is ~:[not in ~a~;your own folder in ~a: take it out yourself~]"
+                            (cell-label name) (nlk:installed-cell-p name) nlk::*cells-directory*))
+    (when (nlk:find-cell name)
+      (stop-cells (list name)))
+    (format nil "~a is off~:[~;; its folder stays as it is and no boot loads it until you turn it on~]; ~
+                 its code stays loaded in this organism until a restart"
+            (cell-label name) parked)))
 
 (defun request-wait-seconds (request &aux (seconds (and (hash-table-p request) (gethash "seconds" request))))
   "The seconds a POST to /api/gateway/cells says its sender waits for the

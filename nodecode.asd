@@ -205,6 +205,10 @@ of stacking."
      ;; records and never loads, and the index reads the layer the scribe
      ;; writes.
      (:file "organism/knowledge")
+     ;; made-cells follows knowledge: a made cell is a folder of kept code it lists
+     (:file "organism/made-cells")
+     ;; cell-move follows made-cells: what the layer kept, moved into one after the fact
+     (:file "organism/cell-move")
      ;; upgrade: what a staged tree changes in this image, classified: reads
      ;; the scribe's definitions and the loader's residue rule, evaluates nothing.
      (:file "organism/upgrade")
@@ -552,6 +556,10 @@ of stacking."
      ;; scribe's, into a fixture folder of its own (support's
      ;; WITH-KNOWLEDGE-FIXTURE).
      (:file "organism/knowledge-test")
+     ;; made-cells-test follows knowledge-test: same fixture, and its KNOWLEDGE-GIT
+     (:file "organism/made-cells-test")
+     ;; cell-move-test follows made-cells-test: its fixture and helpers
+     (:file "organism/cell-move-test")
      ;; recall-test follows scribe-test: it drives the store fixtures plus
      ;; support's seeded turns and binds the scribe ambient recall defaults
      ;; to.

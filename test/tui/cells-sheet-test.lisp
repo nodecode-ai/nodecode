@@ -192,6 +192,17 @@ other route reaches the real call."
         (is (sheet-row model "Sessions that join a board read each other's posts"))
         (is (sheet-row model "Adds" "known once it loads"))))))
 
+(deftest cells-an-own-folder-that-parks-has-a-switch ()
+  ;; An organism that parks an own folder says so on its row (parks); a row
+  ;; without it -- the layer, a knowledge cell, an older organism -- keeps
+  ;; the fixed `your own folder'.
+  (let ((parks (cell-row-json "weather" :source "own" :parks t))
+        (layer (cell-row-json "harness" :source "own")))
+    (is (not (nle::cell-fixed-p parks)) "off parks it, so it switches")
+    (is (nle::cell-fixed-p layer) "one that does not park stays")
+    (is (search "off keeps it here" (first (first (nle::cell-source-segs parks)))) "saying what off keeps")
+    (is (search "never takes it out" (first (first (nle::cell-source-segs layer)))))))
+
 (deftest cells-space-turns-a-cell-on-or-off-and-says-what-came-of-it ()
   ;; Space turns the chosen cell on or off through the organism; the listing
   ;; it answers lands under the same query, on the same cell, with its
@@ -256,6 +267,51 @@ other route reaches the real call."
         (is (equal "nodecode-cursor" (cells-chosen cells)))
         (press model #\x)
         (is (sheet-row model "Nothing matches “curx”"))))))
+
+(deftest cells-new-cell-row-starts-a-cell-by-talking ()
+  ;; Home's first row is + New cell. The sheet still opens on a cell, so
+  ;; Space never starts one; Up reaches the row, its pane says how a cell
+  ;; is made, and Enter leaves the sentence in the composer to finish.
+  (with-frame-model (model 120 40 :session-id "cells-new")
+    (with-cells-gateway (calls)
+      (let ((cells (cells-open model)))
+        (is (equal '(:new) (first (nle::cells-items cells))) "the new row heads Home")
+        (is (stringp (cells-chosen cells)) "the sheet opens on a cell, not the new row")
+        (is (sheet-row model "+  New cell") "the row shows")
+        (press model :up)
+        (is (eq :new (cells-chosen cells)) "Up from the first cell reaches it")
+        (is (sheet-row model "describe it") "the key row names what Enter does")
+        (is (sheet-row model "Say what it should do") "the pane says how")
+        (press model :enter)
+        (is (null model.dialog) "the sheet closes")
+        (is (equal "Make a cell that " (composer-value model)) "the sentence waits in the composer")
+        (is (null (cells-posts calls)) "nothing is switched")))))
+
+(deftest cells-new-starts-from-a-click-a-search-or-the-slash ()
+  (with-frame-model (model 120 40 :session-id "cells-new-ways")
+    (with-cells-gateway (calls)
+      (cells-open model)
+      (click-on model "New cell" "New cell")
+      (is (null model.dialog) "a click on the row starts one")
+      (is (equal "Make a cell that " (composer-value model)))
+      (let ((cells (cells-open model)))
+        (press model #\n #\e #\w)
+        (is (eq :new (cells-chosen cells)) "typing its words finds the row")
+        (press model :enter)
+        (is (equal "Make a cell that " (composer-value model))))
+      (nle::execute-slash-command model "cells" "new weather")
+      (is (equal "Make a cell named weather that " (composer-value model)) "one word names it")
+      (nle::execute-slash-command model "cells" "new  watches my inbox ")
+      (is (equal "Make a cell that watches my inbox" (composer-value model)) "more words say what it does")
+      (nle::execute-slash-command model "cells" " new ")
+      (is (equal "Make a cell that " (composer-value model)))
+      (nle::execute-slash-command model "cells" "disc")
+      (let ((cells model.dialog))
+        (is (nle::cells-sheet-p cells) "other words open the sheet")
+        (is (equal "disc" (nle::cells-sheet-query cells)) "searching them")
+        (is (equal "nodecode-channel-discord" (cells-chosen cells))))
+      (is (search "Make a cell named weather that" (nle::headless-cells "new weather" "room")) "a room, with no composer, is told the sentence")
+      (is (null (cells-posts calls)) "nothing is switched"))))
 
 (deftest cells-enter-opens-the-cells-own-settings ()
   ;; Enter on a cell that declares a section opens /settings on it, once the

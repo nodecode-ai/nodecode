@@ -306,10 +306,17 @@ shell runs."
                        (getf plan :realized-percent)
                        (getf plan :retained-message-count)))))))
 
-(defun headless-cells (args session-id)
-  "This process's folder report — the same local-process rule as /gc."
-  (declare (ignore args session-id))
-  (render-cells (nlk:cells)))
+(defun headless-cells (args session-id &aux (words (string-trim " " (or args ""))))
+  "This process's folder report — the same local-process rule as /gc; /cells
+new [NAME] says how a cell is made by talking, where no composer can be
+filled."
+  (declare (ignore session-id))
+  (let ((space (position #\Space words)))
+    (if (string-equal "new" (subseq words 0 space))
+        (multiple-value-bind (name what) (cells-new-words (if space (subseq words space) ""))
+          (format nil "Say what it should do, starting “~a…”: the agent asks what it still needs, then builds it as a cell of its own, on at once."
+                  (cell-sentence name what)))
+        (render-cells (nlk:cells)))))
 
 (defun headless-doctor (args session-id)
   "What is missing rather than what loaded, then what only a look can say

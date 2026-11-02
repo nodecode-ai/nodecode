@@ -4572,7 +4572,9 @@ One thread per folder; none outside a serving gateway."
                       (namestring nlk::*cells-directory*))
               :level :warning))
     (dolist (cell (nlk:cells))
-      (when (and (cell-selected-p cell names) (cell-startable-p cell))
+      (when (and (cell-selected-p cell names)
+                 ;; a start declared since the load is taken up here
+                 (progn (nlk:note-cell-start cell) (cell-startable-p cell)))
         (let ((name cell.name))
           (handler-case
               (let ((stop (funcall cell.start config)))
