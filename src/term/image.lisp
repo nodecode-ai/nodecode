@@ -244,9 +244,11 @@ take it as a title."
 (defun %render-image-placements (old new stream &key force)
   "Delete the placements in OLD that NEW dropped and place the ones NEW
 added; with FORCE, delete and re-place everything (after a full paint)."
-  ;; Answers NEW. A placement is its values: EQUALP reads through to the image.
+  ;; Answers NEW, and as a second value whether it placed one, which moves
+  ;; the cursor. A placement is its values: EQUALP reads through to the image.
   (dolist (p (if force old (set-difference old new :test #'equalp)))
     (delete-image-placements p.image :placement-id p.placement-id :stream stream))
-  (dolist (p (if force new (set-difference new old :test #'equalp)))
-    (place-image p.image p.x p.y :rows p.rows :placement-id p.placement-id :stream stream))
-  new)
+  (let ((placed (if force new (set-difference new old :test #'equalp))))
+    (dolist (p placed)
+      (place-image p.image p.x p.y :rows p.rows :placement-id p.placement-id :stream stream))
+    (values new (and placed t))))

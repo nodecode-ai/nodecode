@@ -224,6 +224,14 @@ as a window title, the empty string included."
     (is (null (search (csi "?25h") out)) "and never shows the cursor")
     (is (uiop:string-suffix-p out (csi "?2026l")) "its update closes last")))
 
+(deftest a-typed-key-pays-for-hiding-the-cursor-with-its-motion ()
+  ;; The paint sends no home of its own, and the caret is reached from where
+  ;; the paint left off: a key typed at the caret costs no motion at all.
+  (let ((typed (second-frame (list "x   " "    ") (nlt:make-cursor :x 1 :y 0)))
+        (below (second-frame (list "x" "    ") (nlt:make-cursor :x 1 :y 1))))
+    (is (string= (concatenate 'string (csi "?2026h") (csi "?25l") (csi "H") "x" (csi "?25h") (csi "?2026l")) typed) "the frame is the key, the cursor hidden around it, and nothing else")
+    (is (uiop:string-suffix-p below (concatenate 'string "x" (csi "B") (csi "?25h") (csi "?2026l"))) "a caret elsewhere is reached by the shortest motion from the paint's end")))
+
 (deftest terminal-size-answers-two-positive-integers ()
   (multiple-value-bind (width height) (nlt:terminal-size)
     (is (and (integerp width) (plusp width)) "a positive width")

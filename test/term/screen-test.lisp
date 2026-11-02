@@ -132,6 +132,24 @@
     (is (search "X" written) "and the changed cell is written")
     (is (null (search "a" written)) "the unchanged cells are not")))
 
+(defun painted-diff (before after width)
+  "The bytes the painter writes to turn rows BEFORE into rows AFTER."
+  (let ((height (length before)))
+    (with-output-to-string (out)
+      (nlt:render-diff (nlt:parse-styled-string before width height)
+                       (nlt:parse-styled-string after width height)
+                       out))))
+
+(deftest painter-steps-between-rows-only-from-a-column-it-is-sure-of ()
+  (let ((step (painted-diff (list "abc" "abc") (list "aXc" "aYc") 3))
+        (ascii (painted-diff (list "abc" "abc") (list "Ebc" "acc") 3))
+        (wide (painted-diff (list "abc" "abc") (list "ébc" "acc") 3))
+        (edge (painted-diff (list "ab" "ab") (list "aX" "aY") 2)))
+    (is (string= (format nil "~C[CX~C[B~CY" #\Escape #\Escape #\Backspace) step) "down a row and back a column: four bytes where an absolute move costs six")
+    (is (string= (format nil "E~C[Bc" #\Escape) ascii) "past ASCII the column is certain")
+    (is (string= (format nil "é~C[2;2Hc" #\Escape) wide) "past a glyph a terminal may draw at another width, the next row is reached absolutely")
+    (is (string= (format nil "~C[CX~C[2;2HY" #\Escape #\Escape) edge) "and after a write into the last column, whose wrap is pending")))
+
 (deftest painter-opens-and-closes-links-and-resets-the-style ()
   (let ((linked-red (concatenate 'string +osc8-open+ (format nil "~C[31mab" #\Escape) +osc8-close+)))
     ;; The link and the style end at cell 2, where the blanks begin.
@@ -151,4 +169,5 @@
   (let* ((buffer (nlt:parse-styled-string (list "ab" "cd") 2 2))
          (written (with-output-to-string (out) (nlt:render-diff nil buffer out))))
     (is-table (in) (search in written) ("ab" "the first row")
-      ((csi "2;1H") "an absolute move to the second row") ("cd" "the second row"))))
+      ((csi "2H") "an absolute move to the second row, its column the default")
+      ("cd" "the second row"))))

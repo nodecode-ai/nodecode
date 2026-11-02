@@ -10,7 +10,8 @@
 ;;;; synchronized update so the terminal shows no tearing. The mode
 ;;;; transitions between the two view-states go first, the image placements
 ;;;; are diffed after the cells, and the cursor, hidden for the whole paint,
-;;;; is placed and shown last, before the update closes.
+;;;; is placed and shown last, before the update closes, reached from where
+;;;; the paint left it.
 
 (in-package #:nodecode.term)
 
@@ -90,16 +91,25 @@ DEADLINE-MS."
     ;; was drawn on whatever cell the frame wrote last (a spinner, a
     ;; countdown) and then jumped back: the caret flickered, and so did
     ;; everything that moves.
-    (format stream "~C[?2026h~C[?25l~C[H" #\Escape #\Escape #\Escape)
-    (render-diff renderer.last-buffer new stream)
-    (setf renderer.last-images
+    ;;
+    ;; The six bytes that hide it are paid for by the motion: the paint
+    ;; starts from a cursor whose place it does not assume, so it sends no
+    ;; home and goes straight to its first changed cell, and the caret is
+    ;; reached from where the paint left off -- a typed key ends its paint
+    ;; right at the caret, and costs no motion at all.
+    (format stream "~C[?2026h~C[?25l" #\Escape #\Escape)
+    (multiple-value-bind (x y)
+        (render-diff renderer.last-buffer new stream :cursor-x nil :cursor-y nil)
+      (multiple-value-bind (images placed)
           (%render-image-placements renderer.last-images
                                     view.images
                                     stream
-                                    :force (null renderer.last-buffer)))
-    (nlk:when-let (cursor view.cursor)
-      (format stream "~C[~D;~DH~C[?25h" #\Escape
-              (1+ cursor.y) (1+ cursor.x) #\Escape))
+                                    :force (null renderer.last-buffer))
+        (setf renderer.last-images images)
+        (nlk:when-let (cursor view.cursor)
+          (move-cursor stream (and (not placed) x) (and (not placed) y)
+                       cursor.x cursor.y)
+          (format stream "~C[?25h" #\Escape))))
     (format stream "~C[?2026l" #\Escape)
     (force-output stream)
     ;; The frame is on the terminal: the count a launcher's hand-over waits
