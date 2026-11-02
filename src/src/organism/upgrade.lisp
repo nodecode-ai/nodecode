@@ -226,53 +226,92 @@ image, evaluating nothing."
       (dolist (file new-files)
         (setf (gethash file texts)
               (uiop:read-file-string (merge-pathnames file new-root) :external-format :utf-8)))
-      (dolist (file old-files)
-        (setf (gethash file old-texts)
-              (uiop:read-file-string (merge-pathnames file old-root) :external-format :utf-8))
-        (unless (gethash file texts)
-          (incf removed)
-          (dolist (entry (file-definitions (merge-pathnames file old-root) :read-eval t))
-            (push (definition-key-label (first entry)) gone))))
-      ;; A package the old tree's files declare and this image lacks is one
-      ;; this image chose not to load: a cell that is not enabled here. Its
-      ;; files, old and new, are not this image's to evaluate. A package no
-      ;; old file declares is new with the upgrade, and its definitions hold.
-      (let* ((absent (loop for file in old-files
-                           for name = (file-package-name (gethash file old-texts))
-                           when (and name (not (find-package name))) collect name))
-             (inline (inline-names (loop for file in new-files collect (gethash file texts)))))
-        (dolist (file new-files)
-          (let* ((new-text (gethash file texts))
-                 (old-text (gethash file old-texts))
-                 (same (and old-text (string= old-text new-text))))
-            (if (member (file-package-name new-text) absent :test #'string=)
-                (unless same (push file unloaded))
-            (handler-case
-                (multiple-value-bind (entries lost residue after)
-                    (if same
-                        (values nil nil nil (toplevel-definitions new-text :read-eval t))
-                        (definition-changes old-text new-text))
-                  (setf (gethash file definitions) after)
-                  (unless same (if old-text (incf changed) (incf added)))
-                  (setf gone (append gone lost))
-                  (when residue
-                    (push (cons file "changes outside any definition are boot state") held))
-                  (dolist (pair entries)
-                    (let* ((entry (car pair))
-                           (key (first entry))
-                           (reason (hold-reason entry (cdr pair) new-text)))
-                      (cond (reason (push (cons (definition-key-label key) reason) held))
-                            (t (take file entry)
-                               (when (and (cdr pair)
-                                          (or (string= (getf key :operator) "DEFMACRO")
-                                              (and (string= (getf key :operator) "DEFUN")
-                                                   (member (getf key :name) inline
-                                                           :test #'string=))))
-                                 (pushnew (getf key :name) expanders :test #'string=)))))))
-              (error (condition)
-                (push (cons file (format nil "does not read in this image: ~a"
-                                         (or (first (lines (princ-to-string condition))) "")))
-                      held)))))))
+      ;; A definition is known by its package and key, not by its file. One
+      ;; that left a file -- a removed file, or a kept file it no longer
+      ;; stands in -- and stands in another file of the new tree moved there:
+      ;; moved as it was, there is nothing to do; moved and changed, it is a
+      ;; change against the text it left, held or hot as any change. Standing
+      ;; in no file, it is gone. A file move is many moves.
+      (let ((left (make-hash-table :test 'equal))
+            (order '())
+            (defined (make-hash-table :test 'equal))
+            (vacated '())
+            (scanned '()))
+        (labels ((id (entry)
+                   (cons (let ((package (fourth entry)))
+                           (if (packagep package) (package-name package) (string-upcase (string package))))
+                         (first entry)))
+                 (leave (entry text &aux (id (id entry)))
+                   ;; ENTRY of the old tree's TEXT stands no longer where it stood
+                   (unless (nth-value 1 (gethash id left)) (push id order))
+                   (setf (gethash id left) (subseq text (second entry) (third entry)))))
+          (dolist (file old-files)
+            (setf (gethash file old-texts)
+                  (uiop:read-file-string (merge-pathnames file old-root) :external-format :utf-8))
+            (unless (gethash file texts)
+              (incf removed)
+              (let* ((text (gethash file old-texts))
+                     (entries (ignore-errors (toplevel-definitions text :read-eval t))))
+                ;; what it ran at boot, should a new file carry the same
+                (push (source-residue text entries) vacated)
+                (dolist (entry entries) (leave entry text)))))
+          ;; A package the old tree's files declare and this image lacks is one
+          ;; this image chose not to load: a cell that is not enabled here. Its
+          ;; files, old and new, are not this image's to evaluate. A package no
+          ;; old file declares is new with the upgrade, and its definitions hold.
+          (let* ((absent (loop for file in old-files
+                               for name = (file-package-name (gethash file old-texts))
+                               when (and name (not (find-package name))) collect name))
+                 (inline (inline-names (loop for file in new-files collect (gethash file texts)))))
+            ;; every file read first, so each definition is placed wherever it went
+            (dolist (file new-files)
+              (let* ((new-text (gethash file texts))
+                     (old-text (gethash file old-texts))
+                     (same (and old-text (string= old-text new-text))))
+                (if (member (file-package-name new-text) absent :test #'string=)
+                    (unless same (push file unloaded))
+                (handler-case
+                    (multiple-value-bind (entries lost residue after before)
+                        (if same
+                            (values nil nil nil (toplevel-definitions new-text :read-eval t))
+                            (definition-changes old-text new-text))
+                      (declare (ignore lost))
+                      (setf (gethash file definitions) after)
+                      (unless same (if old-text (incf changed) (incf added)))
+                      (dolist (entry after) (setf (gethash (id entry) defined) t))
+                      (dolist (entry before)
+                        (unless (assoc (first entry) after :test #'equal) (leave entry old-text)))
+                      (push (list file new-text old-text entries residue after) scanned))
+                  (error (condition)
+                    (push (cons file (format nil "does not read in this image: ~a"
+                                             (or (first (lines (princ-to-string condition))) "")))
+                          held))))))
+            ;; then each change weighed against the text it left
+            (loop for (file new-text old-text entries residue after) in (nreverse scanned)
+                  do (when (and residue
+                                ;; a new file that boots as a removed one did
+                                (not (and (null old-text)
+                                          (member (source-residue new-text after) vacated
+                                                  :test #'string=))))
+                       (push (cons file "changes outside any definition are boot state") held))
+                     (dolist (pair entries)
+                       (let* ((entry (car pair))
+                              (key (first entry))
+                              (previous (or (cdr pair) (gethash (id entry) left))))
+                         (unless (and (null (cdr pair)) previous
+                                      (string= previous (subseq new-text (second entry) (third entry))))
+                           (let ((reason (hold-reason entry previous new-text)))
+                             (cond (reason (push (cons (definition-key-label key) reason) held))
+                                   (t (take file entry)
+                                      (when (and previous
+                                                 (or (string= (getf key :operator) "DEFMACRO")
+                                                     (and (string= (getf key :operator) "DEFUN")
+                                                          (member (getf key :name) inline
+                                                                  :test #'string=))))
+                                        (pushnew (getf key :name) expanders :test #'string=)))))))))
+            (setf gone (loop for id in (reverse order)
+                             unless (gethash id defined)
+                               collect (definition-key-label (cdr id)))))))
       ;; dependents: every definition in the new tree that calls an expander
       (when expanders
         (let ((use (ppcre:create-scanner
