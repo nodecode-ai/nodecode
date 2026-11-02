@@ -211,7 +211,15 @@ and C=1 so the cursor does not move with the image."
 
 ;;; --- capability query ----------------------------------------------------
 
-(define-escape (request-kitty-graphics :flush t) ("_Gi=1,s=1,v=1,a=q,t=d,f=24;AAAA" "\\")
+(defun request-kitty-graphics (stream &optional (multiplexer (current-multiplexer)))
+  ;; Behind tmux or screen nothing is sent. Both take a bare APC as their
+  ;; own: tmux makes it the pane's title, screen its hardstatus, so the probe
+  ;; never reached the outer terminal and the pane was renamed
+  ;; `Gi=1,s=1,v=1,a=q,t=d,f=24;AAAA'. Wrapping it for passthrough would
+  ;; not help: the images themselves go out bare, so an OK that came back
+  ;; through passthrough would only turn on drawing the multiplexer eats.
+  ;; Silence is the answer behind one: no inline images, as before.
+  ;;
   ;; A supporting terminal answers an APC the decoder turns into a
   ;; KITTY-GRAPHICS-MSG, and silence means no support.
   ;;
@@ -224,7 +232,12 @@ and C=1 so the cursor does not move with the image."
   ;; Nothing is stored: a=q neither replaces the image under this id nor
   ;; keeps what it loaded.
   "Ask whether the terminal speaks kitty graphics: the query action over a
-single RGB pixel (i=1,s=1,v=1,a=q,t=d,f=24 with the pixel as the payload).")
+single RGB pixel (i=1,s=1,v=1,a=q,t=d,f=24 with the pixel as the payload),
+written to STREAM unless MULTIPLEXER (the one this process runs under) would
+take it as a title."
+  (unless multiplexer
+    (format stream "~C_Gi=1,s=1,v=1,a=q,t=d,f=24;AAAA~C\\" #\Escape #\Escape)
+    (force-output stream)))
 
 ;;; --- the renderer seam ---------------------------------------------------
 
