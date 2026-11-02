@@ -499,6 +499,15 @@ RUN-PROGRAM builds it."
      (with-cleanup ((sb-sys:deallocate-system-memory ,block ,size))
        ,@body)))
 
+;; A strict decoder made one stray byte in a command's output -- a Latin-1
+;; file name, a binary's banner -- a decoding error in the middle of the
+;; read: SH unwound, killed the child's tree, and the output and the exit
+;; status were lost with it. PROVIDER.LISP and DIAL.LISP already decode
+;; their bytes this lenient way.
+(defparameter *child-external-format* '(:utf-8 :replacement #\?)
+  "The external format of a child's pipes: UTF-8, a byte that is not UTF-8
+read as ? rather than signalled.")
+
 #-win32
 (defun %spawn-posix (argv directory environment output errors input)
   "ARGV started through posix_spawn, its stdout as OUTPUT says -- :STREAM, a
@@ -576,8 +585,9 @@ says: :STREAM, a pipe of its own; :OUTPUT, joined to stdout; a namestring.
           (when descriptor (sb-posix:close descriptor)))
         (flet ((child-stream (descriptor direction name)
                  (when descriptor
-                   (sb-sys:make-fd-stream descriptor direction t :external-format :utf-8
-                                                     :buffering :full :auto-close t :name name))))
+                   (sb-sys:make-fd-stream descriptor direction t
+                                          :external-format *child-external-format*
+                                          :buffering :full :auto-close t :name name))))
           (values pid
                   (child-stream out-read :input "child stdout")
                   (child-stream err-read :input "child stderr")
@@ -619,7 +629,7 @@ process: DIRECTORY its working directory when given, ENVIRONMENT
                                 :input (and (eq input :stream) :stream)
                                 :output output :if-output-exists :append
                                 :error errors :if-error-exists :append
-                                :external-format :utf-8
+                                :external-format *child-external-format*
                                 :directory directory
                                 (when environment
                                   (list :environment environment)))))
