@@ -68,7 +68,7 @@ pairs, each answer a few paragraphs, painted once."
 
 (define-scaling a-streamed-word-in-a-long-transcript
     (n :kind :constant :bound 0.85
-       :known "main 7be8147: cpu n^0.59, bytes n^0.80; TAIL-PROJECTION-START runs GROUP-ROWS over every row per look")
+       :known "main 25bc955: instructions n^0.55, bytes n^0.79; TAIL-PROJECTION-START runs GROUP-ROWS over every row per look")
   ;; A word of a streaming answer landing at the tail of a long conversation:
   ;; the fold, the re-projection of the live tail and the frame, as the frame
   ;; clock paints a dirty transcript.
@@ -109,7 +109,7 @@ pairs, each answer a few paragraphs, painted once."
 
 (define-scaling a-turn-appended-to-a-long-session
     (n :kind :constant :bound 0.75 :sizes '(200 800 3200)
-       :known "main 7be8147: cpu n^0.66, bytes n^0.57; COMPLETE-TURN's TURN-CHAIN-DEPTH reads every TURN.STARTED, ADMIT-TURN scans")
+       :known "main 25bc955: instructions n^0.54, bytes n^0.56; COMPLETE-TURN's TURN-CHAIN-DEPTH reads every TURN.STARTED, ADMIT-TURN scans")
   ;; Admitting, journaling and completing one more turn: the store's cost per
   ;; write must not see how long the session already is.
   (let ((session (seeded-session n)))
@@ -127,7 +127,7 @@ pairs, each answer a few paragraphs, painted once."
 
 (define-scaling replaying-a-session
     (n :bound 1.30 :sizes '(200 800 3200)
-       :known "main 7be8147: cpu n^1.22; STAMP-UNPOSITIONED-ROWS walks every row after every folded event")
+       :known "main 25bc955: instructions n^1.12; STAMP-UNPOSITIONED-ROWS walks every row after every folded event")
   ;; A session's frames folded as a shell's replay folds them when it opens
   ;; the session (SESSION-TRANSCRIPT): linear in the session.
   (let ((session (seeded-session n)))
@@ -208,16 +208,19 @@ pairs, each answer a few paragraphs, painted once."
     (dolist (size sizes)
       (with-temp-store ()
         (let ((fn (funcall setup size)))
-          (multiple-value-bind (cpu bytes calls) (run-scaling-fn fn)
-            (push (make-point :size size :cpu cpu :bytes bytes :calls calls) points)
-            (format stream "  ~a n=~d: ~,1f us/call, ~,0f bytes/call (~d calls)~%"
-                    name size (* cpu 1d6) bytes calls)))))
+          (multiple-value-bind (work bytes calls) (run-scaling-fn fn)
+            (push (make-point :size size :work work :bytes bytes :calls calls) points)
+            (format stream "  ~a n=~d: ~:[~,0f instructions~;~,1f us~]/call, ~,0f bytes/call (~d calls)~%"
+                    name size (eq *work-measure* :cpu)
+                    (if (eq *work-measure* :cpu) (* work 1d6) work) bytes calls)))))
     (setf points (nreverse points))
     (values points (verdict contract points))))
 
 (defun run-scaling (&key (only nil) (stream *standard-output*))
   "Run every case (or the names in ONLY); print each slope and verdict, one
 line a case; answers the number of cases that broke their contract."
+  (format stream "scaling: work is ~a~:[ (this kernel counts no instructions)~;~]~%"
+          (work-label) (eq *work-measure* :instructions))
   (let ((broken 0))
     (dolist (entry *cases* broken)
       (destructuring-bind (name contract sizes setup) entry
@@ -234,9 +237,10 @@ line a case; answers the number of cases that broke their contract."
                       (progn (format stream "  ~(~a~) breached (~{~a~^; ~}); measuring it again~%" name reasons)
                              (measure))
                       (values points reasons))))
-            (format stream "~:[ok  ~;FAIL~] ~(~a~) (~(~a~), slope <= ~,2f): cpu n^~,2f, bytes n^~,2f~@[~%       ~a~]~{~%       ~a~}~%"
+            (format stream "~:[ok  ~;FAIL~] ~(~a~) (~(~a~), slope <= ~,2f): ~a n^~,2f, bytes n^~,2f~@[~%       ~a~]~{~%       ~a~}~%"
                     reasons name (scaling-contract-kind contract) (scaling-contract-bound contract)
-                    (or (exponent points :slot 'point-cpu) 0)
+                    (work-label)
+                    (or (exponent points :slot 'point-work) 0)
                     (or (exponent points :slot 'point-bytes) 0)
                     (let ((known (scaling-contract-known contract)))
                       (and known (format nil "known breach of ~(~a~): ~a" (scaling-contract-kind contract) known)))

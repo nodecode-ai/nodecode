@@ -16,12 +16,12 @@
   (:use #:cl)
   (:shadow #:time)
   (:export #:scaling-contract #:make-scaling-contract #:scaling-contract-kind
-           #:scaling-contract-bound #:scaling-contract-cpu-cost
+           #:scaling-contract-bound #:scaling-contract-work-cost
            #:scaling-contract-bytes-cost #:scaling-contract-unit
            #:scaling-contract-floor #:scaling-contract-known
            #:run-scaling-fn #:seconds-per-call #:gc-flush
-           #:point #:make-point #:point-size #:point-cpu #:point-bytes
-           #:point-calls #:exponent #:verdict))
+           #:point #:make-point #:point-size #:point-work #:point-bytes
+           #:point-calls #:exponent #:verdict #:*work-measure* #:work-label))
 
 (defpackage #:nodecode.perf.scaling
   (:documentation
