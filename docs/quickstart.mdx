@@ -1,0 +1,334 @@
+---
+title: Quickstart
+summary: "Install, start, connect a provider, send a request, keep one definition, leave it running."
+---
+
+<Systems />
+
+<Reel items={[["home", "#2-start", 2, "Start"], ["setup", "#3-connect-a-provider", 3, "Connect"], ["turn", "#4-send-a-request", 4, "Ask"], ["kept", "#5-keep-one-definition", 5, "Keep"]]} />
+
+{/* source: src/tools/install.sh */}
+## 1. Install
+
+<For os="linux">
+
+Linux x86_64. glibc 2.34 or newer: Ubuntu 22.04+, Debian 12+, RHEL 9+, Fedora 35+, Arch.
+
+```sh
+curl -fsSL https://nodecode.ai/install.sh | sh
+```
+
+```output
+nodecode: reading https://nodecode.ai/dl/stable-x86_64-linux
+nodecode: release 9608b582e
+nodecode: downloading https://nodecode.ai/dl/nodecode-9608b582e-x86_64-linux.tar.gz
+nodecode: sha256 verified
+nodecode: laid out 9608b582e at /home/you/.local/share/nodecode/9608b582e
+nodecode: current is 9608b582e
+nodecode: linked /home/you/.local/bin/nodecode
+nodecode: the executable runs
+nodecode: open a new shell, then run 'nodecode' to start; the first launch opens the setup wizard
+```
+
+</For>
+
+<For os="macos">
+
+Apple Silicon, macOS 15 or newer, with Homebrew `openssl@3` and `zstd`.
+
+```sh
+curl -fsSL https://nodecode.ai/install.sh | sh
+```
+
+```output
+nodecode: reading https://nodecode.ai/dl/stable-arm64-darwin
+nodecode: release 9608b582e
+nodecode: downloading https://nodecode.ai/dl/nodecode-9608b582e-arm64-darwin.tar.gz
+nodecode: sha256 verified
+nodecode: laid out 9608b582e at /Users/you/.local/share/nodecode/9608b582e
+nodecode: current is 9608b582e
+nodecode: linked /Users/you/.local/bin/nodecode
+nodecode: the executable runs
+nodecode: add /Users/you/.local/bin to your PATH:
+  echo 'export PATH="$HOME/.local/bin:$PATH"' >> /Users/you/.zprofile
+then open a new shell and run 'nodecode' to start; the first launch opens the setup wizard
+```
+
+</For>
+
+<For os="windows">
+
+Windows x86_64, in PowerShell. Git for Windows is needed at run time.
+
+```powershell
+irm https://nodecode.ai/install.ps1 | iex
+```
+
+It shows the download as it goes, and `nodecode` runs in the same window when it ends.
+
+</For>
+
+Requirements and flags: [Install](/install).
+
+<Mistakes>
+<Mistake os="linux">
+<What>Hunting for a flag past `glibc X is too old`</What>
+<Why>Ubuntu 20.04, Debian 11 and RHEL 8 fail. No flag changes this.</Why>
+<Instead>Move to Ubuntu 22.04+, Debian 12+, RHEL 9+, Fedora 35+ or Arch.</Instead>
+</Mistake>
+<Mistake os="macos">
+<What>Installing without Homebrew's `openssl@3` and `zstd`</What>
+<Why>The installer stops and prints the brew line. Forced through, the executable does not answer at all.</Why>
+<Instead>`brew install openssl@3 zstd`, then run the installer again.</Instead>
+</Mistake>
+<Mistake os="windows">
+<What>Skipping Git for Windows</What>
+<Why>Shell commands run through its `sh.exe`. Without it you get `git is not on PATH`.</Why>
+<Instead>`winget install --id Git.Git -e --source winget`, then open a new terminal.</Instead>
+</Mistake>
+<Mistake os="linux macos">
+<What>Installing again after `nodecode: command not found`</What>
+<Why>`~/.local/bin` is not on your PATH yet. A second install changes nothing.</Why>
+<Instead>Add the line the installer printed to <Only os="linux">`~/.profile`</Only><Only os="macos">`~/.zprofile`</Only>. Open a new shell.</Instead>
+</Mistake>
+<Mistake os="linux macos">
+<What>Keeping an older `nodecode` first on PATH</What>
+<Why>You keep running the old build. The installer warns: `'nodecode' on your PATH is NOT the build just installed`.</Why>
+<Instead>Remove the old one, or put `~/.local/bin` ahead of it.</Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/cli/entry.lisp */}
+## 2. Start
+
+```sh
+nodecode
+```
+
+This opens the shell, the terminal UI. It starts the organism when none is running. An organism is a running Nodecode.
+
+The home screen shows the mark, the version and a tip. Type in the <Term screen="home" spot="composer">composer</Term>. The footer names the <Term screen="home" spot="model">model</Term> on the left and the <Term screen="home" spot="gateway">gateway</Term> on the right.
+
+<Screen name="home" />
+
+`nodecode` needs a terminal. Without one it exits with code 2.
+
+<Mistakes>
+<Mistake>
+<What>Starting it from cron, a pipe or `ssh` without `-t`</What>
+<Why>It exits with code 2: `nodecode needs a terminal (no controlling tty); run it in one.`</Why>
+<Instead>Use a terminal or `ssh -t`. With no terminal at all, run <Only os="linux macos">`nodecode gateway on`</Only><Only os="windows">`nodecode serve`</Only>.</Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/tui/setup.lisp */}
+## 3. Connect a provider
+
+With no provider connected, or no default model saved, setup opens on the first frame.
+
+1. <Term screen="setup" spot="list">Pick a provider</Term>.
+2. Paste its API key.
+3. Pick a model.
+4. Pick the reasoning effort. Esc keeps the current one.
+
+<Term screen="setup" spot="hints">Esc on the provider list ends the walk</Term>. Esc on the model step goes back to the providers. A connected provider moves up under Suggested. Enter on it opens its models. Turn cells on later in `/cells`.
+
+<Screen name="setup" />
+
+Run `/setup` to open it again. Stage detail: [First run](/first-run).
+
+On a nodecode.ai plan or API credit, skip the key: run `nodecode login`, or `/login` in the shell, and sign in in the browser. Then `/models` picks a `nodecode` model. See [First run](/first-run#a-nodecodeai-account).
+
+<Screen name="slash" strip />
+
+The key is saved in `~/.nodecode/auth.json`, mode 0600. The footer shows the <Term screen="setup" spot="model">provider and model</Term>.
+
+<Mistakes>
+<Mistake os="linux macos">
+<What>Retrying keys while the provider list is empty</What>
+<Why>No error shows. The list comes over HTTPS, and this machine has no CA bundle.</Why>
+<Instead><Only os="linux">Install `ca-certificates`</Only><Only os="macos">`brew reinstall ca-certificates`</Only>, then restart `nodecode`.</Instead>
+</Mistake>
+<Mistake>
+<What>Pressing Esc on the provider list</What>
+<Why>It ends the walk. With no model, the footer says `run /setup to add a model` and a prompt gets `no model is chosen yet`.</Why>
+<Instead>Run `/models` to pick one, or `/setup` for the whole wizard.</Instead>
+</Mistake>
+<Mistake>
+<What>Pasting a new key over a working one to fix a failing turn</What>
+<Why>The key may be fine. `/doctor` says which part is missing.</Why>
+<Instead>Run `/doctor`. If it says the key check failed, run `/models`, pick the provider and press Ctrl+E to paste a working key.</Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/tui/keys.lisp */}
+## 4. Send a request
+
+Type a prompt. Press Enter.
+
+Your <Term screen="turn" spot="prompt">prompt</Term> moves up, and the model's <Term screen="turn" spot="thinking">thinking</Term> streams under it. The <Term screen="turn" spot="bar">turn bar</Term> shows the model, the clock and the keys. The <Term screen="turn" spot="composer">composer</Term> stays open while it works.
+
+<Screen name="turn" />
+
+| Key | While a turn runs |
+| --- | --- |
+| Enter | Steers the running turn with new text. |
+| Tab | Queues the text as the next prompt. |
+| Esc | Interrupts the turn. |
+| Ctrl+O | Switches the viewport between Standard and Developer. |
+
+All keys: [Shell](/shell).
+
+<Mistakes>
+<Mistake>
+<What>Pressing Enter to line up the next prompt</What>
+<Why>Enter steers. The running turn stops at its next round boundary, and your text runs now.</Why>
+<Instead>Press Tab. The prompt waits behind the turn. Up takes it back.</Instead>
+</Mistake>
+<KeyProof />
+<Mistake>
+<What>Pressing Ctrl+C to stop a turn</What>
+<Why>The first Ctrl+C clears the composer, the next interrupts, the one after quits the shell.</Why>
+<Instead>Press Esc. It interrupts the turn. If the turn produced nothing, your prompt comes back to the composer.</Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/organism/scribe.lisp */}
+## 5. Keep one definition
+
+The model has one tool, `eval`. It evaluates Common Lisp in the running organism.
+
+1. Ask for a helper in plain words. Example: "Define a function that counts the lines in a file."
+2. The model evaluates a top-level defining form such as `defun`.
+3. Nodecode writes the definition to the layer and commits it with git.
+
+The card says <Term screen="kept" spot="defined">Defined</Term>, and the <Term screen="kept" spot="receipt">receipt</Term> says it is live. The next cell <Term screen="kept" spot="call">calls it</Term> right away.
+
+<Screen name="kept" />
+
+The layer is the set of definitions the agent wrote and kept. It lives in `~/.nodecode/cells/<name>/`. `<name>` is your git `user.name` in lowercase with hyphens; here it is `ada`. Without one it is `$USER`. The layer loads at every start, in every session.
+
+```lisp
+;;; count-lines — defun recorded by session s-1NXO4JMW, 2026-10-07T22:41:54Z
+(in-package :nodecode.evolved)
+
+(defun count-lines (path)
+  "The number of lines in the file at PATH."
+  (length (uiop:read-file-lines path)))
+```
+
+A `setf` is not kept. Run `/cells` to see the loaded folders. Detail: [Eval](/eval).
+
+<Mistakes>
+<Mistake>
+<What>Asking it to remember a value with `setf`</What>
+<Why>A `setf` is not kept. The value is gone at the next start.</Why>
+<Instead>Ask for a `defparameter`. It is kept like a `defun`.</Instead>
+</Mistake>
+<Mistake>
+<What>Working on a machine without git</What>
+<Why>The definition runs, but the layer, memory and checkpoint history are not committed.</Why>
+<Instead>Install git.<Only os="macos"> `xcode-select --install` puts it on a Mac.</Only><Only os="windows"> Git for Windows covers it.</Only></Instead>
+</Mistake>
+<Mistake>
+<What>Redefining a kernel function to change it</What>
+<Why>The kernel is locked. The redefinition errors and is never written to the layer.</Why>
+<Instead>Ask for a `define-hook` around it. Hooks on kernel functions are allowed and kept.</Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/gateway/background.lisp */}
+## 6. Leave it running
+
+<For os="linux macos">
+
+The gateway is the local server that shells attach to. It runs the organism in the background and at login. <Only os="linux">Linux uses a systemd user unit.</Only><Only os="macos">macOS uses a LaunchAgent.</Only>
+
+It is on by default. The first boot installs it, and the shell says `nodecode's gateway keeps your sessions running after this shell closes, and comes up at every login · /settings turns it off`.
+
+```sh
+nodecode gateway on
+```
+
+This turns it back on after `nodecode gateway off`.
+
+</For>
+
+<For os="windows">
+
+```powershell
+nodecode serve
+```
+
+Windows has no background gateway. Run `nodecode serve` in a terminal you keep open. The gateway is the local server that shells attach to.
+
+</For>
+
+A shell opened later attaches to it. Its footer shows <Term screen="footer" spot="gateway">`Gateway`</Term>. It links to the web page at the gateway's port, open on Sessions.
+
+<Screen name="footer" strip />
+
+<Note head="One owner">One process owns a home's store. A second `nodecode` attaches to it. Closing the owning shell stops the organism unless another shell or the gateway takes over.</Note>
+
+<Mistakes>
+<Mistake>
+<What>Closing the last shell and expecting bots and cron jobs to go on</What>
+<Why>With the gateway off, they stop with the shell.</Why>
+<Instead><Only os="linux macos">`nodecode gateway on`.</Only><Only os="windows">Keep `nodecode serve` running in its own terminal.</Only></Instead>
+</Mistake>
+<Mistake os="linux macos">
+<What>Writing your own unit for `nodecode`</What>
+<Why>`nodecode` needs a terminal. And `gateway on` refuses to overwrite a unit of that name it did not write.</Why>
+<Instead>Remove yours. Run `nodecode gateway on`.</Instead>
+</Mistake>
+<Mistake os="linux">
+<What>Expecting it to keep running after you log out</What>
+<Why>With linger off, it stops at logout. `on` asks for linger; if your system refuses, the status says so.</Why>
+<Instead>`sudo loginctl enable-linger $USER`, once.</Instead>
+</Mistake>
+<Mistake os="macos">
+<What>Expecting it to keep running after you log out</What>
+<Why>The LaunchAgent stops at logout. launchd has no linger.</Why>
+<Instead>Stay logged in on the machine that runs it.</Instead>
+</Mistake>
+<Mistake os="windows">
+<What>Running `nodecode gateway on` on Windows</What>
+<Why>There is no background gateway on Windows. It says so and does nothing.</Why>
+<Instead>Run `nodecode serve` in a terminal you keep open.</Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/cli/entry.lisp */}
+## Before you leave it alone
+
+Nodecode has no sandbox. Eval can read, write and run anything your user can.
+
+<Mistakes>
+<Mistake>
+<What>Treating the guard cell as a sandbox</What>
+<Why>It refuses known spellings. Any other spelling runs.</Why>
+<Instead>Run inside a container before you let it change things unattended.</Instead>
+</Mistake>
+<Mistake>
+<What>Trusting `--ephemeral` to protect the machine</What>
+<Why>It isolates the store only. Files and network are as open as before.</Why>
+<Instead>Use it for trials. Use a container for containment.</Instead>
+</Mistake>
+<Mistake>
+<What>Installing a cell you have not read</What>
+<Why>A folder under `~/.nodecode/cells/` loads in every Nodecode process. Nothing asks first.</Why>
+<Instead>Install cells from sources you trust. Read the code first.</Instead>
+</Mistake>
+<Mistake>
+<What>Putting a whole server on a bot's allowlist</What>
+<Why>Anyone on the allowlist can drive eval on this machine.</Why>
+<Instead>List users or channels one by one. Keep `require_mention` on.</Instead>
+</Mistake>
+<Mistake>
+<What>Pasting the `nodecode web` link into a chat</What>
+<Why>It carries the operator token after the `#`.</Why>
+<Instead>Keep the link to yourself.</Instead>
+</Mistake>
+</Mistakes>
+
+Next: [Gateway](/gateway), [Cells](/cells), [Security](/security).

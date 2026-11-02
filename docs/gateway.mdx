@@ -1,0 +1,146 @@
+---
+title: The gateway
+summary: "The background gateway: its verbs, what it installs per platform, logout, automatic start and updates."
+---
+
+The gateway is the local server that shells attach to. The background gateway keeps it and the organism, a running Nodecode, up with no shell open.
+
+{/* source: src/gateway/background.lisp */}
+## Verbs
+
+```sh
+nodecode gateway
+nodecode gateway on
+nodecode gateway off
+nodecode gateway restart
+nodecode gateway logs --follow
+```
+
+| Verb | Does |
+| --- | --- |
+| none, `status` | Prints the state: off, serving, waiting, starting, stopped, restarting, failed or unavailable. |
+| `on` | Writes the unit. Enables it. Starts it. On Linux, asks logind to keep it running after logout. |
+| `off` | Disables the unit, removes its file and stops the process. Writes `gateway-off`. |
+| `restart` | Restarts on the current build with the current config. Refused while the gateway is off. |
+| `logs` | Prints the last 60 log lines. |
+| `logs --follow`, `logs -f` | Keeps printing new lines. Command line only. |
+| `run` | Runs the gateway in the foreground. This is what the unit runs. Command line only. |
+| `help [VERB]` | Prints help. |
+
+`/gateway [on | off | restart | logs | help]` does the same from a shell. A shell is the terminal UI. `/settings` > System > Gateway > Run in the background turns it on or off: Off is `off`, and writes `gateway-off`. On is `on`.
+
+For a profile, add `-p NAME`:
+
+```sh
+nodecode -p NAME gateway on
+```
+
+While it serves, the status adds the pid, the port, the uptime and the build. It also says whether the gateway starts at login, and lists the standing notices of cells.
+
+{/* source: src/gateway/background.lisp */}
+## What on installs
+
+| Platform | Installs | Unit file |
+| --- | --- | --- |
+| Linux | A systemd user unit | `~/.config/systemd/user/nodecode-gateway.service` |
+| macOS | A LaunchAgent | `~/Library/LaunchAgents/nodecode-gateway.plist` |
+| Windows | Nothing | None |
+
+Windows: no background gateway. `status`, `on`, `restart` and `logs` say so. Run `nodecode serve` in a terminal you keep open.
+
+On Linux the unit folder follows `XDG_CONFIG_HOME` when it is set.
+
+| Home | Unit name |
+| --- | --- |
+| `~/.nodecode/` | `nodecode-gateway` |
+| A profile | `nodecode-gateway-NAME` |
+| Another `NODECODE_HOME` | `nodecode-gateway-` plus 8 hex digits of the path's hash |
+| Any home under a `HOME` that is not your account's own | The same hashed name |
+
+The home is `~/.nodecode/` unless a profile or `NODECODE_HOME` names another. Your account's own home is the one the system's user database names. A link to it counts. A scratch `HOME` never takes the account's `nodecode-gateway`.
+
+| Setting | Linux | macOS |
+| --- | --- | --- |
+| Runs | `nodecode gateway run` | The same, through a launcher |
+| Restart after any exit | After 5 s | Yes, at most once per 5 s |
+| Watchdog | 30 s | None |
+| Stop timeout | 60 s | 60 s |
+| Log | The user journal | `~/Library/Logs/nodecode/nodecode-gateway.log` |
+
+On macOS the launcher is copied once to `~/Library/Application Support/nodecode/launcher/1/nodecode`.
+
+`on` refuses to overwrite a unit file of that name that Nodecode did not write. `off` leaves such a file alone.
+
+{/* source: src/client/client-boot.lisp */}
+## Shells and the gateway
+
+| Situation | Result |
+| --- | --- |
+| A shell owns the store, then the gateway starts | The gateway waits. It takes the organism over when that shell closes. |
+| The gateway serves, then a shell opens | The shell attaches. Its footer shows `Gateway`, colored by the connection. A click opens the web page on Sessions. |
+| The gateway restarts: for an update, or after a clean exit | Open shells wait up to 60 s for it to take the store again, then attach. Meanwhile they start no organism of their own. |
+| `/gateway off` from an attached shell | The gateway stops. That shell takes the organism over. |
+
+See [The organism](/organism).
+
+{/* source: src/gateway/background.lisp */}
+## Logout
+
+| Platform | Behaviour |
+| --- | --- |
+| Linux, linger on | The gateway starts at boot. It keeps running after logout. |
+| Linux, linger off | The gateway starts at login. It stops at logout. |
+| macOS | The agent starts at login. It stops at logout. launchd has no linger. |
+
+`on` runs `loginctl enable-linger` for your account. If your system refuses, the status says so. Then run once:
+
+```sh
+sudo loginctl enable-linger $USER
+```
+
+Run the same command when the status says systemd has no user manager.
+
+{/* source: src/gateway/gateway.lisp */}
+## Automatic start
+
+The organism turns the gateway on at the first boot of `~/.nodecode/` or a named profile, when `HOME` is your account's own home. Any other home is left to you, or to a cell.
+
+A cell is a folder of code under `~/.nodecode/cells/`. Four cells also turn the gateway on by themselves:
+
+| Cell | When |
+| --- | --- |
+| Channels | A bot starts. |
+| Cron | A job is scheduled, or active jobs exist at start. |
+| Link | The link is on. |
+| Prs | The pull request watch starts. |
+
+Every attached shell shows a notice when this happens. The organism's says `nodecode's gateway keeps your sessions running after this shell closes, and comes up at every login · /settings turns it off`.
+
+Nothing turns the gateway on by itself in these cases:
+
+- `~/.nodecode/gateway-off` exists.
+- The organism runs with `--ephemeral`.
+- The platform is Windows.
+
+{/* source: src/gateway/background.lisp */}
+## gateway-off
+
+`nodecode gateway off` writes the file `~/.nodecode/gateway-off`.
+
+While the file exists, neither the organism nor a cell turns the gateway on. Bots and cron jobs then run only while a shell is open.
+
+`nodecode gateway on` deletes the file.
+
+{/* source: src/tools/install.sh */}
+## Updates
+
+The unit names the installer's `current` link. A restart runs the build installed last.
+
+| Event | Result |
+| --- | --- |
+| The installer finishes, gateway running | The installer runs `nodecode gateway restart` for it. |
+| The installer finishes, gateway stopped | Nothing. The next start runs the new build. |
+| `nodecode update` needs a restart | The organism restarts itself through the unit at an idle moment. |
+| `nodecode gateway restart` | Rewrites the unit first if the binary path or `PATH` changed. |
+
+The installer restarts only units that Nodecode wrote. See [Updates](/updates).

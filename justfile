@@ -46,6 +46,14 @@ test: cells-pull
         --eval '(push (truename ".") asdf:*central-registry*)' \
         --eval '(asdf:test-system :nodecode)'
 
+# The pages under docs/ that nodecode.ai/docs renders: nav.json names each
+# page once, every page has its title and summary, links and anchors land,
+# pictures exist, and every source path a page names is a file of this
+# commit or of a shipped cell (pulled first, which is why this pulls them).
+# Check the site's pages.
+docs-check: cells-pull
+    @python3 tools/check/docs-check.py
+
 # Parens, layout, and IS prose on a line of its own; with no FILES, every
 # .lisp and .asd of the organism (src/, test/, tools/, perf/ and the two
 # systems at the root), never the cells pulled into cells/, which are
@@ -99,8 +107,8 @@ loc:
 
 # Cheapest first: a paren defect fails in a second, not after the whole
 # suite has run.
-# Gate a change: lint, loc, build, test.
-check: lint loc build test
+# Gate a change: lint, loc, the site's pages, build, test.
+check: lint loc docs-check build test
 
 # Lean, at the version proofs/lean-toolchain pins, checks each proofs/*.lean
 # with warnings as errors, so a `sorry' fails; then every theorem must rest on

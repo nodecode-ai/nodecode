@@ -1,0 +1,266 @@
+---
+title: RPC
+summary: "Drive Nodecode from a program: one command a line on stdin, one frame a line on stdout."
+---
+
+A program spawns `nodecode rpc` and keeps its stdin open. rpc speaks the gateway's protocol: a line in is the gateway's own command, and a line out is the gateway's own frame.
+
+{/* source: src/cli/rpc.lisp */}
+## Start it
+
+```sh
+nodecode rpc [SESSION-ID [--cursor N]] [--store PATH | --ephemeral]
+```
+
+It finds the organism serving your home, or starts one. It presents the operator token and subscribes to a session: the one you name, or a fresh one. Your program never handles a port, a token or a handshake. The first line out is <Field run="hello" spot="replay">the session's replay</Field>. Then come <Field run="hello" spot="durable">its facts as they land</Field>, <Field run="hello" spot="status">the command's result</Field> and <Field run="hello" spot="end">the turn's end</Field>.
+
+<Wire run="hello" lit="replay" />
+
+One line went in and thirteen came out. The command's result came at 0.12 s, the turn's text at 0.81 s.
+
+<Mistakes>
+<Mistake>
+<What>Reading the port from the store's `.owner` file and doing the WebSocket handshake yourself</What>
+<Why>The challenge, the operator token, the session and the subscription are what `rpc` does for you.</Why>
+<Instead>Spawn `nodecode rpc` and write commands.</Instead>
+</Mistake>
+<Mistake>
+<What>`nodecode rpc serve`</What>
+<Why>Exit 2: `rpc is a command of its own: nodecode [-p NAME] rpc [SESSION-ID [--cursor N]] [--store PATH | --ephemeral]`</Why>
+<Instead>Run `nodecode serve`, or `nodecode gateway on`, by itself. `nodecode rpc` attaches to it.</Instead>
+</Mistake>
+<Mistake>
+<What>Spawning one `nodecode rpc` per prompt</What>
+<Why>With no organism running, each one starts an organism and stops it when its stdin ends. Every start after a stop sends the model a "running again" note: 6 of the 20 model calls in the runs on this page.</Why>
+<Instead>Keep one `nodecode rpc` open for your program's life, or run `nodecode gateway on` so each one attaches.</Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/gateway/protocol.schema.json */}
+## Lines in
+
+Each line is one command object. A line that names no `command_id` gets one, and a command that names no `session_id` goes to rpc's session. A line that is not a command gets <Field run="bare-text" spot="error">a sync_protocol_error</Field>, and the next line is read.
+
+| Type | Takes | Does |
+| --- | --- | --- |
+| `start_turn` | `request.prompt` | Starts a turn. One already running queues it. |
+| `steer_turn` | `request.prompt`, `request.expected_turn_id` | The prompt runs at the running turn's next round boundary. |
+| `cancel_turn` | `turn_id`, `retract` | Stops the running turn. `retract` also takes it back when it produced nothing. |
+| `withdraw_prompt` | `prompt_id` | Takes a queued prompt back. |
+| `interrupt_exec` | `exec_id` | Stops a background evaluation. |
+| `navigate_checkpoint` | `target_turn_id` or `direction` | Moves the session's head. Every client is told to subscribe again. |
+| `get_state` | nothing | The session as it stands, in the result. |
+| `set_session_subscriptions` | `subscriptions` | The sessions this client follows. |
+
+<Wire run="bare-text" lit="error" />
+
+The three wrong lines were refused, and the fourth line ran.
+
+<WirePair name="cancel">
+`cancel_turn` takes `turn_id` beside `type`. Under `request` it is refused, and the turn keeps streaming.
+</WirePair>
+
+<WirePair name="queue">
+A second `start_turn` waits behind the first. `steer_turn` reaches the running turn at its next round boundary.
+</WirePair>
+
+<Mistakes>
+<Mistake>
+<What>Writing the prompt as text</What>
+<Why>`invalid JSON: malformed JSON at byte 0: #\s begins no value`</Why>
+<Instead>`{"type":"start_turn","request":{"prompt":"say pong"}}`</Instead>
+</Mistake>
+<Mistake>
+<What>Putting `prompt` beside `type`</What>
+<Why>`request must be an object`</Why>
+<Instead>The prompt goes under `request`.</Instead>
+</Mistake>
+<Mistake>
+<What>Leaving out `type`</What>
+<Why>`type must be a non-empty string`</Why>
+<Instead>Every line names its `type`.</Instead>
+</Mistake>
+<Mistake>
+<What>Steering without `expected_turn_id`</What>
+<Why>Rejected: `session_id, expected_turn_id, and non-empty prompt are required`</Why>
+<Instead>Send the `turn_id` from your `start_turn` result.</Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/gateway/gateway.lisp */}
+## Lines out
+
+Each line is one frame, exactly as the gateway sent it. A turn ends with <Field run="docs-2" spot="end">turn.completed</Field>, `turn.failed` or `turn.cancelled`.
+
+| Frame | Is |
+| --- | --- |
+| <Field run="docs-2" spot="replay">session_stream_resumed</Field> | Always first. The session's replay, in `accumulated_frames`. |
+| <Field run="docs-2" spot="durable">session_stream_event</Field> | A fact as it lands. It carries `"durable":true` and a `cursor`, its place in the log. |
+| <Field run="docs-2" spot="delta">item_delta</Field> | Text or a tool call while it streams. No cursor. |
+| <Field run="docs-2" spot="status">gateway_turn_command_result</Field> | A command's answer: `accepted`, `queued` or `rejected`, with the `turn_id`. |
+| <Field run="docs-2" spot="organism">organism.activity</Field> | The organism's own frames. `sequence` 0 and no session. |
+| `sync_protocol_error` | A line that is not a command. |
+| `session_resync_required` | The session's history changed under the client: subscribe again, with no cursor. rpc does not do it for you: send `{"type":"set_session_subscriptions","subscriptions":[{"session_id":"SESSION-ID"}]}`. |
+
+<Wire run="docs-2" lit="end" />
+
+A second turn on a named session, with one evaluation. The replay holds the first turn, its `turn.completed` included.
+
+<WirePair name="end">
+The replay carries the last turn's `turn.completed`. Wait for the end whose `turn_id` is the one your `start_turn` result carried.
+</WirePair>
+
+<Mistakes>
+<Mistake>
+<What>Taking `accepted` for the answer</What>
+<Why>`turn admitted` came at 0.11 s. The answer's first word came at 1.50 s.</Why>
+<Instead>Read on to the turn's own `turn.completed`.</Instead>
+</Mistake>
+<Mistake>
+<What>Keeping `item_delta` text as the answer</What>
+<Why>Deltas are not facts. They have no cursor, and a resume does not send them again.</Why>
+<Instead>The answer is in `turn.assistant_message_completed`.</Instead>
+</Mistake>
+<Mistake>
+<What>Reading `sequence` as a place in the log</What>
+<Why>`sequence` counts the frames sent to this client, and it is 0 on the organism's own frames.</Why>
+<Instead>The place in the log is `cursor`.</Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/cli/rpc.lisp */}
+## Ending
+
+| When | rpc | The organism |
+| --- | --- | --- |
+| stdin ends | Exits 0 | Stops if rpc started it, and a running turn stops with it. Keeps running if it was already serving. |
+| The gateway ends | Exits 1, why on stderr | Gone. |
+| A bad argument | Exits 2 | Never started. |
+
+<WirePair name="stdin">
+Closing stdin stops the organism rpc started, and the turn with it. The next start picks the turn up. Close stdin after your turn's end.
+</WirePair>
+
+<Wire run="att-2" />
+
+Attached to a `nodecode serve`, which was then stopped.
+
+<Mistakes>
+<Mistake>
+<What>Reading exit 0 as "the turn finished"</What>
+<Why>Exit 0 means stdin ended. It says nothing about any turn.</Why>
+<Instead>The turn's end is a frame: `turn.completed`, `turn.failed` or `turn.cancelled`.</Instead>
+</Mistake>
+<Mistake>
+<What>Expecting rpc's exit to stop a `nodecode serve` it attached to</What>
+<Why>An organism that was already serving keeps running, and so does its turn.</Why>
+<Instead>Stop it where you started it, or with `nodecode gateway off`.</Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/gateway/gateway.lisp */}
+## Resume
+
+Name the session and the newest <Field run="resume" spot="cursor">cursor</Field> you read. The replay then carries only what landed past it, and says <Field run="resume" spot="resumed">resumed_after</Field>.
+
+```sh
+nodecode rpc s-DOCS --cursor 22
+```
+
+<Wire run="resume" lit="resumed" />
+
+Nine facts past 22: the second turn alone. Without `--cursor`, the same session replays all fifteen.
+
+| You run | You get |
+| --- | --- |
+| `rpc SESSION-ID --cursor N` | `resumed_after` N and the facts past N. Add them to what you hold. |
+| `rpc SESSION-ID` | The whole replay, no `resumed_after`. Replace what you hold. |
+| `--cursor` past the log, or the head moved since | The whole replay, no `resumed_after`. |
+| `rpc` | A fresh session and an empty replay. |
+
+<WirePair name="cursor">
+`--cursor` takes a frame's `cursor`. A `sequence` number resumes from far back and sends what you already hold.
+</WirePair>
+
+<WirePair name="session">
+With no session id you get a new, empty session. Pass the `session_id` from the first frame.
+</WirePair>
+
+<Mistakes>
+<Mistake>
+<What>Adding every replay to what you hold</What>
+<Why>With no `resumed_after`, the replay is whole: `--cursor 9999` got all fifteen facts.</Why>
+<Instead>Replace your copy when `resumed_after` is absent.</Instead>
+</Mistake>
+<Mistake>
+<What>`nodecode rpc --cursor 5`</What>
+<Why>Exit 2: `--cursor resumes a session past a log position: nodecode rpc SESSION-ID --cursor N`</Why>
+<Instead>Name the session first.</Instead>
+</Mistake>
+<Mistake>
+<What>`--cursor five`</What>
+<Why>Exit 2: `--cursor takes a log position, not "five"`</Why>
+<Instead>A whole number, from a frame's `cursor`.</Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/gateway/gateway.lisp */}
+## get_state
+
+`{"type":"get_state"}` answers with the session as it stands. It needs no subscription.
+
+```output
+{
+  "queue_depth": 0,
+  "session": {
+    "session_id": "s-DOCS",
+    "cwd": "/home/you/project",
+    "parent": false,
+    "created_at": "2026-10-09T02:53:34.076Z"
+  },
+  "title": "say pong",
+  "admission_state": "ready",
+  "cursor": 36,
+  "target": {
+    "provider": "nodecode",
+    "model": "nodecode-axolotl-cyber",
+    "unconfigured": false,
+    "default": {
+      "provider": "nodecode",
+      "model": "nodecode-axolotl-cyber"
+    },
+    "pin": {
+      "provider": "nodecode",
+      "model": "nodecode-axolotl-cyber"
+    },
+    "effort": "max",
+    "efforts": [
+      "off",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "refusal": null
+  },
+  "pending_prompts": []
+}
+```
+
+| Field | Is |
+| --- | --- |
+| `turn_id` | The running turn. Absent when none runs. |
+| `queue_depth` | Prompts waiting behind it. |
+| `admission_state` | `ready` or `active`. |
+| `cursor` | The newest place in the log: the one to resume from. |
+| `target` | The provider, model and effort the next turn uses. |
+| `pending_prompts` | The queued prompts. |
+
+{/* source: src/gateway/protocol.schema.json */}
+## The schema
+
+Every command and every frame, both ways, is `src/gateway/protocol.schema.json`, JSON Schema 2020-12. Of the 596 JSON lines the runs behind this page sent and got back, 591 check against it. The other five are wrong commands sent on purpose. Check yours before you send them.
+
+See [Troubleshooting](/troubleshooting#rpc-failures) for a line you got, and [The gateway](/gateway) for keeping an organism running.

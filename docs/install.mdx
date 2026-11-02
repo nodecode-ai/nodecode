@@ -1,0 +1,481 @@
+---
+title: Install
+summary: "One line for Linux, macOS and Windows. What it prints, what it needs, where files land, and the mistakes people make."
+---
+
+<Systems />
+
+{/* source: src/tools/install.sh */}
+## One line
+
+<For os="linux">
+
+Linux x86_64. glibc 2.34 or newer: Ubuntu 22.04+, Debian 12+, RHEL 9+, Fedora 35+, Arch.
+
+</For>
+
+<For os="macos">
+
+Apple Silicon, macOS 15 or newer, with Homebrew `openssl@3` and `zstd`.
+
+</For>
+
+<For os="windows">
+
+Windows x86_64, in PowerShell.
+
+</For>
+
+<For os="linux macos">
+
+```sh
+curl -fsSL https://nodecode.ai/install.sh | sh
+```
+
+It <Step name="release">asks the channel</Step> which release is current, <Step name="download">downloads it</Step>, <Step name="checksum">checks its sha256</Step>, <Step name="layout">lays it out</Step> beside any older version, <Step name="current">points `current` at it</Step>, <Step name="link">links the command</Step> and <Step name="probe">runs it once</Step>.
+
+A running background gateway restarts on the new build: <Only os="linux">`nodecode: refreshed and restarted nodecode-gateway.service on 9608b582e`</Only><Only os="macos">`nodecode: restarted nodecode-gateway on 9608b582e`</Only>.
+
+</For>
+
+<For os="windows">
+
+```powershell
+irm https://nodecode.ai/install.ps1 | iex
+```
+
+It <Step name="download">downloads the release</Step>, <Step name="checksum">checks its sha256</Step>, <Step name="layout">unpacks it</Step> beside any older version, <Step name="link">puts it on your user PATH</Step> and <Step name="probe">runs it once</Step>.
+
+It asks for the smaller `.tar.zst` first and unpacks it with Windows' own `tar.exe`. A release published without one falls back to the `.zip` and says so. While it downloads, one line counts the megabytes and the speed.
+
+</For>
+
+<For os="linux">
+
+<Run cmd="curl -fsSL https://nodecode.ai/install.sh | sh">
+
+```output
+nodecode: reading https://nodecode.ai/dl/stable-x86_64-linux
+nodecode: release 9608b582e
+nodecode: downloading https://nodecode.ai/dl/nodecode-9608b582e-x86_64-linux.tar.gz
+nodecode: sha256 verified
+nodecode: laid out 9608b582e at /home/you/.local/share/nodecode/9608b582e
+nodecode: current is 9608b582e
+nodecode: linked /home/you/.local/bin/nodecode
+nodecode: the executable runs
+nodecode: open a new shell, then run 'nodecode' to start; the first launch opens the setup wizard
+```
+
+</Run>
+
+</For>
+
+<For os="macos">
+
+<Run cmd="curl -fsSL https://nodecode.ai/install.sh | sh">
+
+```output
+nodecode: reading https://nodecode.ai/dl/stable-arm64-darwin
+nodecode: release 9608b582e
+nodecode: downloading https://nodecode.ai/dl/nodecode-9608b582e-arm64-darwin.tar.gz
+nodecode: sha256 verified
+nodecode: laid out 9608b582e at /Users/you/.local/share/nodecode/9608b582e
+nodecode: current is 9608b582e
+nodecode: linked /Users/you/.local/bin/nodecode
+nodecode: the executable runs
+nodecode: add /Users/you/.local/bin to your PATH:
+  echo 'export PATH="$HOME/.local/bin:$PATH"' >> /Users/you/.zprofile
+then open a new shell and run 'nodecode' to start; the first launch opens the setup wizard
+```
+
+</Run>
+
+</For>
+
+<For os="windows">
+
+<Run prompt="PS>" cmd="irm https://nodecode.ai/install.ps1 | iex">
+
+```output
+nodecode: downloading https://nodecode.ai/dl/nodecode-9608b582e-x86_64-windows.tar.zst
+nodecode: nodecode-9608b582e-x86_64-windows.tar.zst is not published for this release
+nodecode: downloading https://nodecode.ai/dl/nodecode-9608b582e-x86_64-windows.zip
+nodecode: downloaded 28.6 MB in 7.3 s, 3.9 MB/s
+nodecode: sha256 verified
+nodecode: installed 9608b582e at C:\Users\you\AppData\Local\Programs\nodecode\9608b582e
+nodecode: your user PATH names C:\Users\you\AppData\Local\Programs\nodecode\9608b582e; nodecode runs in this window now, and in new ones
+nodecode: the executable runs
+```
+
+</Run>
+
+</For>
+
+<Only os="linux macos">Open a new shell.</Only><Only os="windows">The window you pasted into runs it now; so does a new one.</Only> Then:
+
+```sh
+nodecode --version
+```
+
+<For os="linux windows">
+
+```output
+nodecode 0.0.1+9608b582e
+```
+
+</For>
+
+<For os="macos">
+
+```output
+nodecode 0.0.1+9608b582e
+```
+
+</For>
+
+Run `nodecode` to start. Next: [Quickstart](/quickstart).
+
+<Mistakes>
+<Mistake os="linux macos">
+<What>Passing a flag straight to `sh`</What>
+<Why>`sh` takes it as its own option and stops: `sh: 0: Illegal option --`. Nothing installs.</Why>
+<Instead>Hand it to the installer: `curl -fsSL https://nodecode.ai/install.sh | sh -s -- --no-modify-path`</Instead>
+</Mistake>
+<Mistake os="linux macos">
+<What>Setting a variable in front of `curl`</What>
+<Why>It reaches `curl`, not the installer. The run still reads the channel.</Why>
+<Instead>Put it in front of `sh`: `curl -fsSL https://nodecode.ai/install.sh | NODECODE_VERSION=9608b582e sh`</Instead>
+</Mistake>
+<Mistake os="linux">
+<What>Running it with `sudo`</What>
+<Why>It installs into root's home, `/root/.local/share/nodecode`. Your own shell says `nodecode: command not found`.</Why>
+<Instead>Run it as yourself. It needs no root.</Instead>
+</Mistake>
+<Mistake os="linux macos">
+<What>Installing again after `nodecode: command not found`</What>
+<Why>The shell you installed from keeps the PATH it started with. A second install changes nothing.</Why>
+<Instead>Open a new shell. If the run ended with `add … to your PATH`, run the `echo` line it printed first.</Instead>
+</Mistake>
+<Mistake os="windows">
+<What>Pasting the line into Command Prompt</What>
+<Why>`irm` and `iex` are PowerShell. cmd answers `'irm' is not recognized as an internal or external command`.</Why>
+<Instead>Open PowerShell and paste it there.</Instead>
+</Mistake>
+<Mistake os="windows">
+<What>Running `nodecode` in another terminal opened before the install</What>
+<Why>The installer adds it to your user PATH and tells the window it ran in. Any other terminal that was already open keeps the old PATH.</Why>
+<Instead>Use the window you installed from, or open a new terminal.</Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/tools/install.sh */}
+## Requirements
+
+<For os="linux">
+
+| Needs | Without it | It prints |
+| --- | --- | --- |
+| x86_64 | Stops | `no Linux build for aarch64 yet` |
+| glibc 2.34 or newer | Stops | `glibc 2.31 is too old — nodecode needs 2.34 or newer.` |
+| `curl` or `wget` | Stops | `need curl or wget to download` |
+| `tar` | Stops | `need tar to unpack` |
+| `libsqlite3.so.0`, `libssl.so.3`, `libcrypto.so.3` | Warns | `WARNING: not found: libsqlite3.so.0` |
+| A CA bundle | Warns | `WARNING: no CA bundle found` |
+| `git` | Warns | `WARNING: git is not installed` |
+
+</For>
+
+<For os="macos">
+
+| Needs | Without it | It prints |
+| --- | --- | --- |
+| Apple Silicon | Stops | `no macOS build for Intel yet` |
+| macOS 15 or newer | Stops | `nodecode needs 15 (Sequoia) or newer` |
+| Homebrew `openssl@3` and `zstd` | Stops | `nodecode needs Homebrew's openssl@3 zstd` |
+| `curl` or `wget`, and `tar` | Stops | `need curl or wget to download` |
+| A CA bundle at `/opt/homebrew/etc/openssl@3/cert.pem` | Warns | `WARNING: no CA bundle at …` |
+| `git` | Warns | `WARNING: git is not installed` |
+
+</For>
+
+<For os="windows">
+
+| Needs | Without it | It prints |
+| --- | --- | --- |
+| 64-bit Windows | Stops | `nodecode needs 64-bit Windows` |
+| An AMD64 processor | Stops | `nodecode ships for x86-64 Windows only today` |
+| Git for Windows | Warns | `git is not on PATH` |
+
+</For>
+
+No flag changes a stop. A warning lets the install go on.
+
+<Mistakes>
+<Mistake os="linux">
+<What>Hunting for a flag past `glibc 2.31 is too old`</What>
+<Why>Ubuntu 20.04, Debian 11 and RHEL 8 fail. No flag changes this.</Why>
+<Instead>Move to Ubuntu 22.04+, Debian 12+, RHEL/Alma/Rocky 9+, Amazon Linux 2023, Fedora 35+ or Arch.</Instead>
+</Mistake>
+<Mistake os="linux">
+<What>Going on past `WARNING: not found: libsqlite3.so.0`</What>
+<Why>The install links the new build, then the build fails its own check: `the executable did not answer`. `nodecode` now points at a build that cannot start.</Why>
+<Instead>Install sqlite3 and OpenSSL 3 (`sudo apt install libsqlite3-0` on Ubuntu), then run the installer again.</Instead>
+</Mistake>
+<Mistake os="linux">
+<What>Going on past `WARNING: no CA bundle found`</What>
+<Why>Setup's provider list comes up empty. No error shows.</Why>
+<Instead>Install `ca-certificates`, then run `nodecode` again.</Instead>
+</Mistake>
+<Mistake os="macos">
+<What>Installing `openssl@3` alone</What>
+<Why>The build also opens Homebrew's `zstd` at every start. Without it, it does not answer at all.</Why>
+<Instead>`brew install openssl@3 zstd`, then run the installer again.</Instead>
+</Mistake>
+<Mistake os="macos">
+<What>Going on past `WARNING: no CA bundle at …`</What>
+<Why>Setup's provider list comes up empty. No error shows.</Why>
+<Instead>`brew reinstall ca-certificates`.</Instead>
+</Mistake>
+<Mistake os="windows">
+<What>Skipping Git for Windows</What>
+<Why>Shell commands run through its `sh.exe`. Without it they fail with `git is not on PATH`.</Why>
+<Instead>`winget install --id Git.Git -e --source winget`, then open a new terminal.</Instead>
+</Mistake>
+<Mistake os="linux macos">
+<What>Going on past the git warning</What>
+<Why>Nodecode runs, but the layer, memory and checkpoint history are not committed.</Why>
+<Instead>Install git.<Only os="macos"> `xcode-select --install` puts it on a Mac.</Only></Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/tools/install.sh */}
+## Where files land
+
+<For os="linux">
+
+<Upgrade before="A new version lands beside the old one. A running Nodecode keeps the files it started with." after="The old folder stays while anything runs from it. Only current moved.">
+
+<Tree root="~/">
+<Branch name=".local/share/nodecode/">
+The versions.
+
+<Branch name="9608b582e/" step="layout">The executable and `src/`. They stay together.</Branch>
+<Branch name="<newer>/" when="after">The newer release, beside it.</Branch>
+<Branch name="current" step="current" when="before">A symlink to `9608b582e/`, the version in use.</Branch>
+<Branch name="current" when="after">A symlink to `<newer>/` now. Nothing else moved.</Branch>
+<Branch name="base-url">The release host. Written only when `NODECODE_BASE_URL` was set at install.</Branch>
+</Branch>
+<Branch name=".local/bin/nodecode" step="link">A symlink to `current/nodecode`.</Branch>
+<Branch name=".nodecode/">Your home: sessions, cells, keys. An install never touches it.</Branch>
+</Tree>
+
+</Upgrade>
+
+</For>
+
+<For os="macos">
+
+<Upgrade before="A new version lands beside the old one. A running Nodecode keeps the files it started with." after="The old folder stays while anything runs from it. Only current moved.">
+
+<Tree root="~/">
+<Branch name=".local/share/nodecode/">
+The versions.
+
+<Branch name="9608b582e/" step="layout">The executable and `src/`. They stay together.</Branch>
+<Branch name="<newer>/" when="after">The newer release, beside it.</Branch>
+<Branch name="current" step="current" when="before">A symlink to `9608b582e/`, the version in use.</Branch>
+<Branch name="current" when="after">A symlink to `<newer>/` now. Nothing else moved.</Branch>
+<Branch name="base-url">The release host. Written only when `NODECODE_BASE_URL` was set at install.</Branch>
+</Branch>
+<Branch name=".local/bin/nodecode" step="link">A symlink to `current/nodecode`.</Branch>
+<Branch name=".nodecode/">Your home: sessions, cells, keys. An install never touches it.</Branch>
+</Tree>
+
+</Upgrade>
+
+</For>
+
+<For os="windows">
+
+<Upgrade before="A new version lands beside the old one. A running Nodecode keeps the files it started with." after="The old folder stays while anything runs from it. Only current and the PATH entry moved.">
+
+<Tree root="%LOCALAPPDATA%\Programs\nodecode\">
+<Branch name="9608b582e\" step="layout">The executable, its DLLs and `src\`.</Branch>
+<Branch name="<newer>\" when="after">The newer release, beside it.</Branch>
+<Branch name="current" step="current link" when="before">A junction to `9608b582e\`, the version in use. Your user PATH names `9608b582e\` itself.</Branch>
+<Branch name="current" when="after">A junction to `<newer>\` now. The PATH entry moved to `<newer>\` too.</Branch>
+<Branch name="base-url">The release host. Written only when `NODECODE_BASE_URL` was set at install.</Branch>
+</Tree>
+
+</Upgrade>
+
+</For>
+
+Your data lives in the home, <Only os="linux macos">`~/.nodecode/`</Only><Only os="windows">`%USERPROFILE%\.nodecode\`</Only>. See [Files](/files).
+
+<Mistakes>
+<Mistake os="linux macos">
+<What>Waiting for the installer to edit your profile</What>
+<Why>It never writes to <Only os="linux">`~/.profile`</Only><Only os="macos">`~/.zprofile`</Only>. It prints the line to add and stops there.</Why>
+<Instead>Run the `echo` line it printed, then open a new shell.</Instead>
+</Mistake>
+<Mistake os="linux macos">
+<What>Keeping an older `nodecode` first on PATH</What>
+<Why>You keep running the old build. The installer warns: `'nodecode' on your PATH is NOT the build just installed`.</Why>
+<Instead>Remove the other one, or put `~/.local/bin` ahead of it in PATH.</Instead>
+</Mistake>
+<Mistake os="linux macos">
+<What>Copying the executable somewhere else</What>
+<Why>It reads its own `src/` beside it. The two stay together.</Why>
+<Instead>Link it instead, as the installer does: `ln -s ~/.local/share/nodecode/current/nodecode ~/bin/nodecode`</Instead>
+</Mistake>
+<Mistake os="linux macos">
+<What>Exporting `NODECODE_HOME` for Nodecode, then installing</What>
+<Why>`install.sh` reads the same name as its install folder. The versions land inside your home.</Why>
+<Instead>Leave it out of the install line: `curl -fsSL https://nodecode.ai/install.sh | env -u NODECODE_HOME sh`</Instead>
+</Mistake>
+<Mistake os="windows">
+<What>Deleting an old version folder while Nodecode runs</What>
+<Why>A running Nodecode runs from the folder it started in.</Why>
+<Instead>Close it first. `current` already points at the new one.</Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/tools/install.sh */}
+## Flags and variables
+
+<For os="linux macos">
+
+Flags go after `sh -s --`. Variables go in front of `sh`, not `curl`.
+
+```sh
+curl -fsSL https://nodecode.ai/install.sh | NODECODE_CHANNEL=stable sh -s -- --stage
+```
+
+| Flag | Does |
+| --- | --- |
+| `--no-modify-path` | No link in `~/.local/bin`. It prints the path to run. |
+| `--stage` | Lays the version out and probes it. `current` stays. Nothing restarts. |
+| `--link` | Points `current` at a version laid out earlier. No download. Needs `NODECODE_VERSION`. |
+| `--force` | Downloads and lays the version out again, even when it is already laid out and answers. |
+| `-h`, `--help` | Prints help when the script runs from a file: `sh install.sh --help`. Piped, it prints nothing. |
+
+</For>
+
+<For os="windows">
+
+With `irm … | iex`, set variables first. Parameters only reach the script when it runs as a file.
+
+```powershell
+$env:NODECODE_VERSION = '9608b582e'; irm https://nodecode.ai/install.ps1 | iex
+```
+
+| Parameter | Does |
+| --- | --- |
+| `-Version LABEL` | Installs that release. |
+| `-FromZip PATH` | Installs a local release zip. No download. |
+| `-NoModifyPath` | Leaves the user PATH alone. It prints the folder to add. |
+| `-Force` | Downloads and lays the release out again, even when it is already laid out and answers. |
+
+</For>
+
+| Variable | Default | Does |
+| --- | --- | --- |
+| `NODECODE_VERSION` | the channel's release | Installs this version. |
+| `NODECODE_CHANNEL` | `stable` | Names the channel pointer to read. |
+| `NODECODE_BASE_URL` | `https://nodecode.ai/dl` | Fetches from this host. Later updates read the same host. |
+| `NODECODE_STAGE` | `full` | `full`, `stage` or `link`. Same as `--stage` and `--link`. |
+| `NODECODE_FORCE` | unset | `1` is the same as `--force` and `-Force`. |
+| `NODECODE_HOME` | `~/.local/share/nodecode` | Install folder, for `install.sh`. |
+| `NODECODE_INSTALL_DIR` | `%LOCALAPPDATA%\Programs\nodecode` | Install folder, for `install.ps1`. |
+| `NODECODE_NO_MODIFY_PATH` | unset | Same as `-NoModifyPath`, for `install.ps1`. |
+
+<Mistakes>
+<Mistake os="linux macos">
+<What>Using `--link` without a version</What>
+<Why>It stops: `--link needs the version to point at: set NODECODE_VERSION`.</Why>
+<Instead>`curl -fsSL https://nodecode.ai/install.sh | NODECODE_VERSION=9608b582e sh -s -- --link`</Instead>
+</Mistake>
+<Mistake os="linux macos">
+<What>Adding a flag from another installer</What>
+<Why>Anything else exits with code 2: `install.sh: unknown argument --yes`.</Why>
+<Instead>The flags are `--no-modify-path`, `--stage`, `--link`, `--force` and `-h`.</Instead>
+</Mistake>
+<Mistake os="windows">
+<What>Adding `-Version` after `iex`</What>
+<Why>`iex` runs the script but takes no parameters for it. PowerShell refuses the line.</Why>
+<Instead>Set the variable first, as above.</Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/tools/install.sh */}
+## Running it again
+
+Pasting the line again over a release that is already laid out downloads nothing. Only `current` and the link move, in about a second.
+
+<For os="linux">
+
+<Run cmd="curl -fsSL https://nodecode.ai/install.sh | sh">
+
+```output
+nodecode: reading https://nodecode.ai/dl/stable-x86_64-linux
+nodecode: release 9608b582e
+nodecode: 9608b582e is already laid out at /home/you/.local/share/nodecode/9608b582e; keeping it (--force downloads it again)
+nodecode: current is 9608b582e
+nodecode: linked /home/you/.local/bin/nodecode
+nodecode: the executable runs
+nodecode: open a new shell, then run 'nodecode' to start; the first launch opens the setup wizard
+```
+
+</Run>
+
+</For>
+
+<For os="macos">
+
+It says `9608b582e is already laid out at /Users/you/.local/share/nodecode/9608b582e; keeping it (--force downloads it again)`, then moves `current` and the link.
+
+</For>
+
+<For os="windows">
+
+It says `9608b582e is already laid out at …; keeping it (-Force downloads it again)`. It keeps the release `current` names and the one before it, and removes older copies: `removed <label>, an older copy`. A copy something still runs from stays.
+
+</For>
+
+<For os="linux macos">
+
+Two installs into one home take turns. The second waits and says `waiting for another install into …`.
+
+</For>
+
+{/* source: src/organism/update.lisp */}
+## Upgrade
+
+```sh
+nodecode update
+```
+
+Installed builds also update themselves by default. A gateway running in the background moves to the new build. See [Updates](/updates).
+
+{/* source: justfile */}
+## From source
+
+Needs SBCL and `just`.
+
+```sh
+just build      # compile the system
+just test       # run the core suite
+just release    # dump ./nodecode
+./nodecode
+```
+
+`just check` runs lint, the line-count ceiling (`just loc`), build and test.
+
+<Mistakes>
+<Mistake>
+<What>Waiting for a source build to update itself</What>
+<Why>Automatic updates are off in a source build.</Why>
+<Instead>Pull and run `just release` again. Or install a release with the line at the top.</Instead>
+</Mistake>
+</Mistakes>

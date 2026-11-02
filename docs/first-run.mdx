@@ -1,0 +1,262 @@
+---
+title: First run
+summary: "The setup wizard: when it opens, what each stage shows, and the usual mistakes."
+---
+
+<Reel items={[["providers", "#2-provider", 2, "Provider"], ["models", "#3-model", 3, "Model"], ["summary", "#5-finish", 5, "Finish"]]} />
+
+```sh
+nodecode
+```
+
+{/* source: src/tui/setup.lisp */}
+## When setup opens
+
+| Case | Result |
+| --- | --- |
+| No provider has a credential, or no default model is saved | Setup opens on the first frame. |
+| `nodecode setup` | Setup opens on the first frame. |
+| `/setup` in the shell | Setup opens now. |
+
+A credential can come from `config.jsonc`, `auth.json` or the environment.
+
+The walk imports first, then has three steps: Provider, Model, Reasoning effort. The <Term screen="providers" spot="step">step line</Term> counts them: `step 1/3`. The <Term screen="providers" spot="hints">key line</Term> lists what each stage takes. Left and Right move between steps. Esc on the provider list ends the walk.
+
+<Screen name="providers" />
+
+<Mistakes>
+<Mistake>
+<What>Quitting halfway and expecting it to pick up</What>
+<Why>The walk keeps no state. The next launch opens it again until a provider and a default model are both saved.</Why>
+<Instead>`nodecode setup` walks it again.</Instead>
+</Mistake>
+<Mistake>
+<What>Writing `config.jsonc` by hand before the first run</What>
+<Why>A parse error stops the launch: `is not valid JSONC (byte N)`.</Why>
+<Instead>Fix it or move it aside. Then `nodecode setup`.</Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/tui/setup.lisp */}
+## 1. Import
+
+The import runs only when another coding agent's home is on this machine. Nodecode knows 15 of them: Claude Code, Codex, OpenCode, Cursor CLI, Gemini CLI, Qwen Code, pi, Crush, Cline, Windsurf, Kiro, dotagents, Hermes Agent, Openclaw and Command Code. It does not ask first.
+
+The walk says what it found in its own dialog, never the chat: a ledger over the key check, such as `2 keys`, `3 configs` and `1 memory`, each with the agents it came from. The keys land first; instructions, memory, skills, servers, bots and jobs land behind the walk.
+
+When the import brings a default model over and its provider answers, the walk ends there. `/models` changes the pick.
+
+| Item | Here |
+| --- | --- |
+| Instructions | Added to `~/.nodecode/AGENTS.md`, under the agent's name. |
+| Skills | Kept by name, with their description. |
+| MCP servers | Written to the config, off. `/mcp on NAME` starts one. |
+| API keys | Copied to `auth.json`, then checked. |
+| Sign-ins | Stay with the other agent. |
+| Sessions | Left out. `nodecode import WORLD --only sessions` brings them. |
+| Settings this home already has | Kept. |
+| Report | `~/.nodecode/import/report-<time>.txt` |
+
+<Mistakes>
+<Mistake>
+<What>Starting where another agent holds keys you don't want here</What>
+<Why>The import runs without a question. Keys and bot tokens come with it.</Why>
+<Instead>Run `nodecode import WORLD` first and pick Skip. Then `nodecode`.</Instead>
+</Mistake>
+<Mistake>
+<What>Expecting a Claude Code or Codex sign-in to come over</What>
+<Why>A sign-in stays with its agent. The report says so: `no key imported here serves it`.</Why>
+<Instead>Paste an API key in the provider step.</Instead>
+</Mistake>
+<Mistake>
+<What>Waiting for an imported MCP server to answer</What>
+<Why>Imported servers land off: `lands off: /mcp on filesystem starts it`.</Why>
+<Instead>`/mcp on NAME`, once you have read what it runs.</Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/tui/models-wizard.lisp */}
+## 2. Provider
+
+Seven providers come first, then the rest A to Z. Enter on one asks for its key and <Term screen="keyStep" spot="page">names the page</Term> that makes one. The <Term screen="keyStep" spot="field">key field</Term> shows stars.
+
+<Screen name="keyStep" />
+
+Nodecode asks the provider before it saves. A key that answers goes to `~/.nodecode/auth.json` <Term screen="keySaved" spot="msg">and says so</Term>. The provider <Term screen="keySaved" spot="connected">moves up under Suggested</Term>, over `Connect another`. Connect a second one, or press Enter on a connected provider to pick its model.
+
+<Screen name="keySaved" />
+
+<Mistakes>
+<Mistake>
+<What>Pasting the key while the list is open</What>
+<Why>It goes into the search, in plain text, and finds `No matching providers`.</Why>
+<Instead>Press Enter on the provider first. Paste into the key field.</Instead>
+</Mistake>
+<KeyProof pair="paste" />
+<Mistake>
+<What>Pasting a key from another provider, or one with a typo</What>
+<Why>`DeepSeek refused this key (HTTP 401 invalid_api_key); nothing was saved.`</Why>
+<Instead>Make a key on the page the step names. Enter pastes another.</Instead>
+</Mistake>
+<KeyProof pair="check" />
+<Mistake>
+<What>Reading "saved" as "works"</What>
+<Why>A provider that doesn't answer in 5 seconds gets the key saved anyway: `not checked: no answer`.</Why>
+<Instead>Run `/doctor`. If the key fails, `/models` takes it again: pick the provider, then Ctrl+E.</Instead>
+</Mistake>
+<Mistake>
+<What>Connecting a local server before it runs</What>
+<Why>`nothing listens at …; nothing was saved.`</Why>
+<Instead>Start the server. Enter checks again.</Instead>
+</Mistake>
+<Mistake os="linux">
+<What>Pressing Ctrl+V over SSH</What>
+<Why>`No clipboard to read here — paste with your terminal (Ctrl+Shift+V)`</Why>
+<Instead>Ctrl+Shift+V.</Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/tui/setup.lisp */}
+## 3. Model
+
+The picker opens on the <Term screen="models" spot="suggested">suggested model</Term>: the provider's newest that can call tools. A list not fetched yet reads `Loading the model list…` and fills in place. Type to search. Enter makes the <Term screen="models" spot="row">selected row</Term> the default for every session.
+
+<Screen name="models" />
+
+<Mistakes>
+<Mistake>
+<What>Pressing Esc on the model step, then on the providers</What>
+<Why>Esc on the model step goes back to the provider list. Esc there ends the walk with nothing picked. The summary's `problem` line says `model: no model configured — /models picks one, and writes it to the shared config`, and every prompt fails until one is.</Why>
+<Instead>`/models`.</Instead>
+</Mistake>
+<Mistake>
+<What>Pressing Enter on the first row without reading it</What>
+<Why>It is the newest model with tool calls, not the one you use.</Why>
+<Instead>Type part of the name you want, then Enter.</Instead>
+</Mistake>
+<Mistake>
+<What>Editing `config.jsonc` while the walk runs</What>
+<Why>The pick can't be written: `was not saved: … is not valid JSONC`.</Why>
+<Instead>Fix the file. Then `/models`.</Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/tui/setup.lisp */}
+## 4. Reasoning effort
+
+After a pick, the step opens the model's own reasoning ladder. Enter applies a rung from the next turn, in this session and every new one, and the summary notes it: `reasoning effort: high`. Esc keeps the current one and ends the walk. Left goes back to the model. `/think` changes it later.
+
+A model with no reasoning controls shows one `Continue` row: `This model has no reasoning effort controls.`
+
+{/* source: src/tui/setup.lisp */}
+## 5. Finish
+
+The walk ends on its last page, in the same dialog. Its head says `Ready`, or how many things there are to check. Under it: each `problem` or `check` first, then the provider, the model, what the import found, and notes.
+
+<Screen name="summary" />
+
+| Row | Shows | Does |
+| --- | --- | --- |
+| `Start` | Nothing left to check | Closes the walk on an empty chat. The row says `type a task, such as "what is in this folder?"`. |
+| `Change provider or key` | Something to check | Goes `back to step 1`. |
+| `Start anyway` | Something to check | Starts, and `the footer keeps the count`: `1 setup issue`, which opens `/setup`. |
+| `Details` | An import ran | Lists what came over, agent by agent. |
+
+Esc starts too. The footer gains the <Term screen="summary" spot="gateway">gateway</Term>.
+
+<Mistakes>
+<Mistake>
+<What>Pressing `Start anyway` over a model `problem`</What>
+<Why>The turn fails: `no model is chosen yet: /setup connects a provider and picks one`.</Why>
+<Instead>`Change provider or key`, or `/models`. The footer's count goes when the pick answers it.</Instead>
+</Mistake>
+<Mistake>
+<What>Expecting the summary again in the chat</What>
+<Why>The walk never writes it there. The footer keeps only the count.</Why>
+<Instead>`/doctor` reports the same. `/setup` walks it again.</Instead>
+</Mistake>
+<Mistake>
+<What>Expecting it to keep running after the last shell closes</What>
+<Why>It does while the gateway is on, its default on Linux and macOS. Off, `/doctor` says `gateway off — nothing keeps this organism running once its last shell closes`.</Why>
+<Instead>`nodecode gateway on`.</Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/tui/account-login.lisp */}
+## A nodecode.ai account
+
+A Founders plan or API credit from [nodecode.ai](https://nodecode.ai/pricing) needs no key pasted. Sign in instead:
+
+```sh
+nodecode login
+```
+
+It asks what for: `1  Subscription: your Founders or Plus plan's requests` or `2  API credits: pay per token from your balance`. `--subscription` or `--api` answers up front. In the shell, `/login` does the same.
+
+It opens nodecode.ai in your browser with this machine's code already in the page: `Your browser is open at nodecode.ai`. Over SSH it prints the link instead, `Open this page in a browser, on this machine or any other`, and any device signs it in. Nothing is pasted back.
+
+Then it prints `Signed in`, saves the account key to `auth.json`, and prints the meter: `Founders Base plan: 41,188 of 42,000 requests left, resets Nov 11 · 0 of 4 running`, and `API credit: …`. `Run nodecode, then /models to choose a nodecode model.`
+
+The footer shows the meter from then on. A click on it opens `/usage`.
+
+| Command | Does |
+| --- | --- |
+| `nodecode login` | Signs in, in a browser. Asks which, or takes `--subscription` or `--api`. |
+| `/login` | The same, from the shell. |
+| `nodecode machine link [CODE]` | Links this machine with a code from [Machines](https://nodecode.ai/account/machines). |
+
+<Mistakes>
+<Mistake>
+<What>Running `nodecode login` from a script</What>
+<Why>With no terminal it cannot ask: `nodecode login asks what to sign in for and no terminal can answer`.</Why>
+<Instead>`nodecode login --subscription` or `nodecode login --api`.</Instead>
+</Mistake>
+<Mistake>
+<What>Signing in for a subscription with no plan</What>
+<Why>`This account holds no plan yet: subscribe at https://nodecode.ai/pricing`. Calls answer 402.</Why>
+<Instead>Plans open soon. Until then, run on your own provider key.</Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/gateway/settings.lisp */}
+## Secrets
+
+| Secret | Stored in | Mode |
+| --- | --- | --- |
+| Provider API key | `~/.nodecode/auth.json` | 0600 |
+| A secret pasted in `/settings` | A file under `~/.nodecode/secrets/` | 0600 |
+
+The config names the file, never the value.
+
+{/* source: src/tui/slash.lisp */}
+## Coming back
+
+| Command | Does |
+| --- | --- |
+| `nodecode setup` | Opens the shell with setup on the first frame. |
+| `/setup` | Opens the whole walk. Takes no argument. |
+| `/login` | Signs in to your nodecode.ai account: a subscription or API credits. |
+| `/models` | Opens the providers under Main, Auxiliary, Decider and Backup tabs. Connect one, or pick a model. |
+| `/cells` | Lists cells. Space turns one on or off. |
+| `/settings` | Browse and change settings, a cell's among them. |
+| `/doctor` | Lists what is missing, with a fix for each. |
+
+<Mistakes>
+<Mistake>
+<What>Typing `/setup discord`</What>
+<Why>`` `/setup` does not take arguments. ``</Why>
+<Instead>`nodecode gateway setup discord` in a terminal. See [Channels](/channels).</Instead>
+</Mistake>
+<Mistake>
+<What>Turning a cell off in `/cells` and expecting it gone</What>
+<Why>The row says `its code stays loaded until a restart`.</Why>
+<Instead>Restart `nodecode`.</Instead>
+</Mistake>
+<Mistake>
+<What>Editing `auth.json` by hand</What>
+<Why>A file that doesn't parse reads as no keys. The next save fails.</Why>
+<Instead>Let `/models` write it.</Instead>
+</Mistake>
+</Mistakes>
+
+What it said, line by line: [Troubleshooting](/troubleshooting#setup-and-model-failures). Then type a prompt and press Enter. Keys: [Shell](/shell).

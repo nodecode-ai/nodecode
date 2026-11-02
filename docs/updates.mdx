@@ -1,0 +1,181 @@
+---
+title: Updates
+summary: "The update command, the update config keys, channels, staging, the hot and restart paths, and manual steps."
+---
+
+```sh
+nodecode update [VERSION] [--check]
+```
+
+{/* source: src/organism/update.lisp */}
+## Command
+
+| Form | Does |
+| --- | --- |
+| `nodecode update` | Moves to the latest release on the configured channel. Lifts a hold. |
+| `nodecode update VERSION` | Moves to that release label, and holds this home there until a bare `nodecode update`. |
+| `nodecode update --check` | Stages and classifies the release. Applies nothing. |
+
+| Case | Result |
+| --- | --- |
+| An organism serves this home | It takes the update itself. The command prints its answer. |
+| No organism runs | The release is staged and linked. The next launch runs it. |
+| Already on that release | Prints `already at LABEL`. |
+| The binary and the organism differ | Prints one line for each. |
+
+An organism is a running Nodecode. One update runs at a time. An error exits with code 1.
+
+{/* source: src/organism/update.lisp */}
+## Config keys
+
+Set these under `update` in `~/.nodecode/config.jsonc`. The same keys are in `/settings`, under System > Updates.
+
+| Key | Values | Default |
+| --- | --- | --- |
+| `update.mode` | `auto`, `ask`, `off` | `auto` on an installed build. `off` on a source build. |
+| `update.channel` | A channel name | `stable` |
+| `update.check_minutes` | Integer, 1 or more | `360` with a release feed. `30` without one. |
+| `update.url` | A release host | The host this build was installed from. Else `https://nodecode.ai/dl`. |
+| `update.feed` | A feed host, or `off` | The release host. `off` when the host is a folder. |
+
+```jsonc
+{
+  "update": { "mode": "ask", "channel": "stable" }
+}
+```
+
+| Mode | Does |
+| --- | --- |
+| `auto` | Stages and applies each new release. |
+| `ask` | Stages the release. Posts a notice. `nodecode update` applies it. |
+| `off` | Never looks. No release note is reported. |
+
+An installed build runs from the installer's layout, beside a `current` link. `NODECODE_BASE_URL` overrides the built-in host. See [Config](/config).
+
+{/* source: src/organism/update.lisp */}
+## Channels
+
+A channel is one pointer file per platform on the release host:
+
+```sh
+<host>/<channel>-<arch>-<os>
+```
+
+| Platform | Pointer on `stable` |
+| --- | --- |
+| Linux x86_64 | `stable-x86_64-linux` |
+| macOS Apple Silicon | `stable-arm64-darwin` |
+| Windows x86_64 | `stable-x86_64-windows` |
+
+The pointer holds one release label. The installer reads the same file.
+
+| Check | When |
+| --- | --- |
+| First look | 30 seconds after the gateway starts. |
+| Poll | Every `update.check_minutes`. |
+| Release feed | One open connection to the feed host. A new label triggers a check at once. |
+
+Windows: the default poll is 30 minutes.
+
+The poller only moves forward. A channel that names an older build, or a build no channel published (a source build's own), is said and left:
+
+```output
+LABEL is out; this build, OWN, is newer, so it stays: `nodecode update' takes LABEL
+```
+
+Naming a release holds this home there. `nodecode update VERSION` writes `~/.nodecode/release-pin`. While the hold stands, the poller leaves the channel alone, and its look still says what came out:
+
+```output
+release LABEL is held by `nodecode update LABEL'; NEW is out; `nodecode update' lifts the hold
+```
+
+A bare `nodecode update` lifts the hold. A restore holds nothing.
+
+{/* source: src/organism/update.lisp */}
+## Staging
+
+Staging runs the installer that shipped with the build, in `stage` mode.
+
+1. Download the release archive.
+2. Check its sha256.
+3. Lay it out in `<release-dir>/<label>/`, beside the running build.
+4. Run the staged executable with `--help`.
+
+`current` does not move. Nothing restarts. A failure stops here with the installer's last line as the reason. The installer may run for 30 minutes at most.
+
+After staging, Nodecode compares the staged source with its own, definition by definition. The verdict is `same`, `hot` or `restart`.
+
+{/* source: src/organism/upgrade.lisp */}
+## Hot path and restart path
+
+| Changed form | Path |
+| --- | --- |
+| `defun`, `defmethod`, `defvar`, `defparameter`, `defsetf`, `define-*`, `defclass` | Hot |
+| Any new definition | Hot |
+| A changed `defmacro` or inline function | Hot. Every definition that uses it is evaluated again. |
+| A `defpackage` that changes only `:export` | Hot |
+| `defstruct`, `define-record` | Restart |
+| Any other `defpackage` change, `defconstant`, `deftype` | Restart |
+| A definition in a package this image lacks | Restart |
+| A file or `.asd` that does not read | Restart |
+| `define-kind`, the store schema | Restart |
+| A `defgeneric` whose lambda list changed | Restart |
+| Code outside any definition | Restart |
+| A new system dependency | Restart |
+
+| Step | Hot release | Restart release |
+| --- | --- | --- |
+| Live image | Every changed definition is evaluated. All or nothing. | Every definition that can go live is evaluated. The rest waits. |
+| `current` link | Moves to the new release. | Moves to the new release. |
+| Attached shells | Evaluate the same changes. | Evaluate the same changes. Boot state waits for their next launch. |
+| Restart | None. | See below. |
+| Record | An `organism.upgraded` fact. | An `organism.upgraded` fact. |
+
+Restart on the restart path:
+
+| Organism runs as | Result |
+| --- | --- |
+| The background gateway (`nodecode gateway on`) | It checks every 5 seconds. It exits when no turn runs. The unit starts it on `current`. |
+| A shell, or `nodecode serve` | The new build runs at the next launch. |
+
+A running turn is never interrupted. The gateway's own look applies a release only while no turn runs. A release that leaves a provider this organism served unresolved is undone whole, and runs at the next launch instead.
+
+If the live image refuses a release, nothing changes in the image. The release is linked for the next launch. The poller does not try it again.
+
+After an update the model reports the new version and the changes once. Latest changes, in `/settings`, lists what the running release changed.
+
+{/* source: src/organism/generation.lisp */}
+## Rollback
+
+| Failure | What happens |
+| --- | --- |
+| A staged build does not answer `--help` | Refused at staging. Nothing moved. |
+| A hot load fails | The image is restored. The release is linked for the next launch. |
+| A launch dies before it serves | The next launch runs pristine: generation 0, the binary alone, no folder loaded. After two deaths in a row it stays pristine until a restore. |
+
+Go back by hand:
+
+```sh
+nodecode generations
+nodecode rollback N
+```
+
+`nodecode generations` lists the sealed generations. `nodecode rollback N` restores one: every folder goes back to what N recorded, and a hub cell is cloned again at N's pin. The binary and its shipped folders stay on the release that runs, and updates keep coming, forward, over the restored folder. With the organism running, it exits once no turn is in flight, and the next launch runs N. `/generations` does the same in a shell, and asks before anything moves.
+
+To take the binary back, name the release: `nodecode update OLD-LABEL` moves to it and holds this home there.
+
+If `nodecode` itself does not start, reinstall the old release:
+
+```sh
+curl -fsSL https://nodecode.ai/install.sh | NODECODE_VERSION=OLD-LABEL sh
+```
+
+{/* source: src/UPGRADE.md */}
+## Not automated
+
+- Moving `current` back after a restart onto a build that does not serve. A pristine launch still runs that build.
+- Rollback after a store migration. Copy `~/.nodecode/history.db` before an update you may want to reverse, or run `/backup`.
+- Updates of a source build. `update.mode` is `off` there. Run `just release` to rebuild.
+- Updates of cells from the hub. `nodecode update` moves the core and the shipped cells only.
+
+Run the installer again to upgrade from outside. It restarts a running background gateway on the new build. See [Install](/install).

@@ -1,0 +1,368 @@
+---
+title: Command line
+summary: "Every nodecode command and option, the rules for combining them, and the exit codes."
+---
+
+`nodecode --help` prints the whole line. The <Term screen="help" spot="usage">usage line</Term> comes first. Then the <Term screen="help" spot="commands">commands</Term> and the <Term screen="help" spot="options">options</Term>. The <Term screen="help" spot="foot">last line</Term> says how to read one command.
+
+<Transcript name="help" />
+
+{/* source: src/cli/entry.lisp */}
+## Commands
+
+<Commands first="nodecode">
+<Command line="nodecode" tty="Yes" show="home">Opens the shell on this home's organism. Starts the organism when none runs.</Command>
+<Command line="nodecode serve [--store PATH]" tty="No" show="serve">Runs the organism with no shell. Exits at once when another process owns the store.</Command>
+<Command line="nodecode login [--subscription | --api]" tty="No" show="help-login">Signs in to your nodecode.ai account in a browser, for a plan's requests or API credits. Saves the key and prints the account's meter.</Command>
+<Command line="nodecode machine link [CODE]" tty="No" show="help-machine">Links this machine to your nodecode.ai account with a code from its Machines page.</Command>
+<Command line="nodecode setup" tty="Yes" show="setup">Opens the shell with setup on the first frame.</Command>
+<Command line="nodecode import [WORLD] [FLAGS]" tty="Yes" show="import-only">Reads another coding agent's home into this one. A preview until `--yes`.</Command>
+<Command line="nodecode add nc://NAME [--yes]" tty="No" show="add-web">Installs a shipped or hub cell and turns it on.</Command>
+<Command line="nodecode profile [VERB]" tty="No" show="profile">Manages profiles. Alias: `profiles`.</Command>
+<Command line="nodecode gateway [VERB]" tty="No" show="gateway">Keeps the organism running in the background and at login.</Command>
+<Command line="nodecode update [VERSION] [--check]" tty="No" show="help-update">Moves to the latest release, or to VERSION.</Command>
+<Command line="nodecode generations" tty="No" show="help">Lists the sealed generations of this home's organism.</Command>
+<Command line="nodecode rollback N" tty="No" show="help">Restores this home's organism to generation N.</Command>
+<Command line="nodecode web" tty="No" show="web">Prints the web page link and opens it in a browser.</Command>
+<Command line="nodecode resume SESSION-ID" tty="Yes" show="resume-pipe">Opens the shell on that session.</Command>
+<Command line="nodecode rpc [SESSION-ID]" tty="No" show="help">Drives this home's organism from a program: JSON lines in and out. See [RPC](/rpc).</Command>
+<Command line="nodecode help [COMMAND]" tty="No" show="help-resume">Prints general help, or one command's help.</Command>
+</Commands>
+
+Terms: the organism is a running Nodecode. The shell is the terminal UI. The home is `~/.nodecode/`. The gateway is the local server that shells attach to. The layer is the set of definitions the agent wrote and kept. A cell is a folder of code under `~/.nodecode/cells/`.
+
+`trial`, `warm` and `warm-dump` are internal. Help does not list them.
+
+<Mistakes>
+<Mistake>
+<What>Starting `nodecode` from cron, a pipe or `ssh` without `-t`</What>
+<Why>It exits with code 2. <Said>{"nodecode needs a terminal (no controlling tty); run it in one."}</Said></Why>
+<Instead>Use a terminal or `ssh -t`. With no terminal at all, run `nodecode serve`, or `nodecode gateway on` on Linux and macOS.</Instead>
+</Mistake>
+<Mistake>
+<What>Putting `--store` or `--ephemeral` in front of `login`, `machine`, `add`, `profile`, `gateway`, `update`, `web`, `generations` or `rollback`</What>
+<Why>These are commands of their own. Exit code 2. <Said>{"nodecode: add is a command of its own: nodecode [-p NAME] add ..."}</Said></Why>
+<Instead>Only `-p NAME` goes in front of them: `nodecode -p work add nc://web`.</Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/cli/entry.lisp */}
+## Options
+
+| Option | Does |
+| --- | --- |
+| `-p NAME`, `--profile NAME` | Runs profile NAME. Read anywhere on the line. One per launch. |
+| `--store PATH` | Runs on the store at PATH. |
+| `--ephemeral` | Runs on a throwaway store at `$TMPDIR/nodecode-ephemeral-<pid>.db`. |
+| `--pristine` | Runs generation 0: the binary alone, no folder loaded. Keeps are refused while it runs. |
+| `-h`, `--help` | Prints help. After a command, prints that command's help. |
+| `--version` | Prints `nodecode VERSION`. |
+
+`--ephemeral` replaces the store only. Channel adapters do not start.
+
+<Mistakes>
+<Mistake>
+<What>Reaching for `--ephemeral` for a clean start</What>
+<Why>Only the store is new. Config, layer, memory and skills stay the profile's. New definitions still go to the real layer.</Why>
+<Instead>Use a throwaway home: `HOME=$(mktemp -d) nodecode`.</Instead>
+</Mistake>
+<Mistake>
+<What>Two `-p` on one line</What>
+<Why>Exit code 2. <Said>{"nodecode: -p names a second profile, play; a launch runs one"}</Said></Why>
+<Instead>One profile per launch. Run the other in its own terminal.</Instead>
+</Mistake>
+<Mistake>
+<What>`--version` in front of a command</What>
+<Why>It answers and exits. `nodecode --version add nc://web` prints the version and installs nothing.</Why>
+<Instead>Ask for the version on a line of its own.</Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/lib/paths.lisp */}
+## Which home runs
+
+First match wins:
+
+1. `-p NAME`
+2. `$NODECODE_HOME`
+3. The profile named in `~/.nodecode/active-profile`
+4. `~/.nodecode/`
+
+Nodecode exports the chosen home to child processes as `NODECODE_HOME`. See [Profiles](/profiles).
+
+<Mistakes>
+<Mistake>
+<What>`-p` with a profile you have not made</What>
+<Why>Exit code 2. <Said>{"nodecode: no profile \"ghost\". \"nodecode profile create ghost\" makes one."}</Said></Why>
+<Instead>Run the line it names, then `nodecode -p ghost`.</Instead>
+</Mistake>
+<Mistake>
+<What>A capital or a dot in a profile name</What>
+<Why>Refused before anything starts. <Said>{"nodecode: \"Bad.Name\" is not a profile name: a-z, 0-9, _ and -, 64 at most, starting with a letter or digit"}</Said></Why>
+<Instead>Lower case and hyphens: `bad-name`.</Instead>
+</Mistake>
+<Mistake>
+<What>Setting `$NODECODE_HOME` and keeping `-p` on the line</What>
+<Why>`-p` wins. The variable is read only when no `-p` is given.</Why>
+<Instead>Use one of the two.</Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/cli/entry.lisp */}
+## import
+
+```sh
+nodecode import [WORLD] [--source PATH] [--only KINDS] [--dry-run] [--overwrite] [--keep-running] [--yes]
+```
+
+| Word | Values |
+| --- | --- |
+| WORLD | `hermes`, `codex`, `claude`, `opencode`, `cursor`, `gemini`, `qwen`, `pi`, `crush`, `cline`, `windsurf`, `kiro`, `dotagents`, `openclaw`, `commandcode`, `nodecode` |
+| KINDS | `providers`, `instructions`, `memory`, `skills`, `usage`, `standing`, `mcp`, `channels`, `cron`, `sessions`, `profiles` |
+| `--source` | A home at a path, or a repository's skills and MCP servers: `OWNER/REPO` or an https URL, `#REF` pinning a branch, tag or commit. |
+| `--dry-run` | The preview only. |
+
+In the shell, `/import --sources` lists the repositories held and `/import --remove LABEL` takes one back.
+
+<Mistakes>
+<Mistake>
+<What>Importing to replace what is already here</What>
+<Why>An existing fact here always wins.</Why>
+<Instead>Add `--overwrite`.</Instead>
+</Mistake>
+<Mistake>
+<What>Importing while another gateway answers the same bots</What>
+<Why>That gateway is stopped and disabled, so the bots answer from here. The report names the command that gives them back.</Why>
+<Instead>`--keep-running` leaves it running. Its bots land off here and come on once it stops.</Instead>
+</Mistake>
+<Mistake>
+<What>`--yes` on the first run</What>
+<Why>It applies without the preview, keys and tokens with it.</Why>
+<Instead>Run it once without `--yes`. The preview opens in the setup walk.</Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/tui/account-login.lisp */}
+## login
+
+```sh
+nodecode login [--subscription | --api]
+nodecode machine link [CODE]
+```
+
+`login` opens nodecode.ai in your browser with this machine's code already in the page. Sign in and allow the machine. Over ssh, open the printed page on any device. The key is saved in this home's `auth.json`, and the account's meter is printed: the plan's requests left and when they reset, the API credit, what pays now. Then run `nodecode` and pick a nodecode model in `/models`.
+
+| Form | Signs in for |
+| --- | --- |
+| `nodecode login` | It asks: `1` Subscription, your plan's requests, or `2` API credits, pay per token from your balance. |
+| `nodecode login --subscription` | A plan's requests. |
+| `nodecode login --api` | API credits. |
+| `nodecode machine link [CODE]` | The Machines page's link: bring the code from https://nodecode.ai/account/machines, or omit CODE to get one to type there, then approve the machine. |
+
+In the shell, `/login` does the same. From then on the footer shows the account's meter, and a click on it opens `/usage`.
+
+<Mistakes>
+<Mistake>
+<What>`nodecode login CODE` with a code from the Machines page</What>
+<Why>Exit code 2. <Said>{"nodecode: login signs in with a browser and takes no CODE; a code from the Machines page is nodecode machine link CODE"}</Said></Why>
+<Instead>`nodecode machine link CODE`.</Instead>
+</Mistake>
+<Mistake>
+<What>`nodecode login` from a script, with no flag</What>
+<Why>No terminal can answer which one, so it is refused, naming both flags.</Why>
+<Instead>Put `--subscription` or `--api` on the line.</Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/gateway/control.lisp */}
+## add
+
+```sh
+nodecode add nc://NAME [--yes]
+```
+
+A shipped cell installs with no question. A hub cell prints its <Term screen="hub" spot="repo">repository</Term>, the <Term screen="hub" spot="pin">commit it is pinned at</Term> and <Term screen="hub" spot="brings">what it brings</Term>, then <Term screen="hub" spot="ask">asks</Term>.
+
+<Transcript name="hub" />
+
+| Fact | Detail |
+| --- | --- |
+| NAME | The cell's name. The `nodecode-` and `nc://` prefixes are both optional. |
+| `--yes` | Answers yes on the line. |
+| No terminal, no `--yes` | Nothing is installed. Exit code 1. |
+| Organism running | The cell turns on live, in every attached shell. |
+| No organism running | The cell loads at the next launch. |
+
+<Mistakes>
+<Mistake>
+<What>`add` in a script, without `--yes`</What>
+<Why>With no terminal to ask, nothing is installed. Exit code 1. <Said>{"nodecode: channel-slack is code from the hub and there is no terminal to ask: nothing was installed; add --yes to install it"}</Said></Why>
+<Instead>Read the repository at the pinned commit first. Then put `--yes` on the line.</Instead>
+</Mistake>
+<Mistake>
+<What>A misspelt name</What>
+<Why>Exit code 1. <Said>{"nodecode: no cell \"websarch\" is shipped or on the hub. Did you mean \"websearch\"?"}</Said></Why>
+<Instead>Take the name it offers. Every cell is on the <CellsTab /> tab.</Instead>
+</Mistake>
+<Mistake>
+<What>Answering `y` without opening the repository</What>
+<Why>Hub code runs inside Nodecode with full access to your files and keys.</Why>
+<Instead>Open the repository at the commit it prints. Answer after. See [Cells](/cells).</Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/organism/profile.lisp */}
+## profile
+
+| Verb | Arguments |
+| --- | --- |
+| `list` | none. The default with no verb. |
+| `use` | `NAME` |
+| `switch` | `NAME` |
+| `create` | `NAME [--blank \| --clone-all] [--from NAME] [--description TEXT]` |
+| `delete` | `NAME [--yes]` |
+| `export` | `NAME PATH [--whole]` |
+| `import` | `PATH [--name NAME]` |
+| `install` | `URL [--name NAME]` |
+| `update` | `NAME` |
+| `help` | `[VERB]` |
+
+What each verb does: [Profiles](/profiles).
+
+<Mistakes>
+<Mistake>
+<What>Deleting a profile to start it over</What>
+<Why>`delete` removes its whole home: store, layer and secrets. Memory and skills linked from your home stay.</Why>
+<Instead>Make an empty one beside it: `nodecode profile create fresh --blank`.</Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/gateway/background.lisp */}
+## gateway
+
+<Transcript name="gateway" />
+
+| Verb | Does |
+| --- | --- |
+| `status` | Prints the gateway's state. The default with no verb. |
+| `on` | Writes the unit, enables it and starts it. |
+| `off` | Stops it, disables it and removes the unit. |
+| `restart` | Restarts it on this build with the current config. |
+| `logs [--follow \| -f]` | Prints the last 60 log lines. `--follow` keeps printing. |
+| `run` | Runs the gateway in the foreground. The unit runs this. |
+| `help [VERB]` | Prints help. |
+
+Detail: [Gateway](/gateway) and [Operations](/operations).
+
+<Mistakes>
+<Mistake>
+<What>`nodecode gateway on` on Windows</What>
+<Why>Windows has no background gateway.</Why>
+<Instead>Run `nodecode serve` in a terminal you leave open.</Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/organism/update.lisp */}
+## update
+
+```sh
+nodecode update [VERSION] [--check]
+```
+
+| Form | Does |
+| --- | --- |
+| `nodecode update` | Moves to the channel's latest release. |
+| `nodecode update VERSION` | Moves to that release and holds this home there, until a bare `nodecode update` lifts it. |
+| `nodecode update --check` | Stages and classifies the release. Applies nothing. |
+
+Detail: [Updates](/updates).
+
+<Mistakes>
+<Mistake>
+<What>`--check` to update</What>
+<Why>It stages and classifies the release. It applies nothing.</Why>
+<Instead>`nodecode update`.</Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/cli/entry.lisp */}
+## web
+
+```sh
+nodecode web
+```
+
+Prints `http://127.0.0.1:PORT/web/#t=TOKEN`. Opens it when a display exists.
+
+<Transcript name="web" />
+
+| Refusal | Fix |
+| --- | --- |
+| Nodecode is not running for this home | Run `nodecode` or `nodecode gateway on`. |
+| The web cell is not installed | Open `/cells` and turn web on with Space. |
+| The web cell is installed but not loaded | Restart the organism. With the gateway: `nodecode gateway restart`. |
+
+<Mistakes>
+<Mistake>
+<What>Pasting the link into a chat or an issue</What>
+<Why>The link carries the operator token, after the `#`.</Why>
+<Instead>Keep the link to yourself.</Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/cli/entry.lisp */}
+## resume
+
+```sh
+nodecode resume SESSION-ID [--store PATH]
+```
+
+The shell prints the resume line when it exits. See [Sessions](/sessions).
+
+<Mistakes>
+<Mistake>
+<What>`resume` from a script or a pipe</What>
+<Why>Exit code 2. <Said>{"nodecode resume needs a terminal (no controlling tty); run it in one."}</Said></Why>
+<Instead>Run it in a terminal.</Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/cli/entry.lisp */}
+## Lines it refuses
+
+<Retype />
+
+<Refusals>
+<Refusal typed="nodecode --ephemeral serve" said={"nodecode: --ephemeral is a shell's flag: a headless owner names its store with --store PATH"}>`nodecode serve --store PATH`</Refusal>
+<Refusal typed="nodecode --ephemeral resume s-1NXO4JMW" said={"nodecode: --ephemeral cannot resume: a fresh store has no session; resume one with --store PATH"}>`nodecode resume s-1NXO4JMW --store PATH`</Refusal>
+<Refusal typed="nodecode --ephemeral --store PATH" said={"nodecode: --ephemeral chooses the store; --store PATH names one yourself"}>One of the two.</Refusal>
+<Refusal typed="nodecode setup serve" said={"nodecode: setup is a shell's verb: a headless owner has no wizard"}>`nodecode setup`, in a terminal.</Refusal>
+<Refusal typed="nodecode --store PATH add nc://web" said={"nodecode: add is a command of its own: nodecode [-p NAME] add ..."}>`nodecode add nc://web`</Refusal>
+<Refusal typed="nodecode -p work -p play" said={"nodecode: -p names a second profile, play; a launch runs one"}>One `-p` per launch.</Refusal>
+<Refusal typed="nodecode -p ghost" said={"nodecode: no profile \"ghost\". \"nodecode profile create ghost\" makes one."}>`nodecode profile create ghost`</Refusal>
+<Refusal typed="nodecode resume" said={"nodecode: resume needs a SESSION-ID"}>`nodecode resume SESSION-ID`</Refusal>
+<Refusal typed="nodecode servve" said={"nodecode: no command \"servve\". Did you mean \"serve\"?"}>The word it names.</Refusal>
+</Refusals>
+
+Each of these exits 2, and ends on one more line: <Said>{"Run \"nodecode --help\" to see every command."}</Said>
+
+`import` with `serve` is refused as `setup` is.
+
+| Not refused | Result |
+| --- | --- |
+| `--help`, or `--version` ahead of a command | Answers and exits. Nothing else runs. |
+| `gateway run` | Parsed as a headless launch that waits for the store. |
+
+A profile name is `a-z`, `0-9`, `_` and `-`. It starts with a letter or digit and has at most 64 characters.
+
+{/* source: src/cli/entry.lisp */}
+## Exit codes
+
+<ExitCodes>
+<ExitCode n="0" show="exit-0">Success. Also `help` and `--version`.</ExitCode>
+<ExitCode n="1" show="exit-1">An error. Also a refused `add`, `update`, `web`, `profile` or `gateway` request.</ExitCode>
+<ExitCode n="2" show="exit-2">A bad command line. Also no terminal for a command that needs one.</ExitCode>
+<ExitCode n="130" show="exit-130">Interrupted with Ctrl+C.</ExitCode>
+</ExitCodes>
+
+A refusal goes to stderr. An answer goes to stdout.

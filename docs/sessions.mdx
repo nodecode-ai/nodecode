@@ -1,0 +1,160 @@
+---
+title: Sessions and undo
+summary: "Session ids, resume, rename, export, fork, the session tree, undo, crash recovery and throwaway stores."
+---
+
+A session is one conversation in the store, `~/.nodecode/history.db`.
+
+{/* source: src/client/client-session.lisp */}
+## Session ids
+
+| Id | Session |
+| --- | --- |
+| `s-` and up to 8 letters or digits | A session the shell opened. Example: `s-K3F9Q2ZA`. |
+| `s-GATEWAY` | The boot session of the background gateway. |
+
+Cells name their own sessions. A session nobody typed in is never stored.
+
+{/* source: src/client/client-session.lisp */}
+## List and resume
+
+| Do | How |
+| --- | --- |
+| List sessions | `/sessions`, `/agents` or Ctrl+S. |
+| Leave a session running | Press Left on an empty composer. The picker opens. |
+| Switch | Select a row. Press Enter. |
+| Rename in the picker | Press F2 on a row. |
+| Fold or unfold forks | Left and Right. |
+| Resume from the command line | `nodecode resume SESSION-ID` |
+| See what waits on you | The web page's Sessions list: under a session whose answer asked you something, its question; `its last turn failed` when it did. A stopped turn waits on nobody. |
+
+```sh
+nodecode resume s-K3F9Q2ZA
+```
+
+The shell prints the resume line when it exits: `To resume: nodecode resume SESSION-ID`, then `--store PATH` when it ran with `--store` or `--ephemeral`. `resume` needs a terminal.
+
+{/* source: src/gateway/gateway.lisp */}
+## Rename
+
+| Command | Does |
+| --- | --- |
+| `/rename` | Shows the session's name. |
+| `/rename NAME` | Names the session. One line, 64 characters at most. |
+| `/rename default` | Gives back the first prompt's line. |
+
+A session has no name before its first prompt. Then it wears that prompt's first line, until the auxiliary model writes it a title of three to seven words. A prompt of five words or fewer is its own title. A name you give first wins.
+
+{/* source: src/tui/commands/headless.lisp */}
+## Export
+
+`/export [path]` saves the session as Markdown. It works in the shell only.
+
+| Argument | File written |
+| --- | --- |
+| None | A file named after the session, in the shell's folder. |
+| A folder | That file name, inside the folder. |
+| A file path | That path. |
+
+| In the file | Left out |
+| --- | --- |
+| Prompts, answers, plans, one line per call | Reasoning, the output of calls |
+
+{/* source: src/client/client-session.lisp, src/tui/commands/headless.lisp */}
+## Clear
+
+| Where | `/clear` or `/new` does |
+| --- | --- |
+| Shell | Opens a fresh session in the shell's folder. The old session stays in `/sessions`. |
+| Web page, chat room, eval | `/clear` moves this session back to its start. `/redo` returns. The web page takes `/clear` only: `/new` there goes to the model. |
+
+{/* source: src/session/checkpoint.lisp */}
+## Fork
+
+`/fork` opens a new session at the current head. The shell switches to it.
+
+| Rule | Detail |
+| --- | --- |
+| History | The fork reads the parent's turns up to the fork point. Nothing is copied. |
+| Later parent changes | A rewind in the parent does not change the fork. |
+| Folder | The fork works in the parent's folder. |
+
+{/* source: src/tui/commands/tree.lisp */}
+## Tree
+
+`/tree` shows the session as a tree of turns. Alias: `/checkpoints`. Esc twice within 0.5 seconds opens it too.
+
+| Key | Action |
+| --- | --- |
+| Typing | Search the rows. |
+| Right | Show the tool calls of a turn. |
+| Left | Hide them. |
+| Enter on a turn | Opens the options below. |
+| Enter on a tool call | Moves the head to that turn. Restores files to where that turn ended. |
+
+| Option | Result |
+| --- | --- |
+| Continue from this turn | The head moves to the turn. Its answer is kept. New turns branch from it. |
+| Rewind to before this message | The head moves before the turn. The prompt returns to the composer. |
+| Rewind to before this message + code changes | The same, and the files are restored. Offered when a snapshot exists. |
+
+The head row offers the rewinds only.
+
+{/* source: src/session/checkpoint.lisp */}
+## Undo and redo
+
+| Command | Does |
+| --- | --- |
+| `/undo` | Rewinds the last turn. |
+| `/redo` | Returns to the branch the last rewind left. |
+
+| Where | `/undo` restores |
+| --- | --- |
+| Shell | The conversation and the files. |
+| Web page, chat room, eval | The conversation only. |
+
+A rewind is refused while a turn runs, in the shell too: `a turn is in flight; cancel or await it first`.
+
+A rewind deletes nothing. It records a head move. The branch you left stays in `/tree`.
+
+{/* source: src/session/snapshot.lisp */}
+## Workspace snapshots
+
+Nodecode captures the session's folder at turn and tool boundaries. Undo restores files from these captures.
+
+| Fact | Value |
+| --- | --- |
+| Repository | A bare git repository at `<cwd>/.nodecode/workspace_snapshots`. |
+| Tool | The `git` command. Without git there is no capture. The turn still runs. |
+| Scope | Files under the session's folder. Writes elsewhere are not captured. |
+| Restore | Per file. A file changed by something else is left alone. The web page reports the conflict; the shell does not. |
+| Your repository | `.nodecode/` can show in `git status`. Nodecode does not add it to `.gitignore`. |
+| Off switch | `"workspace": { "captures": false }` in the config. Applies at the next start. |
+
+{/* source: src/session/lifecycle.lisp */}
+## After a crash
+
+| Fact | Detail |
+| --- | --- |
+| Open turns | Each interrupted turn resumes at the next boot. |
+| Unanswered tool calls | Each gets the result `interrupted by process restart`. |
+| Limit | A turn is resumed on up to 3 boots. Then it is marked failed. |
+| Cost | A resumed turn calls the model again. |
+| Cancel | Esc stops a resumed turn like any other. |
+
+{/* source: src/cli/entry.lisp */}
+## Ephemeral
+
+```sh
+nodecode --ephemeral
+```
+
+| Fact | Detail |
+| --- | --- |
+| Store | A new file: `nodecode-ephemeral-<pid>.db` in the temp folder (`TMPDIR`). |
+| Still shared | Config, layer, cells, memory and skills are the home's. |
+| Layer | The layer is the set of definitions the agent wrote and kept. New ones still land in it. |
+| Channels | Channel bots do not start. |
+| Refused with | `serve`, `resume` and `--store`. |
+
+For a throwaway organism, a whole running Nodecode with its own home, run `HOME=$(mktemp -d) nodecode`.

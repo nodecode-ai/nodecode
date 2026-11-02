@@ -1,0 +1,286 @@
+---
+title: Models and providers
+summary: "Providers, wire dialects, key lookup, Nodecode's own models, default and auxiliary model, effort, retries and the failover chain."
+---
+
+A provider is an endpoint, a key and the wire dialect it speaks. Providers live in `~/.nodecode/config.jsonc`.
+
+{/* source: src/engine/provider.lisp */}
+## Providers
+
+```jsonc
+"providers": {
+  "anthropic": { "sdk": "anthropic", "api_key": "sk-ant-..." },
+  "local": {
+    "sdk": "openai-completions",
+    "base_url": "http://127.0.0.1:8000/v1",
+    "models": [{ "id": "gemma-3-27b" }]
+  }
+}
+```
+
+Every provider key is listed in [Config](/config). `/models` connects a provider from the models.dev catalog and saves its key in `auth.json`. Ctrl+E on a connected provider replaces its key.
+
+A provider whose `base_url` is a machine of your own, on localhost, your LAN or your tailnet, is listed under Local in `/models`. Its models come from `GET <base_url>/models`.
+
+A request to openrouter.ai carries `HTTP-Referer: https://nodecode.ai` and `X-OpenRouter-Title: Nodecode`, which credit the tokens to Nodecode on OpenRouter's app rankings. No other host gets them.
+
+{/* source: src/engine/provider.lisp */}
+## Dialects
+
+`sdk` names the wire dialect. Nodecode never probes the endpoint for it.
+
+| `sdk` | Path added to `base_url` | Default endpoint |
+| --- | --- | --- |
+| `openai-completions` | `/chat/completions` | `https://opencode.ai/zen/v1/chat/completions` |
+| `openai-responses` | `/responses` | `https://api.openai.com/v1/responses` |
+| `anthropic` | `/messages` | `https://api.anthropic.com/v1/messages` |
+| `google` | Set per model | `https://generativelanguage.googleapis.com/v1beta` |
+
+| Case | Dialect used |
+| --- | --- |
+| `sdk` is set | That dialect. An unknown value leaves the provider unusable. |
+| No `sdk`, the id is a dialect name | That dialect. Example: `"anthropic": {}`. |
+| No `sdk`, any other id | Refused. The refusal names the key to set. |
+| No config entry | The dialect of the id, or of its models.dev catalog entry. |
+| `models[].sdk` is set | That dialect, for that model only. |
+
+{/* source: src/engine/provider.lisp */}
+## base_url
+
+| Rule | Detail |
+| --- | --- |
+| Composition | Trailing slashes are trimmed. The dialect path is appended. |
+| Version segment | Include it. Write `https://host/v1`. |
+| No `base_url`, id `openai-completions`, `anthropic` or `google` | The default endpoint of that dialect. |
+| No `base_url`, id `openai-responses` or `openai` | `https://api.openai.com/v1/responses`. |
+| No `base_url`, a models.dev catalog provider | The catalog's `api` address. |
+| No `base_url`, anything else | Refused. Set `providers.<id>.base_url`. |
+| `NODECODE_ENDPOINT` | Overrides every rule above. It is the full endpoint URL. |
+
+{/* source: src/engine/provider.lisp */}
+## Keys
+
+Nodecode takes the first key found, in this order.
+
+| Order | Source |
+| --- | --- |
+| 1 | `NODECODE_API_KEY` |
+| 2 | `providers.<id>.api_key` in the config |
+| 3 | `~/.nodecode/auth.json`, at `api_keys.<id>.key`. `/models` writes it when you connect a provider. |
+| 4 | A cell's credential hook |
+| 5 | `<ID>_API_KEY`. The id is uppercased, `-` becomes `_`. |
+| 6 | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` or `GOOGLE_API_KEY`, by dialect |
+| 7 | `ANTHROPIC_AUTH_TOKEN`, for the provider id `anthropic` only |
+| 8 | The literal string `public` |
+
+<Note head="Command keys">A key from source 1 or 2 that starts with `!` is a shell command. Nodecode runs it with `sh -lc` every time it resolves the key.</Note>
+
+| `!` command | Result |
+| --- | --- |
+| Success | The trimmed output is the key. |
+| Runs past 10 seconds | Resolution fails. |
+| Non-zero exit or empty output | Resolution fails. |
+
+A provider with no key anywhere sends `public` as its key. An `auth.json` that is unreadable, invalid or over 1 MiB stops resolution.
+
+{/* source: src/tui/account-login.lisp */}
+## Nodecode's own models
+
+nodecode.ai serves Nodecode's own models at `https://api.nodecode.ai/v1`, on OpenAI's wire, under the provider id `nodecode`.
+
+`nodecode login`, or `/login` in the shell, signs in at nodecode.ai in a browser, for a subscription or for API credits. It saves the key in `auth.json`, at `api_keys.nodecode.key`, and writes the provider:
+
+```jsonc
+"providers": {
+  "nodecode": { "sdk": "openai-completions", "base_url": "https://api.nodecode.ai/v1" }
+}
+```
+
+A sign-in never changes your default model. Pick one with `/models nodecode foresight-cyber-v1`.
+
+| Model | Id | What it is |
+| --- | --- | --- |
+| Cyber v1 | `foresight-cyber-v1` | The security model. A chat model: 1M context, 16K output unless a call asks for more, up to 131K. A session can run on it. |
+| Image v1 | `foresight-image-v1` | The image model, at `POST /v1/images/generations`. The images come back in the body as `b64_json`, never as URLs. |
+| Decide v1 | `foresight-decide-v1` | The classifier. It answers named questions about one state as probabilities, never prose. 32K context. |
+
+| Fact | Value |
+| --- | --- |
+| Keys | Start with `sk-nc-`. A key made at https://nodecode.ai/account/keys works the same. Any other key answers 401 `invalid_api_key`: run `nodecode login` again. |
+| Routes | `POST /v1/chat/completions`, `POST /v1/images/generations`, `GET /v1/models`, `GET /v1/models/ID`, `GET /v1/usage`. There is no `/v1/messages` or `/v1/responses`. |
+| Who pays | The plan's month first, then the topped-up balance. With neither, a call answers 402. See [Pricing](/pricing). |
+| What is left | `GET /v1/usage`: the plan's requests left, its reset and seats, the credit. The shell's footer and `/usage` show it. |
+
+{/* source: src/engine/provider.lisp */}
+## Default and auxiliary model
+
+```jsonc
+"general": {
+  "default_model":   { "provider": "anthropic", "model": "claude-opus-5", "effort": "high" },
+  "auxiliary_model": { "provider": "local", "model": "gemma-3-27b" }
+}
+```
+
+| Key | Used for | When unset |
+| --- | --- | --- |
+| `general.default_model` | New sessions. | The build default applies. The footer reads `run /setup to add a model`. |
+| `general.auxiliary_model` | Session names, recaps and summaries. | The session's own model, at its weakest effort rung. |
+
+Both take `provider`, `model` and an optional `effort`. `provider` and `model` are required. The older string form of `default_model` is refused.
+
+{/* source: src/gateway/gateway.lisp */}
+## Session pinning
+
+A model pick pins the session. The pin survives restarts.
+
+| Event | Result |
+| --- | --- |
+| `/models` pick | Pins this session. Writes `general.default_model`. |
+| A session that already ran | Keeps its own model. |
+| A child session, such as a fork | Starts on its parent's provider, model and effort. |
+| `(select-model nil)` in eval | Clears the pin. The session takes the default at its next turn. |
+| Attached shells | Their footers follow the pick. |
+
+{/* source: src/tui/slash.lisp */}
+## /models
+
+Bare `/models` opens the providers under four tabs: Main, Auxiliary, Decider and Backup. Tab moves between them. Decider is the model that answers judgments as probabilities. Backup is the [failover chain](#failover).
+
+| Command | Does |
+| --- | --- |
+| `/models` | Opens the providers on the Main tab. Headless: prints the current target. |
+| `/models MODEL` | Picks a model on the current provider. |
+| `/models PROVIDER MODEL` | Picks a provider and a model. |
+| `/models list [PROVIDER]` | Prints the catalog, or one provider's models. |
+| `/models refresh` | Drops the cached listings, then opens the providers. |
+| `/models aux` | Opens the Auxiliary tab. Headless: prints the auxiliary target. |
+| `/models aux [PROVIDER] MODEL` | Writes `general.auxiliary_model`. Pins no session. |
+| `/models aux default` | Removes `general.auxiliary_model`. Its work goes back to each session's own model. |
+| `/models decider` | Opens the Decider tab. Headless: prints the decider. |
+| `/models decider ID` | Pins a decider in `general.decider_model`. The one decider is `djev`. |
+| `/models decider none` | Removes the pin. |
+| `/models backups` | Opens the Backup tab: the failover chain and its triggers. |
+
+The decider pin offers `djev`, a decider on a machine of your own. Decide v1, nodecode.ai's hosted classifier, is called by its id and is not offered there.
+
+The picker lists each provider from `GET <base_url>/models`.
+
+| Cache | File | Kept |
+| --- | --- | --- |
+| Provider listings | `~/.cache/nodecode/provider-models.json` | 600 seconds. A failed listing: 60 seconds. |
+| models.dev catalog | `~/.cache/nodecode/models.dev/api.json` | Path override: `NODECODE_MODELS_CATALOG`. |
+
+{/* source: src/engine/provider.lisp */}
+## /think and effort
+
+The ladder, weakest first: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. A model offers the rungs it declares.
+
+| Command | Does |
+| --- | --- |
+| `/think` | Opens the reasoning controls. Headless: prints the effort and the ladder. |
+| `/think RUNG` | Sets the effort for this session and every new session. Applies from the next turn. |
+| `/think default` | Uses the model's own reasoning. |
+| `/effort` | Alias of `/think`. |
+
+| Source | Detail |
+| --- | --- |
+| `general.default_model.effort` | The default effort. `/think` writes it when `default_model` is set. |
+| `NODECODE_REASONING_EFFORT` | Outranks the config default. |
+| A session's `/think` pick | Outranks both. |
+
+| Dialect | Effort on the wire |
+| --- | --- |
+| `openai-completions`, `openai-responses` | Sent as written. |
+| `google` | Clamped to `high`. |
+| `anthropic` | An adaptive effort or a thinking budget, by what the model declares. |
+
+{/* source: src/engine/provider.lisp */}
+## Retries
+
+Set these per provider, under `providers.<id>`.
+
+| Key | Default | Counts |
+| --- | --- | --- |
+| `request_max_retries` | 4 | Failures before any stream bytes. Counted per stream attempt. |
+| `stream_max_retries` | 5 | Failures after the response started. |
+| `stream_idle_timeout_ms` | 120000 | Milliseconds with no byte before the attempt fails. |
+| `stream_rerun_ceiling_seconds` | 120 | A stream cut after this much output is continued. `0`: always re-run. |
+
+The two retry budgets multiply. A stream that keeps sending bytes has no time limit.
+
+| HTTP status | Retried |
+| --- | --- |
+| None: network error, timeout, cut stream, empty response | Yes |
+| 408, 409, 425, 429 | Yes |
+| 500 and above | Yes |
+| 400, 401, 403, 404, 413, 422 and every other status | No |
+
+| Delay rule | Value |
+| --- | --- |
+| `Retry-After` header | Used as sent, capped at 60 seconds. |
+| No header | 0.2 seconds, doubling to 8 seconds, with 10% jitter. |
+| Status 503 | Starts at 5 seconds, capped at 60 seconds. |
+| Refused connection | Spends the request budget at once. |
+
+A context overflow is handled apart: 413, or 400 with an overflow message. Nodecode evicts old history and retries, up to 8 times. See [Context](/context).
+
+{/* source: src/engine/provider.lisp, src/engine/turn.lisp */}
+## Failover
+
+The failover chain is the backup models a failing round moves to, in order. Every session and every channel shares it. Set it on the Backup tab of `/models`, or in the config:
+
+```jsonc
+"failover": {
+  "chain": [
+    { "provider": "local", "model": "gemma-3-27b" }
+  ],
+  "on": ["rate_limit", "outage", "slow_start", "broken_answer", "refusal"],
+  "first_token_seconds": 60
+}
+```
+
+`on` names the failures that move a round to the chain.
+
+| Trigger | `on` id | The failure |
+| --- | --- | --- |
+| rate limit | `rate_limit` | A 429. |
+| outage | `outage` | A server or transport failure, a timeout or a stall. |
+| slow start | `slow_start` | An attempt that streamed no token by its deadline, or was skipped while it waited. |
+| broken answer | `broken_answer` | A stream cut short, an empty answer or a malformed tool call. |
+| refusal | `refusal` | The model's refusal. |
+
+| Rule | Detail |
+| --- | --- |
+| `on` unset | Every trigger is on. |
+| `on` is `[]` | Every trigger is off. The chain stays set and is never walked. |
+| A trigger that is off | The failure stays on the selected model. |
+| Rate limit, outage, broken answer | The selected model's retries are spent first. Then the round re-runs on the next entry. |
+| Slow start | Watched only while a chain entry stands behind the attempt. Past `first_token_seconds`, 60 unless set, `0` never, the round leaves for the next entry at once, without retrying. |
+| Refusal | Never resent. The chain's first entry answers that round. The next round runs on the selected model. |
+| On a chain entry | A failure no retry cures, or one whose retries are spent, moves to the next entry, whatever `on` says. |
+| Scope | One turn. Its later rounds stay on the entry that answered. The next turn starts on the selected model. |
+| Key | Each entry resolves its own key. `NODECODE_API_KEY` is not used for it. |
+| Bad entry | An entry without `provider` or `model` is skipped with a warning, as is an `on` id no trigger has. |
+| No chain | No failover. |
+
+When every model fails, the turn's error starts `every model failed` and lists each model it tried, one a line, with what its provider said: `1. provider/model · HTTP 400: ...`.
+
+{/* source: src/tui/commands/models.lisp */}
+## Backup tab
+
+`/models backups` opens it. Its rows, top to bottom:
+
+| Row | Does |
+| --- | --- |
+| `1. MODEL`, one per backup | Tried in order. The detail says its provider, when it last answered and how many chain moves it rescued. Enter takes it out. |
+| Add a backup… | Pick a model; it goes last. |
+| Test backups | Asks each backup once, with no retry and no chain. |
+| Switch when the model hits | The five triggers. Enter turns one on or off. |
+
+The tab writes `failover.chain` and `failover.on`. The next turn reads them.
+
+{/* source: src/engine/provider.lisp */}
+## Environment
+
+`NODECODE_PROVIDER`, `NODECODE_MODEL`, `NODECODE_API_KEY`, `NODECODE_ENDPOINT` and `NODECODE_REASONING_EFFORT` override the config for one process. See [Environment variables](/environment).
