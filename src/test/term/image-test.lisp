@@ -100,7 +100,9 @@
   ;; the query must carry one: kitty answers a payload-less query
   ;; `EINVAL:Zero width/height not allowed', which is an APC that is not OK.
   (is (search "_Gi=1,s=1,v=1,a=q,t=d,f=24;AAAA"
-              (with-output-to-string (out) (nlt:request-kitty-graphics out))))
+              (with-output-to-string (out) (nlt:request-kitty-graphics out nil))))
+  (is (string= "" (with-output-to-string (out) (nlt:request-kitty-graphics out :tmux))) "tmux would take the bare APC as the pane title")
+  (is (string= "" (with-output-to-string (out) (nlt:request-kitty-graphics out :screen))) "screen would take it as its hardstatus")
   (let ((msg (funcall (nlt:terminal-io-cmd #'nlt:request-kitty-graphics))))
     (is (nlt:terminal-io-msg-p msg) "the command asks the loop thread to write it")))
 

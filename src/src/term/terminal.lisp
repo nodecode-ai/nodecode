@@ -594,11 +594,13 @@ they come and popped when they go away, the window title when it moved."
 OSC 52 — the Windows default: the helper chain is Wayland's and X11's, and
 Windows Terminal takes OSC 52.")
 
-(defun %wrap-passthrough (sequence &optional (multiplexer
-                                             (cond ((uiop:getenv "TMUX") :tmux)
-                                                   ((uiop:string-prefix-p
-                                                     "screen" (uiop:getenv "TERM"))
-                                                    :screen))))
+(defun current-multiplexer ()
+  "The terminal multiplexer this process runs under: :TMUX under tmux, :SCREEN
+under GNU screen, else NIL."
+  (cond ((uiop:getenv "TMUX") :tmux)
+        ((uiop:string-prefix-p "screen" (uiop:getenv "TERM")) :screen)))
+
+(defun %wrap-passthrough (sequence &optional (multiplexer (current-multiplexer)))
   "SEQUENCE wrapped so MULTIPLEXER passes it to the outer terminal: tmux
 takes DCS tmux; with every ESC doubled, screen takes 256-byte DCS chunks."
   ;; MULTIPLEXER defaults to the one this process runs under: :TMUX under
@@ -639,11 +641,7 @@ takes DCS tmux; with every ESC doubled, screen takes 256-byte DCS chunks."
                    ("xclip" "-selection" "clipboard")
                    ("xsel" "--clipboard" "--input"))))
 
-(defun copy-to-clipboard (content &key stream
-                                       (multiplexer (cond ((uiop:getenv "TMUX") :tmux)
-                                                          ((uiop:string-prefix-p
-                                                            "screen" (uiop:getenv "TERM"))
-                                                           :screen))))
+(defun copy-to-clipboard (content &key stream (multiplexer (current-multiplexer)))
   "Write CONTENT to the system clipboard through OSC 52 on STREAM, wrapped
 for the MULTIPLEXER this process runs under. Answers :OSC52: the sequence
 was written, and whether the terminal honours it is the terminal's to say."
