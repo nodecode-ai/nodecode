@@ -348,6 +348,9 @@ fi
 
 fi
 [ "$locked" = 1 ] || take_lock
+# Laid out or staged just now: an update between its stage and its link holds
+# no lock, and the prune below keeps a folder touched within the hour.
+[ -d "$target" ] && touch "$target"
 
 # The probe is an argument the CLI rejects: it answers any unknown one with its
 # usage, which is proof the executable and its libraries load. A staged
@@ -375,6 +378,8 @@ fi
 if [ "$STAGE" = full ]; then
   if [ -n "${NODECODE_BASE_URL:-}" ]; then printf '%s\n' "$BASE_URL" > "$HOME_DIR/base-url"; else rm -f "$HOME_DIR/base-url"; fi
 fi
+previous="$(readlink "$HOME_DIR/current" 2>/dev/null || true)"
+previous="${previous%/}"; previous="${previous##*/}"
 ln -sfn "$VERSION" "$HOME_DIR/current"
 say "current is $VERSION"
 
@@ -406,6 +411,67 @@ fi
 
 probe "$HOME_DIR/current/nodecode" "the executable"
 say "the executable runs"
+
+# --- older releases -----------------------------------------------------------
+# Every update lays its release out beside the last one, and nothing ever took
+# one away: a home that followed the channel for five weeks held 84 of them,
+# 7.6 GB. Once `current' has moved and answers, every release folder goes but
+# the one it names, the one it named before (the way back, one link away), one
+# laid out or staged within the hour (an update between its stage and its
+# link) and any a process runs from or holds open -- install.ps1's rule. A
+# warm launch image runs from the cache, not from its release, so it holds its
+# origin executable open (launch.lisp, HOLD-ORIGIN). What runs is the kernel's
+# word: /proc on Linux, lsof elsewhere; where neither answers, nothing goes.
+# A folder is renamed aside before it is removed, so a removal cut short never
+# leaves half a release under a release's name. A home's links into a removed
+# release are pointed at the running build at its next boot
+# (REFRESH-INSTALLED-CELLS), and `nodecode update LABEL' fetches one again.
+# Nothing here fails the install: it has already succeeded.
+release_name_p() { # NAME: a release's folder, or a lay-out or removal left behind
+  label="${1%%.*}"
+  case "$1" in "$label"|"$label".new|"$label".prune-*) ;; *) return 1 ;; esac
+  case "$label" in ''|*[!0-9a-f]*) return 1 ;; esac
+  [ "${#label}" -ge 7 ] && [ "${#label}" -le 40 ]
+}
+held_releases() { # the folders under ROOT something runs from or holds open
+  if [ -e /proc/self/exe ]; then
+    ls -l /proc/[0-9]*/exe /proc/[0-9]*/fd 2>/dev/null
+  else
+    lsof -nP -w -Fn -u "$(id -u)" 2>/dev/null
+  fi | awk -v root="$1/" '{ i = index($0, root); if (i) { rest = substr($0, i + length(root)); sub("/.*", "", rest); print rest } }' | sort -u
+}
+prune_releases() {
+  root="$(cd "$HOME_DIR" && pwd -P)" || return 0
+  if [ ! -e /proc/self/exe ] && ! have lsof; then
+    say "kept the older releases: nothing here lists what runs from them"
+    return 0
+  fi
+  held="$(held_releases "$root")"
+  removed=0
+  for dir in "$root"/*; do
+    [ -d "$dir" ] && [ ! -L "$dir" ] || continue
+    name="${dir##*/}"
+    release_name_p "$name" || continue
+    { [ "$name" = "$VERSION" ] || [ "$name" = "$previous" ]; } && continue
+    case "$name" in
+      *.*) ;; # a lay-out or a removal whose install died: this one holds the lock
+      *) case "
+$held
+" in *"
+$name
+"*) say "kept $name: something runs from it"; continue ;; esac
+         [ -n "$(find "$dir" -maxdepth 0 -mmin -60 2>/dev/null)" ] && continue
+         aside="$dir.prune-$$"
+         mv "$dir" "$aside" 2>/dev/null || { say "kept $name: it could not be moved aside"; continue; }
+         dir="$aside" ;;
+    esac
+    rm -rf "$dir" 2>/dev/null || say "could not remove all of $dir"
+    removed=$((removed + 1))
+  done
+  [ "$previous" = "$VERSION" ] && previous=''
+  [ "$removed" -eq 0 ] || say "removed $removed older release folder(s); kept $VERSION${previous:+ and $previous}"
+}
+prune_releases
 
 # A link is the organism's own move (`nodecode update'): it restarts itself
 # when it must, at an idle moment, and tells its shells.

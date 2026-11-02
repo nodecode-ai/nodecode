@@ -541,3 +541,25 @@ exit 0
       (is (null (nlk:decide-pristine)) "a key move clears it")
       (is (null (nlk:read-death-marker)))
       (is (not nlk:*pristine*)))))
+
+;;; A warm image runs from its cache file, so the kernel names that file as
+;;; what it runs, never the release it descends from. That release reads as
+;;; in use -- the installer keeps every release a process runs from or holds
+;;; open (install.sh, prune_releases) -- only through the stream HOLD-ORIGIN
+;;; keeps open on the origin executable.
+(deftest a-warm-image-holds-its-origin-open ()
+  (with-temp-trees ((dir "warm-origin"))
+    (let* ((origin (merge-pathnames "nodecode" dir))
+           (nlk::*image-origin* origin)
+           (nlk::*origin-hold* nil))
+      (write-temp-file origin "origin")
+      (unwind-protect
+           (let ((hold (nlk::hold-origin)))
+             (is (open-stream-p hold) "the origin is held open")
+             (is (eq hold (nlk::hold-origin)) "a second call keeps the one stream")
+             (is (equal (truename hold) (truename origin)))
+             #+linux
+             (let ((open (loop for fd in (directory #p"/proc/self/fd/*" :resolve-symlinks nil)
+                               collect (ignore-errors (sb-posix:readlink (namestring fd))))))
+               (is (member (namestring (truename origin)) open :test #'equal) "the kernel lists it open")))
+        (when nlk::*origin-hold* (close nlk::*origin-hold*))))))

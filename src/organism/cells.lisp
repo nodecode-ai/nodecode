@@ -323,12 +323,12 @@ every semicolon comment dropped, the rest joined on single spaces."
                   when (plusp (length code)) collect code))))
 
 (defun definition-changes (old-text new-text)
-  "=> (values ENTRIES GONE RESIDUE AFTER): ENTRIES the (ENTRY . OLD-BODY) of
+  "=> (values ENTRIES GONE RESIDUE AFTER BEFORE): ENTRIES the (ENTRY . OLD-BODY) of
 NEW-TEXT's definitions that are new (OLD-BODY NIL) or whose text moved, ENTRY
 as TOPLEVEL-DEFINITIONS lists it; GONE the labels OLD-TEXT defined and
 NEW-TEXT does not; RESIDUE true when text outside every definition differs
 (for a new file, NIL OLD-TEXT: when it holds any beyond IN-PACKAGE); AFTER
-every definition of NEW-TEXT."
+every definition of NEW-TEXT, BEFORE every definition of OLD-TEXT."
   (let* ((after (toplevel-definitions new-text :read-eval t))
          (old (and old-text (toplevel-definitions old-text :read-eval t)))
          (was (make-hash-table :test 'equal)))
@@ -347,7 +347,8 @@ every definition of NEW-TEXT."
                                             (ppcre:regex-replace-all "(?i)\\(in-package[^)]*\\)"
                                                                      (source-residue new-text after)
                                                                      "")))))
-            after)))
+            after
+            old)))
 
 (defun source-loaded (path definitions)
   "This image evaluated DEFINITIONS — ((OPERATOR . LABEL) ...), LABEL a
