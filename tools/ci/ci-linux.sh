@@ -104,19 +104,9 @@ tools/build/pull-cells.sh
 suite_home="$(mktemp -d "$HOME/.nodecode-ci-suite.XXXXXX")"
 trap 'rm -rf "$scratch" "$suite_home"; [ -n "$release_pid" ] && kill "$release_pid" 2>/dev/null' EXIT
 mkdir -p "$scratch/cache"
-# Quicklisp comes in through an init file of the run's own; the worker tests
-# start a bare child SBCL that reads only the account's ~/.sbclrc, so that must
-# load quicklisp too. A runner account is set up by its job; a person's init
-# file is never written.
+# Quicklisp comes in through an init file of the run's own, never the account's
+# ~/.sbclrc; the worker tests' child SBCL loads the same quicklisp as its suite.
 printf '(load "%s")\n' "$ql_setup" > "$scratch/sbclrc"
-if ! grep -qs quicklisp "$HOME/.sbclrc"; then
-  if [ -n "$gh_actions" ]; then
-    printf '(load "%s")\n' "$ql_setup" > "$HOME/.sbclrc"
-  else
-    echo "ci-linux: ~/.sbclrc loads no quicklisp; the worker tests' child SBCL needs one, e.g. (load \"$ql_setup\")" >&2
-    exit 1
-  fi
-fi
 # The layer tests commit and merge with git: an account with no identity of its
 # own (a CI account) gets one for this run only.
 if ! git config user.email >/dev/null 2>&1; then
