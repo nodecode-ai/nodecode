@@ -557,8 +557,8 @@ file names it, and is removed for `default'."
   "The plan that moves a shell to profile NAME: => (values BINARY ARGV),
 ARGV being BINARY, `-p NAME', and every word this process was launched
 with but the profile flag it already carried and what it asked of its first
-session: --provider, --model, --effort, --prompt-file and `--' with every
-word after it (#141)."
+session: --provider, --model, --effort, --prompt-file, every @FILE and `--'
+with every word after it (#141)."
   ;; Pure — it reads the roster and ORGANISM-BINARY and touches nothing. The
   ;; caller performs it with EXEC-PROGRAM once its terminal is restored and
   ;; its store is closed.
@@ -577,20 +577,28 @@ word after it (#141)."
     ;; Any `-p NAME' or `--profile NAME' pair goes, wherever it sits ahead of
     ;; a `--' -- the rule PARSE-LAUNCH-ARGUMENTS reads them by. So does what
     ;; the launch asked of its first session: its target pairs, and its first
-    ;; prompt -- `--' and every word after it, or --prompt-file's pair --
-    ;; which this shell already sent, and which the other profile's fresh
-    ;; session would only run again. What is left is every other word this
+    ;; prompt -- `--' and every word after it, or --prompt-file's pair, and
+    ;; the @FILE words -- which this shell already sent, and which the other
+    ;; profile's fresh session would only run again. Its piped text is the
+    ;; performer's to drop: it rides stdin, not argv (FORGET-PIPED-INPUT). What is left is every other word this
     ;; process was started with, so a switch keeps the session, the store
     ;; path and the verb the operator launched under.
     (values binary (list* binary "-p" name
-                          (rest (loop while argv
-                                      for word = (pop argv)
-                                      until (string= word "--")
-                                      if (member word '("-p" "--profile" "--provider" "--model"
-                                                        "--effort" "--prompt-file")
-                                                 :test #'string=)
-                                        do (pop argv)
-                                      else collect word))))))
+                          (rest (let ((kept '()))
+                                  (loop while argv
+                                        for word = (pop argv)
+                                        until (string= word "--")
+                                        do (cond ((member word '("-p" "--profile" "--provider" "--model"
+                                                                 "--effort" "--prompt-file")
+                                                          :test #'string=)
+                                                  (pop argv))
+                                                 ;; A kept word's value is its own, an @ or not.
+                                                 ((member word '("--store" "resume") :test #'string=)
+                                                  (push word kept)
+                                                  (when argv (push (pop argv) kept)))
+                                                 ((and (plusp (length word)) (char= (char word 0) #\@)))
+                                                 (t (push word kept))))
+                                  (nreverse kept)))))))
 
 ;;; LAUNCH.LISP installs the one that execs immediately — a command line, a
 ;;; channel lane and the model's eval have no terminal state to give back. A

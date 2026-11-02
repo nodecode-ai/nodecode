@@ -76,6 +76,7 @@ and each TYPE are SB-ALIEN's, or SAP, INT or STR for the three most written."
      (access sb-win32::dword) (share sb-win32::dword) (security (* t))
      (disposition sb-win32::dword) (attributes sb-win32::dword) (template sb-win32::handle))
     ("FlushFileBuffers" %flush-file-buffers int (handle sb-win32::handle))
+    ("GetFileType" %get-file-type sb-win32::dword (handle sb-win32::handle))
     ("SetStdHandle" %set-std-handle int (which sb-win32::dword) (handle sb-win32::handle))
     ("SetEnvironmentVariableA" %set-environment-variable int (name str) (value str))
     ("SetProcessWorkingSetSize" %set-process-working-set-size int (process sb-win32::handle)

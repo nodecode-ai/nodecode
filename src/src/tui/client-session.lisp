@@ -1824,13 +1824,18 @@ waiting to be sent."
   ;; prompt waits for it there (the INIT method below).
   (when-let (prompt (getf launch :prompt))
     (if model.editor
-        (seat-launch-prompt model session-id prompt)
-        (setf model.launch-prompt (list :session-id session-id :unseated prompt)))))
+        (seat-launch-prompt model session-id prompt (getf launch :images))
+        (setf model.launch-prompt (list :session-id session-id :unseated prompt
+                                        :images (getf launch :images))))))
 
-(defun seat-launch-prompt (model session-id prompt)
+(defun seat-launch-prompt (model session-id prompt &optional images)
   "PROMPT, the launch's, into MODEL's composer, waiting there to be sent to
-SESSION-ID (SEND-LAUNCH-PROMPT)."
+SESSION-ID (SEND-LAUNCH-PROMPT), with IMAGES, its @FILE images as
+(MEDIA-TYPE . BASE64), staged as a pasted image is."
+  ;; PROMPT names each image by the [Image #N] marker the composer would
+  ;; have typed for it (LAUNCH-FILES), so they stage without typing one.
   (attach-composer-prompt model prompt)
+  (alexandria:appendf (chat-model-pending-images model) images)
   (setf model.launch-prompt (list :session-id session-id
                                   :composer (editor-value model.editor)))
   (show-status model "The prompt sends once the organism answers; edit it to keep it here"))
@@ -1839,7 +1844,7 @@ SESSION-ID (SEND-LAUNCH-PROMPT)."
   "Seat the launch's prompt in the composer INIT has just made (SEAT-LAUNCH)."
   (let ((launch model.launch-prompt))
     (when-let (prompt (getf launch :unseated))
-      (seat-launch-prompt model (getf launch :session-id) prompt))))
+      (seat-launch-prompt model (getf launch :session-id) prompt (getf launch :images)))))
 
 (defun attach-or-own-organism (&key session-id store-path setup prelude launch)
   "The binary's entry: paint the shell NOW, boot the organism BEHIND it."

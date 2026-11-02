@@ -614,7 +614,132 @@ state to give back, so nothing is deferred."
   ;; inherits: a live terminal. It is the one thing an exec carries that
   ;; says so (the environment), and the successor must know, because a
   ;; screen already painted is not one to enter and clear again.
+  ;; What it must not inherit is the launch's piped text: the switch drops
+  ;; the first prompt, and stdin is part of it (FORGET-PIPED-INPUT).
+  (forget-piped-input)
   (or (hand-over-to-image binary argv) (format nil "switched to ~a" name)))
+
+;;; --- text piped into a launch ------------------------------------------------
+;;; `git diff | nodecode -- review this': the shell's first prompt leads with
+;;; what stdin carries (tui/entry.lisp PIPED-LAUNCH). It is read before
+;;; anything boots, and an exec keeps the descriptor but not what was read
+;;; through it: the published-image hand-over and a stale image's hand-back
+;;; both replay argv into a successor that reads stdin again. So a pipe, once
+;;; drained, is put back on descriptor 0 as an unlinked file -- nothing names
+;;; it on disk -- that every successor reads from its start.
+
+(defun stdin-kind (&optional (fd 0))
+  "What descriptor FD, stdin, is as far as a launch reads it: :PIPE, :FILE,
+or NIL -- a terminal, /dev/null, a socket a launcher holds open, nothing."
+  ;; A socket is left alone on purpose: libuv's launchers (Node's spawn)
+  ;; hand a child a socket pair that never ends, and a read would wait on it
+  ;; for ever. A shell's `|' is a pipe, its `<' a file. Windows says which
+  ;; through the handle's type: a console is neither.
+  #+win32
+  (case (ignore-errors (%get-file-type (sb-win32::get-osfhandle fd)))
+    (3 :pipe)                           ; FILE_TYPE_PIPE
+    (1 :file))                          ; FILE_TYPE_DISK
+  #-win32
+  (let ((mode (ignore-errors (sb-posix:stat-mode (sb-posix:fstat fd)))))
+    (case (and mode (logand mode sb-posix:s-ifmt))
+      (#.sb-posix:s-ififo :pipe)
+      (#.sb-posix:s-ifreg :file))))
+
+(defun descriptor-octets-to-end (fd limit &key say-waits)
+  "Every byte FD has left until its end, or :TOO-LARGE past LIMIT. With
+SAY-WAITS, a read still waiting after a second says so on stderr, once."
+  #+win32
+  (let ((stream (sb-sys:make-fd-stream fd :input t :element-type '(unsigned-byte 8)
+                                          :buffering :full :auto-close nil))
+        (chunks '()) (total 0))
+    (declare (ignore say-waits))
+    (loop for buffer = (make-array 65536 :element-type '(unsigned-byte 8))
+          for end = (read-sequence buffer stream)
+          while (plusp end)
+          do (when (> (incf total end) limit)
+               (return-from descriptor-octets-to-end :too-large))
+             (push (subseq buffer 0 end) chunks))
+    (let ((octets (make-array total :element-type '(unsigned-byte 8))) (start 0))
+      (dolist (chunk (nreverse chunks) octets)
+        (replace octets chunk :start1 start)
+        (incf start (length chunk)))))
+  #-win32
+  (let ((buffer (make-array 65536 :element-type '(unsigned-byte 8)))
+        (chunks '()) (total 0) (said nil))
+    (loop
+      (when (and say-waits (not said) (not (sb-sys:wait-until-fd-usable fd :input 1)))
+        (setf said t)
+        (format *error-output* "~&nodecode: reading the first prompt from stdin until the pipe closes (Ctrl-C stops)~%")
+        (finish-output *error-output*))
+      (multiple-value-bind (count errno)
+          (sb-sys:with-pinned-objects (buffer)
+            (sb-unix:unix-read fd (sb-sys:vector-sap buffer) (length buffer)))
+        (cond ((null count)
+               (unless (eql errno sb-unix:eintr)
+                 (error "stdin cannot be read: ~a" (sb-int:strerror errno))))
+              ((zerop count)
+               (return))
+              ((> (incf total count) limit)
+               (return-from descriptor-octets-to-end :too-large))
+              (t (push (subseq buffer 0 count) chunks)))))
+    (let ((octets (make-array total :element-type '(unsigned-byte 8))) (start 0))
+      (dolist (chunk (nreverse chunks) octets)
+        (replace octets chunk :start1 start)
+        (incf start (length chunk))))))
+
+#-win32
+(defun keep-on-stdin (octets &optional (target 0))
+  "Put OCTETS on descriptor TARGET, stdin, as an unlinked file read from its
+start, in place of the pipe they were drained from."
+  (multiple-value-bind (fd path)
+      (sb-posix:mkstemp (uiop:native-namestring
+                         (merge-pathnames "nodecode-stdin-XXXXXX" (uiop:temporary-directory))))
+    (unwind-protect
+         (progn
+           (sb-posix:unlink path)
+           (let ((start 0))
+             (sb-sys:with-pinned-objects (octets)
+               (loop while (< start (length octets))
+                     do (multiple-value-bind (count errno)
+                            (sb-unix:unix-write fd octets start (- (length octets) start))
+                          (cond (count (incf start count))
+                                ((not (eql errno sb-unix:eintr))
+                                 (error "stdin's text cannot be kept: ~a" (sb-int:strerror errno))))))))
+           (sb-posix:lseek fd 0 sb-posix:seek-set)
+           (sb-posix:dup2 fd target))
+      (sb-posix:close fd))))
+
+(defun piped-input-octets (limit &optional (fd 0))
+  "The bytes a pipe or a redirected file carries on FD, stdin, read to their
+end -- :TOO-LARGE past LIMIT -- or NIL when it is neither (STDIN-KIND). A
+drained pipe is kept on FD for a successor image
+(KEEP-ON-STDIN), and a file is read from its start, so every image this
+process execs into reads the same bytes."
+  ;; Windows has no exec, so nothing there reads stdin a second time.
+  (case (stdin-kind fd)
+    (:file
+     #-win32 (sb-posix:lseek fd 0 sb-posix:seek-set)
+     (descriptor-octets-to-end fd limit))
+    (:pipe
+     (let ((octets (descriptor-octets-to-end fd limit :say-waits t)))
+       #-win32 (when (vectorp octets)
+                 (keep-on-stdin octets fd))
+       octets))))
+
+(defun forget-piped-input (&optional (fd 0))
+  "Give FD, stdin, /dev/null in place of a pipe or a file, so the image this
+process execs into next reads no launch text from it."
+  ;; A shell's stdio is severed while it runs (CALL-WITH-SEVERED-STDIO), and
+  ;; an exec hands the successor the originals it saved: the saved stdin is
+  ;; the one to forget, too.
+  #+win32 (progn fd nil)
+  #-win32
+  (dolist (target (remove nil (list fd (and (eql fd 0) (first *severed-stdio*)))))
+    (when (stdin-kind target)
+      (ignore-errors
+       (let ((null (sb-posix:open "/dev/null" sb-posix:o-rdonly)))
+         (sb-posix:dup2 null target)
+         (sb-posix:close null))))))
 
 ;; The default performer, so a command line, a channel lane and the model's
 ;; eval all reach the exec through the one call shape that owns it. A TUI
