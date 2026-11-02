@@ -4,14 +4,133 @@
 
 (in-package #:nodecode.evolved)
 
-;;; The terminal walk (`nodecode gateway setup', tui/entry.lisp) as a sheet in
-;;; the middle of the frame: the same organism routes in the same order -- the
-;;; channel's cell switched on, the token kept and checked, a wait while the
-;;; platform has nothing to pick from, each field picked from a checklist, the
-;;; channels started -- and the same fold: a finished step stands as one line,
-;;; and only the open one is drawn whole. Every call runs off the loop
-;;; (SHEET-CALL); a wait asks again every few seconds until there is something
-;;; to pick, or the sheet is closed.
+;;; A channel set up on a sheet in the middle of the frame, over the
+;;; organism's own config surface -- the calls the web page's Control >
+;;; Channels and /settings make: the channel's cell switched on (POST
+;;; /api/gateway/cells), the pasted token kept in the section's 0600 file
+;;; (POST /api/gateway/config {secret}) and checked against the platform
+;;; (/config/probe), a wait while the platform has nothing to pick from (a bot
+;;; in no server yet), each field picked from a checklist of what the token
+;;; sees (/config/probe {field}) and written (/config {path, value}), the
+;;; channels started again (/api/channels?op=restart). A finished step stands
+;;; as one line, and only the open one is drawn whole. Every call runs off the
+;;; loop (SHEET-CALL); a wait asks again every few seconds until there is
+;;; something to pick, or the sheet is closed. The sheet reads and writes no
+;;; file itself; every refusal is the organism's, in its words.
+
+;;; --- the choices ----------------------------------------------------------------
+
+(defun gateway-setup-choice-name (label)
+  "What a choice's LABEL calls it: the label up to its first two spaces --
+the `#general' of `#general  Home', the `@mods' of `@mods  Home'."
+  (subseq label 0 (or (search "  " label) (length label))))
+
+(defun gateway-setup-named (text choices)
+  "The id of the first of CHOICES ((ID . LABEL) ...) whose name is TEXT,
+case aside and a leading # or @ optional on either side, or NIL."
+  (flet ((bare (name) (string-left-trim "#@" (string-trim '(#\Space #\Tab) name))))
+    (let ((wanted (bare text)))
+      (and (plusp (length wanted))
+           (car (find-if (lambda (choice)
+                           (string-equal wanted (bare (gateway-setup-choice-name (cdr choice)))))
+                         choices))))))
+
+(defun gateway-setup-picks (reply choices)
+  "The ids REPLY names, each once, in its order: `all' (or *) every one of
+CHOICES ((ID . LABEL) ...); else each comma-separated entry a choice's name
+(GATEWAY-SETUP-NAMED), or words each a 1-based number into CHOICES, a range
+of them (2-5), a name, or an id as typed."
+  (flet ((number-in (text)
+           (and (plusp (length text)) (every #'digit-char-p text)
+                (let ((number (parse-integer text)))
+                  (and (<= 1 number (length choices)) number)))))
+    (if (member (string-trim '(#\Space #\Tab) reply) '("all" "*") :test #'string-equal)
+        (mapcar #'car choices)
+        (remove-duplicates
+         (loop for entry in (uiop:split-string reply :separator '(#\,))
+               for named = (gateway-setup-named entry choices)
+               if named collect named
+                 else append
+                      (loop for word in (uiop:split-string entry :separator '(#\Space #\Tab))
+                            for dash = (position #\- word :start (min 1 (length word)))
+                            for from = (and dash (number-in (subseq word 0 dash)))
+                            for to = (and dash (number-in (subseq word (1+ dash))))
+                            for number = (number-in word)
+                            unless (string= word "")
+                              append (cond ((and from to (<= from to))
+                                            (mapcar #'car (subseq choices (1- from) to)))
+                                           (number (list (car (nth (1- number) choices))))
+                                           (t (list (or (gateway-setup-named word choices) word))))))
+         :test #'equal :from-end t))))
+
+(defun gateway-setup-names (ids choices &key (shown 3))
+  "IDS as their names among CHOICES ((ID . LABEL) ...), the first SHOWN of
+them and how many more, `all N' when they are every one of more than SHOWN."
+  (let ((names (mapcar (lambda (id)
+                         (let ((choice (assoc id choices :test #'equal)))
+                           (if choice (gateway-setup-choice-name (cdr choice)) id)))
+                       ids)))
+    (format nil "~:[~*~;all ~d: ~]~{~a~^, ~}~@[, +~d more~]"
+            (and (> (length ids) shown) (= (length ids) (length choices))) (length ids)
+            (subseq names 0 (min shown (length names)))
+            (and (> (length names) shown) (- (length names) shown)))))
+
+(defun setup-pick-rows (choices picked cursor &key (rows 20))
+  "The checklist over CHOICES ((ID . LABEL) ...) as rows to draw, top down:
+(:ALL POINTED TICKED COUNT), (:HEAD SERVER), (:CHOICE POINTED TICKED NAME
+AFTER NESTED INDEX), (:MORE COUNT) -- the ids in PICKED ticked, the CURSOR
+row (0, the all row) pointed at, at most ROWS choices shown around it. A
+label's tail (`#general  Home') heads a group when two or more share it, a
+server's channels, them NESTED under it; a lone one rides AFTER its name."
+  (let* ((count (length choices))
+         (top (max 0 (min (- cursor (floor rows 2)) (- count rows))))
+         (end (min count (+ top rows)))
+         (tails (mapcar (lambda (choice)
+                          (let ((cut (search "  " (cdr choice))))
+                            (and cut (subseq (cdr choice) (+ cut 2)))))
+                        choices))
+         (out (list (list :all (zerop cursor)
+                          (and choices (every (lambda (choice) (member (car choice) picked :test #'equal)) choices))
+                          count))))
+    (when (plusp top) (push (list :more top) out))
+    (loop with group = nil
+          for index from top below end
+          for (id . label) = (nth index choices)
+          for tail = (nth index tails)
+          for heading = (and tail (< 1 (count tail tails :test #'equal)))
+          do (when (and heading (not (equal tail group)))
+               (setf group tail)
+               (push (list :head tail) out))
+             (push (list :choice (= cursor (1+ index)) (and (member id picked :test #'equal) t)
+                         (gateway-setup-choice-name label) (and (not heading) tail) heading index)
+                   out))
+    (when (< end count) (push (list :more (- count end)) out))
+    (nreverse out)))
+
+(defun setup-pick-toggle (choices picked cursor)
+  "PICKED with the CURSOR row of the checklist over CHOICES flipped: the all
+row (0) ticks every one, or none when every one is ticked."
+  (if (zerop cursor)
+      (if (every (lambda (choice) (member (car choice) picked :test #'equal)) choices)
+          '()
+          (mapcar #'car choices))
+      (let ((id (car (nth (1- cursor) choices))))
+        (if (member id picked :test #'equal)
+            (remove id picked :test #'equal)
+            (cons id picked)))))
+
+(defun gateway-setup-lane (call id &key (seconds 30))
+  "ID's row of GET /api/channels once it is running and connected, or has
+settled anywhere else, after at most SECONDS."
+  (loop with deadline = (+ (get-universal-time) seconds)
+        for row = (find id (json-array (funcall call :get "/api/channels" nil) "channels")
+                        :key (lambda (row) (json-value row :string "id")) :test #'equal)
+        for state = (and row (json-value row :string "state"))
+        when (or (and (equal state "running") (json-value row :boolean "connected"))
+                 (member state '("refused" "failed" "unconfigured" "stopped" "done") :test #'equal)
+                 (>= (get-universal-time) deadline))
+          return row
+        do (sleep 1)))
 
 (defstruct (channel-setup-sheet (:include sheet-dialog))
   "/gateway setup: CHANNEL, the id set up (NIL until picked from CELLS, the
@@ -613,7 +732,7 @@ whole, what it said, and its keys. => the caret's cell, or NIL."
 ;;; --- opening it -----------------------------------------------------------------
 
 (defun open-channel-setup (model &optional channel &key call)
-  "/gateway setup [CHANNEL] on a shell: the sheet at once over the shell,
+  "/gateway setup [CHANNEL]: the sheet at once over the shell,
 its first read off the loop. CALL stands in for the organism's control
 surface (a test's fake). => NIL."
   (let ((setup (make-channel-setup-sheet

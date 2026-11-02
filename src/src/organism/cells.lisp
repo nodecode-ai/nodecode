@@ -2824,7 +2824,7 @@ its commit (CLONE-INSTALL)."
       (truename target))))
 
 ;;; Turning a cell on is waited on: `nodecode add', the /cells sheet, the
-;;; /models picker and `nodecode gateway setup' each hold a wall clock on the
+;;; /models picker and the shell's /gateway setup each hold a wall clock on the
 ;;; answer of the organism that turns it on. Each sends the seconds it waits,
 ;;; and the organism gives the turn-on that much less a margin kept for what
 ;;; runs in the image -- the loads, the starts, the answer -- as one deadline

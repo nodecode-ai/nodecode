@@ -395,8 +395,8 @@ of stacking."
      (:file "tui/sheet")
      ;; The TUI's quick config knobs use the same typed config route as the page.
      (:file "tui/settings-sheet")
-     ;; /gateway setup on the shell: the terminal walk's steps on a sheet,
-     ;; each finished one folded into a line, choices a checklist.
+     ;; /gateway setup on the shell: a channel set up step by step on a
+     ;; sheet, each finished step folded into a line, choices a checklist.
      (:file "tui/channel-setup")
      ;; /generations: the history of the self, a sheet over the generations
      ;; routes (gateway.lisp), and the way back to a change in it.

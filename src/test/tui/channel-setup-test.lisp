@@ -1,8 +1,85 @@
 ;;;; channel-setup-test.lisp --- /gateway setup on the shell: the sheet walked with the keys
-;;;; an operator presses, over launch-test's fake organism.
+;;;; an operator presses, over a fake organism.
 ;;;; SPDX-License-Identifier: MIT
 
 (in-package #:nodecode.test)
+
+;;; The organism's routes as the sheet calls them, faked: it installs the
+;;; cell, keeps the secret, refuses one token at the check and offers two
+;;; channels.
+
+(defun setup-fake-object (&rest members)
+  (let ((object (make-hash-table :test #'equal)))
+    (loop for (key value) on members by #'cddr do (setf (gethash key object) value))
+    object))
+
+(defun setup-fake-organism (&key offer &aux (calls '()) installed secret chosen restarted)
+  "A control surface for the setup sheet: (values CALL CALLS), CALLS answering every
+call made so far, oldest first, as (METHOD PATH BODY-JSON). OFFER, when
+given, answers a field's choices probe from the field's name, and the owner
+field offers choices too."
+  (labels ((field (name type &rest more)
+             (apply #'setup-fake-object "name" name "type" type "doc" (format nil "~a doc" name) more))
+           (section ()
+             (setup-fake-object
+              "key" "channels.discord" "path" (vector "channels" "discord")
+              "guide" "make an app; copy the token" "check" t
+              "needs" (if (and secret chosen) "complete" "still needed: bot token, allowed_channels or allowed_users")
+              "secret" (setup-fake-object "noun" "bot token" "env" "bot_token_env" "file" "bot_token_file")
+              "fields" (vector (field "bot_token_env" "env")
+                               (field "bot_token_file" "path" "set" (and secret t) "essential" (and secret t))
+                               (field "allowed_channels" "list" "essential" t "choices" t "set" (and chosen t))
+                               (field "allowed_users" "list" "essential" t)
+                               (field "owner" "list" "choices" (and offer t))
+                               (field "pairing" "boolean" "default" t))))
+           (call (method path body)
+             (push (list method path (and body (nlk:encode-json-object body))) calls)
+             (cond ((equal path "/api/gateway/cells")
+                    (when (eq method :post) (setf installed t))
+                    (setup-fake-object "text" (and (eq method :post) "nodecode-channel-discord is on")
+                                       "cells" (vector (setup-fake-object "name" "nodecode-channel-discord" "on" installed)
+                                                       (setup-fake-object "name" "nodecode-channel-kit" "on" t)
+                                                       (setup-fake-object "name" "nodecode-channel-telegram" "on" t))))
+                   ((equal path "/api/channels")
+                    (setup-fake-object "channels" (vector (setup-fake-object "id" "telegram" "state" "running" "connected" t)
+                                                          (setup-fake-object "id" "discord" "state" (if restarted "running" "unconfigured")
+                                                                             "connected" restarted "detail" "as nodebot"))))
+                   ((equal path "/api/channels?op=restart") (setf restarted t) (setup-fake-object "channels" #()))
+                   ((equal path "/api/gateway/config")
+                    (when (eq method :post)
+                      (cond ((gethash "secret" body) (setf secret (gethash "secret" body)))
+                            ((equal "allowed_channels" (aref (gethash "path" body) 2))
+                             (setf chosen (coerce (gethash "value" body) 'list)))))
+                    (setup-fake-object "said" (and (eq method :post) "saved it")
+                                       "sections" (if installed (vector (section)) #())))
+                   ((equal path "/api/gateway/config/probe")
+                    (cond ((and offer (gethash "field" body)) (funcall offer (gethash "field" body)))
+                          ((gethash "field" body)
+                           (setup-fake-object "choices" (vector (setup-fake-object "id" "111" "label" "#general (Home)")
+                                                                (setup-fake-object "id" "222" "label" "#bots (Home)"))))
+                          ((equal secret "good-token") (setup-fake-object "text" "token: ok — bot nodebot"))
+                          ((equal secret "bad-token") (setup-fake-object "text" "token: unauthorized (401): the token is wrong"))
+                          (t (error 'nle::gateway-http-error :status 400 :code "refused"
+                                                            :detail "channels.discord is unreadable"))))
+                   (t (error "the fake organism has no ~a ~a" method path)))))
+    (values #'call (lambda () (reverse calls)))))
+
+(deftest channel-setup-picks-by-number-range-name-or-all ()
+  (let ((choices '(("111" . "#general  Home") ("222" . "#bots  Home") ("333" . "#ops  Away") ("444" . "@mods  Home"))))
+    (is (equal '("111" "222" "333" "444") (nle::gateway-setup-picks "all" choices)) "all picks every one")
+    (is (equal '("111" "222" "333" "444") (nle::gateway-setup-picks " * " choices)))
+    (is (equal '("222" "333") (nle::gateway-setup-picks "2-3" choices)) "a range of numbers")
+    (is (equal '("111" "333") (nle::gateway-setup-picks "general, #ops" choices)) "names, the # optional")
+    (is (equal '("444" "222") (nle::gateway-setup-picks "@mods 2 2" choices)) "each once, in the order named")
+    (is (equal '("999" "5") (nle::gateway-setup-picks "999 5" choices)) "an id, or a number past the list, as typed")
+    (is (equal '("2") (nle::gateway-setup-picks "2" nil)) "no choices: words as typed")))
+
+(deftest channel-setup-is-the-shells-own ()
+  (is (search "setup" (nlk:gateway-text "help" :command "nodecode gateway")) "help lists setup")
+  (let ((said (handler-case (nlk:gateway-text "setup" :command "nodecode gateway")
+                (nlk:gateway-usage-error (refusal) (princ-to-string refusal)))))
+    (is (search "shell's own: open `nodecode' and type /gateway setup" said) "the command line points at the shell")))
+
 
 (defun setup-sheet-offer (asks)
   "Choices for the fake organism: the owner offered with its maker the
