@@ -604,8 +604,9 @@ text>`.")
 
 (defun write-file-atomically (path content &key mode directory-mode (parents t) &aux fd renamed)
   "CONTENT — a string, the octets one encodes to, or a function writing them
-to the octet stream it is handed — to PATH through a temp claimed beside it and
-one rename, so a crash mid-write leaves the old file or none, never a torn one.
+to the octet stream it is handed — to PATH through a temp claimed beside it,
+synced, and one rename, so a crash mid-write, or off Windows a power cut, leaves
+the old file or none, never a torn one.
 PATH's directory is made first, unless PARENTS is NIL and a missing one is an
 error. MODE is the mode the file carries across the rename: an integer,
 :KEEP for the mode PATH already has, since adopting a fresh temp file's mode
@@ -662,7 +663,13 @@ PATH is new. DIRECTORY-MODE is the directory's mode."
         ;; where the bits are set by name on a temp nothing else can see yet.
         (when bits
           #-win32 (sb-posix:fchmod fd bits)
-          #+win32 (sb-posix:chmod temp bits)))
+          #+win32 (sb-posix:chmod temp bits))
+        ;; The bytes on the disk before the name moves: unsynced, a power cut
+        ;; could keep the rename and lose the data, leaving an empty file in
+        ;; the old one's place -- auth.json, a secret, the config. Not on
+        ;; Windows: OUT there is over a HANDLE, and FLUSH-FILE asks the C
+        ;; runtime for the handle of a descriptor.
+        #-win32 (flush-file out))
       ;; rename(2), MoveFileEx with replacement on Windows (REPLACE-FILE's call)
       (multiple-value-bind (ok errno) (sb-unix:unix-rename temp native)
         (unless ok (error "cannot replace ~a: ~a" native (sb-int:strerror errno))))
