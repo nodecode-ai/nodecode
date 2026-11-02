@@ -1,5 +1,5 @@
 /-
-Refusal hold: the policy NEXT-ROUND-CONTEXT (src/src/engine/turn.lisp)
+Refusal hold: the policy NEXT-ROUND-CONTEXT (src/engine/turn.lisp)
 follows when the selected model refuses a round and its fallback answers it.
 
 State: `streak`, the selection's refusals in a row; `remaining`, the rounds

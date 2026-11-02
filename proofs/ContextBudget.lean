@@ -1,6 +1,6 @@
 /-
 Context budget: INSTRUCTIONS-FILES and INSTRUCTIONS-SECTION
-(src/src/engine/context.lisp), the rules files a session reads into its
+(src/engine/context.lisp), the rules files a session reads into its
 `instructions` section.
 
 Every folder from the session's directory up to / offers its candidates in
@@ -253,7 +253,7 @@ theorem nearest_read (size : Text → Nat) (limit : Nat) (f : Read) (fs : List R
   simp [fill, h, Prod.map]
 
 /-! ### 3. Decided traces, pinned on the real functions by
-`the-instructions-files-run-contextbudget-lean-s-traces` (src/test/engine/context-test.lisp) -/
+`the-instructions-files-run-contextbudget-lean-s-traces` (test/engine/context-test.lisp) -/
 
 /-- A blank AGENTS.md passes to its folder's CLAUDE.md... -/
 theorem trace_blank_passes :
