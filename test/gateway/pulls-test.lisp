@@ -20,6 +20,18 @@
 ;;;;       failed ask keeps what was held.
 ;;;;   P6. GET /api/gateway/sessions carries `pr' on each row: the object for
 ;;;;       a branch with a pull request, null for a folder with none.
+;;;;   P7. A push moves the branch's remote-tracking ref (loose or packed), and
+;;;;       the next read asks again however fresh the answer was; none on a
+;;;;       pushed branch is asked again in half a minute, on an unpushed one
+;;;;       or the default branch in five.
+;;;;   P8. An answer that changes what a row reads tells every client, one
+;;;;       session_list_changed frame; the same answer again, or none, tells
+;;;;       nobody.
+;;;;   P9. The worker re-reads the refs of the checkouts rows read lately, so
+;;;;       a push is seen with no read; a branch newly pushed, with no pull
+;;;;       request, is followed: asked again every step until its pull
+;;;;       request appears (and every client is told) or the follow runs out,
+;;;;       and the worker leaves once nothing is followed or watched.
 
 (in-package #:nodecode.test)
 
@@ -37,6 +49,11 @@ config whose origin is URL; answers ROOT."
   "Run BODY over an empty pull request cache and queue, FETCHER standing in
 for GitHub; the organism's own are put back on the way out."
   `(with-saved-globals ((nle::*pull-requests* (make-hash-table :test #'equal))
+                        (nle::*pull-request-stamps* (make-hash-table :test #'equal))
+                        (nle::*pull-request-follows* (make-hash-table :test #'equal))
+                        (nle::+pull-request-follow-step+ 0.2)
+                        (nle::+pull-request-follow-for+ 2)
+                        (nle::+pull-request-watch-for+ 1)
                         (nle::*pull-requests-queued* (make-hash-table :test #'equal))
                         (nle::*pull-requests-worker* nil)
                         (nle::*pull-request-fetcher* ,fetcher))
@@ -128,3 +145,113 @@ for GitHub; the organism's own are put back on the way out."
             (is (eq :null (gethash "checks" (gethash "pr" row) :absent)) "no checks reads null"))
           (is-present (row (wire-row "pr-off" body)) "the session outside a checkout is listed"
             (is (member (gethash "pr" row :absent) '(nil :null)) "with a null pr")))))))
+
+(deftest pull-request-push-asks-again (with-temp-trees ((root "pulls")))
+  (let* ((asks 0)
+         (lock (bt2:make-lock))
+         (repo (fake-checkout (merge-pathnames "repo/" root)))
+         (folder (namestring repo))
+         (main (fake-checkout (merge-pathnames "main/" root) :branch "main"))
+         (one (make-string 40 :initial-element #\a))
+         (two (make-string 40 :initial-element #\b)))
+    (flet ((fresh-for (branch) (third (gethash (cons "acme/widget" branch) nle::*pull-requests*)))
+           (asked () (bt2:with-lock-held (lock) asks)))
+      (write-temp-file (merge-pathnames ".git/refs/remotes/origin/HEAD" repo) (format nil "ref: refs/remotes/origin/develop~%"))
+      (with-pull-request-cache (:fetcher (lambda (owner-name branches)
+                                           (declare (ignore owner-name))
+                                           (bt2:with-lock-held (lock) (incf asks))
+                                           (mapcar (lambda (branch) (cons branch nil)) branches)))
+        ;; Following a pushed branch, and watching its refs, are P9's; here
+        ;; every read is the only ask.
+        (setf nle::+pull-request-follow-for+ 0
+              nle::+pull-request-watch-for+ 0)
+        (is (null (nle::folder-push-stamp folder "feat/x")) "a branch no remote holds has no stamp")
+        (nle::session-pull-request folder)
+        (is-eventually (eql 300 (fresh-for "feat/x")) "none on an unpushed branch: five minutes")
+        (nle::session-pull-request folder)
+        (sleep 0.5)
+        (is (= 1 (asked)) "a fresh answer is not asked again")
+        (write-temp-file (merge-pathnames ".git/refs/remotes/origin/feat/x" repo) (format nil "~a~%" one))
+        (is (equal `(("origin" . ,one)) (nle::folder-push-stamp folder "feat/x")) "the loose ref a push writes")
+        (nle::session-pull-request folder)
+        (is-eventually (= 2 (asked)) "a push moves the ref: the next read asks again")
+        (is-eventually (eql 30 (fresh-for "feat/x")) "none on a pushed branch: half a minute")
+        (nle::session-pull-request folder)
+        (sleep 0.5)
+        (is (= 2 (asked)) "the same ref asks nothing")
+        (delete-file (merge-pathnames ".git/refs/remotes/origin/feat/x" repo))
+        (write-temp-file (merge-pathnames ".git/packed-refs" repo)
+                         (format nil "# pack-refs with: peeled fully-peeled sorted~%~a refs/remotes/origin/feat/x~%" two))
+        (is (equal `(("origin" . ,two)) (nle::folder-push-stamp folder "feat/x")) "a packed ref reads the same")
+        (nle::session-pull-request folder)
+        (is-eventually (= 3 (asked)) "and moving it asks again")
+        (write-temp-file (merge-pathnames ".git/packed-refs" main)
+                         (format nil "~a refs/remotes/origin/main~%" one))
+        (is (nth-value 1 (nle::folder-push-stamp (namestring main) "main")) "main, with no remote HEAD, is the default")
+        (is (nth-value 1 (nle::folder-push-stamp folder "develop")) "a remote HEAD names the default")
+        (is (not (nth-value 1 (nle::folder-push-stamp folder "main"))) "and then main is none")
+        (nle::session-pull-request (namestring main))
+        (is-eventually (eql 300 (fresh-for "main")) "none on the pushed default branch: five minutes")))))
+
+(deftest pull-request-change-tells-every-client ()
+  (let ((kinds '())
+        (lock (bt2:make-lock))
+        (pull '(:number 9 :state "open" :url "https://github.com/acme/widget/pull/9" :checks nil)))
+    (nle:hook :frame "pulls-moved-test"
+              (lambda (op next)
+                (bt2:with-lock-held (lock) (push (getf op :kind) kinds))
+                (funcall next op)))
+    (nlk:with-cleanup ((nle:unhook :frame "pulls-moved-test"))
+      (with-pull-request-cache (:fetcher (lambda (owner-name branches) (declare (ignore owner-name branches)) :failed))
+        (flet ((told (answer)
+                 (bt2:with-lock-held (lock) (setf kinds '()))
+                 (nle::store-pull-requests "acme/widget" '(("feat/x" . t)) answer)
+                 (bt2:with-lock-held (lock) (count "session_list_changed" kinds :test #'equal))))
+          (is (= 0 (told '(("feat/x")))) "none where the row read none tells nobody")
+          (is (= 1 (told `(("feat/x" . ,pull)))) "a pull request appearing tells every client once")
+          (is (= 0 (told `(("feat/x" . ,pull)))) "the same answer again tells nobody")
+          (is (= 0 (told :failed)) "no answer tells nobody")
+          (is (equal pull (first (gethash '("acme/widget" . "feat/x") nle::*pull-requests*))) "and keeps what was held")
+          (is (= 1 (told `(("feat/x" . ,(list :number 9 :state "merged" :url "https://github.com/acme/widget/pull/9" :checks nil))))) "a merge tells them"))))))
+
+(deftest pull-request-push-is-followed (with-temp-trees ((root "pulls")))
+  (let* ((asks 0)
+         (lock (bt2:make-lock))
+         (kinds '())
+         (repo (fake-checkout (merge-pathnames "repo/" root)))
+         (folder (namestring repo))
+         (pull '(:number 12 :state "open" :url "https://github.com/acme/widget/pull/12" :checks nil)))
+    (flet ((asked () (bt2:with-lock-held (lock) asks)))
+      (nle:hook :frame "pulls-follow-test"
+                (lambda (op next)
+                  (bt2:with-lock-held (lock) (push (getf op :kind) kinds))
+                  (funcall next op)))
+      (nlk:with-cleanup ((nle:unhook :frame "pulls-follow-test"))
+        ;; GitHub knows the pull request from the fourth ask on: opened a
+        ;; moment after the push.
+        (with-pull-request-cache (:fetcher (lambda (owner-name branches)
+                                             (declare (ignore owner-name))
+                                             (let ((n (bt2:with-lock-held (lock) (incf asks))))
+                                               (mapcar (lambda (branch) (cons branch (and (>= n 4) pull))) branches))))
+          (nle::session-pull-request folder)
+          (is-eventually (= 1 (asked)) "a cold key is asked once")
+          (is-eventually (null nle::*pull-requests-worker*) "an unpushed branch is not followed: the worker leaves")
+          ;; A row read the checkout a moment ago, as a page's poll does: the
+          ;; worker re-reads its refs, and sees the push with no read at all.
+          (setf nle::+pull-request-watch-for+ 30)
+          (nle::session-pull-request folder)
+          (write-temp-file (merge-pathnames ".git/refs/remotes/origin/feat/x" repo)
+                           (format nil "~a~%" (make-string 40 :initial-element #\c)))
+          (is-eventually (equal pull (first (gethash '("acme/widget" . "feat/x") nle::*pull-requests*)))
+                         "the worker sees the push and asks on its own until the pull request is there")
+          (is (= 4 (asked)) "with no read between: the push, then two follows")
+          (setf nle::+pull-request-watch-for+ 1)
+          (is (member "session_list_changed" (bt2:with-lock-held (lock) kinds) :test #'equal) "and every client is told")
+          (is (zerop (hash-table-count nle::*pull-request-follows*)) "the follow ends with it")
+          (is-eventually (null nle::*pull-requests-worker*) "and the worker leaves")
+          (setf (gethash '("acme/widget" . "feat/y") nle::*pull-request-follows*) (+ (nlk:unix-now) 1))
+          (setf nle::*pull-request-fetcher* (lambda (owner-name branches) (declare (ignore owner-name)) (mapcar #'list branches)))
+          (setf (second (gethash '("acme/widget" . "feat/x") nle::*pull-requests*)) 0)
+          (nle::session-pull-request folder)
+          (is-eventually (zerop (hash-table-count nle::*pull-request-follows*)) "a follow with no pull request runs out")
+          (is-eventually (null nle::*pull-requests-worker*) "and then the worker leaves too"))))))
