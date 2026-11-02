@@ -112,8 +112,12 @@ $exe = Join-Path $repo 'nodecode.exe'
 $bare = Join-Path $repo 'nodecode'
 if (-not (Test-Path $exe) -and (Test-Path $bare)) { Move-Item $bare $exe -Force }
 if (-not (Test-Path $exe)) { throw "no executable at $exe after the build" }
-foreach ($dll in @('libsqlite3.dll', 'libssl-3-x64.dll', 'libcrypto-3-x64.dll')) {
-  Copy-Item (Join-Path $src $dll) (Join-Path $repo $dll) -Force
+# The binary lands in $repo; the dlls were laid in $src. In the flat layout they are one folder,
+# and Copy-Item refuses to overwrite a file with itself.
+if ($src -ne $repo) {
+  foreach ($dll in @('libsqlite3.dll', 'libssl-3-x64.dll', 'libcrypto-3-x64.dll')) {
+    Copy-Item (Join-Path $src $dll) (Join-Path $repo $dll) -Force
+  }
 }
 
 $csc = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
