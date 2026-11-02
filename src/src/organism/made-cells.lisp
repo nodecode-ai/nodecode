@@ -101,15 +101,37 @@ folder."
     (ensure-directories-exist directory)
     (write-system-file (layer-system-file system) system (layer-system-blurb system)
                        (fresh-layer-system system :description description))
+    (write-file-atomically (merge-pathnames "cell.lisp" directory) (made-cell-package-text name system))
+    (write-layer-system (layer-system-file system) system "cell")
     (write-file-atomically (merge-pathnames "README.md" directory)
                            (format nil "# ~a~%~@[~%~a~%~]~%A nodecode cell: its definitions one per file, loaded from ~
-                                        source at every boot in the order ~a.asd lists them.~%"
-                                   name (and (plusp (length description)) description) system))
-    (git-commit-all directory (format nil "new cell ~a~@[ — session ~a~]" name session-id)
+                                        source at every boot in the order ~a.asd lists them, cell.lisp ~
+                                        first: the package ~(~a~) they read in.~%"
+                                   name (and (plusp (length description)) description) system system))
+    (git-commit-all directory (format nil "new cell ~a~@[ - session ~a~]" name session-id)
                     :notice (lambda (line) (format t "~&[~a: ~a]~%" name line)))
     (git-exclude-dot-directories directory)
     (load-cell system)
     (setf (gethash session-id *session-cells*) system)
-    (format t "~&[~a: made ~a; what this session keeps goes there now, (leave-cell) for the layer]~%"
-            name (namestring directory))
+    (format t "~&[~a: made ~a; what this session keeps goes there now, (leave-cell) for the layer. ~
+               A snippet working on it opens with (in-package #:~(~a~)), (help :cells) says the rest]~%"
+            name (namestring directory) system)
     directory))
+
+(defun made-cell-package-text (name system)
+  "cell.lisp of the made cell NAME, whose system is SYSTEM: the package its
+definitions read in, named after the system as the loader asks, and the
+peripheral mark, so a DEFINE-CELL kept beside it is a cell that starts."
+  ;; The package uses the kernel and EVOLVED's exports (DEFINE-CELL, NOTICE,
+  ;; ON-STOP ...), which clash with neither, so a snippet reads the same in
+  ;; it as in EVOLVED; EVOLVED's internal names are written nle::name.
+  (format nil ";;;; cell.lisp --- ~a: the package this cell's definitions read in.~%~
+               ;;;;~%~
+               ;;;; Written by new-cell. Every other file here is one definition, kept~%~
+               ;;;; by a session working on the cell; a snippet doing that opens with~%~
+               ;;;; (in-package #:~(~a~)). A (define-cell ~(~a~) ...) kept beside this~%~
+               ;;;; declares its commands, tools and settings: (help :cells).~%~%~
+               (defpackage #:~(~a~)~%  (:use #:cl #:nodecode.kernel #:nodecode.evolved))~%~%~
+               (in-package #:~(~a~))~%~%~
+               (define-peripheral ~(~a~) :not-running t)~%"
+          name system name system system name))

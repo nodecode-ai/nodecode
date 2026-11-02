@@ -47,7 +47,7 @@ report of loaded cells put back after."
     (is (eq :code (nlk:kept-folder-kind directory)) "a folder of kept code")
     (is (search "Weather where the operator is."
                 (nlk:read-text (merge-pathnames "tester-weather.asd" directory))))
-    (is (search "new cell weather — session s-cell" (knowledge-git "tester-weather" "log" "--format=%s" "-1")))
+    (is (search "new cell weather - session s-cell" (knowledge-git "tester-weather" "log" "--format=%s" "-1")))
     (is (nlk:find-cell "tester-weather") "loaded, on the report"))
   (is (equal "weather" (nlk:current-cell "s-cell")))
   (is (null (nlk:current-cell "s-other")) "another session's code stays the layer's")
@@ -99,6 +99,45 @@ report of loaded cells put back after."
   (is (search "[memory: kept mc-fact]"
               (keep-definition-text "(define-memory mc-fact \"A fact, not code.\" :type :reference)" :session "s-new")))
   (is (kept-text "mc-fact") "knowledge is the knowledge cell's, in a cell or not"))
+
+(deftest made-cell-declares-a-command-that-starts (with-made-cell-fixture ())
+  ;; cell.lisp gives the cell its package; a DEFUN and a DEFINE-CELL of one
+  ;; name keep two files; the start the DEFINE-CELL made after the load is
+  ;; taken up, and it registers the command under the cell's folder name
+  (make-test-cell "clock")
+  (is (find-package "TESTER-CLOCK") "cell.lisp made the package")
+  (is (search "(:file \"cell\")"
+              (nlk:read-text (merge-pathnames "tester-clock/tester-clock.asd" nlk::*cells-directory*))))
+  (is (null (nlk:note-cell-start (nlk:find-cell "tester-clock"))) "nothing to start yet")
+  (keep-definition-text "(defun clock (args session-id) (declare (ignore args session-id)) \"noon\")"
+                        :session "s-cell" :package "TESTER-CLOCK")
+  (keep-definition-text "(define-cell clock (:section (\"tester-clock-section\")) (:command \"tester-clock\" 'clock :description \"The time.\"))"
+                        :session "s-cell" :package "TESTER-CLOCK")
+  (is (search "(defun clock" (nlk:read-text (cell-file "clock" "clock"))) "the defun keeps its file")
+  (is (search "(define-cell clock" (nlk:read-text (cell-file "clock" "clock-define-cell"))))
+  (is (search "(:file \"clock-define-cell\")"
+              (nlk:read-text (merge-pathnames "tester-clock/tester-clock.asd" nlk::*cells-directory*))))
+  (let ((start (nlk:note-cell-start (nlk:find-cell "tester-clock"))))
+    (is (functionp start) "the start is taken up")
+    (let ((stop (funcall start (make-hash-table :test 'equal))))
+      (nlk:with-cleanup ((funcall stop))
+        (let ((entry (find "tester-clock" nle::*registered-commands*
+                           :key #'nle::slash-command-name :test #'string-equal)))
+          (is entry "the command is registered")
+          (is (equal "tester-clock" (nle::slash-command-owner entry)) "under the folder's name")
+          (is (equal "noon" (funcall (nle::slash-command-headless entry) "" "s-cell"))))))))
+
+(deftest layer-two-kinds-of-one-name-keep-two-files (with-made-cell-fixture ())
+  ;; a DEFCLASS beside a DEFUN of its name keeps the DEFUN's file and takes
+  ;; its own; a DEFMACRO of the DEFUN's name is the same function and takes
+  ;; its file, as a second DEFUN would
+  (keep-definition-text "(defun mc-point () :fn)" :session "s-layer")
+  (keep-definition-text "(defclass mc-point () ())" :session "s-layer")
+  (is (search "(defun mc-point" (nlk:read-text (layer-file "mc-point"))))
+  (is (search "(defclass mc-point" (nlk:read-text (layer-file "mc-point-defclass"))))
+  (keep-definition-text "(defmacro mc-point () :macro)" :session "s-layer")
+  (is (search "(defmacro mc-point" (nlk:read-text (layer-file "mc-point"))) "the macro took the defun's file")
+  (is (search "(defclass mc-point" (nlk:read-text (layer-file "mc-point-defclass"))) "the class kept its own"))
 
 (deftest made-cell-refuses-a-bad-name-and-a-taken-folder (with-made-cell-fixture ())
   (flet ((refused (thunk)

@@ -218,9 +218,43 @@ specializers joined on, so each method has its own file."
             (mapcar #'slug (getf key :qualifiers))
             (mapcar #'slug (getf key :specializers)))))
 
+(defun definition-namespace (operator)
+  "What a definition by OPERATOR, an operator's name, names: :FUNCTION,
+:VARIABLE or :TYPE for the standard operators that share one -- a DEFMACRO
+of a DEFUN's name takes its place -- else OPERATOR itself, so a DEFUN and a
+DEFINE-CELL of one name are two definitions."
+  (cond ((member operator '("DEFUN" "DEFMACRO" "DEFGENERIC") :test #'string=) :function)
+        ((member operator '("DEFVAR" "DEFPARAMETER" "DEFCONSTANT" "DEFINE-SYMBOL-MACRO")
+                 :test #'string=)
+         :variable)
+        ((member operator '("DEFCLASS" "DEFSTRUCT" "DEFTYPE" "DEFINE-CONDITION") :test #'string=)
+         :type)
+        (t operator)))
+
 (defun definition-path (key directory)
-  "The file in DIRECTORY a definition of KEY is kept in (DEFINITION-FILE-NAME)."
-  (merge-pathnames (format nil "~a.lisp" (definition-file-name key)) directory))
+  "The file in DIRECTORY a definition of KEY is kept in: DEFINITION-FILE-NAME's,
+unless that file holds another kind of definition of the same name, which
+keeps it -- a cell's DEFUN TOKYO-TIME and its DEFINE-CELL TOKYO-TIME -- and
+then the name with KEY's operator joined on, tokyo-time-define-cell.lisp."
+  ;; Before this a second kind of one name overwrote the first's file, and
+  ;; the first was gone at the next boot. A key with no operator (a
+  ;; knowledge cell's lookup by name) is the plain file.
+  (let ((plain (merge-pathnames (format nil "~a.lisp" (definition-file-name key)) directory))
+        (operator (getf key :operator)))
+    (if (null operator)
+        plain
+        (let ((own (merge-pathnames (format nil "~a-~(~a~).lisp" (definition-file-name key) operator)
+                                    directory)))
+          (cond ((probe-file own) own)
+                ((and (probe-file plain)
+                      (let ((there (mapcar #'first (file-definitions plain))))
+                        (and there
+                             (notany (lambda (found)
+                                       (equal (definition-namespace (getf found :operator))
+                                              (definition-namespace operator)))
+                                     there))))
+                 own)
+                (t plain))))))
 
 ;;; --- the scanner ----------------------------------------------------------
 
@@ -1220,7 +1254,7 @@ out of every one."
                                            (t (write-file-atomically path content)
                                               (let ((name (folder-name directory)))
                                                 (write-layer-system (layer-system-file name) name
-                                                                    (definition-file-name key))))))))
+                                                                    (pathname-name path))))))))
                                 ;; a folder this write made is one the next member may move a name out of
                                 (unless (find (folder-name directory) (listed-folders)
                                               :key #'folder-name :test #'string=)

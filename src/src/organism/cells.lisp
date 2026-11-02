@@ -1848,12 +1848,9 @@ left (BEFORE for the first) against OWNERS. => the records, in load order."
                           (ignore-errors (asdf:clear-system name))
                           (call-with-compile-lock
                            (lambda () (muffled-load (lambda () (asdf:load-system name)))))))
-                       ;; the peripheral mark: its package exports a fbound START-CELL
-                       (bind ((package (find-package (string-upcase name)))
-                              ((symbol status) (and package (find-symbol "START-CELL" package))))
-                         (when (and symbol (eq status :external) (fboundp symbol))
-                           (setf cell.start (fdefinition symbol))
-                           (when (eq cell.kind :library) (setf cell.kind :peripheral))))))))
+                       (when-let (start (exported-start-cell name))
+                         (setf cell.start start)
+                         (when (eq cell.kind :library) (setf cell.kind :peripheral)))))))
             (let ((after (definition-snapshot)))
               ;; fill CELL's lists and advance OWNERS: the next folder is judged against this one
               ;; a changed method count adds methods; a changed definition nobody here owns
@@ -2976,6 +2973,21 @@ there (INSTALLER-PUT-P)."
             (t (uiop:delete-directory-tree (merge-pathnames (format nil "~a/" name) root) :validate t))))
     (refresh-shipped-cell-notice :root root)
     t))
+
+(defun exported-start-cell (system)
+  "The peripheral mark: the function START-CELL names when the package
+named after SYSTEM exports it fbound. => it, or NIL."
+  (bind ((package (find-package (string-upcase system)))
+         ((symbol status) (and package (find-symbol "START-CELL" package))))
+    (and symbol (eq status :external) (fboundp symbol) (fdefinition symbol))))
+
+(defun note-cell-start (cell)
+  "CELL's start: its record's, else the START-CELL one of its systems'
+packages exports now -- a made cell's DEFINE-CELL evaluated after the folder
+loaded -- put on the record, so the next start runs it. => it, or NIL."
+  (or cell.start
+      (when-let (start (some #'exported-start-cell cell.systems))
+        (setf cell.start start))))
 
 (defun load-cell (&rest names)
   "Load the folders NAMES under *CELLS-DIRECTORY* into this image now — the
