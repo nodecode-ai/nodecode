@@ -126,8 +126,7 @@ pairs, each answer a few paragraphs, painted once."
       (wire-fold session))))
 
 (define-scaling replaying-a-session
-    (n :bound 1.30 :sizes '(200 800 3200)
-       :known "main 25bc955: instructions n^1.12; STAMP-UNPOSITIONED-ROWS walks every row after every folded event")
+    (n :sizes '(200 800 3200))
   ;; A session's frames folded as a shell's replay folds them when it opens
   ;; the session (SESSION-TRANSCRIPT): linear in the session.
   (let ((session (seeded-session n)))

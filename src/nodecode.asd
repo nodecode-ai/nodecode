@@ -619,6 +619,7 @@ of stacking."
      ;; canvas-test too, and theme-test's THEME-PALETTE.
      (:file "tui/canvas-test")
      (:file "tui/timestamps-test")
+     (:file "tui/history-lane-test")
      (:file "surface/gateway-test")
      (:file "surface/gateway-return-test")
      (:file "surface/still-starting-test")
