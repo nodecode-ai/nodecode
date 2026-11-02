@@ -4452,7 +4452,10 @@ outranks the default effort the same way while the turn's effective
          ;; The effort pick resolves AFTER the session model binding so it
          ;; addresses the turn's actual target.
          (*reasoning-effort*
-           (effective-effort session-effort *provider* *model*)))
+           (effective-effort session-effort *provider* *model*))
+         ;; A pick made inside the turn still moves the image's default
+         ;; (WITH-IMAGE-DEFAULT-TARGET), not these bindings.
+         (*default-target-shadowed* t))
     (with-cleanup ((when turn
                      (forget-turn-images turn-id)
                      ;; With the log open the working set is the next hydration's to

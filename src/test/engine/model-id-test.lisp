@@ -52,6 +52,25 @@
       (is (equal id (nth-value 1 (nle::select-default-model :model id))) "explicit ids, including private aliases, are preserved")
       (is (equal id (config-pin nle::*shared-config-path* "default_model" "model")) "the persisted id is exact"))))
 
+(deftest model-id-selection-under-a-turns-target-moves-the-image-default (with-ids ())
+  ;; Inside a turn, and in an eval it dispatched, *PROVIDER* and *MODEL* are
+  ;; the session's own target (RUN, BACKGROUND-CAPABLE-EVAL). A pick made
+  ;; there -- (select-model ...), (slash "/models ...") -- still means the
+  ;; image's default: it keeps the default's lane, lands on the globals every
+  ;; new session reads, and leaves the turn's own binding alone.
+  (with-saved-globals ((nle::*provider* "a6api") (nle::*model* "kept") (nle::*endpoint* nil)
+                       (nle::*reasoning-effort* nil))
+    (let ((nle::*provider* "turn-lane") (nle::*model* "turn-model") (nle::*reasoning-effort* "turn-effort")
+          (nle::*default-target-shadowed* t))
+      (multiple-value-bind (provider model) (nle::select-default-model :model "exact-id")
+        (is (equal '("a6api" "exact-id") (list provider model)) "a model-only pick keeps the default's lane"))
+      (nle::select-default-effort "high")
+      (let ((turn (list nle::*provider* nle::*model* nle::*reasoning-effort*)))
+        (is (equal '("turn-lane" "turn-model" "turn-effort") turn) "the running turn keeps its target")))
+    (let ((default (mapcar #'sb-ext:symbol-global-value '(nle::*provider* nle::*model* nle::*reasoning-effort*))))
+      (is (equal '("a6api" "exact-id" "high") default) "the image's default moved"))
+    (is (equal "exact-id" (config-pin nle::*shared-config-path* "default_model" "model")) "and the shared config")))
+
 (deftest model-id-listing-identity-outranks-a-catalog-label (with-ids (:cache +model-id-cache+))
   (let ((nle::*provider* "a6api") (nle::*model* "kept") (nle::*endpoint* nil))
     (is (equal "Gemini 4 Argon" (nth-value 1 (nle::select-default-model :model "Gemini 4 Argon"))) "an exact provider-listed id wins over another namespace's display name")

@@ -1720,8 +1720,13 @@ yield-and-background lifecycle."
              ;; The dispatching turn's stack rides along too: a form that
              ;; redefines what the turn is running on must be judged
              ;; against THAT stack, not this worker's (provisional.lisp).
+             ;; So does its target, the session's own model over the image's
+             ;; default (RUN binds it): LOOK's models.dev gate and a COMPLETE
+             ;; side call ask the model the turn runs on. A pick from the form
+             ;; still moves the image's default (WITH-IMAGE-DEFAULT-TARGET).
              (ambient '(*current-durable-turn* *live-turn* *executing-tool-call-id*
-                        *provider-round* nlk:*caller-frames*))
+                        *provider-round* nlk:*caller-frames*
+                        *provider* *model* *reasoning-effort* *default-target-shadowed*))
              (ambient-values (mapcar #'symbol-value ambient)))
         (multiple-value-bind (id process)
             (spawn-background-eval

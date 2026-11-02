@@ -128,6 +128,22 @@ evaluation's exit fact — narrowed to CALL-ID when one is named."
     ("[3 terminal control sequences removed by the output sanitizer]"
      "the removal is disclosed with its count (CRLF is a rewrite, not a drop)")))
 
+(deftest an-eval-runs-on-its-turns-target (with-exec-registry (registry))
+  ;; RUN binds the session's own target over the image's default. A form the
+  ;; turn backgrounds runs on a fresh thread, so without the target in its
+  ;; ambient it read the default: LOOK's models.dev gate refused a vision
+  ;; model's turn when the default read text only, and a COMPLETE side call
+  ;; asked the wrong model.
+  (with-saved-globals ((nle::*provider* "default-lane") (nle::*model* "default-model")
+                       (nle::*reasoning-effort* nil))
+    (let ((nle::*provider* "turn-lane") (nle::*model* "turn-model")
+          (nle::*reasoning-effort* "turn-effort") (nle::*default-target-shadowed* t))
+      (is-carrying (result (nle::background-capable-eval
+                            "(list nle::*provider* nle::*model* nle::*reasoning-effort* nle::*default-target-shadowed*)"
+                            5000))
+        ("\"turn-lane\" \"turn-model\" \"turn-effort\" T" "the form reads the turn's target")
+        (is (not (search "default-" result)) "never the image's default")))))
+
 (deftest eval-await-value-is-the-same-clean-text (with-exec-registry (registry))
   (let ((id (spawn-test-eval registry :value (format nil "\"~c[31mred~c[0m\"" #\Escape #\Escape))))
     (let ((plist (nle::eval-await id :until-exit t :yield-ms 5000)))
