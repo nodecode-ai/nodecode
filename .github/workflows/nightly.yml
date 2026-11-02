@@ -1,0 +1,58 @@
+name: Nightly
+
+# Once a night, what main costs a person, measured where a pull request's
+# minutes would not pay for it (src/tools/ci/ci-nightly.sh):
+#   latency    main against main a day before, built as the release is and
+#              driven in a terminal as a person drives it, in interleaved
+#              rounds: keys, Enter, first token, the wheel, the session list,
+#              Pss and CPU per frame (`just latency BASE')
+#   footprint  resident memory held to its ceilings (`just footprint')
+# A red night blocks nothing: it names the day a regression landed, and the
+# numbers it keeps name the metric. Perf and Scaling hold every pull request.
+# A pull request that changes the nightly runs it against its base.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "Commit to hold this one to (default: main 24 hours before)"
+        required: false
+  pull_request:
+    paths:
+      - .github/workflows/nightly.yml
+      - src/tools/ci/ci-nightly.sh
+      - src/tools/check/latency.*
+      - src/tools/check/footprint.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  nightly:
+    name: Nightly
+    # Our machines run a pull request's code only from a branch of this
+    # repository, as in ci.yml.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, nc-linux]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Latency and memory, against main a day before
+        run: src/tools/ci/ci-nightly.sh
+        env:
+          NIGHTLY_BASE: ${{ inputs.base }}
+          CI_OUT: ${{ runner.temp }}/nightly
+      - name: Keep the numbers
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly
+          path: ${{ runner.temp }}/nightly/
+          if-no-files-found: ignore

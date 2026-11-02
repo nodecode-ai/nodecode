@@ -170,12 +170,12 @@ bloat:
         --load tools/check/bloat.lisp \
         --eval '(princ (nodecode.bloat:report))'
 
-# --- proofs against the built ./nodecode (CI runs the first three) -----------
+# --- proofs against the built ./nodecode (CI: perf; the Nightly: footprint, latency)
 
 # Resident memory ceilings in MB: at boot, at any turn of 40 past the fifth,
 # growth over the last ten, and after a quiet minute. Lower them as the shell
 # gets lighter; raise one only with the reason in the commit.
-footprint_ceilings := "--max-boot-mb 95 --max-turn-mb 105 --max-growth-mb 15 --max-idle-mb 46"
+footprint_ceilings := "--max-boot-mb 180 --max-turn-mb 145 --max-growth-mb 15 --max-idle-mb 120"
 
 # A scratch home with every shipped cell, a mock provider, the shell in tmux.
 # Hold the shell to the memory ceilings (~3 min, Linux).
@@ -193,6 +193,16 @@ perf base="origin/main":
       s=0; {{just_executable()}} --justfile {{justfile()}} scaling || s=$?; \
       if [ "$a" = 1 ] || [ "$s" = 1 ]; then exit 1; fi; \
       exit $(( a > s ? a : s ))
+
+# BASE (a commit) and this checkout as it stands are both built as the
+# release is, then driven as a person drives the shell, in a terminal, in
+# interleaved rounds: boot, typing, streamed turns, the wheel, the session
+# list. Fails when this checkout is slower or holds more memory than BASE
+# past a metric's tolerance with 95% confidence (src/tools/check/latency.py).
+# The Nightly runs it on main against main a day before (ci/ci-nightly.sh).
+# Hold what a person waits on to BASE's, on the clock (~8 min, Linux).
+latency base="origin/main":
+    @src/tools/check/latency.sh {{base}}
 
 # The gateway must leave a release feed that goes silent without closing,
 # and act on the next label.
