@@ -123,7 +123,7 @@ under *UNIT-DIRECTORY*, its enablement and its process FAKE's."
   ;; plainly or come on by themselves.
   (let ((real-home (sb-posix:getenv "HOME"))
         (scratch (namestring (temp-path "home"))))
-    (is (nlk::own-account-home-p) "the suite runs under the account's own $HOME")
+    (is (nlk::own-account-home-p) "the suite's $HOME stands for the account's own")
     (is (equal "nodecode-gateway" (nlk:gateway-label (nlk:default-home))) "which keeps its name")
     (nlk:with-cleanup ((sb-posix:setenv "HOME" real-home 1)
                        (ignore-errors (uiop:delete-directory-tree (pathname scratch) :validate t)))
