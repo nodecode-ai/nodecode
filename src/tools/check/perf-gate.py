@@ -13,7 +13,8 @@ review. The workloads, each its own process:
 
   tui    a 120x40 shell over a 4000-line transcript: a sentence typed into the
          composer and 40 pages of scrolling, each key one batch through the
-         event loop's own fold-then-paint (HANDLE-MESSAGES)
+         event loop's own fold-then-paint (HANDLE-MESSAGES); then 3 s still,
+         the frame clock ticking, outside the measured spans
   boot   the gateway started on a fresh store, five times
   turns  eight turns sent to the gateway as start_turn, each streamed back as
          200 deltas from a provider whose HTTP answer is played
@@ -27,13 +28,20 @@ Each process is measured four ways, over the workload's own spans only:
   wall          the time a person waits, sleeps and blocking waits included,
                 which cost no instructions
 
+A workload may also report counts beside its spans, which no machine moves:
+the tui workload counts what it writes to its terminal, per phase (keys,
+scroll, idle), as PHASE-bytes and PHASE-frames. They catch what a fast runner
+hides in time: a frame that repaints the whole screen where one line moved,
+or a clock that paints while nothing changes.
+
 Base and head runs alternate, REPS of each (default 5). A metric regressed
 when the head's median exceeds the base's by more than its floor AND every
 head run costs more than every base run, so one noisy run never fails it;
 a flagged workload is then measured again, a fresh round of both sides, and
 fails only when that round flags the same metric:
   instructions 3%   consed 3% + 256 KiB   cpu 20% + 5 ms   wall 25% + 20 ms
-PERF_FLOORS="instructions=0.05,wall=0.4" overrides floors (fractions).
+  *-bytes 1%   *-frames 0 (an idle frame where the base paints none fails)
+PERF_FLOORS="instructions=0.05,wall=0.4,bytes=0.1" overrides floors (fractions).
 
 Exits 0 when the head holds, 1 when a metric regressed, 2 when it cannot
 measure (a tree that does not load, a workload that fails). Prints a table;
@@ -65,7 +73,10 @@ WORKLOADS = ["tui", "boot", "turns"]
 METRICS = ["instructions", "consed", "cpu", "wall"]
 # (fraction, absolute) per metric; absolute in the metric's own unit
 FLOORS = {"instructions": (0.03, 0), "consed": (0.03, 256 * 1024),
-          "cpu": (0.20, 5e6), "wall": (0.25, 20e6)}
+          "cpu": (0.20, 5e6), "wall": (0.25, 20e6),
+          # counts: the same work writes the same bytes in every run
+          "bytes": (0.01, 0), "frames": (0.0, 0)}
+SPAN_KEYS = {"WALL-NS", "CPU-NS", "CONSED", "SPANS"}
 PERF_HOME = os.environ.get("PERF_HOME", "/var/tmp/nodecode-perf")
 
 
@@ -201,6 +212,8 @@ def run_one(tree, workload, scratch, use_perf):
                             % (workload, tree, r.returncode, (r.stdout + r.stderr)[-2000:]))
     spans = read_plist(open(out).read())
     result = {"consed": spans["CONSED"], "cpu": spans["CPU-NS"], "wall": spans["WALL-NS"]}
+    # every other key is a count the workload reported (PERF-COUNT)
+    result.update({k.lower(): v for k, v in spans.items() if k not in SPAN_KEYS})
     if use_perf:
         for line in open(counts):
             fields = line.strip().split(",")
@@ -232,16 +245,19 @@ def verdicts(base, head, use_perf):
     rows = []
     table = floors()
     for workload in base:
-        for metric in METRICS:
+        counts = sorted(set(base[workload][0]) - set(METRICS))
+        for metric in METRICS + counts:
             if metric == "instructions" and not use_perf:
+                continue
+            if any(metric not in run for run in base[workload] + head[workload]):
                 continue
             b = [run[metric] for run in base[workload]]
             h = [run[metric] for run in head[workload]]
             mb, mh = statistics.median(b), statistics.median(h)
-            fraction, absolute = table[metric]
+            fraction, absolute = table[metric if metric in table else metric.rsplit("-", 1)[-1]]
             regressed = mh > mb * (1 + fraction) + absolute and min(h) > max(b)
             rows.append({"workload": workload, "metric": metric, "base": mb, "head": mh,
-                         "change": (mh - mb) / mb if mb else 0.0,
+                         "change": (mh - mb) / mb if mb else (0.0 if mh == mb else None),
                          "spread": (max(b) - min(b)) / mb if mb else 0.0,
                          "regressed": regressed})
     return rows
@@ -252,7 +268,15 @@ def human(metric, value):
         return "%.1f ms" % (value / 1e6)
     if metric == "consed":
         return "%.1f MiB" % (value / 1048576)
+    if metric.endswith("-bytes"):
+        return "%d B" % value
+    if metric.endswith("-frames"):
+        return "%d" % value
     return "%.1f M" % (value / 1e6)
+
+
+def change(row):
+    return "from 0" if row["change"] is None else "%+.1f%%" % (100 * row["change"])
 
 
 def table(rows, base_sha, head_label, reps):
@@ -260,9 +284,9 @@ def table(rows, base_sha, head_label, reps):
              "| workload | metric | base | head | change | base spread | |",
              "|---|---|---:|---:|---:|---:|---|"]
     for row in rows:
-        lines.append("| %s | %s | %s | %s | %+.1f%% | %.1f%% | %s |"
+        lines.append("| %s | %s | %s | %s | %s | %.1f%% | %s |"
                      % (row["workload"], row["metric"], human(row["metric"], row["base"]),
-                        human(row["metric"], row["head"]), 100 * row["change"],
+                        human(row["metric"], row["head"]), change(row),
                         100 * row["spread"],
                         "REGRESSED" if row["regressed"]
                         else "ok (not confirmed)" if row.get("unconfirmed") else "ok"))
@@ -346,8 +370,8 @@ def main():
                            "runs": {"base": base, "head": head}}, f, indent=1)
         regressed = [r for r in rows if r["regressed"]]
         for r in regressed:
-            print("perf-gate: %s %s regressed %+.1f%% (%s -> %s)"
-                  % (r["workload"], r["metric"], 100 * r["change"],
+            print("perf-gate: %s %s regressed %s (%s -> %s)"
+                  % (r["workload"], r["metric"], change(r),
                      human(r["metric"], r["base"]), human(r["metric"], r["head"])), file=sys.stderr)
         return 1 if regressed else 0
     except CannotMeasure as e:

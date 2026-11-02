@@ -16,6 +16,11 @@
 ;;;; work: user-space instructions of every thread, the one number here that
 ;;;; runner load does not move.
 ;;;;
+;;;; A workload may also count things that do not move with the machine at
+;;;; all, written into the same plist (PERF-COUNT): the TUI's counts what it
+;;;; writes to its terminal, so a frame that repaints more than it changed
+;;;; fails the gate even on a runner fast enough to hide it in time.
+;;;;
 ;;;; The workloads use the suite's own fixtures, so they stand on what every
 ;;;; test stands on and move with them. A fixture this file names must exist
 ;;;; in the base tree too; when it does not, the base cannot be measured and
@@ -62,26 +67,90 @@ it has."
 
 ;;; --- the TUI: keystrokes and paging through the real program loop ----------
 
+;;; What a frame costs the terminal is a count, not a time: the bytes it is
+;;; sent and how many frames carry them. A repaint of the whole screen where
+;;; one line moved, or a clock that paints while nothing changes, costs a fast
+;;; runner almost no time, yet over ssh or a multiplexer it is the lag a
+;;; person sees. The same keys over the same transcript write the same bytes
+;;; in every run, so these hold to the base exactly.
+
+(defclass perf-terminal (sb-gray:fundamental-character-output-stream)
+  ((octets :initform 0 :accessor perf-terminal-octets)
+   (frames :initform 0 :accessor perf-terminal-frames))
+  (:documentation "A terminal that keeps only counts: the UTF-8 octets it was
+sent, and its frames -- RENDER ends each frame in one FORCE-OUTPUT."))
+
+(defun perf-octets (char)
+  (let ((code (char-code char)))
+    (cond ((< code #x80) 1) ((< code #x800) 2) ((< code #x10000) 3) (t 4))))
+
+(defmethod sb-gray:stream-write-char ((stream perf-terminal) char)
+  (incf (perf-terminal-octets stream) (perf-octets char))
+  char)
+
+(defmethod sb-gray:stream-write-string ((stream perf-terminal) string &optional (start 0) end)
+  (loop for i from start below (or end (length string))
+        do (incf (perf-terminal-octets stream) (perf-octets (char string i))))
+  string)
+
+(defmethod sb-gray:stream-line-column ((stream perf-terminal)) nil)
+
+(defmethod sb-gray:stream-force-output ((stream perf-terminal))
+  (incf (perf-terminal-frames stream))
+  nil)
+
+(defmethod sb-gray:stream-finish-output ((stream perf-terminal))
+  (incf (perf-terminal-frames stream))
+  nil)
+
+(defun perf-count (name value)
+  "Report VALUE as count NAME, a keyword, beside this process's spans."
+  (setf (getf *perf-spans* name) value))
+
+(defmacro with-terminal-counted ((terminal phase) &body body)
+  "Run BODY and report what it sent TERMINAL as PHASE-bytes and PHASE-frames."
+  (let ((octets (gensym)) (frames (gensym)))
+    `(let ((,octets (perf-terminal-octets ,terminal))
+           (,frames (perf-terminal-frames ,terminal)))
+       (multiple-value-prog1 (progn ,@body)
+         (perf-count ,(intern (format nil "~a-BYTES" phase) :keyword)
+                     (- (perf-terminal-octets ,terminal) ,octets))
+         (perf-count ,(intern (format nil "~a-FRAMES" phase) :keyword)
+                     (- (perf-terminal-frames ,terminal) ,frames))))))
+
 (defparameter +perf-typed+
   "perf gate: every key a person types reaches the composer and paints a frame"
   "What the TUI workload types, one key press per batch.")
 
+(defparameter +perf-idle-seconds+ 3
+  "How long the TUI workload sits still, its frame clock ticking.")
+
 (defun perf-tui ()
   "A 120x40 shell over a 4000-line transcript: type a sentence into the
 composer, then page up 20 times and back down, each key one batch through
-HANDLE-MESSAGES, the event loop's own fold-then-paint, painting into a sink."
+HANDLE-MESSAGES, the event loop's own fold-then-paint, painting into a
+terminal that counts what it is sent. Then sit still for
++PERF-IDLE-SECONDS+ while the frame clock ticks, outside the measured spans:
+an idle shell owes its terminal nothing."
   (with-frame-model (model 120 40 :session-id "perf-tui")
     (seed-long-transcript model 4000)
-    (let ((program (nlt:make-program model)))
-      (setf (nlt::renderer-output-stream (nlt::program-renderer program)) (make-broadcast-stream))
-      (nlt::handle-messages program (list (nlt:make-window-size-msg :width 120 :height 40)))
-      (measured
-        (loop for code across +perf-typed+
-              do (nlt::handle-messages program (list (nlt:make-key-press-msg :code code))))
-        (dotimes (i 20)
-          (nlt::handle-messages program (list (nlt:make-key-press-msg :code :page-up))))
-        (dotimes (i 20)
-          (nlt::handle-messages program (list (nlt:make-key-press-msg :code :page-down))))))))
+    (let ((program (nlt:make-program model))
+          (terminal (make-instance 'perf-terminal)))
+      (flet ((press (code) (nlt::handle-messages program (list (nlt:make-key-press-msg :code code)))))
+        (setf (nlt::renderer-output-stream (nlt::program-renderer program)) terminal)
+        (nlt::handle-messages program (list (nlt:make-window-size-msg :width 120 :height 40)))
+        (measured
+          (with-terminal-counted (terminal :keys)
+            (map nil #'press +perf-typed+))
+          (with-terminal-counted (terminal :scroll)
+            (dotimes (i 20) (press :page-up))
+            (dotimes (i 20) (press :page-down))))
+        ;; The frame clock's own pace (RUN-FRAME-CLOCK), each tick one batch.
+        (with-terminal-counted (terminal :idle)
+          (let ((period (float nle::*frame-clock-period-seconds* 1d0)))
+            (dotimes (i (round +perf-idle-seconds+ period))
+              (sleep period)
+              (nlt::handle-messages program (list (nlt:make-tick-msg))))))))))
 
 ;;; --- the gateway: starting it, and turns streamed through it ---------------
 
