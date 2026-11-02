@@ -647,7 +647,8 @@ or NIL -- a terminal, /dev/null, a socket a launcher holds open, nothing."
 
 (defun descriptor-octets-to-end (fd limit &key say-waits)
   "Every byte FD has left until its end, or :TOO-LARGE past LIMIT. With
-SAY-WAITS, a read still waiting after a second says so on stderr, once."
+SAY-WAITS, the name of what FD is, a read still waiting after a second says
+so on stderr, once."
   #+win32
   (let ((stream (sb-sys:make-fd-stream fd :input t :element-type '(unsigned-byte 8)
                                           :buffering :full :auto-close nil))
@@ -669,7 +670,8 @@ SAY-WAITS, a read still waiting after a second says so on stderr, once."
     (loop
       (when (and say-waits (not said) (not (sb-sys:wait-until-fd-usable fd :input 1)))
         (setf said t)
-        (format *error-output* "~&nodecode: reading the first prompt from stdin until the pipe closes (Ctrl-C stops)~%")
+        (format *error-output* "~&nodecode: reading the first prompt from ~a until the pipe closes (Ctrl-C stops)~%"
+                say-waits)
         (finish-output *error-output*))
       (multiple-value-bind (count errno)
           (sb-sys:with-pinned-objects (buffer)
@@ -709,10 +711,10 @@ start, in place of the pipe they were drained from."
            (sb-posix:dup2 fd target))
       (sb-posix:close fd))))
 
-(defun piped-input-octets (limit &optional (fd 0))
+(defun piped-input-octets (limit &optional (fd 0) (name "stdin"))
   "The bytes a pipe or a redirected file carries on FD, stdin, read to their
-end -- :TOO-LARGE past LIMIT -- or NIL when it is neither (STDIN-KIND). A
-drained pipe is kept on FD for a successor image
+end -- :TOO-LARGE past LIMIT -- or NIL when it is neither (STDIN-KIND); NAME
+is what the wait notice calls FD. A drained pipe is kept on FD for a successor image
 (KEEP-ON-STDIN), and a file is read from its start, so every image this
 process execs into reads the same bytes."
   ;; Windows has no exec, so nothing there reads stdin a second time.
@@ -721,7 +723,7 @@ process execs into reads the same bytes."
      #-win32 (sb-posix:lseek fd 0 sb-posix:seek-set)
      (descriptor-octets-to-end fd limit))
     (:pipe
-     (let ((octets (descriptor-octets-to-end fd limit :say-waits t)))
+     (let ((octets (descriptor-octets-to-end fd limit :say-waits name)))
        #-win32 (when (vectorp octets)
                  (keep-on-stdin octets fd))
        octets))))

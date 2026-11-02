@@ -762,7 +762,7 @@ at four bytes a character, or one image, whichever is more."
     (cond ((and descriptor (<= descriptor 2))
            (launch-usage-error "@~a is the launch's own stdio; pipe text into nodecode instead" file))
           (descriptor
-           (or (nlk::piped-input-octets (launch-read-limit) descriptor)
+           (or (nlk::piped-input-octets (launch-read-limit) descriptor (format nil "@~a" file))
                (launch-usage-error "@~a: no pipe or file is open there" file)))
           ((null truename)
            (launch-usage-error "@~a: there is no file ~a" file name))
