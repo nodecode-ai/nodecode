@@ -775,6 +775,14 @@ completed. BODY runs with SID bound."
 (deftest sh-runs-argv-without-a-shell ()
   (is (equal "a b" (nle:sh (list "printf" "%s" "a b"))) "argv is not re-split"))
 
+(deftest sh-reads-past-a-byte-that-is-not-utf-8 ()
+  ;; One stray byte -- a Latin-1 file name in an ls -- was a decoding error
+  ;; that unwound SH, killed the command and lost its output and status.
+  #-win32
+  (multiple-value-bind (output status) (nle:sh "printf 'x\\377y'; exit 3")
+    (is (search "x?y" output) output)
+    (is (eql 3 status) "the status survives the bad byte")))
+
 (deftest sh-feeds-end-of-file-on-stdin ()
   ;; A program reading stdin finds it empty rather than a terminal nobody
   ;; holds; a heredoc in the command is the way to feed it.

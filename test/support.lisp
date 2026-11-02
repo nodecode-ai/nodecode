@@ -226,6 +226,12 @@ operator file."
          ;; reads, and no cell's start turns one on. The gateway gates
          ;; bind a scratch folder and script the runner inside this extent.
          (nodecode.kernel::*unit-directory* nil)
+         ;; The account's home is the $HOME the suite runs under, never the
+         ;; password database's: a run under a borrowed $HOME (a dev shell's,
+         ;; a sandbox's) names the account's gateway as a run under the real
+         ;; one does, and a gate that hands the process a scratch $HOME still
+         ;; sees it as borrowed.
+         (nodecode.kernel::*account-home* (uiop:ensure-directory-pathname (user-homedir-pathname)))
          (nodecode.kernel::*unit-runner* 'nodecode.kernel::run-unit-program)
          (nodecode.kernel::*shipped-launcher* nil)
          ;; Which service manager the gateway speaks to stays

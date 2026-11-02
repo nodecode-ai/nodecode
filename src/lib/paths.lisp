@@ -36,13 +36,21 @@
   ;; The operating system's home, not the organism's: see HOME for that.
   (merge-pathnames relative (user-homedir-pathname)))
 
+(defvar *account-home* nil
+  "When a pathname, the folder ACCOUNT-HOME answers instead of asking the
+password database. The test posture binds the $HOME its suite runs under, so
+the account's homes are named the same under a borrowed $HOME as under the
+real one, and no test reads the account's own folder.")
+
 (defun account-home ()
   "This account's home as the password database has it — the one systemd
-runs a user unit in, whatever $HOME this process was handed — or NIL."
-  #-win32 (let ((directory (ignore-errors
-                            (sb-posix:passwd-dir (sb-posix:getpwuid (sb-posix:getuid))))))
-            (and directory (uiop:ensure-directory-pathname directory)))
-  #+win32 nil)
+runs a user unit in, whatever $HOME this process was handed — or NIL.
+*ACCOUNT-HOME*, when set, answers instead."
+  (or *account-home*
+      #-win32 (let ((directory (ignore-errors
+                                (sb-posix:passwd-dir (sb-posix:getpwuid (sb-posix:getuid))))))
+                (and directory (uiop:ensure-directory-pathname directory)))
+      #+win32 nil))
 
 (defun expand-home (text &aux (text (string-trim '(#\Space #\Tab) text)))
   "TEXT, a path as the shell idiom writes it, with a leading `~/' read against
