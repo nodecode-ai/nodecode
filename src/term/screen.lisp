@@ -269,15 +269,71 @@ the next (PAINT-ROWS)."
 
 ;;; --- the diff painter ----------------------------------------------------
 
-(defun render-diff (old new stream &aux (w new.width)
-                                        (h new.height)
-                                        (cur-x 0) (cur-y 0)
-                                        (wrote nil)
-                                        (fg nil) (bg nil) (attrs 0) (link nil))
+(defun %digits (n)
+  (do ((k n (floor k 10)) (d 1 (1+ d))) ((< k 10) d)))
+
+(defun %step-length (n)
+  "The bytes of a CSI that moves the cursor N cells; a count of one is left out."
+  (if (= n 1) 3 (+ 3 (%digits n))))
+
+(defun %write-step (stream n final)
+  (if (= n 1)
+      (format stream "~C[~C" #\Escape final)
+      (format stream "~C[~D~C" #\Escape n final)))
+
+(defun move-cursor (stream from-x from-y x y &optional (sure t))
+  "Write to STREAM the shortest motion that takes the cursor from FROM-X,
+FROM-Y to X, Y (zero-based), and answer whether its column is then known for
+certain. FROM-Y NIL is a cursor whose place is not known: only an absolute
+move brings it home. SURE NIL is a column taken on trust, counted through a
+glyph the terminal may draw at another width: a step along the row may still
+build on it, as the painter always has, but no step to another row does."
+  (let* ((known (and from-x from-y))
+         (dx (and known (- x from-x)))
+         (dy (and known (- y from-y)))
+         ;; Along the row: stay, a carriage return, backspaces, or a step.
+         (column (cond ((not known) nil)
+                       ((zerop dx) :stay)
+                       ((zerop x) :return)
+                       ((< -4 dx 0) :back)
+                       (t :step)))
+         (relative (and known (or sure (zerop dy))
+                        (+ (ecase column
+                             (:stay 0) (:return 1) (:back (- dx))
+                             (:step (%step-length (abs dx))))
+                           (if (zerop dy) 0 (%step-length (abs dy))))))
+         ;; CUP's column defaults to the first, and both to the home.
+         (absolute (cond ((/= x 0) (+ 4 (%digits (1+ y)) (%digits (1+ x))))
+                         ((/= y 0) (+ 3 (%digits (1+ y))))
+                         (t 3))))
+    (cond ((and relative (< relative absolute))
+           (unless (zerop dy)
+             (%write-step stream (abs dy) (if (plusp dy) #\B #\A)))
+           (ecase column
+             (:stay)
+             (:return (write-char #\Return stream))
+             (:back (loop repeat (- dx) do (write-char #\Backspace stream)))
+             (:step (%write-step stream (abs dx) (if (plusp dx) #\C #\D))))
+           (or sure (eq column :return)))
+          (t
+           (cond ((/= x 0) (format stream "~C[~D;~DH" #\Escape (1+ y) (1+ x)))
+                 ((/= y 0) (format stream "~C[~DH" #\Escape (1+ y)))
+                 (t (format stream "~C[H" #\Escape)))
+           t))))
+
+(defun render-diff (old new stream
+                    &key (cursor-x 0) (cursor-y 0)
+                    &aux (w new.width) (h new.height) (cur-x cursor-x) (cur-y cursor-y)
+                    (sure t) (wrote nil) (fg nil) (bg nil) (attrs 0) (link nil))
   "Write to STREAM the escape bytes that turn buffer OLD (NIL for a full
 paint) into buffer NEW: only changed cells, with the shortest cursor motion
-between them, an SGR only when the style changes, OSC 8 opened and closed
-around linked cells, and the style reset at the end."
+between them (MOVE-CURSOR), an SGR only when the style changes, OSC 8 opened
+and closed around linked cells, and the style reset at the end. The cursor
+starts at CURSOR-X, CURSOR-Y, the home unless told otherwise, NIL where its
+place is not known. Answers where the paint leaves it, as two values, both
+NIL unless that is certain: past a glyph outside ASCII, whose width the
+terminal may count otherwise, or after a write into the last column, where
+the terminal holds the cursor with its wrap pending."
   (dotimes (y h)
     (loop with x = 0 while (< x w)
           do (let* ((cell (screen-buffer-ref new x y))
@@ -285,13 +341,8 @@ around linked cells, and the style reset at the end."
                     (step (max 1 cell.width)))
                (unless (and before (or (eq before cell)
                                        (cell-equal before cell)))
-                 (unless (and (= cur-x x) (= cur-y y))
-                   (cond ((/= cur-y y)
-                          (format stream "~C[~D;~DH" #\Escape (1+ y) (1+ x)))
-                         ((= x 0) (write-char #\Return stream))
-                         ((> x cur-x) (format stream "~C[~DC" #\Escape (- x cur-x)))
-                         (t (format stream "~C[~DD" #\Escape (- cur-x x))))
-                   (setf cur-x x cur-y y))
+                 (setf sure (move-cursor stream cur-x cur-y x y sure)
+                       cur-x x cur-y y)
                  (when (or (not (equal cell.fg fg))
                            (not (equal cell.bg bg))
                            (/= cell.attrs attrs))
@@ -305,11 +356,16 @@ around linked cells, and the style reset at the end."
                    (format stream "~C]8;;~@[~A~]~C\\" #\Escape cell.link #\Escape)
                    (setf link cell.link))
                  (unless (zerop cell.width)
-                   (write-char cell.char stream))
+                   (write-char cell.char stream)
+                   (when (>= (char-code cell.char) #x7f) (setf sure nil)))
                  (incf cur-x step)
+                 ;; In the last column the wrap is pending: no step from
+                 ;; there counts true, so the next move is absolute.
+                 (when (>= cur-x w) (setf cur-x nil cur-y nil))
                  (setf wrote t))
                (incf x step))))
   (when (and wrote (or fg bg (/= attrs 0)))
     (format stream "~C[0m" #\Escape))
   (when (and wrote link)
-    (format stream "~C]8;;~C\\" #\Escape #\Escape)))
+    (format stream "~C]8;;~C\\" #\Escape #\Escape))
+  (if sure (values cur-x cur-y) (values nil nil)))

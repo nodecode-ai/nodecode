@@ -9,8 +9,9 @@
 ;;;; applied to them, diffed against the previous frame, and written inside a
 ;;;; synchronized update so the terminal shows no tearing. The mode
 ;;;; transitions between the two view-states go first, the image placements
-;;;; are diffed after the cells, and the cursor is placed and shown, or
-;;;; hidden, last.
+;;;; are diffed after the cells, and the cursor, hidden for the whole paint,
+;;;; is placed and shown last, before the update closes, reached from where
+;;;; the paint left it.
 
 (in-package #:nodecode.term)
 
@@ -82,18 +83,34 @@ DEADLINE-MS."
                                            *frame-scratch* width height))))
     (nlk:when-let (overlay view.overlay)
       (funcall overlay new))
-    (format stream "~C[?2026h~C[H" #\Escape #\Escape)
-    (render-diff renderer.last-buffer new stream)
-    (setf renderer.last-images
+    ;; The cursor hides before the paint moves it and shows only once it is
+    ;; parked, all inside the update. A terminal that holds the update shows
+    ;; the frame whole either way; but ConPTY re-emits a console's output on
+    ;; its own schedule and cuts it where it likes, so on Windows any point
+    ;; of the paint can reach the screen. Shown through the paint, the cursor
+    ;; was drawn on whatever cell the frame wrote last (a spinner, a
+    ;; countdown) and then jumped back: the caret flickered, and so did
+    ;; everything that moves.
+    ;;
+    ;; The six bytes that hide it are paid for by the motion: the paint
+    ;; starts from a cursor whose place it does not assume, so it sends no
+    ;; home and goes straight to its first changed cell, and the caret is
+    ;; reached from where the paint left off -- a typed key ends its paint
+    ;; right at the caret, and costs no motion at all.
+    (format stream "~C[?2026h~C[?25l" #\Escape #\Escape)
+    (multiple-value-bind (x y)
+        (render-diff renderer.last-buffer new stream :cursor-x nil :cursor-y nil)
+      (multiple-value-bind (images placed)
           (%render-image-placements renderer.last-images
                                     view.images
                                     stream
-                                    :force (null renderer.last-buffer)))
+                                    :force (null renderer.last-buffer))
+        (setf renderer.last-images images)
+        (nlk:when-let (cursor view.cursor)
+          (move-cursor stream (and (not placed) x) (and (not placed) y)
+                       cursor.x cursor.y)
+          (format stream "~C[?25h" #\Escape))))
     (format stream "~C[?2026l" #\Escape)
-    (nlk:if-let (cursor view.cursor)
-      (format stream "~C[~D;~DH~C[?25h" #\Escape
-              (1+ cursor.y) (1+ cursor.x) #\Escape)
-      (format stream "~C[?25l" #\Escape))
     (force-output stream)
     ;; The frame is on the terminal: the count a launcher's hand-over waits
     ;; on before it replaces itself with a successor that will be told it

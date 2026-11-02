@@ -192,6 +192,46 @@ as a window title, the empty string included."
     (is (and alt-on home (< alt-on home)) "before the first paint")
     (is (null (search (csi "2J") out)) "and never erases")))
 
+;;; Windows Terminal flickered the caret and every cell that moves: a frame
+;;; painted its changed cells with the hardware cursor still shown, and parked
+;;; it at the caret only after the synchronized update had closed. ConPTY
+;;; re-emits a console's output on its own schedule and cuts it where it
+;;; likes, so any point inside a frame can reach the screen, and the cursor
+;;; stood on whatever the paint wrote last -- the spinner, a countdown --
+;;; before it jumped back. Hidden for the paint and shown only once parked,
+;;; inside the update, it is never seen anywhere but the caret.
+
+(defun second-frame (rows cursor)
+  "The bytes a 4x2 frame of ROWS with CURSOR writes over a blank frame."
+  (let ((renderer (nlt:make-renderer :output-stream (make-broadcast-stream)
+                                     :width 4 :height 2)))
+    (nlt:render renderer (nlt:make-view (list "    " "    ") :cursor cursor))
+    (with-output-to-string (stream)
+      (setf renderer.output-stream stream)
+      (nlt:render renderer (nlt:make-view rows :cursor cursor)))))
+
+(deftest a-frame-shows-the-cursor-only-at-its-caret ()
+  (let* ((out (second-frame (list "   x" "    ") (nlt:make-cursor :x 1 :y 1)))
+         (hide (search (csi "?25l") out))
+         (paint (search "x" out))
+         (show (search (csi "?25h") out))
+         (tail (concatenate 'string (csi "2;2H") (csi "?25h") (csi "?2026l"))))
+    (is (and hide paint (< hide paint)) "the cursor hides before the paint writes a cell")
+    (is (and show (null (search (csi "?25h") out :start2 (1+ show)))) "and is shown once")
+    (is (uiop:string-suffix-p out tail) "parked at the caret, then shown, inside the synchronized update"))
+  (let ((out (second-frame (list "   x" "    ") nil)))
+    (is (search (csi "?25l") out) "a frame without a caret paints hidden")
+    (is (null (search (csi "?25h") out)) "and never shows the cursor")
+    (is (uiop:string-suffix-p out (csi "?2026l")) "its update closes last")))
+
+(deftest a-typed-key-pays-for-hiding-the-cursor-with-its-motion ()
+  ;; The paint sends no home of its own, and the caret is reached from where
+  ;; the paint left off: a key typed at the caret costs no motion at all.
+  (let ((typed (second-frame (list "x   " "    ") (nlt:make-cursor :x 1 :y 0)))
+        (below (second-frame (list "x" "    ") (nlt:make-cursor :x 1 :y 1))))
+    (is (string= (concatenate 'string (csi "?2026h") (csi "?25l") (csi "H") "x" (csi "?25h") (csi "?2026l")) typed) "the frame is the key, the cursor hidden around it, and nothing else")
+    (is (uiop:string-suffix-p below (concatenate 'string "x" (csi "B") (csi "?25h") (csi "?2026l"))) "a caret elsewhere is reached by the shortest motion from the paint's end")))
+
 (deftest terminal-size-answers-two-positive-integers ()
   (multiple-value-bind (width height) (nlt:terminal-size)
     (is (and (integerp width) (plusp width)) "a positive width")
