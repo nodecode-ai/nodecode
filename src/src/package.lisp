@@ -144,6 +144,7 @@ renderer, the program loop.")
    #:*session-wrapper* #:session-argv #:pid-live-p #:kill-tree #:spawn-detached
    #:exits-zero-p
    #:environment-with #:spawn-program #:wait-for-child #:child-exit #:run-bounded #:lock-file
+   #:interruption-may-unwind-p #:interrupt-thread-safely #:terminate-thread-safely
    #:*wait-deadline* #:wait-seconds #:wait-deadline-passed-p #:wait-deadline-reason #:with-wait-deadline #:call-with-wait-deadline
    #:call-with-lock-in-time
    #:*wait-hook* #:with-named-wait

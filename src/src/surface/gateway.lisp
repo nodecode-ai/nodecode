@@ -4673,7 +4673,7 @@ config change instead of relaunching."
   ;; is swallowed: a stop is best effort and this is unwind-time code.
   (let ((thread (ignore-errors (clack.handler::handler-acceptor handler))))
     (cond ((typep thread 'bt2:thread)
-           (when (bt2:thread-alive-p thread) (ignore-errors (bt2:destroy-thread thread)))
+           (when (bt2:thread-alive-p thread) (ignore-errors (nlk:terminate-thread-safely thread)))
            (nlk::%join-bounded thread timeout))
           (t (ignore-errors (clack:stop handler)))))
   t)

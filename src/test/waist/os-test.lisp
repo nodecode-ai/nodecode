@@ -623,3 +623,98 @@ process's own, or NIL."
   ;; a step no wait named is said as none
   (is (null (nlk:wait-deadline-reason (make-condition 'nlk:wait-deadline-passed :seconds 1))))
   (is (equal "cut short" (nlk:wait-deadline-reason (make-condition 'simple-error :format-control "cut short")))))
+
+;;; --- an interruption that unwinds lands where it strands nothing -----------
+
+(defun c-malloc-and-free (size)
+  "One malloc of SIZE bytes and its free, in C."
+  (sb-alien:alien-funcall (sb-alien:extern-alien "free" (function sb-alien:void sb-sys:system-area-pointer))
+                          (sb-alien:alien-funcall (sb-alien:extern-alien "malloc" (function sb-sys:system-area-pointer
+                                                                                          sb-alien:unsigned-long))
+                                                  size)))
+
+(defun spin-in-malloc ()
+  "Call malloc and free forever, at sizes past glibc's thread cache, so that
+every call takes its arena's lock."
+  (loop (c-malloc-and-free (+ 2048 (random 60000)))))
+
+(defun every-arena-answers-p ()
+  "Whether malloc_trim, which takes every arena's lock in turn, returns within
+five seconds on a thread of its own."
+  (eq :ok (nlk::%join-bounded
+           (bt2:make-thread (lambda ()
+                              (sb-alien:alien-funcall (sb-alien:extern-alien "malloc_trim" (function sb-alien:int sb-alien:unsigned-long)) 0)
+                              :ok)
+                            :name "arena probe")
+           5)))
+
+(deftest an-unwinding-interruption-never-strands-a-malloc-lock ()
+  ;; The frozen suite: a stop unwound a thread out of malloc, its arena's lock
+  ;; stayed held, and the next free elsewhere waited on it for six hours. A
+  ;; thread that spends most of its time inside malloc is stopped two hundred
+  ;; times, each way a stop is sent; every arena still answers after. With
+  ;; BT2:INTERRUPT-THREAD in place of the safe delivery this froze in its
+  ;; first few dozen stops.
+  (dolist (stop (list (lambda (thread) (nlk:interrupt-thread-safely thread (lambda () (throw 'stopped :stopped))))
+                      (lambda (thread) (nlk:terminate-thread-safely thread))
+                      (lambda (thread) (bt2:destroy-thread thread))))
+    (let ((ended 0))
+      (dotimes (i 200)
+        (let* ((ready (bt2:make-semaphore))
+               (thread (bt2:make-thread (lambda () (catch 'stopped
+                                                     (bt2:signal-semaphore ready)
+                                                     (spin-in-malloc)))
+                                        :name "spins in malloc")))
+          (bt2:wait-on-semaphore ready :timeout 5)
+          (sleep (/ (random 2000) 1000000))
+          (funcall stop thread)
+          (nlk::%join-bounded thread 5)
+          (unless (bt2:thread-alive-p thread)
+            (incf ended))))
+      (is (= 200 ended) "every stop ended its thread")
+      (is (every-arena-answers-p) "no arena's lock was left held"))))
+
+(deftest an-unwinding-interruption-runs-only-outside-other-c-code ()
+  ;; Every run of the function happened where the classifier allows an
+  ;; unwind; and a thread spinning in malloc was found inside C at least once,
+  ;; the case the delivery sends again rather than unwinds there.
+  (let* ((stop nil)
+         (thread (bt2:make-thread (lambda () (loop until stop do (c-malloc-and-free (+ 2048 (random 60000)))))
+                                  :name "spins in malloc"))
+         (runs 0) (unsafe 0) (in-c 0))
+    (unwind-protect
+         (dotimes (i 300)
+           (nlk:interrupt-thread-safely thread (lambda ()
+                                                 (incf runs)
+                                                 (unless (nlk:interruption-may-unwind-p) (incf unsafe))))
+           ;; a plain delivery, which never unwinds, says where it landed
+           (let ((landed (bt2:make-semaphore)) (where (list nil)))
+             (bt2:interrupt-thread thread (lambda () (setf (car where) (nlk:interruption-may-unwind-p))
+                                            (bt2:signal-semaphore landed)))
+             (bt2:wait-on-semaphore landed :timeout 5)
+             (unless (car where) (incf in-c))))
+      (setf stop t)
+      (nlk::%join-bounded thread 5))
+    (is (= 300 runs) "each delivery ran")
+    (is (zerop unsafe) "none ran inside C code")
+    #+(and linux x86-64)
+    (is (plusp in-c) "the spinning thread was found inside malloc")))
+
+(deftest a-parked-thread-still-takes-an-unwinding-interruption ()
+  ;; A stop is for a thread parked on something outside it, so the safe
+  ;; delivery must still land in a system call that waits: a sleep, a read
+  ;; on a pipe nobody writes, an accept nobody dials, a futex wait.
+  (dolist (park (list (lambda () (sleep 30))
+                      (lambda () (multiple-value-bind (in out) (sb-posix:pipe)
+                                   (declare (ignore out))
+                                   (read-byte (sb-sys:make-fd-stream in :input t :element-type '(unsigned-byte 8)) nil)))
+                      (lambda () (let ((socket (make-instance 'sb-bsd-sockets:inet-socket :type :stream :protocol :tcp)))
+                                   (sb-bsd-sockets:socket-bind socket #(127 0 0 1) 0)
+                                   (sb-bsd-sockets:socket-listen socket 1)
+                                   (unwind-protect (sb-bsd-sockets:socket-accept socket)
+                                     (sb-bsd-sockets:socket-close socket))))
+                      (lambda () (bt2:wait-on-semaphore (bt2:make-semaphore)))))
+    (let ((thread (bt2:make-thread (lambda () (catch 'stopped (funcall park) :returned)) :name "parked")))
+      (sleep 0.2)
+      (is (eq :ran (nlk:interrupt-thread-safely thread (lambda () (throw 'stopped :stopped)))))
+      (is (eq :stopped (nlk::%join-bounded thread 5)) "and unwound it out of its wait"))))
