@@ -203,13 +203,22 @@ that follows deeper — or a sequence at the same column, PyYAML's habit."
                     (let ((next (ypeek p)))
                       (push (if (and next (> next.indent indent)) (parse-node p next.indent) :null)
                             items)))
-                   ((and (not (quoted-p rest)) (not (flow-p rest)) (split-key rest))
+                   ((and (not (quoted-p rest)) (not (flow-p rest)) (not (sequence-line-p rest))
+                         (split-key rest))
                     ;; `- key: value': a mapping whose first line is this
                     ;; item, its body two columns in — the line is rewritten
                     ;; in place and the mapping reader takes over.
                     (setf line.indent (+ indent 2)
                           line.text rest)
                     (push (parse-mapping p (+ indent 2)) items))
+                   ((sequence-line-p rest)
+                    ;; `- - item': a sequence whose first line is this item, its
+                    ;; dashes at the column the inner one sits in -- the line is
+                    ;; rewritten in place, as the mapping case above does.
+                    (let ((inner (+ indent (- (length line.text) (length rest)))))
+                      (setf line.indent inner
+                            line.text rest)
+                      (push (parse-sequence p inner) items)))
                    ((block-scalar-p rest)
                     (ynext p)
                     (push (parse-block-scalar p line indent rest) items))

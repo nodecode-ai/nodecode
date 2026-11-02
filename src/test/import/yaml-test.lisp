@@ -48,6 +48,10 @@ note: |
 folded: >-
   one
   two
+matrix:
+  - - 1
+    - 2
+  - - 3
 ")))
     (is-shape config (hash-table-p is) ((:string "model" "default") "gpt-5.5")
       ((:string "model" "provider") "custom:subrouter-1")
@@ -69,7 +73,8 @@ folded: >-
     (is-shape config ("args" equalp #("-y" "@scope/pkg" "plain") "a flow sequence")
       ((:integer "inline" "a") eql 1 "a flow mapping") ((:string "inline" "b") "two")
       ("note" (format nil "first line~%second line~%") "a literal block")
-      ("folded" "one two" "a folded block, stripped")))
+      ("folded" "one two" "a folded block, stripped")
+      ("matrix" equalp #(#(1 2) #(3)) "a sequence of sequences")))
   (is (zerop (hash-table-count (nik:read-yaml ""))) "an empty document is an empty object")
   (is (search "anchors" (refusal-text nik:import-error (nik:read-yaml "a: &x 1")))))
 
