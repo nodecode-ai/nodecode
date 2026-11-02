@@ -1,0 +1,122 @@
+---
+title: Instruction files
+summary: "Which files Nodecode reads into the prompt, where the model finds them, and when an edit takes effect."
+---
+
+{/* source: src/engine/context.lisp */}
+## Files read
+
+| File | Applies to | Block |
+| --- | --- | --- |
+| `~/.nodecode/AGENTS.md` | Every session, in any folder. | `operator-rules` |
+| Every project file above the session | Sessions in that folder and below it. | `instructions` |
+
+Both ride in the conversation's first user message, ahead of your prompt. Each is a `<harness>` block that starts `From <path>:`, `operator-rules` first. The system message holds the base prompt, the session's folder and the manual's topics.
+
+<Received name="both" />
+
+A profile has its own home, so it has its own `AGENTS.md`. A new profile starts with a copy of this home's, unless made with `--blank`. `nodecode import` writes another agent's rules into `~/.nodecode/AGENTS.md`, one `##` heading per file it read. A file that would take it past 64.0 KB is left out, and the import says so.
+
+Chat bots also read `~/.nodecode/SOUL.md`, for their voice. A terminal session does not. The channel cells under <CellsTab /> say how.
+
+{/* source: src/engine/context.lisp */}
+## Project files
+
+Nodecode looks in the session's folder for `AGENTS.md`, then `CLAUDE.md`, then `.cursorrules`, and takes the first one there. Then it climbs to the parent folder and looks again, up to `/` or 64 folders. Every file it finds is read, in one `instructions` block: the farthest first, the session's own folder last, so the nearest rules have the last word. Each file starts on its own `From <path>:` line.
+
+<ClimbFigure />
+
+| Rule | Detail |
+| --- | --- |
+| One file a folder | Only the first name found in a folder is read. |
+| Every folder | Each parent folder's file is read too, up to `/` or 64 folders. |
+| Git root | Not a stop. A file above the repository, such as `~/AGENTS.md`, reaches every repository under it. |
+| Order | The farthest file first, the session's folder last. |
+| Empty file | A blank or unreadable file is passed over. The files above it are still read. A blank `AGENTS.md` still counts as its folder's file, so that folder's `CLAUDE.md` and `.cursorrules` are not read. |
+| A folder by that name | A folder named `AGENTS.md`, `CLAUDE.md` or `.cursorrules` is passed over. Only a file counts. |
+| Session in the home | `~/.nodecode/AGENTS.md` is read once, as `operator-rules`. |
+
+<Mistakes>
+<Mistake>
+<What>`AGENTS.md` and `CLAUDE.md` side by side, for both to apply</What>
+<Why>Only `AGENTS.md` is read. The model gets <Said>{"From /home/you/shop/AGENTS.md:"}</Said> and not a line of `CLAUDE.md`.</Why>
+<Instead>One file. Link the other to it: `ln -s AGENTS.md CLAUDE.md`.</Instead>
+</Mistake>
+<Mistake>
+<What>Rules in `packages/api/AGENTS.md`, the session opened at the repository root</What>
+<Why>The search climbs from the session's folder. It never looks down. The model gets no `instructions` block.</Why>
+<Instead>Open the session in `packages/api`, or put the rules at the root.</Instead>
+</Mistake>
+<Mistake>
+<What>The root's rules copied into a package's `AGENTS.md`</What>
+<Why>In `packages/api` both files are read, so the copied rules ride twice and count twice against the 64.0 KB.</Why>
+<Instead>Keep in the package's file only what the package does differently. The root's file already reaches it.</Instead>
+</Mistake>
+<Mistake>
+<What>A forgotten `AGENTS.md` in a parent folder, such as `~/AGENTS.md`</What>
+<Why>It is read by every session in every folder below it, repositories included.</Why>
+<Instead>Keep a parent folder's file to rules meant for everything under it, or remove it.</Instead>
+</Mistake>
+<Mistake>
+<What>`.cursor/rules/`, `GEMINI.md` or `.github/copilot-instructions.md`</What>
+<Why>None of them is a name Nodecode looks for. The model gets no `instructions` block.</Why>
+<Instead>Keep the rules in `AGENTS.md`. Link the other tools' files to it.</Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/engine/context.lisp */}
+## Size limit
+
+The limit is 64.0 KB for a session's project files together: 65,536 characters. The nearest file is served first.
+
+| Case | Result |
+| --- | --- |
+| Within the limit | Read whole. |
+| Over the limit on its own | Refused whole. Nothing is trimmed. No session reads it. |
+| Over the limit beside the nearer files | Left out whole. A file farther up that still fits is read. |
+| Blank or unreadable | Passed over. |
+
+The warning names the file, its size and the limit: <Said>{"~/big/AGENTS.md is not read: 71.2 KB — trim to 64.0 KB"}</Said> A file left out beside nearer ones says what they take: <Said>{"~/AGENTS.md is not read: 20.0 KB, and the instructions files nearer the session already take 50.0 KB of 64.0 KB"}</Said>
+
+| File over the limit | Who is told |
+| --- | --- |
+| A project file | The shells attached when a turn reads it, once per file while the organism runs. A shell that attaches later is not told. |
+| `~/.nodecode/AGENTS.md` | Every shell as it attaches, and the model in its `notices` block, until the file fits. |
+
+<Tty name="project-over" />
+
+<Mistakes>
+<Mistake>
+<What>Pasting a reference into the file: an OpenAPI dump, a style guide</What>
+<Why>Past 64.0 KB the whole file is refused, the rules with it. The model gets no `instructions` block.</Why>
+<Instead>Keep the rules in the file, and name where the reference lives: `The API reference is docs/openapi.yaml.`</Instead>
+</Mistake>
+</Mistakes>
+
+{/* source: src/engine/context.lisp */}
+## When edits apply
+
+| File | Read | Edit takes effect |
+| --- | --- | --- |
+| `~/.nodecode/AGENTS.md`, project file | At the first request of each turn. | At the next turn. |
+
+No restart is needed.
+
+A conversation keeps the prompt of its first request. A later edit reaches the model at the next turn, as a `<system-reminder>` after your message. It lists the lines added (`+`) and removed (`-`), or the whole file when that is shorter. A deleted file reads `(withdrawn)`. A file that appears mid-conversation arrives whole. After an eviction the prompt is built again from the current files. See [Context](/context).
+
+<Received name="edit-line" />
+
+<Received name="edit-gone" />
+
+<Mistakes>
+<Mistake>
+<What>Restarting, or `/new`, to pick up an edit</What>
+<Why>The next turn already carries it. A new session starts without the conversation.</Why>
+<Instead>Send the next message.</Instead>
+</Mistake>
+<Mistake>
+<What>Editing the file during a turn, for that turn</What>
+<Why>The file is read at the turn's first request. The edit lands at the next turn.</Why>
+<Instead>Steer the running turn with the change, or wait for the next one.</Instead>
+</Mistake>
+</Mistakes>

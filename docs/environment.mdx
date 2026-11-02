@@ -1,0 +1,155 @@
+---
+title: Environment variables
+summary: "Every environment variable the nodecode binary and the installers read, by purpose."
+---
+
+A variable applies to the one process that reads it. For lasting settings use [Config](/config).
+
+{/* source: src/lib/paths.lisp */}
+## Home
+
+<Note head="Two meanings">To `install.sh`, `NODECODE_HOME` is the install folder. To the binary it is the home. Do not export it in your shell profile.</Note>
+
+| Variable | Meaning |
+| --- | --- |
+| `NODECODE_HOME` | The home: the folder that holds config, store and cells. Default `~/.nodecode/`. |
+
+The binary picks the home in this order.
+
+1. `-p NAME` or `--profile NAME` on the command line.
+2. `NODECODE_HOME`.
+3. The profile named in `~/.nodecode/active-profile`.
+4. `~/.nodecode/`.
+
+The binary sets `NODECODE_HOME` for every child process it starts.
+
+{/* source: src/engine/provider.lisp */}
+## Model
+
+| Variable | Meaning | Default |
+| --- | --- | --- |
+| `NODECODE_PROVIDER` | Provider id. Outranks `general.default_model`. | `openai-completions` |
+| `NODECODE_MODEL` | Model id. Outranks `general.default_model`. | The build's model |
+| `NODECODE_ENDPOINT` | Full endpoint URL. Outranks every `base_url`. | None |
+| `NODECODE_API_KEY` | API key. Outranks `providers.<id>.api_key`. A leading `!` runs a shell command. | None |
+| `NODECODE_REASONING_EFFORT` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max`. | None |
+| `NODECODE_TEMPERATURE` | Sampling temperature, a number. | Not sent |
+| `NODECODE_TOP_P` | Nucleus sampling bound, a number. | Not sent |
+| `NODECODE_MAX_TOKENS` | Output token limit, an integer. | Not sent |
+| `NODECODE_TOOL_CHOICE` | `auto`, `none` or `required`. | Not sent |
+| `NODECODE_CONTEXT_TOKENS` | Context window in tokens, an integer. Outranks every other source. | None |
+| `NODECODE_MODELS_CATALOG` | Path of the models.dev catalog cache. | `~/.cache/nodecode/models.dev/api.json` |
+
+See [Models and providers](/models).
+
+{/* source: src/engine/provider.lisp */}
+## Provider keys
+
+Read after the config and `auth.json`, in this order.
+
+| Variable | Used for |
+| --- | --- |
+| `<ID>_API_KEY` | The provider with that id. The id is uppercased, `-` becomes `_`. |
+| `OPENAI_API_KEY` | Any provider on `openai-completions` or `openai-responses`. |
+| `ANTHROPIC_API_KEY` | Any provider on `anthropic`. |
+| `GOOGLE_API_KEY` | Any provider on `google`. |
+| `ANTHROPIC_AUTH_TOKEN` | The provider id `anthropic` only. |
+
+{/* source: src/client/client-update.lisp */}
+## Gateway
+
+The gateway is the local server shells attach to.
+
+| Variable | Meaning |
+| --- | --- |
+| `NODECODE_GATEWAY_OPERATOR_TOKEN` | The operator token. Read first. |
+| `NODECODE_OPERATOR_TOKEN` | The operator token. Read second. |
+
+Both outrank the `operator-token` file and `gateway.operator_token`.
+
+{/* source: src/organism/update.lisp, src/organism/cells.lisp */}
+## Updates and cell indexes
+
+| Variable | Meaning | Default |
+| --- | --- | --- |
+| `NODECODE_BASE_URL` | The release host. `update.url` outranks it. | The host the build was installed from, else `https://nodecode.ai/dl` |
+| `NODECODE_HUB_INDEX` | Address of Nodecode's cell index. | `https://nodecode.ai/dl/cells/index.json` |
+| `NODECODE_COMMUNITY_INDEX` | Address of the community cell index. | `https://nodecode.ai/cells/community.json` |
+
+{/* source: src/organism/launch.lisp, src/lib/paths.lisp, src/organism/profile.lisp */}
+## Diagnostics and switches
+
+| Variable | Meaning |
+| --- | --- |
+| `NODECODE_PHASE_LOG` | A file path. Nodecode appends one timed line per boot phase. |
+| `NODECODE_QA` | `0`, `off`, `never` or `false` stops every send of the qa cell. |
+| `NODECODE_HANDOVER` | Internal. Set by a profile switch for the next process. |
+| `NODECODE_EPHEMERAL` | Internal. `1`: a throwaway store. Set by `--ephemeral` for every process it starts. |
+| `NODECODE_PRISTINE` | Internal. `1`: generation 0, no folder loaded. Set by `--pristine` for every process it starts. |
+| `NODECODE_FRONT` | Internal. The shell's pid, on an organism that shell started. |
+
+{/* source: src/lib/config.lisp */}
+## Named by config
+
+Some config keys hold the name of a variable. Nodecode reads the secret from that variable.
+
+| Config key | Section |
+| --- | --- |
+| `bot_token_env` | `channels.discord`, `channels.slack` |
+| `app_token_env` | `channels.slack` |
+| `token_env` | `channels.telegram`, `prs` |
+| `api_key_env` | `transcription`, `speech` |
+
+{/* source: src/tui/theme.lisp */}
+## System variables
+
+| Variable | Used for |
+| --- | --- |
+| `XDG_CACHE_HOME` | The cache root. Default `~/.cache/`. |
+| `LOCALAPPDATA` | Windows: the cache root. |
+| `XDG_CONFIG_HOME` | Linux: where the gateway's systemd unit is written. |
+| `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_DATA_HOME`, `PATH`, `HOME` | Copied into the background gateway's unit. |
+| `TMPDIR` | Where an `--ephemeral` store is created. Unset: `/tmp`. Windows: `TEMP`. |
+| `XDG_RUNTIME_DIR` | Linux: how `systemctl --user` finds the user manager. Unset: `/run/user/<uid>`. |
+| `TERM`, `COLORTERM`, `WT_SESSION`, `TERM_PROGRAM` | Colour depth detection. `TERM=dumb` gives no colour. |
+| `NO_COLOR` | Any value limits the shell to 16 colours. |
+| `TMUX` | Wraps clipboard sequences for tmux. `TERM=screen...` does the same for screen. |
+| `WAYLAND_DISPLAY`, `DISPLAY` | Linux: a link opens with `xdg-open` only when one is set. |
+| `NOTIFY_SOCKET` | Linux: readiness messages to systemd. |
+| `JOURNAL_STREAM` | Tells Nodecode its logs go to the journal. |
+| `USER` | The layer folder's name when git has no `user.name`. Unset: `you`. |
+| `ProgramFiles`, `LOCALAPPDATA` | Windows: where to look for Git's `sh.exe`. |
+
+{/* source: src/tools/install.sh */}
+## Installer only
+
+`install.sh`, for Linux and macOS:
+
+| Variable | Meaning | Default |
+| --- | --- | --- |
+| `NODECODE_VERSION` | Install this version. | The version the channel names |
+| `NODECODE_CHANNEL` | The release channel to read. | `stable` |
+| `NODECODE_BASE_URL` | Fetch from this host. | `https://nodecode.ai/dl` |
+| `NODECODE_HOME` | The install folder. | `~/.local/share/nodecode` |
+| `NODECODE_STAGE` | `full`, `stage` or `link`. | `full` |
+| `NODECODE_FORCE` | Any value but `0`: download and lay the version out again, even when it is already laid out and answers. Same as `--force`. | Unset |
+
+`install.ps1`, for Windows:
+
+| Variable | Meaning | Default |
+| --- | --- | --- |
+| `NODECODE_VERSION` | Install this version. | The version the channel names |
+| `NODECODE_CHANNEL` | The release channel to read. | `stable` |
+| `NODECODE_BASE_URL` | Fetch from this host. | `https://nodecode.ai/dl` |
+| `NODECODE_INSTALL_DIR` | The install folder. | `%LOCALAPPDATA%\Programs\nodecode` |
+| `NODECODE_STAGE` | `full`, `stage` or `link`. | `full` |
+| `NODECODE_FORCE` | Any value but `0`: download and lay the release out again, even when it is already laid out and answers. Same as `-Force`. | Unset |
+| `NODECODE_NO_MODIFY_PATH` | Any value leaves the user PATH alone. | Unset |
+
+| `NODECODE_STAGE` | Does |
+| --- | --- |
+| `full` | Downloads and lays out the version, then points `current` at it. A version already laid out that answers is kept, with no download. |
+| `stage` | Lays out the version. `current` does not move. |
+| `link` | Points `current` at a version already laid out. No download. |
+
+See [Install](/install) and [Updates](/updates).

@@ -1,0 +1,183 @@
+---
+title: Config
+summary: "The config file, how to change it, and every core key with type and default."
+---
+
+{/* source: src/engine/provider.lisp */}
+## File
+
+| Fact | Value |
+| --- | --- |
+| Path | `~/.nodecode/config.jsonc` |
+| Format | JSONC: JSON with comments. |
+| Scope | One per home. The home is `~/.nodecode/`, or a profile's folder. |
+| Missing file | Allowed. Every key has a default or is optional. |
+
+The other files of the home are listed in [Files](/files).
+
+{/* source: src/engine/provider.lisp */}
+## Change it
+
+Edit the file, or use eval. See [Eval](/eval).
+
+```lisp
+(config-get '("channels" "discord"))
+(config-set '("channels" "discord") '(:require_mention :false))
+(config-set '("providers" "old") :remove)
+```
+
+| Form | Does |
+| --- | --- |
+| `(config-get)` | Returns the whole config. |
+| `(config-get PATH)` | Returns the value at PATH. PATH is a list of keys, or one key. |
+| `(config-set PATH VALUE)` | Writes VALUE at PATH. Returns the change as one line. |
+| `(config-set PATH :remove)` | Removes the member at PATH. |
+
+| Rule | Detail |
+| --- | --- |
+| Values | `t`, `:false`, `:null`, a string, a number, a keyword plist for an object, a list or vector for an array. `nil` is refused: `#()` is an empty array. |
+| Comments | Kept. Every other byte of the file is kept too. |
+| Object value | Merged member by member. It never removes a member. |
+| Other value | Replaces the member. |
+| Write | Atomic. The file mode is kept. |
+| Secrets on read | A key ending in `api_key`, `token`, `secret` or `password` reads as `[set]`. |
+| Secrets on write | `config-set` refuses to write `[set]` over a secret. |
+| Whole section | A section read with secrets cannot be written back whole. Write single members. |
+
+{/* source: src/gateway/gateway.lisp */}
+## Apply a change
+
+| Keys | Read | Apply with |
+| --- | --- | --- |
+| Cell sections | When the cell starts. | `(restart-cells)` or `(restart-cells "NAME")` in eval. |
+| `providers`, `failover` | At the start of each turn, when the file changed. | The next turn. |
+| `fork.seconds` | At each `(fork ...)` call. | The next call. |
+| `general.default_model`, `general.auxiliary_model` | When the organism boots. An organism is a running Nodecode. | A restart, or `/models`: its Main and Auxiliary tabs, or `/models aux`. |
+| `workspace.captures` | When the gateway starts. The gateway is the local server shells attach to. | A restart. |
+| `general.theme` | When the shell starts. | `/themes`, or a new shell. |
+
+`(restart-cells)` stops the cells, reads the file again and starts them.
+
+{/* source: src/engine/provider.lisp */}
+## general
+
+| Key | Type | Default |
+| --- | --- | --- |
+| `general.default_model` | Object: `provider`, `model`, optional `effort` | None. The build default applies. |
+| `general.auxiliary_model` | Same object | None. Session names, recaps and summaries run on the session's model. |
+| `general.decider_model` | Object: `provider`, a decider id (`djev`), and `model` | None. No decider. |
+| `general.theme` | String | `Tungstene`. A `/themes` pick outranks it. |
+
+See [Models and providers](/models).
+
+{/* source: src/engine/provider.lisp */}
+## providers
+
+One entry per provider id, under `providers.<id>`.
+
+| Key | Type | Default |
+| --- | --- | --- |
+| `sdk` | `openai-completions`, `openai-responses`, `anthropic` or `google` | None |
+| `base_url` | String | By dialect. See [Models and providers](/models). |
+| `api_key` | String. A leading `!` runs a shell command. | None |
+| `display_name` | String | The id |
+| `models[].id` | String | None |
+| `models[].context_window` | Integer above 0 | None |
+| `models[].sdk` | A dialect, for this model only | The provider's `sdk` |
+| `proxy` | String | None |
+| `request_max_retries` | Integer, 0 or more | 4 |
+| `stream_max_retries` | Integer, 0 or more | 5 |
+| `stream_idle_timeout_ms` | Integer above 0 | 120000 |
+| `stream_rerun_ceiling_seconds` | Number, 0 or more. `0` disables it. | 120 |
+| `reasoning_summary` | String. `off`, `none` or `false` disables it. | `auto` |
+| `session_token`, `access_key_id`, `secret_access_key` | String | None |
+
+`session_token`, `access_key_id` and `secret_access_key` only mark the provider as having credentials. No request sends them.
+
+{/* source: src/engine/provider.lisp */}
+## failover
+
+| Key | Type | Default |
+| --- | --- | --- |
+| `failover.chain` | Array of `{provider, model}` | None: no failover |
+| `failover.on` | Array of trigger ids: `rate_limit`, `outage`, `slow_start`, `broken_answer`, `refusal` | Every trigger. `[]` turns every one off. |
+| `failover.first_token_seconds` | Number, 0 or more. `0` never cuts. | 60: seconds an attempt with a backup behind it waits for its first token |
+
+`/models backups` writes `chain` and `on`. See [Models and providers](/models#failover).
+
+{/* source: src/organism/fork.lisp */}
+## fork
+
+`(fork "task" ...)` hands a turn's independent tasks to forks of its session. See [Eval](/eval).
+
+| Key | Type | Default |
+| --- | --- | --- |
+| `fork.seconds` | Integer, 30 or more | 900: seconds a fork's turn may run before its tools are refused |
+
+{/* source: src/gateway/gateway.lisp */}
+## gateway and workspace
+
+| Key | Type | Default |
+| --- | --- | --- |
+| `gateway.operator_token` | String | None. Read after the environment and the `operator-token` file. |
+| `workspace.captures` | Boolean | `true`. `false` turns workspace snapshots off. |
+
+See [Gateway](/gateway) and [Sessions and undo](/sessions).
+
+{/* source: src/organism/update.lisp */}
+## update
+
+| Key | Type | Default |
+| --- | --- | --- |
+| `update.mode` | `auto`, `ask` or `off` | `auto` on an installed build. `off` on a checkout build. |
+| `update.channel` | String | `stable` |
+| `update.check_minutes` | Integer, 1 or more | 360 with a release feed. 30 without one. |
+| `update.url` | String: a release host | The host this build was installed from. |
+| `update.feed` | String: the feed address, or `off` | Beside the release host. |
+
+See [Updates](/updates).
+
+{/* source: src/engine/turn.lisp */}
+## request_bodies
+
+Nodecode keeps the exact body of each model call in the store.
+
+| Key | Type | Default |
+| --- | --- | --- |
+| `request_bodies.keep_mb` | Integer, 0 or more. `0` keeps none. | 256 |
+
+Past the limit the oldest bodies go.
+
+{/* source: src/gateway/notify.lisp */}
+## notify
+
+A desktop notice when a turn ends. The section's presence turns it on.
+
+| Key | Type | Default |
+| --- | --- | --- |
+| `notify.command` | Array of strings: the command and its arguments. `{title}` and `{body}` are filled in. | `notify-send` on Linux, a toast on Windows and WSL, `osascript` on macOS |
+| `notify.scope` | `attached` or `all` | `attached`: only when a shell received the turn's end |
+
+A cancelled turn sends no notice.
+
+{/* source: src/engine/turn.lisp, src/import/seams.lisp, src/gateway/gateway.lisp, src/tui/settings-sheet.lisp */}
+## index, import, welcome and tui
+
+| Key | Type | Default |
+| --- | --- | --- |
+| `index.hot_budget` | Integer, 500 or more | 8192: characters of the index below its first line |
+| `index.stale_days` | Integer, 1 or more | 30: a skill or a layer definition unused this long reads as cold. A memory never does. |
+| `import.session_budget` | Integer, 1 or more | 200: conversations one import carries before the rest wait |
+| `welcome.note` | Boolean | `true`: a short brief when Nodecode comes back after a stop, a crash or an update, as a row in a chat that has begun and in each channel's home room. The home screen shows none. `false` makes no model call for it. |
+| `tui.notification_popups` | Boolean | `false`. `true` shows notices as popups in the top-right corner. |
+
+{/* source: src/lib/config.lisp, src/gateway/gateway.lisp */}
+## Cell sections
+
+<Note head="The addons key is ignored">Nodecode does not read a top-level `addons` key. It posts a warning when it finds one. A folder under `cells/` loads because it is there.</Note>
+
+A cell is a folder of code under `~/.nodecode/cells/`. Each cell reads its own section.
+
+Every cell section takes `enabled`, a boolean, default `true`. `"enabled": false` stops that cell from starting.
+
+A cell declares its section in its own code. `/settings` shows its fields. On `/cells`, Enter opens a cell's settings. See [Cell API](/cell-api#section).

@@ -1,0 +1,448 @@
+---
+title: Cell API
+summary: "How a cell is written: nle:define-cell, its clauses, tool contracts, the config section, hooks, notices, stop, and what Nodecode shows when one is written wrong."
+---
+
+One `nle:define-cell` form declares a cell: its config section, what it adds, and how all of it comes back off. The page builds one cell, `nodecode-weather`: a tool, a slash command and a manual. Each section ends with the mistakes people make there. Press **Mistake** and **Instead** to see what Nodecode showed each time.
+
+{/* source: src/organism/made-cells.lisp */}
+## Ask for one
+
+The shortest way to a cell is to ask the agent for it: [Cells](/cells#ask-for-one). It writes the cell with these verbs, through `eval`; you can call them yourself.
+
+| Verb | What it does |
+| --- | --- |
+| `(new-cell "NAME" :description "...")` | Writes `cells/<you>-NAME/`: the `.asd`, a README and `cell.lisp` with the package, in a git repository of its own. Loads it, and makes it this session's current cell. |
+| `(current-cell)` | The cell this session keeps its definitions in, or NIL. |
+| `(enter-cell "NAME")` | Takes a made cell up again after a restart. |
+| `(leave-cell)` | Sends what the session keeps back to the layer. |
+| `(move-to-cell "NAME" 'fn '*var* ...)` | Moves definitions the layer already keeps into the cell. They load from it at the next start. |
+
+While a cell is current, every definition the session keeps is written there, one file each, never to the layer. A snippet working on it opens with `(in-package #:<you>-NAME)`. That package uses the kernel and the evolved package's exports, so `define-cell`, `notice` and `on-stop` read bare. One `define-cell` kept beside the code declares what the cell adds:
+
+```lisp
+(in-package #:thomas-tokyo-time)
+
+(defun tokyo-time (args session-id)
+  "/tokyo-time => the answer's text."
+  (declare (ignore args session-id))
+  (multiple-value-bind (s m h) (decode-universal-time (get-universal-time) -9)
+    (declare (ignore s))
+    (format nil "~2,'0d:~2,'0d in Tokyo" h m)))
+
+(define-cell tokyo-time
+  (:section ("tokyo-time"))
+  (:command "tokyo-time" 'tokyo-time :description "The time in Tokyo"))
+
+(restart-cells "thomas-tokyo-time")
+```
+
+| Case | Result |
+| --- | --- |
+| `restart-cells` on the folder | The `define-cell` starts. `/tokyo-time` answers in every attached shell. |
+| The `define-cell` evaluated again | It replaces the kept one. Run `restart-cells` on the folder again. |
+| A `defun` and a `define-cell` of one name | Two files: `tokyo-time.lisp` and `tokyo-time-define-cell.lisp`. |
+| Nodecode restarts | The cell loads from its folder and starts. The session's hold on it ends: `enter-cell` takes it up again. |
+
+The clauses are the same as a hand-written cell's: [define-cell](#define-cell).
+
+{/* source: nodecode-ai/cells template/ */}
+## Start from the template
+
+The template ships with every release. It is also `template/` in [nodecode-ai/cells](https://github.com/nodecode-ai/cells/tree/main/template), with every cell Nodecode ships as a worked example.
+
+| Where | Path |
+| --- | --- |
+| A release | `~/.local/share/nodecode/current/src/cells/template/` |
+| GitHub | `template/` in `nodecode-ai/cells` |
+
+1. Copy it to `~/.nodecode/cells/nodecode-<name>/`.
+2. Rename the `.asd` file and the `defsystem` inside it.
+3. Name the package after the system.
+4. Write one `nle:define-cell` form under `nlk:define-peripheral`.
+5. Start Nodecode. The landing lists the cell.
+
+```sh
+cp -r ~/.local/share/nodecode/current/src/cells/template ~/.nodecode/cells/nodecode-weather
+cd ~/.nodecode/cells/nodecode-weather
+mv nodecode-template.asd nodecode-weather.asd
+```
+
+<Screen name="cell-landing" />
+
+| Part | Content |
+| --- | --- |
+| `nodecode-template.asd` | The system. Depends on `nodecode`. |
+| `cell.lisp` | One section, one `:tool` hook, `/template [NAME]`, one notice at start. |
+| `config.example.jsonc` | The section, commented. Nodecode does not read it. |
+
+<Mistakes>
+<Mistake>
+<What>Renaming the `.asd` file and keeping the system inside it</What>
+<Why>ASDF finds no system named after the file. The folder fails its load, and the landing shows a failed row.</Why>
+<Instead>Rename both: `nodecode-weather.asd` holds `(defsystem "nodecode-weather" ...)`.</Instead>
+</Mistake>
+<Pair name="cell-asd" open />
+<Mistake>
+<What>Naming the package after the cell: `weather`</What>
+<Why>The loader looks for `START-CELL` in the package named after the system. It finds none, so the folder loads as a library and nothing starts.</Why>
+<Instead>Name the package after the system: `nodecode-weather`.</Instead>
+</Mistake>
+<Pair name="cell-package" />
+</Mistakes>
+
+{/* source: src/organism/cell-dsl.lisp */}
+## define-cell
+
+The whole cell, as it ran for every screen on this page:
+
+```lisp
+(defpackage #:nodecode-weather
+  (:use #:cl))
+
+(in-package #:nodecode-weather)
+
+(nlk:define-peripheral weather :not-running t)
+
+(defparameter *today* '(("oslo" . 4) ("lisbon" . 19) ("tokyo" . 15)))
+
+(nlk:define-contract forecast
+  (:doc "Today's forecast for one city.")
+  ("city" :text :required t :doc "the city, as the operator wrote it"))
+
+(defun today (city)
+  (let ((c (cdr (assoc (string-downcase city) *today* :test #'string=))))
+    (cond ((null c) (format nil "~a: no forecast" city))
+          ((string= (setting :units) "f") (format nil "~a: ~d°F" city (round (+ 32 (* 9/5 c)))))
+          (t (format nil "~a: ~d°C" city c)))))
+
+(defun look-up (request)
+  (today (forecast-city request)))
+
+(defun run-slash (args session-id)
+  (declare (ignore session-id))
+  (today (if (plusp (length args)) args (or (first (setting :cities)) "Oslo"))))
+
+(defun refresh () nil)
+
+(nle:define-cell weather
+  (:section ("weather")
+    (:guide "units is c or f; cities is what /weather answers for with no argument")
+    ("units"   :choice :options '("c" "f") :default "c" :doc "degrees")
+    ("cities"  :list :doc "what the primer names")
+    ("timeout_seconds" :integer :default 10 :min 1 :doc "one lookup's ceiling"))
+  (:tool "weather" (nlk:contract 'forecast) 'look-up)
+  (:help :weather "weather: today's forecast for a city - (weather:today \"Oslo\")"
+         "(nodecode-weather::today CITY) answers today's forecast.")
+  (:command "weather" 'run-slash
+            :description "Today, where you are" :argument-hint "CITY")
+  (:start (lambda ()
+            (let ((worker (nlk:worker-start "weather" #'refresh :wake 900)))
+              (nle:on-stop (lambda () (nlk:worker-stop worker)))))))
+```
+
+<Screen name="cell-slash" />
+
+<Screen name="cell-tool" />
+
+`nlk:define-peripheral` gives the package its condition, `FAIL`, the settings variable `*WEATHER*`, `RUNNING-SETTINGS` and `DEFINE-VERB`. `nle:define-cell` adds `START-CELL`, `STOP-CELL` and `SETTING`.
+
+Clauses go in any order. They install in the order written and come off in reverse.
+
+| Clause | Does | On stop |
+| --- | --- | --- |
+| `(:section (PATH...) CLAUSE...)` | Required. `nlk:define-section`, verbatim. | — |
+| `(:settings FUNCTION)` | `(lambda (values table) ...)` answers the plist the cell runs on, for a section the declaration cannot carry. | — |
+| `(:tool NAME SCHEMA FN)` | `nle:register-tool`. SCHEMA is a contract. See [Tool arguments](#tool-arguments). | Unregistered. |
+| `(:command NAME RUN &key ...)` | `/NAME` in the one slash catalog. RUN takes `(args session-id)` and answers `(values TEXT DIALOG)`. | Out of the catalog. |
+| `(:help TOPIC SUMMARY TEXT)` | `(help TOPIC)` answers TEXT. Every request's `help` section carries SUMMARY. | Topic removed. |
+| `(:hook NAME FN)` | `nle:hook` on a point or a function name. | Unhooked. |
+| `(:route PATH FN &key public)` | PATH answered on the gateway's own port, to the operator's token; to anyone under `:public`. A PATH ending in `/` answers everything under it. | Route removed. |
+| `(:start FUNCTION)` | `(lambda () ...)`, with the settings set. Everything no clause covers. | What it gave `nle:on-stop`. |
+
+A `:command` takes these keys:
+
+| Key | Does |
+| --- | --- |
+| `:description` | Its line in the slash menu. |
+| `:argument-hint` | Shown after `/NAME` while it is typed. |
+| `:label`, `:catches` | A `:catches` condition answers `LABEL: it`. Defaults: the command's name, and `error`. |
+| `:session` | `nil` for a command that acts on no session. |
+| `:trigger` | One character that opens it at a word's start. |
+| `:complete` | Takes `(text session-id)` and answers `(:name :value)` plists while the argument is typed. |
+
+<Screen name="cell-manual" />
+
+Everything is filed under one key: the package's name, downcased. That is the folder's name.
+
+<Mistakes>
+<Mistake>
+<What>Leaving out `nlk:define-peripheral`</What>
+<Why>The folder loads and starts. The first call that reads a setting fails.</Why>
+<Instead>Put `(nlk:define-peripheral weather :not-running t)` above `define-cell`.</Instead>
+</Mistake>
+<Pair name="cell-no-peripheral" open />
+<Mistake>
+<What>Leaving out the `:section` clause</What>
+<Why>`define-cell` requires one. The file does not compile, and the folder fails.</Why>
+<Instead>Declare the section the cell reads.</Instead>
+</Mistake>
+<Pair name="cell-no-section" />
+<Mistake>
+<What>Giving a command's RUN one parameter</What>
+<Why>RUN is called with the argument text and the session id.</Why>
+<Instead>Take both, and ignore the one you don't use.</Instead>
+</Mistake>
+<Pair name="cell-arity" />
+</Mistakes>
+
+{/* source: src/lib/contract.lisp */}
+## Tool arguments
+
+A tool's arguments cross into the cell through a contract, declared once. The model sees the schema the contract derives. A call that does not fit is refused before any hook or body runs, and the body reads a record.
+
+```lisp
+(nlk:define-contract forecast
+  (:doc "Today's forecast for one city.")
+  ("city" :text :required t :doc "the city, as the operator wrote it"))
+
+(defun look-up (request)
+  (today (forecast-city request)))
+
+(:tool "weather" (nlk:contract 'forecast) 'look-up)
+```
+
+<Screen name="cell-contract" />
+
+| Declares | Detail |
+| --- | --- |
+| Types | `:any`, `:string`, `:text` (non-empty), `:integer`, `:number`, `:boolean`, `:object`, `:array`. |
+| A member | `:required`, `:default`, `:options` (the schema's enum), `:of` to nest, `:slot` to rename. |
+| Unknown members | Ignored, unless `(:unknown :refuse)`. |
+| Derives | `FORECAST`, `FORECAST-CITY`, `MAKE-FORECAST`, `FORECAST-P`, `DECODE-FORECAST`, `ENCODE-FORECAST`. |
+
+| Arrives | Result |
+| --- | --- |
+| JSON `null` | Absent. Takes the default, or is refused like a missing key. |
+| `false` | Present. `NIL` on a `:boolean`. |
+| The wrong type | Refused, never coerced. `"3"` is not an integer. |
+| A malformed declaration | Fails at macroexpansion, so the folder fails its load. |
+
+{/* source: src/lib/config.lisp */}
+## The section
+
+A section is the cell's part of `~/.nodecode/config.jsonc`, declared once, as data. `/settings`, the web page's Settings tab, the model's setup primer, the cell's line in `/cells`, its refusal and the values it runs on all come from it.
+
+| Field type | Value |
+| --- | --- |
+| `:string` | Text. |
+| `:secret` | A secret written inline. |
+| `:env` | The name of an environment variable holding a secret. |
+| `:path` | A file path. |
+| `:directory` | A folder. `~/` is expanded. A relative default is under the home. |
+| `:boolean` | `true` or `false`. |
+| `:integer` | A whole number. May carry `:min`. |
+| `:list` | An array of strings. May carry `:choices`, a function of the section's table answering `((id . label) ...)`. |
+| `:choice` | One of `:options`. |
+
+A field may be `:required` and carry `:default` and `:doc`. Section options: `(:guide TEXT)`, `(:check FN)`, `(:one-of NAME...)`, `(:any-of NAME...)`, `(:owner NAME)`. `:owner` defaults to the package's name, downcased.
+
+| Case | Result |
+| --- | --- |
+| Section present | The cell starts. |
+| `"enabled": false` | Nothing installs. The code stays loaded until Nodecode restarts. |
+| A value of the wrong shape | `NLK:CONFIG-REFUSAL`. `REFUSED` on the cell, and a standing `:error` notice under the folder's name. |
+| A `:required` value absent | No refusal. `/settings` and `/cells` say `still needed: KEY`. |
+
+<Screen name="cell-refused-toast" />
+
+`(setting :timeout-seconds)` reads a value. An underscore in the config is a dash here. `(config-get '("weather"))` reads the section, and `(config-set '("weather") '(:units "c"))` writes it, comments kept.
+
+<Mistakes>
+<Mistake>
+<What>Writing a value the section does not allow: `"units": "C"`</What>
+<Why>The cell refuses to start. A standing notice names it, and the cell is `REFUSED` until it restarts.</Why>
+<Instead>Fix the value, then run `(restart-cells "nodecode-weather")` without relaunching Nodecode.</Instead>
+</Mistake>
+<Pair name="cell-refused" open />
+<Mistake>
+<What>Reading a setting by its config spelling: `:timeout_seconds`</What>
+<Why>`SETTING` names keys with dashes. A key the section does not declare is an error.</Why>
+<Instead>`(setting :timeout-seconds)`.</Instead>
+</Mistake>
+<Pair name="cell-key" />
+<Mistake>
+<What>Marking a field `:required` and counting on a refusal when it is missing</What>
+<Why>Nothing refuses. The cell starts, and `/settings` says `still needed: KEY`.</Why>
+<Instead>Check the value where you use it, and `FAIL` with a sentence that says what to set.</Instead>
+</Mistake>
+<Pair name="cell-required" />
+</Mistakes>
+
+{/* source: src/organism/hook.lisp */}
+## Hooks
+
+| NAME | FN receives |
+| --- | --- |
+| `:tool` | `(op next)`. One tool dispatch. OP is `(:name :arguments :call-id)`. |
+| `:frame` | `(op next)`. One live frame leaving the gateway. |
+| `:credential` | `(op next)`. |
+| `:round` | `(op next)`. One model request about to be built, every round of every turn. OP is `(:session-id :turn :round)`. A reminder recorded here is in that request. |
+| A function name | `(next &rest args)`. Around every call of it. |
+
+Call `next` to run the rest of the chain. Don't, to replace it. A hook that refuses a call answers `(nle:failure "ERROR: ...")`, and the call is recorded failed.
+
+`:frame` and `:round` hooks only watch. An error such a hook signals itself, outside `next`, is stepped over: the frame still goes out, the request is still built, and every shell shows the error as a notice, once per registration. On `:tool`, `:credential` and around a function, a hook's error is the call's own error.
+
+<Screen name="cell-hook-failure" />
+
+Two cells hooking one function under different keys both run, in load order. `(nle:turn)` answers the running turn as a plist, or `NIL` outside one: `:session-id`, `:turn-id`, `:parent`, what it has spent (`:seconds`, `:rounds`, `:calls`, the token counts), `:context-tokens` against `:context-window`, `:quiet-seconds` since the operator last read a sentence, and its `:budget`. To cap your own sessions' turns, advise `nle:turn-budget` and return `(:seconds N :calls N :tokens N)`. Call `next` for every other session.
+
+<Mistakes>
+<Mistake>
+<What>Writing a `:tool` hook that never calls `next`</What>
+<Why>The hook replaces every tool call in every session. It answers `NIL`, so the turn fails.</Why>
+<Instead>`(funcall next op)`, unless you mean to replace the call. Then return a string.</Instead>
+</Mistake>
+<Pair name="cell-hook-no-next" open />
+<Mistake>
+<What>Refusing a call by returning `"ERROR: ..."`</What>
+<Why>The call is recorded as done. The transcript draws it as a success.</Why>
+<Instead>Return `(nle:failure "ERROR: ...")`. The call is recorded failed.</Instead>
+</Mistake>
+<Pair name="cell-hook-string" />
+</Mistakes>
+
+{/* source: src/gateway/gateway.lisp */}
+## Notices and restarts
+
+```lisp
+(nle:notice "weather: no key set, answering from the table" :level :warning :key "nodecode-weather")
+(nle:notice nil :key "nodecode-weather")     ; clear it
+(restart-cells)                              ; every peripheral, from the config as it is now
+(restart-cells "nodecode-weather")           ; one folder
+```
+
+A shell shows notices as toasts only with `"tui": {"notification_popups": true}`, which is off by default. A keyed notice stands either way: `/cells` shows it and the model reads it.
+
+| Notice | Shown |
+| --- | --- |
+| `:info`, `:warning` | A toast for five seconds. |
+| `:error` | A toast until it is closed. |
+| With `:key` | Stands. A shell that attaches later gets it, and the model reads it at the tail of its prompt until it is replaced or cleared. |
+| `:quiet`, with `:key` | Stands without a toast. `/cells` and the model read it. |
+
+<Screen name="cell-notice-toast" />
+
+What the model's next prompt carried:
+
+```output
+<harness key="notices">
+weather: no key set, answering from the table
+</harness>
+
+hello
+```
+
+<Mistakes>
+<Mistake>
+<What>Posting a state that lasts without `:key`</What>
+<Why>It is said once, as a toast where popups are on. The model never reads it.</Why>
+<Instead>Give it a `:key`. It stands, and the model reads it until you clear it.</Instead>
+</Mistake>
+<Pair name="cell-notice-nokey" open />
+<Mistake>
+<What>Posting a keyed notice at start and never clearing it</What>
+<Why>It stands after the cell stops. The restart report still lists it.</Why>
+<Instead>Clear it on stop, next to where you post it.</Instead>
+</Mistake>
+<Pair name="cell-notice-stays" />
+</Mistakes>
+
+{/* source: src/organism/cell-dsl.lisp */}
+## Stop
+
+| Property | Detail |
+| --- | --- |
+| Complete | Stop takes back exactly what start put in. |
+| Idempotent | A second stop does nothing. |
+| A start that fails halfway | Leaves nothing. Sibling cells still start. |
+| A second start | Stops the first one. One of everything remains. |
+
+When the declaration does not fit, write `START-CELL` by hand from the same pieces:
+
+```lisp
+(nlk:define-section ("mine") ...)             ; config alone, no cell
+(nle:register-tool NAME SCHEMA FN)            ; (nle:unregister-tool NAME)
+(nle:register-command OWNER CMD RUN ...)      ; (nle:unregister-commands OWNER)
+(nle:hook NAME KEY FN)                        ; (nle:unhook NAME KEY)
+(nle:route PATH FN)                           ; (nle:route PATH nil)
+(nlk:worker-start NAME STEP :wake N)          ; (nlk:worker-stop W), (nlk:worker-poke W)
+(nle:starting ...)                            ; answers the thunk that undoes its body
+(nle:on-stop FN)                              ; one inverse, in the innermost scope
+```
+
+<Mistakes>
+<Mistake>
+<What>Starting a worker in `:start` without an `on-stop`</What>
+<Why>Each restart starts another worker. The old ones keep running.</Why>
+<Instead>Record its stop with `nle:on-stop`.</Instead>
+</Mistake>
+<Pair name="cell-worker" open />
+<Mistake>
+<What>Calling `nle:on-stop` from a command or a tool</What>
+<Why>There is no start to record it in, so it signals. Whatever it was meant to stop keeps running.</Why>
+<Instead>Start long-lived things in `:start`, or inside `(nle:starting ...)`.</Instead>
+</Mistake>
+<Pair name="cell-onstop" />
+<Mistake>
+<What>Writing `START-CELL` by hand and leaving the command out of its stop</What>
+<Why>After the cell stops, `/weather` still answers.</Why>
+<Instead>Use `define-cell`. By hand, unregister everything you registered.</Instead>
+</Mistake>
+<Pair name="cell-hand-stop" />
+</Mistakes>
+
+{/* source: src/organism/evolve.lisp */}
+## What a folder may do
+
+| Act | Detail |
+| --- | --- |
+| Define | New names in `nodecode.evolved` or its own package. |
+| Override | A shipped `nodecode.evolved` definition. The boot line reports it. |
+| Advise | A shipped function, through a hook. Preferred to an override. |
+| Add methods | To shipped generics. Only a restart removes one. |
+| Redefine a `nodecode.kernel` name | Don't. The kernel locks after the folders load, so at load the folder's definition wins, in every process. Through `eval`, the lock refuses it. |
+
+<Screen name="cell-lock" />
+
+A cell reads its home through `(nlk:home "...")`, never a literal `~/.nodecode/`. It then follows a [profile](/profiles).
+
+Dependencies the image lacks go in `vendor/`, from `ql:bundle-systems`. `vendor/bundle.lisp` loads before the folder's systems.
+
+<Mistakes>
+<Mistake>
+<What>Redefining a kernel function in the folder</What>
+<Why>The folder's definition wins in every process. Here, `nlk:home` points at a directory that does not exist, and Nodecode no longer starts.</Why>
+<Instead>Advise the function with a hook. If a launch already fails, run `nodecode --pristine` and fix the folder.</Instead>
+</Mistake>
+<Pair name="cell-kernel" open />
+<Mistake>
+<What>Writing `~/.nodecode/` into a path</What>
+<Why>Under a profile it still points at the main home.</Why>
+<Instead>`(nlk:home "weather.cache")` follows the profile.</Instead>
+</Mistake>
+<Pair name="cell-literal" />
+</Mistakes>
+
+{/* source: src/CELLS.md */}
+## Test and share
+
+| To | How |
+| --- | --- |
+| Share it | `git push` the folder to any remote. |
+| Install it elsewhere | `git clone` it into `~/.nodecode/cells/`, or `nodecode add nc://NAME` once it is on the hub. |
+| List it on the hub | Submit it at [nodecode.ai/cells/submit](https://nodecode.ai/cells/submit). Nodecode's own cells arrive as pull requests to `nodecode-ai/cells`, where `.github/test-cell.sh FOLDER` runs one cell's tests. |
+| Undo a change | `nodecode rollback N` puts every folder back to generation N. A folder's git HEAD is its revision. A folder with no repository is never restored, and the rollback refuses by name. |
+
+When one goes wrong, find the line in [Troubleshooting](/troubleshooting#cell-failures).

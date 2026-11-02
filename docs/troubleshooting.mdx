@@ -1,0 +1,267 @@
+---
+title: Troubleshooting
+summary: "The diagnostic commands, the log files, and common failures as symptom then fix."
+---
+
+Start with `/doctor`.
+
+{/* source: src/gateway/health.lisp */}
+## /doctor
+
+```sh
+/doctor
+```
+
+`/doctor` lists what is missing and prints a fix for each problem. It takes no arguments.
+
+| Fact | Checks | Fix it prints |
+| --- | --- | --- |
+| `model` | A default model is set and a provider serves it. | `/models` picks one. |
+| `cells` | How many loaded, refused at start or failed. | `/cells` names the condition. |
+| `gateway` | Whether the background gateway is on and serving. | `nodecode gateway`, then `nodecode gateway logs`. |
+| `sessions` | The session count. | none |
+| `requests kept` | Stored request bodies against `request_bodies.keep_mb`. | none |
+| `store check` | SQLite `quick_check` on the store. | Back it up, then `sqlite3 PATH .recover`. |
+| `build` | Linux only. Whether the running executable was replaced on disk. | Restart. |
+| `disk` | Free space under the home. Danger below 256 MB. Not on Windows. | Free some space. |
+| `config` | `config.jsonc` parses. Lists incomplete cell sections. | `/settings sets it; or set it in config.jsonc and restart its cell` |
+| `provider key` | The default provider has a key and its model listing accepts it. | `add one: Settings on the web page, /models in a shell` |
+| `update` | A release is waiting, or the current `update.mode`. | `nodecode update`. |
+
+The home is `~/.nodecode/`. The gateway is the local server that shells attach to.
+
+{/* source: src/store/backup.lisp */}
+## /backup
+
+```sh
+/backup
+```
+
+| Fact | Value |
+| --- | --- |
+| Location | `~/.nodecode/backups/`, mode 0700 |
+| File | `nodecode-<profile>-<date>-<time>.tar.gz`, mode 0600, with a `.json` note beside it |
+| Contents | A copy of the store, `config.jsonc`, `auth.json`, `secrets/`, memory, skills, `SOUL.md`, `AGENTS.md`, `themes.json`, cell folders |
+| Running organism | The copy is taken while it runs. |
+
+The archive holds your keys. Store it like a password.
+
+Restore it as a new profile. It never overwrites the home:
+
+```sh
+nodecode profile import ~/.nodecode/backups/FILE.tar.gz --name restored
+nodecode -p restored
+```
+
+See [Profiles](/profiles).
+
+{/* source: src/gateway/background.lisp */}
+## Logs
+
+| Log | Where | Read it with |
+| --- | --- | --- |
+| Gateway, Linux | The systemd user journal, unit `nodecode-gateway.service` | `nodecode gateway logs` |
+| Gateway, macOS | `~/Library/Logs/nodecode/<label>.log` | `nodecode gateway logs` |
+| Boot log | `~/.nodecode/history.db.stdio.log` | Any text viewer |
+| Boot phase timing | The file named by `NODECODE_PHASE_LOG` | Any text viewer |
+| MCP server stderr | `~/.nodecode/mcp/` | Any text viewer |
+| Import reports | `~/.nodecode/import/report-<time>.txt` | Any text viewer |
+
+```sh
+nodecode gateway logs            # last 60 lines
+nodecode gateway logs --follow   # keep printing, -f also works
+nodecode gateway                 # state, pid, port, uptime, build
+```
+
+- A profile's unit is `nodecode-gateway-NAME.service`.
+- The boot log sits beside the store. With `--store PATH` it is `PATH.stdio.log`.
+- The boot log holds cell load failures as `cell NAME: FAILED ...` lines.
+- `NODECODE_PHASE_LOG` is off unless set before launch.
+- `/gateway logs` works in the shell. `--follow` works on the command line only.
+
+{/* source: src/tools/install.sh */}
+## Install failures
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `glibc X is too old` | glibc is older than 2.34. | Move to Ubuntu 22.04+, Debian 12+, RHEL 9+, Fedora 35+ or Arch. No flag helps. |
+| `no Linux build for ARCH yet` | The machine is not x86_64. | None. No build exists. |
+| `no macOS build for Intel yet` | An Intel Mac. | None. No build exists. |
+| `macOS X is too old` | macOS is older than 15. | Upgrade macOS. |
+| `nodecode needs Homebrew's openssl@3` or `zstd` | A Homebrew library is missing. | `brew install openssl@3 zstd`, then run the installer again. |
+| The macOS executable does not answer at all | Homebrew `openssl@3` or `zstd` is missing. | `brew install openssl@3 zstd`. |
+| `WARNING: not found: libsqlite3.so.0 ...` | A runtime library is missing on Linux. | Install sqlite3 and OpenSSL 3. |
+| `WARNING: no CA bundle found` | No CA certificates. | Linux: install `ca-certificates`. macOS: `brew reinstall ca-certificates`. |
+| `WARNING: git is not installed` | git is missing. | Install git. macOS: `xcode-select --install`. |
+| `git is not on PATH` on Windows | Git for Windows is missing. | `winget install --id Git.Git -e --source winget`, then open a new terminal. |
+| `sha256 mismatch` | The download is damaged. | Run the installer again. |
+| `waiting for another install into ...` | A second install into the same home is running. | Wait. It goes on when the first ends. |
+| `another install still holds ... (pid ...); remove it if none runs` | An install left its lock behind. | If no install runs, remove `~/.local/share/nodecode/.install-lock`. |
+| `nodecode-LABEL-x86_64-windows.tar.zst is not published for this release` on Windows | The release has only the zip. | None. It goes on with the zip. |
+| `no stable release is published for ...` | The channel pointer did not answer. | Check the network and `NODECODE_BASE_URL`. |
+| `'nodecode' on your PATH is NOT the build just installed` | An older `nodecode` comes first on PATH. | Remove it, or put `~/.local/bin` ahead of it. |
+| `nodecode: command not found` after install | `~/.local/bin` is not on PATH. | Add the line the installer printed. Open a new shell. |
+| `these cells predate the rename and will not load` | Old cell folders name `nodecode-lisp`. | Run the `ln` or `sed` command the installer prints. |
+
+{/* source: src/tui/setup.lisp */}
+## Setup and model failures
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| The provider list in setup is empty, with no error | No CA bundle. The provider catalog is fetched over HTTPS. | Install the CA bundle as above. Restart `nodecode`. |
+| `No matching providers`, with your key in the search | The key was pasted while the list was open. It shows in plain text. | Clear the search. Press Enter on the provider, then paste. |
+| `PROVIDER refused this key (HTTP 401 ...); nothing was saved.` | The provider refused the key. | Make a key on the page the key step names. Enter pastes another. |
+| `key saved to auth.json, not checked: no answer from HOST in 5 s` | The provider did not answer the check. The key was saved. | `/doctor`. If the key fails, `/models` takes it again (Ctrl+E). |
+| `nothing listens at ...; nothing was saved.` | A local server is not running. | Start it. Enter checks again. |
+| `No clipboard to read here — paste with your terminal (Ctrl+Shift+V)` | Ctrl+V over SSH. | Ctrl+Shift+V. |
+| Setup's last page says `model: no model configured` | The walk ended before a model was picked. | `/models`. |
+| `1 setup issue` in the footer | `Start anyway` was pressed over a caveat. | Click it, or `/setup`. A `/models` pick that answers it clears it. |
+| `no model is chosen yet: /setup connects a provider and picks one` | No default model and no session model. | Run `/setup`, or `/models`. |
+| The footer says `run /setup to add a model` | Same. | Same. |
+| `` `/setup` does not take arguments. `` | `/setup NAME` was typed. | `/cells`, then type to search. |
+| The import report says `no key imported here serves it` | The import brought the model's name over, not the sign-in behind it. | `/models`. |
+| The import report says `lands off` | Imported MCP servers start off. | `/mcp on NAME`. |
+| `/doctor` says a provider failed its key check | The provider's model listing refused the key. | Run `/models` and paste a working key (Ctrl+E). |
+| `/doctor` says `none for PROVIDER: a turn on it sends none` | The default provider has no key. | Run `/models`. |
+
+{/* source: src/tui/account-login.lisp */}
+## Account failures
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `nodecode login asks what to sign in for and no terminal can answer` | It ran with no terminal. | `nodecode login --subscription` or `nodecode login --api`. |
+| `This account holds no plan yet: subscribe at https://nodecode.ai/pricing` | A subscription sign-in on an account with no plan. | Plans open soon. Until then, run on your own provider key (`/models`). |
+| `This account has no API credit yet: add some at https://nodecode.ai/account/top-up` | An API sign-in on an account with no balance. | Top-ups open soon. Until then, run on your own provider key (`/models`). |
+| `nodecode.ai refused this machine's key (HTTP 401) ... Sign in again with /login or nodecode login.` | The saved account key was revoked or replaced. | `/login` or `nodecode login`. |
+| A `nodecode` model answers `402` | The account has neither a plan nor a balance to pay from. | Plans and top-ups open soon. Until then, run on your own provider key (`/models`). |
+
+{/* source: src/client/client-boot.lisp */}
+## Launch failures
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `nodecode needs a terminal (no controlling tty); run it in one.` Exit code 2. | Launched from cron, a pipe or `ssh` without `-t`. | Use a terminal or `ssh -t`. For no terminal, use `nodecode serve` or `nodecode gateway on`. |
+| `... is not valid JSONC (byte N)` | `config.jsonc` does not parse. | Fix the file or move it aside. Then run `nodecode setup`. |
+| A sentence about the home or store being read-only, a file or not a database. Exit code 1. | Nodecode cannot write its home or open its store. | Fix the path, set `NODECODE_HOME`, or name a store with `--store PATH`. |
+| `nodecode: ...` plus `Run "nodecode --help"`. Exit code 2. | A bad command line. | See [Command line](/cli). |
+| `-p NAME` is refused | The profile does not exist. | `nodecode profile create NAME`. |
+| The layer, memory and checkpoint history are not committed | git is missing. | Install git. |
+
+{/* source: src/gateway/background.lisp */}
+## Gateway failures
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| Composer says `Connecting to Gateway...` | The shell is connecting or reconnecting. | Wait. Then check `nodecode gateway`. |
+| Composer says `Gateway sync failed - check the endpoint and retry` | The connection failed for good. | Restart the shell. Read `nodecode gateway logs`. |
+| The footer's `Gateway` changes colour | Connecting again, or failed for good. | Same. |
+| `/doctor` says `on, but nothing serves the store` | The unit is installed and no process owns the store. | `nodecode gateway`, then `nodecode gateway logs`, then `nodecode gateway restart`. |
+| `/doctor` says the gateway is `off` | Nothing keeps the organism running after the last shell closes. | `nodecode gateway on`. |
+| `no background gateway on ... yet` | Windows has no background gateway. | Run `nodecode serve` in a terminal you keep open. |
+| `nodecode web` says `nodecode is not running for this home` | No organism serves this home. | Run `nodecode` or `nodecode gateway on`. |
+| `nodecode web` says the web cell is not installed | The cell is missing. | `/cells`, then Space on web. |
+| `nodecode web` says the cell is installed but not loaded | The organism started before the install. | `nodecode gateway restart`, or restart the shell. |
+| Bots or cron jobs stop when the shell closes | The gateway is off. | `nodecode gateway on`. |
+| `nodecode profile delete NAME` says `served by pid` | An organism serves that profile. | `nodecode -p NAME gateway off`. |
+
+See [Gateway](/gateway) and [Operations](/operations).
+
+{/* source: src/organism/update.lisp */}
+## Update failures
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `staging LABEL failed: ...` | The installer could not fetch, verify or run the release. | Read the reason. Run `nodecode update` again. |
+| `the stable channel did not answer` notice | The release host is unreachable. | Check the network and `update.url`. |
+| `no installer travels with this build` | The build has no `install.sh` beside it. | Reinstall with the one-line installer. |
+| `LABEL runs at the next launch: this image refused it live` | A hot update failed to evaluate. | Restart Nodecode. |
+| The new build does not start | No automatic rollback. | See [Updates](/updates). |
+
+{/* source: src/engine/context.lisp */}
+## Instruction file failures
+
+<Tty name="home-over" />
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `~/big/AGENTS.md is not read: 71.2 KB — trim to 64.0 KB` | The project file is over 64.0 KB. No session reads it. The shell says so once per file while the organism runs. | Trim it under the limit. |
+| `~/.nodecode/AGENTS.md is not read: 71.2 KB — trim to 64.0 KB` | Your own rules are over 64.0 KB. Every shell shows this as it attaches, and the model reads it in its `notices` block. | Trim it. The warning goes when the file fits. |
+| `CLAUDE.md` is ignored | An `AGENTS.md` beside it is the first name looked for. Only one file is read. | Merge them into `AGENTS.md` and link `CLAUDE.md` to it. |
+| A package's rules are ignored | The session opened above the package. The search only climbs. | Open the session in the package. |
+| The root's rules are ignored in a package | The package's own file is found first. | Copy what the package needs into its file. |
+| Rules above the repository are ignored | The search stops at the folder that holds `.git`. | Move them to `~/.nodecode/AGENTS.md`. |
+| Another tool's rules are ignored | `.cursor/rules/`, `GEMINI.md` and `.github/copilot-instructions.md` are not read. | Move the rules to `AGENTS.md`. |
+| An edit did nothing this turn | The files are read at the first request of each turn. | It applies at the next turn without a restart. |
+
+See [Instruction files](/instructions).
+
+{/* source: src/cli/rpc.lisp */}
+## RPC failures
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `invalid JSON: malformed JSON at byte 0` | A `sync_protocol_error`: the line was not JSON, often a prompt written as text. | One JSON object a line, the prompt under `request`. See [RPC](/rpc#lines-in). |
+| `request must be an object` | The prompt sits beside `type`. | Put it under `request`. |
+| `type must be a non-empty string` | The line names no `type`. | Name the command's `type`. |
+| `session_id and turn_id are required` | A `cancel_turn` with no `turn_id` beside `type`. rpc fills in the session; the message names both. The turn keeps streaming. | Put `turn_id` beside `type`. |
+| `session_id, expected_turn_id, and non-empty prompt are required` | A `steer_turn` with no `request.expected_turn_id`. | The `turn_id` from your `start_turn` result. |
+| `"status":"queued"` | A turn was running. Yours waits, and starts when it ends. | Nothing is wrong. To change the running turn, `steer_turn`. To take yours back, `withdraw_prompt`. |
+| `"message":"turn admitted"`, and no answer | The turn started. The answer comes later. | Read on to `turn.completed` with that `turn_id`. |
+| `turn.completed` in the first frame | It is in the replay: the last turn's end. | Match the frame's `turn_id` to your `start_turn` result. |
+| `resumed_after`, then facts you hold | The cursor was older than all of them, often a `sequence` number. | Pass the newest durable frame's `cursor`, or `get_state`'s. |
+| No `resumed_after` after `--cursor` | The cursor was past the log, or the session's head moved since. The replay is whole. | Replace what you hold. |
+| `"accumulated_frames":[]` after a reconnect | No session id was passed, so this is a new session. | `nodecode rpc SESSION-ID`, with the `session_id` from your first frame. |
+| No output, exit code 0 | stdin ended before any frame came back. The organism rpc started stopped, and the turn with it. | Keep stdin open until your turn's end. |
+| `organism.note`, then a turn you did not start | The organism came back and picked up a turn a stop had cut off. | Expected after a cut. Keep stdin open past your turn's end. |
+| `the gateway closed the connection`. Exit code 1. | The organism serving the store went away while rpc was attached. | Start `nodecode rpc` again. It starts an organism when none serves. |
+| `--cursor resumes a session past a log position`. Exit code 2. | `--cursor` with no session. | `nodecode rpc SESSION-ID --cursor N`. |
+| `--cursor takes a log position, not "five"`. Exit code 2. | A cursor that is not a whole number. | A frame's `cursor`. |
+| `rpc is a command of its own`. Exit code 2. | A command word after `rpc`, such as `serve`. | Run `nodecode serve` by itself. rpc attaches to it. |
+| `--store needs a PATH`. Exit code 2. | `--store` with no path. | `--store PATH`, or `--ephemeral` for a throwaway store. |
+
+See [RPC](/rpc).
+
+{/* source: src/organism/profile.lisp */}
+## File failures
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `no such table: events` on a copy of `history.db` | The copy was made while Nodecode ran. The sessions were still in `history.db-wal`. | `nodecode profile export NAME PATH --whole`, or `/backup`. Both copy the store whole while it runs. |
+| `history.db.owner: No such file or directory` | The lock was deleted, a second organism took the store, and it deleted the owner file when it stopped. | Quit every shell on this home; the organism stops with its shell. Never delete the lock. |
+| `serving store … on port N` from a second `nodecode serve` | The lock was deleted, so a second organism took a store that already had one. | Stop it. `nodecode profile list` names the one that owns the store. |
+| `<you> has uncommitted edits; keep or discard them first` | A file in `cells/<you>/` was changed or deleted outside a turn. | Commit or discard the edit in `cells/<you>/`, then roll back again. |
+| `cell <you>: layer, 0 definitions, unsealed` at launch | A kept file was deleted by hand, and the layer's `.asd` still names it. | Put the file back, then `nodecode rollback N`. |
+| `<you> left in place: it is yours, and generation N never had it` | A rollback to before the first keep. A rollback never deletes a folder that is yours. | Roll back to the generation after the keep you want gone. |
+| `?? .nodecode/` in `git status` | Nodecode's undo snapshots for this folder. | Add `.nodecode/` to `.gitignore` or `.git/info/exclude`. |
+| `also carrying cells-named, composer-catalogs.sexp` in `nodecode profile list` | Two files Nodecode writes that the list does not know by name. | Nothing. They are harmless. |
+| `shares auth.json` in `nodecode profile list`, but the keys differ | A key saved in `/models` inside the profile put a file of its own where the link was. | `ln -sf ~/.nodecode/auth.json ~/.nodecode/profiles/NAME/auth.json`, then change keys from the default home. |
+| `-rw-r--r--` on a `--clone-all` fork's `auth.json` | A fork copies `auth.json` without its 0600. The home around it is still 0700. | `chmod 600 ~/.nodecode/profiles/NAME/auth.json`. |
+| `"api_key"` inside an export | The key was written into `config.jsonc`, which an export carries. | Save it with `/models`, which writes `auth.json`, and export again. |
+
+See [Files](/files).
+
+{/* source: src/organism/cells.lisp */}
+## Cell failures
+
+For a cell you are writing. `(describe-cells)` through `eval` gives every folder's state.
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `failed` on the landing | The folder did not load. | `(describe-cells)` names the condition. |
+| `Component "nodecode-weather" not found` | The `.asd` file was renamed, the `defsystem` inside it was not. | Name the system after the file. See [Cell API](/cell-api#start-from-the-template). |
+| `a (:section (PATH...) ...) clause is required` | `define-cell` has no `:section` clause. | Declare the section the cell reads. |
+| `library, 0 definitions` | The package is not named after the system, so the loader finds no `START-CELL`. | Name the package after the system. |
+| `unknown command /weather` | The cell is not running: it failed, was refused, is a library or is set `"enabled": false`. Or Nodecode started a moment ago and its cells are still starting. | `(describe-cells)` says which. |
+| `RUNNING-SETTINGS is undefined` | `nlk:define-peripheral` is missing. | Add `nlk:define-peripheral` above `define-cell`. |
+| `config refusal: units must be one of c\|f` | A value in the section has the wrong shape. | Fix it, then `(restart-cells "NAME")`. |
+| `no setting :TIMEOUT_SECONDS` | `SETTING` was given the config's spelling. | Dashes: `(setting :timeout-seconds)`. |
+| `invalid number of arguments: 2` from a command | The command's RUN takes one parameter. | Take `(args session-id)`. |
+| `on-stop: no (starting ...) scope is open` | `nle:on-stop` was called outside a start. | Start it in `:start`, or inside `(nle:starting ...)`. |
+| `contract_refused` | The model's call did not fit the contract. | Nothing is wrong. The model repairs from the refusal. A clear `:doc` helps it. |
+| `RESULT is NIL, which is not of type STRING` | A `:tool` hook returned `NIL` without calling `next`. | `(funcall next op)`, or return a string. |
+| `nodecode: could not start` after adding a cell | A folder redefined a kernel function. | `nodecode --pristine`, then fix or remove the folder. |
+| `Lock on package NODECODE.KERNEL violated` | `eval` redefined a kernel name. | Advise it with a hook instead. |
+| A cell's notice stands after it is turned off | A keyed notice nothing clears. | Clear it in an `nle:on-stop`: `(nle:notice nil :key KEY)`. |
+| A command still answers after its cell is turned off | A hand-written stop that does not unregister it. | Use `define-cell`, or `nle:unregister-commands` in the stop. |
+
+See [Cell API](/cell-api).

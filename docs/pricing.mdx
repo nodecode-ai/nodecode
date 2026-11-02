@@ -1,0 +1,86 @@
+---
+title: Pricing
+summary: "How a plan's requests are counted: what one request is, how many a month each plan gives, how many run at once, and when the month starts again. Plans and prices are coming soon."
+---
+
+{/* One of the six pages that show the plans: change its prices, requests and threads together with the rest (web/AGENTS.md, "Pricing is one scheme on every page that shows it"). */}
+
+{/* Sales closed until the models launch (v1se.thom, 2026-10-23; web/src/lib/sales.ts): no prices, no top-up, no refill on this page. To put them back, revert this file's hunks of the commit that says "hide pricing until Monday", then replace its Cyber v1 off-peak and peak paragraph with the one in the comment above "The API per token" below, and drop the sentence it restores after the plans' table that says peak requests would cost twice as much: off-peak pricing is off since 2026-10-24 (`off_peak` in deploy/gate.toml) and no page states a plan's worth as a multiple. */}
+
+Nodecode itself is free, under the MIT license, and runs on your own provider key. A plan from [nodecode.ai/pricing](https://nodecode.ai/pricing) adds the hosted models, and what it gives you is counted in requests. Plans and their prices are coming soon.
+
+{/* source: crates/gate/src/meter.rs, and each model's `standard` and `requests` in deploy/gate.toml */}
+## What one request is
+
+A request is a standard call to a model through `https://api.nodecode.ai/v1`. For Cyber v1 it is a typical agent call: 89,000 input tokens the model already had cached, 2,500 new input tokens and 1,300 output tokens. Every other call counts as its cost measured against that standard call: a call twice as big is two requests, a short one a fraction of one. Nodecode makes one call each time it asks the model something, so one turn in which the agent runs a few evals and answers is a few requests.
+
+Counts as one request:
+
+- A Cyber v1 call of 89,000 cached and 2,500 new input tokens and 1,300 output tokens, streamed or not.
+
+Counts as more, or less:
+
+- Any other Cyber v1 call, by its tokens: 1,300 output tokens alone are 0.55 of a request, and 13,000 output tokens on a typical prompt about 5.9. Past 262,144 input tokens, cached input weighs four times, as it costs four times.
+
+Counts as a hundredth of a request:
+
+- A Decide v1 call of 200 input tokens. 2,000 input tokens are a tenth.
+
+Counts as 30.3 requests:
+
+- Each image Image v1 made: a call that asks for three images is 90.9 requests. They come out of the month's requests, not extra ones.
+
+Costs nothing:
+
+- Listing the models (`/v1/models`).
+- Asking what is left (`/v1/usage`): the plan's requests used and left this month, when they reset, the requests running now and the balance, which `nodecode` prints after `nodecode login` and at `/usage`.
+- A call refused because your requests at once are all busy.
+- A call refused because the month's requests are used up.
+- A call the model itself refused or failed, such as a prompt past its window.
+
+The tokens are the model's own count, shown under [Usage](https://nodecode.ai/account/usage). When the model reports none, they are estimated from the size of the call and its answer, about four bytes a token. The hour does not change the count. Every count is rounded up to a thousandth of a request.
+
+{/* source: crates/gate/src/plans.rs */}
+## How many each plan gives
+
+| Plan | Requests a month | Or images a month | Requests at once |
+| --- | --- | --- | --- |
+| Founders Lite | 10,000 | 330 | 4 |
+| Founders Base | 42,000 | 1,386 | 8 |
+| Founders Pro | 126,000 | 4,158 | 16 |
+| Founders Max | 378,000 | 12,475 | 32 |
+
+"Or images" is the month spent on images alone, at 30.3 requests each; images and other calls come out of the same requests.
+
+Prices are coming soon. Every plan carries the same three models. Usage on your [account](https://nodecode.ai/account/usage) cuts the month into four weeks of a quarter each to pace against; nothing stops at the end of a week.
+
+{/* source: web/src/lib/lab-plans.ts (`estimate`, `TYPICAL_CALL`), the pricing page's Estimated requests */}
+## Estimated requests
+
+Each plan's month spent on one model alone. The requests are exact: they are what your plan counts. A day is the month over 30, and tokens are that many typical calls, so both are estimates. There is no 5-hour or weekly limit, only the month.
+
+| Plan | Cyber v1 (1 request) | Decide v1 (0.01 request) | Image v1 (30.3 requests) |
+| --- | --- | --- | --- |
+| Founders Lite | 10,000 a month, ≈ 333 a day, ≈ 928M tokens | 1,000,000 a month, ≈ 33,333 a day, ≈ 200M tokens | 330 images a month, ≈ 11 a day |
+| Founders Base | 42,000 a month, ≈ 1,400 a day, ≈ 3.9B tokens | 4,200,000 a month, ≈ 140,000 a day, ≈ 840M tokens | 1,386 images a month, ≈ 46 a day |
+| Founders Pro | 126,000 a month, ≈ 4,200 a day, ≈ 11.7B tokens | 12,600,000 a month, ≈ 420,000 a day, ≈ 2.5B tokens | 4,158 images a month, ≈ 139 a day |
+| Founders Max | 378,000 a month, ≈ 12,600 a day, ≈ 35.1B tokens | 37,800,000 a month, ≈ 1,260,000 a day, ≈ 7.6B tokens | 12,475 images a month, ≈ 416 a day |
+
+A typical Cyber v1 call is the one our own agent makes on average: 89K cached input tokens, 2.5K new and 1.3K output. A typical Decide v1 call is 200 input tokens. All models share one month: 1,000 images on Founders Base leave 11,700 Cyber v1 requests.
+
+{/* source: crates/gate/src/admit.rs */}
+## Requests at once
+
+A plan runs that many requests at the same time across all your machines and keys. One more waits for a free place, up to 30 seconds, and is then answered with `429` and "all of them are busy. Try again shortly." A refused call is not counted.
+
+{/* source: crates/gate/src/plans.rs */}
+## When the month starts again
+
+The month starts on the day you subscribed and runs to the same day next month. A yearly plan is cut into twelve such months, each with the full allowance. Unused requests do not carry over.
+
+When a month's requests are used up, a call is answered with `429`, saying when the month resets.
+
+{/* With sales open and off-peak pricing off (deploy/gate.toml `off_peak = false`, crates/gate/src/prices.rs), this section's price paragraph reads: "Cyber v1 costs 0.006 per million input tokens the model had cached, 0.30 for the rest of the input and 1.20 for output, DeepSeek's own price for the model it is built on, at every hour. Its context is 1M tokens; a call with more than 256K tokens of input pays four times the cached price for its cached input. Decide v1 costs 0.10 per million input tokens, its output free, and Image v1 0.04 an image. The cost is taken once the model has answered and shows beside the call under [Usage](https://nodecode.ai/account/usage). A refused call costs nothing. A balance held in both currencies is spent in euros first." */}
+## The API per token
+
+A balance will pay for calls per token, as on DeepSeek's platform, with a plan's requests coming first. Per-token prices and top-ups are coming soon.

@@ -1,0 +1,196 @@
+---
+title: Profiles
+summary: "Separate homes under one binary: -p NAME, every nodecode profile verb, /profile and the active-profile file."
+---
+
+```sh
+nodecode -p work
+```
+
+{/* source: src/lib/paths.lisp */}
+## What a profile is
+
+A profile is a separate home. The home is the folder Nodecode keeps its data in.
+
+| Profile | Home |
+| --- | --- |
+| `default` | `~/.nodecode/` |
+| A named profile | `~/.nodecode/profiles/<name>/` |
+
+Each profile has its own config, store, layer, operator token and gateway, and runs its own organism. An organism is a running Nodecode. The layer is the set of definitions the agent wrote and kept.
+
+| Name rule | Value |
+| --- | --- |
+| Characters | `a-z`, `0-9`, `_`, `-` |
+| First character | A letter or digit |
+| Length | 64 at most |
+| Reserved | `default`, `profiles`, `nodecode`, `test`, `tmp`, `root`, `sudo`, `serve`, `trial`, `setup`, `import`, `profile`, `gateway`, `resume`, `warm`, `warm-dump`, `web` |
+
+{/* source: src/lib/paths.lisp */}
+## Choosing a profile
+
+A profile is chosen when a process starts. First match wins:
+
+1. `-p NAME` or `--profile NAME`, anywhere on the line.
+2. `$NODECODE_HOME`, a path to a home.
+3. The name in `~/.nodecode/active-profile`.
+4. `~/.nodecode/`.
+
+```sh
+nodecode -p work              # open the shell in profile work
+nodecode -p work gateway on   # keep that profile running in the background
+```
+
+`-p NAME` for a missing profile exits with code 2.
+
+{/* source: src/lib/paths.lisp */}
+## The active-profile file
+
+`~/.nodecode/active-profile` holds one line: a profile name. A launch with no `-p` and no `$NODECODE_HOME` boots that profile.
+
+| Action | Effect on the file |
+| --- | --- |
+| `nodecode profile use NAME` | Writes NAME. |
+| `nodecode profile use default` | Removes the file. |
+| `nodecode profile delete NAME` | Removes the file when it names NAME. |
+
+A name whose folder is gone falls back to `~/.nodecode/`.
+
+{/* source: src/organism/profile.lisp */}
+## Verbs
+
+```sh
+nodecode profile [VERB] [ARGUMENTS]
+```
+
+`nodecode profiles` is an alias. With no verb it runs `list`.
+
+| Verb | Does |
+| --- | --- |
+| `list` | Prints one line per profile. |
+| `use NAME` | Makes NAME the profile a bare launch boots. This process stays where it is. |
+| `switch NAME` | Relaunches this shell in NAME, in the same window. |
+| `create NAME [--blank \| --clone-all] [--from NAME] [--description TEXT]` | Makes a new home. |
+| `delete NAME [--yes]` | Removes NAME's whole home. |
+| `export NAME PATH [--whole]` | Writes NAME's home to a tar.gz at PATH. |
+| `import PATH [--name NAME]` | Makes a profile from an exported archive. |
+| `install URL [--name NAME]` | Makes a profile from a git repository. |
+| `update NAME` | Pulls an installed profile's repository. |
+| `help [VERB]` | Prints help. |
+
+Exit codes: 0 on success, 2 for words a verb cannot read, 1 for any other refusal.
+
+{/* source: src/organism/profile.lisp */}
+## list
+
+Each line shows:
+
+| Part | Meaning |
+| --- | --- |
+| `*` | This process's own profile. |
+| Name and home | The profile and its folder. |
+| `serving pid N port N` | An organism is serving it. |
+| `boots by default` | A bare launch boots this one. |
+| Text after the dash | The description. |
+| `shares ...` | Entries it reads from another profile. |
+| `also carrying ...` | Top-level entries that belong to no known kind. |
+
+{/* source: src/organism/profile.lisp */}
+## create
+
+| Flag | New home starts with |
+| --- | --- |
+| none | The source profile's settings. Memory, skills and credentials are shared. |
+| `--blank` | Nothing. Setup runs at its first launch. |
+| `--clone-all` | A full copy: settings, memory, skills, credentials, your own cells, the layer with its git history. |
+| `--from NAME` | NAME as the source. The default source is the running profile. |
+| `--description TEXT` | A description shown by `list`. |
+
+`--blank` with `--clone-all` is refused.
+
+With no flag:
+
+| Entry | Handling |
+| --- | --- |
+| `config.jsonc` | Copied, without its `channels` section. |
+| `SOUL.md`, `AGENTS.md`, `themes.json` | Copied. |
+| Installed cells | Carried over. |
+| `secrets/`, `auth.json` | Linked. Both profiles read one copy. Windows copies them. |
+| Knowledge cells, such as `cells/<you>-memory/` | Linked: your memories and skills. Windows copies them. |
+| Store, layer | New and empty. |
+
+No form of `create` copies the store. No form copies `channels`: a bot token belongs to one home.
+
+`create` writes `profile.jsonc` into the new home. On Linux and macOS it also writes a command `~/.local/bin/NAME` that runs `nodecode -p NAME`. An existing command of that name is left alone.
+
+{/* source: src/organism/profile.lisp */}
+## switch
+
+`switch` closes this shell's store and relaunches it under `-p NAME`. The process keeps its pid and its terminal.
+
+| Refused when | Use |
+| --- | --- |
+| NAME is already running in this shell | Nothing to do. |
+| The binary is not an installed one | `nodecode -p NAME` in a new terminal. |
+
+{/* source: src/organism/profile.lisp */}
+## delete
+
+`delete` removes the home, its gateway unit, its `~/.local/bin/NAME` command and the `active-profile` file when it names NAME.
+
+| Case | Result |
+| --- | --- |
+| Terminal, no `--yes` | Asks `[y/N]`. |
+| No terminal, no `--yes` | Refused. |
+| Windows | Needs `--yes`. |
+| `default` | Refused. |
+| The profile this process runs | Refused. Delete it from another profile. |
+| An organism serves it | Refused. When its gateway serves it: `nodecode -p NAME gateway off`. Otherwise, stop that organism first. |
+
+{/* source: src/organism/profile.lisp */}
+## export and import
+
+| Archive | Contains |
+| --- | --- |
+| `export NAME PATH` | `config.jsonc`, `SOUL.md`, `AGENTS.md`, `themes.json`, `cells/` (the layer and the knowledge cells), `profile.jsonc` |
+| `export NAME PATH --whole` | All of the above, plus `secrets/`, `auth.json` and a copy of the store `history.db` |
+
+- A `--whole` archive holds your keys. Its file mode is 0600.
+- The store copy is taken while the organism runs.
+- Linked entries are packed by content.
+- `/backup` writes the same `--whole` archive into this home's `backups/`. For `default` that is `~/.nodecode/backups/`.
+
+`import PATH` unpacks an archive as a new profile.
+
+| Name source | Order |
+| --- | --- |
+| `--name NAME` | First |
+| `name` in the archive's `profile.jsonc` | Second |
+| The archive's folder name | Third |
+
+A name that exists or is reserved is refused. Import never overwrites a home.
+
+{/* source: src/organism/profile.lisp */}
+## install and update
+
+`install URL` makes a shallow clone of a git repository as a new profile. The repository is a home with a `profile.jsonc` that names it.
+
+- A repository that contains a symbolic link is refused.
+- The name comes from `--name`, then `profile.jsonc`, then the repository name.
+- `distribution.json` in the home records the URL and the install time.
+- The store, secrets, memory and cells are excluded from git.
+
+`update NAME` runs `git pull --ff-only --autostash` in that home. A profile that was not installed with `install` is refused.
+
+{/* source: src/tui/slash.lisp, src/gateway/control.lisp */}
+## /profile
+
+| Input | Does |
+| --- | --- |
+| `/profile` | Opens the roster. Enter relaunches the shell in the picked profile. |
+| The `+ New profile` row | Opens a field that creates a profile. |
+| `/profile VERB ...` | Runs the same verbs as `nodecode profile`. |
+| `/profiles` | Alias. |
+| The web page's Profiles tab | Lists, creates, deletes and exports profiles, and sets the one a bare launch boots. |
+
+See [Slash commands](/slash-commands) and [Files](/files).

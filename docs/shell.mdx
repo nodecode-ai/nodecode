@@ -1,0 +1,222 @@
+---
+title: The shell
+summary: "Keys, composer prefixes, header, footer and turn bar of the terminal UI."
+---
+
+The shell is the terminal UI. It attaches to the gateway, the local server of a running Nodecode.
+
+{/* source: src/client/client.lisp */}
+## Turn
+
+A turn is one prompt and the work the model does to answer it. One turn runs per session at a time.
+
+| Action | Result |
+| --- | --- |
+| Enter, no turn running | Starts a turn. |
+| Enter, turn running | Steers. The running turn ends at its next round boundary. Your message runs next. |
+| Tab, turn running | Queues the prompt behind the running turn. |
+| Up, a prompt is queued | Takes the newest queued prompt back into the composer. |
+| Enter on an empty composer, after Up took a prompt back | Drops that prompt. |
+| Esc, turn running | Interrupts the turn. |
+| Esc, the turn produced nothing | The prompt returns to the composer. Applies to a turn this shell started. |
+| Ctrl+C | Clears the composer. Empty composer: interrupts the turn. No turn: quits. |
+| Left, empty composer | Leaves the session running. Opens `/sessions` on a fresh session. |
+
+{/* source: src/tui/keys.lisp */}
+## Global keys
+
+| Key | Action |
+| --- | --- |
+| Enter | Submit. |
+| Tab | Queue the prompt while a turn runs. Idle: accept the highlighted suggestion. |
+| Shift+Enter, Alt+Enter, Ctrl+J | Insert a newline. |
+| Up, Down | Previous or next prompt. In a dropdown: previous or next suggestion. |
+| Ctrl+N | Next suggestion. |
+| Ctrl+P | Empty composer: insert `/`. Dropdown open: previous suggestion. |
+| Ctrl+R | Open or close the prompt history picker. |
+| Ctrl+S | Open or close the sessions picker. |
+| Ctrl+O | Switch the viewport between Standard and Developer. |
+| Ctrl+F | Give an open dialog the full window height. |
+| PgUp, PgDn | Scroll the transcript. |
+| Home, End | Empty composer: jump to the transcript top or bottom. |
+| `?` | Empty composer: open keyboard help. |
+| Ctrl+V, Ctrl+Alt+V | Paste an image from the clipboard. In a dialog: paste clipboard text. |
+| Ctrl+Shift+C | Copy the selection. |
+| Esc | Interrupt the turn. Idle: close the newest toast. |
+| Esc, Esc within 0.5 s | Idle: open `/tree`. |
+| Ctrl+C | Clear the composer, then interrupt the turn, then quit. |
+| Ctrl+Q | Quit. |
+| Ctrl+D | Empty composer: quit. With text: delete the character at the cursor. |
+
+{/* source: src/tui/editor.lisp */}
+## Composer editing
+
+| Key | Action |
+| --- | --- |
+| Ctrl+Left, Alt+Left, Alt+B | Back one word. |
+| Ctrl+Right, Alt+Right, Alt+F | Forward one word. |
+| Ctrl+A, Home | Line start. |
+| Ctrl+E, End | Line end. |
+| Ctrl+Home, Ctrl+End | Start or end of the text. |
+| Ctrl+B, Ctrl+F | Back or forward one character. |
+| Up, Down | One visual row up or down. |
+| Ctrl+W, Ctrl+Backspace, Alt+Backspace | Delete the previous word. |
+| Alt+D, Ctrl+Delete, Alt+Delete | Delete the next word. |
+| Ctrl+D, Delete | Delete the character at the cursor. |
+| Ctrl+K | Delete to line end. |
+| Ctrl+U | Delete to line start. |
+| Ctrl+T | Swap two characters. |
+| Alt+C, Alt+L, Alt+U | Capitalize, lowercase or uppercase a word. |
+
+| Paste | Shown as |
+| --- | --- |
+| Text over 10 lines or 1000 characters | `[Paste #N]`. The full text is sent. |
+| Image | `[Image #N]` |
+
+{/* source: src/tui/dialog.lisp */}
+## Dialog keys
+
+| Key | Action |
+| --- | --- |
+| Up, Down, Ctrl+P, Ctrl+N | Move the selection. |
+| PgUp, PgDn, Home, End | Page the list or jump to an end. |
+| Enter | Select. |
+| Esc | Clear the search. Empty search: close. |
+| Typing | Filter the list. |
+| Ctrl+U | Clear the search. |
+| Ctrl+W, Ctrl+Backspace | Delete a word of the search. |
+| Space | Toggle a mark. In `/cells`: turn the cell on or off. |
+| Left, Right | Fold or unfold rows in `/sessions` and `/tree`. |
+| Delete, Ctrl+X | Interrupt an exec in `/execs`. Delete a profile in `/profile`. It asks first. |
+| F2 | Rename the highlighted session in `/sessions`. |
+| Tab, Shift+Tab | Next or previous tab, for example in `/usage`. Left and Right too, where no fold takes them. |
+| Ctrl+F | Full height. |
+| Ctrl+V | Paste clipboard text into the field. |
+
+{/* source: src/tui/mouse.lisp */}
+## Mouse
+
+| Gesture | Action |
+| --- | --- |
+| Wheel | Scroll. |
+| Drag the scrollbar | Scroll. |
+| Click a tool card | Expand it. |
+| Click a link | Open it. |
+| Click the exec band | Unfold or fold its lines. Its stop control interrupts the exec. |
+| Drag over text | Select. Release copies. |
+| Click the × on a toast | Close it. |
+| Click a dialog row | Confirm it. |
+| Click a dialog's tab | Show that tab, as Tab does. In `/usage`, `/models` and the other tabbed dialogs. |
+| Click a key hint | Press that key: `esc`, `enter`, `tab`, `ctrl+f` and the rest a dialog, `/settings`, `/cells` or `/generations` names. |
+| Click a `/` dropdown row | Choose it, as Enter does. |
+| Click a footer part | Open what it names. See [Footer](#footer). |
+
+{/* source: src/tui/keys.lisp */}
+## Composer prefixes
+
+| Prefix | Opens |
+| --- | --- |
+| `/` | The command dropdown. See [Slash commands](/slash-commands). |
+| `@` | Workspace file completion. Hidden files, `node_modules`, `target`, `zig-cache`, `zig-out`, `bazel-bin`, `bazel-out` and `bazel-testlogs` are skipped. At most 512 files, 10 folders deep. |
+| `$` at the start of a word | `/index`. Knowledge: the meter and the picker. |
+
+{/* source: src/tui/frame.lisp */}
+## Header
+
+| Side | Shows |
+| --- | --- |
+| Left | The session title. In the Developer viewport, then `· session-id`. Blank on the home screen and in setup. |
+| Right | `N.N%/WINDOW`: context use over the model's window. `ctx N` when the window is unknown. |
+| Right | `evicts at N` from 75% of the window, N the eviction line. `evicts next request` once past it. |
+| Right, Standard | `cache N%`: the share of the session's input served from cache. |
+| Right, Developer | `↑ input (cache N%)`: input tokens of the session. |
+| Right, Developer | `↓ output (reasoning N)`: output tokens of the session. |
+| Right, Developer | `$cost`, when the cost is known. |
+
+{/* source: src/tui/frame.lisp */}
+## Footer
+
+Windows under 12 rows have no footer.
+
+| Side | Shows |
+| --- | --- |
+| Left | `provider model (effort) · ← sessions` |
+| Left, sessions running | `← sessions · N running` |
+| Left, target unknown yet | `setting up…` |
+| Left, no model configured | `run /setup to add a model` |
+| Right | `profile · folder · Gateway` |
+| Right, signed in to nodecode.ai | The account's meter first: the plan's name, then its requests left, or the API credit once that pays. |
+
+Every part is a link. A second click on one closes the dialog it opened.
+
+| Part | Opens |
+| --- | --- |
+| The model | `/models` |
+| `(effort)` | `/think` |
+| `← sessions` | `/sessions` |
+| The account's meter | `/usage`, the account first |
+| The profile | `/profiles` |
+| The folder | The folder, as a `file://` link |
+| `Gateway` | The web page, on Sessions |
+
+The meter's colour says what pays: the plan with a tenth or more left; low once under a tenth, or when a spent plan's credit pays; danger when nothing can pay. `Gateway`'s colour alone shows the connection: connected, connecting or reconnecting, failed. A narrow window drops the profile and the folder, then the meter, then `Gateway`. Sign in with [`nodecode login`](/cli#login) or `/login`.
+
+{/* source: src/tui/paint.lisp */}
+## Turn bar
+
+The bar shows while a turn runs.
+
+| Part | Meaning |
+| --- | --- |
+| Spinner | The turn is running. |
+| Verb | The current activity, `waiting on the model`, or the retry status. A 429 or 5xx retry adds `/models to switch`. |
+| Clock | Elapsed time. |
+| `quiet N` | How long a quiet stream has waited. |
+| Token meter | Tokens of this turn. Developer viewport only. |
+| `ctx N%` | Context use. Shown from 75%. |
+| Stop key | `esc stop` |
+
+While a turn runs, the composer reads `Type to steer`. With text in it, it shows `enter steer` and `tab queue`.
+
+A failed or interrupted turn leaves a resting bar with elapsed time and outcome.
+
+{/* source: src/tui/keys.lisp */}
+## keybinds.json
+
+Override keys in `~/.nodecode/keybinds.json`. The file is one JSON object: action name to chord.
+
+Example: `{"toggle_viewport": "ctrl+t", "help": "none"}`.
+
+| Rule | Detail |
+| --- | --- |
+| Chord | Modifiers `ctrl` (or `mod`), `alt`, `shift` and one key, joined by `+`. |
+| Key names | `enter`, `tab`, `esc`, `backspace`, `delete`, `up`, `down`, `left`, `right`, `space`, `pgup`, `pgdn`, `home`, `end`, `f1` to `f12`, or one character. |
+| Override | One chord replaces every default chord of that action. |
+| `"none"` | Unbinds the action. |
+| Malformed chord | The defaults stay. |
+| Unreadable file | Ignored. |
+
+| Action name | Default |
+| --- | --- |
+| `quit` | `ctrl+q`, `ctrl+d` |
+| `submit` | `enter` |
+| `submit_turn_queue` | `tab` |
+| `insert_newline` | `shift+enter`, `alt+enter`, `ctrl+j` |
+| `accept_suggestion` | `tab` |
+| `history_previous` | `up` |
+| `history_next` | `down` |
+| `history_dialog` | `ctrl+r` |
+| `sessions_dialog` | `ctrl+s` |
+| `rename` | `f2` |
+| `toggle_viewport` | `ctrl+o` |
+| `toggle_dialog_fullscreen` | `ctrl+f` |
+| `page_up` | `pgup` |
+| `page_down` | `pgdn` |
+| `scroll_home` | `home` |
+| `scroll_end` | `end` |
+| `help` | `?` |
+| `open_command_palette` | `ctrl+p` |
+| `paste_image` | `ctrl+v`, `ctrl+alt+v` |
+| `copy_selection` | `ctrl+shift+c` |
+
+The composer editing keys and Esc are fixed.

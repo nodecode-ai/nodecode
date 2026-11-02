@@ -1,0 +1,69 @@
+---
+title: The organism
+summary: "What runs when you type nodecode, what it keeps, and what happens when it stops."
+---
+
+An organism is a running Nodecode. There is one per home, and every terminal you open talks to it. Below are five things people do to it, each done two ways.
+
+{/* source: src/store/store.lisp */}
+## A second agent
+
+A home has one store, and one process owns it: a `nodecode serve` that the first shell started. Anything else that wants the store finds it taken.
+
+<Pair name="second">
+<Verdict>The store is taken, so it says ready and exits 0. Nothing new is running.</Verdict>
+<Verdict>A home of its own: its own store, port, layer and organism. See [Profiles](/profiles).</Verdict>
+</Pair>
+
+{/* source: src/client/client-boot.lisp */}
+## Done with a terminal
+
+With the background gateway off, the organism is a child of the shell that started it, and it lives as long as that shell does. Later shells only attach.
+
+<Pair name="done">
+<Verdict>The organism stops with it. The other shell starts a new one within a second, on the same port, and its turn picks up where it stopped. A value set with `setf` is gone.</Verdict>
+<Verdict>Only that shell closes. The organism, and everything in it, goes on.</Verdict>
+</Pair>
+
+The background gateway is on by default for `~/.nodecode/` and a named profile. The organism a shell runs then passes to the gateway when that shell closes, and comes up again at every login. Turn it off in `/settings` or with `nodecode gateway off`. Off, the organism runs only while a shell is open. See [The gateway](/gateway).
+
+{/* source: src/store/store.lisp */}
+## A launch looks stuck
+
+The owner holds a lock on `history.db.lock`. The operating system frees it when the owner exits, however it exits.
+
+<Pair name="stuck">
+<Verdict>The first organism still holds its lock, on a file that no longer exists. The next launch starts a second organism on the same store, on a new port. Two processes now write one history.</Verdict>
+<Verdict>Nothing runs and nothing holds the lock. The file stays, and the next `nodecode` takes it. If a launch still fails, the reason is in `history.db.stdio.log`.</Verdict>
+</Pair>
+
+{/* source: src/organism/scribe.lisp */}
+## Remember a value
+
+The organism keeps definitions. A top-level `defun` or `defparameter` is written to your layer and loads at every start. Anything else, state included, lives only as long as the process.
+
+<Pair name="remember">
+<Verdict>Set in this process only. After a restart, `boundp` says `NIL`, while a `defun` from the same hour is still there.</Verdict>
+<Verdict>A file in your layer, `~/.nodecode/cells/ada/` here, and a git commit. It loads at every start, in every shell. See [Eval and the layer](/eval).</Verdict>
+</Pair>
+
+{/* source: src/organism/evolve.lisp */}
+## Change a kernel function
+
+The kernel, `nodecode.kernel`, holds the store, the lock and the loader. The organism locks it at boot. Everything else is unlocked: `nodecode.evolved`, which holds the turn loop, the terminal core `nodecode.term` and the importer `nodecode.import`. The model may redefine any of it.
+
+<Pair name="kernel">
+<Verdict>The lock refuses it, and nothing is written to the layer.</Verdict>
+<Verdict>The hook runs around the kernel function, is kept in the layer, and loads in every process: here the home screen shows the full path.</Verdict>
+</Pair>
+
+{/* source: src/engine/exec.lisp */}
+## One tool, one log
+
+The organism has one tool, `eval`. A shell command, a file edit and a new definition are each a Lisp form in an `eval` call.
+
+<TurnFigure />
+
+Every fact is an event in `~/.nodecode/history.db`: a prompt, an answer, a tool call, its result. The transcript in every shell and the model's context are both read from it. History the model no longer sees stays in the log. See [Context and recall](/context).
+
+The gateway answers on `127.0.0.1`, on the port this store used last. There is no port option. Shells find it in `history.db.owner`. See [Files](/files).

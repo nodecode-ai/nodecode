@@ -1,0 +1,231 @@
+---
+title: Eval and the layer
+summary: "The eval tool, its helpers, and how a definition is kept, held, skipped, inspected and undone."
+---
+
+{/* source: src/engine/exec.lisp */}
+## Arguments
+
+`eval` evaluates Common Lisp forms in the running image.
+
+| Argument | Type | Does |
+| --- | --- | --- |
+| `form` | string, required | One or more forms, evaluated in order. |
+| `yield_time_ms` | integer | Milliseconds to wait before the form continues in the background. Default 10000. Maximum 600000. |
+| `strings` | object of strings | Named literal texts. Read one inside the form with `($ "name")`. |
+
+A multi-line cell may leave parens open. Its indentation closes them. A one-line cell must close its own.
+
+Use `strings` for text with backslashes, double quotes or newlines. In a Lisp string, `"\n"` reads as `n`.
+
+```lisp
+(edit "src/app.py" ($ "old") ($ "new"))
+```
+
+{/* source: src/engine/exec.lisp */}
+## Helpers
+
+Helpers are functions inside `eval`. Calling one as its own tool is refused with a repair hint.
+
+| Form | Does |
+| --- | --- |
+| `(sh "cmd")` | Runs the command through `sh -c` in the session's folder. Returns stdout and stderr merged. Adds `[exit N]` when the status is not 0. |
+| `(sh "cmd" :directory "dir")` | Runs it in `dir`. |
+| `(sh (list "git" "status"))` | Runs an argv list with no shell. |
+| `(edit path old new)` | Replaces the one occurrence of `old` in the file. Zero or several occurrences is an error. |
+| `(write-file path text)` | Writes the whole file. Creates parent folders. |
+| `(patch name old new)` | Changes one subform of a kept definition. Evaluates the result. Keeps it. Write `name`, `old` and `new` unquoted. |
+| `(look path)` | Attaches an image file to the turn. The model sees it at the next round. |
+| `($ "name")` | Reads one entry of `strings`, exact. |
+| `(fork "task 1" "task 2" ...)` | Forks this session once per task, at most 4, and waits for them all. Each fork holds this whole context, works its one task on the session's model, and answers. Each fork's turn is bounded by `fork.seconds`, 900 by default. `(help :fork)` has the rest. |
+| `(help)` | Lists the functions and topics. `(help :eval)` and `(help :layer)` have the detail. |
+
+| Limit | Value |
+| --- | --- |
+| `sh` stdin | Empty. |
+| `sh` output capture | 1,000,000 characters. Past that the command is killed. |
+| `look` formats | PNG, JPEG, GIF, WebP |
+| `look` file size | 5 MiB |
+| Relative paths | Resolved against the session's folder. |
+
+On Windows, `sh` uses the `sh.exe` from Git for Windows.
+
+{/* source: src/engine/turn.lisp */}
+## Result
+
+| Rule | Detail |
+| --- | --- |
+| Cap | 32,000 characters per result. |
+| Values | One `=>` line per form. Only the last value prints in full. |
+| Failure | The result names the failing form: `ERROR in form i of n`. Earlier forms stand. |
+| Compiler warnings | A `[warning: ...]` line leads the result. The form still ran. |
+| Note | A cell's leading `;;` line is its note. Eviction stubs keep it. |
+
+In the next cell, `*` is the last value of the previous cell. `/` is the list of its values.
+
+Linux only: a cell's last form is watched when it only reads. It finished quickly, its value prints whole in under 2,000 characters, and it reached nothing outside the image: no verb, no file, process or socket, no assignment, no definition. It runs again after each later cell. A change shows as `[watched FORM: OLD -> NEW]`. A cell that went on in the background is never watched.
+
+{/* source: src/engine/exec.lisp */}
+## Background evals
+
+A form still running after `yield_time_ms` continues in the background. It is never killed by the timeout.
+
+The call answers:
+
+```jsonc
+{"status":"running","eval_id":N}
+```
+
+The harness reads the exit for the model. It does so in the same turn, or in a new turn that wakes the session.
+
+| Form | Does |
+| --- | --- |
+| `(list-evals)` | Lists this image's background evals. |
+| `(eval-status N)` | Returns the output since the last look. Adds the value and exit code once exited. |
+| `(eval-await N)` | Waits for new output or the exit. Waits at most the calling cell's `yield_time_ms`. |
+| `(eval-await N :until-exit t)` | Waits for the exit only. |
+| `(eval-interrupt N)` | Aborts the eval. |
+| `(eval-interrupt N :force t)` | Terminates its thread. Use when the form traps the abort. |
+
+Background output is live only. The exit result is stored in the log.
+
+{/* source: src/organism/scribe.lisp */}
+## Kept definitions
+
+<LayerFigure />
+
+The layer is the set of definitions the agent wrote and kept.
+
+A defining form that evaluates successfully as a top-level form is kept. No confirmation is asked.
+
+| Kind | Kept operators |
+| --- | --- |
+| Functions | `defun`, `defmacro`, `defgeneric`, `defmethod`, `defsetf` |
+| Variables | `defvar`, `defparameter`, `defconstant` |
+| Types | `defclass`, `defstruct`, `deftype`, `defpackage` |
+| Other | `define`, and any `define-*` form such as `define-hook` |
+
+A definition inside a top-level `progn` or `eval-when` is kept as its own file.
+
+| Fact | Value |
+| --- | --- |
+| Folder | `~/.nodecode/cells/<name>/` |
+| `<name>` | `git config user.name`, else `$USER`, else `you`. Lowercased. Other characters become `-`. |
+| Files | One `.lisp` file per definition, plus a generated `.asd`. |
+| Git | One commit per write. The message names the definitions and the session id. |
+| Log | One `organism.definition_recorded` event. |
+| Result line | `[layer: kept NAME]` |
+| Load | From source at every boot, in every process, after all other cells. |
+| Compile cache | `~/.cache/nodecode/layers/<image-stamp>/` |
+
+Not kept:
+
+| Form | Do this |
+| --- | --- |
+| `setf` | Write a `defparameter`. |
+| A defining form built as a string and evaluated inside another form | Evaluate the defining form itself. |
+| A definition of a kernel name | See the kernel lock below. |
+
+Knowledge is kept the same way. `(define-memory name "one sentence" :type :feedback ...)` keeps a fact. `(define-skill name "one sentence" ...)` keeps a procedure in prose. Each is one file in `~/.nodecode/cells/<name>-memory/`, or in the folder `:cell "topic"` names, with one commit per write. These files never load. The `index` section lists them, `(index "text")` finds them, and `(help 'name)` reads one. Memory types: `:feedback`, `:user`, `:project`, `:reference`, `:lesson`. A `define-skill` with a lambda list is a `defun` and goes to the layer.
+
+{/* source: src/organism/hook.lisp */}
+## Hooks
+
+| Form | Does | Kept |
+| --- | --- | --- |
+| `(define-hook name "key" (next &rest args) ...)` | Runs the body around every call of `name`. | Yes |
+| `(hook 'name "key" fn)` | The same advice, live only. | No |
+| `(unhook 'name "key")` | Removes the hook. Deletes its layer file. | |
+
+A hook survives an upstream change to the function's body. A redefinition of a shipped function may be skipped at boot after an update.
+
+{/* source: src/organism/evolve.lisp */}
+## Kernel lock
+
+The kernel is the package `nodecode.kernel`, nickname `nlk`. It is locked at boot. The boot records an `organism.floor_engaged` event.
+
+| Action | Result |
+| --- | --- |
+| Redefine a kernel name while locked | Error. |
+| Define a kernel name in a cell | Never written to the layer. The result says `[layer: NAME is floor material; ...]`. |
+| Advise a kernel function with `define-hook` | Allowed. Kept. |
+
+The agent can lower the lock itself:
+
+```lisp
+(lower-floor :session-id "s-..." :requested-by "who asked" :reason "why")
+```
+
+All three arguments are required. An `organism.floor_lowered` event is recorded before the unlock.
+
+<Note head="No sandbox">The kernel lock is not a security boundary. `eval` has full host authority. See [Safety and trust](/security).</Note>
+
+{/* source: src/organism/provisional.lisp */}
+## Held definitions
+
+A redefinition is held when its name is running on the stack of the calling cell. The turn loop, `agent-loop`, always is.
+
+1. The new definition goes live at once.
+2. It is written to the layer after it has been entered and has returned once.
+3. If that first run signals an error, the old definition is restored.
+4. The session is woken with the error.
+
+A cancelled turn does not count as a failed first run.
+
+A `defun` of a held name whose lambda list cannot take its callers' calls is refused. The form is not evaluated. Give the new function a name of its own.
+
+| Form | Does |
+| --- | --- |
+| `(held-definitions)` | Lists what waits for a first run. |
+| `(revert 'name)` | Puts back the displaced definition, or the one this image booted with. |
+
+`revert` changes the image only. It leaves the layer file as it is.
+
+{/* source: src/organism/cells.lisp */}
+## Skipped files
+
+At boot a layer file is skipped in two cases:
+
+| Case | Example |
+| --- | --- |
+| The shipped text it overrides has changed or is gone | An update rewrote the function. |
+| It names a function or variable that nothing defines | An update removed a helper. |
+
+The shipped definition stands. The boot line and `(cells)` name the file and the reason. Other files still load.
+
+The gateway then submits the skipped files to a session named `layer`. The agent redefines or forgets each one. Each skipped file is handed once. This turn spends tokens.
+
+{/* source: src/engine/exec.lisp */}
+## Source edits
+
+`edit` or `write-file` on a file this image loads from evaluates the changed definitions at once. This covers the shipped source, cell folders and the layer.
+
+| Receipt line | Meaning |
+| --- | --- |
+| `live here: ...` | Already running in this process. |
+| `not live until a relaunch: ...` | Needs a relaunch: a struct, a class, a package, a constant. |
+
+{/* source: src/organism/scribe.lisp */}
+## Inspect and undo
+
+| Form or command | Does |
+| --- | --- |
+| `(cells)` or `/cells` | Reports each folder: definitions, overrides, collisions, skipped files, failures. |
+| `(definition-text 'name)` | Reads the live definition. |
+| `(definition-location 'name)` | Names where it lives: the layer file and the shipped file. |
+| `(held-definitions)` | Lists held definitions. |
+| `(revert 'name)` | Restores the previous function in the image. |
+
+Forget a definition with a top-level form. The name leaves the image. Its file is deleted. The commit reads `forgot NAME`.
+
+```lisp
+(fmakunbound 'name)
+(makunbound '*name*)
+(unhook 'name "key")
+(remove-method ...)
+(unintern 'name)
+```
+
+A forgetting form computed inside another form is not seen.
+
+Undo a whole change with a generation. `(generations)` or `/generations` lists them. `(rollback N)` or `nodecode rollback N` puts every folder back to what N recorded. The layer takes one commit forward and keeps its history. The binary stays on the release that runs. See [Updates](/updates). The organism exits once no turn is running, and the next launch runs N. Under `--pristine` nothing is kept.
