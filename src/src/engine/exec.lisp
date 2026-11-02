@@ -531,20 +531,23 @@ swallows the soft interrupt condition forces). BY names who stopped it --
                                 :end (exec-total-len process))))
   (if hard
       (when (and thread (bt2:thread-alive-p thread))
-        (ignore-errors (bt2:destroy-thread thread)))
+        (nlk:terminate-thread-safely thread))
       ;; Only a still-running eval takes the abort (INTERRUPT-RUNNING).
       (interrupt-running process (lambda ()
                                    (apply #'error 'background-eval-interrupt
                                           (and message (list :message message)))))))
 
-(defun interrupt-running (process fn &aux (thread process.wait-thread))
+(defun interrupt-running (process fn &key (within 2) &aux (thread process.wait-thread))
   ;; FN on PROCESS's evaluating thread while that lives => the thread. The
   ;; interruption may land after the eval completed but before its thread
   ;; exits; signalling then would unwind outside the lifecycle's handler, so
-  ;; FN runs there only while the evaluation still runs.
+  ;; FN runs there only while the evaluation still runs. Delivered where its
+  ;; unwind strands no C library's lock (INTERRUPT-THREAD-SAFELY, WITHIN).
   (when (and thread (bt2:thread-alive-p thread))
     (ignore-errors
-     (bt2:interrupt-thread thread (lambda () (when (eq :running process.status) (funcall fn)))))
+     (nlk:interrupt-thread-safely
+      thread (lambda () (when (eq :running process.status) (funcall fn)))
+      :within within))
     thread))
 
 ;;; --- the runaway probe -------------------------------------------------------
@@ -612,14 +615,15 @@ and the threads evaluating a snippet in place, which no registry holds."
   (dolist (process (bt2:with-lock-held (registry.lock) (copy-list registry.processes)))
     ;; only a still-running evaluation takes the verdict (INTERRUPT-RUNNING)
     (when (eq :running process.status)
-      (when-let (thread (interrupt-running process 'eval-runaway-thread-probe))
+      (when-let (thread (interrupt-running process 'eval-runaway-thread-probe :within 0))
         (push thread backgrounded))))
   ;; A synchronous snippet has no process; its thread carries the evaluation
   ;; itself. Skip one already probed above as a background eval's thread.
   (dolist (thread (guarded-evaluating-threads))
     (unless (member thread backgrounded)
+      ;; One delivery: a probe that lands inside C code skips this pass.
       (ignore-errors
-       (bt2:interrupt-thread thread #'eval-runaway-thread-probe)))))
+       (nlk:interrupt-thread-safely thread #'eval-runaway-thread-probe :within 0)))))
 
 (defun control-stack-usage (&aux (sp (sb-sys:sap-int (sb-vm::current-sp)))
                                  (thread sb-thread:*current-thread*)

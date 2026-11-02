@@ -131,7 +131,7 @@
             ;; would wait for a read timeout SBCL never applies to a socket
             ;; on Windows: end it, and its socket with it.
             (dolist (worker (workers))
-              (ignore-errors (sb-thread:terminate-thread worker)))
+              (ignore-errors (nlk:terminate-thread-safely worker)))
             (loop repeat 150 while (workers) do (sleep 0.02))
             (when (workers)
               (error "warm-image: a gateway worker did not stop"))))))))

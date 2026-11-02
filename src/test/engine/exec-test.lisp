@@ -796,7 +796,7 @@ completed. BODY runs with SID bound."
                   (lambda ()
                     (handler-case (nle:sh (list "sleep" marker)) (error () :unwound))))))
     (sleep 0.3)
-    (bt2:interrupt-thread thread (lambda () (error "eval-interrupt")))
+    (nlk:interrupt-thread-safely thread (lambda () (error "eval-interrupt")))
     (is (eq :unwound (bt2:join-thread thread)) "the evaluation unwound")
     (is (equal "" (nle:sh (format nil "pgrep -x -f 'sleep ~a' || true" marker))))))
 

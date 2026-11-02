@@ -262,7 +262,7 @@ for the operator's own stop from a surface (TURN-CANCEL-CAUSE)."
       ;; in WITH-CANCELLABLE-WAIT's cleanup. A stale delivery is harmless — the
       ;; interruption function is a guarded no-op once the region is gone.
       (dolist (thread waiting)
-        (ignore-errors (bt2:interrupt-thread thread #'cancel-wait-interruption))))
+        (ignore-errors (interrupt-thread-safely thread #'cancel-wait-interruption))))
     turn))
 
 

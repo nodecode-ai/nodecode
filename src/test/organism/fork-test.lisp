@@ -137,7 +137,7 @@ NEEDLE, or NIL."
                                           (catch 'stop (nlk:fork "a task the caller gives up on"))))
                                       :name "fork-caller")))
         (is (await (:timeout 10) (nlk:active-turn-p child)) "the fork's turn runs")
-        (bt2:interrupt-thread caller (lambda () (throw 'stop :stopped)))
+        (nlk:interrupt-thread-safely caller (lambda () (throw 'stop :stopped)))
         (is (eq :stopped (bt2:join-thread caller)) "the call stopped waiting")
         (is (await (:timeout 10) (nlk:events :session-id child :kind "turn.cancelled" :as :exists)) "and its fork's turn was cancelled")
         (is (zerop (hash-table-count nlk::*fork-waiting*)) "no fork is left waited on")))))

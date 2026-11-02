@@ -1716,3 +1716,139 @@ page comes back alone when next touched."
     released)
   #-linux
   (progn image nil))
+
+;;; --- interrupting a thread: where an unwind may land ------------------------
+;;; An interruption runs on top of whatever its thread was doing, C frames
+;;; included: SBCL delivers it inside foreign code as readily as in Lisp. One
+;;; that unwinds -- a THROW, an ERROR, ABORT-THREAD -- discards those C frames
+;;; without their cleanup, and a C function that held a lock when it was
+;;; interrupted holds it for good. malloc's arena lock is the one that bites:
+;;; every thread shares two arenas (CAP-MALLOC-ARENAS), so the next malloc or
+;;; free that misses its thread's cache, on any thread, waits on it forever,
+;;; at 0% CPU and deaf to SIGINT. A full `just test' froze so for six hours:
+;;; the main thread joining a thread, in free, on the main arena, and no live
+;;; thread holding it. The test it froze in had done nothing wrong; an earlier
+;;; stop had unwound a thread out of malloc.
+;;;
+;;; So an interruption that may unwind goes through INTERRUPT-THREAD-SAFELY.
+;;; It runs where the interrupted pc is Lisp code, or where the thread is
+;;; parked in a system call that waits -- a read, a poll, an accept, a sleep,
+;;; a wait for a child or a futex the runtime itself sleeps on -- across which
+;;; no C library lock is held. Landed anywhere else in C it does nothing, and
+;;; is sent again a moment later, by when the thread is past the malloc it
+;;; found. The parked case is what a stop is for (a turn waiting on its
+;;; provider, an evaluation in SLEEP or SH), so it stays reachable; the
+;;; classification reads the interrupted context's pc and result register.
+;;; Where that reading is not written (only x86-64 Linux is), every landing
+;;; counts as safe, as it did before; Windows interrupts at safepoints only.
+
+#+(and linux x86-64)
+(defparameter +waiting-syscalls+
+  '(0 1 7 17 18 19 20 23 34 35 42 43 44 45 46 47 61 72 73 202 230 232 247 270 271 281 288)
+  "x86-64 Linux system calls a thread parks in while it waits on something
+outside it: read, write, poll, pread64, pwrite64, readv, writev, select,
+pause, nanosleep, connect, accept, sendto, recvfrom, sendmsg, recvmsg, wait4,
+fcntl, flock, futex, clock_nanosleep, epoll_wait, waitid, pselect6, ppoll,
+epoll_pwait, accept4.")
+
+#+(and linux x86-64)
+(defun %pc-function-name (pc)
+  "The name of the exported C function PC is in, or NIL."
+  (sb-alien:with-alien ((info (sb-alien:array sb-sys:system-area-pointer 4)))
+    (unless (zerop (sb-alien:alien-funcall
+                    (sb-alien:extern-alien "dladdr" (function sb-alien:int sb-sys:system-area-pointer
+                                                             (* (sb-alien:array sb-sys:system-area-pointer 4))))
+                    pc (sb-alien:addr info)))
+      (let ((name (sb-alien:deref info 2)))
+        (unless (zerop (sb-sys:sap-int name))
+          (sb-alien::c-string-to-string name :latin-1 'character))))))
+
+(defun interruption-may-unwind-p (&aux (context sb-kernel:*current-internal-error-context*))
+  "Inside an interruption, true when unwinding out of it strands no C
+library's lock: its thread was running Lisp code, or was parked in a system
+call that waits (+WAITING-SYSCALLS+)."
+  ;; Nothing here may call malloc: this can run on top of a malloc that holds
+  ;; its arena's lock, and the lock is not recursive. dladdr does not.
+  #+(and linux x86-64)
+  (or (null context)                    ; run outside a signal: Lisp
+      (let* ((context (sb-alien:sap-alien context (* sb-sys:os-context-t)))
+             (pc (sb-vm:context-pc context))
+             (address (sb-sys:sap-int pc))
+             (result (sb-vm:context-register context sb-vm::rax-offset)))
+        (flet ((syscall-at (offset)
+                 ;; the two bytes of `syscall' (0F 05), read only inside pc's page
+                 (let ((byte (+ (logand address #xfff) offset)))
+                   (and (<= 0 byte) (<= (+ byte 2) #x1000)
+                        (= #x0f (sb-sys:sap-ref-8 pc offset))
+                        (= #x05 (sb-sys:sap-ref-8 pc (1+ offset)))))))
+          (or (and (sb-di::code-header-from-pc pc) t)
+              ;; A wait the signal broke: the call returned -EINTR, pc past it.
+              (and (= result (- (ash 1 64) 4)) (syscall-at -2))
+              ;; A wait the kernel will restart: pc back on the call, and the
+              ;; result register holding its number again. A futex only from
+              ;; libc's syscall(), which is how the runtime sleeps; glibc's own
+              ;; lock waits (__lll_lock_wait) may sit inside another lock.
+              (and (member result +waiting-syscalls+)
+                   (syscall-at 0)
+                   (or (/= result 202)
+                       (equal (%pc-function-name pc) "syscall")))))))
+  #-(and linux x86-64)
+  (progn context t))
+
+(defparameter *interrupt-resend-seconds* 0.001
+  "How long INTERRUPT-THREAD-SAFELY waits before sending again an
+interruption that landed inside C code.")
+
+(defun interrupt-thread-safely (thread function &key (within 2))
+  "Run FUNCTION in THREAD as BT2:INTERRUPT-THREAD does, but only where an
+unwind out of it strands nothing (INTERRUPTION-MAY-UNWIND-P): landed inside
+other C code it is sent again, until it runs or WITHIN seconds pass.
+=> :RAN; :GONE when THREAD has ended; :QUEUED when THREAD holds interruptions
+back past WITHIN (it runs, in Lisp, once they are allowed again); NIL when
+THREAD stayed inside C code for WITHIN seconds and FUNCTION did not run."
+  ;; THREAD a bordeaux or an SBCL thread. The call waits for each delivery to
+  ;; land, which is microseconds unless THREAD defers interruptions
+  ;; (WITHOUT-INTERRUPTS, a guarded SQLite call): at least a twentieth of a
+  ;; second, so WITHIN 0 makes one delivery and a probe that may skip a pass
+  ;; asks that.
+  (let ((native (if (typep thread 'sb-thread:thread) thread (bt2:thread-native-thread thread)))
+        (deadline (+ (get-internal-real-time) (* within internal-time-units-per-second))))
+    (loop
+      (let ((landed (sb-thread:make-semaphore))
+            (where (list nil)))
+        (unless (ignore-errors
+                 (sb-thread:interrupt-thread
+                  native (lambda ()
+                           (let ((safe (interruption-may-unwind-p)))
+                             (setf (car where) (if safe :ran :deferred))
+                             (sb-thread:signal-semaphore landed)
+                             (when safe (funcall function)))))
+                 t)
+          (return :gone))
+        (unless (sb-thread:wait-on-semaphore
+                 landed :timeout (max 0.05 (/ (- deadline (get-internal-real-time))
+                                              internal-time-units-per-second)))
+          (return (if (sb-thread:thread-alive-p native) :queued :gone)))
+        (when (eq (car where) :ran)
+          (return :ran))
+        (when (>= (get-internal-real-time) deadline)
+          (return nil))
+        (sleep *interrupt-resend-seconds*)))))
+
+(defun terminate-thread-safely (thread &key (within 2))
+  "End THREAD as SB-THREAD:TERMINATE-THREAD does, delivered where its unwind
+strands nothing (INTERRUPT-THREAD-SAFELY, whose answer this is)."
+  (interrupt-thread-safely thread (lambda () (sb-thread:abort-thread :allow-exit t))
+                           :within within))
+
+;;; Libraries end their own threads through BT2:DESTROY-THREAD -- the
+;;; websocket client its reader on every close, clack its acceptor -- so the
+;;; entry itself goes through TERMINATE-THREAD-SAFELY. Idempotent: a reload
+;;; replaces the advice rather than stacking it.
+(when (sb-int:encapsulated-p 'bt2:destroy-thread 'safe-point)
+  (sb-int:unencapsulate 'bt2:destroy-thread 'safe-point))
+(sb-int:encapsulate 'bt2:destroy-thread 'safe-point
+                    (lambda (next thread)
+                      (if (eq thread (bt2:current-thread))
+                          (funcall next thread) ; its own refusal
+                          (progn (terminate-thread-safely thread) thread))))
