@@ -56,10 +56,24 @@ shape shasht gives JSON => (values VALUE REFUSALS)."
   ;; to isolate and is refused whole.
   (let* ((raw (map 'vector (lambda (line) (string-right-trim '(#\Return) line))
                    (uiop:split-string text :separator '(#\Newline))))
+         (started nil)
+         (ended nil)
          (lines (loop for line across raw
                       for number from 1
                       for content = (string-right-trim '(#\Space #\Tab) (strip-comment line))
                       for trimmed = (string-trim '(#\Space #\Tab) content)
+                      ;; One document: a `---' opens it and a `...' may close it, but a
+                      ;; `---' after content, or content after a `...', starts another,
+                      ;; which this reader refuses by name rather than merging into one.
+                      do (cond ((string= content "---")
+                                (when (or started ended)
+                                  (fail-document "config.yaml line ~d: more than one document is not read"
+                                                 number)))
+                               ((string= content "...") (setf ended t))
+                               ((string= trimmed ""))
+                               (ended (fail-document "config.yaml line ~d: more than one document is not read"
+                                                     number))
+                               (t (setf started t)))
                       unless (member trimmed '("" "---" "...") :test #'string=)
                         do (when (uiop:string-prefix-p "%" trimmed)
                              (fail-document "config.yaml line ~d: directives are not read" number))
