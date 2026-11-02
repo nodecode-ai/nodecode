@@ -108,7 +108,11 @@
   ;; on an :integer, is the smallest value it may take. CHOICES, on a :list,
   ;; is a function of the section's table answering ((id . label) ...) — how a
   ;; panel offers ids by name — or signalling CONFIG-REFUSAL with the reason
-  ;; it cannot.
+  ;; it cannot. A second value, a plist, may say more: :WAIT TEXT, there is
+  ;; nothing to pick from until the operator does what TEXT says on the
+  ;; platform (a walk waits and asks again); :FOUND TEXT, one line on what
+  ;; there is to pick from (a walk's wait ends on it); :DEFAULT IDS, what an
+  ;; unset field takes when the operator just presses Enter.
   (name "" :type string)
   (type :string :type keyword)
   (required nil)
@@ -126,7 +130,9 @@
   ;; member of a ONE-OF group must be set, at least one member of an ANY-OF
   ;; group must be non-empty. GUIDE is the operator's walk in prose; CHECK,
   ;; when present, is a function of the section's table answering a text once
-  ;; the section is complete, or signalling CONFIG-REFUSAL. READER, when
+  ;; the section is complete (and, as a second value, one line saying what it
+  ;; saw, which a setup walk folds the step into), or signalling
+  ;; CONFIG-REFUSAL. READER, when
   ;; present, is a function of the values the fields derive and the section's
   ;; table, answering the plist the owner runs on or signalling
   ;; CONFIG-REFUSAL: a nested object, a bound between members, a value read

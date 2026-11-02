@@ -1250,6 +1250,9 @@ MODEL's transport."
         (multiple-value-bind (percent through valid-p) (evict-args args)
           (values (if valid-p (slash-evict-op model percent through) *evict-usage-hint*)
                   nil)))
+       ((and (string= name "gateway") (equal "setup" (first (split-words (or args "")))))
+        ;; A channel set up step by step, on a sheet over the shell.
+        (values (open-channel-setup model (second (split-words args))) nil))
        ((member name '("gateway" "web") :test #'string=)
         ;; The machine's gateway, not a session's state: local, like /profile.
         ;; Its verbs wait on systemd — an off waits on the gateway's own unwind

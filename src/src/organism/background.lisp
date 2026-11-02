@@ -995,7 +995,7 @@ organism keeps standing (a bot's state among them)."
    (make-verb "status" "whether it runs, what it serves, whether it starts at login"
               :detail "What the command prints with no verb: serving, waiting for a shell to close, starting, stopped or failed; its pid, port, uptime and build; whether it starts at login and keeps running after a logout; and the lines the organism keeps standing, a bot's state among them.")
    (make-verb "setup" "connect a bot to it: Discord, Telegram, Slack" :arguments "[CHANNEL]"
-              :detail "Walks one channel in the terminal, over the organism serving this home, and offers to turn the gateway on when none serves: installs the channel's cell, keeps the pasted bot token in a 0600 file in this home's secrets folder (or names the environment variable that holds it), checks it against the platform, picks the rooms and people it answers from what the token can see, and starts the channel. CHANNEL skips the choice: `setup discord'. Run it again to change one; /settings > Channels and the web page's Control > Channels edit the same section.")
+              :detail "Opens the shell straight on a sheet that sets one channel up step by step (/gateway setup in a shell already open), over the organism serving this home. It switches the channel's cell on, keeps the pasted bot token in a 0600 file in this home's secrets folder (or names the environment variable that holds it) and checks it against the platform, waits while the bot is in no server yet, has the rooms and people it answers picked from a checklist of what the token sees, and starts the channel. CHANNEL skips the choice: `setup discord'. Open it again to change one; /settings > Channels and the web page's Control > Channels edit the same section.")
    (make-verb "on" "run it in the background from now on, and at every login"
               :detail "Writes the unit the operating system runs — a systemd user unit on Linux, a LaunchAgent on macOS; nodecode-gateway, nodecode-gateway-NAME for a profile — enables and starts it, and on Linux asks logind to keep it running after you log out. While a shell runs the organism the gateway waits, and takes over when that shell closes; every shell opened after attaches to it. A bot or a cron job turns it on by itself, once, unless you turned it off.")
    (make-verb "off" "stop it, and stop starting it at login"
@@ -1041,5 +1041,5 @@ its help prints, what a mistyped verb is matched against.")
                 (nothing-more)
                 (gateway-log-text))
         ("run" (usage-fail verb "run is the command line's own: `nodecode gateway run' serves in the foreground."))
-        ("setup" (usage-fail verb "setup is the command line's own: `nodecode gateway setup' walks it in a terminal; here, /settings > Channels sets up the same section."))
+        ("setup" (usage-fail verb "setup runs in the shell: `nodecode gateway setup discord' opens it there, and /gateway setup in a shell already open; the web page's Control > Channels sets up the same section."))
         (t (error "the gateway verb ~a has no branch in GATEWAY-TEXT" verb))))))

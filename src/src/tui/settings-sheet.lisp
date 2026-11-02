@@ -238,7 +238,13 @@ Models (SETTINGS-PAGES)."
                :applies (settings-apply-text section)
                :json section))
         (models (cdr (assoc key +models-fields+ :test #'equal))))
-    (setf part.rows (append (when-let (row (paste-setting part)) (list row))
+    (setf part.rows (append (when (and (equal "channels" (first path)) (rest path))
+                              ;; A channel sets up step by step on a sheet of its own.
+                              (let ((id (second path)))
+                                (list (make-setting :label "Set up" :kind :action :part part :text "Step by step"
+                                                    :doc (format nil "The token, a wait while the bot joins a server, then its channels and people from a checklist: /gateway setup ~a." id)
+                                                    :act (lambda (model) (open-channel-setup model id))))))
+                            (when-let (row (paste-setting part)) (list row))
                             (loop for field in (settings-section-fields section)
                                   unless (member (json-value field :string "name") models :test #'equal)
                                     collect (field-setting part field))

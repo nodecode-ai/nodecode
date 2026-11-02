@@ -1,4 +1,4 @@
-;;;; entry.lisp --- warnings, stdio severance, the entry point, the command line, gateway setup. Evolved package.
+;;;; entry.lisp --- warnings, stdio severance, the entry point, the command line. Evolved package.
 ;;;;
 ;;;; SPDX-License-Identifier: MIT
 
@@ -451,7 +451,8 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
   ;; `--store' named; EPHEMERAL whether the shell boots a throwaway store of
   ;; its own, which excludes the other three ways of naming one; SETUP whether
   ;; the shell opens the setup wizard on its first frame, T for `setup' and
-  ;; the import request plist (:import WORLD ...) for `import'; PROFILE the
+  ;; the import request plist (:import WORLD ...) for `import', or a channel's
+  ;; setup sheet, (:channel-setup CHANNEL) for `gateway setup [CHANNEL]'; PROFILE the
   ;; profile `-p NAME' or `--profile NAME' named, anywhere on the line;
   ;; PRISTINE whether `--pristine' asked for generation 0, the binary alone.
   ;;
@@ -550,6 +551,16 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
                       (launch-usage-error "--cursor resumes a session past a log position: ~
                                              nodecode rpc SESSION-ID --cursor N"))
                     (setf child (list :rpc session cursor))))
+                 ;; `gateway setup [CHANNEL]' is the shell, opened straight on
+                 ;; the channel's setup sheet; `gateway setup --help' is the
+                 ;; gateway verbs' help, like every verb's.
+                 ((and (string= name "gateway") (equal (first args) "setup")
+                       (notany #'nlk:help-flag-p (rest args)))
+                  (pop args)
+                  (setf setup (list :channel-setup
+                                    (and args (not (uiop:string-prefix-p "-" (first args))) (pop args))))
+                  (when (and args (not (uiop:string-prefix-p "-" (first args))))
+                    (launch-usage-error "gateway setup takes one CHANNEL: nodecode gateway setup discord")))
                  ;; `gateway run' is the gateway itself: the headless owner
                  ;; that waits for the store instead of losing it.
                  ((and (string= name "gateway") (equal (first args) "run"))
@@ -620,7 +631,9 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
         (launch-usage-error "--ephemeral chooses the store; --store PATH names one yourself")))
     (when (and setup serve)
       (launch-usage-error "~a is a shell's verb: a headless owner has no wizard"
-                          (if (consp setup) "import" "setup")))
+                          (cond ((and (consp setup) (eq (first setup) :channel-setup)) "gateway setup")
+                                ((consp setup) "import")
+                                (t "setup"))))
     (when (and child (eq (first child) :rpc) (or serve session-id setup))
       (launch-usage-error "rpc is a command of its own: nodecode [-p NAME] rpc ~a"
                           (nlk:verb-arguments (nlk:find-verb "rpc" *launch-verbs*))))
@@ -1047,334 +1060,9 @@ journalctl until it is interrupted."
                                           :error-output :interactive :ignore-error-status t)
             (sb-sys:interactive-interrupt () nil))
           (values "" 0 :output))
-         ;; `setup --help' is the verbs' help, like every verb's.
-         ((and (equal (first words) "setup")
-               (not (intersection '("--help" "-h") (rest words) :test #'string=)))
-          (handler-case (gateway-setup-text (rest words))
-            (sb-sys:interactive-interrupt ()
-              (values "setup stopped; what it saved stays saved" 130 :error))))
          (t (values (nlk:gateway-text words :command "nodecode gateway" :live #'gateway-live-facts)
                     0 :output)))
    (nlk:gateway-usage-error (refusal) (values (princ-to-string refusal) 2 :error))))
-
-;;; --- `nodecode gateway setup' ----------------------------------------------
-;;; A terminal walk over the organism's own config surface, the calls the web
-;;; page's Control > Channels > Set up and /settings make: switch the channel's
-;;; cell on (POST /api/gateway/cells), keep a pasted token in the section's
-;;; 0600 file (POST /api/gateway/config {secret}), check it against the
-;;; platform (/config/probe), pick who it answers from what the token sees
-;;; (/config/probe {field}), write those members (/config {path, value}) and
-;;; start the channels again (/api/channels?op=restart). The walk reads and
-;;; writes no file itself; every refusal is the organism's, in its words.
-
-(define-condition gateway-setup-ended (error) ()
-  (:report "the input ended")
-  (:documentation "A question of the setup walk read no line: no terminal, or end of input."))
-
-(defun terminal-secret-answer (question &key (input *standard-input*) (output *error-output*))
-  "Ask QUESTION and read one line back with the terminal's echo off, or NIL
-when there is no terminal to ask (TERMINAL-ANSWER's rule)."
-  #+win32 (progn question input output nil)
-  #-win32
-  (when (interactive-stream-p input)
-    (flet ((stty (word)
-             (ignore-errors
-              (uiop:run-program (list "stty" word) :input :interactive
-                                                   :output nil :error-output nil)
-              t)))
-      (format output "~a " question)
-      (finish-output output)
-      (let ((quiet (stty "-echo")))
-        (unwind-protect (read-line input nil nil)
-          (when quiet (stty "echo"))
-          (terpri output)
-          (finish-output output))))))
-
-(defun default-yes-p (reply)
-  "Whether REPLY, a line typed at a [Y/n] question, says yes: an empty one does."
-  (and (stringp reply)
-       (or (string= "" (string-trim '(#\Space #\Tab #\Return) reply))
-           (yes-answer-p reply))))
-
-(defun gateway-setup-port (ask out &key (seconds 120))
-  "The port of the organism serving this home; when none does, the gateway
-turned on (NLK:GATEWAY-ON) once ASK says yes, and its port once it serves.
-NIL when the operator says no or it does not serve within SECONDS."
-  (or (organism-port)
-      (progn
-        (format out "~&A bot runs inside this home's organism, and none is running.~%")
-        (unless (default-yes-p (funcall ask "Turn the gateway on: run it in the background now and at every login? [Y/n]"))
-          (return-from gateway-setup-port nil))
-        (nlk:gateway-on)
-        (format out "Starting the gateway")
-        (loop with deadline = (+ (get-universal-time) seconds)
-              for port = (organism-port)
-              when (and port (ignore-errors
-                              (gateway-http-session-request port :get "/api/gateway/identity" nil
-                                                            (gateway-configured-operator-token)
-                                                            :connect-timeout 2 :read-timeout 3)))
-                do (format out " serving.~%")
-                   (return port)
-              while (< (get-universal-time) deadline)
-              do (format out ".")
-                 (finish-output out)
-                 (sleep 1)
-              finally (format out "~%")
-                      (return nil)))))
-
-(defun gateway-setup-section (call id)
-  "The channels.ID section as GET /api/gateway/config draws it, or NIL."
-  (find (format nil "channels.~a" id)
-        (json-array (funcall call :get "/api/gateway/config" nil) "sections")
-        :key (lambda (section) (json-value section :string "key")) :test #'equal))
-
-(defun gateway-setup-write (call out object)
-  "POST OBJECT as a config write and print what the organism says it did."
-  (format out "~a~%" (or (json-value (funcall call :post "/api/gateway/config" object) :string "said")
-                          "saved")))
-
-(defun gateway-setup-member-path (path name)
-  "The member NAME of the section at PATH, as a write's path."
-  (concatenate 'vector path (vector name)))
-
-(defun gateway-setup-refusal (condition)
-  "The organism's words for a 400 CONDITION; any other status is not the
-operator's to answer, so it goes on up."
-  (if (eql 400 (gateway-http-error-status condition))
-      (gateway-http-error-detail condition)
-      (error condition)))
-
-(defun gateway-setup-picks (reply choices)
-  "The ids REPLY names: each comma- or space-separated word a 1-based number
-into CHOICES ((ID . LABEL) ...), or an id as typed."
-  (loop for word in (uiop:split-string reply :separator '(#\, #\Space #\Tab))
-        for number = (and (plusp (length word)) (every #'digit-char-p word)
-                          (parse-integer word))
-        unless (string= word "")
-          collect (if (and number (<= 1 number (length choices)))
-                      (car (nth (1- number) choices))
-                      word)))
-
-(defun gateway-setup-secret (call ask-secret out path section)
-  "Keep the token SECTION takes by reference: a pasted one in its 0600 file,
-or $NAME, the environment variable the organism reads it from. => :KEPT when
-an Enter keeps a set one, :WRITTEN."
-  (let* ((secret (json-value section :object "secret"))
-         (noun (json-value secret :string "noun"))
-         (env (json-value secret :string "env"))
-         (file (json-value secret :string "file"))
-         (set (loop for field across (json-array section "fields")
-                    for name = (json-value field :string "name")
-                    when (and (member name (list env file) :test #'equal)
-                              (json-value field :boolean "set"))
-                      return name)))
-    (loop
-      (let ((text (string-trim '(#\Space #\Tab #\Return)
-                               (funcall ask-secret
-                                        (if set
-                                            (format nil "The ~a is set. Enter keeps it; paste a new one, or $NAME for the environment variable that holds it:" noun)
-                                            (format nil "Paste the ~a (it is not shown), or $NAME for the environment variable that holds it:" noun))))))
-        (cond ((string= text "")
-               (if set (return :kept) (format out "The ~a is needed.~%" noun)))
-              ((char= #\$ (char text 0))
-               (let ((name (subseq text 1)))
-                 (cond ((equal set file)
-                        (format out "The ~a is kept in a file now: paste the token itself to replace it.~%" noun))
-                       ((not (and (plusp (length name))
-                                  (every (lambda (char) (or (alphanumericp char) (char= char #\_))) name)))
-                        (format out "~s is not an environment variable's name.~%" name))
-                       (t (gateway-setup-write call out (json-object "path" (gateway-setup-member-path path env)
-                                                                     "value" name))
-                          (return :written)))))
-              (t (gateway-setup-write call out (json-object "path" path "secret" text))
-                 ;; The file names it now; the variable it replaces goes, so one of the two is set.
-                 (when (equal set env)
-                   (funcall call :post "/api/gateway/config"
-                            (json-object "path" (gateway-setup-member-path path env) "remove" t)))
-                 (return :written)))))))
-
-(defun gateway-setup-check (call ask out path)
-  "What the section at PATH's check says its token sees, printed, and
-whether the operator goes on with that token: T, or NIL to paste another --
-also when the check refused it, the refusal printed."
-  ;; The check's text is a report (a wrong token is one of its lines), not a
-  ;; verdict: the operator, who reads it, decides.
-  (handler-case
-      (let ((text (json-value (funcall call :post "/api/gateway/config/probe" (json-object "path" path))
-                              :string "text")))
-        (format out "~&~%What the token sees:~%~{  ~a~%~}" (uiop:split-string (or text "") :separator '(#\Newline)))
-        (default-yes-p (funcall ask "Go on with this token? [Y/n]")))
-    (gateway-http-error (condition)
-      (format out "~&The check refused it: ~a~%" (gateway-setup-refusal condition))
-      nil)))
-
-(defun gateway-setup-field (call ask out path field &aux (name (json-value field :string "name"))
-                                                       (list (equal "list" (json-value field :string "type"))))
-  "Ask for FIELD of the section at PATH -- from the ids its token can see
-when it offers choices -- and write what the answer names; an Enter keeps it."
-  (let ((choices (and (json-value field :boolean "choices")
-                      (handler-case
-                          (map 'list (lambda (choice) (cons (json-value choice :string "id")
-                                                            (json-value choice :string "label")))
-                               (json-array (funcall call :post "/api/gateway/config/probe"
-                                                    (json-object "path" path "field" name))
-                                           "choices"))
-                        (gateway-http-error (condition)
-                          (format out "~&  (nothing to pick from: ~a)~%" (gateway-setup-refusal condition))
-                          nil)))))
-    (format out "~&~%~a: ~a~@[~%  now: ~a~]~%" name (json-value field :string "doc")
-            (and (json-value field :boolean "set") (json-value field :string "text")))
-    (loop for (id . label) in choices
-          for number from 1
-          do (format out "  ~3d  ~a~:[  ~a~;~]~%" number label (search id label) id))
-    (loop
-      (let ((text (string-trim '(#\Space #\Tab #\Return)
-                               (funcall ask (cond (choices "Numbers or ids, comma-separated; Enter keeps it:")
-                                                  (list "Ids, comma-separated; Enter keeps it:")
-                                                  (t "Value; Enter keeps it:"))))))
-        (when (string= text "") (return :kept))
-        (handler-case
-            (progn (gateway-setup-write call out (json-object "path" (gateway-setup-member-path path name)
-                                                              "value" (if list
-                                                                          (coerce (gateway-setup-picks text choices) 'vector)
-                                                                          text)))
-                   (return :written))
-          (gateway-http-error (condition)
-            (format out "~a~%" (gateway-setup-refusal condition))))))))
-
-(defun gateway-setup-lane (call id &key (seconds 30))
-  "ID's row of GET /api/channels once it is running and connected, or has
-settled anywhere else, after at most SECONDS."
-  (loop with deadline = (+ (get-universal-time) seconds)
-        for row = (find id (json-array (funcall call :get "/api/channels" nil) "channels")
-                        :key (lambda (row) (json-value row :string "id")) :test #'equal)
-        for state = (and row (json-value row :string "state"))
-        when (or (and (equal state "running") (json-value row :boolean "connected"))
-                 (member state '("refused" "failed" "unconfigured" "stopped" "done") :test #'equal)
-                 (>= (get-universal-time) deadline))
-          return row
-        do (sleep 1)))
-
-(defun gateway-setup-text (words &key (ask #'terminal-answer) (ask-secret #'terminal-secret-answer)
-                                      (out *standard-output*) call (keep-running t))
-  "`nodecode gateway setup [CHANNEL]': walk one channel from its bot's token
-to a running lane, over the organism serving this home (GATEWAY-SETUP-PORT
-turns the gateway on when none does). CALL, (METHOD PATH BODY) => the
-decoded answer, is the organism's control surface -- a test's fake; ASK and
-ASK-SECRET read a line. KEEP-RUNNING offers the gateway at the end when a
-shell serves. => (values TEXT CODE STREAM)."
-  (labels ((ask (question)
-             (finish-output out)
-             (or (funcall ask question) (error 'gateway-setup-ended)))
-           (ask-secret (question)
-             (finish-output out)
-             (or (funcall ask-secret question) (error 'gateway-setup-ended)))
-           (stop (text &optional (code 1))
-             (return-from gateway-setup-text (values text code (if (zerop code) :output :error)))))
-    (handler-case
-        (let* ((call (or call
-                         (let ((port (gateway-setup-port #'ask out)))
-                           (unless port
-                             (stop "nothing was set up: a bot needs a running organism -- `nodecode gateway on', or a `nodecode' shell -- then `nodecode gateway setup' again"))
-                           (lambda (method path body)
-                             ;; a turn-on is waited on for the seconds it is told of
-                             (gateway-http-session-request port method path body
-                                                           (gateway-configured-operator-token)
-                                                           :read-timeout (if (equal path "/api/gateway/cells")
-                                                                             nlk:*cell-switch-seconds*
-                                                                             60))))))
-               (cells (loop for row across (json-array (funcall call :get "/api/gateway/cells" nil) "cells")
-                            for name = (json-value row :string "name")
-                            when (and (uiop:string-prefix-p "nodecode-channel-" name)
-                                      (string/= name "nodecode-channel-kit"))
-                              collect (cons (subseq name (length "nodecode-channel-")) row)))
-               (lanes (ignore-errors (json-array (funcall call :get "/api/channels" nil) "channels")))
-               (id (let ((named (first words)))
-                     (if named
-                         (let ((id (string-downcase
-                                    (reduce (lambda (word prefix)
-                                              (if (uiop:string-prefix-p prefix word) (subseq word (length prefix)) word))
-                                            '("nodecode-" "channel-") :initial-value named))))
-                           (unless (assoc id cells :test #'string=)
-                             (stop (format nil "no channel ~a here; there are ~{~a~^, ~}" named (mapcar #'car cells)) 2))
-                           id)
-                         (progn
-                           (unless cells (stop "no channel adapter is on offer here"))
-                           (format out "~&Which channel?~%")
-                           (loop for (id . row) in cells
-                                 for number from 1
-                                 for lane = (find id lanes :key (lambda (lane) (json-value lane :string "id")) :test #'equal)
-                                 do (format out "  ~d  ~10a ~a~%" number id
-                                            (cond (lane (json-value lane :string "state"))
-                                                  ((json-value row :boolean "on") "installed")
-                                                  (t "not installed"))))
-                           (loop for reply = (string-trim '(#\Space #\Tab #\Return) (ask "Number or name:"))
-                                 for number = (ignore-errors (parse-integer reply))
-                                 for pick = (cond ((and number (<= 1 number (length cells))) (car (nth (1- number) cells)))
-                                                  ((assoc (string-downcase reply) cells :test #'string=) (string-downcase reply)))
-                                 when pick return pick
-                                 do (format out "Pick 1 to ~d, or a name.~%" (length cells)))))))
-               (cell (format nil "nodecode-channel-~a" id)))
-          (unless (json-value (cdr (assoc id cells :test #'string=)) :boolean "on")
-            (format out "~&Installing ~a...~%" cell)
-            (format out "~a~%" (or (json-value (funcall call :post "/api/gateway/cells"
-                                                         (json-object "name" cell "on" t "seconds" nlk:*cell-switch-seconds*))
-                                               :string "text")
-                                   "installed")))
-          (let* ((section (or (gateway-setup-section call id)
-                              (stop (format nil "~a declares no channels.~a section to set up" cell id))))
-                 (path (json-value section :array "path")))
-            (format out "~&~%Setting up ~a.~%" id)
-            (unless (equal "complete" (json-value section :string "needs"))
-              (format out "On ~a's side first:~%~{  ~a~%~}" id
-                      (loop for step in (uiop:split-string (or (json-value section :string "guide") "") :separator '(#\;))
-                            for words = (string-trim '(#\Space) step)
-                            unless (string= words "") collect words)))
-            (when (json-value section :object "secret")
-              (loop do (gateway-setup-secret call #'ask-secret out path section)
-                    until (or (not (json-value section :boolean "check"))
-                              (gateway-setup-check call #'ask out path))
-                    do (setf section (gateway-setup-section call id))))
-            (loop repeat 3
-                  do (loop with pair = (let ((secret (json-value section :object "secret")))
-                                         (and secret (list (json-value secret :string "env")
-                                                           (json-value secret :string "file"))))
-                           for field across (json-array (gateway-setup-section call id) "fields")
-                           for name = (json-value field :string "name")
-                           when (and (not (member name pair :test #'equal))
-                                     (or (json-value field :boolean "essential") (equal name "owner")))
-                             do (gateway-setup-field call #'ask out path field))
-                     (setf section (gateway-setup-section call id))
-                  until (equal "complete" (json-value section :string "needs"))
-                  do (format out "~&~%~:(~a~) ~a.~%" id (json-value section :string "needs")))
-            (unless (equal "complete" (json-value section :string "needs"))
-              (stop (format nil "~a is not started: ~a; what was saved stays, and `nodecode gateway setup ~a' goes on from there"
-                            id (json-value section :string "needs") id)))
-            (format out "~&~%Starting the channels...~%")
-            (funcall call :post "/api/channels?op=restart" nil)
-            (let* ((lane (gateway-setup-lane call id))
-                   (state (and lane (json-value lane :string "state")))
-                   (connected (and lane (json-value lane :boolean "connected")))
-                   (detail (and lane (or (json-value lane :string "detail") (json-value lane :string "last_rejection")))))
-              (unless (and (equal state "running") connected)
-                (stop (format nil "~a did not connect: ~a~@[ -- ~a~]; `nodecode gateway logs' has the rest"
-                              id (or state "no lane") detail)))
-              (let ((gateway (ignore-errors (nlk:gateway-state))))
-                (when (and keep-running gateway (nlk:gateway-state-supported gateway)
-                           (not (eq :ours (nlk:gateway-state-installed gateway)))
-                           (default-yes-p (ask (format nil "~a runs while the shell serving it does. Turn the gateway on, so it keeps running and starts at login? [Y/n]" id))))
-                  (nlk:gateway-on)))
-              (values (format nil "~a is connected~@[: ~a~]~%Change it: `nodecode gateway setup ~a', /settings > Channels, or `nodecode web' > Control > Channels.~@[~%Someone it does not know who writes to it directly is given a pairing code; /channels pair CODE lets them in.~]"
-                              id detail id
-                              (find-if (lambda (field) (and (equal "pairing" (json-value field :string "name"))
-                                                            (not (eq :false (json-value field :any "value")))
-                                                            (not (eq :false (json-value field :any "default")))))
-                                       (json-array section "fields")))
-                      0 :output))))
-      (gateway-setup-ended ()
-        (stop "setup stopped: there was no line to read (no terminal, or the input ended); what it saved stays saved"))
-      (gateway-http-error (condition)
-        (stop (format nil "the organism refused: ~a" (gateway-http-error-detail condition)))))))
 
 (defun web-text (words)
   "`nodecode web': the page's link for the organism serving this home, opened

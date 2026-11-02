@@ -95,8 +95,17 @@ for it or when the provider/default model is missing, and paints it in."
   ;; unasked.
   (when (and model.program
              (or model.setup-requested (setup-required-p)))
-    (slash-setup-op model)
+    (open-requested-setup model)
     (render-state model)))
+
+(defun open-requested-setup (model &aux (requested model.setup-requested))
+  "Open what the launch asked for on the first frame: a channel's setup
+sheet for `nodecode gateway setup [CHANNEL]', which needs no model, else the
+setup walk."
+  (if (and (consp requested) (eq (first requested) :channel-setup))
+      (progn (setf model.setup-requested nil)
+             (open-channel-setup model (second requested)))
+      (slash-setup-op model)))
 (defun slash-import-op (model args &aux (words (split-words (or args ""))))
   "/import in a shell: the setup walk's import stage over the request ARGS
 name, as `nodecode import' opens it -- the plan read off the loop with its
