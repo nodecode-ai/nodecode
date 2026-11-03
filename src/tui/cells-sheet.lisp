@@ -28,12 +28,11 @@ NOTICES and why it could not be read (FAILED); the hub's entries (HUB, NIL
 until its index is read), why it could not be (HUB-FAILED) or was read from
 the copy kept of it (HUB-STALE); where the operator is -- the TAB, :HOME or
 :HUB, the cell CHOSEN by name, the QUERY, the first line the list and the
-cell show (TOP, PANE-TOP) and, one view at a time, whether the cell is
-OPEN -- the hub cell whose install the last Space ASKED, what the last
-switch SAID ((NAME TEXT TONE)); and what the last paint left: the RAIL's
-width, 0 when it showed one view at a time."
+cell show (TOP, PANE-TOP) -- the hub cell whose install the last Space
+ASKED, what the last switch SAID ((NAME TEXT TONE)); and what the last
+paint left: the RAIL's width."
   (home #()) (notices #()) (failed nil) (hub nil) (hub-failed nil) (hub-stale nil)
-  (tab :home) (chosen nil) (query "" :type string) (top 0) (pane-top 0) (open nil)
+  (tab :home) (chosen nil) (query "" :type string) (top 0) (pane-top 0)
   (asked nil) (said nil) (rail 0))
 
 (nlk:access (cells cells-sheet))
@@ -263,7 +262,7 @@ first, in place, and a second Space installs it at the commit read."
 (defun cells-tab (cells tab)
   "Show TAB's cells, from its first."
   (unless (eq tab cells.tab)
-    (setf cells.tab tab cells.chosen nil cells.top 0 cells.pane-top 0 cells.asked nil cells.open nil)))
+    (setf cells.tab tab cells.chosen nil cells.top 0 cells.pane-top 0 cells.asked nil)))
 
 (defun cells-key (model cells key &key ctrl alt shift)
   "Every key the shell's chords leave the open sheet."
@@ -281,19 +280,14 @@ first, in place, and a second Space installs it at the commit read."
       ((eql key #\Space) (when name (cells-space model cells name)))
       ((eq key :escape)
        (cond ((plusp (length cells.query)) (cells-search cells ""))
-             ((and cells.stacked cells.open) (setf cells.open nil))
              (t (dismiss-dialog model nil))))
       ((member key '(:up :down)) (cells-move cells names (if (eq key :up) -1 1)))
       ((eq key :home) (when names (cells-choose cells (first names))))
       ((eq key :end) (when names (cells-choose cells (car (last names)))))
       ((member key '(:page-up :page-down))
        (setf cells.pane-top (max 0 (+ cells.pane-top (if (eq key :page-up) -10 10)))))
-      ((and (member key '(:left :right)) cells.stacked cells.open)
-       (when (eq key :left) (setf cells.open nil)))
       ((member key '(:left :right)) (cells-tab cells (if (eq key :left) :home :hub)))
       ((eq key :tab) (cells-tab cells (if (eq cells.tab :home) :hub :home)))
-      ((and (eq key :enter) cells.stacked (not cells.open))
-       (when name (setf cells.open t cells.pane-top 0)))
       ((eq key :enter) (when name (cells-settings model cells name))))))
 
 (defun cells-paste (model cells text)
@@ -305,7 +299,7 @@ first, in place, and a second Space installs it at the commit read."
   "A notch on the list moves the choice; on the cell, it scrolls what the
 cell says."
   (declare (ignore model y))
-  (if (if cells.stacked cells.open (>= (- x (second cells.layout)) cells.rail))
+  (if (>= (- x (second cells.layout)) cells.rail)
       (setf cells.pane-top (max 0 (+ cells.pane-top delta)))
       (cells-move cells (cells-names (cells-items cells)) delta)))
 
@@ -519,11 +513,8 @@ row that opens or closes a slab. Errors and refusals are said whole."
                ((cell-offered-p cell) '(("space" "install")))
                ((cell-fixed-p cell) nil)
                (t (list (list "space" (if on "turn off" "turn on")))))
-         (cond ((and cells.stacked (not cells.open)) (and cell '(("enter" "open"))))
-               ((and cell (json-value cell :text "section")) '(("enter" "settings"))))
-         (if (and cells.stacked cells.open)
-             '(("←" "back"))
-             (list (list "←→" (if (eq cells.tab :home) "hub" "home"))))
+         (and cell (json-value cell :text "section") '(("enter" "settings")))
+         (list (list "←→" (if (eq cells.tab :home) "hub" "home")))
          (if (plusp (length cells.query)) '(("esc" "clear")) '(("type" "search") ("esc" "close")))))))
 
 (defun cells-empty-text (cells)
@@ -588,10 +579,7 @@ wants a look, lifted when CHOSEN."
     (multiple-value-bind (glyph tone) (cell-state-glyph cell)
       (when glyph (canvas-put canvas (+ x width -2) r glyph (sheet-ink tone :ground here))))
     (sheet-hit cells r x (+ x width)
-               (lambda-ignoring (model cells)
-                 (if (and chosen cells.stacked)
-                     (setf cells.open t cells.pane-top 0)
-                     (cells-choose cells name))))))
+               (lambda-ignoring (model cells) (cells-choose cells name)))))
 
 (defun paint-cells-list (cells canvas items name top rows x width ground)
   "ITEMS down ROWS rows from TOP, from X, WIDTH wide, on GROUND: a head over
@@ -729,9 +717,9 @@ is made; with no cell, why the list could not be read."
           (paint-scroll-marks canvas (+ px pw 1) (+ top 2) bottom offset rows (length lines) pane)))))
 
 (defun paint-cells-wide (cells canvas edges)
-  "The wide sheet: the list in a rail beside the chosen cell. => the
-caret's cell, or NIL."
-  (with-wide-sheet (canvas edges (if (>= width 110) 30 28))
+  "The sheet at every width: the list in a rail beside the chosen cell.
+=> the caret's cell, or NIL."
+  (with-wide-sheet (canvas edges (cond ((>= width 110) 30) ((>= width 84) 28) (t (floor (* width 2) 5))))
     (let* ((gap (if (< inner 22) 1 2))
            (title-row (+ top (1- gap)))
            (hint-row (- (+ top inner) gap))
@@ -753,38 +741,6 @@ caret's cell, or NIL."
       (paint-keys cells canvas hint-row px (+ px pw) (cells-keys cells name) cells.flash pane)
       cursor)))
 
-(defun paint-cells-stacked (cells canvas edges)
-  "The narrow sheet: the list, or the chosen cell, one view at a time. =>
-the caret's cell, or NIL."
-  (with-stacked-sheet (canvas edges)
-    (let* ((items (cells-items cells))
-           (name (cells-focus cells (cells-names items)))
-           (open (and cells.open name))
-           (cursor nil))
-      (setf cells.rail 0)
-      (cond
-        (open
-         (let ((at (canvas-put canvas px header-row "Cells › " (sheet-ink :muted :ground pane))))
-           (sheet-hit cells header-row px at
-                      (lambda-ignoring (model cells) (setf cells.open nil)))
-           (canvas-put canvas at header-row
-                       (clip-text-to-width (if (eq name :new) "New cell" (json-value (cell-of cells name) :string "label"))
-                                           (max 1 (- (+ px pw) at)))
-                       (sheet-ink :title :ground pane :bold t))))
-        ((plusp (length cells.query))
-         (setf cursor (paint-search-line canvas px header-row pw cells.query pane 8)))
-        (t
-         (let ((at (canvas-put canvas px header-row "Cells" (sheet-ink :title :ground pane :bold t))))
-           (paint-cells-tabs cells canvas header-row (+ at 3) (- (+ px pw) at 3) pane))))
-      (cond (open (paint-cell-pane cells canvas name (+ header-row 2) (- hint-row 2) px pw))
-            (items (paint-cells-list cells canvas items name (+ header-row 2) (- hint-row header-row 3)
-                                     (- px 2) (+ pw 4) pane))
-            (t (when-let (text (cells-empty-text cells))
-                 (canvas-put canvas px (+ header-row 2) (clip-text-to-width text pw) (sheet-ink :muted :ground pane)))
-               (paint-cell-pane cells canvas nil (+ header-row 4) (- hint-row 2) px pw)))
-      (paint-keys cells canvas hint-row px (+ px pw) (cells-keys cells name) cells.flash pane)
-      cursor)))
-
 (defparameter +cells-sheet-size+ '(120 34)
   "The columns and rows the sheet asks for: what a wide window gives it.")
 
@@ -792,7 +748,7 @@ the caret's cell, or NIL."
   "/cells on a shell: the sheet at once over the shell, the listing and the
 hub's index read off the loop."
   (let ((cells (make-cells-sheet :kind :cells :title "Cells"
-                                 :paint (sheet-painter +cells-sheet-size+ #'paint-cells-wide #'paint-cells-stacked)
+                                 :paint (sheet-painter +cells-sheet-size+ #'paint-cells-wide #'paint-cells-wide)
                                  :key #'cells-key :paste #'cells-paste
                                  :click #'sheet-click :wheel #'cells-wheel)))
     (setf (chat-model-dialog model) cells)
