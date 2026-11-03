@@ -20,7 +20,7 @@
 
 (in-package #:nodecode.import)
 
-;;; --- the memo ---------------------------------------------------------------
+;;; --- the indexes ------------------------------------------------------------
 ;;; The catalog is a few megabytes and its provider list is walked once per
 ;;; plan, not once per fact: the two indexes below are built on first use
 ;;; and thrown away when the parsed root changes identity.
@@ -29,29 +29,11 @@
   "(ROOT ENV-TABLE BASE-TABLE) for the catalog root the indexes were built
 from; rebuilt when the root is a different object.")
 
-(defvar *providers-memo* nil
-  "The catalog's providers without their models (CATALOG-PROVIDERS), as
-NLE::READ-JSON-FILE-MEMO keeps a parse.")
-
-(defvar *providers-probe* nil
-  "When CATALOG-PROVIDERS last looked at the catalog file.")
-
 (defun catalog-providers ()
-  "The models.dev catalog's providers, each without its models: all a home's
-read asks of the catalog -- a provider's env, api, npm and name."
-  ;; Passed over, the models are most of the file; without passing them
-  ;; over, the read would wait on the bulk of the data.
-  (nle::read-json-file-memo '*providers-memo* nle::*models-catalog-path*
-                            :max-bytes (* 8 1024 1024)
-                            :probe '*providers-probe*
-                            :probe-seconds nle::*models-catalog-probe-seconds*
-                            :decoder (lambda (octets)
-                                       (nlk:decode-json
-                                        octets
-                                        :keep (lambda (path)
-                                                (or (/= (length path) 2)
-                                                    (and (string/= (first path) "models")
-                                                         (nle::catalog-member-p path))))))))
+  "The models.dev catalog's providers: the root NLE::MODELS-CATALOG-TABLE
+parses for the /models picker, whose env, api, npm and name are all a home's
+read asks of it."
+  (nle::models-catalog-table))
 
 (defun catalog-normalize-base (url)
   "URL as a base for comparison: lowercased, trailing slashes off."

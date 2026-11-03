@@ -62,8 +62,6 @@ first by its MAKE-<WORLD>-FIXTURE."
                    \"models\": {\"anthropic/claude-opus-5-5\": {\"id\": \"anthropic/claude-opus-5-5\", \"tool_call\": true, \"release_date\": \"2026-09-22\"}}}}")))
                (nle::*models-catalog-memo* nil)
                (nle::*models-catalog-probe* nil)
-               (nik::*providers-memo* nil)
-               (nik::*providers-probe* nil)
                (nik::*vocabulary* nil)
                (nle::*auth-file-path* (merge-pathnames "auth.json" ,home))
                (nle::*secrets-directory* (merge-pathnames "secrets/" ,home))
