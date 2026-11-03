@@ -2323,3 +2323,28 @@ from ARGUMENTS, the text bound as TEXT."
                                 (lambda (model effort) (nle::apply-effort model effort)))
         (press model #\x)
         (is (eq :think (nle::picker-dialog-kind model.dialog)) "/think's own panel keeps its keys")))))
+
+(deftest shell-sends-the-draft-only-to-a-command-that-reads-it ()
+  ;; #199: the catalog says which of the gateway's commands read the input
+  ;; box (reads: ["draft"]); the shell sends the draft with those lines
+  ;; alone, so what the operator is writing reaches no command that did not
+  ;; ask for it.
+  (with-frame-model (model 120 40 :session-id "draft-read")
+    (let ((posts '())
+          (nle::*gateway-commands* nil))
+      (with-stubbed-fdefinition (nle::gateway-model-http-call (model method path body &rest keys)
+                                  (declare (ignore model keys))
+                                  (cond ((and (eq method :get) (equal path "/api/gateway/slash"))
+                                         (nlk:decode-json "{\"commands\":[{\"name\":\"t-stash\",\"reads\":[\"draft\",\"selection\"]},{\"name\":\"t-plain\"}]}"))
+                                        (t (push body posts)
+                                           (nlk:decode-json "{\"text\":\"ok\"}"))))
+        (nle::set-gateway-commands (nle::gateway-command-entries model))
+        (is (equal '(:draft) (nle::slash-command-reads (nle::find-gateway-command "t-stash"))) "the catalog's read lands on the entry, an unknown read dropped")
+        (is (null (nle::slash-command-reads (nle::find-gateway-command "t-plain"))) "a command that declared none reads nothing")
+        (nle::editor-insert model.editor "half a thought")
+        (nle::gateway-slash-answer model "/t-stash save")
+        (nle::gateway-slash-answer model "/t-plain go")
+        (destructuring-bind (plain stash) posts
+          (is (equal "half a thought" (gethash "draft" stash)) "the reader gets the box")
+          (is (null (nth-value 1 (gethash "draft" plain))) "the rest never see it"))
+        (is (equal "half a thought" (nle::editor-value model.editor)) "sending it leaves the box as it was")))))
