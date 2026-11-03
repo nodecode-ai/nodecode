@@ -1114,8 +1114,14 @@ FOLDERS already holding KEY's file, else the organism's own
       (let ((cell (getf (knowledge-form-options form) :cell)))
         (values (cond ((stringp cell) (knowledge-directory cell))
                       ((find-if (lambda (directory)
-                                  (and (string/= (folder-name directory) (layer-name))
-                                       (probe-file (definition-path key directory))))
+                                  (let ((file (definition-path key directory)))
+                                    ;; a made cell's NAME.lisp is there for every key: the
+                                    ;; folder holds KEY only when its file defines the name
+                                    (and (string/= (folder-name directory) (layer-name))
+                                         (probe-file file)
+                                         (or (not (made-cell-code-file-p file directory))
+                                             (member key (mapcar #'first (file-definitions file))
+                                                     :test #'equal)))))
                                 folders))
                       (t (knowledge-directory)))
                 t))))

@@ -53,8 +53,9 @@ report of loaded cells put back after."
   (is (null (nlk:current-cell "s-other")) "another session's code stays the layer's")
   (is (search "[weather: kept mc-forecast]"
               (keep-definition-text "(defun mc-forecast () \"Tomorrow's.\" :sunny)" :session "s-cell")))
-  (is (cell-file "weather" "mc-forecast"))
-  (is (search "(:file \"mc-forecast\")"
+  (is (search "(defun mc-forecast" (nlk:read-text (cell-file "weather" "weather"))) "in the cell's one code file")
+  (is (null (cell-file "weather" "mc-forecast")) "not a file of its own")
+  (is (search "(:file \"weather\")"
               (nlk:read-text (merge-pathnames "tester-weather/tester-weather.asd" nlk::*cells-directory*))))
   (is (string= "" (knowledge-git "tester-weather" "status" "--porcelain")) "committed whole")
   (is (null (uiop:directory-exists-p (nlk:layer-directory))) "the layer gained nothing")
@@ -78,7 +79,7 @@ report of loaded cells put back after."
   (let ((said (keep-definition-text "(defun mc-built () \"Built, now the cell's.\" :new)" :session "s-cell")))
     (is (search "[built: kept mc-built]" said))
     (is (search "[layer: moved mc-built to built]" said)))
-  (is (cell-file "built" "mc-built"))
+  (is (search "(defun mc-built" (nlk:read-text (cell-file "built" "built"))))
   (is (null (layer-file "mc-built")) "one home: no second copy loads after it")
   (is (null (search "mc-built" (nlk:read-text (nlk::layer-system-file))))))
 
@@ -87,6 +88,7 @@ report of loaded cells put back after."
   (keep-definition-text "(defun mc-gone () \"Soon gone.\" 0)" :session "s-cell")
   (is (search "[gone: forgot mc-gone]" (keep-definition-text "(fmakunbound 'mc-gone)" :session "s-cell")))
   (is (null (cell-file "gone" "mc-gone")))
+  (is (null (search "mc-gone" (nlk:read-text (cell-file "gone" "gone")))) "its form is cut out")
   (is (null (search "mc-gone" (nlk:read-text (merge-pathnames "tester-gone/tester-gone.asd"
                                                                 nlk::*cells-directory*))))))
 
@@ -102,7 +104,8 @@ report of loaded cells put back after."
 
 (deftest made-cell-declares-a-command-that-starts (with-made-cell-fixture ())
   ;; cell.lisp gives the cell its package; a DEFUN and a DEFINE-CELL of one
-  ;; name keep two files; the start the DEFINE-CELL made after the load is
+  ;; name both go to clock.lisp, the DEFINE-CELL after what it names; the
+  ;; start the DEFINE-CELL made after the load is
   ;; taken up, and it registers the command under the cell's folder name
   (make-test-cell "clock")
   (is (find-package "TESTER-CLOCK") "cell.lisp made the package")
@@ -113,9 +116,12 @@ report of loaded cells put back after."
                         :session "s-cell" :package "TESTER-CLOCK")
   (keep-definition-text "(define-cell clock (:section (\"tester-clock-section\")) (:command \"tester-clock\" 'clock :description \"The time.\"))"
                         :session "s-cell" :package "TESTER-CLOCK")
-  (is (search "(defun clock" (nlk:read-text (cell-file "clock" "clock"))) "the defun keeps its file")
-  (is (search "(define-cell clock" (nlk:read-text (cell-file "clock" "clock-define-cell"))))
-  (is (search "(:file \"clock-define-cell\")"
+  (let ((code (nlk:read-text (cell-file "clock" "clock"))))
+    (is (search "(defun clock" code) "one code file holds both kinds")
+    (is (search "(define-cell clock" code))
+    (is (< (search "(defun clock" code) (search "(define-cell clock" code)) "the define-cell last"))
+  (is (null (cell-file "clock" "clock-define-cell")))
+  (is (search "(:file \"clock\")"
               (nlk:read-text (merge-pathnames "tester-clock/tester-clock.asd" nlk::*cells-directory*))))
   (let ((start (nlk:note-cell-start (nlk:find-cell "tester-clock"))))
     (is (functionp start) "the start is taken up")
@@ -176,7 +182,7 @@ report of loaded cells put back after."
     (is (not (nlk:cell-parkable-p "tester-memory")) "nor a knowledge cell")
     (is (equal (nlk:cell-directory "weather") (nlk:park-cell "tester-weather")))
     (is (nlk:cell-parked-p "tester-weather"))
-    (is (cell-file "weather" "mc-parked") "its work is all there")
+    (is (search "(defun mc-parked" (nlk:read-text (cell-file "weather" "weather"))) "its work is all there")
     (is (null (nlk:current-cell "s-cell")) "its session keeps to the layer again")
     (is (string= "" (knowledge-git "tester-weather" "status" "--porcelain")) "the marker stays out of its history")
     (is (not (member "tester-weather" (funcall names (nlk::cell-folders)) :test #'string=)) "no boot loads it")
