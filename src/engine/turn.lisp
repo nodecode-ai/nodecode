@@ -783,15 +783,12 @@ token. ESCAPE is (CHAR POS) for the first \\n, \\t or \\r inside a string
 literal, the escape the reader does not have (STRING-ESCAPE-REPORT), or NIL.
 The one refusal: a string, |symbol| or #| comment that never ends,
 named at its position, because SBCL's END-OF-FILE on it names nothing."
-  (labels ((snippet (start)
-             (let ((end (min n (+ start 40))))
-               (format nil "~a~:[~;...~]" (subseq text start end) (< end n))))
-           (fail (control &rest arguments)
+  (labels ((fail (control &rest arguments)
              (return-from lex-form-structure
                (values nil (apply #'format nil control arguments))))
            (never-ends (what start)
              (fail "unbalanced form: ~a opened at char ~d never ends: ~a"
-                   what start (snippet start)))
+                   what start (text-excerpt text start 40)))
            (newline ()
              (incf line)
              (setf line-start (1+ i) at-head t))
@@ -874,6 +871,12 @@ named at its position, because SBCL's END-OF-FILE on it names nothing."
                  (t (head) (code (incf i))))))
     (values (nreverse tokens) code-end depth escape)))
 
+(defun text-excerpt (text start width &optional (end (length text)))
+  "The WIDTH characters of TEXT from START, stopping at END, followed by ...
+when TEXT goes on past them: how the reader quotes the form it names."
+  (let ((stop (min end (+ start width))))
+    (format nil "~a~:[~;...~]" (subseq text start stop) (< stop (length text)))))
+
 (defun outermost-unclosed (tokens &aux (open '()))
   "The :OPEN token of the outermost paren TOKENS leave open, or NIL."
   (dolist (token tokens)
@@ -887,10 +890,7 @@ named at its position, because SBCL's END-OF-FILE on it names nothing."
 where it started, and why no closer is inserted."
   (let* ((entry (outermost-unclosed tokens))
          (start (and entry (second entry)))
-         (shown (and start
-                     (let ((end (min (length text) (+ start 56))))
-                       (format nil "~a~:[~;...~]" (subseq text start end)
-                               (< end (length text)))))))
+         (shown (and start (text-excerpt text start 56))))
     (format nil "~d paren~:p left open and this snippet is one line, so there is no indentation to place a closer by. Closing at the end would not finish the form, it would move everything after it inside~@[ ~a~] — which reads, compiles and means something else. Close it yourself, or write the snippet across lines and the reader places the closers by indentation."
             missing shown)))
 
@@ -1007,11 +1007,8 @@ unchanged, and so is dropping a \")\" that closes nothing."
                         (flet ((opener (start)
                                  ;; The opener's own line, at most forty
                                  ;; characters: a note stays one line.
-                                 (let* ((eol (or (position #\Newline text :start start)
-                                                 (length text)))
-                                        (end (min eol (+ start 40))))
-                                   (format nil "~a~:[~;...~]" (subseq text start end)
-                                           (< end (length text))))))
+                                 (text-excerpt text start 40 (or (position #\Newline text :start start)
+                                                                 (length text)))))
                           (let ((closed
                                   (cond ((null sites) nil)
                                         ((= 1 (length sites))
@@ -2386,29 +2383,22 @@ and escapes are skipped, depth is counted, and JSON's structure is ASCII so
 the bytes of a wider character never read as any of it — so it costs one
 pass over the prefix and never refuses a body."
   (loop for i from 0 below (min (1+ offset) (length body))
-        for byte = (aref body i)
-        do (cond (in-string
-                  (cond (escaped (setf escaped nil))
-                        ((= byte #.(char-code #\\)) (setf escaped t))
-                        ((= byte #.(char-code #\"))
-                         (setf in-string nil)
-                         (when (= depth 1)
-                           (setf pending (sb-ext:octets-to-string
-                                          body :start (1+ string-start) :end i
-                                          :external-format :utf-8))))))
-                 ((= byte #.(char-code #\")) (setf in-string t string-start i))
-                 ((= byte #.(char-code #\:))
-                  (when (and (= depth 1) pending)
-                    (setf key pending pending nil index nil)))
-                 ((= byte #.(char-code #\,))
-                  (cond ((and (= depth 2) index) (incf index))
-                        ((= depth 1) (setf pending nil))))
-                 ((or (= byte #.(char-code #\{)) (= byte #.(char-code #\[)))
-                  (incf depth)
-                  (when (and (= depth 2) (= byte #.(char-code #\[))) (setf index 0)))
-                 ((or (= byte #.(char-code #\})) (= byte #.(char-code #\])))
-                  (decf depth)
-                  (when (= depth 1) (setf index nil)))))
+        for char = (code-char (aref body i))
+        do (if in-string
+               (cond (escaped (setf escaped nil))
+                     ((char= char #\\) (setf escaped t))
+                     ((char= char #\")
+                      (setf in-string nil)
+                      (when (= depth 1)
+                        (setf pending (sb-ext:octets-to-string body :start (1+ string-start) :end i
+                                                                    :external-format :utf-8)))))
+               (case char
+                 (#\" (setf in-string t string-start i))
+                 (#\: (when (and (= depth 1) pending) (setf key pending pending nil index nil)))
+                 (#\, (cond ((and (= depth 2) index) (incf index))
+                            ((= depth 1) (setf pending nil))))
+                 ((#\{ #\[) (incf depth) (when (and (= depth 2) (char= char #\[)) (setf index 0)))
+                 ((#\} #\]) (decf depth) (when (= depth 1) (setf index nil))))))
   (cond ((null key) "")
         (index (format nil "~a[~d]" key index))
         (t key)))
@@ -4593,10 +4583,9 @@ outranks the default effort the same way while the turn's effective
                      turn (json-object "role" "assistant" "content" (or streamed "")
                                        :when thinking "reasoning_content" thinking
                                        :when calls "tool_calls"
-                                       (map 'vector (lambda (call)
-                                                      (destructuring-bind (id name arguments) call
-                                                        (chat-tool-call-object id (or name "") arguments)))
-                                            calls))
+                                       (coerce (loop for (id name arguments) in calls
+                                                     collect (chat-tool-call-object id (or name "") arguments))
+                                               'vector))
                      :continued-from (nlk:turn-cancelled-condition-partial-continued-from condition))
                     (loop for (id name arguments) in calls
                           do (nlk:record-tool-call turn id (or name "unknown") arguments)

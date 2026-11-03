@@ -94,29 +94,30 @@ row-major in DATA."
   (let* ((p (- (+ a b) c)) (pa (abs (- p a))) (pb (abs (- p b))) (pc (abs (- p c))))
     (cond ((and (<= pa pb) (<= pa pc)) a) ((<= pb pc) b) (t c))))
 
+(declaim (inline png-predicted))
+(defun png-predicted (filter data row prior i bpp)
+  "What PNG FILTER, 0 to 4, predicts byte I of the row at ROW in DATA from:
+its left neighbour, the byte above it in the row at PRIOR (NIL for none)
+and the one above-left, BPP bytes being one pixel."
+  (declare (type octets data) (type fixnum filter row i bpp) (type (or null fixnum) prior))
+  (let ((a (if (>= i bpp) (aref data (+ row (- i bpp))) 0))
+        (b (if prior (aref data (+ prior i)) 0))
+        (c (if (and prior (>= i bpp)) (aref data (+ prior (- i bpp))) 0)))
+    (ecase filter (0 0) (1 a) (2 b) (3 (ash (+ a b) -1)) (4 (paeth a b c)))))
+
 (defun png-unfilter (raw start stride bpp prior)
   "Undo, in place, the filter on the STRIDE bytes of RAW at START, whose type
 is the byte before them; PRIOR is where the row above starts, already undone,
 or NIL for a pass's first row. BPP is the bytes of one pixel, at least 1."
   (declare (type octets raw) (type fixnum start stride bpp)
            (type (or null fixnum) prior) (optimize speed))
-  (macrolet ((at (i) `(aref raw (the fixnum (+ start ,i))))
-             (left (i) `(if (>= ,i bpp) (aref raw (the fixnum (+ start (- ,i bpp)))) 0))
-             (up (i) `(if prior (aref raw (the fixnum (+ prior ,i))) 0))
-             (corner (i) `(if (and prior (>= ,i bpp)) (aref raw (the fixnum (+ prior (- ,i bpp)))) 0)))
-    (let ((filter (aref raw (1- start))))
-      (case filter
-        (0)
-        (1 (loop for i of-type fixnum from bpp below stride
-                 do (setf (at i) (ldb (byte 8 0) (+ (at i) (left i))))))
-        (2 (when prior
-             (loop for i of-type fixnum below stride
-                   do (setf (at i) (ldb (byte 8 0) (+ (at i) (up i)))))))
-        (3 (loop for i of-type fixnum below stride
-                 do (setf (at i) (ldb (byte 8 0) (+ (at i) (ash (+ (left i) (up i)) -1))))))
-        (4 (loop for i of-type fixnum below stride
-                 do (setf (at i) (ldb (byte 8 0) (+ (at i) (paeth (left i) (up i) (corner i)))))))
-        (t (error 'image-unfit :reason (format nil "a PNG row names filter ~d, which PNG has not" filter)))))))
+  (let ((filter (aref raw (1- start))))
+    (unless (<= 0 filter 4)
+      (error 'image-unfit :reason (format nil "a PNG row names filter ~d, which PNG has not" filter)))
+    (when (plusp filter)
+      (loop for i of-type fixnum below stride
+            do (setf (aref raw (+ start i))
+                     (ldb (byte 8 0) (+ (aref raw (+ start i)) (png-predicted filter raw start prior i bpp))))))))
 
 (defparameter +adam7+ '((0 0 8 8) (4 0 8 8) (0 4 4 8) (2 0 4 4) (0 2 2 4) (1 0 2 2) (0 1 1 2))
   "Adam7's passes, each (X0 Y0 DX DY).")
@@ -274,12 +275,7 @@ filter's type byte, then its bytes under that filter."
       (let ((row (* y stride)) (prior (and (plusp y) (* (1- y) stride))) (best 0) (least most-positive-fixnum))
         (declare (type fixnum row best least) (type (or null fixnum) prior))
         (macrolet ((predicted (filter i)
-                     `(let ((a (if (>= ,i bpp) (aref data (+ row (- ,i bpp))) 0))
-                            (b (if prior (aref data (+ prior ,i)) 0))
-                            (c (if (and prior (>= ,i bpp)) (aref data (+ prior (- ,i bpp))) 0)))
-                        (declare (type fixnum a b c) (ignorable a b c))
-                        (ldb (byte 8 0) (- (aref data (+ row ,i))
-                                           (ecase ,filter (0 0) (1 a) (2 b) (3 (ash (+ a b) -1)) (4 (paeth a b c))))))))
+                     `(ldb (byte 8 0) (- (aref data (+ row ,i)) (png-predicted ,filter data row prior ,i bpp)))))
           (dotimes (filter 5)
             (let ((sum 0))
               (declare (type fixnum sum))
