@@ -483,7 +483,8 @@ breakpoints placed by policy."
        (tools (and tools (tool-declarations tools "input_schema")))
        (mapped-choice (and tools (stringp choice)
                            (cdr (assoc choice
-                                       '(("auto" . "auto") ("required" . "any") ("any" . "any"))
+                                       '(("auto" . "auto") ("required" . "any") ("any" . "any")
+                                         ("none" . "none"))
                                        :test #'string-equal))))
        (sampling-p (not (or budget adaptive-effort)))
        ;; the head joins before the breakpoints: it is the prefix

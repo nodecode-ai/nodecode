@@ -343,7 +343,7 @@ renderer, the program loop.")
    ;; --- fork: a turn forks itself, each fork fenced to names of its own;
    ;; back through the generations to the step a check broke; a name's
    ;; versions raced on the image's own calls (fork.lisp) ---
-   #:fork #:fork-error #:fork-error-detail #:fork-session-p
+   #:fork #:fork-error #:fork-error-detail #:fork-session-p #:last-finished-turn-id
    #:fork-collect-progress #:fork-progress-snapshots
    #:*fork-task-input* #:*fork-earlier-input* #:*fork-keep-input* #:*fork-bisect-input*
    ;; --- history recall: the model-facing log read (recall.lisp) ---

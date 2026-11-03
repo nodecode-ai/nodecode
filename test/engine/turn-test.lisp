@@ -3693,6 +3693,14 @@ ATTACH-VISIBLE-IMAGES puts in front of the round."
 anthropic lane."
   (anthropic-context (list (nle::message "user" text))))
 
+(deftest anthropic-asks-with-tool-choice-none ()
+  ;; A turn limited to no tools (SUBMIT :TOOLS '()) asks with tool_choice
+  ;; none and its tools still declared, which Anthropic spells {"type": "none"}.
+  (let* ((nle::*tool-choice* "none")
+         (body (nle::anthropic-request-body (anthropic-context (list (nle::message "user" "why?"))))))
+    (is (equal "none" (gethash "type" (gethash "tool_choice" body))))
+    (is (vectorp (gethash "tools" body)) "the tools are still declared")))
+
 (deftest anthropic-request-hoists-system-and-converts-history ()
   (let* ((assistant (wire-message "assistant" :content "let me check"
                                   :tool-calls (vector (wire-tool-call

@@ -1283,7 +1283,8 @@ worker ran or not, then promote SESSION-ID's next queued prompt."
 of its own, :INLINE inside the SUBMIT that admits it (a gate that covers
 naming), NIL never (the test posture).")
 
-(defun submit (session-id prompt &key steer images command-id invocation source source-id)
+(defun submit (session-id prompt &key steer images command-id invocation source source-id
+                                 (tools nil tools-p))
   "Put PROMPT into SESSION-ID: the one in-process ingress, which the
 WebSocket start_turn/steer_turn commands are shells over."
   ;; Returns the
@@ -1300,6 +1301,12 @@ WebSocket start_turn/steer_turn commands are shells over."
   ;; record, defaulting to the kernel's in-process one. An in-process submitter
   ;; with no record of its own names its SOURCE kind (`cron', `team') and
   ;; SOURCE-ID instead, and the record is built here, turn.start or turn.steer.
+  ;; TOOLS, when given, names the only tools the turn may call: '() none at
+  ;; all -- a side question answered from the context alone -- and every
+  ;; tool's schema is still offered (TURN-TOOL-LIMIT says why). The limit is
+  ;; recorded with the input, so a queued prompt and a turn resumed at boot
+  ;; keep it. A steer's limit is the one of the turn it starts (it parks and
+  ;; is promoted like a follow-up); the turn it cuts short keeps its own.
   ;;
   ;; Signals rather than returning a status: NLK:UNKNOWN-SESSION, the kernel's
   ;; NLK:TURN-LIFECYCLE-ERROR family for a steer that found no matching active
@@ -1311,6 +1318,8 @@ WebSocket start_turn/steer_turn commands are shells over."
   ;; spawned, not joined.
   (check-type session-id string)
   (check-type prompt string)
+  (unless (and (listp tools) (every #'stringp tools))
+    (error "submit :tools must be a list of tool names, got ~s" tools))
   ;; The input cap is read here, at the one ingress every submitter comes
   ;; through, before anything is admitted: ADMIT's own check runs on the
   ;; worker after the durable admission, and without this an input past the
@@ -1329,8 +1338,10 @@ WebSocket start_turn/steer_turn commands are shells over."
          (unnamed (and *session-naming* (string= "" (nlk::session-title session-id))))
          ;; The pictures the operator's message shows, read once here, at
          ;; the one ingress: the admission records them with the input.
-         (metadata (when-let (facts (prompt-images images))
-                     (json-object "images" facts)))
+         (metadata (let ((facts (prompt-images images)))
+                     (when (or facts tools-p)
+                       (json-object :opt "images" facts
+                                    :when tools-p "tools" (coerce tools 'vector)))))
          (admission (nlk:admit-active-turn-input
                      session-id command-id prompt
                      :disposition (if steer :steer :follow-up)
