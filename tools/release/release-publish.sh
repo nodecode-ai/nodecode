@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # release-publish.sh --- the Release workflow's last job: the three archives
-# the build jobs made, published under their label by publish.sh -- or, for a
-# run by hand, checked and every credential the publish uses tried, with
-# nothing moved.
+# the build jobs made, published under their label by publish.sh -- to stable
+# for a tag, to the nightly channel for a nightly -- or, for a rehearsal,
+# checked and every credential the publish uses tried, with nothing moved.
 #
-#   release-publish.sh publish|rehearse DIST
+#   release-publish.sh publish|nightly|rehearse DIST [COMMIT]
+#
+# COMMIT is the build the jobs made (default HEAD): a nightly's is main's
+# newest green commit, which may be older than the checkout running this.
 #
 # DIST holds what the build jobs uploaded: the Linux and Mac tarballs and the
 # Windows zip, each beside its sidecar. publish.sh finds every archive already
@@ -27,17 +30,17 @@
 # the runner account's ~/.ssh is never read or written.
 set -euo pipefail
 
-mode="${1:?publish or rehearse}"
+mode="${1:?publish, nightly or rehearse}"
 dist="${2:?DIST, the folder the build jobs archives were downloaded to}"
 case "$mode" in
-  publish|rehearse) ;;
-  *) echo "release: the mode is publish or rehearse, not '$mode'" >&2; exit 2 ;;
+  publish|nightly|rehearse) ;;
+  *) echo "release: the mode is publish, nightly or rehearse, not '$mode'" >&2; exit 2 ;;
 esac
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$here/../.." && pwd)"
 cd "$repo"
-commit="$(git rev-parse 'HEAD^{commit}')"
+commit="$(git rev-parse "${3:-HEAD}^{commit}")"
 label="$(git rev-parse --short=9 "$commit")"
 dist="$(cd "$dist" && pwd)"
 
@@ -127,10 +130,14 @@ web_container="$(publish_setting NODECODE_PUBLISH_WEB_CONTAINER)"
 site_remote="$(publish_setting NODECODE_PUBLISH_SITE_REMOTE)"
 github_repo="$(publish_setting NODECODE_PUBLISH_GITHUB_REPO)"
 
-if [ "$mode" = publish ]; then
+if [ "$mode" = publish ] || [ "$mode" = nightly ]; then
+  # A nightly moves the nightly pointers alone: no tag, no GitHub release, and
+  # the installers stay the stable release's (publish.sh).
+  channel=stable
+  [ "$mode" = publish ] || channel=nightly
   # Not exec: the trap must still clear the credentials when it returns.
   rc=0
-  "$here"/publish.sh "$commit" "$dist" || rc=$?
+  NODECODE_PUBLISH_CHANNEL="$channel" "$here"/publish.sh "$commit" "$dist" || rc=$?
   exit "$rc"
 fi
 

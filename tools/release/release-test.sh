@@ -201,3 +201,69 @@ mode=publish rehearse || fail "a publish whose installers changed did not mirror
 [ -z "$(ls -A "$root/runner-temp")" ] || fail 'a publish left its credentials behind'
 say 'a publish commits the changed installers to the site through the run helper'
 say 'a missing or wrong archive, a missing secret, or a silent host stops it, and no key is left'
+
+# --- release-publish.sh nightly: publish.sh on the nightly channel ------------------
+# A nightly is a publish whose channel is nightly, of the commit the check
+# named -- which may be older than the checkout running the job.
+cat > "$work/tools/release/publish.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'channel=%s args=%s\n' "${NODECODE_PUBLISH_CHANNEL:-}" "$*" > "$RELEASE_TEST_PUBLISHED"
+EOF
+chmod 0755 "$work/tools/release/publish.sh"
+head_commit="$(git -C "$work" rev-parse HEAD)"
+make_dist
+mode=nightly rehearse RELEASE_TEST_PUBLISHED="$root/published" || fail "the nightly publish failed: $(cat "$root/rehearse-out")"
+grep -qx "channel=nightly args=$head_commit $dist" "$root/published" || fail "the nightly did not publish to nightly: $(cat "$root/published")"
+make_dist
+mode=publish rehearse RELEASE_TEST_PUBLISHED="$root/published" || fail "the tag publish failed: $(cat "$root/rehearse-out")"
+grep -qx "channel=stable args=$head_commit $dist" "$root/published" || fail "a tag did not publish to stable: $(cat "$root/published")"
+[ -z "$(ls -A "$root/runner-temp")" ] || fail 'a nightly left its credentials behind'
+say 'a nightly publishes its commit to the nightly channel, a tag to stable'
+
+# --- release-check.sh nightly: main's newest green commit -------------------------
+# A nightly builds main's newest commit a CI run went green on -- by tree, so
+# the squash of a green pull request counts -- and a night whose pick every
+# nightly pointer already names builds nothing.
+echo two > "$work/two"
+git_c -C "$work" add two
+git_c -C "$work" commit -qm two
+git -C "$work" push -q origin main
+first="$(git -C "$work" rev-parse HEAD~1)"
+second="$(git -C "$work" rev-parse HEAD)"
+mkdir -p "$root/curl-bin" "$root/pointers"
+cat > "$root/curl-bin/curl" <<'EOF'
+#!/bin/sh
+for url; do :; done
+name="${url##*/}"
+name="${name%%\?*}"
+[ -f "$RELEASE_TEST_POINTERS/$name" ] || exit 22
+cat "$RELEASE_TEST_POINTERS/$name"
+EOF
+chmod 0755 "$root/curl-bin/curl"
+nightly() {
+  : > "$root/gh-output"
+  check PATH="$root/curl-bin:$PATH" RELEASE_TEST_POINTERS="$root/pointers" NODECODE_RELEASE_MODE=nightly \
+    GITHUB_OUTPUT="$root/gh-output" "$@"
+}
+tree_of() { git -C "$work" rev-parse "$1^{tree}"; }
+nightly NODECODE_RELEASE_GREEN_TREES="$(tree_of "$first")" || fail "the nightly check failed: $(cat "$root/check-out")"
+grep -qx "commit=$first" "$root/gh-output" || fail "the nightly did not pick the newest green commit: $(cat "$root/gh-output")"
+grep -qx 'mode=nightly' "$root/gh-output" && grep -qx 'skip=false' "$root/gh-output" || fail "a green commit was skipped: $(cat "$root/gh-output")"
+nightly NODECODE_RELEASE_GREEN_TREES="$(printf '%s\n' "$(tree_of "$first")" "$(tree_of "$second")")" || fail 'the nightly check failed'
+grep -qx "commit=$second" "$root/gh-output" || fail "the nightly did not take main's head when it is green: $(cat "$root/gh-output")"
+say "a nightly builds main's newest green commit"
+
+nightly NODECODE_RELEASE_GREEN_TREES= || fail "a night with no green commit failed: $(cat "$root/check-out")"
+grep -qx 'skip=true' "$root/gh-output" || fail 'a night with no green commit was not skipped'
+grep -q "none of main's newest 50 commits has a green CI run" "$root/check-out" || fail "the red night was not said: $(cat "$root/check-out")"
+for platform in x86_64-linux arm64-darwin x86_64-windows; do
+  git -C "$work" rev-parse --short=9 "$second" > "$root/pointers/nightly-$platform"
+done
+nightly NODECODE_RELEASE_GREEN_TREES="$(tree_of "$second")" || fail 'the nightly check failed'
+grep -qx 'skip=true' "$root/gh-output" || fail 'a night with nothing new was not skipped'
+grep -q 'every nightly pointer already names' "$root/check-out" || fail "the night with nothing new was not said: $(cat "$root/check-out")"
+rm "$root/pointers/nightly-arm64-darwin"
+nightly NODECODE_RELEASE_GREEN_TREES="$(tree_of "$second")" || fail 'the nightly check failed'
+grep -qx 'skip=false' "$root/gh-output" || fail 'a nightly one platform never got was skipped'
+if check NODECODE_RELEASE_MODE=weekly; then fail 'an unknown mode was taken'; fi
+say 'a night with no green commit, or nothing new on every platform, builds nothing'
