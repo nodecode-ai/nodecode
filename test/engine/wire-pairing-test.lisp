@@ -91,6 +91,16 @@ before anything else follows, and no call id is issued twice."
     (is (equal '(:user (:asst "a" "b") (:tool "a") (:tool "b"))
                (fold '(:user) '(:call "a") '(:call "b") '(:result "a") '(:call "c") '(:result "c") '(:result "b"))) "a call fact journaled while a call is open folds as nothing, and the open call keeps its result")))
 
+(deftest repaired-call-ids-do-not-collide-with-journaled-ids ()
+  (dolist (specs '(((:user) (:asst "call-5-0") (:result "call-5-0") (:user) (:asst "") (:result ""))
+                   ((:user) (:asst "call-5-0" "call-5-0-1") (:result "call-5-0") (:result "call-5-0-1") (:asst "") (:result ""))
+                   ((:user) (:asst "call-2-1" "") (:result "call-2-1") (:result ""))
+                   ((:user) (:asst "" "call-2-0") (:result "") (:result "call-2-0"))))
+    (let* ((events (apply #'pairing-log specs))
+           (shape (wire-shape (nle::wire-messages-from-events events))))
+      (is (wire-well-formed-p shape) "repair IDs cannot reuse an issued ID")
+      (is (equal shape (wire-shape (nle::wire-messages-from-events events))) "collision repair is deterministic"))))
+
 (deftest the-fold-is-well-formed-on-generated-logs ()
   ;; WIRE_WELLFORMED over a sample of the logs it quantifies: 400 random logs
   ;; of up to 12 facts over three ids and the blank one, plain and stored

@@ -272,7 +272,14 @@ message below UNREASONED-BEFORE."
                (if (and (stringp call-id) (plusp (length call-id))
                         (not (gethash call-id issued-call-ids)))
                    call-id
-                   (format nil "call-~a-~d" position k)))
+                   (let ((base (format nil "call-~a-~d" position k)))
+                     ;; A provider may already have used the repair name.
+                     ;; Probe deterministically to keep replay IDs stable.
+                     (loop for suffix from 0
+                           for candidate = (if (zerop suffix) base
+                                               (format nil "~a-~d" base suffix))
+                           unless (gethash candidate issued-call-ids)
+                             return candidate))))
              (issue-call (call-id tool-name position k)
                ;; Issue the K-th call of the message at POSITION: its wire
                ;; id, the call open until the result journaled under CALL-ID
