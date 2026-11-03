@@ -53,7 +53,9 @@
   ;; Every piece but the cron jobs, which land through the cron folder and
   ;; are its lane's to prove (CRON-CELL-LANDS-AN-IMPORTED-JOB).
   (with-temp-store ()
-    (let ((plan (nik:apply-plan (hermes-plan home :without "cron"))))
+    ;; Skills copied, the seam a skill takes on Windows, in a project's own
+    ;; folder or under --copy; linking them is IMPORT-LINKS-EACH-LIBRARY-....
+    (let ((plan (nik:apply-plan (hermes-plan home :without "cron" :copy t))))
       (is (zerop (cdr (assoc "error" (nik::summary-counts plan) :test #'string=))))
       (is-shape (import-config)
         ((:text "providers" "subrouter-1" "base_url") "https://ai.example.test/v1")
@@ -959,16 +961,19 @@
     (is (null (nik::held-platforms (list :home home))))))
 ;;; --- memories and skills: definitions -----------------------------------------------
 
-(deftest import-link-links-each-library-and-copies-no-skill (with-import-runtime (home box :hermes))
-  (let* ((plan (hermes-plan home :only "skills" :link t))
+(deftest import-links-each-library-by-default-and-copies-no-skill (with-import-runtime (home box :hermes))
+  (let* ((plan (hermes-plan home :only "skills"))
          (item (first (import-items plan "skills")))
          (cell (merge-pathnames "cells/linked-skills/" home)))
-    (is (equal "linked-skills/hermes-skills-productivity" (nik:item-destination item)) "one item per library, named by its path under the home")
+    (is (equal '("imported") (import-statuses plan "skills")))
     #+win32
-    (is (equal '("skipped") (import-statuses plan "skills")) "no symbolic link on Windows: it says so")
+    (progn
+      (is (equal "notes" (nik:item-destination item)) "no symbolic link on Windows: the skill is copied")
+      (nik:apply-plan plan)
+      (is (kept-text "notes")))
     #-win32
     (progn
-      (is (equal '("imported") (import-statuses plan "skills")))
+      (is (equal "linked-skills/hermes-skills-productivity" (nik:item-destination item)) "one item per library, named by its path under the home")
       (is (equal "1 skill, read where it is" (nik:item-reason item)))
       (nik:apply-plan plan)
       (is (null (kept-text "notes")) "no skill is copied")
@@ -979,7 +984,72 @@
         (is (equal (truename (merge-pathnames ".hermes/skills/productivity/notes/SKILL.md" box))
                    (nlk:knowledge-entry-path skill)) "from the SKILL.md where it is")
         (is (equal "Keeps notes." (nlk:knowledge-entry-description skill))))
-      (is (equal '("skipped") (import-statuses (hermes-plan home :only "skills" :link t) "skills")) "a second --link finds it linked already"))))
+      (is (equal '("skipped") (import-statuses (hermes-plan home :only "skills") "skills")) "a second import finds it linked already"))))
+
+(deftest import-copy-copies-each-skill-and-links-none (with-import-runtime (home box :hermes))
+  (with-temp-store ()
+    (let* ((plan (hermes-plan home :only "skills" :copy t))
+           (item (first (import-items plan "skills"))))
+      (is (equal "notes" (nik:item-destination item)) "the skill is its own item, a definition of its name")
+      (nik:apply-plan plan)
+      (is (search "(define-skill notes" (kept-text "notes")))
+      (is (null (probe-file (merge-pathnames "cells/linked-skills/" home))) "no link is made"))))
+
+#-win32
+(deftest import-link-names-the-copy-kept-here-and-overwrite-forgets-it (with-import-runtime (home box :hermes))
+  ;; A copy an earlier import kept is read in place of a linked skill of its
+  ;; name (NLK:KNOWLEDGE-ENTRIES): the link would change nothing the
+  ;; operator sees, so the item says so, and --overwrite forgets the copy.
+  (with-temp-store ()
+    (nik:apply-plan (hermes-plan home :only "skills" :copy t))
+    (is (kept-text "notes") "the copy is kept")
+    (let ((plan (hermes-plan home :only "skills")))
+      (is (equal '("imported") (import-statuses plan "skills")))
+      (is (equal "1 skill; notes kept here wins (--overwrite forgets it)"
+                 (nik:item-reason (first (import-items plan "skills")))))
+      (nik:apply-plan plan))
+    (is (equal "lisp" (pathname-type (nlk:knowledge-entry-path (nlk:knowledge-entry-named "notes" nil)))) "the copy is still what the index reads")
+    (let ((plan (hermes-plan home :only "skills")))
+      (is (equal '("skipped") (import-statuses plan "skills")))
+      (is (equal "linked already; notes kept here wins (--overwrite forgets it)"
+                 (nik:item-reason (first (import-items plan "skills")))) "linked already, the copy still named"))
+    (let ((plan (hermes-plan home :only "skills" :overwrite t)))
+      (is (equal '("imported") (import-statuses plan "skills")))
+      (is (equal "1 skill, read where it is; notes kept here forgotten"
+                 (nik:item-reason (first (import-items plan "skills")))))
+      (nik:apply-plan plan))
+    (is (null (kept-text "notes")) "the copy is gone")
+    (is (equal (truename (merge-pathnames ".hermes/skills/productivity/notes/SKILL.md" box))
+               (nlk:knowledge-entry-path (nlk:knowledge-entry-named "notes" nil))) "the index reads the SKILL.md where it is")
+    (is (equal '("skipped") (import-statuses (hermes-plan home :only "skills") "skills")))))
+
+#-win32
+(deftest import-link-of-a-home-that-is-one-skill-links-that-skill (with-import-runtime (home box :hermes))
+  ;; A home read at one skill's own path links that folder: its parent holds
+  ;; whatever else sits beside it, no library of this home's.
+  (let* ((folder (merge-pathnames ".hermes/skills/productivity/notes/" box))
+         (plan (nik:make-plan :source (namestring folder) :only "skills" :settings (list :home home)))
+         (item (first (import-items plan "skills"))))
+    (is (equal '("imported") (import-statuses plan "skills")))
+    (is (equal (nlk:home-abbreviated (uiop:native-namestring (truename folder))) (nik:item-source item)) "the skill's own folder is the one linked")
+    (nik:apply-plan plan)
+    (is (equal (truename (merge-pathnames "SKILL.md" folder))
+               (nlk:knowledge-entry-path (nlk:knowledge-entry-named "notes" nil))))))
+
+(deftest import-copies-a-project-skill-a-link-would-unscope (with-import-runtime (home box))
+  ;; A skill a repository's .nodecode/skills/ holds is that project's alone:
+  ;; a link would make it every session's, so it is copied with its project.
+  (let ((project (merge-pathnames "proj/" (uiop:ensure-directory-pathname box))))
+    (import-write project ".git/HEAD" "ref: refs/heads/main")
+    (import-write project ".nodecode/skills/builds/SKILL.md"
+                  (format nil "---~%name: builds~%description: How this repo builds.~%---~%~%just build~%"))
+    (with-temp-store ()
+      (let* ((plan (nik:make-plan :source (namestring (merge-pathnames ".nodecode/skills/" project))
+                                  :only "skills" :settings (list :home home)))
+             (item (first (import-items plan "skills"))))
+        (is (equal "builds" (nik:item-destination item)) "copied, a definition of its name")
+        (nik:apply-plan plan)
+        (is (search ":project" (kept-text "builds")) "with the project it is scoped to")))))
 
 (deftest import-nodecode-world-converts-both-carriers-and-seeds-the-ledger (with-import-runtime (home box))
   (make-nodecode-fixture box)

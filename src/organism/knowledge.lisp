@@ -240,7 +240,7 @@ time and again only when PATH's stat moved; PATH is marked in SEEN."
 ;;; --- a skill another harness keeps, read where it lives -----------------------------
 ;;; A folder a cell holds -- or a link in it -- may be a skill in the shape
 ;;; every other coding agent writes, a folder with a SKILL.md, or a library of
-;;; them (`/import --link' links one per library). Each is a prose skill read
+;;; them (`/import' links one per library). Each is a prose skill read
 ;;; in place: an edit made in the harness that keeps it is the skill here at
 ;;; the next read, and nothing is copied to drift. It ranks as an import does,
 ;;; its :origin the folder it was found through, and never takes a name the

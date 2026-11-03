@@ -112,7 +112,7 @@ Nodecode exports the chosen home to child processes as `NODECODE_HOME`. See [Pro
 ## import
 
 ```sh
-nodecode import [WORLD] [--source PATH] [--only KINDS] [--dry-run] [--overwrite] [--link] [--keep-running] [--yes]
+nodecode import [WORLD] [--source PATH] [--only KINDS] [--dry-run] [--overwrite] [--copy] [--keep-running] [--yes]
 ```
 
 | Word | Values |
@@ -121,7 +121,7 @@ nodecode import [WORLD] [--source PATH] [--only KINDS] [--dry-run] [--overwrite]
 | KINDS | `providers`, `instructions`, `memory`, `skills`, `usage`, `standing`, `mcp`, `channels`, `cron`, `sessions`, `profiles` |
 | `--source` | A home at a path, or a repository's skills and MCP servers: `OWNER/REPO` or an https URL, `#REF` pinning a branch, tag or commit. |
 | `--dry-run` | The preview only. |
-| `--link` | Skills are linked, not copied: each folder of them becomes one link in the `linked-skills` cell, and every `SKILL.md` is read where it is. |
+| `--copy` | Skills are copied into this home instead of linked. By default each folder of them becomes one link in the `linked-skills` cell, and every `SKILL.md` is read where it is. On Windows they are always copied. |
 
 In the shell, `/import --sources` lists the repositories held and `/import --remove LABEL` takes one back.
 
@@ -132,9 +132,9 @@ In the shell, `/import --sources` lists the repositories held and `/import --rem
 <Instead>Add `--overwrite`.</Instead>
 </Mistake>
 <Mistake>
-<What>Importing skills you still edit in the other harness</What>
+<What>Adding `--copy` for skills you still edit in the other harness</What>
 <Why>A copy keeps the text it had: an edit made there never reaches it, and a second import skips it.</Why>
-<Instead>Add `--link`. Each `SKILL.md` is then read where it is.</Instead>
+<Instead>Leave `--copy` off. Each `SKILL.md` is then read where it is.</Instead>
 </Mistake>
 <Mistake>
 <What>Importing while another gateway answers the same bots</What>
