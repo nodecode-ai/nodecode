@@ -1,0 +1,82 @@
+---
+title: Context reference
+summary: "The forms and numbers behind the context: the file and its edits, the budget, eviction, the stub, recall and checkpoints."
+---
+
+The story is on [Context](/context). This page is the detail.
+
+{/* source: src/engine/working-context.lisp */}
+## The file
+
+`(context)` writes the session's context to `context/STORE/SESSION/context.txt` under the home and returns its path. Edit it with any file verb, a shell command or Lisp. The first line names the export: keep it. Each message below it is a block under a `[[m:NONCE ID ROLE]]` line.
+
+| Edit | What the next request reads |
+| --- | --- |
+| Keep | The message byte for byte, so it stays cached. |
+| Delete | Nothing. A deleted tool block takes its call with it. |
+| Rewrite | The edited text. An edited result ends with the line that recalls the original. |
+| Note | Text under a `[[note]]` line, read as the agent's own words. |
+| Restore | A removed block's header written back: the original message. |
+
+`(context :drop SPANS :keep IDS :note TEXT)` makes the same edit without the file. Every tool result ends with its seq, `[seq 57]`.
+
+| Keyword | Takes |
+| --- | --- |
+| `:drop` | `t`, or seqs, ids and `(from . to)` spans. |
+| `:keep` | Seqs held back from the drop. |
+| `:note` | A note kept at the end. |
+
+The next model request takes the edit or refuses it and says why, in `context.receipt.txt`. It refuses an edit whose first line changed, or one made before another edit was taken. The log is never edited: recall still reads every original. Messages before the first change keep the provider's cache.
+
+{/* source: src/engine/provider.lisp */}
+## Budget
+
+The budget is the model's context window. The first source with a number wins.
+
+| Order | Source |
+| --- | --- |
+| 1 | `NODECODE_CONTEXT_TOKENS` |
+| 2 | `providers.<id>.models[].context_window` in `config.jsonc` |
+| 3 | Overrides recorded in the running image |
+| 4 | The models.dev cache |
+
+A window no source knows is never evicted ahead of time. A request rejected as too large records a ceiling, and that ceiling is the budget from then on. `/context` shows the window and what fills it.
+
+{/* source: src/engine/context.lisp */}
+## Eviction
+
+| Setting | Value |
+| --- | --- |
+| Warns at | 85% of the budget, once |
+| Evicts | At the next request still over 85% |
+| Evicts down to | 50% of the budget |
+| Order | Finished turns, oldest first and whole; then the running turn's older rounds |
+| Never | The running turn's ask and newest round |
+
+A stub stands where the turns were: `[history evicted: seq A–B · N turns · recall: (recall-log :match "text" :before B+1)]`. It carries the `;;` first line of every evicted cell and the agent's own notes.
+
+{/* source: src/tui/slash.lisp */}
+`/evict [percent | through TURN]` evicts by hand (alias `/compact`, default 50%). The newest turn always stays.
+
+{/* source: src/session/recall.lisp */}
+## Recall
+
+| Form | Reads |
+| --- | --- |
+| `(recall-log :match "text" :before N :limit 20)` | This session's log, oldest first, bodies clipped to 200 characters. `:match` is SQL LIKE. |
+| `(recall-entry N)` | The one event at seq N, whole. |
+| `(recall-search "words")` | Every session, newest first. Every word must appear. |
+
+Recall reads the sessions this one forked from, and turns an undo hid.
+
+{/* source: src/session/checkpoint.lisp */}
+## Checkpoints
+
+| Command | Does |
+| --- | --- |
+| `/tree` | Opens the session tree: continue from a turn, or rewind to it. |
+| `/undo` | Rewinds the last turn, and its file changes. |
+| `/redo` | Returns to the branch the last rewind left. |
+| `/fork` | Forks a new session here. |
+
+A rewind deletes nothing. See [Sessions](/sessions).
