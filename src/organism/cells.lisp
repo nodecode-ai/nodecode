@@ -822,6 +822,93 @@ layer will not carry to the next boot."
   "Where a layer's files compile to: one directory per *IMAGE-STAMP*, one
 fasl per file named by the file's text.")
 
+(define-startup-parameter *layer-units-directory*
+  (cache-path "nodecode/layer-units/")
+  "Where a layer file of several definitions is cut into one file per
+definition, for the loader to judge each on its own (LAYER-FILE-UNITS):
+<folder>/<file>@<NN>-<name>.lisp. NIL cuts into a throwaway directory.")
+
+(defvar *layer-units* (make-hash-table :test 'equal :synchronized t)
+  "A unit's namestring -> (FILE . LABEL): the folder's own file it was cut
+from and the definition it holds.")
+
+(defun layer-unit-source (path)
+  "=> (values FILE LABEL): the file of its folder PATH's definitions are
+recorded under -- PATH's own name, or for a unit (LAYER-FILE-UNITS) the file
+it was cut from -- and the unit's definition, NIL for a whole file."
+  (let ((unit (gethash (namestring path) *layer-units*)))
+    (if unit
+        (values (car unit) (cdr unit))
+        (values (file-namestring path) nil))))
+
+(defun definition-leading-comment (text start)
+  "The override marker line among the comment lines right above position
+START of TEXT, the header LAYER-FILE-OVERRIDE judges a definition by, or NIL."
+  ;; nearest first, up to the first line that is not a comment
+  (loop for line in (reverse (ppcre:split "\\n" (subseq text 0 start)))
+        for trimmed = (string-trim +scribe-whitespace+ line)
+        while (and (plusp (length trimmed)) (char= (char trimmed 0) #\;))
+        when (uiop:string-prefix-p +override-marker+ trimmed) return trimmed))
+
+(defun file-only-definitions-p (path hits)
+  "Whether PATH's top-level forms are HITS, its definitions, and IN-PACKAGEs
+alone: a file that runs anything else at load is judged and folded whole."
+  ;; A package the image has not made is read in a scratch one, deleted
+  ;; after: reading a file must not intern its names elsewhere.
+  (let ((scratch '()))
+    (unwind-protect
+         (handler-case
+             (let ((*read-eval* nil) (*package* (find-package '#:nodecode.evolved)) (others 0))
+               (with-open-file (in path :external-format :utf-8)
+                 (loop for form = (read in nil in)
+                       until (eq form in)
+                       do (if (named-form-p form "IN-PACKAGE")
+                              (setf *package*
+                                    (or (find-package (second form))
+                                        (car (push (make-package (format nil "LAYER-SCRATCH-~a" (random 1000000000))
+                                                                 :use '(#:cl))
+                                                   scratch))))
+                              (incf others))))
+               (= others (length hits)))
+           (error () nil))
+      (mapc #'delete-package scratch))))
+
+(defun layer-file-units (path)
+  "PATH as the files the loader judges one at a time: PATH itself when it
+holds one definition, or anything but definitions; else one unit per
+definition, in its order -- the definition's own text under the package it
+reads in, its override marker above it -- cut into *LAYER-UNITS-DIRECTORY*
+and rewritten only when its text changed, so its fasl is reused."
+  ;; Without this a file is one unit: a form naming what this build lacks
+  ;; skips every form beside it, and a cell kept as one file (cell-fold.lisp)
+  ;; is gone at the next boot over one dead hook.
+  (let ((hits (ignore-errors (file-definitions path))))
+    (if (or (< (length hits) 2) (not (file-only-definitions-p path hits)))
+        (list path)
+        (let* ((text (read-text path))
+               (folder (folder-name (uiop:pathname-directory-pathname path)))
+               (directory (merge-pathnames (format nil "~a/" folder)
+                                           (or *layer-units-directory*
+                                               (merge-pathnames (format nil "nodecode-layer-units-~d/" (sb-posix:getpid))
+                                                                (uiop:temporary-directory))))))
+          (ensure-directories-exist directory)
+          (loop for (key start end home) in hits
+                for index from 1
+                collect (let ((unit (merge-pathnames (format nil "~a@~2,'0d-~a.lisp" (pathname-name path) index
+                                                             (definition-file-name key))
+                                                     directory))
+                              (content (format nil "~@[~a~%~](in-package ~s)~%~%~a~%"
+                                               (definition-leading-comment text start)
+                                               (cond ((packagep home) (package-name home))
+                                                     ((stringp home) home)
+                                                     (t "NODECODE.EVOLVED"))
+                                               (subseq text start end))))
+                          (unless (equal content (ignore-errors (read-text unit)))
+                            (write-file-atomically unit content))
+                          (setf (gethash (namestring unit) *layer-units*)
+                                (cons (file-namestring path) (definition-key-label key)))
+                          unit))))))
+
 (define-startup-parameter *peripheral-cache-directory*
   (cache-path "nodecode/peripherals/")
   "Where a peripheral outside the shipped tree compiles to:
@@ -1700,25 +1787,32 @@ LOAD-CELL-FOLDERS started it -- of FOLDER into CELL, one file at a time."
          ;; a file not loaded yet may define (LOAD-LAYER-FILE)
          (waiting '()))
     (flet ((settle (path later &optional promised
-                    &aux (started (get-internal-real-time)) (wait nil))
-             ;; load PATH, skip it or leave it waiting => whether it is settled
-             (call-recording-failure
-              cell (file-namestring path)
-              (lambda ()
-                (multiple-value-bind (reason names)
-                    (muffled-load
-                     (lambda ()
-                       ;; said while it loads, so a stall is named as it happens
-                       (setf *layer-file-loading* (list* cell.name (file-namestring path) started))
-                       (unwind-protect
-                            (load-layer-file path (append (remove path (mapcar #'car waiting)) later)
-                                             provides promised)
-                         (setf *layer-file-loading* nil))))
-                  (cond ((eq reason :wait) (setf wait (cons path names)))
-                        (reason
-                         (setf cell.skipped
-                               (append cell.skipped
-                                       (list (cons (file-namestring path) reason)))))))))
+                    &aux (started (get-internal-real-time)) (wait nil)
+                    (failed (length cell.failures)))
+             ;; load PATH, skip it or leave it waiting => whether it is settled;
+             ;; a unit cut from a file is recorded as that file, its definition named
+             (multiple-value-bind (file label) (layer-unit-source path)
+               (flet ((labelled (text) (if label (format nil "~a: ~a" label text) text)))
+                 (call-recording-failure
+                  cell file
+                  (lambda ()
+                    (multiple-value-bind (reason names)
+                        (muffled-load
+                         (lambda ()
+                           ;; said while it loads, so a stall is named as it happens
+                           (setf *layer-file-loading* (list* cell.name (file-namestring path) started))
+                           (unwind-protect
+                                (load-layer-file path (append (remove path (mapcar #'car waiting)) later)
+                                                 provides promised)
+                             (setf *layer-file-loading* nil))))
+                      (cond ((eq reason :wait) (setf wait (cons path names)))
+                            (reason
+                             (setf cell.skipped
+                                   (append cell.skipped
+                                           (list (cons file (labelled reason))))))))))
+                 (when (and label (> (length cell.failures) failed))
+                   (let ((last (last cell.failures)))
+                     (setf (cdr (first last)) (labelled (cdr (first last))))))))
              (setf waiting (append (remove path waiting :key #'car) (and wait (list wait))))
              (unless wait
                ;; what the file cost, so a stall is named
@@ -1806,11 +1900,13 @@ left (BEFORE for the first) against OWNERS. => the records, in load order."
                                               (uiop:temporary-directory)))))
                  (*layer-fasl-paths* (make-hash-table :test 'equal))
                  (scan (lambda ()
-                         (remove-if-not
-                          #'probe-file
-                          (mapcar (lambda (file)
-                                    (merge-pathnames (format nil "~a.lisp" file) (cell-folder-source folder)))
-                                  declared.files)))))
+                         ;; a file of several definitions is judged one definition at a time
+                         (mapcan #'layer-file-units
+                                 (remove-if-not
+                                  #'probe-file
+                                  (mapcar (lambda (file)
+                                            (merge-pathnames (format nil "~a.lisp" file) (cell-folder-source folder)))
+                                          declared.files))))))
             (multiple-value-bind (handle paths)
                 (if (or scratch declared.problem)
                     (values nil (funcall scan))

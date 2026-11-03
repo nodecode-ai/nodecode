@@ -209,6 +209,8 @@ of stacking."
      (:file "organism/made-cells")
      ;; cell-move follows made-cells: what the layer kept, moved into one after the fact
      (:file "organism/cell-move")
+     ;; cell-fold follows cell-move: a made cell's files folded into two
+     (:file "organism/cell-fold")
      ;; upgrade: what a staged tree changes in this image, classified: reads
      ;; the scribe's definitions and the loader's residue rule, evaluates nothing.
      (:file "organism/upgrade")
