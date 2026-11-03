@@ -3312,10 +3312,10 @@ did not say."
              ;; never the verdict.
              (let* ((scope (provider-error-scope e))
                     (request-p (eq scope :request))
-                    (scope-retry
-                      (if request-p
-                          (1+ request-retries-used)
-                          stream-attempt))
+                    ;; The budget SCOPE spends: how much of it is used, and
+                    ;; its size. The retry about to run is the (1+ USED)th.
+                    (used (if request-p request-retries-used (1- stream-attempt)))
+                    (limit (if request-p config.max-request-retries config.max-stream-retries))
                     ;; Past the rerun ceiling a cut attempt is continued,
                     ;; not re-run: no lane resumes a generation, so a re-run
                     ;; repeats everything from zero, while a continuation
@@ -3328,62 +3328,56 @@ did not say."
                     ;; the prompt to go on looping.
                     (continue-p (and (not request-p)
                                      (not (typep e 'provider-reasoning-loop))
-                                     (past-rerun-ceiling-p))))
-               ;; A refused connection spends the request budget at once:
-               ;; nothing listens there, and the next attempt hears the same.
-               (let ((exhausted (or (typep e 'provider-connection-refused)
-                                    (if request-p
-                                        (>= request-retries-used config.max-request-retries)
-                                        (>= (1- stream-attempt) config.max-stream-retries)))))
-                 (cond
-                   ((and exhausted (try-fallback e))
-                    ;; The chain took the round: the failed attempt is sealed
-                    ;; by the fallback itself (disposition rerun), the loop
-                    ;; re-runs against the candidate, and the ladder below is
-                    ;; NOT walked — no retry fact, no counters, no sleep.
-                    nil)
-                   (exhausted
-                    ;; An exhausted budget keeps its last attempt too — and
-                    ;; the failure says what survived.
-                    (seal-streamed-attempt (provider-error-detail e) "stood")
-                    (when (continuing-p)
-                      (setf (provider-error-note e)
-                            "(the stream budget is spent; what streamed across the attempts is kept)"))
-                    (amend-terminal-failover-note e)
-                    (error e))
-                   (t
-                    ;; The failed attempt may have streamed parts: seal them
-                    ;; durably before the retry fact, under the attempt index
-                    ;; that fact names, and join them to the continuation seal
-                    ;; when the policy continues.
-                    (multiple-value-bind (text thinking)
-                        (seal-streamed-attempt (provider-error-detail e)
-                                               (if continue-p "continued" "rerun"))
-                      (when continue-p (extend-seal text thinking)))
-                    (let ((delay (provider-retry-delay
-                                  scope-retry
-                                  config.retry-base-delay
-                                  :retry-after (provider-error-retry-after e)
-                                  :status (provider-error-status e))))
-                      (announce-retry
-                       e scope delay (provider-error-detail e)
-                       scope-retry
-                       (if request-p config.max-request-retries config.max-stream-retries)
-                       (and continue-p t))
-                      (if request-p
-                          (incf request-retries-used)
-                          (setf stream-attempt (1+ stream-attempt)
-                                request-retries-used 0))
-                      (incf provider-attempt)
-                      ;; The announcement above already hydrated the rows a client
-                      ;; keeps; voiding the cancel backstop's accumulation the same
-                      ;; way clears only what it did not.
-                      (void-partial-stream)
-                      ;; The backoff itself is a cancellable wait: Esc during a
-                      ;; long Retry-After pause interrupts the sleep instead of
-                      ;; letting the retry fire first.
-                      (nlk:with-cancellable-wait (*current-durable-turn*)
-                        (sleep delay)))))))))))))))
+                                     (past-rerun-ceiling-p)))
+                    ;; A refused connection spends the request budget at once:
+                    ;; nothing listens there, and the next attempt hears the same.
+                    (exhausted (or (typep e 'provider-connection-refused) (>= used limit))))
+               (cond
+                 ((and exhausted (try-fallback e))
+                  ;; The chain took the round: the failed attempt is sealed
+                  ;; by the fallback itself (disposition rerun), the loop
+                  ;; re-runs against the candidate, and the ladder below is
+                  ;; NOT walked — no retry fact, no counters, no sleep.
+                  nil)
+                 (exhausted
+                  ;; An exhausted budget keeps its last attempt too — and
+                  ;; the failure says what survived.
+                  (seal-streamed-attempt (provider-error-detail e) "stood")
+                  (when (continuing-p)
+                    (setf (provider-error-note e)
+                          "(the stream budget is spent; what streamed across the attempts is kept)"))
+                  (amend-terminal-failover-note e)
+                  (error e))
+                 (t
+                  ;; The failed attempt may have streamed parts: seal them
+                  ;; durably before the retry fact, under the attempt index
+                  ;; that fact names, and join them to the continuation seal
+                  ;; when the policy continues.
+                  (multiple-value-bind (text thinking)
+                      (seal-streamed-attempt (provider-error-detail e)
+                                             (if continue-p "continued" "rerun"))
+                    (when continue-p (extend-seal text thinking)))
+                  (let ((delay (provider-retry-delay
+                                (1+ used)
+                                config.retry-base-delay
+                                :retry-after (provider-error-retry-after e)
+                                :status (provider-error-status e))))
+                    (announce-retry e scope delay (provider-error-detail e)
+                                    (1+ used) limit (and continue-p t))
+                    (if request-p
+                        (incf request-retries-used)
+                        (setf stream-attempt (1+ stream-attempt)
+                              request-retries-used 0))
+                    (incf provider-attempt)
+                    ;; The announcement above already hydrated the rows a client
+                    ;; keeps; voiding the cancel backstop's accumulation the same
+                    ;; way clears only what it did not.
+                    (void-partial-stream)
+                    ;; The backoff itself is a cancellable wait: Esc during a
+                    ;; long Retry-After pause interrupts the sleep instead of
+                    ;; letting the retry fire first.
+                    (nlk:with-cancellable-wait (*current-durable-turn*)
+                      (sleep delay))))))))))))))
 
 ;;; --- tool dispatch ------------------------------------------------------
 
