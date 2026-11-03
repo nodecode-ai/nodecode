@@ -827,8 +827,7 @@ systems' components in load order, else every .lisp directly in it."
                                  (and system
                                       (mapcar #'asdf:component-pathname
                                               (asdf:required-components
-                                               system :other-systems nil
-                                                      :component-type 'asdf:cl-source-file))))))))
+                                               system :other-systems nil :component-type 'asdf:cl-source-file))))))))
     (remove-duplicates (remove-if-not #'probe-file
                                       (or files (directory (merge-pathnames "*.lisp" directory))))
                        :test #'equal :key (lambda (path) (namestring (truename path))) :from-end t)))
