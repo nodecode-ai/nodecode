@@ -188,8 +188,6 @@ See [Gateway](/gateway) and [Operations](/operations).
 | `~/.nodecode/AGENTS.md is not read: 71.2 KB — trim to 64.0 KB` | Your own rules are over 64.0 KB. Every shell shows this as it attaches, and the model reads it in its `notices` block. | Trim it. The warning goes when the file fits. |
 | `CLAUDE.md` is ignored | An `AGENTS.md` beside it is the first name looked for. Only one file is read. | Merge them into `AGENTS.md` and link `CLAUDE.md` to it. |
 | A package's rules are ignored | The session opened above the package. The search only climbs. | Open the session in the package. |
-| The root's rules are ignored in a package | The package's own file is found first. | Copy what the package needs into its file. |
-| Rules above the repository are ignored | The search stops at the folder that holds `.git`. | Move them to `~/.nodecode/AGENTS.md`. |
 | Another tool's rules are ignored | `.cursor/rules/`, `GEMINI.md` and `.github/copilot-instructions.md` are not read. | Move the rules to `AGENTS.md`. |
 | An edit did nothing this turn | The files are read at the first request of each turn. | It applies at the next turn without a restart. |
 
