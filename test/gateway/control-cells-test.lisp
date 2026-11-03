@@ -399,6 +399,45 @@ ASK its terminal: (TEXT CODE STREAM PREVIEW), PREVIEW what it printed first."
             (bt2:join-thread thread)))
         (is (null (probe-file (merge-pathnames "hub/" home))) "and nothing was fetched")))))
 
+(deftest control-cells-a-hub-folder-unpacks-from-its-index-archive
+    (with-switch-fixture (port base top))
+  ;; A PATH entry whose index names an archive of its folder installs out of
+  ;; it, off the /dl beside the index, with no git at all: here its git is a
+  ;; dead port. Bytes that are not the index's sha256 are never unpacked, and
+  ;; the install falls back to git, which then fails.
+  (with-temp-trees ((remote "archive-remote") (home "archive-home"))
+    (multiple-value-bind (repository commit)
+        (hub-fixture-repository remote "nl-sw-archived"
+                                (lambda (folder) (write-peripheral-folder (merge-pathnames "cells/" folder) "nl-sw-packed")))
+      (let* ((root (merge-pathnames "cells/" home))
+             (file (merge-pathnames "packed.tar.gz" remote))
+             (dead "https://127.0.0.1:9/o/cells.git")
+             (url (format nil "http://127.0.0.1:~d/test-hub/nl-sw-packed.tar.gz" port)))
+        (nlk::run-checked (list "git" "-C" repository "archive" "--format=tar.gz" "-o" (uiop:native-namestring file)
+                                commit "--" "cells/nl-sw-packed")
+                          (lambda (err) (error "git archive: ~a" err)))
+        (let* ((bytes (with-open-file (in file :element-type '(unsigned-byte 8))
+                        (let ((octets (make-array (file-length in) :element-type '(unsigned-byte 8))))
+                          (read-sequence octets in)
+                          octets)))
+               (sha (subseq (nlk::sha256-text bytes) 7)))
+          (nle:route "/test-hub/nl-sw-packed.tar.gz"
+                     (constantly (list 200 '(:content-type "application/gzip") bytes))
+                     :public t)
+          (nlk:with-cleanup ((nle:route "/test-hub/nl-sw-packed.tar.gz" nil))
+            (flet ((entry (sha256)
+                     (hub-offer "nl-sw-packed" dead commit :path "cells/nl-sw-packed" :archive url :sha256 sha256)))
+              (is (hub-install (entry sha) root) "the archive installs with no git")
+              (let ((folder (merge-pathnames "nl-sw-packed/" root)))
+                (is (probe-file (merge-pathnames "nl-sw-packed.asd" folder)))
+                (is (null (probe-file (merge-pathnames ".archive.tar.gz" folder))) "the archive itself goes")
+                (is (equal (list dead commit "cells/nl-sw-packed") (uiop:read-file-lines (merge-pathnames ".hub" folder)))))
+              (is (null (probe-file (merge-pathnames "hub/" home))) "and no repository was fetched")
+              (is (nlk:uninstall-cell "nl-sw-packed" :root root))
+              (is (search "git clone failed" (hub-refusal (entry (reverse sha)) root)) "other bytes are refused")
+              (is (not (nlk:installed-cell-p "nl-sw-packed" root)))
+              (is (null (probe-file (merge-pathnames ".cell-staging/" home))) "and leave nothing staged"))))))))
+
 (deftest control-cells-hub-reads-both-indexes-and-each-answers-for-itself
     (with-switch-fixture (port base top))
   ;; Nodecode's own index and the community's are read side by side: a name

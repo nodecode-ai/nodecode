@@ -1254,8 +1254,8 @@ the range and what went wrong (ACTIVITY-JSON); seven days when unsaid."
   (:route :get "/api/gateway/activity" "activity")
   ;; Sorting a month of steps conses a gigabyte and more in passing:
   ;; under the organism's 2 MB nursery that is a collection every two
-  ;; megabytes. The read's nursery is the read's, as a cell
-  ;; load's is (LOAD-CELL), and the cap comes back after.
+  ;; megabytes. The read's nursery is the read's, as a compile's is
+  ;; (COMPILE-LAYER-SHARES), and the cap comes back after.
   (nlk:with-nursery ((* 64 1024 1024))
     (activity-json (or (cdr (assoc "range" (gateway-query-parameters env) :test #'string=)) "7d"))))
 

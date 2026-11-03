@@ -140,6 +140,32 @@ is not EQ to the one a later eval interns — names compare, symbols do not."
     (is (search "gone.lisp" text) (format nil "the stream is still named: ~a" text))
     (is (null (ppcre:scan "\\{[0-9A-F]{6,}\\}" text)) (format nil "no heap address: ~a" text))))
 
+(deftest cells-a-folder-older-than-the-rename-is-told-what-to-do (with-cell-fixture (root))
+  ;; `Component "nodecode-lisp" not found' names the missing thing and stops.
+  ;; An operator arriving from a build before the rename had eight shipped
+  ;; folders and their own 25-definition layer go dark behind that line, and
+  ;; read it as the install being broken; it was not, the folders were older
+  ;; than the install. The loader knows which folder is shipped and which is
+  ;; the operator's own, and the two want opposite remedies, so it says which
+  ;; — a folder that fails for any other reason is left to speak for itself.
+  ;; Not a layer: a layer's files load directly, so its .asd dependency is
+  ;; never resolved and never fails. The folders that went dark were plain
+  ;; systems — nodecode-channel-kit and the seven that stand on it.
+  (write-cell-folder
+   root "my-cell"
+   (list (cons "kept" (evolved-source "(defun cells-probe-kept () :kept)")))
+   :depends-on '("nodecode-lisp"))
+  (write-layer-folder root "nl-other"
+                      '(("boom" . "(error \"this folder cannot load\")")))
+  (load-cell-fixture root)
+  (let ((lines (nlk:cells-folder-text)))
+    (is-carrying lines ("cell my-cell: FAILED" "the folder still fails")
+      ("predates the rename" (format nil "and the line says why: ~a" lines)) "sed -i")
+    (is-present (other (search "cell nl-other: FAILED" lines))
+      "the unrelated failure is still reported"
+      (is (not (search "predates the rename"
+                       (subseq lines other (min (length lines) (+ other 200)))))))))
+
 (deftest cells-failed-layer-file-isolates-its-siblings (with-cell-fixture (root))
   (write-layer-folder
    root "nl-partial"
@@ -578,6 +604,34 @@ is not EQ to the one a later eval interns — names compare, symbols do not."
             (is (zerop compiles) "the next load compiles nothing again")
             (is (eql 1 (evolved-fn "CELLS-PROBE-REBIND")) "and still rebinds")))))))
 
+(deftest cells-layer-compile-takes-only-the-files-it-claims ()
+  ;; A worker compiles the files whose claim — one MKDIR under CLAIMS — it
+  ;; wins, and marks a compile that published nothing `failed', where the
+  ;; launch waiting for that fasl looks.
+  (with-temp-directory (dir "layer-claims")
+    (let ((claims (merge-pathnames "claims/" dir))
+          (nursery (sb-ext:bytes-consed-between-gcs))
+          (pairs (loop for (name . text) in '(("taken" . "(defun cells-probe-claim-taken () 0)")
+                                               ("free" . "(defun cells-probe-claim-free () 1)")
+                                               ("broken" . "(defun cells-probe-claim-broken ( :never"))
+                       for source = (write-temp-file (merge-pathnames (format nil "~a.lisp" name) dir)
+                                                     (format nil "(in-package :nodecode.evolved)~%~a" text))
+                       collect (cons (namestring source)
+                                     (namestring (make-pathname :type "fasl" :defaults source))))))
+      (ensure-directories-exist (merge-pathnames "0/" claims))
+      (unwind-protect (let ((*error-output* (make-broadcast-stream)))
+                        (nlk::muffled-load (lambda () (nlk::compile-layer-shares pairs 1 (namestring claims))))
+                        ;; Without this, a shell that compiles its layer would
+                        ;; come back to the organism's nursery, not its own.
+                        ;; It comes back on a timer, shortly after (WITH-NURSERY).
+                        (is (await (:tries 200 :rest 0.01)
+                              (= nursery (sb-ext:bytes-consed-between-gcs))) "the process's own nursery comes back"))
+        (setf (sb-ext:bytes-consed-between-gcs) nursery))
+      (is (not (probe-file (cdr (first pairs)))) "a file claimed elsewhere is not compiled here")
+      (is (probe-file (cdr (second pairs))) "a free one is")
+      (is (probe-file (merge-pathnames "1/" claims)) "under its own claim")
+      (is (probe-file (merge-pathnames "2/failed/" claims)) "a compile that failed says so"))))
+
 (deftest cells-layer-with-a-pathname-fails-as-a-unit (with-cell-fixture (root))
   ;; A layer's files sit beside its .asd: a :pathname the data read cannot
   ;; honour fails the folder loudly instead of loading nothing.
@@ -673,14 +727,15 @@ writer."
 
 (defun hub-index-text (&rest entries)
   "A format-1 hub index of ENTRIES, each a plist of NAME GIT COMMIT and the
-optional PATH, PLATFORMS and DEPENDS-ON."
+optional PATH, PLATFORMS, DEPENDS-ON, ARCHIVE and SHA256."
   (format nil "{\"format\": 1, \"cells\": [~{~a~^, ~}]}"
           (loop for entry in entries
-                collect (destructuring-bind (&key name git commit path platforms depends-on) entry
+                collect (destructuring-bind (&key name git commit path platforms depends-on archive sha256) entry
                           (format nil "{\"name\": ~s, \"git\": ~s, \"commit\": ~s, \"description\": \"d\"~
                                      ~@[, \"path\": ~s~]~@[, \"platforms\": [~{~s~^, ~}]~]~
-                                     ~@[, \"depends_on\": [~{~s~^, ~}]~]}"
-                                  name git commit path platforms depends-on)))))
+                                     ~@[, \"depends_on\": [~{~s~^, ~}]~]~
+                                     ~@[, \"archive\": ~s~]~@[, \"sha256\": ~s~]}"
+                                  name git commit path platforms depends-on archive sha256)))))
 
 (deftest cells-hub-index-reads-pinned-entries-and-refuses-a-loose-one ()
   ;; An entry clones from https:// only and pins a full commit: a branch or a
@@ -712,7 +767,15 @@ optional PATH, PLATFORMS and DEPENDS-ON."
       ;; a path is a folder inside the repository, never out of it or into .git
       (dolist (path '("../up" "/abs" "a/../b" ".git/x" "a//b" "a/"))
         (is (search "path is a folder" (refused :name "nl-hub-a" :git git :commit commit :path path))
-            path)))
+            path))
+      ;; an archive is https:// and comes with the sha256 its bytes must have
+      (let ((sha (make-string 64 :initial-element #\0)))
+        (is (search "archive is" (refused :name "nl-hub-a" :git git :commit commit :path "a" :archive "http://example.org/a.tar.gz" :sha256 sha)) "not over plain http")
+        (is (search "archive is" (refused :name "nl-hub-a" :git git :commit commit :path "a" :archive "https://example.org/a.tar.gz")) "not without its sha256")
+        (is (search "archive is" (refused :name "nl-hub-a" :git git :commit commit :path "a" :sha256 sha)) "nor a sha256 alone")
+        (let ((entry (first (nlk:read-hub-index (hub-index-text (list :name "nl-hub-a" :git git :commit commit :path "a" :archive "https://example.org/a.tar.gz" :sha256 sha)) :shipped '()))))
+          (is (equal "https://example.org/a.tar.gz" (nlk::offer-archive entry)) "the archive is read")
+          (is (equal sha (nlk::offer-sha256 entry)) "beside its sha256"))))
     (is (search "format 1" (refusal-text error (nlk:read-hub-index "{\"format\": 2, \"cells\": []}"))))))
 
 (defun hub-fixture-repository (parent folder &optional (prepare #'identity))

@@ -199,7 +199,7 @@ cells - What a cell is, where to find one, how to turn one on or off, the hub, h
 cell-api - How a cell is written: nle:define-cell, its clauses, tool contracts, the config section, hooks, notices, stop, and what Nodecode shows when one is written wrong.")
     (:fork "fork: whenever an ask splits into two or more independent investigations that each take several reads, run them at once with (fork \"task 1\" \"task 2\" ...) instead of one after another: each of up to 4 forks of this session holds this whole context, and the call answers their results. Also for a probe whose output would bury this context; never for a linear task or a quick read" . "Forking this turn: one verb of the kernel, called through eval. A refusal is
 ERROR: FORK-ERROR with the reason.
-  (fork \"task\" ... &key seconds from)
+  (fork \"task\" ... &key seconds from check keep)
  fork this session at the turn running it, once per task (at most 4), and
  wait for them all. Each fork holds this whole context, works its one task on
  this session's model, and answers. => one plist a task, in order: (:task
@@ -210,6 +210,30 @@ ERROR: FORK-ERROR with the reason.
   :from -N (or a turn id)
  fork N turns back instead of here: the forks hold what this session knew
  when that turn ended, and nothing after it.
+  :from G (or (OLD NEW)) :check CHECK, tasks optional
+ go back through the generations this home sealed, G to the newest, to the
+ step where CHECK turned false. CHECK is a form answering true, e.g.
+ (fboundp 'nle::help), or a shell command exiting 0 in this session's
+ folder, e.g. \"test -f README.md\". Each generation is laid in a throwaway
+ home and asked in a fresh process of today's binary, 4 at once (about a
+ minute a round, 6 rounds over a thousand generations); nothing live is
+ touched. => (:bisect (:verdict V :range (OLD NEW) :good G :bad G :changes
+ LINES :rounds N :tested ROWS :says WORDS) :forks RESULTS): V :found;
+ :clean when the newest passes, so the break is outside what a generation
+ records; :program when the oldest fails too, so no generation explains it;
+ :unanswered when an end could not be asked; :unsteady when the step's two
+ generations, asked again, answer otherwise (a check reading what a boot
+ varies). Tasks are forked after the search, told what it found.
+  :keep NAME :check CHECK
+ race versions of NAME, a plain function: fork n writes its version as
+ fork-n/NAME, one defun taking every call NAME takes. Each version and what
+ stands are put to CHECK in a fresh process; the ones that pass are timed on
+ this image's own calls of NAME, one version serving each call; the fastest,
+ if 5% faster than what stands (or passing where what stands fails), goes
+ live HELD -- written to the layer after one clean call outside an eval,
+ (revert 'NAME) putting the old one back until then. Beside :from G, NAME as
+ the last good generation had it races too. => (:forks RESULTS :race (:keep
+ NAME :standing ROW :versions ROWS :winner LABEL :says WORDS)).
 A fork defines only names of its own -- one that already answers is refused --
 and nothing it defines is written to the layer: the parent keeps what it chose.
 When to fork: work that splits into branches that do not need each other --
