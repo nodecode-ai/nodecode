@@ -338,6 +338,12 @@ the model picker sets together and Delete takes out together."
                                                        (json-object "path" (section-path-to experience name)
                                                                     "remove" t)))))))
 
+(defun pinned-model-setting (page label tab pin unset doc)
+  "A row of PAGE for the model /models' TAB picks: PIN, (PROVIDER MODEL), else UNSET."
+  (make-setting :label label :kind :action :part page :set (and (first pin) t) :doc doc
+                :act (lambda (model) (open-models-provider-picker model :tab tab))
+                :text (if (first pin) (identity-text (second pin) (first pin)) unset)))
+
 (defun models-section (target parts providers)
   "The models the shell runs on: the default a new session starts on, the
 reasoning effort -- TARGET's, (:LADDER :EFFORT :DEFAULT-PROVIDER
@@ -378,20 +384,10 @@ every one of PROVIDERS' settings, each under its name (PROVIDER-PARTS)."
                      (make-setting :label "Reasoning effort" :kind :note :part page
                                    :text (if target "None for this model" "Reading…")
                                    :doc "This model offers no reasoning effort controls."))
-                 (make-setting :label "Auxiliary model" :kind :action :part page
-                               :act (lambda (model) (open-models-provider-picker model :tab "aux"))
-                               :set (and (first aux) t)
-                               :text (if (first aux)
-                                         (identity-text (second aux) (first aux))
-                                         "Same as main")
-                               :doc "Naming a session, a recap, a summary: they run on this model, on /models' Auxiliary tab.")
-                 (make-setting :label "Decider model" :kind :action :part page
-                               :act (lambda (model) (open-models-provider-picker model :tab "decider"))
-                               :set (and (first decider) t)
-                               :text (if (first decider)
-                                         (identity-text (second decider) (first decider))
-                                         "None")
-                               :doc "Judgments as probabilities (POST /v1/systemone): the decider a guard, a triage or a router asks, on /models' Decider tab."))
+                 (pinned-model-setting page "Auxiliary model" "aux" aux "Same as main"
+                                       "Naming a session, a recap, a summary: they run on this model, on /models' Auxiliary tab.")
+                 (pinned-model-setting page "Decider model" "decider" decider "None"
+                                       "Judgments as probabilities (POST /v1/systemone): the decider a guard, a triage or a router asks, on /models' Decider tab."))
            (and experience (list (reflections-model-setting experience)))
            (loop for part in providers append part.rows)))
     (choice-texts page)))
@@ -1852,17 +1848,13 @@ cell, or NIL."
   "The columns and rows the sheet asks for: what a wide window gives it, the
 whole rail standing in it unscrolled.")
 
-(defun settings-paint (model settings width height)
-  "The sheet for a WIDTH x HEIGHT frame: wide from 84 columns, the rail beside
-the pane; narrower, one view at a time."
-  (paint-sheet model settings width height +settings-sheet-size+ #'paint-wide #'paint-stacked))
-
 (defun slash-settings-op (model &optional section)
   "Open /settings: the sheet at once over the shell, General first -- or the
 page holding the config SECTION once it is read (/cells' Enter) -- every
 section read off the loop."
   (let ((settings (make-settings-sheet :kind :settings :title "Settings"
-                                       :paint #'settings-paint :key #'settings-key
+                                       :paint (sheet-painter +settings-sheet-size+ #'paint-wide #'paint-stacked)
+                                       :key #'settings-key
                                        :paste #'settings-paste :click #'sheet-click
                                        :wheel #'settings-wheel :hover #'settings-hover
                                        :asked section)))

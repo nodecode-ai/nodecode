@@ -175,6 +175,10 @@ ROWS X Y CARET)."
         (values (canvas-rows canvas) x y
                 (and caret (cons (+ x (car caret)) (+ y (cdr caret)))))))))
 
+(defun sheet-painter (size wide stacked)
+  "A sheet's :PAINT, (MODEL SHEET WIDTH HEIGHT): PAINT-SHEET with SIZE, WIDE and STACKED."
+  (lambda (model sheet width height) (paint-sheet model sheet width height size wide stacked)))
+
 (defun paint-search-field (canvas x row width query placeholder ground)
   "The search field WIDTH wide from X on ROW: QUERY, else PLACEHOLDER quiet. => the caret's cell, or NIL."
   (canvas-fill canvas (1- x) row (+ width 2) 1 (sheet-ink nil :ground ground))

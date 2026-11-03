@@ -705,10 +705,6 @@ whole, what it said, and its keys. => the caret's cell, or NIL."
         (paint-keys setup canvas hint-row px (+ px pw) (channel-setup-keys setup) setup.flash ground)
         caret))))
 
-(defun channel-setup-paint (model setup width height)
-  "The sheet for a WIDTH x HEIGHT frame: one pane, wide or narrow."
-  (paint-sheet model setup width height +channel-setup-size+ #'paint-channel-setup #'paint-channel-setup))
-
 ;;; --- opening it -----------------------------------------------------------------
 
 (defun open-channel-setup (model &optional channel &key call)
@@ -717,7 +713,8 @@ its first read off the loop. CALL stands in for the organism's control
 surface (a test's fake). => NIL."
   (let ((setup (make-channel-setup-sheet
                 :kind :channel-setup :title "Set up"
-                :paint #'channel-setup-paint :key #'channel-setup-key
+                :paint (sheet-painter +channel-setup-size+ #'paint-channel-setup #'paint-channel-setup)
+                :key #'channel-setup-key
                 :paste #'channel-setup-paste :click #'sheet-click
                 :channel (and channel (channel-setup-id channel))
                 :call (or call

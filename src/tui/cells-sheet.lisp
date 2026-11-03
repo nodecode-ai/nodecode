@@ -792,16 +792,12 @@ the caret's cell, or NIL."
 (defparameter +cells-sheet-size+ '(120 34)
   "The columns and rows the sheet asks for: what a wide window gives it.")
 
-(defun cells-paint (model cells width height)
-  "The sheet for a WIDTH x HEIGHT frame: wide from 84 columns, the list
-beside the chosen cell; narrower, one view at a time."
-  (paint-sheet model cells width height +cells-sheet-size+ #'paint-cells-wide #'paint-cells-stacked))
-
 (defun open-cells-dialog (model)
   "/cells on a shell: the sheet at once over the shell, the listing and the
 hub's index read off the loop."
   (let ((cells (make-cells-sheet :kind :cells :title "Cells"
-                                 :paint #'cells-paint :key #'cells-key :paste #'cells-paste
+                                 :paint (sheet-painter +cells-sheet-size+ #'paint-cells-wide #'paint-cells-stacked)
+                                 :key #'cells-key :paste #'cells-paste
                                  :click #'sheet-click :wheel #'cells-wheel)))
     (setf (chat-model-dialog model) cells)
     (cells-read model cells)
