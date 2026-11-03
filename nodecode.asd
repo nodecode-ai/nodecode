@@ -350,6 +350,7 @@ of stacking."
      ;; notify: a desktop notice when a turn ends, the second reader of the
      ;; frames PUBLISH-EVENT lets out.
      (:file "gateway/notify")
+     (:file "gateway/questions")
      (:file "gateway/health")
      ;; The shell's gateway client, in load order: the WebSocket model and its
      ;; update, the organism it fronts, the slash commands it runs
@@ -629,6 +630,8 @@ of stacking."
      (:file "tui/timestamps-test")
      (:file "tui/history-lane-test")
      (:file "gateway/gateway-test")
+     ;; Uses gateway-test's silent peers.
+     (:file "gateway/questions-test")
      (:file "gateway/gateway-return-test")
      (:file "gateway/still-starting-test")
      (:file "gateway/think-off-test")

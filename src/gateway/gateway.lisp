@@ -87,6 +87,10 @@ of.")
   ;; The process the shell runs in, from its subscribe command, or NIL for
   ;; a client that did not say (IMAGE-LIVE-SECTIONS).
   (pid nil)
+  ;; It draws the organism's questions and sends their answers (its
+  ;; subscribe said "answers": true): only such a peer is sent the board,
+  ;; and only while one is attached is anyone asked (questions.lisp).
+  (answers-p nil :type boolean)
   ;; The standing board went out once, after this peer's first replay --
   ;; a replay replaces the shell's transcript state, so rows sent before
   ;; it would be wiped.
@@ -2137,7 +2141,8 @@ position (the cursor a resume names), the target its next turn binds
       (result "rejected" "unknown_session" "session does not exist")))
 
 (define-sync-command :set-session-subscriptions ((subscriptions :array "subscriptions")
-                                                 (pid :integer "pid"))
+                                                 (pid :integer "pid")
+                                                 (answers :boolean "answers"))
   ;; The decoder (NLK::DECODE-COMMAND) admits this command only with its
   ;; subscriptions array, and carries the pid only when it is an integer. An
   ;; entry names a session; a live_only entry (a preview lane's follow) gets no
@@ -2173,6 +2178,10 @@ position (the cursor a resume names), the target its next turn binds
                    (tell "organism.note" (json-object "text" words))))))
       (when-let (state (and pid (find-gw-peer-state peer)))
         (setf state.pid pid))
+      (when-let (state (find-gw-peer-state peer))
+        (setf state.answers-p (and answers t))
+        ;; The open questions, so a page that reloaded mid-question shows it.
+        (when answers (tell "organism.questions" (questions-payload))))
       (remove-peer (car subscription-list) peer)
       (close-rows-views peer rows)
       (setf (car subscription-list) new-ids)
