@@ -1,9 +1,92 @@
 ---
 title: Context and recall
-summary: "The window budget, eviction, the stub it leaves, /evict, the working context, the recall forms and checkpoints."
+summary: "The agent edits its own context as a file, recall reads back whatever left it, and eviction is the backstop: the working context, the budget, eviction, the stub, /evict, recall and checkpoints."
 ---
 
+Nodecode's agent manages its own context, the way a [Context Language Model](https://arxiv.org/abs/2609.37725) (Shao et al., 2026) does: the context is a file the agent may edit without restriction, and the next request reads what it left. Nothing it lets go is lost. The context is a window over a log that is never edited, and recall reads any of it back word for word.
+
+| Part | What it does |
+| --- | --- |
+| [Working context](#working-context) | The agent cuts, edits, notes and restores its own context. |
+| [Recall](#recall) | Reads anything that left the window back from the log. |
+| [Eviction](#eviction) | The backstop: drops the oldest turns when the agent did not shrink the context in time. |
+
 <WindowFigure />
+
+{/* source: src/engine/working-context.lisp */}
+## Working context
+
+`(context)` writes the session's context to `context.txt` and returns its path. The file sits under the home at `context/STORE/SESSION/context.txt`, one per store and session. Edit it with any file verb, a shell command or Lisp. There is no summarizing API and no size target: growing the context, cutting it, writing notes and restoring blocks are all edits.
+
+The first line names the export and, once a round has reported it, how full the window is. Keep it. Below it, each message of the retained history is a block under a `[[m:NONCE ID ROLE]]` line, where ID is its log position. A tool block's first line is its call, and the rest is its result. Harness lines and the active request are not in the file, and they stay where they stand.
+
+| Edit | What the next request reads |
+| --- | --- |
+| Keep | A block left as it is: the message as it was, byte for byte, so it stays cached. |
+| Delete | Nothing. A deleted tool block takes its call with it. |
+| Rewrite | An assistant's text or a tool result, edited in place. An edited result ends with the recall line that reads the original. |
+| Edit a call | A stand-in for the call's arguments that names the original. |
+| Note | Text under a `[[note]]` line, above the first block or after a block's own text, and an edited user ask: an assistant message labelled `[context note]`. It reads as the agent's own words, never as the operator's and never as a call that ran. |
+| Restore | A removed block's header written back, anywhere: the original message, where it stood. |
+| Move | A block moved behind a later one reads as a note where it was moved to. |
+
+Every call stays answered. A call whose result left answers that it did.
+
+### Edit by seq
+
+Every tool result ends with its seq: `[seq 57]`. `(context :drop SPANS :keep IDS :note TEXT)` makes the same edit without the file.
+
+| Keyword | Takes |
+| --- | --- |
+| `:drop` | `t` for every block, or a list of seqs, ids (`"n1"`, `"57c"`) and `(from . to)` spans. |
+| `:keep` | Seqs held back from the drop. |
+| `:note` | The agent's note, kept at the end. Alone, it changes nothing else. |
+
+```lisp
+(context :drop '(1200 . 1250) :note "deploy fixed and proved; open: the docs page")
+(context :drop t :keep '(1257) :note "…")
+```
+
+The call returns what the next request will take. Calls in the same round compose.
+
+### When an edit is taken
+
+The next model request takes the edit, or refuses it and says why. `context.receipt.txt` says what it kept, changed, removed and added. Refused bytes go to `context.rejected.txt`. Either way the file is then written afresh, but a file still holding an edit not yet taken is never overwritten.
+
+An edit is refused when its first line changed, when another edit was taken after the file was written, or when the session moved to another branch. Newer turns do not refuse it: a file read rounds ago still edits, and the newer turns follow it.
+
+A taken edit is one `context.edited` event in the log. The shell shows it as one `Context` row, such as `~95k → ~41k tokens · 12 removed · 1 note · by the model`. The log itself is never edited: the edit changes what the next request reads, and recall still reads every original.
+
+### Cache cost
+
+Messages before the first change stay byte for byte as they were, so the provider's cached prefix holds through them. A note added at the end costs only itself. The receipt says how far the prefix holds:
+
+```
+the first 40 of 52 messages are unchanged, so the cached prefix holds through them
+```
+
+An edit at the first message sends the history after the system prompt uncached, once.
+
+Everything after the first change is sent again. No provider here reuses a cached suffix. Reasoning still rides the messages before the first change. From the first change on, signed reasoning is not replayed.
+
+### Forks, resume and rewind
+
+Each session edits its own file. A fork inherits the edit visible where it forked, and never a file. Resume rebuilds the view from the store. A rewind restores the older branch's view.
+
+{/* source: cells/context/cell.lisp */}
+### The standing rule
+
+The `nodecode-context` cell is built into every binary, so it runs in a pristine boot and in a home with no cells installed. It gives the agent one standing rule: edit at checkpoints, after a subproblem settles and before the final answer, in one `(context :drop …)` call. The note keeps constraints, decisions, verified state, open work and evidence pointers. Free room in the window is not the test, because every kept block rides every request. Correctness outranks size.
+
+### Beside the paper
+
+| | The paper | Nodecode |
+| --- | --- | --- |
+| File | The context is mirrored to a file the model edits with Bash. | `context.txt`, edited with any file verb or shell command, or in one call with `(context :drop …)`. |
+| Sync | An edit reaches the live context on the next turn. | An edit is taken at the next model request, and a receipt says what was taken. |
+| Agents | Several agents' contexts coexist as files. | One file per session. A fork inherits the edit taken where it forked. |
+| Cache | Suffix Cache Reuse keeps a middle edit cheap on the server. | The cached prefix holds up to the first change. Everything after it is sent again. |
+| Policy | Instructions or reinforcement learning shape it. | The standing rule shapes it. No learned policy ships. |
 
 {/* source: src/engine/provider.lisp */}
 ## Budget
@@ -28,9 +111,11 @@ Nodecode also learns the window. A request the provider rejects as too large rec
 {/* source: src/engine/context.lisp */}
 ## Eviction
 
+Eviction is the backstop for a context the agent did not shrink. It acts only at a request that is still over the line.
+
 | Setting | Value |
 | --- | --- |
-| Warns at | 0.85 of the budget, once: `[context X of Y, past the 85% line: the next request evicts your oldest history unless it shrinks first. ...]` |
+| Warns at | 0.85 of the budget, once: `[context X of Y, past the 85% line: the next request evicts your oldest history unless it shrinks first. (context :drop SPANS :keep IDS :note TEXT) shrinks it in one call, and the note keeps what you still need. One warning until it shrinks.]` |
 | Evicts | At the next request still over 0.85. A request already past the whole budget evicts at once. |
 | Evicts down to | 0.50 of the budget |
 
@@ -44,7 +129,7 @@ Order:
 
 The running turn keeps its user message and its newest round. It is never evicted whole.
 
-Evicted history is never summarised. It stays in the log, word for word.
+Nothing summarizes evicted history except the agent. Its notes ride the stub, and the log keeps every word.
 
 The eviction boundary only moves forward. An undo does not bring evicted turns back into the window.
 
@@ -102,11 +187,6 @@ Write a `;;` line at the top of a cell. That line survives eviction.
 | Default | 50 |
 | Drops | The oldest whole turns, until at least that share of the retained history is gone. |
 | Keeps | The newest turn, always. |
-
-{/* source: src/engine/working-context.lisp */}
-## Working context
-
-`(context)` writes the session's context to `context.txt` and returns its path. Each message is a block under a `[[m:NONCE ID ROLE]]` line, where ID is its log position. Delete a block and the message leaves the context. Edit its text and the message reads as edited. Text under a `[[note]]` line is the agent's own note. The next model request takes the edit, and `context.receipt.txt` says what it kept, changed and removed. `(context :drop SPANS :keep IDS :note TEXT)` makes the same edit without the file: SPANS is `t` for every block, or a list of seqs and `(from . to)` spans, and `:keep` holds seqs back from the drop. Every tool result ends with its seq, `[seq 57]`. The log is never edited.
 
 {/* source: src/session/recall.lisp */}
 ## Recall
