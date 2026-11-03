@@ -277,6 +277,9 @@ of stacking."
      ;; image-fit shrinks, named in *IMAGE-DECODERS* there for image/gif.
      (:file "engine/image/gif")
      (:file "engine/turn")
+     ;; policy-review: an edit to the agent's own policy, draft to verdict;
+     ;; after turn, whose system prompt it reads under policy.self.
+     (:file "engine/policy-review")
      ;; shell precedes exec: the grammar of what (sh ...) runs — a command
      ;; string as its simple commands, each with words, redirects and the
      ;; substitution mark — is one pure authority, read by exec's read-only
@@ -574,6 +577,7 @@ of stacking."
      ;; gate reads the pool the same way.
      (:file "engine/provider-watchdog-test")
      (:file "engine/turn-test")
+     (:file "engine/policy-review-test")
      ;; meter-test follows turn-test: its budget turns drive the tool-call
      ;; seam through turn-test's wire helpers and probe schema.
      (:file "engine/meter-test")

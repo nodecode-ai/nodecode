@@ -3990,7 +3990,7 @@ given if it began now — the system prompt, its standing and live sections,
 and the payload of the tool BINDINGS — and of SECTIONS the standing ones,
 the ones a pin holds."
   (let ((standing (kept-sections (read-harness-sections session-id))))
-    (values (copy-seq *system-prompt*)
+    (values (copy-seq (policy-system-prompt session-id))
             (kept-sections (append standing (read-live-sections session-id)))
             (tools-payload bindings)
             standing)))
@@ -4141,7 +4141,7 @@ fold of the fact reproduces."
                                        turns floor
                                        :budget window
                                        :tools (or tools (tools-payload))
-                                       :system-prompt (or system-prompt *system-prompt*)
+                                       :system-prompt (or system-prompt (policy-system-prompt (session-id session)))
                                        :head head
                                        :calibration calibration
                                        :floors floors)))
