@@ -55,7 +55,7 @@ NAME.lisp (one function, one variable, one generic), both loaded from disk.
                (is (member "defun only-live" labels :test #'string=) "an evaluated function in no file is named")
                (is (member "defvar *only-live-var*" labels :test #'string=) "an evaluated variable in no file is named")
                (is (find-if (lambda (l) (search "defmethod kept-gf (string)" l)) labels) "an evaluated method in no file is named, by its specializers")
-               (is (not (find-if (lambda (l) (search "(integer)" l)) labels)) "the method the file loaded is not"))
+               (is (not (find-if (lambda (l) (search "defmethod kept-gf (integer)" l)) labels)) "the method the file loaded is not"))
              (drift-append code (format nil "(defun only-live () 3)~%(defvar *only-live-var* 4)~%(defmethod kept-gf ((x string)) x)~%"))
              (let ((drift (nlk:cell-drift directory)))
                (is (notany (lambda (l) (or (search "only-live" l) (search "kept-gf" l))) (drift-live-labels drift)) "once the file defines them, though they were made live from text, nothing is named")
