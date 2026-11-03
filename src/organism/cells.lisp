@@ -2615,10 +2615,8 @@ and the caller fetches the repository."
                (http :get entry.archive :binary t :max-bytes (* 16 1024 1024) :timeout 20))
            (when (and (eql status 200) (typep body '(vector (unsigned-byte 8)))
                       (string= (sha256-text body) (format nil "sha256:~a" entry.sha256)))
-             (ensure-directories-exist staging)
-             (with-open-file (out (merge-pathnames ".archive.tar.gz" staging) :direction :output
-                                  :element-type '(unsigned-byte 8) :if-exists :supersede)
-               (write-sequence body out))
+             ;; STAGING is made with it
+             (write-file-atomically (merge-pathnames ".archive.tar.gz" staging) body)
              ;; a name relative to the working directory: Git for Windows' tar
              ;; reads the colon of a drive as a host to fetch the archive from
              (multiple-value-bind (out err status)
