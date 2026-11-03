@@ -807,16 +807,9 @@ or those bytes themselves."
   "DIGITS hex characters of TEXT's SHA-256: a name for it, not a proof."
   (subseq (sha256-text (or text "")) 7 (+ 7 digits)))
 
-;;; Every row read recomputes its contract hash, and a log holds a few dozen
-;;; contracts: the FORMAT and the SHA-256 were paid per row.
-(defvar *contract-hashes* (make-hash-table :test #'equal :synchronized t)
-  "(aggregate-type kind schema-version) -> its contract hash.")
-
-(defun contract-hash-for (aggregate-type kind schema-version
-                          &aux (key (list aggregate-type kind schema-version)))
+(defun contract-hash-for (aggregate-type kind schema-version)
   "Fingerprint the stable event contract identity, not mutable payload data."
-  (alexandria:ensure-gethash key *contract-hashes*
-    (sha256-text (format nil "~a|~a|~d" aggregate-type kind schema-version))))
+  (sha256-text (format nil "~a|~a|~d" aggregate-type kind schema-version)))
 
 (defun iso-now ()
   "UTC ISO-8601 with millisecond precision."
