@@ -19,7 +19,12 @@ Nothing it drops is lost. Every word stays in the session's log, and the agent r
 
 - `(context)` hands the agent its context as a file. What the file says is what the next request sends.
 - `(context :drop '(15 21) :note "...")` makes the same edit in one call.
-- The shell shows each edit as one row: `Context ~28.6k → ~489 tokens · 5 removed · by the model`.
 - If the window passes 85% and the agent has not made room, the oldest finished turns leave by themselves. They can still be read back.
+
+The shell shows each edit as one row:
+
+```
+Context ~28.6k → ~489 tokens · 5 removed · by the model
+```
 
 Every form and number: [Context reference](/context-reference).
