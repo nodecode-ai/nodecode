@@ -151,8 +151,9 @@ section's, or the page's own), LABEL, the GROUP heading it in the rail, its
 GUIDE, what it still NEEDS, when a change APPLIES -- NIL for a page whose
 sections apply apart -- its JSON as the route answered it, and its ROWS. A
 section a page gathers with others stands under its HEAD there; the page
-shows why its own read FAILED, whole."
-  key label group guide needs json applies head failed (rows '()))
+shows its BADGE beside its name until it is opened, and why its own read
+FAILED, whole."
+  key label group guide needs json applies head badge failed (rows '()))
 
 (nlk:access (setting setting) (part settings-section) (page settings-section))
 
@@ -393,14 +394,30 @@ every one of PROVIDERS' settings, each under its name (PROVIDER-PARTS)."
 
 (define-startup-parameter *changes-seen-path*
   (home "changes-seen")
-  "Where a release whose Latest changes were opened was once kept; nothing
-reads it now. NIL disables persistence; tests bind.")
+  "Where /settings keeps the release whose Latest changes the operator last
+opened, so the page's `new' goes once it is seen. NIL disables persistence;
+tests bind.")
+
+(defun changes-seen ()
+  "The release whose Latest changes were last opened, or NIL."
+  (when *changes-seen-path*
+    (let ((label (nlk:trimmed (or (ignore-errors (nlk:read-text *changes-seen-path*)) ""))))
+      (and (plusp (length label)) label))))
+
+(defun see-changes (label)
+  "Keep LABEL as the release whose Latest changes were opened; best-effort."
+  (when (and *changes-seen-path* label)
+    (ignore-errors
+      (nlk::with-output-file (out *changes-seen-path*)
+        (write-string label out))
+      t)))
 
 (defun latest-section (release)
   "What the release the organism runs changed, as the page Latest changes:
 RELEASE as GET /api/gateway/release answered it, (:ERROR TEXT) when it did
 not, NIL until it lands -- a change a row, newest first, and the release's
-label where a section says when it applies."
+label where a section says when it applies. Its badge says `new' until it
+is opened on this release (*CHANGES-SEEN-PATH*)."
   (let* ((failure (off-loop-failure release))
          (answer (and (not failure) release))
          (label (json-value answer :string "label"))
@@ -417,6 +434,7 @@ label where a section says when it applies."
                              (t (format nil "What changed up to ~a: ~d change~:p, newest first."
                                         label (length changes)))))))
     (setf page.failed failure
+          page.badge (and changes (not (equal label (changes-seen))) "new")
           page.rows (loop for change in changes
                           for head = (json-value change :text "head")
                           collect (make-setting :label head :kind :change :part page :doc head
@@ -996,9 +1014,13 @@ the sheet goes back where it was."
   "Open the chosen section: its first setting chosen."
   (setf settings.focus :pane settings.setting-at 0 settings.pane-top 0 settings.said nil))
 
-(defun settings-choose (settings at)
-  "Choose the page AT, at its first setting."
-  (setf settings.section-at at settings.setting-at 0 settings.pane-top 0 settings.said nil))
+(defun settings-choose (settings at &aux (page (nth at settings.sections)))
+  "Choose the page AT, at its first setting. A page chosen has been seen:
+its badge goes, and Latest changes keeps the release it lists as seen."
+  (setf settings.section-at at settings.setting-at 0 settings.pane-top 0 settings.said nil)
+  (when (and page page.badge)
+    (setf page.badge nil)
+    (when (equal page.key "latest") (see-changes page.applies))))
 
 (defun settings-step-section (settings delta)
   "Choose the section DELTA away, wrapping, at its first setting."
@@ -1395,11 +1417,13 @@ it, General's none -- as (:GAP), (:HEAD TEXT) and (:SECTION INDEX)."
     (nreverse entries)))
 
 (defun section-mark (canvas x row part ground on)
-  "What stands at the end of PART's name ending at column X on ROW: a dot
-while any of its settings is set."
-  (declare (ignore on))
-  (when (section-set-p part)
-    (canvas-put canvas x row "•" (sheet-ink :dialog-accent :ground ground))))
+  "What stands at the end of PART's name ending at column X on ROW: its
+badge until it is chosen, else a dot while any of its settings is set."
+  (cond ((and part.badge (not on))
+         (canvas-put canvas (- x (text-display-width part.badge) -1) row part.badge
+                     (sheet-ink :dialog-accent :ground ground)))
+        ((section-set-p part)
+         (canvas-put canvas x row "•" (sheet-ink :dialog-accent :ground ground)))))
 
 (defun section-set-p (part)
   "Whether any setting of PART is set rather than at its default."
