@@ -32,52 +32,44 @@ WORD-P) triples — a space is ' ' or tab only (Zig tokenizeWords)."
       (return-from diff-word-tokens nil))
     (push (list start end (not (member (char line start) '(#\Space #\Tab)))) tokens)))
 
-(defun diff-word-ranges (line counterpart &aux (tokens-a (diff-word-tokens line))
-                                               (tokens-b (diff-word-tokens counterpart)))
+(defun diff-word-ranges (line counterpart &aux (va (coerce (diff-word-tokens line) 'vector))
+                                               (vb (coerce (diff-word-tokens counterpart) 'vector))
+                                               (n (length va)) (m (length vb))
+                                               ;; Suffix-LCS, the Zig edit_diff shape: (aref table i j) is VA[i..] vs VB[j..].
+                                               (table (make-array (list (1+ n) (1+ m)) :initial-element 0))
+                                               (ranges '()) (matched-word nil))
   "Word-level change ranges of LINE against its index-paired COUNTERPART:
 (START . END) char ranges with byte-adjacent unmatched tokens merged into
 one emphasis span."
   ;; NIL when the pair shares no common word token — the Zig
   ;; appendWordHighlights similarity gate, so fully rewritten lines keep plain
-  ;; whole-line coloring instead of an all-emphasis smear.
-  (when (and tokens-a tokens-b)
-    (let* ((va (coerce tokens-a 'vector))
-           (vb (coerce tokens-b 'vector))
-           (token= (lambda (ta tb)
-                     (string= line counterpart
-                              :start1 (first ta) :end1 (second ta)
-                              :start2 (first tb) :end2 (second tb))))
-           (n (length va))
-           (m (length vb))
-           ;; Suffix-LCS, the Zig edit_diff shape: (aref table i j) is VA[i..] vs VB[j..].
-           (table (make-array (list (1+ n) (1+ m)) :initial-element 0))
-           (ranges '())
-           (matched-word nil)
-           (i 0)
-           (j 0))
+  ;; whole-line coloring instead of an all-emphasis smear. The walk takes a
+  ;; match, else steps along whichever side keeps the longer common rest; a
+  ;; token of LINE stepped past (all of them once COUNTERPART runs out) changed.
+  (flet ((same (i j)
+           (destructuring-bind ((s1 e1 _) (s2 e2 __)) (list (aref va i) (aref vb j))
+             (declare (ignore _ __))
+             (string= line counterpart :start1 s1 :end1 e1 :start2 s2 :end2 e2))))
+    (when (plusp m)
       (loop for i from (1- n) downto 0
             do (loop for j from (1- m) downto 0
-                     do (setf (aref table i j)
-                              (if (funcall token= (aref va i) (aref vb j))
-                                  (1+ (aref table (1+ i) (1+ j)))
-                                  (max (aref table (1+ i) j)
-                                       (aref table i (1+ j)))))))
-      (flet ((collect (token)
-               (if (and ranges (= (cdr (first ranges)) (first token)))
-                   (setf (cdr (first ranges)) (second token))
-                   (push (cons (first token) (second token)) ranges))))
-        (loop while (and (< i n) (< j m))
-              do (cond ((funcall token= (aref va i) (aref vb j))
-                        (when (third (aref va i)) (setf matched-word t))
-                        (incf i)
-                        (incf j))
-                       ((>= (aref table (1+ i) j) (aref table i (1+ j)))
-                        (collect (aref va i))
-                        (incf i))
-                       (t (incf j))))
-        (loop for rest from i below n do (collect (aref va rest)))
-        (when (and matched-word ranges)
-          (nreverse ranges))))))
+                     do (setf (aref table i j) (if (same i j)
+                                                   (1+ (aref table (1+ i) (1+ j)))
+                                                   (max (aref table (1+ i) j) (aref table i (1+ j)))))))
+      (loop with i = 0 and j = 0
+            while (< i n)
+            do (cond ((and (< j m) (same i j))
+                      (when (third (aref va i)) (setf matched-word t))
+                      (incf i)
+                      (incf j))
+                     ((and (< j m) (< (aref table (1+ i) j) (aref table i (1+ j)))) (incf j))
+                     (t (destructuring-bind (start end _) (aref va i)
+                          (declare (ignore _))
+                          (if (and ranges (= (cdr (first ranges)) start))
+                              (setf (cdr (first ranges)) end)
+                              (push (cons start end) ranges)))
+                        (incf i))))
+      (and matched-word (nreverse ranges)))))
 
 (defun parse-unified-patch (patch &aux (result '())
                                        (pending-removed '())
@@ -96,12 +88,8 @@ one emphasis span."
              (setf pending-removed '() pending-added '())
              (loop for r in removed
                    for a in added
-                   do (setf r.ranges
-                            (diff-word-ranges r.text
-                                              (diff-line-text a))
-                            a.ranges
-                            (diff-word-ranges (diff-line-text a)
-                                              r.text)))
+                   do (setf r.ranges (diff-word-ranges r.text a.text)
+                            a.ranges (diff-word-ranges a.text r.text)))
              (setf result (revappend added (revappend removed result)))))
     (dolist (line (or (split-lines patch) '()))
       ;; A "@@ -A[,B] +C[,D] @@" hunk header: OLD-START only when both numbers read.
@@ -170,14 +158,10 @@ rows dim muted."
          :dim (eq sign :context)
          :fill (case sign (:added :diff-added-line) (:removed :diff-removed-line))
          :spans (unless (eq sign :context)
-                  (cons (mspan 0 prefix-len
-                               :tone (if added :diff-added :diff-removed))
-                        (loop for (start . end) in (diff-line-ranges line)
-                              collect (mspan (+ prefix-len start)
-                                             (+ prefix-len end)
-                                             :tone (if added
-                                                       :diff-added-word
-                                                       :diff-removed-word)))))))))
+                  (cons (mspan 0 prefix-len :tone (if added :diff-added :diff-removed))
+                        (loop with tone = (if added :diff-added-word :diff-removed-word)
+                              for (start . end) in (diff-line-ranges line)
+                              collect (mspan (+ prefix-len start) (+ prefix-len end) :tone tone))))))))
 
 (defun append-row-diff-stats (lline &rest rows &aux (files (loop for row in rows
                                                                   append (coerce (json-array row.metadata "workspace_diff" "files") 'list))))

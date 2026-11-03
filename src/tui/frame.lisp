@@ -131,10 +131,22 @@ from the ones COLLECT-DURING-WAIT hid inside provider wait."
            ;; An open modal picker owns every remaining key.
            (dialog (picker-dialog-key model key :ctrl ctrl :alt alt :shift shift :mod mod))
 
-           ;; Ctrl+Y opens the keyboard selection over the transcript
-           ;; (BEGIN-TRANSCRIPT-SELECT); the mode's own ladder above closes it.
-           ((model-key-matches-p model :select-transcript key mod)
-            (begin-transcript-select model))
+           ;; The chords that are one call on the model. Ctrl+Y opens the
+           ;; keyboard selection over the transcript (BEGIN-TRANSCRIPT-SELECT);
+           ;; the mode's own ladder above closes it. Ctrl+R browses every
+           ;; prompt this shell submitted -- the whole recall ring in one
+           ;; searchable picker, where Up/Down walk it an entry at a time --
+           ;; deliberately with no empty-composer gate: recalling a past prompt
+           ;; is what to do when the box already holds a draft. The image paste
+           ;; (default Ctrl+V / Ctrl+Alt+V) probes the system clipboard for an
+           ;; image and stages it as a pending attachment. Ctrl+Shift+C copies
+           ;; the marked text again, anywhere on the frame, since the mark is a
+           ;; screen region.
+           ((loop for (action . call) in '((:select-transcript . begin-transcript-select)
+                                           (:history-dialog . open-prompt-history-dialog)
+                                           (:paste-image . paste-clipboard-image)
+                                           (:copy-selection . copy-frame-selection))
+                    thereis (and (model-key-matches-p model action key mod) (progn (funcall call model) t))))
 
            ;; Switch Developer / Standard viewport (Ctrl+O).
            ((model-key-matches-p model :toggle-viewport key mod)
@@ -147,13 +159,6 @@ from the ones COLLECT-DURING-WAIT hid inside provider wait."
            ((and (model-key-matches-p model :help key mod)
                  (composer-empty-p model))
             (open-help-dialog model))
-
-           ;; Ctrl+R browses every prompt this shell submitted — the whole
-           ;; recall ring in one searchable picker, where Up/Down walk it an
-           ;; entry at a time. Deliberately no empty-composer gate: recalling
-           ;; a past prompt is what to do when the box already holds a draft.
-           ((model-key-matches-p model :history-dialog key mod)
-            (open-prompt-history-dialog model))
 
            ;; Ctrl+S opens the sessions picker — the Zig
            ;; open_session_launcher chord (keySpec('s', .{ .ctrl = true })),
@@ -184,16 +189,6 @@ from the ones COLLECT-DURING-WAIT hid inside provider wait."
                 (chat-model-editor model) "/"))
               ((composer-suggestions-for model)
                (composer-dropdown-key model :up))))
-
-           ;; Image paste (default Ctrl+V / Ctrl+Alt+V): probe the system
-           ;; clipboard for an image and stage it as a pending attachment.
-           ((model-key-matches-p model :paste-image key mod)
-            (paste-clipboard-image model))
-
-           ;; Copy the marked text again (default Ctrl+Shift+C) — anywhere on
-           ;; the frame, since the mark is a screen region.
-           ((model-key-matches-p model :copy-selection key mod)
-            (copy-frame-selection model))
 
            ;; Newline through the keymap (defaults Shift+Enter, Alt+Enter,
            ;; Ctrl+J). Plain Enter stays submit.
@@ -386,16 +381,15 @@ from the ones COLLECT-DURING-WAIT hid inside provider wait."
                            (funcall dialog.on-tick model dialog)))
               (painted (cond ((or (chat-model-transcript-dirty model)
                                   ;; A place whose old thing has gone out takes
-                                  ;; the newcomer where it stood.
-                                  (fade-due-p model))
+                                  ;; the newcomer where it stood. A glowing
+                                  ;; mark repaints the whole band.
+                                  (fade-due-p model)
+                                  (mark-glowing-p model))
                               (render-state model)
                               t)
                              ((and (live-chrome-animating-p model :dialog-ticks nil)
                                    (status-chrome-moved-p model))
                               (render-status-frame model)
-                              t)
-                             ((mark-glowing-p model)
-                              (render-state model)
                               t)
                              ;; The ember, the fades and the glints are the
                              ;; frame's paint: the rows stand.
@@ -749,27 +743,21 @@ the frame's last column, WIDTH - 1."
       (setf *band-row-cache-epoch* epoch)
       (clrhash *band-row-cache*))
     ;; Where the running calls' listed lines stand this frame, for the ember:
-    ;; under the frame head's three rows, past the two-column inset.
-    (setf (ember-rows model)
-          (loop for line in lines
-                for y from 3
-                for call = (ember-line line)
-                when (row-words-span y (and call (plain-frame-row line)) call) collect it)
-          ;; And where the rows of a place still fading stand, for its light.
-          (fade-rows model)
-          (loop for line in lines
-                for y from 3
-                for (fade . item) = (and (plusp (length line)) (fade-line line))
-                when (row-words-span y (and fade (not (fade-settled-p fade)) (plain-frame-row line)) fade item)
-                  collect it)
-          ;; And where the chips a glint still crosses stand.
-          (glint-rows model)
-          (loop with now = (get-internal-real-time)
-                for line in lines
-                for y from 3
-                nconc (loop for (x0 x1 at) in (and (plusp (length line)) (row-glints line))
-                            when (< (since-ms at now) +glint-ms+)
-                              collect (list y (+ 2 x0) (+ 2 x1) at))))
+    ;; under the frame head's three rows, past the two-column inset; and where the
+    ;; rows of a place still fading stand, for its light, and the chips a glint still crosses.
+    (loop with now = (get-internal-real-time)
+          for line in lines
+          for y from 3
+          for call = (ember-line line)
+          for (fade . item) = (and (plusp (length line)) (fade-line line))
+          when (row-words-span y (and call (plain-frame-row line)) call) collect it into embers
+          when (row-words-span y (and fade (not (fade-settled-p fade)) (plain-frame-row line)) fade item)
+            collect it into fades
+          nconc (loop for (x0 x1 at) in (and (plusp (length line)) (row-glints line))
+                      when (< (since-ms at now) +glint-ms+)
+                        collect (list y (+ 2 x0) (+ 2 x1) at))
+            into glints
+          finally (setf (ember-rows model) embers (fade-rows model) fades (glint-rows model) glints))
     (flet ((banded (line thumb-p)
              (let* ((row (nlk:narrow-string
                           (concatenate
