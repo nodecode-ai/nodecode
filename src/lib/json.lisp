@@ -1251,10 +1251,8 @@ takes before it re-keys or adds to an object it does not own."
 ;;; that left it the round before: the same history messages, encoded again.
 ;;; JSON-VERBATIM is one value the encoder does not encode — its UTF-8
 ;;; octets, laid into the body as they are — so a caller that kept a value's
-;;; bytes hands them back in the value's place. Under ENCODE-JSON-OCTETS the
-;;; bytes cross without a decode, and a long run of them is not even copied
-;;; until the body is whole. Anywhere else (a test printing through shasht) a
-;;; verbatim reads as the text its octets spell.
+;;; bytes hands them back in the value's place, and the encoder writes the
+;;; text they spell instead of encoding the value again.
 
 (defstruct (json-verbatim (:constructor json-verbatim (octets)) (:copier nil))
   "One JSON value already encoded: OCTETS, the UTF-8 bytes of its text,
@@ -1269,144 +1267,12 @@ written into a body as they are."
                 stream)
   value)
 
-;;; --- the octet writer -------------------------------------------------------
-;;; ENCODE-JSON-OCTETS writes a body's UTF-8 straight into one buffer. Without
-;;; this, the body would go through shasht as a character-at-a-time string
-;;; stream, make a generic call per value and fresh delimiter strings per
-;;; object, and then be encoded again. The bytes are shasht's, to the byte: the
-;;; writer owns what bodies are built of — objects, arrays, strings, fixnums,
-;;; T, NIL, :NULL, verbatims — and writes any other value (a float, a bignum,
-;;; a keyword) as shasht does.
-
-(defstruct (json-sink (:constructor make-json-sink ()) (:copier nil) (:predicate nil))
-  "One ENCODE-JSON-OCTETS in progress."
-  (octets (make-array 1024 :element-type '(unsigned-byte 8)) :type octets)
-  (fill 0 :type fixnum)
-  ;; (AT . OCTETS), newest first: a verbatim of 512 bytes or more, laid in at
-  ;; AT when the body is assembled rather than copied through the buffer.
-  (splices '() :type list))
-
-(declaim (inline sink-room sink-byte))
-(defun sink-room (sink count)
-  "SINK's octets, with room for COUNT more past its fill."
-  (let ((octets (json-sink-octets sink)) (need (+ (json-sink-fill sink) count)))
-    (if (<= need (length octets))
-        octets
-        (setf (json-sink-octets sink)
-              (replace (make-array (max need (* 2 (length octets)))
-                                   :element-type '(unsigned-byte 8))
-                       octets :end2 (json-sink-fill sink))))))
-
-(defun sink-byte (sink byte)
-  (setf (aref (sink-room sink 1) (json-sink-fill sink)) byte)
-  (incf (json-sink-fill sink)))
-
-(defun sink-octets (sink octets)
-  (declare (type octets octets))
-  (replace (sink-room sink (length octets)) octets :start1 (json-sink-fill sink))
-  (incf (json-sink-fill sink) (length octets)))
-
-(defun sink-char (sink code &aux (short (position code #(8 9 10 12 13 34 92))))
-  "Character CODE of a JSON string, escaped as shasht escapes it."
-  (cond (short (sink-byte sink 92) (sink-byte sink (char-code (schar "btnfr\"\\" short))))
-        ((or (< code 32) (<= 127 code 159))
-         (sink-octets sink (sb-ext:string-to-octets (format nil "\\u~4,'0x" code))))
-        ((< code #x80) (sink-byte sink code))
-        ;; UTF-8 has no surrogate: refused as the encoder refuses it
-        ((<= #xd800 code #xdfff)
-         (sink-octets sink (utf-8-octets (string (code-char code)))))
-        (t (let ((width (cond ((< code #x800) 2) ((< code #x10000) 3) (t 4))))
-             (sink-byte sink (logior (aref #(0 0 #xc0 #xe0 #xf0) width)
-                                     (ash code (* -6 (1- width)))))
-             (loop for shift from (* 6 (- width 2)) downto 0 by 6
-                   do (sink-byte sink (logior #x80 (ldb (byte 6 shift) code))))))))
-
-(defun sink-string (sink text)
-  "TEXT as a JSON string."
-  (sink-byte sink 34)
-  ;; A plain ASCII run is copied a byte at a time with the index in a
-  ;; register; the rest, and a string of neither simple kind, is SINK-CHAR's.
-  (macrolet ((run (type)
-               `(let ((text text) (octets (sink-room sink (length text)))
-                      (fill (json-sink-fill sink)))
-                  (declare (type ,type text) (type fixnum fill))
-                  (loop for char across text
-                        for code = (char-code char)
-                        do (if (and (< 31 code 127) (/= code 34) (/= code 92)
-                                    (< fill (length octets)))
-                               (setf (aref octets fill) code fill (1+ fill))
-                               (progn (setf (json-sink-fill sink) fill)
-                                      (sink-char sink code)
-                                      (setf octets (json-sink-octets sink)
-                                            fill (json-sink-fill sink)))))
-                  (setf (json-sink-fill sink) fill))))
-    (typecase text
-      ((simple-array character (*)) (run (simple-array character (*))))
-      (simple-base-string (run simple-base-string))
-      (t (loop for char across text do (sink-char sink (char-code char))))))
-  (sink-byte sink 34))
-
-(defun sink-value (sink value)
-  "VALUE's JSON onto SINK."
-  (flet ((items (sequence &aux (first t))
-           (sink-byte sink 91)
-           (map nil (lambda (item)
-                      (if first (setf first nil) (sink-byte sink 44))
-                      (sink-value sink item))
-                sequence)
-           (sink-byte sink 93))
-         (shasht (&aux (*print-pretty* nil))
-           (sink-octets sink (utf-8-octets (shasht:write-json value nil)))))
-    (typecase value
-      (json-verbatim
-       (let ((octets (json-verbatim-octets value)))
-         (if (< (length octets) 512)
-             (sink-octets sink octets)
-             (push (cons (json-sink-fill sink) octets) (json-sink-splices sink)))))
-      (string (sink-string sink value))
-      (hash-table
-       (let ((first t))
-         (sink-byte sink 123)
-         (maphash (lambda (key item)
-                    (if first (setf first nil) (sink-byte sink 44))
-                    (sink-value sink key) (sink-byte sink 58) (sink-value sink item))
-                  value)
-         (sink-byte sink 125)))
-      (fixnum
-       (when (minusp value) (sink-byte sink 45))
-       (dolist (digit (nreverse (loop for rest = (abs value) then (floor rest 10)
-                                      collect (+ 48 (mod rest 10))
-                                      until (< rest 10))))
-         (sink-byte sink digit)))
-      ((member t nil :null)
-       (sink-octets sink (case value
-                           ((t) #.(sb-ext:string-to-octets "true"))
-                           ((nil) #.(sb-ext:string-to-octets "false"))
-                           (t #.(sb-ext:string-to-octets "null")))))
-      ;; shasht's tagged lists, (:ARRAY ...) and its kin, are shasht's
-      (cons (if (member (car value) '(:array :object-alist :object-plist))
-                (shasht)
-                (items value)))
-      ((and vector (not string)) (items value))
-      (t (shasht)))))
-
-(defun encode-json-octets (object &aux (sink (make-json-sink)))
+(defun encode-json-octets (object)
   "OBJECT as the UTF-8 octets of its JSON text: the form a body leaves the
 process in."
-  ;; A JSON-VERBATIM inside OBJECT contributes its octets untouched; the text
-  ;; around them is this call's own and does not outlive it.
-  (sink-value sink object)
-  (let* ((text (json-sink-octets sink))
-         (splices (reverse (json-sink-splices sink)))
-         (body (make-array (reduce #'+ splices :key (lambda (splice) (length (cdr splice)))
-                                               :initial-value (json-sink-fill sink))
-                           :element-type '(unsigned-byte 8)))
-         (from 0) (to 0))
-    (loop for (at . octets) in (append splices (list (cons (json-sink-fill sink) #())))
-          do (replace body text :start1 to :start2 from :end2 at)
-             (replace body octets :start1 (+ to (- at from)))
-             (setf to (+ to (- at from) (length octets)) from at))
-    body))
+  ;; The bytes are shasht's (ENCODE-JSON-OBJECT), and a JSON-VERBATIM inside
+  ;; OBJECT writes the text its octets spell.
+  (utf-8-octets (encode-json-object object)))
 
 ;;; --- encodings remembered by identity --------------------------------------
 ;;; What a verbatim stands for has to come from somewhere: JSON-MEMO is the
