@@ -381,66 +381,15 @@ Training gets a line only when the terms do not say no."
           :name (or (getf terms :name) (getf probe :host))
           :rows (connection-rows level probe terms plan))))
 
-;;; --- the shell: measured once a pick, remembered a host, the colour, the box ---------
+;;; --- the shell: measured once a pick, the colour, the box ----------------------------
 ;;; A pick is measured off the loop when its target lands. The gateway names the endpoint: it is
-;;; the process whose cells dial it (a sign-in provider's lane is known there, not here). What a
-;;; host measured is kept on disk, so the next shell colours the name at once and measures again
-;;; behind it. A check that measured nothing is never kept: it tries again a few times, then
-;;; leaves the pick unmeasured for the next time its target lands.
+;;; the process whose cells dial it (a sign-in provider's lane is known there, not here). A check
+;;; that measured nothing is never kept: it tries again a few times, then leaves the pick
+;;; unmeasured for the next time its target lands.
 
 (defparameter *connection-retry-delays* '(2 5 15)
   "Seconds before each further try when a check measured nothing: a fresh shell may learn its
 endpoint only once the catalog or the gateway's cells have landed.")
-
-(defparameter *connection-memory-days* 7
-  "How long a host's measurement on disk stands in for a fresh one.")
-
-(defvar *connection-memory-path* nil
-  "Where measurements are kept, else the home's connection-checks.sexp.")
-
-(defvar *connection-memory* :unread
-  "URL => (UNIVERSAL-TIME . PROBE) as kept on disk, :UNREAD until first asked.")
-
-(defvar *connection-memory-lock* (sb-thread:make-mutex :name "connection memory"))
-
-(defun connection-memory-file ()
-  (or *connection-memory-path* (nlk:home "connection-checks.sexp")))
-
-(defun connection-memory ()
-  "The kept measurements, read from disk once."
-  (sb-thread:with-recursive-lock (*connection-memory-lock*)
-    (when (eq *connection-memory* :unread)
-      (setf *connection-memory*
-            (let ((table (make-hash-table :test #'equal))
-                  (kept (ignore-errors
-                         (with-open-file (in (connection-memory-file) :if-does-not-exist nil)
-                           (and in (with-standard-io-syntax
-                                     (let ((*read-eval* nil) (*package* (find-package :cl-user)))
-                                       (read in nil nil))))))))
-              (loop for (url time . probe) in (and (listp kept) kept)
-                    when (and (stringp url) (integerp time)) do (setf (gethash url table) (cons time probe)))
-              table)))
-    *connection-memory*))
-
-(defun remembered-probe (url)
-  "What URL's host measured within *CONNECTION-MEMORY-DAYS*, with today's proxy, else NIL."
-  (when-let (kept (sb-thread:with-recursive-lock (*connection-memory-lock*)
-                    (gethash url (connection-memory))))
-    (and (< (- (get-universal-time) (car kept)) (* *connection-memory-days* 86400))
-         (list* :proxy (connection-proxy) (alexandria:remove-from-plist (cdr kept) :proxy)))))
-
-(defun remember-probe (url probe)
-  "Keep PROBE, a measurement that succeeded, as URL's."
-  (sb-thread:with-recursive-lock (*connection-memory-lock*)
-    (let ((table (connection-memory)))
-      (setf (gethash url table) (cons (get-universal-time) (alexandria:remove-from-plist probe :proxy)))
-      (ignore-errors
-       (nlk:write-file-atomically
-        (connection-memory-file)
-        (with-standard-io-syntax
-          (let ((*package* (find-package :cl-user)) (*print-readably* nil))
-            (prin1-to-string (loop for url being the hash-keys of table using (hash-value (time . probe))
-                                   collect (list* url time probe))))))))))
 
 (defvar *connection-checks* (make-hash-table :test #'equal :synchronized t)
   "(PROVIDER . MODEL) => that pick's CONNECTION-VERDICT, or :CHECKING while it is measured.")
@@ -467,17 +416,14 @@ endpoint or the handshake fails => NIL when no try measured anything."
            (let* ((url (connection-target-endpoint model key))
                   (probe (and url (connection-probe url :timeout *connection-probe-timeout*))))
              (when (and probe (not (getf probe :error)))
-               (remember-probe url probe)
                (return (connection-verdict (car key) probe))))))
 
 (defun check-connection (model)
   "Measure the connection MODEL's chosen target takes, off the loop, unless this pick has been:
-once when a model is chosen, before anyone prompts it. A host measured before colours it at once."
+once when a model is chosen, before anyone prompts it."
   (when-let (key (connection-key model))
     (unless (gethash key *connection-checks*)
-      (let* ((url (connection-target-endpoint model key))
-             (kept (and url (remembered-probe url))))
-        (setf (gethash key *connection-checks*) (if kept (connection-verdict (car key) kept) :checking)))
+      (setf (gethash key *connection-checks*) :checking)
       (off-loop model
                 ;; Retries wait, so only on the thread OFF-LOOP spawns, never on the loop's own.
                 (lambda () (measure-connection model key (and (chat-model-program model)
@@ -485,7 +431,7 @@ once when a model is chosen, before anyone prompts it. A host measured before co
                 (lambda (model value)
                   (cond ((and (consp value) (not (off-loop-failure value)))
                          (setf (gethash key *connection-checks*) value))
-                        ;; Nothing measured: a kept answer stands, else the pick stays unmeasured.
+                        ;; Nothing measured: the pick stays unmeasured.
                         ((eq :checking (gethash key *connection-checks*))
                          (remhash key *connection-checks*)))
                   (render-state model))))))
