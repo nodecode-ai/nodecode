@@ -20,15 +20,15 @@ Nodecode's agent manages its own context, the way a [Context Language Model](htt
 
 The first line names the export and, once a round has reported it, how full the window is. Keep it. Below it, each message of the retained history is a block under a `[[m:NONCE ID ROLE]]` line, where ID is its log position. A tool block's first line is its call, and the rest is its result. Harness lines and the active request are not in the file, and they stay where they stand.
 
-| In the file | The next request reads |
+| Edit | What the next request reads |
 | --- | --- |
-| A block left as it is | The message as it was, byte for byte, so it stays cached. |
-| A block deleted | Nothing. A tool block takes its call with it. |
-| An assistant's text or a tool result edited | The edit, in the same place. An edited result ends with the recall line that reads the original. |
-| A call line edited | A stand-in for the call's arguments that names the original. |
-| A user ask edited, or text under a `[[note]]` line, above the first block or after a block's own text | A note: an assistant message labelled `[context note]`. It reads as the agent's own words, never as the operator's and never as a call that ran. |
-| A removed block's header written back, anywhere | The original message, where it stood. |
-| A block moved behind a later one | A note, where it was moved to. |
+| Keep | A block left as it is: the message as it was, byte for byte, so it stays cached. |
+| Delete | Nothing. A deleted tool block takes its call with it. |
+| Rewrite | An assistant's text or a tool result, edited in place. An edited result ends with the recall line that reads the original. |
+| Edit a call | A stand-in for the call's arguments that names the original. |
+| Note | Text under a `[[note]]` line, above the first block or after a block's own text, and an edited user ask: an assistant message labelled `[context note]`. It reads as the agent's own words, never as the operator's and never as a call that ran. |
+| Restore | A removed block's header written back, anywhere: the original message, where it stood. |
+| Move | A block moved behind a later one reads as a note where it was moved to. |
 
 Every call stays answered. A call whose result left answers that it did.
 
@@ -59,7 +59,13 @@ A taken edit is one `context.edited` event in the log. The shell shows it as one
 
 ### Cache cost
 
-Messages before the first change stay byte for byte as they were, so the provider's cached prefix holds through them. A note added at the end costs only itself. The receipt says how far the prefix holds: `the first 40 of 52 messages are unchanged, so the cached prefix holds through them`. An edit at the first message sends the history after the system prompt uncached, once.
+Messages before the first change stay byte for byte as they were, so the provider's cached prefix holds through them. A note added at the end costs only itself. The receipt says how far the prefix holds:
+
+```
+the first 40 of 52 messages are unchanged, so the cached prefix holds through them
+```
+
+An edit at the first message sends the history after the system prompt uncached, once.
 
 Everything after the first change is sent again. No provider here reuses a cached suffix. Reasoning still rides the messages before the first change. From the first change on, signed reasoning is not replayed.
 
@@ -74,13 +80,13 @@ The `nodecode-context` cell is built into every binary, so it runs in a pristine
 
 ### Beside the paper
 
-| Context Language Models | Nodecode |
-| --- | --- |
-| The context is mirrored to a file the model edits with Bash. | `context.txt`, edited with any file verb or shell command, or in one call with `(context :drop …)`. |
-| An edit reaches the live context on the next turn. | An edit is taken at the next model request, and a receipt says what was taken. |
-| Several agents' contexts coexist as files. | One file per session. A fork inherits the edit taken where it forked. |
-| Suffix Cache Reuse keeps a middle edit cheap on the server. | The cached prefix holds up to the first change. Everything after it is sent again. |
-| Instructions or reinforcement learning shape the editing policy. | The standing rule shapes it. No learned policy ships. |
+| | The paper | Nodecode |
+| --- | --- | --- |
+| File | The context is mirrored to a file the model edits with Bash. | `context.txt`, edited with any file verb or shell command, or in one call with `(context :drop …)`. |
+| Sync | An edit reaches the live context on the next turn. | An edit is taken at the next model request, and a receipt says what was taken. |
+| Agents | Several agents' contexts coexist as files. | One file per session. A fork inherits the edit taken where it forked. |
+| Cache | Suffix Cache Reuse keeps a middle edit cheap on the server. | The cached prefix holds up to the first change. Everything after it is sent again. |
+| Policy | Instructions or reinforcement learning shape it. | The standing rule shapes it. No learned policy ships. |
 
 {/* source: src/engine/provider.lisp */}
 ## Budget
