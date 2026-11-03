@@ -651,7 +651,9 @@ names is defined here (MAKE-DEFINITIONS-LIVE)."
                      (list (ignore-errors *source-root*)
                            (ignore-errors (shipped-cells-directory))
                            *staged-source-root*
-                           (ignore-errors (probe-file *cells-directory*)))))
+                           (ignore-errors (probe-file *cells-directory*))
+                           ;; a made cell whose folder lives elsewhere, linked in
+                           (ignore-errors (linked-cell-folder truename)))))
       (bind ((text (uiop:read-file-string truename :external-format :utf-8))
              ;; a file written by hand into a folder of kept code joins its load order
              (joined (and (not only) (list-written-cell-file truename)))
@@ -681,6 +683,8 @@ names is defined here (MAKE-DEFINITIONS-LIVE)."
         (let ((told (if (or only (null sent))
                         0
                         (handler-case (source-loaded truename sent) (error () 0)))))
+          ;; a made cell's files are its record: each write is a commit
+          (unless only (ignore-errors (commit-written-cell-file truename live)))
           ;; the receipt's clause: each list shows eight labels, then a count (a receipt is a sentence)
           (values (flet ((listed (labels &aux (rest (- (length labels) 8)))
                            (format nil "~{~a~^, ~}~@[ +~a more~]"
@@ -729,7 +733,8 @@ layer will not carry to the next boot."
   (with-handlers ((error () nil))
     ;; a fork's eval is told nothing, and a fork's names are no other eval's
     ;; change (FORK-UNKEPT, fork.lisp)
-    (when (and before (not (fork-unkept before)))
+    ;; nor is a made cell's, which CELL-SESSION-RECORD told what stays live only
+    (when (and before (not (fork-unkept before)) (not (current-cell-directory)))
       (let* ((after (definition-snapshot))
              ;; every key new or changed since the window opened
              (delta (unless kept

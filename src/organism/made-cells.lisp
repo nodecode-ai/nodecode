@@ -63,6 +63,99 @@ the layer again. => the cell's name, or NIL when there was none."
   (prog1 (current-cell session-id)
     (remhash session-id *session-cells*)))
 
+(defun cell-main-file (directory)
+  "The made cell DIRECTORY's code file: the first its .asd lists after
+cell.lisp, else NAME.lisp after the folder's name less the organism's own
+prefix."
+  (let* ((name (folder-name directory))
+         (listed (ignore-errors
+                  (loop for component in (getf (cddr (read-defsystem-form (layer-system-file name) name))
+                                               :components)
+                        when (and (file-component-p component) (string/= (second component) "cell"))
+                          return (second component))))
+         (prefix (format nil "~a-" (layer-name))))
+    (merge-pathnames (format nil "~a.lisp" (or listed (if (uiop:string-prefix-p prefix name)
+                                                          (subseq name (length prefix))
+                                                          name)))
+                     directory)))
+
+(defun made-cell-holding (key)
+  "The file of a made cell -- a folder of code the organism made, never the
+layer -- that defines KEY, or NIL."
+  (dolist (directory (definition-folders))
+    (when (and (string/= (folder-name directory) (layer-name))
+               (eq (kept-folder-kind directory) :code))
+      (dolist (path (directory (merge-pathnames "*.lisp" directory)))
+        (when (member key (mapcar #'first (file-definitions path)) :test #'equal)
+          (return-from made-cell-holding path))))))
+
+(defun cell-session-record (form session-id &aux (directory (current-cell-directory session-id)))
+  "Whether FORM, evaluated in SESSION-ID, is code RECORD-DEFINITIONS leaves
+unwritten because a made cell's files are its record. In a session working
+in a made cell every code form is: the model writes the cell's code with
+write-file or edit (LOAD-SOURCE makes what changed live and commits it), and
+an eval there is a try -- live in this image, gone at the next boot -- so the
+folder holds what was written and nothing else. In any session, so is a form
+every definition of which a made cell's file holds: a fix lands in that file,
+never beside it in the layer. => T, the eval told so in one line, when FORM
+defines or forgets code and keeps no memory or skill; NIL otherwise."
+  (let ((acts '()) (knowledge nil))
+    (walk-toplevel-acts form (lambda (sub)
+                               (if (knowledge-form-p sub) (setf knowledge t) (push sub acts))))
+    (setf acts (nreverse acts))
+    (unless (or (null acts) knowledge)
+      (let* ((keys (mapcar #'definition-key acts))
+             ;; outside a cell: the one file of a made cell holding every definition
+             (held (and (null directory) (every #'identity keys)
+                        (let ((files (remove-duplicates (mapcar #'made-cell-holding keys)
+                                                        :key (lambda (path) (and path (namestring path)))
+                                                        :test #'equal)))
+                          (and (null (rest files)) (first files)))))
+             (labels (loop for sub in acts
+                           for key in keys
+                           collect (if key
+                                       (definition-key-label key)
+                                       (format nil "~(~a~) ~(~a~)" (first sub)
+                                               (or (name-designator-string (literal-designator (second sub))) ""))))))
+        (when (or directory held)
+          (format t "~&[~a: ~{~a~^, ~} ~:[is~;are~] live in this image and not kept: ~a with write-file or ~
+                     edit, which makes it live and commits it]~%"
+                  (folder-label (or directory (linked-cell-folder held) (uiop:pathname-directory-pathname held)))
+                  labels (rest labels)
+                  (if directory
+                      (format nil "a cell's code is its files, so write it into ~a"
+                              (sb-ext:native-namestring (cell-main-file directory)))
+                      (format nil "~a holds ~:[it~;them~], so edit it there"
+                              (sb-ext:native-namestring held) (rest labels))))
+          t)))))
+
+(defun linked-cell-folder (path &aux (root *cells-directory*))
+  "The folder of the cells folder that holds PATH through a link -- a made
+cell whose folder lives elsewhere (NEW-CELL :SOURCE) -- named as the cells
+folder names it, cells/NAME/; NIL for a file no link there leads to."
+  (when (and root (probe-file root))
+    (let ((file (ignore-errors (namestring (truename path)))))
+      (when file
+        (dolist (entry (directory (merge-pathnames "*/" root) :resolve-symlinks nil))
+          (let ((target (ignore-errors (namestring (truename entry)))))
+            (when (and target (string/= target (namestring entry)) (uiop:string-prefix-p target file))
+              (return entry))))))))
+
+(defun commit-written-cell-file (path live &aux (session-id *scribe-session-id*))
+  "Commit a made cell's folder after PATH, one of its files, was written:
+what a write makes live is the cell's record, so the cell's history is its
+writes. LIVE names what went live. => the short hash, \"\" when nothing
+changed, or NIL when PATH is no made cell's."
+  (let ((directory (or (linked-cell-folder path) (uiop:pathname-directory-pathname path))))
+    (when (and *cells-directory*
+               (eq (kept-folder-kind directory) :code)
+               (string/= (folder-name directory) (layer-name))
+               (equal (ignore-errors (truename (uiop:pathname-parent-directory-pathname directory)))
+                      (ignore-errors (truename *cells-directory*))))
+      (git-commit-all directory (format nil "~a~@[: ~{~a~^, ~}~]~@[ - session ~a~]"
+                                        (file-namestring path) live session-id)
+                      :notice (lambda (line) (format t "~&[~a: ~a]~%" (folder-label directory) line))))))
+
 (defun add-cell-component (directory file-name)
   "Put FILE-NAME, a file of the made cell DIRECTORY named without its .lisp,
 at the end of the cell's .asd component list, the load order, unless it is
@@ -81,7 +174,7 @@ list it there, last: a file written by hand loads at the next start, as the
 definitions kept beside it do. => the folder's name when it listed it."
   ;; Before this the write loaded the file live and the next start never
   ;; read it: the cell's command answered until a restart, then was gone.
-  (let* ((directory (uiop:pathname-directory-pathname path))
+  (let* ((directory (or (linked-cell-folder path) (uiop:pathname-directory-pathname path)))
          (name (folder-name directory))
          (system (and *cells-directory* (layer-system-file name))))
     (when (and (equal (pathname-type path) "lisp")
@@ -94,14 +187,18 @@ definitions kept beside it do. => the folder's name when it listed it."
       (add-cell-component directory (pathname-name path))
       name)))
 
-(defun new-cell (name &key description (session-id *scribe-session-id*))
+(defun new-cell (name &key description source (session-id *scribe-session-id*))
   "Make the cell NAME, which DESCRIPTION says the use of: write its folder,
-<identity>-NAME/ under *CELLS-DIRECTORY* (CELL-DIRECTORY), an .asd declaring
-a LAYER system and a README; commit it as a repository of its own; load it;
-and make it this session's current cell, so every definition the session
-keeps from now on is written there and not to the layer. Refused when the
+<identity>-NAME/ under *CELLS-DIRECTORY* (CELL-DIRECTORY) -- cell.lisp, its
+package, NAME.lisp, its code, an .asd declaring a LAYER system that lists
+the two, and a README; commit it as a repository of its own; load it; and
+make it this session's current cell, whose code is what is written into its
+files: an eval there defines live and keeps nothing (CELL-SESSION-RECORD).
+SOURCE, a directory that is absent or empty, is where the folder lives
+instead -- a repository of the operator's -- and <identity>-NAME under
+*CELLS-DIRECTORY* a link to it, as a shipped cell's is. Refused when the
 folder is there already: (enter-cell NAME) works on in a made one. => the
-folder."
+folder, as the cells folder names it."
   (made-cell-name name)
   (unless (or (null description) (stringp description))
     (error "a cell's description is a string, not ~s" description))
@@ -118,16 +215,29 @@ folder."
                                     (merge-pathnames (format nil "nodecode-~a/" name) *cells-directory*))))
       (error "~a is there already~:[; pick another name~;, a cell this organism made: (enter-cell ~s) works on in it~]"
              (namestring taken) (and (eq taken directory) (eq (kept-folder-kind taken) :code)) name))
-    (ensure-directories-exist directory)
-    (write-system-file (layer-system-file system) system (layer-system-blurb system)
-                       (fresh-layer-system system :description description))
-    (write-file-atomically (merge-pathnames "cell.lisp" directory) (made-cell-package-text name system))
+    (let ((home (if source (uiop:ensure-directory-pathname (merge-pathnames source)) directory)))
+      (when (and source (or (uiop:directory-files home) (uiop:subdirectories home)))
+        (error "~a holds files already: a cell's source starts in an empty folder" (namestring home)))
+      (ensure-directories-exist home)
+      (write-system-file (merge-pathnames (format nil "~a.asd" system) home) system (layer-system-blurb system)
+                         (fresh-layer-system system :description description))
+      (write-file-atomically (merge-pathnames "cell.lisp" home) (made-cell-package-text name system))
+      (write-file-atomically (merge-pathnames (format nil "~a.lisp" name) home)
+                             (format nil ";;;; ~a.lisp --- ~a~%;;;;~%;;;; The cell's code, in the package cell.lisp makes. Written as a file~%~
+                                          ;;;; (write-file, edit, or any editor): a write makes what changed live~%~
+                                          ;;;; and commits it. An eval defines live and keeps nothing.~%~%~
+                                          (in-package #:~(~a~))~%"
+                                     name (if (plusp (length description)) description name) system))
+      (write-file-atomically (merge-pathnames "README.md" home)
+                             (format nil "# ~a~%~@[~%~a~%~]~%A nodecode cell: cell.lisp is the package ~(~a~), ~a.lisp its code, ~
+                                          loaded from source at every boot in the order ~a.asd lists them.~%"
+                                     name (and (plusp (length description)) description) system name system))
+      (when source
+        (ensure-directories-exist *cells-directory*)
+        (unless (make-symlink (truename home) (merge-pathnames system *cells-directory*))
+          (error "this platform links no folder: make the cell without :source"))))
     (write-layer-system (layer-system-file system) system "cell")
-    (write-file-atomically (merge-pathnames "README.md" directory)
-                           (format nil "# ~a~%~@[~%~a~%~]~%A nodecode cell: its definitions one per file, loaded from ~
-                                        source at every boot in the order ~a.asd lists them, cell.lisp ~
-                                        first: the package ~(~a~) they read in.~%"
-                                   name (and (plusp (length description)) description) system system))
+    (write-layer-system (layer-system-file system) system name)
     (git-commit-all directory (format nil "new cell ~a~@[ - session ~a~]" name session-id)
                     :notice (lambda (line) (format t "~&[~a: ~a]~%" name line)))
     (git-exclude-dot-directories directory)
@@ -147,14 +257,13 @@ peripheral mark, so a DEFINE-CELL kept beside it is a cell that starts."
   ;; it as in EVOLVED; EVOLVED's internal names are written nle::name.
   (format nil ";;;; cell.lisp --- ~a: the package this cell's definitions read in.~%~
                ;;;;~%~
-               ;;;; Written by new-cell. Every other file here is one definition, kept~%~
-               ;;;; by a session working on the cell; a snippet doing that opens with~%~
-               ;;;; (in-package #:~(~a~)). A (define-cell ~(~a~) ...) kept beside this~%~
-               ;;;; declares its commands, tools and settings: (help :cells).~%~%~
+               ;;;; Written by new-cell. The cell's code is ~a.lisp beside it, in~%~
+               ;;;; (in-package #:~(~a~)); a (define-cell ~(~a~) ...) there declares its~%~
+               ;;;; commands, tools and settings: (help :cells).~%~%~
                (defpackage #:~(~a~)~%  (:use #:cl #:nodecode.kernel #:nodecode.evolved))~%~%~
                (in-package #:~(~a~))~%~%~
                (define-peripheral ~(~a~) :not-running t)~%"
-          name system name system system name))
+          name name system name system system name))
 ;;; --- off, and on again ------------------------------------------------------------
 ;;; A folder the installer put in the cells folder goes when /cells turns it
 ;;; off: another copy is a click away. The operator's own -- a cell made here

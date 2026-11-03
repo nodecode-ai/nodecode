@@ -3,14 +3,15 @@
 ;;;; SPDX-License-Identifier: MIT
 ;;;;
 ;;;; What is proved here: NEW-CELL writes a folder of kept code beside the
-;;;; layer, commits and loads it, and makes it the session's current cell;
-;;;; what that session keeps then lands in the cell and not the layer, the
-;;;; eval's output naming the cell; LEAVE-CELL sends the next keep back to
-;;;; the layer, while a name the cell holds stays in it from any session; a
-;;;; name kept into a cell leaves the layer, so it loads from one folder;
-;;;; forgetting takes a cell's file and its .asd entry out; ENTER-CELL takes a
-;;;; made cell up again after a restart, and a memory is still knowledge; a
-;;;; bad name and a taken folder are refused.
+;;;; layer -- cell.lisp, NAME.lisp, an .asd listing the two -- commits and
+;;;; loads it, and makes it the session's current cell; the cell's code is
+;;;; its files, so an eval in that session defines live and keeps nothing,
+;;;; its output naming the file to write, and a write into the file makes it
+;;;; live and commits it; a name a cell's file holds stays there from any
+;;;; session; LEAVE-CELL sends the next keep back to the layer; ENTER-CELL
+;;;; takes a made cell up again after a restart, and a memory is still
+;;;; knowledge; with :SOURCE the folder lives elsewhere, linked in, and a
+;;;; write through it goes live; a bad name and a taken folder are refused.
 
 (in-package #:nodecode.test)
 
@@ -37,7 +38,12 @@ report of loaded cells put back after."
   "NAME.lisp in the fixture's layer, when it is there."
   (probe-file (merge-pathnames (format nil "~a.lisp" name) (nlk:layer-directory))))
 
-(deftest made-cell-takes-what-its-session-keeps (with-made-cell-fixture ())
+(defun write-cell-file (cell name text)
+  "Write NAME.lisp of the fixture's made cell CELL through the write verb the
+model uses. => its receipt."
+  (nle::write-file (merge-pathnames (format nil "tester-~a/~a.lisp" cell name) nlk::*cells-directory*) text))
+
+(deftest made-cell-writes-two-files-and-keeps-no-eval (with-made-cell-fixture ())
   (is (search "[weather: made"
               (with-output-to-string (*standard-output*)
                 (let ((nlk:*scribe-session-id* "s-cell"))
@@ -45,78 +51,108 @@ report of loaded cells put back after."
   (let ((directory (nlk:cell-directory "weather")))
     (is (equal (merge-pathnames "tester-weather/" nlk::*cells-directory*) directory))
     (is (eq :code (nlk:kept-folder-kind directory)) "a folder of kept code")
-    (is (search "Weather where the operator is."
-                (nlk:read-text (merge-pathnames "tester-weather.asd" directory))))
+    (is (equal '("cell" "weather")
+               (sort (mapcar #'pathname-name (directory (merge-pathnames "*.lisp" directory))) #'string<)))
+    (let ((asd (nlk:read-text (merge-pathnames "tester-weather.asd" directory))))
+      (is (search "Weather where the operator is." asd))
+      (is (search "(:file \"cell\") (:file \"weather\")" asd) "the .asd lists the two"))
+    (is (search "(in-package #:tester-weather)" (nlk:read-text (cell-file "weather" "weather"))))
     (is (search "new cell weather - session s-cell" (knowledge-git "tester-weather" "log" "--format=%s" "-1")))
     (is (nlk:find-cell "tester-weather") "loaded, on the report"))
   (is (equal "weather" (nlk:current-cell "s-cell")))
   (is (null (nlk:current-cell "s-other")) "another session's code stays the layer's")
-  (is (search "[weather: kept mc-forecast]"
-              (keep-definition-text "(defun mc-forecast () \"Tomorrow's.\" :sunny)" :session "s-cell")))
-  (is (cell-file "weather" "mc-forecast"))
-  (is (search "(:file \"mc-forecast\")"
-              (nlk:read-text (merge-pathnames "tester-weather/tester-weather.asd" nlk::*cells-directory*))))
-  (is (string= "" (knowledge-git "tester-weather" "status" "--porcelain")) "committed whole")
+  (let ((said (keep-definition-text "(defun mc-forecast () \"Tomorrow's.\" :sunny)" :session "s-cell")))
+    (is (search "[weather: mc-forecast is live in this image and not kept" said))
+    (is (search "weather.lisp with write-file or edit" said) "it names the file to write"))
+  (is (null (cell-file "weather" "mc-forecast")) "an eval leaves no file")
+  (is (null (search "mc-forecast" (nlk:read-text (merge-pathnames "tester-weather/tester-weather.asd" nlk::*cells-directory*)))))
+  (is (string= "" (knowledge-git "tester-weather" "status" "--porcelain")) "nothing changed in the folder")
   (is (null (uiop:directory-exists-p (nlk:layer-directory))) "the layer gained nothing")
   (is (eq :sunny (funcall (find-symbol "MC-FORECAST" '#:nodecode.evolved))) "and it runs"))
 
-(deftest made-cell-leave-sends-new-code-to-the-layer-and-held-names-stay (with-made-cell-fixture ())
+(deftest made-cell-a-write-is-live-and-a-commit (with-made-cell-fixture ())
+  (make-test-cell "bell")
+  (let ((receipt (let ((nlk:*scribe-session-id* "s-cell"))
+                   (write-cell-file "bell" "bell" (format nil "(in-package #:tester-bell)~%~%(defun mc-ring () :ring)~%")))))
+    (is (search "live here: mc-ring" receipt) "the write is the live change"))
+  (is (eq :ring (funcall (find-symbol "MC-RING" "TESTER-BELL"))))
+  (is (string= "" (knowledge-git "tester-bell" "status" "--porcelain")) "committed whole")
+  (is (search "bell.lisp: mc-ring - session s-cell" (knowledge-git "tester-bell" "log" "--format=%s" "-1")))
+  (let ((nlk:*scribe-session-id* "s-cell"))
+    (nle::edit (cell-file "bell" "bell") ":ring)" ":rung)"))
+  (is (eq :rung (funcall (find-symbol "MC-RING" "TESTER-BELL"))) "an edit is live too")
+  ;; the new cell, the write, the edit: one commit each
+  (is (= 3 (length (remove "" (uiop:split-string (knowledge-git "tester-bell" "log" "--format=%s")
+                                                 :separator '(#\Newline))
+                           :test #'string=)))))
+
+(deftest made-cell-leave-sends-evals-to-the-layer-and-a-name-its-file-holds-stays-there (with-made-cell-fixture ())
   (make-test-cell "clock")
-  (keep-definition-text "(defun mc-tick () \"One.\" 1)" :session "s-cell")
+  (write-cell-file "clock" "clock" (format nil "(in-package #:tester-clock)~%~%(defun nle::mc-tick () \"One.\" 1)~%"))
   (is (equal "clock" (nlk:leave-cell "s-cell")))
   (is (null (nlk:current-cell "s-cell")))
   (is (search "[layer: kept mc-other]" (keep-definition-text "(defun mc-other () \"Two.\" 2)" :session "s-cell")))
   (is (layer-file "mc-other"))
   (let ((said (keep-definition-text "(defun mc-tick () \"One, again.\" 11)" :session "s-later")))
-    (is (search "[clock: kept mc-tick]" said) "a name the cell holds stays in it, from any session"))
-  (is (null (layer-file "mc-tick"))))
+    (is (search "[clock: mc-tick is live in this image and not kept" said) "a name the cell's file holds stays there, from any session")
+    (is (search "clock.lisp holds it, so edit it there" said)))
+  (is (null (layer-file "mc-tick")) "never a second copy in the layer"))
 
-(deftest made-cell-a-name-kept-into-a-cell-leaves-the-layer (with-made-cell-fixture ())
+(deftest made-cell-an-eval-in-it-leaves-the-layer-and-the-files-as-they-were (with-made-cell-fixture ())
   (keep-definition-text "(defun mc-built () \"Built before the cell.\" :old)" :session "s-cell")
   (is (layer-file "mc-built"))
   (make-test-cell "built")
-  (let ((said (keep-definition-text "(defun mc-built () \"Built, now the cell's.\" :new)" :session "s-cell")))
-    (is (search "[built: kept mc-built]" said))
-    (is (search "[layer: moved mc-built to built]" said)))
-  (is (cell-file "built" "mc-built"))
-  (is (null (layer-file "mc-built")) "one home: no second copy loads after it")
-  (is (null (search "mc-built" (nlk:read-text (nlk::layer-system-file))))))
-
-(deftest made-cell-forgetting-takes-the-file-and-its-entry-out (with-made-cell-fixture ())
-  (make-test-cell "gone")
-  (keep-definition-text "(defun mc-gone () \"Soon gone.\" 0)" :session "s-cell")
-  (is (search "[gone: forgot mc-gone]" (keep-definition-text "(fmakunbound 'mc-gone)" :session "s-cell")))
-  (is (null (cell-file "gone" "mc-gone")))
-  (is (null (search "mc-gone" (nlk:read-text (merge-pathnames "tester-gone/tester-gone.asd"
-                                                                nlk::*cells-directory*))))))
+  (is (search "not kept" (keep-definition-text "(defun mc-built () \"Tried in the cell.\" :new)" :session "s-cell")))
+  (is (search ":old" (nlk:read-text (layer-file "mc-built"))) "the layer's text is as it was")
+  (is (search "not kept" (keep-definition-text "(fmakunbound 'mc-built)" :session "s-cell")) "a forget is a try too")
+  (is (layer-file "mc-built") "and takes no file"))
 
 (deftest made-cell-enter-takes-it-up-again-and-a-memory-stays-knowledge (with-made-cell-fixture ())
   (make-test-cell "notes")
   (clrhash nlk::*session-cells*)          ; what a restart forgets
   (is (null (nlk:current-cell "s-new")))
   (is (equal (nlk:cell-directory "notes") (nlk:enter-cell "notes" "s-new")))
-  (is (search "[notes: kept mc-note]" (keep-definition-text "(defun mc-note () \"A note.\" t)" :session "s-new")))
+  (is (search "[notes: mc-note is live in this image and not kept"
+              (keep-definition-text "(defun mc-note () \"A note.\" t)" :session "s-new")))
   (is (search "[memory: kept mc-fact]"
               (keep-definition-text "(define-memory mc-fact \"A fact, not code.\" :type :reference)" :session "s-new")))
   (is (kept-text "mc-fact") "knowledge is the knowledge cell's, in a cell or not"))
 
+(deftest made-cell-lives-in-a-source-folder-linked-in (with-made-cell-fixture ())
+  (let ((source (merge-pathnames "code/linked/" (uiop:pathname-parent-directory-pathname nlk::*cells-directory*))))
+    (let ((nlk:*scribe-session-id* "s-cell") (*standard-output* (make-broadcast-stream)))
+      (nlk:new-cell "linked" :source source))
+    (let ((link (merge-pathnames "tester-linked" nlk::*cells-directory*)))
+      (is (sb-posix:s-islnk (sb-posix:stat-mode (sb-posix:lstat (namestring link)))) "cells/ holds a link")
+      (is (equal (namestring (truename source))
+                 (namestring (truename (uiop:ensure-directory-pathname link)))) "to the source folder"))
+    (is (probe-file (merge-pathnames "linked.lisp" source)) "the files are the source folder's")
+    (is (probe-file (merge-pathnames ".git/" source)) "a repository of its own there")
+    (let ((receipt (nle::write-file (merge-pathnames "linked.lisp" source)
+                                    (format nil "(in-package #:tester-linked)~%~%(defun mc-linked () :there)~%"))))
+      (is (search "live here: mc-linked" receipt) "a write at the source goes live"))
+    (is (eq :there (funcall (find-symbol "MC-LINKED" "TESTER-LINKED"))))
+    (is (string= "" (knowledge-git "tester-linked" "status" "--porcelain")) "and is committed")
+    (let ((nlk:*scribe-session-id* "s-cell"))
+      ;; a source folder that holds files is refused
+      (is (search "refused" (or (handler-case (progn (nlk:new-cell "again" :source source) nil)
+                                  (error () "refused"))
+                              ""))))))
+
 (deftest made-cell-declares-a-command-that-starts (with-made-cell-fixture ())
-  ;; cell.lisp gives the cell its package; a DEFUN and a DEFINE-CELL of one
-  ;; name keep two files; the start the DEFINE-CELL made after the load is
-  ;; taken up, and it registers the command under the cell's folder name
+  ;; cell.lisp gives the cell its package; the code file holds the defun and
+  ;; the define-cell, written; the start the define-cell made is taken up,
+  ;; and it registers the command under the cell's folder name
   (make-test-cell "clock")
   (is (find-package "TESTER-CLOCK") "cell.lisp made the package")
-  (is (search "(:file \"cell\")"
-              (nlk:read-text (merge-pathnames "tester-clock/tester-clock.asd" nlk::*cells-directory*))))
   (is (null (nlk:note-cell-start (nlk:find-cell "tester-clock"))) "nothing to start yet")
-  (keep-definition-text "(defun clock (args session-id) (declare (ignore args session-id)) \"noon\")"
-                        :session "s-cell" :package "TESTER-CLOCK")
-  (keep-definition-text "(define-cell clock (:section (\"tester-clock-section\")) (:command \"tester-clock\" 'clock :description \"The time.\"))"
-                        :session "s-cell" :package "TESTER-CLOCK")
-  (is (search "(defun clock" (nlk:read-text (cell-file "clock" "clock"))) "the defun keeps its file")
-  (is (search "(define-cell clock" (nlk:read-text (cell-file "clock" "clock-define-cell"))))
-  (is (search "(:file \"clock-define-cell\")"
-              (nlk:read-text (merge-pathnames "tester-clock/tester-clock.asd" nlk::*cells-directory*))))
+  (write-cell-file "clock" "clock"
+                   (format nil "(in-package #:tester-clock)~%~%~
+                                (defun clock (args session-id) (declare (ignore args session-id)) \"noon\")~%~%~
+                                (define-cell clock (:section (\"tester-clock-section\")) (:command \"tester-clock\" 'clock :description \"The time.\"))~%"))
+  (let ((code (nlk:read-text (cell-file "clock" "clock"))))
+    (is (search "(defun clock" code))
+    (is (search "(define-cell clock" code) "one file holds both"))
   (let ((start (nlk:note-cell-start (nlk:find-cell "tester-clock"))))
     (is (functionp start) "the start is taken up")
     (let ((stop (funcall start (make-hash-table :test 'equal))))
@@ -169,14 +205,14 @@ report of loaded cells put back after."
   ;; Off on a made cell keeps every file: the marker goes in, out of its
   ;; history, the boot passes over it, and its session keeps to the layer.
   (make-test-cell "weather")
-  (keep-definition-text "(defun mc-parked () \"Kept.\" 1)" :session "s-cell")
+  (write-cell-file "weather" "weather" (format nil "(in-package #:tester-weather)~%~%(defun mc-parked () \"Kept.\" 1)~%"))
   (let ((names (lambda (folders) (mapcar #'nlk:folder-name folders))))
     (is (nlk:cell-parkable-p "tester-weather"))
     (is (not (nlk:cell-parkable-p (nlk::layer-name))) "the layer the organism writes to never parks")
     (is (not (nlk:cell-parkable-p "tester-memory")) "nor a knowledge cell")
     (is (equal (nlk:cell-directory "weather") (nlk:park-cell "tester-weather")))
     (is (nlk:cell-parked-p "tester-weather"))
-    (is (cell-file "weather" "mc-parked") "its work is all there")
+    (is (search "mc-parked" (nlk:read-text (cell-file "weather" "weather"))) "its work is all there")
     (is (null (nlk:current-cell "s-cell")) "its session keeps to the layer again")
     (is (string= "" (knowledge-git "tester-weather" "status" "--porcelain")) "the marker stays out of its history")
     (is (not (member "tester-weather" (funcall names (nlk::cell-folders)) :test #'string=)) "no boot loads it")
