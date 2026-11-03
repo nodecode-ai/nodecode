@@ -674,6 +674,7 @@ the same form."
                   (format out "~%  ;;~:[ ~a~;~]" (equal line "") line))))
             (format out "~%  )"))
           (concatenate 'string head ")")))
+
 (defun definable-name-p (name)
   "Whether NAME reads as the symbol a definition takes: lower case, digits
 and . _ -, never a number."
@@ -704,18 +705,13 @@ of it would refuse."
   (with-output-to-string (*standard-output*) (eval form))
   form)
 
-(defun form-text (parts &aux (head "(progn")
-                               (text (make-string (+ (length head)
-                                                     (loop for part in parts sum (1+ (length part)))))))
-  "`(progn' and each of PARTS on a line of its own, made at its length: through
-FORMAT, an import's 8 MB of definitions were copied as its buffer grew."
-  (replace text head)
-  (loop with at = (length head)
-        for part in parts
-        do (setf (char text at) #\Newline)
-           (replace text part :start1 (1+ at))
-           (incf at (1+ (length part))))
-  text)
+(defun form-text (parts)
+  "`(progn' and each of PARTS on a line of its own."
+  (with-output-to-string (out)
+    (write-string "(progn" out)
+    (dolist (part parts)
+      (terpri out)
+      (write-string part out))))
 
 (defun keep-definitions (run)
   "RUN, (ITEM . FORM) each FORM evaluated already, kept by the scribe as one
