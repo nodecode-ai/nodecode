@@ -32,6 +32,32 @@ nodecode 0.1.7+2629050e1
 The version comes first and the build label, the commit the release was built from, follows the `+`. An installed build moves to a new release by itself, between turns. `nodecode update` moves it now. See [Updates](/updates).
 
 {/* source: tools/release/publish.sh */}
+## 0.1.8
+
+Linux, macOS and Windows. Changes since 0.1.7 (`2629050e1`).
+
+- Anthropic: a session whose history holds a tool result twice, or one that landed after a later message, no longer fails every turn with a 400. A repaired call id never reuses one already stored.
+- A stream that stops sending content is cut after three idle timeouts, however many keep-alives still arrive, and an attempt that sends no content at all is cut after fifteen. Either goes to the next attempt or the backup model.
+- A model that loops is cut and run again, never taken as its answer.
+- A full `/tmp` no longer fails every turn, and a write that fails names its file.
+- An image past 2000 px a side, or past a provider's 5 MiB, is shrunk to fit before it is sent.
+- A turn can ask you a question at the web page or the desktop app and wait for your pick.
+- The web page has a Board of tasks: To do, Running, Needs you and Done. Ctrl+K opens a command palette and Ctrl+P quick open. Settings > Shortcuts rebinds any key.
+- The Files view edits and saves a text file, in syntax colours, and asks first over a file changed on disk. The message box records voice.
+- A session's page steers or stops its helpers, one by one or all at once. A helper you steer answers with what the steer asked.
+- The guard asks Allow once or Deny before it refuses a call, and the page draws the question.
+- MCP: a remote server signs in with OAuth. The MCP tab is one line a server, its tools folded out, with a find across them.
+- The cron cell wakes a session on its own when something outside changes, such as a red CI run or an answer waiting.
+- `/cells new`, or New cell in the Cells tab, makes a cell by talking.
+- `nodecode gateway setup` opens the shell on a step-by-step setup sheet. Discord sets up from the bot token alone, and `/channels` picks its channels, people and roles.
+- `nodecode --model M -- PROMPT` opens a fresh shell on that model with a first prompt; `--prompt-file FILE`, `@FILE` and piped stdin give it the prompt too. `nodecode web --print` prints the page's link and opens nothing.
+- Ctrl+Y selects transcript text from the keyboard. Behind tmux or screen the pane keeps its title, and the cursor no longer flickers while the screen paints. A long session opens faster.
+- `edit` and `write-file` keep a file's mode. A backgrounded or stopped `(sh ...)` answers what its command wrote, and a command's output that is not UTF-8 reads as `?` instead of failing. An eval runs on its turn's model.
+- `nodecode add` says what it waits on, and names it when it gives up.
+- A profile made from your settings carries the cells the hub installed and the folder a pinned provider needs. A models.dev address with a `${NAME}` blank asks for the value.
+- An update moves a definition that moved to another file, and an install removes the older releases nothing uses.
+
+{/* source: tools/release/publish.sh */}
 ## 0.1.7
 
 Linux, macOS and Windows, 2026-11-01, build `2629050e1`.
