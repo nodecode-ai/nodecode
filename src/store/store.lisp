@@ -174,10 +174,9 @@ durable that never was."))
   "Return STORE's handle, or signal STORE-NOT-OPEN -- STORE-BROKEN while a
 failed write has it waiting to reconnect (HEAL-STORE)."
   (unless (or (store-open-p store) (heal-store store))
-    (let ((reason (and store (store-break store :reason))))
-      (if reason
-          (error 'store-broken :reason reason)
-          (error 'store-not-open))))
+    (if-let (reason (and store (store-break store :reason)))
+        (error 'store-broken :reason reason)
+        (error 'store-not-open)))
   store.handle)
 
 ;;; --- serialization ------------------------------------------------------

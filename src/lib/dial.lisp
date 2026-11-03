@@ -155,9 +155,8 @@ when the handshake does not answer -- an error, a deadline, an interrupt."
       (unless secured (ignore-errors (close stream :abort t))))))
 
 ;; Windows' dexador speaks WinHTTP and opens no socket of its own.
-(let ((backend (find-package "DEXADOR.BACKEND.USOCKET")))
-  (when backend
-    (encapsulate-afresh (find-symbol "MAKE-SSL-STREAM" backend) 'close-unless-secured #'close-unless-secured)))
+(when-let (backend (find-package "DEXADOR.BACKEND.USOCKET"))
+  (encapsulate-afresh (find-symbol "MAKE-SSL-STREAM" backend) 'close-unless-secured #'close-unless-secured))
 
 ;;; --- one client TLS context ---------------------------------------------------
 ;;; dexador makes a context for every HTTPS connection it opens, and a

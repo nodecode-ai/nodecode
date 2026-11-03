@@ -258,16 +258,15 @@ attaching to it would paint it."
     ;; resting shape and the tool's silence; the two would drift.
     (multiple-value-bind (state in-flight started activity own) (bar-lane model)
       (if (not in-flight)
-          (let ((resting (and (hash-table-p state)
-                              (gethash "turn_resting_status" state))))
-            (when resting
-              (let* (;; The interrupted shape is the resting divider's own: the
-                     ;; elapse, the outcome word and the wall clock (in its
-                     ;; parentheses) the turn died at, with no meter to repeat
-                     ;; what the header's right lane carries.
-                     (head (turn-rest-text (or (getf resting :outcome) "failed")
-                                           (getf resting :elapsed-ms) (getf resting :ended-at-ms))))
-                (bar-row (bar-segs *status-mark-interrupted* :danger head :muted)))))
+          (when-let (resting (and (hash-table-p state)
+                                  (gethash "turn_resting_status" state)))
+            (let* (;; The interrupted shape is the resting divider's own: the
+                   ;; elapse, the outcome word and the wall clock (in its
+                   ;; parentheses) the turn died at, with no meter to repeat
+                   ;; what the header's right lane carries.
+                   (head (turn-rest-text (or (getf resting :outcome) "failed")
+                                         (getf resting :elapsed-ms) (getf resting :ended-at-ms))))
+              (bar-row (bar-segs *status-mark-interrupted* :danger head :muted))))
           (let ((elapsed-ms (if started (since-ms started) 0)))
             (multiple-value-bind (mark verb quiet)
                 (mark-and-verb elapsed-ms activity
@@ -617,11 +616,9 @@ column.")
   (if (<= height 12) 2 (max 2 (floor (- height 11 extra) 2))))
 
 ;;; The NC mark glows. Once a launch an ember glint crosses it on the
-;;; diagonal (column plus row); a click plays the glint again, and the fifth
-;;; click inside two seconds — or the Konami code typed on the home screen —
-;;; burns the whole mark, a flicker running through it as it cools. The
-;;; colours are the nodecode.ai ramp. The frame clock carries both: the tick
-;;; repaints while one plays, and the mark is still otherwise.
+;;; diagonal (column plus row), and a click plays the glint again. The
+;;; colours are the nodecode.ai ramp. The frame clock carries it: the tick
+;;; repaints while it plays, and the mark is still otherwise.
 (defparameter +home-mark+ '("▄  ▄  ▄▄▄"
                             "█▀▄█ █   "
                             "▀  ▀  ▀▀▀")
@@ -630,7 +627,7 @@ column.")
 (defparameter +mark-ramp+ '((242 87 15) (250 139 62) (255 171 104) (255 210 171))
   "The glow's colours from coolest to hottest; below the first, the mark's own.")
 
-(defparameter +mark-glow-seconds+ '(:shine 0.55 :burn 1.2)
+(defparameter +mark-glow-seconds+ '(:shine 0.55)
   "How long each glow the mark plays lasts.")
 
 (defparameter +mark-launch-delay+ 0.15
@@ -639,11 +636,8 @@ column.")
 (defparameter +mark-shine-half-width+ 3.5
   "Diagonal cells from the glint's centre to where the mark is plain again.")
 
-(defparameter +konami-code+ '(:up :up :down :down :left :right :left :right #\b #\a)
-  "The keys that burn the mark from the home screen, in order.")
-
 (defun play-mark-glow (model kind &key launch)
-  "Start KIND, :SHINE or :BURN, across the mark: now, or for a LAUNCH, a beat
+  "Start KIND, :SHINE, across the mark: now, or for a LAUNCH, a beat
 after it."
   (setf (chat-model-mark-glow model)
         (cons kind (+ (get-internal-real-time)
@@ -667,26 +661,15 @@ screen that stands, or has just ended and the still mark is owed."
 
 (defun mark-glow-heat (model &aux (glow (chat-model-mark-glow model)))
   "The mark's heat this frame as a function of a cell's column and row, 0
-its own colour to 1 the ramp's core, or NIL when it is still."
+its own colour to 1 the ramp's core, or NIL when it is still: the glint, a
+band crossing the diagonal, eased so it is quickest over the mark."
   (when (consp glow)
-    (let* ((elapsed (max 0 (mark-glow-elapsed glow)))
-           (s (/ elapsed (getf +mark-glow-seconds+ (car glow)))))
+    (let ((s (/ (max 0 (mark-glow-elapsed glow)) (getf +mark-glow-seconds+ (car glow)))))
       (when (< s 1)
-        (ecase (car glow)
-          ;; A band crossing the diagonal, eased so it is quickest over the mark.
-          (:shine
-           (let* ((w +mark-shine-half-width+)
-                  (span (+ (length (first +home-mark+)) (length +home-mark+) -2))
-                  (centre (+ (- w) (* (/ (- 1 (cos (* pi s))) 2) (+ span w w)))))
-             (lambda (x row) (max 0 (- 1 (/ (abs (- (+ x row) centre)) w))))))
-          ;; A flare, a hold, a cool; a wave runs down the diagonal throughout.
-          (:burn
-           (let ((level (cond ((< s 0.1) (/ s 0.1))
-                              ((< s 0.4) 1)
-                              (t (/ (+ 1 (cos (* pi (/ (- s 0.4) 0.6)))) 2))))
-                 (phase (* 6 pi elapsed)))
-             (lambda (x row)
-               (* level (+ 0.7 (* 0.2 (sin (- phase (/ (+ x row) 1.5))))))))))))))
+        (let* ((w +mark-shine-half-width+)
+               (span (+ (length (first +home-mark+)) (length +home-mark+) -2))
+               (centre (+ (- w) (* (/ (- 1 (cos (* pi s))) 2) (+ span w w)))))
+          (lambda (x row) (max 0 (- 1 (/ (abs (- (+ x row) centre)) w)))))))))
 
 (defun mark-line-segs (line row heat)
   "LINE, row ROW of the mark, as segs: the title tone, each cell HEAT warms
@@ -706,38 +689,14 @@ painted up the ramp."
                                                                  (round (* 100 part)))
                                                   :bold t)))))))
 
-(defun click-mark (model &aux (now (get-internal-real-time)))
-  "A click on the mark: the glint again, or on the fifth inside two seconds,
-the burn."
-  (let ((clicks (cons now (remove-if (lambda (at) (> (- now at) (* 2 internal-time-units-per-second)))
-                                     (chat-model-mark-clicks model)))))
-    (setf (chat-model-mark-clicks model) (if (>= (length clicks) 5) nil clicks))
-    (play-mark-glow model (if (>= (length clicks) 5) :burn :shine))
-    (render-state model)))
+(defun click-mark (model)
+  "A click on the mark plays the glint again."
+  (play-mark-glow model :shine)
+  (render-state model))
 
-(defun konami-key (model key plain &aux (at (chat-model-konami-progress model)))
-  "Advance MODEL's run through the Konami code by KEY, PLAIN when no modifier
-is held; T when the code spends KEY: its Left and Right on the home screen,
-and its last key when that burns the mark."
-  ;; Up and Down walk prompt history and back to the empty draft, and the
-  ;; `b' types, so those pass through; Left on an empty composer would leave
-  ;; the session (LEAVE-SESSION-OP), so the code keeps its own.
-  (let ((next (cond ((and plain (eql key (nth at +konami-code+))) (1+ at))
-                    ;; Up Up Up still stands two keys in.
-                    ((and plain (eq key :up)) (if (= at 2) 2 1))
-                    (t 0))))
-    (setf (chat-model-konami-progress model) (mod next (length +konami-code+)))
-    (cond ((= next (length +konami-code+)) (konami-burn model))
-          ((<= 5 next 8) (home-screen-p model)))))
-
-(defun konami-burn (model &aux (editor (chat-model-editor model)))
-  "Burn the mark when the code's `b' is all the composer holds and, with it
-gone, the home screen stands; T when it did, so the `a' is spent."
-  (when (equal (editor-value editor) "b")
-    (editor-reset editor)
-    (cond ((home-screen-p model)
-           (play-mark-glow model :burn)
-           (render-state model)
-           t)
-          (t (editor-insert editor "b") nil))))
+(defun konami-key (model key plain)
+  "No key spends a code on the home screen any more: always NIL, so every key
+goes on to its own arm."
+  (declare (ignore model key plain))
+  nil)
 
