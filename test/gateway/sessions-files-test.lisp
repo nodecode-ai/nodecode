@@ -41,6 +41,12 @@
 ;;;;       climbing step, an absolute path, a link that leads out, a name with
 ;;;;       a slash, a NUL or `..' -- is refused before anything is read or
 ;;;;       written, and so is a session whose folder is gone.
+;;;;   F6b. GET .../files?find=1 names every regular file under the folder
+;;;;       asked, as paths relative to the session's folder, sorted: in a git
+;;;;       work tree what git tracks or would track, its ignores honoured;
+;;;;       elsewhere a walk that enters no dot folder and no link. No link is
+;;;;       named, so nothing listed leads out; past the cap, or a walk past its
+;;;;       time, it says the list was cut.
 ;;;;   F7. The listing says the source that began each session. POST
 ;;;;       .../prune with a dry run names the old trees and deletes nothing;
 ;;;;       the delete that follows takes what it named and no more; a pick a
@@ -324,6 +330,27 @@ answer decoded."
       (is (equal "(print 1)" (sb-ext:octets-to-string bytes :external-format :utf-8))))
     (nlk:standby-session :id "s-standing" :cwd (namestring proj))
     (is (equal "directory" (gethash "kind" (files-route port "" :session "s-standing"))) "a session standing by has its folder too")))
+
+(deftest files-route-finds-every-file-under-a-folder-for-quick-open ()
+  (with-files-route-folder (port proj away)
+    (flet ((found (query) (coerce (gethash "files" (files-route port query)) 'list)))
+      (is-shape (files-route port "?find=1") ("kind" "files") ("path" ""))
+      (is (equal '(".env" "README.md" "blob.bin" "shot.png" "src/main.lisp") (found "?find=1")) "a walk, no link named")
+      (is (equal '("src/main.lisp") (found "?path=src&find=1")) "a folder's own, relative to the session's folder")
+      (with-saved-globals ((nle::*folder-find-cap* 2))
+        (let ((cut (files-route port "?find=1")))
+          (is (= 2 (length (gethash "files" cut))) "no more than the cap")
+          (is-shape cut ("cut" t "and says it was cut"))))
+      (is (null (nth-value 1 (gethash "cut" (files-route port "?find=1")))) "a whole list says nothing of a cut")
+      (let ((dir (uiop:native-namestring proj)))
+        (nlk:write-file-atomically (merge-pathnames ".gitignore" proj) (format nil "blob.bin~%"))
+        (nlk:write-file-atomically (merge-pathnames "node_modules/dep/index.js" proj) "x")
+        (nlk:run-bounded (list "git" "-C" dir "init" "-q"))
+        (nlk:run-bounded (list "git" "-C" dir "add" "README.md" "code" "out")))
+      (let ((git '(".env" ".gitignore" "README.md" "node_modules/dep/index.js" "shot.png" "src/main.lisp")))
+        (is (equal git (found "?find=1")) "in a work tree, git's list: its ignores honoured, no link named"))
+      (is-route (port :get "/api/gateway/sessions/s-files/files?path=out&find=1") 403
+                "a link that leads out is refused, find or not" "outside_folder"))))
 
 (deftest files-route-says-in-words-when-a-file-cannot-be-read ()
   ;; Without this, a file the gateway may not read would answer SBCL's
