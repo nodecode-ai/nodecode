@@ -112,16 +112,16 @@ NIL while it stands at none), the binary's VERSION and whether a restore
 FOLLOWS nodecode's own changes -- a release's, never a checkout's -- the
 EDITS that hold every restore ((NAME . COUNT) ...), and why the last read
 FAILED; where the
-operator is -- FOCUS on the :PANE of changes or the :BANNER of edits, AT the
-place in the list as it shows, the FILTER and the QUERY, the first line the
-list shows (TOP) -- the
+operator is -- FOCUS on the :PANE of changes, the :RAIL of days or the
+:BANNER of edits, AT the place in the list as it shows, DAY the rail's, the
+FILTER and the QUERY, the first line each list shows (TOP, RAIL-TOP) -- the
 question asked in place (ASK: :TO the generation, :PLAN what the plan
 route answered, :FAILED why the last step failed, :GOING once it is
 answered), what was SAID above the list ((TEXT TONE)), the generation
 /generations N ASKED for until the rows land, and whether the last paint was
 STACKED, one view at a time."
   (changes #()) (days #()) (now nil) (version nil) (follows nil) (edits '()) (failed nil)
-  (focus :pane) (at 0) (filter :all) (query "" :type string) (top 0)
+  (focus :pane) (at 0) (day 0) (filter :all) (query "" :type string) (top 0) (rail-top 0)
   (ask nil) (said nil) (asked nil))
 
 (nlk:access (history generations-sheet))
@@ -314,7 +314,8 @@ change it was on, else the one the folder stands at."
       (let ((index (or (and was (position was changes :key #'history-change-to))
                        (history-current history)
                        0)))
-        (setf history.at (or (position index (history-visible history)) 0))
+        (setf history.at (or (position index (history-visible history)) 0)
+              history.day (min history.day (max 0 (1- (length days)))))
         (when (and (eq history.focus :banner) (null history.edits))
           (setf history.focus :pane))))))
 
@@ -470,6 +471,19 @@ up past the first, the banner of edits when one stands."
         (setf history.focus :banner)
         (setf history.at (max 0 (min (1- count) (+ history.at delta)))))))
 
+(defun history-chosen-day (history focus)
+  "The day the rail marks: its own on the rail, the chosen change's else."
+  (cond ((eq history.focus :rail) history.day)
+        (focus (history-change-day (aref history.changes focus)))
+        (t 0)))
+
+(defun history-open-day (history day)
+  "Open DAY: stand on its newest change the list shows."
+  (let ((index (find-if (lambda (index) (eql day (history-change-day (aref history.changes index))))
+                        (history-visible history))))
+    (setf history.top 0)
+    (if index (history-select history index) (setf history.focus :pane))))
+
 (defun history-ask-key (model history key)
   "A key while a question stands: Esc stays on the row; Enter goes, the
 edits that hold it kept first; d discards them, then goes."
@@ -496,14 +510,23 @@ edits that hold it kept first; d discards them, then goes."
       (:page-down (history-move history 10))
       (:home (setf history.at 0))
       (:end (setf history.at (max 0 (1- (length visible)))))
-      (:escape (dismiss-dialog model nil))
+      ((:left :escape)
+       (setf history.day (history-chosen-day history focus) history.focus :rail history.said nil))
       (:enter (history-ask-focus model history focus)))))
+
+(defun history-rail-key (model history key)
+  (case key
+    (:up (setf history.day (max 0 (1- history.day))))
+    (:down (setf history.day (min (max 0 (1- (length history.days))) (1+ history.day))))
+    ((:right :enter #\Space) (history-open-day history history.day))
+    (:escape (dismiss-dialog model nil))))
 
 (defun history-banner-key (model history key)
   (case key
     (:down (setf history.focus :pane history.at 0))
     (:enter (unless history.busy (history-edits model history "keep")))
     (:delete (unless history.busy (history-edits model history "discard")))
+    (:left (setf history.focus :rail history.day 0))
     (:escape (dismiss-dialog model nil))))
 
 (defun history-query-key (model history key)
@@ -524,6 +547,7 @@ edits that hold it kept first; d discards them, then goes."
     ((eq key :tab) (history-step-filter history (if shift -1 1)))
     ((eq history.focus :banner) (history-banner-key model history key))
     ((plusp (length history.query)) (history-query-key model history key))
+    ((eq history.focus :rail) (history-rail-key model history key))
     (t (history-pane-key model history key))))
 
 (defun generations-paste (model history text)
@@ -537,8 +561,9 @@ edits that hold it kept first; d discards them, then goes."
   "A notch over the sheet moves the way the arrows do."
   (declare (ignore model x y))
   (unless history.ask
-    (setf history.focus :pane)
-    (history-move history delta)))
+    (if (eq history.focus :rail)
+        (setf history.day (max 0 (min (1- (length history.days)) (+ history.day delta))))
+        (progn (setf history.focus :pane) (history-move history delta)))))
 
 ;;; --- painting -----------------------------------------------------------------
 
@@ -561,7 +586,10 @@ edits that hold it kept first; d discards them, then goes."
     (cond ((eq history.focus :banner)
            '(("enter" "keep them") ("del" "discard them") ("↓" "changes") ("esc" "close")))
           ((plusp (length history.query)) (append '(("↑↓" "move")) go '(("esc" "clear"))))
-          (t (append '(("↑↓" "change")) go '(("tab" "filter") ("type" "search") ("esc" "close")))))))
+          ((eq history.focus :rail)
+           (list '("↑↓" "day") (list (if history.stacked "enter" "→") "open") '("tab" "filter")
+                 '("type" "search") '("esc" "close")))
+          (t (append '(("↑↓" "change")) go '(("←" "days") ("tab" "filter") ("type" "search")))))))
 
 (defun ask-card (history width)
   "The question asked in place, WIDTH wide. => (values LINES KEYS): LINES
@@ -621,6 +649,8 @@ keys do."
   (cond
     ((eq history.focus :banner)
      '(("Keep: one commit, sealed as a generation you can come back to. Discard: into git stash." :muted)))
+    ((and (eq history.focus :rail) (zerop (length history.query)))
+     '(("→ opens the day. " :muted) ("↶" :sheet-restart) (" marks the days going back would undo." :muted)))
     ((null focus)
      (and (plusp (length history.changes))
           '(("Pick a change: this line says what going back to it undoes." :muted))))
@@ -715,13 +745,16 @@ and under FOCUS's row what it carries. => (values LINES FOCUS-LINE)."
 
 (defun paint-history-list (history canvas lines focus-line top rows px pw focus current wide)
   "LINES down ROWS rows from TOP in the pane at PX, PW wide, scrolled to keep
-the chosen change and what it carries in view, the top with none chosen."
+the chosen change and what it carries in view -- on the rail, the chosen
+day's head at the top."
   (when (plusp rows)
     (let* ((pane (sheet-ground :sheet))
            (lift (sheet-ground :sheet-focus))
            (offset history.top))
       (if (null focus)
-          (setf offset 0)
+          (let ((head (position-if (lambda (line) (and (eq :head (first line)) (eql history.day (second line))))
+                                   lines)))
+            (setf offset (max 0 (min (or head 0) (- (length lines) rows)))))
           (let ((last focus-line)
                 (head (if (and (plusp focus-line) (not (eq :row (first (nth (1- focus-line) lines)))))
                           (1- focus-line)
@@ -838,28 +871,145 @@ said, the banner of edits. => the row the list starts on."
     (multiple-value-bind (card keys) (ask-card history pw)
       (values (subseq card 0 (min (length card) (max 0 room))) keys))))
 
-(defun paint-history (history canvas edges)
-  "The sheet at any width: the title and the search field, the filters and
-what stands over the list where there is room, the changes by day, the
-question or the line under the list, and the keys. => the caret's cell, or NIL."
+(defun paint-history-days (history canvas top rows width rail pane focus current)
+  "The days down ROWS rows from TOP in the rail, WIDTH wide, scrolled to keep
+the chosen one in view: the chosen one on the pane's ground, so it reads as
+the tab the list hangs from."
+  (let* ((days history.days)
+         (chosen (history-chosen-day history focus))
+         (offset (max 0 (min history.rail-top chosen) (- chosen rows -1))))
+    (setf offset (min offset (max 0 (- (length days) rows)))
+          history.rail-top offset)
+    (loop for d from offset below (min (length days) (+ offset rows))
+          for r from top
+          for day = (aref days d)
+          do (let* ((on (and (= d chosen) (zerop (length history.query)) (not (eq history.focus :banner))))
+                    (ground (if on pane rail))
+                    (count (princ-to-string (day-count history d))))
+               (when on (canvas-fill canvas 0 r width 1 (sheet-ink nil :ground pane)))
+               (when (and focus
+                          (find d history.changes :key #'history-change-day)
+                          (loop for change across history.changes
+                                for index from 0
+                                always (or (not (eql d change.day))
+                                           (eq :undone (history-moved history focus index current)))))
+                 (canvas-put canvas 1 r "↶" (sheet-ink :sheet-restart :ground ground)))
+               (canvas-put canvas 3 r (clip-text-to-width day.label (- width 9))
+                           (sheet-ink (cond ((not on) (if (day-refused-p history d) :muted :system))
+                                            ((eq history.focus :rail) :dialog-accent)
+                                            (t :foreground))
+                                      :ground ground :bold on))
+               (canvas-put canvas (- width 2 (length count)) r count (sheet-ink :muted :ground ground))
+               (sheet-hit history r 0 width
+                          (lambda-ignoring (model history)
+                            (setf history.query "" history.ask nil history.said nil history.focus :rail
+                                  history.day d)))))
+    (paint-scroll-marks canvas (- width 2) top (+ top rows -1) offset rows (length days) rail)))
+
+(defun paint-history-wide (history canvas edges)
+  "The wide sheet: the days in a rail beside the changes. => the caret's
+cell, or NIL."
+  (with-wide-sheet (canvas edges (if (>= width 104) 24 21))
+    (let* ((tight (< inner 22))
+           (title-row (+ top (if tight 0 1)))
+           (hint-row (+ top inner (if tight -1 -2)))
+           (visible (history-visible history))
+           (focus (history-focus history visible))
+           (current (history-current history))
+           (changes history.changes)
+           (cursor nil)
+           (r (+ title-row 2)))
+      (canvas-put canvas 3 title-row "Generations" (sheet-ink :title :ground rail :bold t))
+      (paint-history-days history canvas (+ title-row 2) (- hint-row 2 title-row 2) rail-width rail pane
+                          focus current)
+      (when (plusp (length changes))
+        (canvas-put canvas 3 (1- hint-row)
+                    (clip-text-to-width (format nil "~d sealed" (history-change-to (aref changes 0)))
+                                        (- rail-width 4))
+                    (sheet-ink :muted :ground rail))
+        (canvas-put canvas 3 hint-row
+                    (clip-text-to-width (format nil "since ~a" (nth-value 1 (local-date (history-change-first-at
+                                                                                          (aref changes (1- (length changes)))))))
+                                        (- rail-width 4))
+                    (sheet-ink :muted :ground rail)))
+      ;; the search field
+      (setf cursor (paint-search-field canvas px title-row pw history.query "Search changes, cells, sessions, #numbers" field))
+      (unless tight
+        (paint-history-chips history canvas r px pw pane)
+        (incf r 2))
+      (setf r (paint-history-notes history canvas r px pw pane tight))
+      (multiple-value-bind (card keys) (history-card history pw (- hint-row r 4))
+        (let ((list-end (if card (- hint-row (length card) 3) (- hint-row 4))))
+          (paint-history-pane history canvas visible focus current r (1+ (- list-end r)) px pw pane t)
+          (paint-history-foot history canvas card keys visible focus current hint-row (- hint-row 2) px pw pane)))
+      cursor)))
+
+(defun paint-history-stacked (history canvas edges)
+  "The narrow sheet: the days, or the changes, or a query's finds, one view
+at a time. => the caret's cell, or NIL."
   (with-stacked-sheet (canvas edges)
     (let* ((visible (history-visible history))
            (focus (history-focus history visible))
            (current (history-current history))
-           (at (canvas-put canvas px header-row "Generations" (sheet-ink :title :ground pane :bold t)))
-           (cursor (paint-search-field canvas (+ at 3) header-row (max 1 (- (+ px pw) at 3)) history.query
-                                       "Search changes, cells, sessions, #numbers" (sheet-ground :composer)))
+           (days-view (and (member history.focus '(:rail :banner)) (zerop (length history.query))))
+           (cursor nil)
            (r (+ header-row 2)))
+      (flet ((right (text)
+               (when (< (+ (text-display-width text) 16) pw)
+                 (canvas-put canvas (- (+ px pw) (text-display-width text)) header-row text
+                             (sheet-ink :muted :ground pane)))))
+        (cond
+          ((plusp (length history.query))
+           (let ((count (length visible)))
+             (setf cursor (paint-search-line canvas px header-row pw history.query pane 22))
+             (right (if (plusp count) (format nil "~d match~:[es~;~]" count (= count 1)) "no match"))))
+          (days-view
+           (canvas-put canvas px header-row "Generations" (sheet-ink :title :ground pane :bold t))
+           (right "type to search"))
+          (t
+           (let* ((chosen (history-chosen-day history focus))
+                  (at (canvas-put canvas px header-row "Generations › " (sheet-ink :muted :ground pane))))
+             (sheet-hit history header-row px at
+                        (lambda-ignoring (model history)
+                          (setf history.day (history-chosen-day history (history-focus history))
+                                history.focus :rail)))
+             (when (plusp (length history.days))
+               (canvas-put canvas at header-row
+                           (clip-text-to-width (history-day-label (aref history.days chosen)) (max 1 (- pw 30)))
+                           (sheet-ink :title :ground pane :bold t))
+               (right (format nil "‹ ~d/~d ›" (1+ chosen) (length history.days))))))))
       (when (>= inner 18)
         (paint-history-chips history canvas r px pw pane)
         (incf r 2))
       (when (>= inner 14)
-        (setf r (paint-history-notes history canvas r px pw pane (< inner 22))))
+        (setf r (paint-history-notes history canvas r px pw pane nil)))
       (multiple-value-bind (card keys) (history-card history pw (- hint-row r 4))
         (let* ((gap (if (>= inner 16) 1 0))
                (bottom-row (- hint-row 1 gap))
-               (list-end (if card (- hint-row (length card) 3) (- bottom-row 1 gap))))
-          (paint-history-pane history canvas visible focus current r (1+ (- list-end r)) px pw pane (>= width 84))
+               (list-end (if card (- hint-row (length card) 3) (- bottom-row 1 gap)))
+               (rows (1+ (- list-end r))))
+          (if days-view
+              (let ((offset (max 0 (min history.rail-top history.day) (- history.day rows -1))))
+                (setf history.rail-top offset)
+                (loop for d from offset below (min (length history.days) (+ offset rows))
+                      for y from r
+                      for day = (aref history.days d)
+                      do (let* ((on (and (= d history.day) (eq history.focus :rail)))
+                                (ground (if on (sheet-ground :sheet-focus) pane))
+                                (count (princ-to-string (day-count history d))))
+                           (when on (canvas-fill canvas (- px 2) y (+ pw 4) 1 (sheet-ink nil :ground ground)))
+                           (canvas-put canvas px y (clip-text-to-width day.long (- pw 8))
+                                       (sheet-ink (cond (on :dialog-accent)
+                                                        ((day-refused-p history d) :muted)
+                                                        (t :system))
+                                                  :ground ground :bold on))
+                           (canvas-put canvas (- (+ px pw) (length count)) y count (sheet-ink :muted :ground ground))
+                           (sheet-hit history y (- px 2) (+ px pw 2)
+                                      (lambda-ignoring (model history)
+                                        (if (and (= d history.day) (eq history.focus :rail))
+                                            (history-open-day history d)
+                                            (setf history.day d history.focus :rail history.said nil)))))))
+              (paint-history-pane history canvas visible focus current r rows px pw pane nil))
           (paint-history-foot history canvas card keys visible focus current hint-row
                               (and (>= inner 12) bottom-row) px pw pane)))
       cursor)))
@@ -868,8 +1018,9 @@ question or the line under the list, and the keys. => the caret's cell, or NIL."
   "The columns and rows the sheet asks for: what a wide window gives it.")
 
 (defun generations-paint (model history width height)
-  "The sheet for a WIDTH x HEIGHT frame, one layout at every width."
-  (paint-sheet model history width height +generations-sheet-size+ #'paint-history #'paint-history))
+  "The sheet for a WIDTH x HEIGHT frame: wide from 84 columns, the days
+beside the changes; narrower, one view at a time."
+  (paint-sheet model history width height +generations-sheet-size+ #'paint-history-wide #'paint-history-stacked))
 
 (defun slash-generations-op (model args &aux (tokens (split-words (or args ""))))
   "/generations on a shell: the sheet at once over the shell, the history
