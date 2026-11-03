@@ -290,6 +290,26 @@ answers 400 in its own words."
 
 ;;; --- the document whole ------------------------------------------------------------
 
+(defun secret-spans (text)
+  "Each string of the JSONC document TEXT that holds a secret (SECRET-PATH-P:
+its own name, or for a list's element the list's) and is not empty, as (PATH
+START END) -- what CONFIG-GET reads as *REDACTED-SECRET*."
+  (remove-if-not (lambda (leaf)
+                   (and (secret-path-p (reverse (first leaf)))
+                        (> (- (third leaf) (second leaf)) 2)))
+                 (nlk::jsonc-string-leaves text)))
+
+(defun splice-spans (text spans)
+  "TEXT with each (START END NEW) of SPANS, ascending and apart, standing
+in place of what lay between START and END."
+  (with-output-to-string (out)
+    (let ((cursor 0))
+      (loop for (start end new) in spans
+            do (write-string text out :start cursor :end start)
+               (write-string new out)
+               (setf cursor end))
+      (write-string text out :start cursor))))
+
 (defun config-document (text)
   "TEXT, a JSONC document, decoded; refused in the reader's words when it is
 not one, or its root is not an object."
@@ -300,3 +320,84 @@ not one, or its root is not an object."
       (nlk::protocol-refuse :invalid_config "config.jsonc would not read: its root must be an object"))
     value))
 
+(defun config-refusals (config &aux (general (json-value config :object "general")))
+  "What the config's declared readers would refuse of CONFIG, as texts: a
+section's member of the wrong shape (NLK:SECTION-SETTINGS), a model pin
+that is not one (CONFIG-MODEL-PIN)."
+  (append (loop for section in (nlk:sections)
+                for why = (and (nlk:section-table config section.path)
+                               (section-refusal section config))
+                when why collect (format nil "~a: ~a" (nlk:section-key section.path) why))
+          (loop for key in '("default_model" "auxiliary_model" "decider_model")
+                when (handler-case (progn (config-model-pin general key) nil)
+                       (nlk:config-refusal (condition) (nlk:config-refusal-detail condition)))
+                  collect it)))
+
+(defun config-text-json (text &optional said)
+  "The raw editor's read of TEXT, config.jsonc as it stands: the document
+with each secret read as *REDACTED-SECRET*, the stamp a save must bring
+back, and SAID."
+  (json-object "file" (namestring *shared-config-path*)
+               "text" (splice-spans text (loop for (nil start end) in (secret-spans text)
+                                               collect (list start end (nlk::json-string-literal
+                                                                        *redacted-secret*))))
+               "stamp" (nlk::sha256-text text)
+               :opt "said" said))
+
+(defun restore-secrets (text old &aux (kept (secret-spans old)) (spans '())
+                                       (sentinel (nlk::json-string-literal *redacted-secret*)))
+  "TEXT, an edit of OLD as the raw editor read it, with each secret still
+reading *REDACTED-SECRET* given OLD's own value at the same path back:
+(values TEXT COUNT). A sentinel where OLD holds no secret is refused."
+  (loop for (path start end) in (secret-spans text)
+        when (string= sentinel text :start2 start :end2 end)
+          do (let ((was (or (find path kept :key #'first :test #'equal)
+                            (nlk::protocol-refuse
+                             :invalid_config "~{~a~^.~} reads ~a, and config.jsonc holds no ~
+                                              secret there to keep: write the secret itself, ~
+                                              or take the member out"
+                             path sentinel))))
+               (push (list start end (subseq old (second was) (third was))) spans)))
+  (let ((spans (nreverse spans)))
+    (values (splice-spans text spans) (length spans))))
+
+(defun save-config-text (text stamp &aux (file *shared-config-path*))
+  "Write TEXT, the raw editor's document, as config.jsonc once the file
+still reads as it did at STAMP: its secrets put back (RESTORE-SECRETS), the
+document read, and nothing a declared reader would refuse that it did not
+already refuse in the file. Every other byte is the operator's, comments
+included. Answers the editor's read of what was written."
+  (unless file
+    (error "the shared config is not writable in this process (no config path)"))
+  (bt2:with-lock-held (*shared-config-write-lock*)
+    (let ((old (or (nlk:read-text file) "")))
+      (unless (equal stamp (nlk::sha256-text old))
+        (nlk::protocol-refuse :changed "config.jsonc changed since it was read: reload it and edit again"))
+      ;; Read first: a document that does not read is refused in the reader's
+      ;; words, before anything walks its members.
+      (config-document text)
+      (multiple-value-bind (text secrets) (restore-secrets text old)
+        (when-let (refused (set-difference (config-refusals (config-document text))
+                                           (ignore-errors (config-refusals (config-document old)))
+                                           :test #'string=))
+          (nlk::protocol-refuse :invalid_config "nothing was saved: ~{~a~^; ~}" refused))
+        (nlk:write-file-atomically file text :mode :private)
+        ;; The memo keys on size and mtime, second-granular.
+        (setf *shared-config-memo* nil)
+        (config-text-json text (format nil "config.jsonc saved~[~:;, ~:*~d secret~:p kept from the file~]"
+                                       secrets))))))
+
+(define-gateway-route handle-gateway-config-raw-http (env)
+  "GET /api/gateway/config/raw — config.jsonc as it stands, each secret's
+value read as the redaction sentinel, with the stamp a save brings back.
+POST {text, stamp} saves the document whole (SAVE-CONFIG-TEXT) and answers
+the same read of what was written."
+  (:route nil "/api/gateway/config/raw")
+  (unless *shared-config-path*
+    (nlk::protocol-refuse :refused "this process reads no config.jsonc"))
+  (if (eq (getf env :request-method) :post)
+      (let ((request (gateway-request-json env)))
+        (save-config-text (or (json-value request :string "text")
+                              (nlk::protocol-refuse :invalid_request "text must be a string"))
+                          (json-value request :string "stamp")))
+      (config-text-json (or (nlk:read-text *shared-config-path*) ""))))
