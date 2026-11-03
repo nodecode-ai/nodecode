@@ -5068,25 +5068,6 @@ carries it, REFUSAL why going back to it can never work, or NIL."
                                              "paths" (coerce paths 'vector))))
                "refusal" (or refusal :null)))
 
-(defvar *generations-memo* nil
-  "(KEY . CHANGES): the history GENERATIONS-ANSWER folded last, KEY the
-manifests' own text and the shipped cells it was read against.")
-
-(defun memo-generation-history (manifests builtin)
-  "NLK:GENERATION-HISTORY of MANIFESTS against BUILTIN, folded once for the
-same manifests: a sealed manifest never changes, so the same manifests fold
-to the same changes -- six seconds of git reads on a home of 775 -- and a
-room's card paged, or a sheet read again, folds them once until the next
-seal, which folds them whole again. A
-session renamed since keeps its old title in WHERE until the next seal."
-  (let ((key (list (nlk:short-digest (nlk:encode-json-object (coerce manifests 'vector)) 16) builtin))
-        (memo *generations-memo*))
-    (if (and memo (equal key (car memo)))
-        (cdr memo)
-        (let ((changes (nlk:generation-history manifests :builtin builtin)))
-          (setf *generations-memo* (cons key changes))
-          changes))))
-
 (defun generations-answer ()
   "The sealed generations as the changes they were (NLK:GENERATION-HISTORY),
 newest first, each with why going back to it can never work when it cannot;
@@ -5119,7 +5100,7 @@ they are kept or discarded. The list route's answer, and the history a
                                     (and read
                                          (restore-refusal
                                           (nlk:restore-steps to (nlk::manifest-rows (gethash to by-number)) rows)))))
-                    (memo-generation-history manifests builtin)))))
+                    (nlk:generation-history manifests :builtin builtin)))))
 
 (defun generation-plan-answer (to)
   "What restoring generation TO would do to the folder as it stands, read
