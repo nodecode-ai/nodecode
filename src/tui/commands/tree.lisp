@@ -141,14 +141,11 @@ parent — which reads `├ ' with more forks below or `╰ ' as the last."
 ;;; ran, one row each, on a graph of one rail per line -- the head's line the
 ;;; leftmost rail, a line branched off it a rail of its own to the right,
 ;;; joined to the turn it left by a fork -- with the turn's clock time ahead
-;;; of the rails and, flush right, how it ended, the steers it took, its calls
-;;; and how long it ran (no bar: a log-scaled one would draw short and long
-;;; runs alike beside the time that already says how long it ran). A
-;;; reflection's recap is its note on the turn it follows, never a turn of its
-;;; own: it folds under that turn. The confirm stage draws the move it offers
-;;; on the same graph (TREE-MOVE-ROWS). The rows keep their slots -- label,
-;;; detail, value -- for the search, the tests and the moves; the paint
-;;; (PICKER-ROW-PAINT) is only the look.
+;;; of the rails and, flush right, how it ended, its calls and how long it
+;;; ran. A reflection's recap is a note on the turn it follows, never a row of
+;;; its own. The rows keep their slots -- label, detail, value -- for the
+;;; search, the tests and the moves; the paint (PICKER-ROW-PAINT) is only the
+;;; look.
 
 (defstruct metro-line
   "One line of the /tree graph: its LANE (0 is the head's line), whether it is
@@ -176,23 +173,15 @@ while it has no end (an absent end is no zero)."
         (to (when-let (end (json-value entry :string "ended_at")) (iso-8601-ms end))))
     (and from to (max 0 (- to from)))))
 
-(defun metro-ask-key (node)
-  "The opening of NODE's ask a retry repeats: its first 22 characters."
-  (let ((prompt (or (json-value (getf node :entry) :string "prompt") "")))
-    (subseq prompt 0 (min 22 (length prompt)))))
-
 (defun metro-nodes (entries children &aux (prompts (make-hash-table :test #'equal))
                                           (by-id (make-hash-table :test #'equal))
                                           (nodes '()))
   "The /tree graph's turns over the listing ENTRIES, in the order they ran: a
 plist per prompt row that is no recap -- :ID, :ENTRY, :PARENT (the nearest
-listed turn above it that is no recap; NIL at a root, or under a turn the
-listing's limit cut), :CALLS (CHILDREN's tool rows under it), :RECAPS (the
-recap rows folded under it), :HEAD-P (it, or a recap of it, is the head),
-:ON-CHAIN, :START (epoch ms), :SPAN (ms; NIL while it runs), :ENDING,
-:STEERS and :RETRY (a cancelled ask its parent was asked
-again after). A recap whose turn the listing does not carry stays a node.
-=> (values NODES BY-ID), BY-ID the node of each id."
+listed turn above it that is no recap; NIL at a root), :CALLS (CHILDREN's tool
+rows under it), :HEAD-P (it, or a recap of it, is the head), :ON-CHAIN, :START
+(epoch ms), :SPAN (ms; NIL while it runs) and :ENDING. A recap whose turn the
+listing does not carry stays a node. => (values NODES BY-ID)."
   (dolist (entry entries)
     (when (checkpoint-turn-entry-p entry)
       (setf (gethash (gethash "turn_id" entry) prompts) entry)))
@@ -203,46 +192,26 @@ again after). A recap whose turn the listing does not carry stays a node.
                ((not (and (stringp parent) (gethash parent prompts))) nil)
              (unless (metro-recap-p (gethash parent prompts))
                (return parent)))))
+    (dolist (entry (remove-if-not #'checkpoint-turn-entry-p entries))
+      (let ((id (gethash "turn_id" entry))
+            (parent (up entry))
+            (start (json-value entry :string "started_at")))
+        (unless (and parent (metro-recap-p entry))
+          (push (setf (gethash id by-id)
+                      (list :id id :entry entry :parent parent :calls (gethash id children)
+                            :head-p (eq t (gethash "is_head" entry))
+                            :on-chain (eq t (gethash "on_head_chain" entry))
+                            :start (and start (iso-8601-ms start))
+                            :span (metro-span-ms entry)
+                            :ending (json-value entry :string "ending")
+                            :position (or (json-value entry :integer "log_position") 0)))
+                nodes))))
+    ;; A recap at the head puts the head on its turn, the one it is read under.
     (dolist (entry entries)
-      (when (checkpoint-turn-entry-p entry)
-        (let ((id (gethash "turn_id" entry))
-              (parent (up entry))
-              (start (json-value entry :string "started_at")))
-          (unless (and parent (metro-recap-p entry))
-            (push (setf (gethash id by-id)
-                        (list :id id :entry entry :parent parent
-                              :calls (gethash id children) :recaps '()
-                              :head-p (eq t (gethash "is_head" entry))
-                              :on-chain (eq t (gethash "on_head_chain" entry))
-                              :start (and start (iso-8601-ms start))
-                              :span (metro-span-ms entry)
-                              :ending (json-value entry :string "ending")
-                              :steers (or (json-value entry :integer "steers") 0)
-                              :retry nil
-                              :position (or (json-value entry :integer "log_position") 0)))
-                  nodes)))))
-    ;; Each recap onto its turn, in the listing's order: a recap at the head
-    ;; puts the head on its turn, the one the operator reads it under.
-    (dolist (entry entries)
-      (when (and (checkpoint-turn-entry-p entry) (metro-recap-p entry))
+      (when (and (checkpoint-turn-entry-p entry) (metro-recap-p entry) (eq t (gethash "is_head" entry)))
         (when-let (node (gethash (up entry) by-id))
-          (setf (getf node :recaps) (append (getf node :recaps) (list entry)))
-          (when (eq t (gethash "is_head" entry))
-            (setf (getf node :head-p) t))))))
-  (let ((nodes (stable-sort (nreverse nodes) #'< :key (lambda (node) (getf node :position)))))
-    ;; A cancelled ask whose parent was asked the same again later says so.
-    (dolist (node nodes)
-      (when (and (equal "cancelled" (getf node :ending)) (getf node :parent))
-        (let ((key (metro-ask-key node)))
-          (setf (getf node :retry)
-                (and (find-if (lambda (other)
-                                (and (not (eq other node))
-                                     (equal (getf other :parent) (getf node :parent))
-                                     (> (getf other :position) (getf node :position))
-                                     (equal key (metro-ask-key other))))
-                              nodes)
-                     t)))))
-    (values nodes by-id)))
+          (setf (getf node :head-p) t)))))
+  (values (stable-sort (nreverse nodes) #'< :key (lambda (node) (getf node :position))) by-id))
 
 (defun metro-layout (nodes main-p &aux (index (make-hash-table :test #'equal))
                                        (holder (make-hash-table :test #'equal))
@@ -377,15 +346,14 @@ under twelve columns. => (values SEGS GROUND)."
   "The painter (PICKER-ROW-PAINT) of NODE's /tree row ROW: the edge, its CLOCK
 time (blank under a row of the same minute, REPEAT, unless selected), its graph
 CELLS, the HEAD tag on the head's row, the fold's ARROW, its ask and, flush
-right, how it ended, its steers, its calls, how long it ran, and a pen when a
-recap folds under it. The selected row carries ROW's files chrome after the ask."
+right, how it ended, its calls and how long it ran. The selected row carries
+ROW's files chrome after the ask."
   (lambda (selected room)
     (let* ((plain (if selected :system :muted))
            (quiet :sheet-undone)
            (ending (getf node :ending))
            (span (getf node :span))
            (calls (length (getf node :calls)))
-           (steers (getf node :steers))
            (left (append
                   (list (selection-edge-seg selected plain)
                         (make-seg :text " " :tone plain)
@@ -408,25 +376,14 @@ recap folds under it. The selected row carries ROW's files chrome after the ask.
                                   :bold head)))
            (suffix (let ((text (picker-row-suffix row)))
                      (and selected (plusp (length text)) text)))
-           (words (remove nil
-                          (list (cond ((getf node :retry)
-                                       (list (make-seg :text "re-asked ↓" :tone quiet :italic t)))
-                                      ((equal ending "failed")
-                                       (list (make-seg :text "failed" :tone :diff-removed)))
-                                      ((equal ending "cancelled")
-                                       (list (make-seg :text "cancelled" :tone quiet)))
-                                      ((and (getf node :start) (null ending))
-                                       (list (make-seg :text "open" :tone quiet))))
-                                (and (plusp steers)
-                                     (list (make-seg :text (format nil "+~d steer~:p" steers)
-                                                     :tone :syntax-command))))))
+           (word (cond ((equal ending "failed") (make-seg :text "failed" :tone :diff-removed))
+                       ((equal ending "cancelled") (make-seg :text "cancelled" :tone quiet))
+                       ((and (getf node :start) (null ending)) (make-seg :text "open" :tone quiet))))
            (columns (list (make-seg :text (format nil "~8@a" (if (plusp calls) (format nil "~d call~:p" calls) ""))
                                     :tone quiet)
-                          (make-seg :text (format nil "  ~7@a" (if span (format-turn-elapsed span) ""))
-                                    :tone plain)
-                          (make-seg :text (if (getf node :recaps) "  ✎" "   ") :tone quiet)
-                          (make-seg :text " " :tone plain))))
-      (metro-row left label suffix words columns room selected))))
+                          (make-seg :text (format nil "  ~7@a " (if span (format-turn-elapsed span) ""))
+                                    :tone plain))))
+      (metro-row left label suffix (and word (list (list word))) columns room selected))))
 
 (defun metro-call-paint (entry cells)
   "The painter (PICKER-ROW-PAINT) of a call's /tree row, listing ENTRY, hung
@@ -446,27 +403,8 @@ asked to do, and flush right how long the call ran."
                                   :tone (if selected :foreground :muted))))
            (columns (list (make-seg :text (format nil "~7@a" (if span (format-turn-elapsed span) ""))
                                     :tone :sheet-undone)
-                          (make-seg :text "    " :tone plain))))
+                          (make-seg :text " " :tone plain))))
       (metro-row left label nil nil columns room selected))))
-
-(defun metro-recap-row (entry cells)
-  "The /tree row of recap ENTRY folded under its turn: a heading -- the arrows
-pass over it -- of the rails running on (CELLS), a pen, and what the recap
-said, or when it ran while the listing carries no words of it."
-  (let* ((said (or (json-value entry :text "answer")
-                   (metro-clock (when-let (start (json-value entry :string "started_at")) (iso-8601-ms start)))
-                   ""))
-         (row (make-picker-row :label (format nil "recap ~a" said) :heading t)))
-    (setf (picker-row-paint row)
-          (lambda-ignoring (selected room)
-            (values (clip-segs (append (list (make-seg :text "         " :tone :muted))
-                                       (metro-cell-segs cells)
-                                       (list (make-seg :text " " :tone :muted)
-                                             (make-seg :text "    ✎ recap  " :tone :sheet-undone)
-                                             (make-seg :text said :tone :muted :italic t)))
-                               room :mark *dialog-row-overflow-mark*)
-                    nil)))
-    row))
 
 (defun metro-chain (by-id id &aux (chain (make-hash-table :test #'equal)))
   "ID and every turn above it by BY-ID's parents: the line a head on ID stands
@@ -507,63 +445,29 @@ the head goes, the turns it takes off the head's line (LEAVING) and puts on it
                         (t "its files restored")))))))
 
 (defun tree-move-rows (state value option room)
-  "The confirm stage's picture of OPTION, a move on the turn whose row VALUE
-was picked: up to five rows of STATE's /tree graph around that turn, relaid
-with the head's line where the move leaves it -- the turn tagged `here'
-(continue) or `before this' (rewind), each row the move takes off the head's
-line `leaves head', each it puts on `joins head', the head it lands on `HEAD'
--- then a blank and the move in a sentence, two rows, so every option draws as
-many rows. => painted rows, ROOM wide; NIL for a turn the graph does not hold."
+  "The confirm stage's words for OPTION, a move on the turn whose row VALUE was
+picked in STATE's graph: the move in a sentence, two rows ROOM wide, so every
+option draws as many rows. NIL for a turn the graph does not hold."
   (let ((nodes (getf state :nodes))
         (by-id (getf state :by-id)))
     (when-let (node (gethash (getf value :turn-id) by-id))
-      (let* ((continue (eq (getf option :move) :continue))
-             (head (if continue (getf node :id) (getf node :parent)))
-             (chain (metro-chain by-id head))
-             (layout (metro-layout nodes (lambda (id) (gethash id chain))))
+      (let* ((chain (metro-chain by-id (if (eq (getf option :move) :continue)
+                                           (getf node :id)
+                                           (getf node :parent))))
              (leaving (remove-if-not (lambda (turn) (and (getf turn :on-chain)
                                                          (not (gethash (getf turn :id) chain))))
                                      nodes))
              (joining (remove-if (lambda (turn) (or (getf turn :on-chain)
                                                     (not (gethash (getf turn :id) chain))))
                                  nodes))
-             (at (position node nodes))
-             ;; Five rows, the sentence's two and a blank: the panel's cap
-             ;; (*DIALOG-FRAME-MAX-HEIGHT*) keeps every option in view under them.
-             (from (max 0 (min (- at 2) (- (length nodes) 5))))
              (sentence (wrapped-lines (tree-move-sentence node option value leaving joining)
                                       (max 20 (1- room)))))
-        (append
-         (loop for i from from below (min (length nodes) (+ from 5))
-               for turn = (nth i nodes)
-               for id = (getf turn :id)
-               for on = (gethash id chain)
-               for leaves = (and (getf turn :on-chain) (not on))
-               for tag = (cond ((eq turn node) (cons (if continue " here " " before this ") :sheet-chip-on))
-                               (leaves (cons " leaves head " :sheet-chip))
-                               ((and on (not (getf turn :on-chain))) (cons " joins head " :diff-added-emphasis))
-                               ((equal id head) (cons " HEAD " :sheet-chip-on)))
-               collect (clip-segs
-                        (append (list (make-seg :text (format nil " ~5a  " (or (metro-clock (getf turn :start)) ""))
-                                                :tone :sheet-undone))
-                                (metro-cell-segs (metro-cells layout i turn :head head))
-                                (list (make-seg :text " " :tone :muted))
-                                (when tag
-                                  (list (make-seg :text (car tag) :tone (style-for-tone (cdr tag)) :bold t)
-                                        (make-seg :text " " :tone :muted)))
-                                (list (make-seg :text (checkpoint-row-excerpt (gethash "prompt" (getf turn :entry)))
-                                                :tone (cond ((equal id head) :title)
-                                                            ((or leaves (equal (getf turn :ending) "cancelled")) :sheet-undone)
-                                                            (on :foreground)
-                                                            (t :muted)))))
-                        room :mark *dialog-row-overflow-mark*))
-         (list '())
-         (loop for k below 2
-               for line = (nth k sentence)
-               collect (if line
-                           (clip-segs (list (make-seg :text (format nil " ~a" line) :tone :tool))
-                                      room :mark *dialog-row-overflow-mark*)
-                           '())))))))
+        (loop for k below 2
+              for line = (nth k sentence)
+              collect (if line
+                          (clip-segs (list (make-seg :text (format nil " ~a" line) :tone :tool))
+                                     room :mark *dialog-row-overflow-mark*)
+                          '()))))))
 
 (defun tree-fold-context (state)
   "The /tree tab's context: how many turns, on how many lines, from the first
@@ -633,8 +537,7 @@ listing did not list. Every turn starts closed."
                                   (last-clock nil)
                                   (rows '()))
   "STATE's fold laid out on its graph (the /tree metro): a turn's own row in
-the order the turns ran, and while the turn is open its recaps and then its
-tool rows under it, the rails running on beside them. A tool row whose turn the
+the order the turns ran, and while the turn is open its tool rows under it, the rails running on beside them. A tool row whose turn the
 listing never named stays a row of its own, ahead of the graph, so nothing the
 listing carried is lost."
   (dolist (entry (getf state :entries))
@@ -659,15 +562,13 @@ listing carried is lost."
                  (metro-node-paint row node (metro-cells layout i node :head head)
                                    :clock clock :repeat (equal clock last-clock)
                                    :head (equal id head)
-                                   :arrow (cond ((not (or kids (getf node :recaps))) "  ")
+                                   :arrow (cond ((not kids) "  ")
                                                 (opened "▾ ")
                                                 (t "▸ "))))
            (setf last-clock clock)
            (push row rows)
            (when opened
              (let ((under (metro-cells layout i node :sub t)))
-               (dolist (recap (getf node :recaps))
-                 (push (metro-recap-row recap under) rows))
                (dolist (kid kids)
                  (let ((kid-row (checkpoint-picker-row kid :child t)))
                    (setf (picker-row-paint kid-row) (metro-call-paint kid under))
@@ -715,9 +616,7 @@ the search's, not the fold's. => T when the fold moved."
         ;; is open (the row is on screen), so the climb from it closes that
         ;; turn -- its parent here -- and parks on it.
         (fold-arrow model direction turn-id (getf state :open)
-                    ;; A turn opens over its calls and the recaps folded under it.
-                    (let ((node (gethash turn-id (getf state :by-id))))
-                      (and node (or (getf node :calls) (getf node :recaps)) t))
+                    (and (getf (gethash turn-id (getf state :by-id)) :calls) t)
                     (unless (equal "user_message" (getf value :kind)) turn-id)
                     (lambda (seat-turn)
                       ;; The rows under the dialog, laid out again with the fold
@@ -805,7 +704,7 @@ the search's, not the fold's. => T when the fold moved."
       (let* ((response (session-control-call model :get "checkpoints"))
              ;; The fold lays the listing out as the metro: one row per turn
              ;; in the order the turns ran, on the rails of their lines, the
-             ;; recaps and tool rows of a turn under it while it is open --
+             ;; tool rows of a turn under it while it is open --
              ;; and the selection opens on the head wherever its line sits.
              (state (tree-fold-index
                      (coerce (gethash "checkpoints" response) 'list)))
