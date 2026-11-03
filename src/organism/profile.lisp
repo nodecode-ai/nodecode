@@ -490,14 +490,9 @@ wrapper too when one was written, and whether its folder is on PATH."
                          (manifest-list home "shared")))
             (manifest-list home "dropped")
             name wrapped name
+            ;; the PATH test is update.lisp's, which a running image has by now
             (and wrapped
-                 (not (let ((wanted (string-right-trim
-                                     "/\\" (uiop:native-namestring *wrapper-directory*))))
-                        (and (plusp (length wanted))
-                             (some (lambda (entry)
-                                     (string= (string-right-trim "/\\" entry) wanted))
-                                   (uiop:split-string (or (uiop:getenv "PATH") "")
-                                                      :separator #+win32 ";" #-win32 ":")))))
+                 (not (funcall 'nle::path-names-directory-p *wrapper-directory*))
                  (string-right-trim "/" (namestring *wrapper-directory*))))))
 
 ;;; --- delete, use ---------------------------------------------------------------------
