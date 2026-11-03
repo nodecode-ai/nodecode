@@ -693,18 +693,7 @@ two, or NIL when none is left."
   "Every byte left on STREAM, or :TOO-LARGE once there are more than LIMIT."
   ;; Read to its end rather than by its length, so a pipe reads too:
   ;; @<(git diff) names one.
-  (let ((chunks '()) (total 0))
-    (loop for buffer = (make-array 65536 :element-type '(unsigned-byte 8))
-          for end = (read-sequence buffer stream)
-          while (plusp end)
-          do (incf total end)
-             (when (> total limit)
-               (return-from launch-octets :too-large))
-             (push (subseq buffer 0 end) chunks))
-    (let ((octets (make-array total :element-type '(unsigned-byte 8))) (start 0))
-      (dolist (chunk (nreverse chunks) octets)
-        (replace octets chunk :start1 start)
-        (incf start (length chunk))))))
+  (nlk::stream-octets-to-end stream limit))
 
 (defun launch-text (octets)
   "OCTETS as text -- UTF-8, a leading byte order mark dropped -- or NIL when
