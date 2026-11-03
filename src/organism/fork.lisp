@@ -3,7 +3,7 @@
 ;;;;
 ;;;; SPDX-License-Identifier: MIT
 ;;;;
-;;;; (fork "task" ... &key seconds from check keep) forks the calling session at
+;;;; (fork "task" ... &key seconds from check) forks the calling session at
 ;;;; the turn running it, once per task, puts each task to its fork and waits
 ;;;; for every fork's turn to end. A fork is an anchored child
 ;;;; (CREATE-SESSION :PARENT :ANCHOR-TURN-ID): its history composes the
@@ -26,16 +26,6 @@
 ;;;; a fresh process of today's binary (TRIAL), so neither the live image nor
 ;;;; the operator's home is touched; the search halts at the step where the
 ;;;; check turned false, and says what moved in it.
-;;;;
-;;;; :KEEP NAME with :CHECK races versions of NAME. Each fork writes its own as
-;;;; FORK-<n>/NAME; each version and what stands are put to the check in a
-;;;; fresh process laid at the newest generation; those that pass are timed on
-;;;; the image's own calls of NAME -- each live call served by one of them, the
-;;;; call itself the clock -- and the winner goes in NAME's place HELD
-;;;; (HOLD-DEFINITIONS): written to the layer after one clean call made outside
-;;;; an eval, put back if that call signals, and (revert 'NAME) puts the old one
-;;;; back by hand until then. Beside a way back that found its step, NAME as the
-;;;; last good generation's layer had it races too.
 ;;;;
 ;;;; Why the kernel: a fork runs in the operator's own image, so what keeps it
 ;;;; from displacing what stands, or from writing the layer, is the kernel's own
@@ -101,12 +91,6 @@ and whether it has siblings.")
   "A fork's input when its call took it back to an earlier turn, over the same
 four.")
 
-(defparameter *fork-keep-input*
-  "~%~%This call races versions of ~a. Write yours as ~a: one defun taking every call ~a takes today~@[ -- its lambda list is ~a~] -- with any helper inside it in flet or labels, and leave ~a itself alone. The parent puts your version to this check in a fresh process: ~a. The versions that pass are timed on this image's own calls of ~a, and the fastest goes live if it is 5% faster than what stands. Answer with what your version does differently and why it is faster, and nothing else."
-  "What a :KEEP call adds to each task, over the name raced, the fork's own
-name for its version, the name, its lambda list, the name, the check and the
-name.")
-
 (defparameter *fork-bisect-input*
   "~%~%Before you were made, this call went back through the generations this home sealed: ~a"
   "What a way back adds to each task: what it found, in words.")
@@ -165,41 +149,19 @@ turn running it, or a refusal."
   "Whether FROM names an earlier turn: -N, or a turn's id."
   (or (stringp from) (and (integerp from) (minusp from))))
 
-(defun fork-keepable (name)
-  "NAME as the symbol a race keeps, or a refusal: a plain function of this
-image, outside a locked package, with no advice on it and no hold."
-  (let* ((symbol (if (stringp name) (find-symbol (string-upcase name) '#:nodecode.evolved) name))
-         (package (and (symbolp symbol) (symbol-package symbol)))
-         (advice (and (symbolp symbol) (cdr (assoc symbol *hooks* :test #'equal)))))
-    (cond ((not (and symbol (symbolp symbol) (fboundp symbol)))
-           (fork-fail ":keep names a function of this image, and ~s is none" name))
-          ((or (macro-function symbol) (special-operator-p symbol))
-           (fork-fail ":keep races calls, and ~s is a macro" symbol))
-          ((typep (fdefinition symbol) 'generic-function)
-           (fork-fail ":keep races one definition, and ~s is a generic function with its methods: race a plain defun" symbol))
-          ((and package (sb-ext:package-locked-p package))
-           (fork-fail ":keep races what this image may change, and ~s is in the locked package ~a" symbol (package-name package)))
-          (advice
-           (fork-fail ":keep serves the calls of a name past any advice on it, and ~s carries ~{~a~^, ~}: race a name with none"
-                 symbol (mapcar #'car advice)))
-          ((find (symbol-name symbol) (held-definitions) :key (lambda (entry) (getf entry :name)) :test #'string=)
-           (fork-fail "~s is HELD, waiting on its first clean call: let one pass, or (revert '~(~s~)), first" symbol symbol))
-          (t symbol))))
-
 (defun fork-parse (arguments)
-  "(values TASKS SECONDS FROM CHECK KEEP) of fork's ARGUMENTS: the tasks,
-strings, then :SECONDS N, :FROM X, :CHECK C and :KEEP NAME; or a refusal."
+  "(values TASKS SECONDS FROM CHECK) of fork's ARGUMENTS: the tasks, strings,
+then :SECONDS N, :FROM X and :CHECK C; or a refusal."
   (let* ((at (or (position-if-not #'stringp arguments) (length arguments)))
          (tasks (subseq arguments 0 at))
          (options (nthcdr at arguments)))
     (unless (and (evenp (length options))
                  (loop for (key) on options by #'cddr
-                       always (member key '(:seconds :from :check :keep))))
-      (fork-fail "fork takes the tasks, strings, then :seconds N, :from X, :check C and :keep NAME; it was given ~s" options))
+                       always (member key '(:seconds :from :check))))
+      (fork-fail "fork takes the tasks, strings, then :seconds N, :from X and :check C; it was given ~s" options))
     (let* ((seconds (getf options :seconds (fork-setting :seconds)))
            (from (getf options :from))
            (check (getf options :check))
-           (keep (getf options :keep))
            (back (and from (not (fork-turn-from-p from)))))
       (cond ((> (length tasks) +fork-most+)
              (fork-fail "fork makes at most ~d forks a call; it was given ~d tasks" +fork-most+ (length tasks)))
@@ -212,13 +174,13 @@ strings, then :SECONDS N, :FROM X, :CHECK C and :KEEP NAME; or a refusal."
                                 (and (consp from) (= 2 (length from))
                                      (every (lambda (n) (and (integerp n) (plusp n))) from)))))
              (fork-fail ":from is an earlier turn -- -N for N turns back, or its id -- or a generation G, or an (old new) pair of them; not ~s" from))
-            ((and (or back keep) (null check))
-             (fork-fail "going back through generations and racing a name are judged by a check: give :check, a form answering true or a shell command exiting 0"))
-            ((and check (not (or back keep)))
-             (fork-fail ":check judges a way back or a race: give :from G (a generation, or an (old new) pair) or :keep NAME beside it"))
+            ((and back (null check))
+             (fork-fail "going back through generations is judged by a check: give :check, a form answering true or a shell command exiting 0"))
+            ((and check (not back))
+             (fork-fail ":check judges a way back: give :from G (a generation, or an (old new) pair) beside it"))
             ((and (null tasks) (not back))
-             (fork-fail "fork needs a task: (fork \"task\" ...)~:[~; -- a race needs versions, and each is a fork's~]" keep))
-            (t (values tasks seconds from check (and keep (fork-keepable keep))))))))
+             (fork-fail "fork needs a task: (fork \"task\" ...)"))
+            (t (values tasks seconds from check))))))
 
 (defun fork-earlier-turn (session turn from)
   "FROM -- -N, or a turn's id -- as a turn of SESSION before TURN, or a refusal."
@@ -235,11 +197,10 @@ strings, then :SECONDS N, :FROM X, :CHECK C and :KEEP NAME; or a refusal."
                (fork-fail ":from ~s is not a turn of this session" from))
               (t from)))))
 
-(defun fork-start (session anchor n words task seconds rival)
-  "Fork SESSION at ANCHOR as its Nth fork and put WORDS to it; RIVAL, when the
-call races a name, is the name this fork writes its version under, claimed
-for it before it runs. => the fork: (:TASK :N :SESSION :RIVAL :TURN), or,
-when its turn could not start, :STATUS :FAILED and why."
+(defun fork-start (session anchor n words task seconds)
+  "Fork SESSION at ANCHOR as its Nth fork and put WORDS to it. => the fork:
+(:TASK :N :SESSION :TURN), or, when its turn could not start, :STATUS :FAILED
+and why."
   (let ((child (fork-name anchor n)))
     (create-session :id child :cwd (find-session-cwd session)
                     :parent session :anchor-turn-id anchor)
@@ -248,14 +209,13 @@ when its turn could not start, :STATUS :FAILED and why."
                   (list :title (format nil "fork ~d: ~a" n (clip (first (lines (trimmed task))) 60))))
     ;; Waited on before the submit: its turn's budget is read as it opens.
     (setf (gethash child *fork-waiting*) (list :seconds seconds :acts '()))
-    (when rival (setf (gethash rival *fork-owners*) child))
     (handler-case
-        (list :task task :n n :session child :rival rival
+        (list :task task :n n :session child
               :turn (active-input-admission-turn-id
                      (nle:submit child words :command-id (format nil "fork:~a" child)
                                  :source "fork" :source-id session)))
       (error (condition)
-        (list :task task :n n :session child :rival rival :status :failed
+        (list :task task :n n :session child :status :failed
               :answer (format nil "its turn could not start: ~a" condition))))))
 
 (defun fork-release (session)
@@ -265,10 +225,9 @@ when its turn could not start, :STATUS :FAILED and why."
                        when (equal owner session) collect name)))
       (dolist (name names) (remhash name *fork-owners*)))))
 
-(defun fork-tasks (session anchor tasks words seconds rivals)
+(defun fork-tasks (session anchor tasks words seconds)
   "Fork SESSION at ANCHOR once per TASK, put each its WORDS, and wait for
-every fork's turn to end. => (values RESULTS FORKS): RESULTS as fork
-answers them, FORKS each (:N :SESSION :RIVAL :ACTS), what it defined."
+every fork's turn to end. => the results as fork answers them."
   (let ((forks '())
         (call (fork-call-id)))
     ;; However this call ends, no fork outlives the wait for it, and no name
@@ -286,19 +245,15 @@ answers them, FORKS each (:N :SESSION :RIVAL :ACTS), what it defined."
       (loop for task in tasks
             for text in words
             for n from 1
-            do (push (fork-start session anchor n text task seconds (nth (1- n) rivals)) forks))
+            do (push (fork-start session anchor n text task seconds) forks))
       (setf forks (reverse forks))
       (fork-progress-begin call session forks)
       (let ((deadline (+ (get-internal-real-time)
                          (* (+ seconds *fork-grace-seconds*) internal-time-units-per-second))))
-        (values (loop for fork in forks
-                      ;; one that never started is already as answered
-                      collect (fork-result fork (and (not (getf fork :status))
-                                                (fork-await fork deadline seconds))))
-                (loop for fork in forks
-                      collect (list :n (getf fork :n) :session (getf fork :session)
-                                    :rival (getf fork :rival)
-                                    :acts (getf (gethash (getf fork :session) *fork-waiting*) :acts))))))))
+        (loop for fork in forks
+              ;; one that never started is already as answered
+              collect (fork-result fork (and (not (getf fork :status))
+                                             (fork-await fork deadline seconds))))))))
 
 (defun fork-await (fork deadline seconds)
   "Wait for FORK's turn to end, or for DEADLINE (internal real time) to pass.
@@ -573,17 +528,16 @@ job, as FORK-ASK-AT-ONCE answers them. A test's stub.")
         (format nil "the shell command ~s exits 0" check)
         (format nil "~s answers true" check))))
 
-(defun fork-check-form (check directory &optional version)
-  "What a fresh process answers for CHECK, VERSION -- a DEFUN -- evaluated first:
-1 when it passes, 0 when it does not, -1 when it signals. A string is a shell
-command, run in DIRECTORY, that passes by exiting 0."
+(defun fork-check-form (check directory)
+  "What a fresh process answers for CHECK: 1 when it passes, 0 when it does
+not, -1 when it signals. A string is a shell command, run in DIRECTORY, that
+passes by exiting 0."
   `(handler-case
-       (progn ,@(and version (list version))
-              ,(if (stringp check)
-                   `(if (eql 0 (nth-value 2 (run-bounded (list "sh" "-c" ,check)
-                                                             :seconds 120 :directory ,directory)))
-                        1 0)
-                   `(if ,check 1 0)))
+       ,(if (stringp check)
+            `(if (eql 0 (nth-value 2 (run-bounded (list "sh" "-c" ,check)
+                                                      :seconds 120 :directory ,directory)))
+                 1 0)
+            `(if ,check 1 0))
      (error () -1)))
 
 (defun fork-form-text (form)
@@ -799,352 +753,31 @@ CHECK in SESSION's folder. => the :BISECT report."
                              (funcall *fork-ask* (mapcar (lambda (number) (list number text)) batch) scratch)))))))
     (fork-bisect-report numbers found check)))
 
-;;; --- the race --------------------------------------------------------------------
-
-(defparameter +fork-race-calls+ 20 "The live calls each entrant of a race is timed on.")
-
-(defparameter +fork-race-least+ 8 "The timed calls below which an entrant's time is not read.")
-
-(defparameter *fork-race-seconds* 300 "How long a race listens for live calls.")
-
-(defparameter +fork-race-faster+ 0.05 "How much faster a version has to be to displace what stands.")
-
-(defvar *fork-serving* nil
-  "True on a thread inside a call a race serves: a call made within it is what
-stands' own, untimed.")
-
-(defun fork-rival-name (n keep)
-  "The name fork N writes its version of KEEP under: FORK-<n>/KEEP, in KEEP's
-package."
-  (intern (format nil "FORK-~d/~a" n (symbol-name keep)) (symbol-package keep)))
-
-(defun fork-keep-words (keep rival check)
-  "What a :KEEP call adds to the task of the fork writing RIVAL."
-  (let ((*package* (find-package '#:nodecode.evolved))
-        (*print-case* :downcase))
-    (let ((name (prin1-to-string keep))
-          (lambda-list (ignore-errors (sb-kernel:%fun-lambda-list (fdefinition keep)))))
-      (format nil *fork-keep-input* name (prin1-to-string rival) name
-              (and (consp lambda-list) (prin1-to-string lambda-list))
-              name (fork-check-said check) name))))
-
-(defun fork-version (fork keep)
-  "What FORK wrote of KEEP -- its newest DEFUN of its own name for it, that name
-KEEP again throughout -- as a version, or NIL when it wrote none."
-  (let* ((rival (getf fork :rival))
-         (act (find-if (lambda (act) (and (eq rival (fork-act-name act))
-                                          (string= "DEFUN" (symbol-name (first act)))))
-                       (getf fork :acts))))
-    (and act (list :label (format nil "fork ~d" (getf fork :n))
-                   :source (getf fork :session)
-                   :form (subst keep rival act)))))
-
-(defun fork-generation-version (generation keep)
-  "KEEP as GENERATION's layer had it, as a version -- read from that
-generation's copy of the layer file that defines KEEP today -- or NIL when
-KEEP is no layer definition, or that file had none."
-  (let* ((folder (format nil "~a/" (layer-name)))
-         (path (first (first (definition-location keep))))
-         (relative (and path (uiop:subpathp path (merge-pathnames folder *cells-directory*)))))
-    (when relative
-      (fork-in-scratch
-       (lambda (scratch)
-         (let ((cells (merge-pathnames "cells/" scratch)))
-           (build-generation generation cells)
-           (let* ((file (merge-pathnames relative (merge-pathnames folder cells)))
-                  (hit (and (probe-file file)
-                            (first (file-definitions file :name (symbol-name keep) :read-eval t))))
-                  (form (and hit
-                             (ignore-errors
-                              (destructuring-bind (key fork-start end package) hit
-                                (declare (ignore key))
-                                (with-standard-io-syntax
-                                  (let ((*package* package) (*read-eval* t))
-                                    (read-from-string (uiop:read-file-string file) t nil
-                                                      :start fork-start :end end))))))))
-             (and (consp form) (string= "DEFUN" (symbol-name (first form))) (eq keep (second form))
-                  (list :label (format nil "generation ~d" generation)
-                        :source (format nil "generation ~d's layer" generation)
-                        :form form)))))))))
-
-(defun fork-versions (keep forks fork-bisect)
-  "What races in KEEP's place: each fork's version, then, beside a way back that
-found its step, KEEP as the last good generation's layer had it."
-  (append (remove nil (mapcar (lambda (fork) (fork-version fork keep)) forks))
-          (and (eq :found (getf fork-bisect :verdict))
-               (remove nil (list (fork-generation-version (getf fork-bisect :good) keep))))))
-
-(defun fork-misfit (form standing)
-  "Why FORM cannot stand in for STANDING -- it is no DEFUN, or it does not take
-every call STANDING's lambda list takes -- or NIL."
-  (let ((old (ignore-errors (sb-kernel:%fun-lambda-list standing)))
-        (new (and (consp form) (third form))))
-    (cond ((not (and (consp form) (string= "DEFUN" (symbol-name (first form))) (listp new)))
-           "it is not a defun")
-          ((and (listp old) (not (takes-every-call-p new old)))
-           (let ((*package* (or (symbol-package (second form)) *package*)) (*print-case* :downcase))
-             (format nil "it takes ~s where every call of it today takes ~s" new old))))))
-
-(defun fork-version-function (form keep)
-  "FORM, a DEFUN of KEEP, made a function bound to no name -- its own calls of
-KEEP its own -- or NIL when it does not compile clean in this image."
-  (destructuring-bind (lambda-list &rest body) (cddr form)
-    (handler-case
-        (multiple-value-bind (function warned failed)
-            (handler-bind ((warning #'muffle-warning) (sb-ext:compiler-note #'muffle-warning))
-              (compile nil `(lambda (&rest arguments)
-                              (labels ((,keep ,lambda-list ,@body))
-                                (apply #',keep arguments)))))
-          (declare (ignore warned))
-          (and (not failed) function))
-      (error () nil))))
-
-(defun fork-median (times)
-  "The middle of TIMES, or NIL for none."
-  (let ((sorted (sort (copy-list times) #'<))
-        (count (length times)))
-    (cond ((zerop count) nil)
-          ((oddp count) (nth (floor count 2) sorted))
-          (t (/ (+ (nth (1- (floor count 2)) sorted) (nth (floor count 2) sorted)) 2)))))
-
-(defun fork-nanoseconds ()
-  "The monotonic clock, in nanoseconds: fine enough to time one call, which
-GET-INTERNAL-REAL-TIME is not -- SBCL reads Linux's coarse clock for it, one
-kernel tick (1 ms here), so a 100 us call timed with it reads 0. Windows'
-SB-UNIX has no CLOCK-GETTIME: there it is internal real time, scaled."
-  #-win32 (multiple-value-bind (seconds nanoseconds) (sb-unix:clock-gettime sb-unix:clock-monotonic)
-            (+ (* seconds 1000000000) nanoseconds))
-  #+win32 (* (get-internal-real-time) (floor 1000000000 internal-time-units-per-second)))
-
-(defun fork-race-live (keep entrants)
-  "Serve KEEP's live calls among ENTRANTS -- (:LABEL L :FUNCTION F), or
-(:LABEL L :STANDING T) for what stands -- one entrant a call in turn, each
-call timed, until each has +FORK-RACE-CALLS+ calls or *FORK-RACE-SECONDS* pass. A call
-made inside a served one is what stands' own, untimed; a version that
-signals is out, and that call is served again by what stands. => a record an
-entrant: (:LABEL :STANDING :CALLS :MEDIAN-US :BROKEN)."
-  (let* ((lock (bt2:make-lock :name "fork-race"))
-         (records (mapcar (lambda (entrant) (list* :calls 0 :times '() :broken nil entrant)) entrants))
-         (ring (coerce records 'vector))
-         (tick 0)
-         (deadline (+ (get-internal-real-time) (* *fork-race-seconds* internal-time-units-per-second))))
-    (labels ((open-p (record)
-               (and (not (getf record :broken)) (< (getf record :calls) +fork-race-calls+)))
-             (pick ()
-               (bt2:with-lock-held (lock)
-                 (loop repeat (length ring)
-                       for record = (aref ring (mod (incf tick) (length ring)))
-                       when (open-p record) return record)))
-             (timed (record thunk)
-               (let ((began (fork-nanoseconds)))
-                 (multiple-value-prog1 (let ((*fork-serving* t)) (funcall thunk))
-                   (let ((micros (/ (- (fork-nanoseconds) began) 1000.0)))
-                     (bt2:with-lock-held (lock)
-                       (when (< (getf record :calls) +fork-race-calls+)
-                         (incf (getf record :calls))
-                         (push micros (getf record :times))))))))
-             (serve (next arguments)
-               (let ((record (and (not *fork-serving*) (pick))))
-                 (cond ((null record) (apply next arguments))
-                       ((getf record :standing) (timed record (lambda () (apply next arguments))))
-                       (t (let ((broken (block version
-                                          (handler-bind
-                                              ((error (lambda (condition)
-                                                        ;; Esc unwinding a turn is no verdict on the version
-                                                        (unless (typep condition 'turn-cancelled-condition)
-                                                          (return-from version condition)))))
-                                            (return-from serve
-                                              (timed record (lambda () (apply (getf record :function) arguments))))))))
-                            (bt2:with-lock-held (lock)
-                              (setf (getf record :broken)
-                                    (handler-case (princ-to-string broken)
-                                      (error () (princ-to-string (type-of broken))))))
-                            (apply next arguments)))))))
-      (hook keep "fork-race" (lambda (next &rest arguments) (serve next arguments)))
-      (unwind-protect
-           (loop until (or (>= (get-internal-real-time) deadline) (notany #'open-p records))
-                 do (sleep 0.1))
-        (unhook keep "fork-race"))
-      (bt2:with-lock-held (lock)
-        (loop for record in records
-              collect (list :label (getf record :label) :standing (getf record :standing)
-                            :calls (getf record :calls) :median-us (fork-median (getf record :times))
-                            :broken (getf record :broken)))))))
-
-(defun fork-timed-records (records)
-  "RECORDS timed enough to read: never broken, +FORK-RACE-LEAST+ calls at least."
-  (remove-if (lambda (record) (or (getf record :broken) (< (getf record :calls) +fork-race-least+)))
-             records))
-
-(defun fork-fastest (records)
-  "The version among RECORDS timed enough to read with the least median, or NIL."
-  (first (sort (remove-if (lambda (record) (getf record :standing)) (fork-timed-records records))
-               #'< :key (lambda (record) (getf record :median-us)))))
-
-(defun fork-choose (standing-passed passing records)
-  "The label of the version that wins, or NIL. What stands having passed the
-check, the fastest version timed, if +FORK-RACE-FASTER+ faster than it; what stands
-having failed it, the fastest version timed, else the first of PASSING that
-never signalled."
-  (let ((standing (find-if (lambda (record) (getf record :standing)) (fork-timed-records records)))
-        (best (fork-fastest records)))
-    (cond (standing-passed
-           (and best standing
-                (< (getf best :median-us) (* (- 1 +fork-race-faster+) (getf standing :median-us)))
-                (getf best :label)))
-          (best (getf best :label))
-          (t (loop for label in passing
-                   unless (getf (find label records :key (lambda (record) (getf record :label)) :test #'equal)
-                                :broken)
-                     return label)))))
-
-(defun fork-swap (keep form)
-  "FORM, a DEFUN of KEEP, live in KEEP's place and HELD (HOLD-DEFINITIONS):
-written to the layer after one clean call made outside an eval, the
-definition it displaced put back if that call signals."
-  (let* ((previous (fdefinition keep))
-         (*package* (symbol-package keep))
-         (text (with-standard-io-syntax
-                 (let ((*package* (symbol-package keep)) (*print-case* :downcase)
-                       (*print-pretty* t) (*print-right-margin* 100) (*print-readably* nil))
-                   (prin1-to-string form)))))
-    (handler-bind ((warning #'muffle-warning) (sb-ext:compiler-note #'muffle-warning))
-      (eval form))
-    ;; its own words say the name runs on the eval's stack; the race's report says what is true
-    (let ((*standard-output* (make-broadcast-stream)))
-      (hold-definitions (list (list (symbol-name keep) keep previous)) form text (length text)
-                            :session-id *scribe-session-id*))
-    text))
-
-(defun fork-race-says (keep standing-passed passing records winner)
-  "The race's answer, in words."
-  (let* ((name (let ((*package* (find-package '#:nodecode.evolved)) (*print-case* :downcase))
-                 (prin1-to-string keep)))
-         (won (find winner records :key (lambda (record) (getf record :label)) :test #'equal))
-         (standing (find-if (lambda (record) (getf record :standing)) records))
-         (best (fork-fastest records))
-         (broken (loop for record in records when (getf record :broken) collect (getf record :label)))
-         (calls (reduce #'+ records :key (lambda (record) (getf record :calls)))))
-    (flet ((us (record) (if (and record (getf record :median-us))
-                            (format nil "~,1f us" (getf record :median-us))
-                            "untimed")))
-      (cond
-        ((and winner standing-passed)
-         (format nil "~a's version is live in ~a's place, HELD: ~a a call against ~a for what stands, over ~d and ~d live calls. One clean call outside an eval writes it to the layer; (revert '~a) puts the old one back until then."
-                 winner name (us won) (us standing) (getf won :calls) (getf standing :calls) name))
-        (winner
-         (format nil "what stands fails the check and ~a's version passes it, so it is live in ~a's place, HELD~@[ (~a a call)~]. One clean call outside an eval writes it to the layer; (revert '~a) puts the old one back until then."
-                 winner name (and won (getf won :median-us) (us won)) name))
-        ((null passing)
-         (format nil "no version passed the check~:[, and what stands fails it too~;~], so ~a stays as it was."
-                 standing-passed name))
-        ((and best standing (>= (getf standing :calls) +fork-race-least+))
-         (format nil "nothing beat what stands by ~d%: it takes ~a a call and the best version, ~a, ~a, so ~a stays as it was."
-                 (round (* 100 +fork-race-faster+)) (us standing) (getf best :label) (us best) name))
-        (t
-         (format nil "~a was called ~d time~:p while the race listened (~d s), too few to time ~d version~:p against what stands, ~d calls each at least~@[; ~{~a~^, ~} signalled on a live call~], so it stays as it was."
-                 name calls *fork-race-seconds* (length passing) +fork-race-least+ broken))))))
-
-(defun fork-race (keep fork-versions check session generation)
-  "Race VERSIONS -- (:LABEL :SOURCE :FORM), FORM a DEFUN of KEEP -- against what
-stands, judged by CHECK: each that takes every call KEEP takes is put to
-CHECK in a fresh process laid at GENERATION, beside what stands; those that
-pass are timed on KEEP's live calls (FORK-RACE-LIVE); the winner goes in KEEP's
-place, HELD (FORK-SWAP). => the :RACE report."
-  (let* ((standing (fdefinition keep))
-         (directory (find-session-cwd session))
-         (shaped (loop for version in fork-versions
-                       for why = (fork-misfit (getf version :form) standing)
-                       collect (if why (list* :out why version) version)))
-         (fit (remove-if (lambda (row) (getf row :out)) shaped))
-         (answers (and fork-versions
-                       (fork-in-scratch
-                        (lambda (scratch)
-                          (funcall *fork-ask*
-                                   (cons (list generation (fork-form-text (fork-check-form check directory)))
-                                         (loop for row in fit
-                                               collect (list generation
-                                                             (fork-form-text (fork-check-form check directory (getf row :form))))))
-                                   scratch)))))
-         (standing-passed (eql 1 (getf (first answers) :score)))
-         (tried (loop for row in fit
-                      for answer in (rest answers)
-                      collect (if (eql 1 (getf answer :score))
-                                  (if-let (function (fork-version-function (getf row :form) keep))
-                                    (list* :function function row)
-                                    (list* :out "it passed the check, and does not compile clean in this image" row))
-                                  (list* :out (fork-answer-words answer) row))))
-         (passing (loop for row in tried unless (getf row :out) collect (getf row :label)))
-         (entrants (append (and standing-passed (list (list :label "what stands" :standing t)))
-                           (loop for row in tried
-                                 unless (getf row :out)
-                                   collect (list :label (getf row :label) :function (getf row :function)))))
-         (records (and passing (or standing-passed (rest passing))
-                       (fork-race-live keep entrants)))
-         (winner (and passing (fork-choose standing-passed passing records)))
-         (form (and winner (getf (find winner tried :key (lambda (row) (getf row :label)) :test #'equal)
-                                 :form))))
-    (when form (fork-swap keep form))
-    (list :keep keep
-          :standing (let ((record (find-if (lambda (record) (getf record :standing)) records)))
-                      (list :passed standing-passed
-                            :detail (and answers (not standing-passed) (fork-answer-words (first answers)))
-                            :calls (and record (getf record :calls))
-                            :median-us (and record (getf record :median-us))))
-          :versions (loop for row in (append (remove-if-not (lambda (row) (getf row :out)) shaped) tried)
-                          for record = (find (getf row :label) records
-                                             :key (lambda (record) (getf record :label)) :test #'equal)
-                          collect (list :label (getf row :label) :source (getf row :source)
-                                        :passed (and (member (getf row :label) passing :test #'equal) t)
-                                        :out (getf row :out)
-                                        :calls (and record (getf record :calls))
-                                        :median-us (and record (getf record :median-us))
-                                        :broken (and record (getf record :broken))))
-          :winner (and form winner)
-          :says (if fork-versions
-                    (fork-race-says keep standing-passed passing records (and form winner))
-                    (format nil "no version of ~(~s~) was written to race, so it stays as it was" keep)))))
-
-(defun fork-newest-generation ()
-  "The newest generation this home sealed, or a refusal when it sealed none."
-  (if-let (numbers (mapcar #'manifest-number (manifests)))
-    (reduce #'max numbers)
-    (fork-fail "this home has sealed no generation to try a version in")))
-
 ;;; --- the verb --------------------------------------------------------------------
 
 (defun fork (&rest arguments)
   "Fork the calling session at the turn running it, once per task, and wait
 for every fork's turn to end -- taken back to an earlier turn (:FROM -N, or
-a turn's id), after a way back through the generations (:FROM G, or an (OLD
-NEW) pair, with :CHECK), racing the versions of a name the forks write
-(:KEEP NAME, with :CHECK), or both. => one plist a task, in order: (:TASK
-:SESSION :STATUS :ANSWER :RAN); with a way back or a race, (:BISECT REPORT
-:FORKS RESULTS :RACE REPORT), each there when the call made it."
-  (multiple-value-bind (tasks seconds from check keep) (fork-parse arguments)
+a turn's id), or after a way back through the generations (:FROM G, or an
+(OLD NEW) pair, with :CHECK). => one plist a task, in order: (:TASK :SESSION
+:STATUS :ANSWER :RAN); with a way back, (:BISECT REPORT :FORKS RESULTS), the
+forks there when the call made them."
+  (multiple-value-bind (tasks seconds from check) (fork-parse arguments)
     (multiple-value-bind (session turn) (fork-caller)
       (let* ((anchor (if (fork-turn-from-p from) (fork-earlier-turn session turn from) turn))
              (fork-bisect (and from (not (fork-turn-from-p from)) (fork-way-back from check session)))
-             (rivals (and keep (loop for n from 1 to (length tasks) collect (fork-rival-name n keep))))
-             (words (loop for task in tasks
-                          for n from 1
-                          collect (format nil "~?~@[~a~]~@[~a~]"
-                                          (if (equal anchor turn) *fork-task-input* *fork-earlier-input*)
-                                          (list n (length tasks) task (rest tasks))
-                                          (and fork-bisect (format nil *fork-bisect-input* (getf fork-bisect :says)))
-                                          (and keep (fork-keep-words keep (nth (1- n) rivals) check))))))
-        (if (not (or fork-bisect keep))
-            (values (fork-tasks session anchor tasks words seconds nil))
-            (unwind-protect
-                 (multiple-value-bind (results forks)
-                     (and tasks (fork-tasks session anchor tasks words seconds rivals))
-                   (append (and fork-bisect (list :bisect fork-bisect))
-                           (and tasks (list :forks results))
-                           (and keep (list :race (fork-race keep (fork-versions keep forks fork-bisect) check session
-                                                       (fork-newest-generation))))))
-              ;; the versions raced were the call's own scratch
-              (dolist (rival rivals)
-                (when (fboundp rival) (fmakunbound rival)))))))))
+             (results (and tasks
+                           (fork-tasks session anchor tasks
+                                       (loop for task in tasks
+                                             for n from 1
+                                             collect (format nil "~?~@[~a~]"
+                                                             (if (equal anchor turn) *fork-task-input* *fork-earlier-input*)
+                                                             (list n (length tasks) task (rest tasks))
+                                                             (and fork-bisect (format nil *fork-bisect-input* (getf fork-bisect :says)))))
+                                       seconds))))
+        (if fork-bisect
+            (append (list :bisect fork-bisect) (and tasks (list :forks results)))
+            results)))))
 
 ;;; --- the budget ------------------------------------------------------------------
 
