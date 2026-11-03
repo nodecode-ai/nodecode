@@ -871,26 +871,39 @@ on pure motion. => whether anything a frame shows moved."
                             ;; Only a painted rail shows the change.
                             (plusp (band-window-max-offset (chat-model-band model)))))))
       (or changed hover-changed rail-changed))))
-(defun copy-frame-selection (model &aux (text (frame-selection-text model))
-                                        (program (chat-model-program model)))
+(defun copy-frame-selection (model &aux (text (frame-selection-text model)))
   "Hand MODEL's marked text to the program's clipboard writer, which never
 waits behind the worker (a turn occupies it), and say in the hint lane what
 became of it once the writer knows (CLIPBOARD-OUTCOME-NOTICE): copied only
 when a clipboard tool took it. With nothing marked it says so, and with no
 live program that nothing was written. The release that ends a drag and the
 :COPY-SELECTION key both come here."
-  (cond ((zerop (length text)) (show-status model +selection-empty-hint+))
-        ((null program) (show-status model +selection-copy-failed-hint+ :error-p t))
-        (t (nlt:write-clipboard program text
-                                (lambda (outcome)
-                                  (nlt:send program (clipboard-outcome-notice outcome)))))))
+  (if (zerop (length text))
+      (show-status model +selection-empty-hint+)
+      (copy-to-shell-clipboard model text)))
 
-(defun clipboard-outcome-notice (outcome)
+(defun copy-to-shell-clipboard (model text &key (copied +selection-copied-hint+)
+                                &aux (program (chat-model-program model)))
+  "Hand TEXT to MODEL's program's clipboard writer, which never waits behind
+the worker, and say in the hint lane what became of it once the writer knows
+(CLIPBOARD-OUTCOME-NOTICE): COPIED when a clipboard tool took it -- nothing
+when COPIED is NIL, for a caller whose own notice says so already. With no
+live program it says nothing was written."
+  ;; A marked selection's copy and a command's clipboard effect
+  ;; (APPLY-ANSWER-EFFECTS) take this one path.
+  (if (null program)
+      (show-status model +selection-copy-failed-hint+ :error-p t)
+      (nlt:write-clipboard program text
+                           (lambda (outcome)
+                             (unless (and (null copied) (consp outcome))
+                               (nlt:send program (clipboard-outcome-notice outcome copied)))))))
+
+(defun clipboard-outcome-notice (outcome &optional (copied +selection-copied-hint+))
   "The composer status a clipboard write's OUTCOME (NLT:WRITE-CLIPBOARD)
-says, as the SYSTEM-NOTICE-MSG that lands it on the loop thread: copied for
+says, as the SYSTEM-NOTICE-MSG that lands it on the loop thread: COPIED for
 a clipboard tool, sent for OSC 52 alone, failed for neither."
   (multiple-value-bind (text error-p)
-      (cond ((and (consp outcome) (eq :command (first outcome))) +selection-copied-hint+)
+      (cond ((and (consp outcome) (eq :command (first outcome))) copied)
             ((eq :osc52 outcome) +selection-osc52-hint+)
             (t (values +selection-copy-failed-hint+ t)))
     (make-instance 'system-notice-msg :text text :error-p error-p :answer t)))

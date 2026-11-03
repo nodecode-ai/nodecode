@@ -105,6 +105,10 @@ when it was said, which an edit moves off; BORN, when it was said."
   "Zig selection_copied_notice, verbatim: said only once a clipboard tool took
 the text (NLT:WRITE-CLIPBOARD's (:COMMAND NAME)).")
 
+(defparameter +answer-copied-hint+ "Copied to clipboard"
+  "What a command's clipboard effect says when a clipboard tool took its text
+and no answer of its own said so (APPLY-ANSWER-EFFECTS).")
+
 (defparameter +selection-osc52-hint+
   "Sent to the terminal as OSC 52: no clipboard tool here took it. Paste empty? Turn on OSC 52 in the terminal, or Shift+drag"
   "What a copy says when only the terminal's OSC 52 was left: the sequence was

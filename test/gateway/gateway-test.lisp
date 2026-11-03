@@ -5537,6 +5537,77 @@ default target is PROVIDER/MODEL-ID, restored after."
           (dialog-keys model :escape)
           (is (null (nle::chat-model-dialog model)) "Esc on the list it all opened from closes it"))))))
 
+(deftest answer-effects-encode-each-kind-and-refuse-a-malformed-one ()
+  ;; Issue #199: an answer's effects are data a shell applies, each with the
+  ;; words a caller that cannot apply it shows instead.
+  (flet ((effect (effect) (nle::answer-effect-json effect))
+         (members (object &rest keys)
+           (mapcar (lambda (key) (nlk:json-value object :any key)) keys)))
+    ;; The text to copy, fenced so a room can copy it too.
+    (is (equal (list "clipboard" "a b" (format nil "```~%a b~%```"))
+               (members (effect '(:clipboard "a b")) "kind" "text" "fallback")))
+    ;; A fallback the cell writes is its own.
+    (is (equal '("draft" "append" "more" "said")
+               (members (effect '(:draft :append "more" :fallback "said")) "kind" "mode" "text" "fallback")))
+    ;; A session says the command that opens it, the prompt one shell word.
+    (is (equal (list "s-1" "go on" "Open it in a terminal: `nodecode resume s-1 -- 'go on'`")
+               (members (effect '(:open :session "s-1" :prompt "go on")) "session" "prompt" "fallback")))
+    (is (equal "Open it in a terminal: `nodecode resume s-1 -- 'it'\\''s'`"
+               (nlk:json-value (effect '(:open :session "s-1" :prompt "it's")) :string "fallback")))
+    (is (equal '("https://x.test/" nil) (members (effect '(:open :url "https://x.test/")) "fallback" "session")))
+    (signals-error error (effect '(:draft :replace "x")))
+    (signals-error error (effect '(:open)))
+    (signals-error error (effect '(:open :url "u" :file "f")))
+    (signals-error error (effect '(:clipboard 3)))
+    (signals-error error (effect '(:paste "x")))
+    (is (null (nle::answer-effects-json nil)) "no effects is no member")))
+
+(deftest cell-command-clipboard-effect-lands-on-the-shells-clipboard (with-temp-gateway (port))
+  ;; Issue #199 need 1: a cell could only copy by running wl-copy where the
+  ;; gateway runs, which misses every shell on another machine. Its answer
+  ;; carries the text instead, and the shell that ran it copies it through
+  ;; its own clipboard path; a caller that applies no clipboard -- the web
+  ;; page, a room, a bare SLASH -- reads the text in the answer.
+  (with-saved-globals (nle::*registered-commands* nle::*gateway-commands*)
+    (nle:register-command "clip-pack" "clip"
+                          (nlk:lambda-ignoring (args session-id)
+                            (values (format nil "Copied ~a" args) nil (list (list :clipboard args))))
+                          :session nil)
+    (nle:register-command "clip-pack" "blocks"
+                          (nlk:lambda-ignoring (args session-id)
+                            (values "2 blocks"
+                                    (nle:list-dialog
+                                     :title "Blocks"
+                                     :rows '((:label "one" :effects ((:clipboard "(first)")))
+                                             (:label "two" :effects ((:clipboard "(second)")))))))
+                          :session nil)
+    (with-gateway-http (port :post "/api/gateway/slash" :body "{\"line\":\"/clip x y\"}")
+      ;; A caller naming no effects reads the text it would copy.
+      (is (equal (format nil "Copied x y~%~%```~%x y~%```") (gethash "text" body)))
+      (is (null (nlk:json-value body :any "effects")) "and is handed none"))
+    (with-gateway-http (port :post "/api/gateway/slash"
+                             :body "{\"line\":\"/clip x y\",\"effects\":[\"clipboard\"]}")
+      (is (equal "Copied x y" (gethash "text" body)) "one that applies it reads the answer alone")
+      (is (equal '(("clipboard" "x y"))
+                 (map 'list (lambda (effect) (list (gethash "kind" effect) (gethash "text" effect)))
+                      (gethash "effects" body)))))
+    (is (search "```" (nle:slash "/clip z")) "a room's line reads it too")
+    (let ((model (gateway-frame-model port "ext-clip"))
+          (copied '()))
+      ;; The shell's program writes the clipboard; this one only records it.
+      (setf (nle::chat-model-program model) :program)
+      (with-stubbed-fdefinition (nlt:write-clipboard (&rest arguments)
+                                  (push (second arguments) copied))
+        ;; The answer's text is the notice.
+        (is (equal "Copied hello there" (nle::execute-slash-command model "clip" "hello there")))
+        (is (equal '("hello there") copied) "and its text went to this shell's clipboard")
+        (with-slash-dialog (dialog model "blocks" "") "a panel whose rows copy opens"
+          (is (equal '("one" "two") (row-labels dialog))))
+        (dialog-keys model :down :enter)
+        (is (equal '("(second)" "hello there") copied) "Enter copied the highlighted row's text")
+        (is (null (nle::chat-model-dialog model)) "and closed the panel")
+        (is (equal "" (composer-value model)) "leaving the draft alone")))))
+
 (deftest cell-command-trigger-opens-its-dialog-at-a-word-start (with-temp-gateway (port))
   ;; A command registered with a TRIGGER answers that character typed at a
   ;; word's start -- the index's `$' opening /index, which this picker

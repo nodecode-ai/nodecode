@@ -24,10 +24,55 @@ SET-GATEWAY-COMMANDS takes."
 
 (defun gateway-slash-answer (model line)
   "The answer MODEL's gateway gives the slash LINE (POST /api/gateway/slash),
-run in MODEL's session."
+run in MODEL's session; the effects it carries are the kinds this shell
+applies (DEFINE-ANSWER-EFFECT), every other one said in its text."
   (gateway-model-http-call
    model :post "/api/gateway/slash"
-   (json-object "line" line :opt "session_id" (json-value model.session-id :text))))
+   (json-object "line" line :opt "session_id" (json-value model.session-id :text)
+                "effects" (coerce (answer-effect-kinds) 'vector))))
+
+;;; --- what an answer asks this shell to do ---------------------------------
+;;; An answer, or a row of its panel, may carry effects (GATEWAY.LISP
+;;; ANSWER-EFFECT-JSON): what only the shell holding the person's terminal
+;;; can do, on the machine it runs on -- the gateway may be another one. The
+;;; shell names the kinds it applies when it runs a line, so an effect of a
+;;; kind it does not reaches it as its text fallback instead.
+
+(defvar *answer-effect-appliers* '()
+  "The effects this shell applies, as (KIND . FUNCTION): KIND the effect's
+`kind' string, FUNCTION called with the model and the effect's JSON.")
+
+(defvar *answer-said* nil
+  "True while an answer's own text is the notice its effects are applied
+under, so an effect that would only repeat it says nothing.")
+
+(defmacro define-answer-effect (kind (model effect) &body body)
+  "Apply the effects of KIND, a string, with BODY: MODEL the shell's model and
+EFFECT the effect's JSON object."
+  `(setf *answer-effect-appliers*
+         (acons ,kind (lambda (,model ,effect) ,@body)
+                (remove ,kind *answer-effect-appliers* :key #'car :test #'string=))))
+
+(defun answer-effect-kinds ()
+  "The kinds of effect this shell applies itself."
+  (sort (mapcar #'car *answer-effect-appliers*) #'string<))
+
+(defun apply-answer-effects (model effects &key said)
+  "Apply EFFECTS, the JSON array an answer or a row carries, in order: each
+by its kind's applier, one of a kind this shell does not apply passed over.
+SAID is true when the answer's own text is the notice they land under."
+  (let ((*answer-said* said))
+    (loop for effect across (or effects #())
+          for applier = (cdr (assoc (json-value effect :string "kind") *answer-effect-appliers*
+                                    :test #'equal))
+          when applier do (funcall applier model effect))))
+
+(define-answer-effect "clipboard" (model effect)
+  ;; The shell's own clipboard path, as a marked selection's copy takes:
+  ;; the helper chain on this machine, else OSC 52 through the terminal, so
+  ;; it lands on the person's clipboard over ssh as at the gateway's desk.
+  (copy-to-shell-clipboard model (or (json-value effect :string "text") "")
+                           :copied (if *answer-said* nil +answer-copied-hint+)))
 
 (defun run-gateway-command (model entry args &key trigger)
   "Run ENTRY, a cell's command MODEL's gateway serves, with its verbatim
@@ -38,6 +83,7 @@ it."
          (line (format nil "/~a~@[ ~a~]" name (json-value args :text))))
     (with-slash-notice ((format nil "/~a" name))
       (let ((answer (gateway-slash-answer model line)))
+        (apply-answer-effects model (json-array answer "effects") :said t)
         (if (json-value answer :object "dialog")
             (progn (open-answer-dialog model answer :line line :trigger trigger) nil)
             (json-value answer :string "text"))))))
@@ -112,6 +158,8 @@ A command whose answer is its text alone opens nothing."
          rows
          (lambda (model value &aux (text (json-value value :text "value")))
            (cond ((gesture model value "enter"))
+                 ((plusp (length (json-array value "effects")))
+                  (apply-answer-effects model (json-array value "effects")))
                  (text
                   (when (and trigger (uiop:string-prefix-p trigger text)
                              (uiop:string-suffix-p (editor-value model.editor) trigger))
@@ -148,6 +196,8 @@ the command ran: a dialog it answers opens over STACK; else what it says is a
 toast, the one line the panel leaves in sight, and STACK is read again
 (REOPEN-ANSWER-DIALOG)."
   (multiple-value-bind (answer failed) (with-slash-notice (line) (gateway-slash-answer model line))
+    (unless failed
+      (apply-answer-effects model (json-array answer "effects") :said t))
     (if (and (not failed) (json-value answer :object "dialog"))
         (open-answer-dialog model answer :line line :under stack)
         (progn (show-status model (if failed answer (json-value answer :string "text")) :error-p failed)

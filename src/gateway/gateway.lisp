@@ -2855,9 +2855,11 @@ reads, since a cell's lanes and inventory hooks run here only."
 (define-gateway-route handle-gateway-slash-http (env)
   "GET /api/gateway/slash — the commands a client can run, in /help order
 (SLASH-CATALOG), each saying whether it acts on a session; POST {line,
-session_id?} runs one against that session and answers {text, dialog?}, what a
-shell would show: the line, and the panel a command answers with. A failure is
-the verb's own 400."
+session_id?, effects?} runs one against that session and answers {text,
+dialog?, effects?}, what a shell would show: the line, the panel a command
+answers with, and the effects of the kinds the request's EFFECTS names, which
+the caller applies itself; any other effect is said in the text (SLASH). A
+failure is the verb's own 400."
   (:route (:get :post) "/api/gateway/slash" "slash")
   (case (getf env :request-method)
     (:get (make-json-object
@@ -2869,9 +2871,11 @@ the verb's own 400."
     (:post (let* ((request (gateway-request-json env))
                   (line (gethash "line" request)))
              (require-non-empty (list line) "line must be a non-empty string" :required t)
-             (multiple-value-bind (text dialog)
-                 (slash line :session-id (json-value request :string "session_id"))
-               (json-object "text" text :opt "dialog" dialog))))))
+             (multiple-value-bind (text dialog effects)
+                 (slash line :session-id (json-value request :string "session_id")
+                             :effects (coerce (remove-if-not #'stringp (json-array request "effects"))
+                                              'list))
+               (json-object "text" text :opt "dialog" dialog :opt "effects" effects))))))
 
 (define-gateway-route handle-gateway-slash-completions-http (env)
   "POST /api/gateway/slash/completions {name, text, session_id?} — what
@@ -3261,6 +3265,7 @@ a surface that draws one wears (a room's card its edge), NIL for none."
                                  (json-object (:getf run :opt "enter" "space")))
                     "mark" (or (getf row :mark) "")
                     :opt "mark_tone" (tone (getf row :mark-tone))
+                    :opt "effects" (answer-effects-json (getf row :effects))
                     :opt "options" (when-let (options (getf row :options))
                                      (map 'vector
                                           (lambda (option)
@@ -3272,6 +3277,94 @@ a surface that draws one wears (a room's card its edge), NIL for none."
                                                           (json-object (:getf run :opt "enter" "space")))))
                                           options))))
                  (getf dialog :rows)))))
+
+;;; --- what an answer asks the shell to do ----------------------------------
+;;; A command's answer, or a row of its panel, may carry EFFECTS: what the
+;;; shell that ran it does on the person's own machine, where the gateway
+;;; cannot reach -- put text on the clipboard, set the draft, open a session
+;;; in a new tab. Each is data, (KIND . ARGUMENTS), and each says in words
+;;; what a caller that cannot do it shows instead (its FALLBACK): the web
+;;; page, a channel's room, rpc, a bare (slash LINE). A caller names the
+;;; kinds it applies itself (SLASH's :EFFECTS); the rest reach it as text.
+
+(defparameter +answer-effect-kinds+ '(:clipboard :draft :open)
+  "The kinds of effect an answer may carry, as their tags.")
+
+(defun shell-word (text)
+  "TEXT quoted as one word of a POSIX shell's command line."
+  (if (and (plusp (length text))
+           (every (lambda (c) (or (alphanumericp c) (find c "-_./:=@%+,"))) text))
+      text
+      (format nil "'~a'" (ppcre:regex-replace-all "'" text "'\\\\''"))))
+
+(defun answer-effect-json (effect)
+  "EFFECT, one (KIND . ARGUMENTS) an answer carries, as the JSON object a
+shell applies: its KIND, its members, and the FALLBACK a caller that does not
+apply it shows. An effect of no known kind, or one missing what its kind
+needs, signals -- the cell's mistake, said where its command ran."
+  ;; (:clipboard TEXT &key fallback)      TEXT onto the shell's clipboard.
+  ;; (:draft MODE TEXT &key fallback)     the composer's draft: MODE :set
+  ;;                                      replaces it, :insert puts TEXT at
+  ;;                                      the caret, :append after the end.
+  ;; (:open &key session prompt url file fallback)  one of: SESSION in a new
+  ;;                                      tab of the shell's own terminal
+  ;;                                      (`nodecode resume SESSION -- PROMPT'),
+  ;;                                      a URL or a FILE in that machine's
+  ;;                                      opener.
+  (flet ((text (value what)
+           (unless (stringp value)
+             (error "answer effect ~s: ~a must be a string" effect what))
+           value)
+         (fence (text)
+           (if (zerop (length text)) "" (format nil "```~%~a~%```" text))))
+    (destructuring-bind (kind &rest arguments) effect
+      (ecase kind
+        (:clipboard
+         (destructuring-bind (text &key fallback) arguments
+           (json-object "kind" "clipboard" "text" (text text "its text")
+                        "fallback" (or fallback (fence text)))))
+        (:draft
+         (destructuring-bind (mode text &key fallback) arguments
+           (unless (member mode '(:set :insert :append))
+             (error "answer effect ~s: the mode is :set, :insert or :append" effect))
+           (json-object "kind" "draft" "mode" (string-downcase mode)
+                        "text" (text text "its text")
+                        "fallback" (or fallback (fence text)))))
+        (:open
+         (destructuring-bind (&key session prompt url file fallback) arguments
+           (unless (= 1 (count-if #'identity (list session url file)))
+             (error "answer effect ~s: open names one of :session, :url or :file" effect))
+           (json-object "kind" "open"
+                        :opt "session" (and session (text session "its session"))
+                        :opt "prompt" (and prompt (text prompt "its prompt"))
+                        :opt "url" (and url (text url "its url"))
+                        :opt "file" (and file (text file "its file"))
+                        "fallback"
+                        (or fallback
+                            (cond (session (format nil "Open it in a terminal: `nodecode resume ~a~@[ -- ~a~]`"
+                                                   session (and prompt (shell-word prompt))))
+                                  (url url)
+                                  (t file))))))))))
+
+(defun answer-effects-json (effects)
+  "EFFECTS, the list an answer or a row carries, as the JSON array of
+ANSWER-EFFECT-JSON objects; NIL for none."
+  (and effects (map 'vector #'answer-effect-json effects)))
+
+(defun applied-answer-effects (text effects applies)
+  "Split the JSON EFFECTS an answer carries by the kinds APPLIES names, the
+ones the caller does itself: => the answer's TEXT with every other effect's
+fallback after it, and the effects the caller applies (a vector, or NIL)."
+  (let ((kinds (mapcar (lambda (kind) (string-downcase (string kind))) applies))
+        (applied '()) (said (list text)))
+    (loop for effect across (or effects #())
+          for kind = (json-value effect :string "kind")
+          do (if (member kind kinds :test #'string=)
+                 (push effect applied)
+                 (when-let (fallback (json-value effect :text "fallback"))
+                   (push fallback said))))
+    (values (format nil "~{~a~^~%~%~}" (remove "" (reverse said) :test #'equal))
+            (and applied (coerce (reverse applied) 'vector)))))
 
 (defun register-command (owner command run &key description argument-hint
                                                    (label command) (catches 'error)
@@ -3287,9 +3380,10 @@ far and the session id, as RUN takes its argument, and answers (:name
   ;; RUN is a function designator, so a command whose whole implementation is
   ;; one defun passes the symbol and a reload of that file reaches the command
   ;; without a re-install. RUN takes the command's argument string and the
-  ;; session id and answers (values TEXT DIALOG): TEXT what every caller shows,
-  ;; DIALOG a LIST-DIALOG the shell that ran the command opens as its docked
-  ;; picker. A CATCHES condition answers "LABEL: it"; any other keeps going up,
+  ;; session id and answers (values TEXT DIALOG EFFECTS): TEXT what every caller
+  ;; shows, DIALOG a LIST-DIALOG the shell that ran the command opens as its
+  ;; docked picker, EFFECTS what that shell does on its own machine
+  ;; (ANSWER-EFFECT-JSON), each said as text to a caller that does not. A CATCHES condition answers "LABEL: it"; any other keeps going up,
   ;; to the caller's own refusal.
   (check-type owner string)
   (unless (json-value command :text)
@@ -3302,14 +3396,15 @@ far and the session id, as RUN takes its argument, and answers (:name
                 :dispatch nil :owner owner :session session :trigger trigger
                 :completer complete
                 :headless (lambda (args session-id)
-                            (multiple-value-bind (text dialog)
+                            (multiple-value-bind (text dialog effects)
                                 (handler-case (funcall run args session-id)
                                   (error (it)
                                     (if (typep it catches)
                                         (format nil "~a: ~a" label it)
                                         (error it))))
                               (values (or text (format nil "/~a done" command))
-                                      (and dialog (dialog-json dialog))))))))
+                                      (and dialog (dialog-json dialog))
+                                      (answer-effects-json effects)))))))
     (setf *registered-commands*
           (append (remove command *registered-commands*
                           :key #'slash-command-name :test #'string-equal)

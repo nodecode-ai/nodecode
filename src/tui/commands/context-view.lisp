@@ -428,12 +428,15 @@ or `time', each round's prompt from the log."
                          (multiple-value-call #'context-dialog breakdown window summary tone
                            (context-rounds session-id)))))))))))
 
-(defun slash (line &key (session-id nlk:*scribe-session-id*))
+(defun slash (line &key (session-id nlk:*scribe-session-id*) effects)
   "Run one slash command LINE — \"/models grok-4.6\", \"/think high\",
 \"/help\" — without a shell, against SESSION-ID (by default the session
 this eval is running for), and answer the text a shell would show; the
 second value is the panel a cell's command answered with (DIALOG-JSON),
-for a caller that draws one."
+for a caller that draws one; the third the effects its answer carries of the
+kinds EFFECTS names, the ones the caller applies itself (ANSWER-EFFECT-JSON),
+whose fallbacks the text leaves out -- every other effect's fallback the text
+says after it."
   ;; The builtins with a headless arm (SLASH-COMMAND-HEADLESS) land on the
   ;; same canonical surfaces the shells' /models, /think, /undo, /redo,
   ;; /clear, /evict, /context, /cells and /gc do; a cell's command is an
@@ -450,7 +453,12 @@ for a caller that draws one."
     (let ((entry (or (find-builtin-slash-command name) (find-registered-command name))))
       (cond
         ((null entry) (format nil "unknown command /~a; /help lists them" name))
-        (entry.headless (funcall entry.headless args session-id))
+        (entry.headless
+         (multiple-value-bind (text dialog carried) (funcall entry.headless args session-id)
+           (if carried
+               (multiple-value-bind (text applied) (applied-answer-effects text carried effects)
+                 (values text dialog applied))
+               (values text dialog))))
         (t (format nil "/~a needs an interactive shell" entry.name))))))
 
 (defun model-pick-body (tokens)

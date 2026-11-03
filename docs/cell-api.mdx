@@ -154,7 +154,7 @@ Clauses go in any order. They install in the order written and come off in rever
 | `(:section (PATH...) CLAUSE...)` | Required. `nlk:define-section`, verbatim. | — |
 | `(:settings FUNCTION)` | `(lambda (values table) ...)` answers the plist the cell runs on, for a section the declaration cannot carry. | — |
 | `(:tool NAME SCHEMA FN)` | `nle:register-tool`. SCHEMA is a contract. See [Tool arguments](#tool-arguments). | Unregistered. |
-| `(:command NAME RUN &key ...)` | `/NAME` in the one slash catalog. RUN takes `(args session-id)` and answers `(values TEXT DIALOG)`. | Out of the catalog. |
+| `(:command NAME RUN &key ...)` | `/NAME` in the one slash catalog. RUN takes `(args session-id)` and answers `(values TEXT DIALOG EFFECTS)`; see [Effects](#effects). | Out of the catalog. |
 | `(:help TOPIC SUMMARY TEXT)` | `(help TOPIC)` answers TEXT. Every request's `help` section carries SUMMARY. | Topic removed. |
 | `(:hook NAME FN)` | `nle:hook` on a point or a function name. | Unhooked. |
 | `(:route PATH FN &key public)` | PATH answered on the gateway's own port, to the operator's token; to anyone under `:public`. A PATH ending in `/` answers everything under it. | Route removed. |
@@ -170,6 +170,25 @@ A `:command` takes these keys:
 | `:session` | `nil` for a command that acts on no session. |
 | `:trigger` | One character that opens it at a word's start. |
 | `:complete` | Takes `(text session-id)` and answers `(:name :value)` plists while the argument is typed. |
+
+### Effects
+
+A command runs where the cell runs, the gateway, which may be another machine than the person's. What has to happen on theirs goes in the answer's third value, a list of effects, and the shell that ran the command does it. A row of a `nle:list-dialog` takes the same list as `:effects`, done when Enter picks the row.
+
+| Effect | The shell |
+| --- | --- |
+| `(:clipboard TEXT)` | Puts TEXT on the clipboard of the machine it runs on: its clipboard tool, else OSC 52 through the terminal, which reaches a laptop over ssh. |
+| `(:draft MODE TEXT)` | Sets the draft (`:set`), or puts TEXT at the caret (`:insert`) or after the end (`:append`). |
+| `(:open :session ID :prompt P)` | Opens `nodecode resume ID -- P` in a new tab of its own terminal. `:url U` or `:file F` instead opens that in the machine's opener. |
+
+Each effect takes a `:fallback`: the words a caller that cannot do it shows instead, after the answer's text. The web page, a channel's room and `(slash LINE)` read it there. Left out, it is the text fenced as code, or the command that opens the session.
+
+```lisp
+(defun copy-block (args session-id)
+  (declare (ignore session-id))
+  (let ((code (nth-block args)))
+    (values "Copied block 2" nil (list (list :clipboard code)))))
+```
 
 <Screen name="cell-manual" />
 
