@@ -335,8 +335,7 @@ the model picker sets together and Delete takes out together."
                             (identity-text (funcall value "model") (funcall value "provider"))
                             "The session's own")
                   :doc "The model a reflection runs on: the session's own, sharing its prompt cache, unless one is picked here."
-                  :remote (lambda (model value)
-                            (declare (ignore value))
+                  :remote (lambda-ignoring (model value)
                             (dolist (name set)
                               (gateway-model-http-call model :post "/api/gateway/config"
                                                        (json-object "path" (section-path-to experience name)
@@ -1492,21 +1491,15 @@ or NIL."
                    (when (and none (member kind '(:field :row :change)))
                      (canvas-put canvas (- px 2) r "›" nil)))
                  (case kind
-                   (:title
+                   ((:title :part-head)
                     (let* ((part (second line))
-                           (applies part.applies)
-                           (at (canvas-put canvas px r (clip-text-to-width part.label pw)
-                                           (sheet-ink :title :ground ground :bold t))))
+                           (title (eq kind :title))
+                           (applies (if title part.applies (third line)))
+                           (at (canvas-put canvas px r (clip-text-to-width (if title part.label (string-upcase (or part.head part.label))) pw)
+                                           (sheet-ink (if title :title :muted) :ground ground :bold title))))
                       (when (and applies (<= (+ at 2 (text-display-width applies)) (+ px pw)))
                         (canvas-put canvas (- (+ px pw) (text-display-width applies)) r applies
                                     (applies-ink applies ground)))))
-                   (:part-head
-                    (destructuring-bind (part applies) (rest line)
-                      (let ((at (canvas-put canvas px r (clip-text-to-width (string-upcase (or part.head part.label)) pw)
-                                            (sheet-ink :muted :ground ground))))
-                        (when (and applies (<= (+ at 2 (text-display-width applies)) (+ px pw)))
-                          (canvas-put canvas (- (+ px pw) (text-display-width applies)) r applies
-                                      (applies-ink applies ground))))))
                    (:change
                     (destructuring-bind (setting focused index text) (rest line)
                       (canvas-put canvas (+ px 2) r setting.text (sheet-ink :muted :ground ground))

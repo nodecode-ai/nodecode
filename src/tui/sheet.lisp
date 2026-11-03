@@ -233,8 +233,7 @@ that key (HINT-KEY-PRESS)."
                (when (hint-key-press key)
                  (let ((key key))
                    (sheet-hit sheet row start at
-                              (lambda (model sheet)
-                                (declare (ignore model sheet))
+                              (lambda-ignoring (model sheet)
                                 (hint-key-press key))))))
              (incf used width))
     (when (and flash-text (<= from (- to (text-display-width flash-text))))

@@ -323,8 +323,7 @@ with that token. A section with no check goes straight to its fields."
       (channel-setup-ask
        model setup
        (lambda () (channel-setup-call setup :post "/api/gateway/config/probe" (json-object "path" setup.path)))
-       (lambda (model answer)
-         (declare (ignore model))
+       (lambda-ignoring (model answer)
          (let ((text (or (json-value answer :string "text") "")))
            (setf setup.check (uiop:split-string text :separator '(#\Newline))
                  setup.summary (or (json-value answer :string "summary") (first-line text))
@@ -402,8 +401,7 @@ default."
      model setup
      (lambda () (channel-setup-call setup :post "/api/gateway/config"
                                     (json-object "path" (concatenate 'vector setup.path (vector name)) "value" value)))
-     (lambda (model answer)
-       (declare (ignore answer))
+     (lambda-ignoring (model answer)
        (channel-setup-fold setup summary)
        (channel-setup-next model setup))
      "Saving…")))
@@ -471,8 +469,7 @@ is asked again, at most three passes."
    (lambda ()
      (channel-setup-call setup :post "/api/channels?op=restart")
      (gateway-setup-lane setup.call setup.channel))
-   (lambda (model lane)
-     (declare (ignore model))
+   (lambda-ignoring (model lane)
      (let ((state (and lane (json-value lane :string "state")))
            (detail (and lane (or (json-value lane :string "detail") (json-value lane :string "last_rejection")))))
        (if (and (equal state "running") (json-value lane :boolean "connected"))
@@ -558,30 +555,6 @@ it ended in the status line."
 
 ;;; --- painting -------------------------------------------------------------------
 
-(defun channel-setup-wrap (text width &key (indent 0))
-  "TEXT as lines at most WIDTH cells wide, broken at spaces, a word longer
-than a line (a link) cut where it must; lines after the first INDENT cells in."
-  (let ((lines '()) (line ""))
-    (flet ((space-left () (- width (if lines indent 0))))
-      (dolist (piece (uiop:split-string text :separator '(#\Space)))
-        (let ((word piece))
-          (loop while (> (text-display-width word) (space-left))
-                do (let ((cut (if (string= line "") (space-left) 0)))
-                     (if (zerop cut)
-                         (progn (push line lines) (setf line ""))
-                         (let ((head (take-display-prefix word cut)))
-                           (push head lines)
-                           (setf word (subseq word (length head)))))))
-          (cond ((string= line "") (setf line word))
-                ((<= (+ (text-display-width line) 1 (text-display-width word)) (space-left))
-                 (setf line (concatenate 'string line " " word)))
-                (t (push line lines) (setf line word)))))
-      (push line lines))
-    (let ((lines (nreverse lines)))
-      (cons (first lines)
-            (mapcar (lambda (line) (concatenate 'string (make-string indent :initial-element #\Space) line))
-                    (rest lines))))))
-
 (defun channel-setup-keys (setup)
   "The key row of SETUP's open step: (KEY WORD) ..."
   (case setup.step
@@ -618,8 +591,7 @@ row ticks it."
                (when after (canvas-put canvas (+ at 2) row after (sheet-ink :muted :ground ground) (+ px pw)))
                (let ((cursor cursor))
                  (sheet-hit setup row px (+ px pw)
-                            (lambda (model setup)
-                              (declare (ignore model))
+                            (lambda-ignoring (model setup)
                               (setf setup.cursor cursor
                                     setup.picked (setup-pick-toggle setup.choices setup.picked cursor))
                               t))))))
@@ -638,7 +610,7 @@ row ticks it."
 (defun paint-channel-setup-step (setup canvas row bottom px pw ground)
   "The open step from ROW, no lower than BOTTOM. => the caret's cell, or NIL."
   (labels ((say (text &key (tone :system) (indent 0) bold)
-             (dolist (line (channel-setup-wrap text (- pw indent) :indent 0))
+             (dolist (line (wrapped-lines text (- pw indent)))
                (when (< row bottom)
                  (canvas-put canvas (+ px indent) row line (sheet-ink tone :ground ground :bold bold) (+ px pw))
                  (incf row))))
@@ -667,13 +639,9 @@ row ticks it."
              (say (format nil "On ~a's side first:" (channel-setup-label setup)) :tone :foreground :bold t)
              (loop for step in steps
                    for number from 1
-                   do (let ((lines (channel-setup-wrap step (- pw 5))))
-                        (when (< row bottom)
-                          (canvas-put canvas (+ px 1) row (format nil "~d" number) (sheet-ink :own-model :ground ground :bold t)))
-                        (dolist (line lines)
-                          (when (< row bottom)
-                            (canvas-put canvas (+ px 4) row line (sheet-ink :system :ground ground) (+ px pw))
-                            (incf row)))))
+                   do (when (< row bottom)
+                        (canvas-put canvas (+ px 1) row (format nil "~d" number) (sheet-ink :own-model :ground ground :bold t)))
+                      (say step :indent 4))
              (gap))
            (say (string-capitalize noun :end 1) :tone :foreground :bold t)
            (prog1 (paint-channel-setup-field canvas px row (min pw 72) setup.typed
