@@ -168,6 +168,85 @@ directories first, then by name, at most *FOLDER-ENTRIES-CAP* rows."
                     (subseq rows 0 (- (length rows) more)))
      :when (plusp more) "more" more)))
 
+;;; --- every file under a folder, for the page's quick open ------------------------------
+;;;
+;;; ?find=1 on a folder answers the files beneath it as one flat list, for a
+;;; picker that matches as the operator types. In a git work tree that is
+;;; what git tracks or would track, its ignores honoured (a build's output and
+;;; node_modules stay out without a list of our own); elsewhere a walk that
+;;; enters no dot folder and none of *FOLDER-FIND-SKIP*. Either way only
+;;; regular files are named, never a link, so nothing listed leads out of
+;;; the folder, and a path is relative to the folder as every other path here.
+
+(defparameter *folder-find-cap* 20000
+  "The most files one ?find=1 names; a larger tree says how many more.")
+
+(defparameter *folder-find-seconds* 3
+  "How long a walk outside a git work tree may take before it answers what it found.")
+
+(defparameter *folder-find-skip* '("node_modules")
+  "Folders a walk outside a git work tree does not enter, beside any dot folder.")
+
+(defun folder-find-git (directory)
+  "The regular files git tracks or would track under the native DIRECTORY,
+its ignores honoured, as paths relative to it; NIL when DIRECTORY lies in no
+work tree or git cannot run."
+  (multiple-value-bind (out err status)
+      (ignore-errors
+       (nlk:run-bounded (list nlk::*git-program* "-C" directory "ls-files" "-z"
+                              "--cached" "--others" "--exclude-standard" "--deduplicate")
+                        :seconds 20 :error-output nil))
+    (declare (ignore err))
+    (when (eql status 0)
+      (loop for path in (uiop:split-string out :separator (string (code-char 0)))
+            when (and (plusp (length path))
+                      (eq :file (nlk::lstat-kind (nlk::path-under directory path))))
+              collect path))))
+
+(defun folder-find-deadline ()
+  "The internal real time a walk begun now stops at."
+  (+ (get-internal-real-time) (* *folder-find-seconds* internal-time-units-per-second)))
+
+(defun folder-find-walk (directory cap &aux found (count 0) (deadline (folder-find-deadline)))
+  "The regular files under the native DIRECTORY as paths relative to it, by a
+walk that enters no dot folder, no link and none of *FOLDER-FIND-SKIP*. It
+stops once it has more than CAP or has walked *FOLDER-FIND-SECONDS* (a home
+folder holds millions); the second value says it stopped short."
+  (labels ((short () (or (> count cap) (> (get-internal-real-time) deadline)))
+           (walk (dir prefix)
+             (multiple-value-bind (names kinds) (nlk::directory-names dir)
+               (loop for name in names
+                     for kind in kinds
+                     for rel = (if prefix (nlk::path-under prefix name) name)
+                     until (short)
+                     do (case (or kind (nlk::lstat-kind (nlk::path-under dir name)))
+                          (:directory
+                           (unless (or (char= #\. (char name 0))
+                                       (member name *folder-find-skip* :test #'string=))
+                             (walk (nlk::path-under dir name) rel)))
+                          (:file (push rel found) (incf count)))))))
+    (walk directory nil)
+    (values found (short))))
+
+(defun folder-find (folder steps directory)
+  "Every regular file under DIRECTORY, the native path STEPS name under FOLDER,
+as paths relative to FOLDER, sorted: git's list in a work tree, else a walk;
+at most *FOLDER-FIND-CAP*, and `cut' when there were more or the walk ran out
+of time."
+  (multiple-value-bind (paths short)
+      (let ((listed (folder-find-git directory)))
+        (if listed (values listed nil) (folder-find-walk directory *folder-find-cap*)))
+    (let* ((paths (sort paths #'string<))
+           (base (steps-path steps))
+           (cut (or short (> (length paths) *folder-find-cap*))))
+      (json-object
+       "folder" folder
+       "path" base
+       "kind" "files"
+       "files" (map 'vector (lambda (path) (if (plusp (length base)) (nlk::path-under base path) path))
+                    (subseq paths 0 (min (length paths) *folder-find-cap*)))
+       :when cut "cut" t))))
+
 ;;; --- a file, answered as what it is --------------------------------------------------
 
 (defun file-head (path count)
@@ -287,7 +366,8 @@ and a directory's name always."
   "GET /api/gateway/sessions/<id>/files?path=REL — the session's folder at
 REL, the folder itself when absent: a directory's listing {folder, path, kind,
 entries: [{name, kind, size, modified, hidden, link}], more}, or the file
-(FOLDER-FILE), with &download=1 to save it. POST ...?path=DIR&name=NAME
+(FOLDER-FILE), with &download=1 to save it; a folder with &find=1 answers
+every file beneath it as one list (FOLDER-FIND), for the page's quick open. POST ...?path=DIR&name=NAME
 [&replace=1] writes the body as the file NAME in DIR and answers DIR's
 listing. A path or a name that leads outside the folder is a 403
 outside_folder."
@@ -302,7 +382,9 @@ outside_folder."
     (case (getf env :request-method)
       (:get (multiple-value-bind (path kind stat) (folder-resolve folder steps)
               (case kind
-                (:directory (folder-listing folder steps path))
+                (:directory (if (funcall flag "find")
+                                (folder-find folder steps path)
+                                (folder-listing folder steps path)))
                 (:file (folder-file steps path stat (funcall flag "download")))
                 (t (folder-refuse 400 "not_a_file" "the path ~a is neither a file nor a folder"
                                   (steps-path steps))))))
