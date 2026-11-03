@@ -394,7 +394,20 @@ HOLD, VERSION is the operator's own pick and holds this home there."
   ;; (UPGRADE-REFUSAL) when the release cannot be named or staged; one this
   ;; image will not evaluate is linked for its next boot. The image is as it was.
   (bt2:with-lock-held (*upgrade-lock*)
-    (bind ((from (effective-label)) (to (release-target version)))
+    (bind ((from (effective-label)) (to (release-target version))
+           ;; Whether TO is older than this build, read off the release host's
+           ;; changes lists (RELEASE-DIRECTION), wherever it decides something:
+           ;; an update that names no release, and one that would go live.
+           (back (and (string/= to from) (or (null version) (and apply (not check)))
+                      (eq :backward (release-direction from to)))))
+      ;; An update that names no release asks for the channel's latest, and
+      ;; one older than this build -- a channel switched back to stable from
+      ;; nightly -- is refused, the way the poller leaves it: going back is
+      ;; the operator's pick, made by naming it, which holds this home there.
+      (when (and back (null version))
+        (nlk::upgrade-fail "~a, the ~a channel's latest, is older than this build, ~a, so this build stays: ~
+                            `nodecode update ~a' goes back to it and holds this home there"
+                           to (nth-value 1 (update-settings)) from to))
       ;; An update asked for is the operator's choice of what runs: one that
       ;; names its release holds this home there -- the way back after an
       ;; update, and the one hold there is -- and one that names none lifts it.
@@ -437,7 +450,13 @@ HOLD, VERSION is the operator's own pick and holds this home there."
            ;; there, a release would strand the image on the build before it:
            ;; every release staged, none run.
            (multiple-value-bind (count files refused displaced)
-               (converge-between-turns plans to (eq verdict :restart) idle)
+               (if back
+                   ;; Older source evaluated over a newer image is what
+                   ;; *INSTALLED-BUILD* keeps a checkout from: its definitions
+                   ;; meet state the newer ones left. A step back is linked
+                   ;; and runs whole, at the restart.
+                   (values 0 0 (format nil "~a is older than ~a" to from) nil)
+                   (converge-between-turns plans to (eq verdict :restart) idle))
              (link-release to)
              (when refused (setf *refused-release* to))
              ;; The process starts again on `current' by itself where it can
@@ -903,20 +922,51 @@ wake its wait, and give the thread a moment to leave."
   "How long after the gateway starts the poller takes its first look at the
 channel.")
 
+;;; A channel switched in the config is followed at once, not at the next
+;;; look: with a feed up that look is six hours off, and the feed's held
+;;; connection names the channel it opened on. The poller reads the config's
+;;; `update' section this often between its looks.
+(defparameter *update-settings-look-seconds* 60
+  "How often the poller reads the config's `update' section for a channel,
+release host or feed that moved since its last look at the channel.")
+
+(defun update-target ()
+  "What a look at the channel reads, from the config now: the channel, the
+release host and the feed's host."
+  (bind (((_ channel _ url feed) (update-settings)))
+    (list channel url feed)))
+
 (defun start-update-poller ()
   "Look at the channel every `check_minutes' unless the config says off,
-and hold the release feed while it is on. START-GATEWAY's."
-  (bind (((mode _ minutes) (update-settings))
-         (wait *update-poller-first-look-seconds*))
+and hold the release feed while it is on; a channel, release host or feed
+the config moves to is looked at within *UPDATE-SETTINGS-LOOK-SECONDS*, the
+feed reconnecting onto it. START-GATEWAY's."
+  (bind (((mode) (update-settings))
+         (next (+ (seconds-now) *update-poller-first-look-seconds*))
+         (seen nil))
     (unless (string= mode "off")
       (start-release-feed)
       (unless *update-poller*
         (setf *update-poller*
               (worker-start "update-poller"
-                            (lambda ()
-                              (ignore-errors (check-for-update))
-                              (setf wait (* 60 minutes)))
-                            :wake (lambda () wait)))))))
+                            (lambda (&aux (target (ignore-errors (update-target))))
+                              (when (or (>= (seconds-now) next)
+                                        (and seen target (not (equal target seen))))
+                                ;; the feed reads its URL when it connects:
+                                ;; ended, the look below starts it on this one
+                                (when (and seen target (not (equal target seen)))
+                                  (ignore-errors (stop-release-feed)))
+                                (setf seen target)
+                                (ignore-errors (check-for-update))
+                                (setf next (+ (seconds-now)
+                                              (* 60 (or (ignore-errors (nth-value 2 (update-settings))) 30))))))
+                            :wake (lambda ()
+                                    (max 0 (min *update-settings-look-seconds*
+                                                (- next (seconds-now)))))))))))
+
+(defun seconds-now ()
+  "This process's clock in seconds, for the poller's waits."
+  (/ (get-internal-real-time) (float internal-time-units-per-second 1d0)))
 
 (defun stop-update-poller ()
   (setf *update-poller* (worker-stop *update-poller* :timeout nil))
