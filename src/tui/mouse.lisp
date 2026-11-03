@@ -1446,6 +1446,13 @@ auxiliary model's."
     ((:model-providers :models :auxiliary-models) "models")
     (t (and kind (string-downcase (string kind))))))
 
+(defun run-click-command (model name)
+  "Run slash command NAME as a click on a footer or home-view hint does:
+its notice said in the status; a click never hands the program a command."
+  (multiple-value-bind (notice cmd) (execute-slash-command model name "")
+    (when notice (show-status model notice))
+    (when cmd (error "Clicked command ~a unexpectedly returned a program command" name))))
+
 (defun handle-mouse-release (model msg &aux (x msg.x)
                                             (y msg.y)
                                             (undragged (not (chat-model-selection-dragged model))))
@@ -1561,19 +1568,14 @@ selection copies to the clipboard through the program's own writer."
                  ;; with a query; it never selects or reruns the opener.
                  (if (and kind (string-equal (cdr uri) (picker-dialog-command kind)))
                      (dismiss-dialog model (picker-dialog-on-cancel dialog))
-                     (multiple-value-bind (notice cmd) (execute-slash-command model (cdr uri) "")
-                       (when notice (show-status model notice))
-                       (when cmd (error "Footer command unexpectedly returned a program command"))))
+                     (run-click-command model (cdr uri)))
                  (render-state model)))
               (t (open-target-or-say model uri))))
            ((and (consp uri) (eq :home (car uri))
                  (equal uri (home-command-at-position model line column)))
-            (if (eq :mark (cdr uri))
-                (click-mark model)
-                (multiple-value-bind (notice cmd) (execute-slash-command model (cdr uri) "")
-                  (when notice (show-status model notice))
-                  (render-state model)
-                  (when cmd (error "Home view command unexpectedly returned a program command")))))
+            (cond ((eq :mark (cdr uri)) (click-mark model))
+                  (t (run-click-command model (cdr uri))
+                     (render-state model))))
            ((and line (equal uri (link-at-position model line column)))
             (open-target-or-say model uri))))))
     ;; An open dialog confirms on release: a press on its panel only armed
