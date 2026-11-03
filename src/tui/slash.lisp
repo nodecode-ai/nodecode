@@ -24,7 +24,7 @@
                                         (intern (format nil "SLASH-~:@(~a~)-OP" name)
                                                 :nodecode.evolved)))
                                (headless (and (eq dispatch :local) op))
-                               completer keybind (session t) trigger)))
+                               completer keybind (session t) trigger reads)))
   "One catalog entry."
   ;; NAME carries no leading slash; ALIASES are alternate
   ;; names (also slash-less); USAGE is the display form when the command takes
@@ -57,9 +57,14 @@
   ;; TRIGGER is a cell command's opener in the composer: the character,
   ;; typed at a word's start, opens the command's dialog and stays in the
   ;; draft until a pick replaces it (COMPOSER-TRIGGER-COMMAND). NIL for most.
+  ;;
+  ;; READS is what of the shell a cell's command declared it reads, a list
+  ;; of keywords: (:DRAFT), the composer's text, is the one there is. The
+  ;; shell sends it only to a command that names it (RUN-GATEWAY-COMMAND),
+  ;; so what is being written never reaches a cell that did not ask.
   (name nil :type string) (description nil :type string) (usage nil :type string)
   (aliases nil :type list) (help-detail nil :type string)
-  owner dispatch op headless completer keybind session trigger)
+  owner dispatch op headless completer keybind session trigger reads)
 
 (nlk:access (entry slash-command))
 
@@ -293,7 +298,7 @@ NIL."
 
 (defun set-gateway-commands (entries)
   "Replace the shell's copy of the gateway's cell commands with ENTRIES,
-plists (:name :description :usage :session :trigger); a name a builtin
+plists (:name :description :usage :session :trigger :reads); a name a builtin
 answers to, or a blank one, is dropped."
   (setf *gateway-commands*
         (loop for entry in entries
@@ -303,7 +308,8 @@ answers to, or a blank one, is dropped."
                                             :usage (or (getf entry :usage) "")
                                             :dispatch nil
                                             :session (getf entry :session t)
-                                            :trigger (json-value (getf entry :trigger) :text)))))
+                                            :trigger (json-value (getf entry :trigger) :text)
+                                            :reads (getf entry :reads)))))
 
 (defun find-gateway-command (name)
   "The gateway's cell command NAME identifies, else NIL. Builtins outrank

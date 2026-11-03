@@ -170,6 +170,9 @@ A `:command` takes these keys:
 | `:session` | `nil` for a command that acts on no session. |
 | `:trigger` | One character that opens it at a word's start. |
 | `:complete` | Takes `(text session-id)` and answers `(:name :value)` plists while the argument is typed. |
+| `:reads` | `'(:draft)` hands RUN the text in the shell's input box as a `:draft` keyword, so RUN takes `(args session-id &key draft)`. A command that does not declare it is never sent the draft. |
+
+The draft is the input box as it is when the command runs. A command run from a key or a picker row gets what is being written, and the box keeps it. A command typed into the box used the box for its own line, so it gets `""`. A front end that does not send the draft (the web page today, a room, cron, `slash` from eval) gets `nil`, unless the caller passes `:draft`.
 
 <Screen name="cell-manual" />
 

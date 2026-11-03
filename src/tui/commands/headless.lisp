@@ -21,8 +21,9 @@ display form when the command takes arguments, \"\" when the bare name is the
 whole usage, :AUTOCOMPLETE true for a command whose argument tail a caller can
 complete while it is typed (SLASH-COMPLETIONS answers it), :SESSION NIL for
 one that acts on no session, which a client with none open runs as it is,
-:ALIASES the other names SLASH answers it by, and :TRIGGER the character a
-shell's composer opens it on."
+:ALIASES the other names SLASH answers it by, :TRIGGER the character a
+shell's composer opens it on, and :READS what of the shell a cell's command
+reads ((:DRAFT), else NIL)."
   ;; The menu a channel publishes to its platform is this list; a cell's
   ;; command that shadows a builtin name is left out, as SLASH never reaches
   ;; it.
@@ -35,7 +36,8 @@ shell's composer opens it on."
                       :autocomplete (and entry.completer t)
                       :session entry.session
                       :aliases entry.aliases
-                      :trigger entry.trigger)))
+                      :trigger entry.trigger
+                      :reads entry.reads)))
 
 (defun models-argument-choices (text session-id)
   "The model catalog as completion choices for the tail TEXT typed so far:

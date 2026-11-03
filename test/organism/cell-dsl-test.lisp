@@ -251,3 +251,18 @@ registry saved around it and the two counters zeroed."
       (is (null (nlk:cell-started-p record)))
       (is (null (nle::find-registered-command "declared")))
       (is (null (assoc :declared nle::*help-topics*))))))
+
+(deftest cell-declaration-reads-is-quoted-data ()
+  ;; Given a :command whose :reads is written as the docs once showed it,
+  ;; unquoted, when the declaration expands, then it refuses there and says
+  ;; to quote it, rather than loading into an undefined function :DRAFT;
+  ;; and a :reads that is not a list of known reads refuses at registration.
+  (let ((condition (handler-case
+                       (progn (macroexpand-1 '(nle:define-cell reads-demo
+                                               (:command "stash" 'ignore :reads (:draft))))
+                              nil)
+                     (error (it) it))))
+    (is condition)
+    (is (search "'(:draft)" (princ-to-string condition))))
+  (is (signals-error error (nle:register-command "reads-demo" "stash" 'ignore :reads :draft)))
+  (is (signals-error error (nle:register-command "reads-demo" "stash" 'ignore :reads '(:mind)))))
