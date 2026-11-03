@@ -1348,12 +1348,10 @@ cut."
           (t (loop for line in (cap-lines (wrapped-lines setting.doc width) doc-lines width)
                    unless (zerop (length line)) collect (list :doc line))))))
 
-(defun setting-lines (settings entries style width label-width control-width doc-lines)
-  "The lines ENTRIES paint in STYLE -- :INLINE, a name column and the
-options beside it on every row, or :QUIET, a name and its value at the right
-edge, the chosen one's options under it when they do not fit beside -- in
-a pane WIDTH columns wide, the chosen one's description at most DOC-LINES
-lines. ENTRIES are (SETTING FOCUSED INDEX), (:HEAD PART) over a page's
+(defun setting-lines (settings entries width doc-lines)
+  "The lines ENTRIES paint, each a name and its value at the right edge, the
+chosen one's options under it when they do not fit beside, in a pane WIDTH
+columns wide, the chosen one's description at most DOC-LINES lines. ENTRIES are (SETTING FOCUSED INDEX), (:HEAD PART) over a page's
 results, or (:PART-HEAD PART APPLIES) over the settings of one section a
 page gathers, a blank line before it. A change of a release is one line,
 the whole of it once it is chosen. => (values LINES FOCUS-LINE)."
@@ -1377,14 +1375,6 @@ the whole of it once it is chosen. => (values LINES FOCUS-LINE)."
                    (push (list :change setting focused index (first said)) lines)
                    (dolist (line (rest said))
                      (push (list :doc line 13 focused) lines))))
-                ((eq style :inline)
-                 (let ((stack (and (> need control-width) (<= need (- width 2)))))
-                   (push (list :field setting focused index stack) lines)
-                   (when stack (push (list :control setting focused index) lines))
-                   (when focused
-                     (dolist (line (focus-extras settings setting (if stack (- width 2) control-width)
-                                                 doc-lines))
-                       (push (append line (list (if stack 2 (+ 3 label-width)) nil)) lines)))))
                 (t
                  (let ((beside (or (not focused) (zerop need)
                                    (<= (+ (text-display-width setting.label) 4 need) (- width 2)))))
@@ -1416,7 +1406,7 @@ APPLIES), APPLIES when a change there applies otherwise than on the page."
   "When a change applies, as a section's head says it: a restart in its own tone."
   (sheet-ink (if (uiop:string-prefix-p "restart" applies) :sheet-restart :muted) :ground ground))
 
-(defun paint-lines (settings canvas lines focus-line top rows px pw label-width ground)
+(defun paint-lines (settings canvas lines focus-line top rows px pw ground)
   "LINES down ROWS rows from TOP in the pane at PX, PW wide, scrolled to keep
 the chosen setting and what it carries in view. => the open field's caret,
 or NIL."
@@ -1440,12 +1430,12 @@ or NIL."
             while line
             do (let* ((kind (first line))
                       (block (case kind
-                               ((:field :row :control :change) (third line))
+                               ((:row :control :change) (third line))
                                ((:doc :said :pick) (car (last line)))))
                       (ground (if block lift ground)))
                  (when block
                    (canvas-fill canvas (- px 2) r (+ pw 4) 1 (sheet-ink nil :ground lift))
-                   (when (and none (member kind '(:field :row :change)))
+                   (when (and none (member kind '(:row :change)))
                      (canvas-put canvas (- px 2) r "›" nil)))
                  (case kind
                    ((:title :part-head)
@@ -1495,19 +1485,6 @@ or NIL."
                                                (unless (eql index (fourth settings.ids))
                                                  (setf (fourth settings.ids) index)
                                                  t))))))
-                   (:field
-                    (destructuring-bind (setting focused index stack) (rest line)
-                      (when setting.set (canvas-put canvas px r "•" (sheet-ink :dialog-accent :ground ground)))
-                      (canvas-put canvas (+ px 2) r
-                                  (clip-text-to-width setting.label (if stack (- pw 2) label-width))
-                                  (sheet-ink (if focused :dialog-accent :system) :ground ground))
-                      (sheet-hit settings r (- px 2) (+ px 2 label-width 1) (focus-setting-action index))
-                      (sheet-hit settings r (- px 2) (+ px pw 2) nil :hover (hover-setting-action index))
-                      (unless stack
-                        (let ((x (+ px 2 label-width 1)))
-                          (when-let (caret (paint-control settings canvas r x (- (+ px pw) x) setting
-                                                          focused ground index))
-                            (setf cursor caret))))))
                    (:control
                     (destructuring-bind (setting focused index) (rest line)
                       (when-let (caret (paint-control settings canvas r (+ px 2) (- pw 2) setting
@@ -1677,9 +1654,6 @@ options on its row while the pane holds them. => the caret's cell, or NIL."
            (title-row (+ top (if tight 0 1)))
            (content-top (+ title-row 2))
            (rows (- hint-row content-top (if tight 0 1)))
-           (style (if (>= pw 70) :inline :quiet))
-           (label-width (max 10 (min 25 (floor (* pw 36) 100))))
-           (control-width (- pw 2 label-width 1))
            (part (nth settings.section-at settings.sections))
            (cursor nil))
       (canvas-put canvas 3 title-row "Settings" (sheet-ink :title :ground rail :bold t))
@@ -1691,10 +1665,10 @@ options on its row while the pane holds them. => the caret's cell, or NIL."
                            (if (plusp (length settings.query))
                                (result-entries settings)
                                (page-entries part (and (eq settings.focus :pane) settings.setting-at)))
-                           style pw label-width control-width (if (>= rows 18) 3 2))
+                           pw (if (>= rows 18) 3 2))
           (when (eq settings.focus :rail) (setf settings.pane-top 0))
           (when-let (caret (paint-lines settings canvas (append head lines) (+ (length head) focus-line)
-                                        content-top rows px pw label-width pane))
+                                        content-top rows px pw pane))
             (setf cursor caret))))
       (paint-keys settings canvas hint-row px (+ px pw) (settings-keys settings) settings.flash pane)
       cursor)))
