@@ -516,13 +516,13 @@ working set."
                t))
     (incf *image-releases*)))
 
-(defun release-wide-read ()
-  "Give the image's pages back when this process holds more of them than one
-turn reads (*WIDE-READ-BYTES*)."
+(defun release-wide-read (&optional (bytes *wide-read-bytes*))
+  "Give the image's pages back when this process holds more of them than
+BYTES, by default what one turn reads (*WIDE-READ-BYTES*)."
   ;; A launch that goes straight to work keeps what its boot read: the boot
   ;; trim waits for a still screen a streaming turn never shows, and the
   ;; cells start after it. A full walk reads the whole image too.
-  (when (when-let (held (image-resident-bytes)) (> held *wide-read-bytes*))
+  (when (when-let (held (image-resident-bytes)) (> held bytes))
     (release-image-pages)))
 
 (defun trim-memory ()
@@ -644,8 +644,7 @@ image's pages back if it is holding any."
              ;; the process's size: a collection frees heap and touches code
              ;; in the same breath, so a process can re-read half its image
              ;; without growing at all.
-             (when (when-let (held (image-resident-bytes)) (> held *idle-release-bytes*))
-               (release-image-pages)))))))))
+             (release-wide-read *idle-release-bytes*))))))))
 
 (defun collect-while-idle (&optional (interval *idle-interval*))
   "Arm the idle collector: every INTERVAL seconds, on a timer thread of its

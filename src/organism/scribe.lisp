@@ -736,14 +736,12 @@ or a cell the organism made (made-cells.lisp). A FORMAT control string."
   ;; component: the loader records it and never loads it, and a build from
   ;; before knowledge cells loads an empty layer, quietly.
   (read-from-string
-   (if knowledge
-       (format nil "(defsystem ~s :description ~s :class nodecode.kernel:layer :depends-on (\"nodecode\") :properties ((:knowledge . t)) :components ())"
-               name
-               (format nil "~a: memories and skills, one definition per file, read by the index and never loaded." name))
-       (format nil "(defsystem ~s :description ~s :class nodecode.kernel:layer :depends-on (\"nodecode\") :serial t :components ())"
-               name
-               (or description
-                   (format nil "~a's layer: the organism's own definitions, one per file, over the shipped source." name))))))
+   (format nil "(defsystem ~s :description ~s :class nodecode.kernel:layer :depends-on (\"nodecode\") ~:[:serial t~;:properties ((:knowledge . t))~] :components ())"
+           name
+           (cond (knowledge (format nil "~a: memories and skills, one definition per file, read by the index and never loaded." name))
+                 (description)
+                 (t (format nil "~a's layer: the organism's own definitions, one per file, over the shipped source." name)))
+           knowledge)))
 
 (defun knowledge-system-file (directory)
   (merge-pathnames (format nil "~a.asd" (folder-name directory)) directory))
@@ -1232,27 +1230,25 @@ out of every one."
                                    ;; the IN-PACKAGE after the header makes OWN mean what it meant at the eval
                                    ;; OWN encoded from TEXT where it stands: copied out
                                    ;; and printed into the header's string first
-                                   (let ((content
-                                      (let* ((hit (and (not knowledge) (shipped-definition key)))
-                                             (head (format nil ";;; ~a — ~a~@[ recorded by session ~a~], ~a~%~@[~a~%~](in-package ~a)~%~%"
-                                                           (definition-key-label key)
-                                                           (string-downcase (getf key :operator))
-                                                           session-id
-                                                           (iso-time (unix-now) :millis nil)
-                                                           (and hit
-                                                                (format nil "~a~a@~a"
-                                                                        +override-marker+
-                                                                        (enough-namestring (second hit) *source-root*)
-                                                                        (shipped-text-digest hit)))
-                                                           (if (string= package (string-upcase package))
-                                                               (format nil ":~(~a~)" package)
-                                                               (format nil "~s" package)))))
-                                        (lambda (out)
-                                          (write-sequence (sb-ext:string-to-octets head :external-format :utf-8) out)
-                                          (write-sequence (sb-ext:string-to-octets text :external-format :utf-8
-                                                                                        :start (second own) :end (third own))
-                                                          out)
-                                          (write-byte 10 out)))))
+                                   (let* ((hit (and (not knowledge) (shipped-definition key)))
+                                          (head (format nil ";;; ~a — ~a~@[ recorded by session ~a~], ~a~%~@[~a~%~](in-package ~a)~%~%"
+                                                        (definition-key-label key)
+                                                        (string-downcase (getf key :operator))
+                                                        session-id
+                                                        (iso-time (unix-now) :millis nil)
+                                                        (and hit
+                                                             (format nil "~a~a@~a"
+                                                                     +override-marker+
+                                                                     (enough-namestring (second hit) *source-root*)
+                                                                     (shipped-text-digest hit)))
+                                                        (format nil (if (string= package (string-upcase package)) ":~(~a~)" "~s")
+                                                                package)))
+                                          (content (lambda (out)
+                                                     (write-sequence (sb-ext:string-to-octets head :external-format :utf-8) out)
+                                                     (write-sequence (sb-ext:string-to-octets text :external-format :utf-8
+                                                                                                   :start (second own) :end (third own))
+                                                                     out)
+                                                     (write-byte 10 out))))
                                      (cond (knowledge
                                             ;; once a call: it lists nothing, so only its absence matters
                                             (unless kept.written (ensure-knowledge-system directory))
@@ -1326,9 +1322,8 @@ out of every one."
                       (note-definition-kept symbol)))))
               (dolist (kept folders)
                 (when (or kept.written kept.removed)
-                  (record-kept-folder kept form text session-id ledger)))
-              ;; a name the layer gives up is the release's again
-              (dolist (kept folders)
+                  (record-kept-folder kept form text session-id ledger))
+                ;; a name the layer gives up is the release's again
                 (unless kept.knowledge
                   (dolist (key kept.forgotten)
                     (restore-shipped-definition key package)))))))

@@ -1226,11 +1226,11 @@ refusal. => LINES, what was done, in words."
                                                         (list (row-offer row))
                                                         (shipped-cells)))
                         (push (format nil "~a installed" name) lines)))
-            (:uninstall (if (uninstall-cell name :root root)
-                            (push (format nil "~a taken out" name) lines)
-                            (push (format nil "~a left in place: it is yours, and generation ~d never had it"
-                                          name number)
-                                  lines))))))
+            (:uninstall (push (if (uninstall-cell name :root root)
+                                  (format nil "~a taken out" name)
+                                  (format nil "~a left in place: it is yours, and generation ~d never had it"
+                                          name number))
+                              lines)))))
       (setf lines (append (nreverse lines) (stays-lines steps)))
       (write-json-file (restoring-path) "to" number
                                         "from" (or from :null)

@@ -40,8 +40,7 @@
 (defun knowledge-folder-p (directory)
   "Whether DIRECTORY is a knowledge cell: its .asd declares a LAYER system
 carrying (:knowledge . t) in :properties."
-  (and directory (uiop:directory-exists-p directory)
-       (cell-folder-knowledge-p (make-cell-folder (uiop:ensure-directory-pathname directory)))))
+  (eq (kept-folder-kind directory) :knowledge))
 
 (defun kept-folder-kind (directory)
   "What DIRECTORY keeps, read from its .asd as data: :KNOWLEDGE for a
