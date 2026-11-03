@@ -737,6 +737,7 @@ five seconds on a thread of its own."
   ;; delivery must still land in a system call that waits: a sleep, a read
   ;; on a pipe nobody writes, an accept nobody dials, a futex wait.
   (dolist (park (list (lambda () (sleep 30))
+                      #-win32
                       (lambda () (multiple-value-bind (in out) (sb-posix:pipe)
                                    (declare (ignore out))
                                    (read-byte (sb-sys:make-fd-stream in :input t :element-type '(unsigned-byte 8)) nil)))

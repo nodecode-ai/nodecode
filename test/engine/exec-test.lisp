@@ -795,7 +795,6 @@ completed. BODY runs with SID bound."
 ;; A shell child names the session that ran it -- a task claim, a log line --
 ;; from NODECODE_SESSION_ID, the id exactly as Nodecode prints it.
 (deftests sh-tells-its-child-the-session-id (session expected why)
-  #-win32
   ;; Given a snippet of SESSION's turn,
   (let ((nle::*current-durable-turn* (and session (detached-turn session "t-session-env"))))
     ;; when its shell child prints NODECODE_SESSION_ID,
@@ -803,7 +802,7 @@ completed. BODY runs with SID bound."
         (let ((*read-eval* nil))
           (read-from-string
            (nle:eval-string
-            "(list nlk:*scribe-session-id* (sh '(\"printenv\" \"NODECODE_SESSION_ID\")))")))
+            "(list nlk:*scribe-session-id* (sh \"printenv NODECODE_SESSION_ID\"))")))
       ;; then it reads the id the snippet's session is, exactly, or nothing.
       (is (equal session scribe-id) "the snippet's session is the scribe's")
       (if expected
