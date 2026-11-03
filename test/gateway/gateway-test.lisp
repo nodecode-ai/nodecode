@@ -3861,6 +3861,9 @@ request."
     (with-gateway-http (port :post "/api/gateway/slash"
                              :body "{\"line\":\"/t-stash save\",\"draft\":\"half a thought\"}")
       (is (equal "save:\"half a thought\"" (gethash "text" body)) "RUN reads the draft the line carried"))
+    (with-gateway-http (port :post "/api/gateway/slash"
+                             :body "{\"line\":\"/t-stash save\",\"draft\":\"café § über — あ\"}")
+      (is (equal "save:\"café § über — あ\"" (gethash "text" body)) "a UTF-8 body reaches the command as written"))
     (with-gateway-http (port :post "/api/gateway/slash" :body "{\"line\":\"/t-stash save\",\"draft\":\"\"}")
       (is (equal "save:\"\"" (gethash "text" body)) "an empty box is an empty draft"))
     (with-gateway-http (port :post "/api/gateway/slash" :body "{\"line\":\"/t-stash save\"}")
