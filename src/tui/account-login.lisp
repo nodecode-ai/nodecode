@@ -390,32 +390,33 @@ A sign-in already waiting is answered again, not claimed twice."
                 (login (list :state :waiting :mode mode :url url :code (getf claim :code)
                              :opened opened :text nil :at (get-universal-time))))
            (setf *account-login* login)
-           (spawn "nodecode-account-login"
-             (handler-case
-                 (let* ((reply (account-await claim :request request :again "/login"))
-                        (name (json-value reply :string "name")))
-                   (account-login-save reply)
-                   (setf *account-usage* nil)
-                   (let* ((lead (let ((id (account-default-model reply)))
-                                  ;; the model a turn runs on from now: a refused pick sets none
-                                  (and id (ignore-errors
-                                           (select-default-model :provider (json-value reply :string "provider")
-                                                                 :model id))
-                                       id)))
-                          (state (account-usage :max-age 0))
-                          (meter (when-let (usage (getf state :usage))
-                                   (multiple-value-bind (label value) (account-meter usage)
-                                     (format nil "~a ~a" label value))))
-                          (text (format nil "Signed in to nodecode.ai~@[ on ~a~]~@[ · ~a~]~@[ · default model ~a~]"
-                                        name meter lead)))
-                     (setf *account-login* (list* :state :signed-in :text text
-                                                  (alexandria:remove-from-plist login :state :text)))
-                     (notice text)))
-               (error (condition)
-                 (let ((text (format nil "nodecode.ai sign-in: ~a" condition)))
-                   (setf *account-login* (list* :state :failed :text text
-                                                (alexandria:remove-from-plist login :state :text)))
-                   (notice text :level :warning)))))
+           (flet ((settle (state text)
+                    (setf *account-login* (list* :state state :text text
+                                                 (alexandria:remove-from-plist login :state :text)))))
+             (spawn "nodecode-account-login"
+               (handler-case
+                   (let* ((reply (account-await claim :request request :again "/login"))
+                          (name (json-value reply :string "name")))
+                     (account-login-save reply)
+                     (setf *account-usage* nil)
+                     (let* ((lead (let ((id (account-default-model reply)))
+                                    ;; the model a turn runs on from now: a refused pick sets none
+                                    (and id (ignore-errors
+                                             (select-default-model :provider (json-value reply :string "provider")
+                                                                   :model id))
+                                         id)))
+                            (state (account-usage :max-age 0))
+                            (meter (when-let (usage (getf state :usage))
+                                     (multiple-value-bind (label value) (account-meter usage)
+                                       (format nil "~a ~a" label value))))
+                            (text (format nil "Signed in to nodecode.ai~@[ on ~a~]~@[ · ~a~]~@[ · default model ~a~]"
+                                          name meter lead)))
+                       (settle :signed-in text)
+                       (notice text)))
+                 (error (condition)
+                   (let ((text (format nil "nodecode.ai sign-in: ~a" condition)))
+                     (settle :failed text)
+                     (notice text :level :warning))))))
            login))))
 
 (defun account-json (&aux (state (account-usage)) (usage (getf state :usage)) (login *account-login*))
@@ -633,8 +634,7 @@ to nodecode.ai."
                                (plan-line plan-line)
                                (credit-line credit-line))
                            (setf (picker-row-paint row)
-                                 (lambda (selected room)
-                                   (declare (ignore selected))
+                                 (lambda-ignoring (selected room)
                                    (let* ((plan-width (min 60 (floor (* 3 (max 0 (- room 7))) 5)))
                                           (credit-width (max 0 (min 44 (- room 7 plan-width)))))
                                      (values (append (list (make-seg :text "    " :tone :muted))

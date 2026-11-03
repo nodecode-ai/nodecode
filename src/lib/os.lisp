@@ -1280,55 +1280,12 @@ STALE-SECONDS old or older, so a claimant that crashed holds nothing forever.
 (defun file-octets (path &optional limit)
   "The bytes of the file at PATH, or NIL when it cannot be read or is longer
 than LIMIT: the one bounded read the image seams and the sidecars share."
-  ;; Off Windows, the descriptor alone: OPEN would make a stream and its buffer
-  ;; and ask access(2) first, adding overhead the descriptor path avoids.
+  ;; A file that says no size, as one under /proc does, is read to its end.
   (with-handlers ((error () nil))
-    #-win32
-    (let ((fd (sb-posix:open (sb-ext:native-namestring (merge-pathnames path) :as-file t)
-                             sb-posix:o-rdonly)))
-      (with-cleanup ((sb-posix:close fd))
-        (let ((size (sb-posix:stat-size (sb-posix:fstat fd))))
-          (when (or (null limit) (<= size limit))
-            (descriptor-octets fd size)))))
-    #+win32
     (with-open-file (in path :element-type '(unsigned-byte 8) :if-does-not-exist nil)
       (when (and in (or (null limit) (<= (file-length in) limit)))
-        (alexandria:read-stream-content-into-byte-vector in :initial-size (file-length in))))))
+        (alexandria:read-stream-content-into-byte-vector in :initial-size (max 1 (file-length in)))))))
 
-#-win32
-(defun descriptor-octets (fd size &aux (octets (make-array size :element-type '(unsigned-byte 8)))
-                                       (end 0))
-  "Every byte left to read from the descriptor FD, SIZE of them expected: more
-when the file grew since, or says no size, as a file under /proc does."
-  (flet ((into (vector start)
-           (sb-sys:with-pinned-objects (vector)
-             (sb-posix:read fd (sb-sys:sap+ (sb-sys:vector-sap vector) start) (- (length vector) start)))))
-    (loop
-      (if (< end (length octets))
-          (let ((read (into octets end)))
-            (when (zerop read)
-              (return (if (= end (length octets)) octets (subseq octets 0 end))))
-            (incf end read))
-          ;; full: the end of the file, or a file longer than it said
-          (let* ((probe (make-array 4096 :element-type '(unsigned-byte 8)))
-                 (read (into probe 0)))
-            (when (zerop read)
-              (return octets))
-            (setf octets (replace (make-array (+ (* 2 end) read) :element-type '(unsigned-byte 8))
-                                  octets)
-                  octets (replace octets probe :start1 end :end2 read)
-                  end (+ end read)))))))
-
-;;; --- the process's stdio -----------------------------------------------------
-;;; A TUI paints through the terminal core, which opens the terminal itself;
-;;; while it runs the process's own descriptors 0, 1 and 2 have no legitimate
-;;; reader or writer, and anything that writes them directly — a child handed
-;;; an fd-stream, foreign code's printf, an SBCL low-level report — paints
-;;; over the viewport. Severing them removes the whole
-;;; class: fd 0 reads the null device, fds 1 and 2 append to a sidecar log,
-;;; and children inherit the severed set. Retention: the log is a debug-only
-;;; sink; fd-level bytes cannot be attributed to a tool call, so no lane
-;;; projects them into the transcript.
 
 #+win32
 (defun %std-handles-follow-fds ()

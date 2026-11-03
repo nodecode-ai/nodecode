@@ -786,15 +786,12 @@ token. ESCAPE is (CHAR POS) for the first \\n, \\t or \\r inside a string
 literal, the escape the reader does not have (STRING-ESCAPE-REPORT), or NIL.
 The one refusal: a string, |symbol| or #| comment that never ends,
 named at its position, because SBCL's END-OF-FILE on it names nothing."
-  (labels ((snippet (start)
-             (let ((end (min n (+ start 40))))
-               (format nil "~a~:[~;...~]" (subseq text start end) (< end n))))
-           (fail (control &rest arguments)
+  (labels ((fail (control &rest arguments)
              (return-from lex-form-structure
                (values nil (apply #'format nil control arguments))))
            (never-ends (what start)
              (fail "unbalanced form: ~a opened at char ~d never ends: ~a"
-                   what start (snippet start)))
+                   what start (text-excerpt text start 40)))
            (newline ()
              (incf line)
              (setf line-start (1+ i) at-head t))
@@ -877,6 +874,12 @@ named at its position, because SBCL's END-OF-FILE on it names nothing."
                  (t (head) (code (incf i))))))
     (values (nreverse tokens) code-end depth escape)))
 
+(defun text-excerpt (text start width &optional (end (length text)))
+  "The WIDTH characters of TEXT from START, stopping at END, followed by ...
+when TEXT goes on past them: how the reader quotes the form it names."
+  (let ((stop (min end (+ start width))))
+    (format nil "~a~:[~;...~]" (subseq text start stop) (< stop (length text)))))
+
 (defun outermost-unclosed (tokens &aux (open '()))
   "The :OPEN token of the outermost paren TOKENS leave open, or NIL."
   (dolist (token tokens)
@@ -890,10 +893,7 @@ named at its position, because SBCL's END-OF-FILE on it names nothing."
 where it started, and why no closer is inserted."
   (let* ((entry (outermost-unclosed tokens))
          (start (and entry (second entry)))
-         (shown (and start
-                     (let ((end (min (length text) (+ start 56))))
-                       (format nil "~a~:[~;...~]" (subseq text start end)
-                               (< end (length text)))))))
+         (shown (and start (text-excerpt text start 56))))
     (format nil "~d paren~:p left open and this snippet is one line, so there is no indentation to place a closer by. Closing at the end would not finish the form, it would move everything after it inside~@[ ~a~] — which reads, compiles and means something else. Close it yourself, or write the snippet across lines and the reader places the closers by indentation."
             missing shown)))
 
@@ -1010,11 +1010,8 @@ unchanged, and so is dropping a \")\" that closes nothing."
                         (flet ((opener (start)
                                  ;; The opener's own line, at most forty
                                  ;; characters: a note stays one line.
-                                 (let* ((eol (or (position #\Newline text :start start)
-                                                 (length text)))
-                                        (end (min eol (+ start 40))))
-                                   (format nil "~a~:[~;...~]" (subseq text start end)
-                                           (< end (length text))))))
+                                 (text-excerpt text start 40 (or (position #\Newline text :start start)
+                                                                 (length text)))))
                           (let ((closed
                                   (cond ((null sites) nil)
                                         ((= 1 (length sites))
@@ -2389,29 +2386,22 @@ and escapes are skipped, depth is counted, and JSON's structure is ASCII so
 the bytes of a wider character never read as any of it — so it costs one
 pass over the prefix and never refuses a body."
   (loop for i from 0 below (min (1+ offset) (length body))
-        for byte = (aref body i)
-        do (cond (in-string
-                  (cond (escaped (setf escaped nil))
-                        ((= byte #.(char-code #\\)) (setf escaped t))
-                        ((= byte #.(char-code #\"))
-                         (setf in-string nil)
-                         (when (= depth 1)
-                           (setf pending (sb-ext:octets-to-string
-                                          body :start (1+ string-start) :end i
-                                          :external-format :utf-8))))))
-                 ((= byte #.(char-code #\")) (setf in-string t string-start i))
-                 ((= byte #.(char-code #\:))
-                  (when (and (= depth 1) pending)
-                    (setf key pending pending nil index nil)))
-                 ((= byte #.(char-code #\,))
-                  (cond ((and (= depth 2) index) (incf index))
-                        ((= depth 1) (setf pending nil))))
-                 ((or (= byte #.(char-code #\{)) (= byte #.(char-code #\[)))
-                  (incf depth)
-                  (when (and (= depth 2) (= byte #.(char-code #\[))) (setf index 0)))
-                 ((or (= byte #.(char-code #\})) (= byte #.(char-code #\])))
-                  (decf depth)
-                  (when (= depth 1) (setf index nil)))))
+        for char = (code-char (aref body i))
+        do (if in-string
+               (cond (escaped (setf escaped nil))
+                     ((char= char #\\) (setf escaped t))
+                     ((char= char #\")
+                      (setf in-string nil)
+                      (when (= depth 1)
+                        (setf pending (sb-ext:octets-to-string body :start (1+ string-start) :end i
+                                                                    :external-format :utf-8)))))
+               (case char
+                 (#\" (setf in-string t string-start i))
+                 (#\: (when (and (= depth 1) pending) (setf key pending pending nil index nil)))
+                 (#\, (cond ((and (= depth 2) index) (incf index))
+                            ((= depth 1) (setf pending nil))))
+                 ((#\{ #\[) (incf depth) (when (and (= depth 2) (char= char #\[)) (setf index 0)))
+                 ((#\} #\]) (decf depth) (when (= depth 1) (setf index nil))))))
   (cond ((null key) "")
         (index (format nil "~a[~d]" key index))
         (t key)))
@@ -2433,14 +2423,9 @@ voided length-cut fact and AGENT-LOOP's round close APPLY on top of their own
 identity keywords; a count the lane never learned stays NIL, which the fact
 drops rather than record as a zero the provider did not say."
   (when usage
-    (list :input-tokens usage.input-tokens
-          :output-tokens usage.output-tokens
-          :cached-input-tokens usage.cached-input-tokens
-          :total-tokens usage.total-tokens
-          :reasoning-tokens usage.reasoning-tokens
-          :cache-write-tokens usage.cache-write-tokens
-          :cache-write-5m-tokens usage.cache-write-5m-tokens
-          :cache-write-1h-tokens usage.cache-write-1h-tokens)))
+    (loop for slot in '(input-tokens output-tokens cached-input-tokens total-tokens reasoning-tokens
+                        cache-write-tokens cache-write-5m-tokens cache-write-1h-tokens)
+          nconc (list (intern (symbol-name slot) :keyword) (slot-value usage slot)))))
 
 (defun record-round-usage (turn &rest usage &key provider model &allow-other-keys)
   "Record one round's turn.usage fact on TURN from USAGE, RECORD-TURN-USAGE's
@@ -2453,42 +2438,6 @@ the counts (MODEL-PRICE, ROUND-COST), COST-KNOWN whether there was one."
   (let ((cost (apply #'round-cost (model-price model provider) usage)))
     (apply #'nlk:record-turn-usage turn
            (if cost (list* :cost-known t :cost-usd cost usage) usage))))
-
-(defun cut-round-usage-estimate (context config cadence response-model
-                                 response-effort text thinking calls)
-  "What a round the cancel cut can still say about itself, for the usage
-fact RUN records in its place: the identity the round ran under, and —
-only once the stream proved the server processed the request (a part
-arrived) — the counts the server never got to report. The prompt is the
-calibrated context estimate, the same corrected number the output cap is
-sized from; the output is everything that streamed, chars/4, with the
-thinking share counted again as reasoning — the provider convention
-(reasoning_tokens is a subset of output_tokens), so the divider reads the
-same whichever way the turn ended.
-=> the RECORD-TURN-USAGE argument list itself (:provider :model
-:reasoning-effort :response-model :input-tokens :output-tokens
-:reasoning-tokens), which both cut sites APPLY rather than re-spell;
-counts NIL when unproven — never a zero the provider did not say."
-  (let* ((provider-id config.provider)
-         (model-id config.model)
-         (served (plusp cadence.part-count))
-         (thinking-chars (length thinking))
-         (output-chars (+ (length text) thinking-chars
-                          (loop for (nil . buf) in calls
-                                sum (length (or (getf buf :arguments) ""))))))
-    (list :provider provider-id
-          :model model-id
-          :reasoning-effort (or response-effort
-                                config.reasoning-effort)
-          :response-model response-model
-          :input-tokens (and served
-                             (round (* (compiled-context-estimated-tokens context)
-                                       (context-estimate-ratio provider-id
-                                                               model-id))))
-          :output-tokens (and served (plusp output-chars)
-                              (ceiling output-chars 4))
-          :reasoning-tokens (and served (plusp thinking-chars)
-                                 (ceiling thinking-chars 4)))))
 
 (defparameter *continuation-reasoning-prompt*
   "Your previous reply was cut off mid-stream after ~d characters of ~
@@ -2723,9 +2672,16 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                (if (continuing-p)
                    (continuation-context context sealed-reasoning sealed-text)
                    context))
-             (seal-prefix ()
-               ;; the sealed reasoning as a continued round's reasoning opens: on its own line
-               (if (plusp (length sealed-reasoning)) (format nil "~a~%" sealed-reasoning) ""))
+             (continued (thinking text &aux (prefix (if (plusp (length sealed-reasoning))
+                                                         (format nil "~a~%" sealed-reasoning)
+                                                         "")))
+               ;; THINKING and TEXT with the seal in front: the sealed
+               ;; reasoning on its own line, the sealed text joined bare.
+               ;; => (values THINKING TEXT CONTINUED-FROM), the last the
+               ;; (:reasoning CHARS :content CHARS) offsets of the join.
+               (values (concatenate 'string prefix thinking)
+                       (concatenate 'string sealed-text text)
+                       (list :reasoning (length prefix) :content (length sealed-text))))
              (merge-continuation (message)
                ;; The winning attempt's message, with the seal restored in
                ;; front of what it streamed: reasoning joined on a newline
@@ -2737,26 +2693,19 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                ;; nothing was continued.
                (if (not (continuing-p))
                    (values message nil)
-                   (let ((reasoning-prefix (seal-prefix))
-                         (reasoning (gethash "reasoning_content" message))
+                   (let ((reasoning (gethash "reasoning_content" message))
                          (content (gethash "content" message)))
-                     (setf (gethash "reasoning_content" message)
-                           (concatenate 'string reasoning-prefix
-                                        (if (stringp reasoning) reasoning "")))
-                     (when (plusp (length sealed-text))
-                       (setf (gethash "content" message)
-                             (cond ((stringp content)
-                                    (concatenate 'string sealed-text content))
-                                   ((and (vectorp content) (plusp (length content)))
-                                    (concatenate
-                                     'vector
-                                     (vector (json-object "type" "text"
-                                                          "text" sealed-text))
-                                     content))
-                                   (t sealed-text))))
-                     (values message
-                             (list :reasoning (length reasoning-prefix)
-                                   :content (length sealed-text))))))
+                     (multiple-value-bind (reasoning text continued-from)
+                         (continued (if (stringp reasoning) reasoning "")
+                                    (if (stringp content) content ""))
+                       (setf (gethash "reasoning_content" message) reasoning)
+                       (when (plusp (length sealed-text))
+                         (setf (gethash "content" message)
+                               (if (and (vectorp content) (not (stringp content)) (plusp (length content)))
+                                   (concatenate 'vector (vector (json-object "type" "text" "text" sealed-text))
+                                                content)
+                                   text)))
+                       (values message continued-from)))))
              (void-partial-stream ()
                (get-output-stream-string partial)
                (get-output-stream-string partial-reasoning)
@@ -2786,11 +2735,7 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                     :reasoning thinking :text text :detail detail
                     :stream-duration-ms (stream-cadence-duration-ms cadence)
                     :disposition disposition)
-                   (when-let (cut (and estimate-p
-                                       (cut-round-usage-estimate
-                                        context config cadence
-                                        response-model response-effort
-                                        text thinking partial-calls)))
+                   (when-let (cut (and estimate-p (cut-usage-estimate text thinking)))
                      (apply #'record-round-usage *current-durable-turn*
                             :voided t :estimated t cut))
                    (notify-turn-facts-committed))
@@ -2811,13 +2756,47 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                ;; the round's estimate, scaled by what this model's counts taught
                (round (* (compiled-context-estimated-tokens context)
                          (context-estimate-ratio config.provider config.model))))
-             (record-fallback (to-provider to-model reason &rest more)
+             (round-identity ()
+               ;; Who answered this round, as its usage fact names it.
+               (list :provider config.provider
+                     :model config.model
+                     :reasoning-effort (or response-effort
+                                           config.reasoning-effort)
+                     :response-model response-model))
+             (cut-usage-estimate (text thinking &aux (served (plusp cadence.part-count))
+                                                     (thinking-chars (length thinking)))
+               "What a round the cancel cut can still say about itself, for the usage
+fact RUN records in its place: the identity the round ran under, and —
+only once the stream proved the server processed the request (a part
+arrived) — the counts the server never got to report. The prompt is the
+calibrated context estimate, the same corrected number the output cap is
+sized from; the output is everything that streamed (TEXT, THINKING and the
+partial tool calls), chars/4, with the thinking share counted again as
+reasoning — the provider convention (reasoning_tokens is a subset of
+output_tokens), so the divider reads the same whichever way the turn ended.
+=> the RECORD-TURN-USAGE argument list itself, which both cut sites APPLY
+rather than re-spell; counts NIL when unproven — never a zero the provider
+did not say."
+               (let ((output-chars (+ (length text) thinking-chars
+                                      (loop for (nil . buf) in partial-calls
+                                            sum (length (or (getf buf :arguments) ""))))))
+                 (list* :input-tokens (and served
+                                           (scaled-estimate))
+                        :output-tokens (and served (plusp output-chars)
+                                            (ceiling output-chars 4))
+                        :reasoning-tokens (and served (plusp thinking-chars)
+                                               (ceiling thinking-chars 4))
+                        (round-identity))))
+             (record-fallback (to-provider to-model reason &rest more
+                               &aux (move (list :from-provider config.provider :from-model config.model
+                                                :to-provider to-provider :to-model to-model :reason reason)))
+               ;; => MOVE, the step's from/to/reason plist, which the
+               ;; :stream-fallback part repeats.
                (when *current-durable-turn*
                  (apply #'nlk:record-provider-fallback *current-durable-turn*
-                        :from-provider config.provider :from-model config.model
-                        :to-provider to-provider :to-model to-model :reason reason
-                        :attempt provider-attempt more)
-                 (notify-turn-facts-committed)))
+                        (append move (list* :attempt provider-attempt more)))
+                 (notify-turn-facts-committed))
+               move)
              (verdict-of (e)
                ;; What failure E said of its model: the failover label, the
                ;; HTTP status, and the provider's own words on one line.
@@ -2866,11 +2845,9 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                ;; Off the chain, E is the selection's own failure.
                (unless fallback-tried
                  (setf selection-verdict (verdict-of e)))
-               (let* ((current-provider config.provider)
-                      (current-model config.model)
-                      ;; Off the selection, only a failure whose trigger is
-                      ;; on leaves for the chain.
-                      (next (next-candidate (failover-chain-for e fallback-tried))))
+               (let (;; Off the selection, only a failure whose trigger is
+                     ;; on leaves for the chain.
+                     (next (next-candidate (failover-chain-for e fallback-tried))))
                  (when next
                    (let ((provider (getf next :provider))
                          (model (getf next :model))
@@ -2878,7 +2855,8 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                      (push (list :provider provider :model model :reason nil)
                            fallback-tried)
                      (handler-case
-                         (let ((candidate (failover-candidate-config provider model)))
+                         (let ((candidate (failover-candidate-config provider model))
+                               (move nil))
                            ;; What the failing attempt streamed is sealed under
                            ;; its own attempt index first, then the seal is
                            ;; cleared: the candidate answers the round from
@@ -2890,9 +2868,9 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                            ;; refused attempt's first token, and the
                            ;; candidate's TTFT came out negative.
                            (void-partial-stream)
-                           (record-fallback provider model reason :status (provider-error-status e)
-                                            :detail (provider-error-detail e))
-                           (setf config candidate
+                           (setf move (record-fallback provider model reason :status (provider-error-status e)
+                                                       :detail (provider-error-detail e))
+                                 config candidate
                                  context (context-with context
                                                        :provider-config candidate)
                                  ;; The candidate's lane gets its own budgets:
@@ -2903,12 +2881,7 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                            (incf provider-attempt)
                            (emit-stream-part
                             on-part :stream-fallback
-                            :payload (list :from-provider current-provider
-                                           :from-model current-model
-                                           :to-provider provider
-                                           :to-model model
-                                           :reason reason
-                                           :status (provider-error-status e)))
+                            :payload (append move (list :status (provider-error-status e))))
                            t)
                        (error (refusal)
                          ;; A candidate whose own config cannot name a wire is
@@ -2990,41 +2963,31 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                (incf provider-attempt)
                (void-partial-stream)
                t)
-             (pre-call-govern ()
+             (pre-call-govern (&aux (steps 0))
                ;; Admission is deliberately soft: known pressure gets a
                ;; bounded number of existing durable eviction steps, while an
                ;; unknown window remains unknown and is left to the provider.
                ;; Recompute after every step because the retained history and
-               ;; its estimate both changed.
-               (let ((steps 0))
-                 (loop
-                   (let* ((estimate (scaled-estimate))
-                          (decision (context-pressure-decision
-                                     estimate (effective-context-budget context.provider-config))))
-                     (case (getf decision :status)
-                       (:unknown
-                        (note-phase "context-pressure status=unknown estimate=~d" estimate)
-                        (return steps))
-                       (:ok
-                        (when (plusp steps)
-                          (note-phase
-                           "context-pressure status=evicted steps=~d estimate=~d budget=~d"
-                           steps estimate (getf decision :budget)))
-                        (return steps))
-                       (:pressure
-                        (cond
-                          ((>= steps +max-pre-call-governor-steps+)
-                           (note-phase
-                            "context-pressure status=capped steps=~d estimate=~d budget=~d"
-                            steps estimate (getf decision :budget))
-                           (return steps))
-                          ((evict-and-retarget "budget_fill")
-                           (incf steps))
-                          (t
-                           (note-phase
-                            "context-pressure status=unresolved estimate=~d budget=~d"
-                            estimate (getf decision :budget))
-                           (return steps)))))))))
+               ;; its estimate both changed. Each verdict but a step taken
+               ;; ends the loop and leaves its phase line.
+               (loop
+                 (let* ((estimate (scaled-estimate))
+                        (decision (context-pressure-decision
+                                   estimate (effective-context-budget context.provider-config)))
+                        (status (getf decision :status))
+                        (budget (getf decision :budget)))
+                   (cond ((eq status :unknown)
+                          (return (note-phase "context-pressure status=unknown estimate=~d" estimate)))
+                         ((eq status :ok)
+                          (return (when (plusp steps)
+                                    (note-phase "context-pressure status=evicted steps=~d estimate=~d budget=~d"
+                                                steps estimate budget))))
+                         ((>= steps +max-pre-call-governor-steps+)
+                          (return (note-phase "context-pressure status=capped steps=~d estimate=~d budget=~d"
+                                              steps estimate budget)))
+                         ((evict-and-retarget "budget_fill") (incf steps))
+                         (t (return (note-phase "context-pressure status=unresolved estimate=~d budget=~d"
+                                                estimate budget)))))))
              (refuse-without-output-room ()
                ;; The admission the governor cannot make. PRE-CALL-GOVERN
                ;; evicts until the estimate fits the budget or its step cap
@@ -3134,11 +3097,8 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                                      ;; merge a finished continuation
                                      ;; gets, and says where the join is.
                                      (when (continuing-p)
-                                       (let ((prefix (seal-prefix)))
-                                         (setf (nlk:turn-cancelled-condition-partial-continued-from c)
-                                               (list :reasoning (length prefix) :content (length sealed-text))
-                                               thinking (concatenate 'string prefix thinking)
-                                               text (concatenate 'string sealed-text text))))
+                                       (setf (values thinking text (nlk:turn-cancelled-condition-partial-continued-from c))
+                                             (continued thinking text)))
                                      (when (plusp (length text))
                                        (setf (nlk:turn-cancelled-condition-partial-text c) text))
                                      (when (plusp (length thinking))
@@ -3147,8 +3107,7 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                                        (setf (nlk:turn-cancelled-condition-partial-tool-calls c)
                                              (mapcar #'cdr (sort (copy-list partial-calls) #'< :key #'car))))
                                      (setf (nlk:turn-cancelled-condition-partial-usage c)
-                                           (cut-round-usage-estimate context config cadence response-model
-                                                                     response-effort text thinking partial-calls)))))
+                                           (cut-usage-estimate text thinking)))))
                     ;; One fold per lane: a round with no observer IS the
                     ;; blocking call. OBSERVER is NIL when nothing wants parts.
                     (setf cadence.sent-ms (elapsed-ms 0)
@@ -3221,10 +3180,8 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                   (setf length-cut-recovered-p t
                         cut-recovered t)
                   (when *current-durable-turn*
-                    (apply #'record-round-usage *current-durable-turn*
-                           :model model-id :provider provider-id :response-model response-model
-                           :reasoning-effort (or response-effort config.reasoning-effort)
-                           :finish-reason finish-reason :voided t (provider-usage-fact-args usage))
+                    (apply #'record-round-usage *current-durable-turn* :finish-reason finish-reason :voided t
+                           (append (round-identity) (provider-usage-fact-args usage)))
                     (notify-turn-facts-committed))
                   ;; The cut message is sealed into the transcript like any
                   ;; other voided attempt (the provider's own usage already
@@ -3354,32 +3311,24 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
              ;; error is allowed to stand.
              (unless (evict-and-retarget) (error e))
              (incf overflow-recoveries))
-            ;; On a candidate (the round has walked the chain), a failure no
-            ;; retry cures is that candidate's verdict, not the round's: the
-            ;; chain walks on, and only past its last entry does it stand.
-            ;; Without this, a relay's 400 for a model it does not serve would
-            ;; end a turn with the next entry untried.
-            ((and fallback-tried
-                  (not (retryable-provider-error-p e))
-                  (try-fallback e))
-             nil)
-            ;; A refusal is the selection's verdict on this one request, not
-            ;; on the turn: with a chain configured, its first candidate
-            ;; answers this round and the selection is asked again once the
-            ;; turn's refusal hold is over (NEXT-ROUND-CONTEXT). Without a
-            ;; fallback, a refusal would be terminal instead of trying the
-            ;; fallback.
-            ((and (typep e 'provider-refused)
-                  (null fallback-tried)
-                  (try-fallback e))
-             (setf refusal-fallback-p t)
-             nil)
-            ;; A slow start leaves for the candidate that stood behind its
-            ;; attempt at once: retried, the same cold start would be
-            ;; waited out again. With the chain spent it is a stall like any
-            ;; other, and the ladder below retries it.
-            ((and (typep e 'provider-slow-start)
-                  (try-fallback e))
+            ;; Three failures walk the chain at once. On a candidate (the
+            ;; round has walked the chain), a failure no retry cures is that
+            ;; candidate's verdict, not the round's: the chain walks on, and
+            ;; only past its last entry does it stand. Without this, a relay's
+            ;; 400 for a model it does not serve would end a turn with the
+            ;; next entry untried. A refusal (never retryable) is the
+            ;; selection's verdict on this one request, not on the turn: with
+            ;; a chain configured, its first candidate answers this round and
+            ;; the selection is asked again once the turn's refusal hold is
+            ;; over (NEXT-ROUND-CONTEXT). A slow start leaves for the
+            ;; candidate that stood behind its attempt at once: retried, the
+            ;; same cold start would be waited out again. With the chain spent
+            ;; each stands, or the ladder below retries it.
+            ((let ((refusal-p (and (typep e 'provider-refused) (null fallback-tried))))
+               (and (or (typep e '(or provider-refused provider-slow-start))
+                        (and fallback-tried (not (retryable-provider-error-p e))))
+                    (try-fallback e)
+                    (or (not refusal-p) (setf refusal-fallback-p t))))
              nil)
             (t
              (unless (retryable-provider-error-p e)
@@ -3393,10 +3342,10 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
              ;; never the verdict.
              (let* ((scope (provider-error-scope e))
                     (request-p (eq scope :request))
-                    (scope-retry
-                      (if request-p
-                          (1+ request-retries-used)
-                          stream-attempt))
+                    ;; The budget SCOPE spends: how much of it is used, and
+                    ;; its size. The retry about to run is the (1+ USED)th.
+                    (used (if request-p request-retries-used (1- stream-attempt)))
+                    (limit (if request-p config.max-request-retries config.max-stream-retries))
                     ;; Past the rerun ceiling a cut attempt is continued,
                     ;; not re-run: no lane resumes a generation, so a re-run
                     ;; repeats everything from zero, while a continuation
@@ -3409,62 +3358,56 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                     ;; the prompt to go on looping.
                     (continue-p (and (not request-p)
                                      (not (typep e 'provider-reasoning-loop))
-                                     (past-rerun-ceiling-p))))
-               ;; A refused connection spends the request budget at once:
-               ;; nothing listens there, and the next attempt hears the same.
-               (let ((exhausted (or (typep e 'provider-connection-refused)
-                                    (if request-p
-                                        (>= request-retries-used config.max-request-retries)
-                                        (>= (1- stream-attempt) config.max-stream-retries)))))
-                 (cond
-                   ((and exhausted (try-fallback e))
-                    ;; The chain took the round: the failed attempt is sealed
-                    ;; by the fallback itself (disposition rerun), the loop
-                    ;; re-runs against the candidate, and the ladder below is
-                    ;; NOT walked — no retry fact, no counters, no sleep.
-                    nil)
-                   (exhausted
-                    ;; An exhausted budget keeps its last attempt too — and
-                    ;; the failure says what survived.
-                    (seal-streamed-attempt (provider-error-detail e) "stood")
-                    (when (continuing-p)
-                      (setf (provider-error-note e)
-                            "(the stream budget is spent; what streamed across the attempts is kept)"))
-                    (amend-terminal-failover-note e)
-                    (error e))
-                   (t
-                    ;; The failed attempt may have streamed parts: seal them
-                    ;; durably before the retry fact, under the attempt index
-                    ;; that fact names, and join them to the continuation seal
-                    ;; when the policy continues.
-                    (multiple-value-bind (text thinking)
-                        (seal-streamed-attempt (provider-error-detail e)
-                                               (if continue-p "continued" "rerun"))
-                      (when continue-p (extend-seal text thinking)))
-                    (let ((delay (provider-retry-delay
-                                  scope-retry
-                                  config.retry-base-delay
-                                  :retry-after (provider-error-retry-after e)
-                                  :status (provider-error-status e))))
-                      (announce-retry
-                       e scope delay (provider-error-detail e)
-                       scope-retry
-                       (if request-p config.max-request-retries config.max-stream-retries)
-                       (and continue-p t))
-                      (if request-p
-                          (incf request-retries-used)
-                          (setf stream-attempt (1+ stream-attempt)
-                                request-retries-used 0))
-                      (incf provider-attempt)
-                      ;; The announcement above already hydrated the rows a client
-                      ;; keeps; voiding the cancel backstop's accumulation the same
-                      ;; way clears only what it did not.
-                      (void-partial-stream)
-                      ;; The backoff itself is a cancellable wait: Esc during a
-                      ;; long Retry-After pause interrupts the sleep instead of
-                      ;; letting the retry fire first.
-                      (nlk:with-cancellable-wait (*current-durable-turn*)
-                        (sleep delay)))))))))))))))
+                                     (past-rerun-ceiling-p)))
+                    ;; A refused connection spends the request budget at once:
+                    ;; nothing listens there, and the next attempt hears the same.
+                    (exhausted (or (typep e 'provider-connection-refused) (>= used limit))))
+               (cond
+                 ((and exhausted (try-fallback e))
+                  ;; The chain took the round: the failed attempt is sealed
+                  ;; by the fallback itself (disposition rerun), the loop
+                  ;; re-runs against the candidate, and the ladder below is
+                  ;; NOT walked — no retry fact, no counters, no sleep.
+                  nil)
+                 (exhausted
+                  ;; An exhausted budget keeps its last attempt too — and
+                  ;; the failure says what survived.
+                  (seal-streamed-attempt (provider-error-detail e) "stood")
+                  (when (continuing-p)
+                    (setf (provider-error-note e)
+                          "(the stream budget is spent; what streamed across the attempts is kept)"))
+                  (amend-terminal-failover-note e)
+                  (error e))
+                 (t
+                  ;; The failed attempt may have streamed parts: seal them
+                  ;; durably before the retry fact, under the attempt index
+                  ;; that fact names, and join them to the continuation seal
+                  ;; when the policy continues.
+                  (multiple-value-bind (text thinking)
+                      (seal-streamed-attempt (provider-error-detail e)
+                                             (if continue-p "continued" "rerun"))
+                    (when continue-p (extend-seal text thinking)))
+                  (let ((delay (provider-retry-delay
+                                (1+ used)
+                                config.retry-base-delay
+                                :retry-after (provider-error-retry-after e)
+                                :status (provider-error-status e))))
+                    (announce-retry e scope delay (provider-error-detail e)
+                                    (1+ used) limit (and continue-p t))
+                    (if request-p
+                        (incf request-retries-used)
+                        (setf stream-attempt (1+ stream-attempt)
+                              request-retries-used 0))
+                    (incf provider-attempt)
+                    ;; The announcement above already hydrated the rows a client
+                    ;; keeps; voiding the cancel backstop's accumulation the same
+                    ;; way clears only what it did not.
+                    (void-partial-stream)
+                    ;; The backoff itself is a cancellable wait: Esc during a
+                    ;; long Retry-After pause interrupts the sleep instead of
+                    ;; letting the retry fire first.
+                    (nlk:with-cancellable-wait (*current-durable-turn*)
+                      (sleep delay))))))))))))))
 
 ;;; --- tool dispatch ------------------------------------------------------
 
@@ -4599,10 +4542,9 @@ outranks the default effort the same way while the turn's effective
                      turn (json-object "role" "assistant" "content" (or streamed "")
                                        :when thinking "reasoning_content" thinking
                                        :when calls "tool_calls"
-                                       (map 'vector (lambda (call)
-                                                      (destructuring-bind (id name arguments) call
-                                                        (chat-tool-call-object id (or name "") arguments)))
-                                            calls))
+                                       (coerce (loop for (id name arguments) in calls
+                                                     collect (chat-tool-call-object id (or name "") arguments))
+                                               'vector))
                      :continued-from (nlk:turn-cancelled-condition-partial-continued-from condition))
                     (loop for (id name arguments) in calls
                           do (nlk:record-tool-call turn id (or name "unknown") arguments)

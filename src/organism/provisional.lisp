@@ -198,14 +198,16 @@ signals, and the batch whose fate it shares."
 definition entered there is the model calling it, which proves nothing.")
 
 (defun call-shape (lambda-list &aux (state :required) (min 0) (positional 0) (keys '())
-                                    (rest nil) (key-p nil) (any nil))
+                                    (rest nil) (key-p nil) (any nil) (start nil))
   "LAMBDA-LIST's calls as (MIN MAX KEYS): MAX NIL when unbounded, KEYS :ANY
-when any keyword passes, else the keyword names taken."
+when any keyword passes, else the keyword names taken; the second value is
+how many arguments it binds positionally before its keywords begin, NIL
+when it takes no &KEY."
   (dolist (item lambda-list)
     (case item
       (&optional (setf state :optional))
       ((&rest &body) (setf state :rest rest t))
-      (&key (setf state :key key-p t))
+      (&key (setf state :key key-p t start positional))
       (&allow-other-keys (setf any t))
       (&aux (setf state :aux))
       ;; an implementation's own &-word (SB-INT:&MORE) is no argument
@@ -214,20 +216,9 @@ when any keyword passes, else the keyword names taken."
            (:optional (incf positional))
            (:key (let ((head (if (consp item) (first item) item)))
                    (push (symbol-name (if (consp head) (first head) head)) keys)))))))
-  (list min (unless (or rest key-p) positional)
-        (if (or any (and rest (not key-p))) :any keys)))
-
-(defun keyword-start (lambda-list &aux (state :required) (positional 0))
-  "How many arguments LAMBDA-LIST binds positionally before its keywords
-begin, or NIL when it takes no &KEY."
-  (dolist (item lambda-list nil)
-    (case item
-      (&optional (setf state :optional))
-      ((&rest &body &aux) (setf state :other))
-      (&key (return positional))
-      (t (when (and (member state '(:required :optional))
-                    (not (and (symbolp item) (uiop:string-prefix-p "&" (symbol-name item)))))
-           (incf positional))))))
+  (values (list min (unless (or rest key-p) positional)
+                (if (or any (and rest (not key-p))) :any keys))
+          start))
 
 (defun keywords-aligned-p (new-start any old-min old-max old-start)
   "Whether a lambda list reading keywords from NEW-START, any keyword when
@@ -251,16 +242,16 @@ begin there too."
 (defun takes-every-call-p (new old)
   "Whether lambda list NEW takes every call lambda list OLD takes: argument
 counts, keywords, and where the keywords begin (proofs/SelfEditHold.lean)."
-  (destructuring-bind (new-min new-max new-keys) (call-shape new)
-    (destructuring-bind (old-min old-max old-keys) (call-shape old)
-      (let ((new-start (keyword-start new)) (old-start (keyword-start old)))
-        (and (<= new-min old-min)
-             (or (null new-max) (and old-max (>= new-max old-max)))
-             (or (null old-keys) (eq new-keys :any)
-                 (and (listp old-keys) (subsetp old-keys new-keys :test #'string=)))
-             ;; NEW reads keywords from NEW-START on: (x &optional y) -> (x &key y)
-             ;; would read the caller's (f 1 2) as a keyword list
-             (keywords-aligned-p new-start (eq new-keys :any) old-min old-max old-start))))))
+  (bind (((new-shape new-start) (call-shape new))
+         ((old-shape old-start) (call-shape old)))
+    (destructuring-bind ((new-min new-max new-keys) (old-min old-max old-keys)) (list new-shape old-shape)
+      (and (<= new-min old-min)
+           (or (null new-max) (and old-max (>= new-max old-max)))
+           (or (null old-keys) (eq new-keys :any)
+               (and (listp old-keys) (subsetp old-keys new-keys :test #'string=)))
+           ;; NEW reads keywords from NEW-START on: (x &optional y) -> (x &key y)
+           ;; would read the caller's (f 1 2) as a keyword list
+           (keywords-aligned-p new-start (eq new-keys :any) old-min old-max old-start)))))
 
 (defvar *held* (make-hash-table :test 'equal)
   "NAME -> HELD-DEFINITION for every definition still waiting on its first

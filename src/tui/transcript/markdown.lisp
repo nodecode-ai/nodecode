@@ -173,13 +173,10 @@ URLs, paths and strict <span style=\"color:#RRGGBB\"> regions."
                (cond (colored
                       (lay inner piece close-pos style
                            (lambda (moved)
-                             (setf moved.tone (or moved.tone (getf style :tone))
-                                   moved.ground (or moved.ground (getf style :ground))
-                                   moved.bold (or moved.bold (getf style :bold))
-                                   moved.italic (or moved.italic (getf style :italic))
-                                   moved.strike (or moved.strike (getf style :strike))
-                                   moved.underline (or moved.underline (getf style :underline))
-                                   moved.link (or moved.link (getf style :link))))))
+                             ;; Each mark STYLE sets fills the slot of that name the inner run left unset.
+                             (loop for (key value) on style by #'cddr
+                                   for slot = (find-symbol (symbol-name key) '#:nodecode.evolved)
+                                   unless (slot-value moved slot) do (setf (slot-value moved slot) value)))))
                      (t (loop for at from piece below close-pos
                               when (and (>= at piece) (escape-p at close-pos))
                                 do (when (< piece at)

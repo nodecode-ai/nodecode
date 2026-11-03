@@ -75,14 +75,6 @@ the id of the event that wrote it, LOG_SEQ and UPDATED_LOG_SEQ positions.")
   (cons "log_position" (mapcar #'first +event-envelope-columns+))
   "A log row as a file carries it: its envelope and the position it had.")
 
-(defun in-list (ids)
-  "The SQL list of one placeholder per id of IDS."
-  (format nil "(~{?~*~^, ~})" ids))
-
-(defun session-in (ids)
-  "The EVENTS :WHERE that holds a row to the sessions IDS."
-  (cons (format nil "session_id in ~a" (in-list ids)) ids))
-
 (defun session-tree (handle session-id)
   "SESSION-ID and every session under it -- each session whose created fact
 names one of them as parent -- SESSION-ID first; NIL when the store holds no
@@ -137,8 +129,8 @@ answer the same."
                                      (error 'unknown-session :session-id session-id))))
            (refuse-running handle ids)
            (list :sessions ids
-                 :turns (events :kind +kind-turn-started+ :where (session-in ids) :as :count)
-                 :events (events :where (session-in ids) :as :count))))
+                 :turns (events :kind +kind-turn-started+ :where (sql-in "session_id" ids) :as :count)
+                 :events (events :where (sql-in "session_id" ids) :as :count))))
     (if dry-run
         (with-store-handle (handle) (plan handle))
         (with-store-transaction (handle)
@@ -254,7 +246,7 @@ session file: the UTF-8 octets of its JSON lines."
                (all (append ancestors ids)))
           (refuse-running handle all)
           (list ids ancestors
-                (events :aggregate-type "session" :where (session-in all)
+                (events :aggregate-type "session" :where (sql-in "session_id" all)
                         :as :rows :columns +exported-event-columns+)
                 (loop for (table . columns) in +session-state-columns+
                       for sql = (format nil "select ~{~a~^, ~} from ~a where session_id in ~a"

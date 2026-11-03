@@ -393,8 +393,8 @@ something to say, running, waiting to load -- or NIL."
 
 (defun cell-lines (cells name width)
   "What the pane says of NAME, WIDTH wide, top to bottom, each line one of
-(:TEXT SEGS ACTION), (:SLAB GROUND SEGS), or (:LIP GROUND SIDE), the half
-row that opens or closes a slab. Errors and refusals are said whole."
+(:TEXT SEGS ACTION) or (:SLAB GROUND SEGS). Errors and refusals are said
+whole."
   (let* ((cell (cell-of cells name))
          (lines '())
          (on (json-value cell :boolean "on"))
@@ -409,11 +409,9 @@ row that opens or closes a slab. Errors and refusals are said whole."
              (para (text tone)
                (dolist (piece (wrap text width)) (add :text (list (list piece tone)))))
              (slab (ground specs)
-               (add :lip ground :top)
                (loop for (text tone bold) in specs
                      do (dolist (piece (wrap text (- width 4)))
                           (add :slab ground (list (list piece tone bold)))))
-               (add :lip ground :bottom)
                (blank))
              (label (head) (list (if head (format nil "~va" label-width head) (make-string label-width :initial-element #\Space))
                                  :muted))
@@ -576,9 +574,7 @@ wants a look, lifted when CHOSEN."
          (here (if chosen lift ground))
          (on (json-value cell :boolean "on"))
          (offered (cell-offered-p cell)))
-    (when chosen
-      (canvas-fill canvas x r width 1 (sheet-ink nil :ground lift))
-      (when (eq (effective-color-profile) :none) (canvas-put canvas x r "›" nil)))
+    (when chosen (paint-lift canvas x r width lift))
     (canvas-put canvas (+ x 2) r (cond (offered "+ ") (on "━●") (t "●━"))
                 (cond (offered (sheet-ink :muted :ground here))
                       ((and on (not (cell-fixed-p cell))) (sheet-ink (sheet-ground :sheet-chip-on) :ground here))
@@ -643,24 +639,18 @@ it is filled; install for a hub cell; for one /cells cannot turn off, why."
             (t (list (free " on " flip) (append (held " off " (sheet-ink :sheet-chip)) (list nil))))))))
 
 (defun paint-cell-band (cells canvas r px pw name)
-  "NAME's head on R: its label on a band that fades into the pane, and its
-switch at the right."
+  "NAME's head on R: its label on a band, and its switch at the right."
   (let* ((cell (cell-of cells name))
-         (pane (sheet-ground :sheet))
-         (lift (sheet-ground :sheet-focus))
-         (chips (cell-switch-chips cells cell pane))
+         (chips (cell-switch-chips cells cell (sheet-ground :sheet)))
          (chips-width (reduce #'+ chips :key (lambda (chip) (text-display-width (first chip)))))
-         (room (max 4 (- pw chips-width 10)))
-         (at (canvas-put canvas px r (clip-text-to-width (format nil " ~a " (json-value cell :string "label")) room)
-                         (sheet-ink :title :ground lift :bold t))))
-    (loop for step from 1 to 8
-          while (< at (- (+ px pw) chips-width 1))
-          do (setf at (canvas-put canvas at r " " (sheet-ink nil :ground (blend-rgb pane lift (round (* 100 step) 9))))))
-    (let ((x (- (+ px pw) chips-width)))
-      (loop for (text ink action) in chips
-            do (let ((end (canvas-put canvas x r text ink)))
-                 (when action (sheet-hit cells r x end action))
-                 (setf x end))))))
+         (x (- (+ px pw) chips-width)))
+    (canvas-put canvas px r (clip-text-to-width (format nil " ~a " (json-value cell :string "label"))
+                                                (max 4 (- pw chips-width 10)))
+                (sheet-ink :title :ground (sheet-ground :sheet-focus) :bold t))
+    (loop for (text ink action) in chips
+          do (let ((end (canvas-put canvas x r text ink)))
+               (when action (sheet-hit cells r x end action))
+               (setf x end)))))
 
 (defparameter +new-cell-lines+
   '("Say what it should do. The agent asks what it still needs, builds it as a cell of its own and turns it on here, with no restart."
@@ -673,9 +663,7 @@ switch at the right."
 starts one."
   (let* ((lift (sheet-ground :sheet-focus))
          (here (if chosen lift ground)))
-    (when chosen
-      (canvas-fill canvas x r width 1 (sheet-ink nil :ground lift))
-      (when (eq (effective-color-profile) :none) (canvas-put canvas x r "›" nil)))
+    (when chosen (paint-lift canvas x r width lift))
     (canvas-put canvas (+ x 2) r "+ " (sheet-ink :dialog-accent :ground here :bold t))
     (canvas-put canvas (+ x 5) r (clip-text-to-width "New cell" (max 1 (- width 8)))
                 (sheet-ink (if chosen :dialog-accent :foreground) :ground here :bold chosen))
@@ -684,12 +672,9 @@ starts one."
 (defun paint-new-cell-pane (canvas top bottom px pw)
   "The new row laid open from TOP to BOTTOM in the pane at PX, PW wide: its
 band, then how a cell is made by talking."
-  (let* ((pane (sheet-ground :sheet))
-         (lift (sheet-ground :sheet-focus))
-         (at (canvas-put canvas px top (clip-text-to-width " New cell " pw) (sheet-ink :title :ground lift :bold t))))
-    (loop for step from 1 to 8
-          while (< at (+ px pw))
-          do (setf at (canvas-put canvas at top " " (sheet-ink nil :ground (blend-rgb pane lift (round (* 100 step) 9))))))
+  (let ((pane (sheet-ground :sheet)))
+    (canvas-put canvas px top (clip-text-to-width " New cell " pw)
+                (sheet-ink :title :ground (sheet-ground :sheet-focus) :bold t))
     (loop with r = (+ top 2)
           for paragraph in +new-cell-lines+
           do (dolist (line (wrapped-lines paragraph pw))
@@ -725,11 +710,7 @@ is made; with no cell, why the list could not be read."
                                 (when action (sheet-hit cells r px (+ px pw) action))))
                        (:slab (destructuring-bind (ground segs) parts
                                 (canvas-fill canvas px r pw 1 (sheet-ink nil :ground ground))
-                                (paint-segs canvas r (+ px 2) (- pw 4) segs ground)))
-                       (:lip (destructuring-bind (ground side) parts
-                               (unless (eq (effective-color-profile) :none)
-                                 (canvas-put canvas px r (make-string pw :initial-element (if (eq side :top) #\▄ #\▀))
-                                             (sheet-ink ground :ground pane))))))))
+                                (paint-segs canvas r (+ px 2) (- pw 4) segs ground))))))
           (paint-scroll-marks canvas (+ px pw 1) (+ top 2) bottom offset rows (length lines) pane)))))
 
 (defun paint-cells-wide (cells canvas edges)
@@ -792,16 +773,12 @@ the caret's cell, or NIL."
 (defparameter +cells-sheet-size+ '(120 34)
   "The columns and rows the sheet asks for: what a wide window gives it.")
 
-(defun cells-paint (model cells width height)
-  "The sheet for a WIDTH x HEIGHT frame: wide from 84 columns, the list
-beside the chosen cell; narrower, one view at a time."
-  (paint-sheet model cells width height +cells-sheet-size+ #'paint-cells-wide #'paint-cells-stacked))
-
 (defun open-cells-dialog (model)
   "/cells on a shell: the sheet at once over the shell, the listing and the
 hub's index read off the loop."
   (let ((cells (make-cells-sheet :kind :cells :title "Cells"
-                                 :paint #'cells-paint :key #'cells-key :paste #'cells-paste
+                                 :paint (sheet-painter +cells-sheet-size+ #'paint-cells-wide #'paint-cells-stacked)
+                                 :key #'cells-key :paste #'cells-paste
                                  :click #'sheet-click :wheel #'cells-wheel)))
     (setf (chat-model-dialog model) cells)
     (cells-read model cells)

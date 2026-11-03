@@ -505,6 +505,11 @@ of zero is left out, all but the first."
                    (string-capitalize (or kind "Item")))))
     (format nil "~a~@[ · ~a~]" name (json-value item :text "destination"))))
 
+(defun option-rows (&rest options)
+  "Picker rows from OPTIONS, each (LABEL DETAIL VALUE) or NIL, the NILs left out."
+  (loop for (label detail value) in (remove nil options)
+        collect (make-picker-row :label label :detail (or detail "") :value value)))
+
 (defun open-setup-panel (model &rest options)
   "A Setup work panel over MODEL, nothing on it to pick: OPEN-PICKER-DIALOG with OPTIONS."
   (apply #'open-picker-dialog model "Setup" '() (lambda (model value) (declare (ignore model value)) nil)
@@ -600,20 +605,14 @@ the Skip, and the walk goes on to the provider."
   (let ((names (mapcar #'setup-world-label worlds)))
     (open-picker-dialog
      model "Setup"
-     (append
-      (list (make-picker-row :label (if (rest worlds)
-                                        (format nil "Import from all ~d" (length worlds))
-                                        (format nil "Import from ~a" (first names)))
-                             :detail "keys, instructions, memory, skills, MCP servers, bots and jobs"
-                             :value :import))
+     (option-rows
+      (list (if (rest worlds)
+                (format nil "Import from all ~d" (length worlds))
+                (format nil "Import from ~a" (first names)))
+            "keys, instructions, memory, skills, MCP servers, bots and jobs" :import)
       ;; one agent is all or nothing already
-      (when (rest worlds)
-        (list (make-picker-row :label "Choose which…"
-                               :detail "tick the agents to bring over"
-                               :value :choose)))
-      (list (make-picker-row :label "Skip"
-                             :detail "nothing read or written; /import later"
-                             :value :skip)))
+      (and (rest worlds) '("Choose which…" "tick the agents to bring over" :choose))
+      '("Skip" "nothing read or written; /import later" :skip))
      (lambda (model choice)
        (ecase choice
          (:import (setup-import-offered model run worlds))
@@ -725,34 +724,26 @@ seconds on a large home."
                  (ignore-errors (note-import-declined value))
                  (setup-note run "import skipped")
                  (funcall next model)))
-         (rows (append
-                (when takeover
-                  (list (make-picker-row
-                         :label (format nil "Import ~d item~:p and take ~a over" to-import noun)
-                         :detail (format nil "~a is stopped and disabled; ~{~a~^ and ~} answer~:[s~;~] from here now"
-                                         unit bots (rest bots))
-                         :value :takeover)))
-                (list (make-picker-row
-                       ;; The plan was made with the takeover, whose stop is
-                       ;; one of its items: without it there is one fewer.
-                       :label (if takeover
-                                  (format nil "Import ~d item~:p, ~a keeps ~a"
-                                          (max 0 (1- to-import)) unit noun)
-                                  (format nil "Import ~d item~:p" to-import))
-                       ;; A gateway running outside its unit is named by no unit.
-                       :detail (if bots
-                                   (format nil "~{~a~^ and ~} wait~:[s~;~] for ~a to stop, then answer~:[s~;~] from here"
-                                           bots (rest bots) (or unit "the other gateway") (rest bots))
-                                   "everything the plan lists, keys and tokens with it")
-                       :value :keep))
+         (rows (option-rows
+                (and takeover
+                     (list (format nil "Import ~d item~:p and take ~a over" to-import noun)
+                           (format nil "~a is stopped and disabled; ~{~a~^ and ~} answer~:[s~;~] from here now"
+                                   unit bots (rest bots))
+                           :takeover))
+                ;; The plan was made with the takeover, whose stop is one of
+                ;; its items: without it there is one fewer. A gateway running
+                ;; outside its unit is named by no unit.
+                (list (if takeover
+                          (format nil "Import ~d item~:p, ~a keeps ~a" (max 0 (1- to-import)) unit noun)
+                          (format nil "Import ~d item~:p" to-import))
+                      (if bots
+                          (format nil "~{~a~^ and ~} wait~:[s~;~] for ~a to stop, then answer~:[s~;~] from here"
+                                  bots (rest bots) (or unit "the other gateway") (rest bots))
+                          "everything the plan lists, keys and tokens with it")
+                      :keep)
                 ;; the report, a page of this dialog that comes back here
-                (when (setup-report-items value)
-                  (list (make-picker-row :label "Details"
-                                         :detail "each item, and why any is skipped"
-                                         :value :details)))
-                (list (make-picker-row :label "Skip"
-                                       :detail "nothing written; /import later"
-                                       :value :skip)))))
+                (and (setup-report-items value) '("Details" "each item, and why any is skipped" :details))
+                '("Skip" "nothing written; /import later" :skip))))
     (open-picker-dialog
      model "Setup" rows
      (lambda (model choice)

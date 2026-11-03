@@ -634,15 +634,14 @@ session the shell ended on, or NIL when it never attached."
               ;; OUTCOME :ENSURED, the condition it failed with, or NIL
               ;; while it runs. Every other flag and stamp starts NIL.
               with (outage-started failure-reported last-resurrect shutdown-reported
-                    stopping-reported stopping-since ensure ensure-reported
-                    unresolved-since unresolved-reported starting-reported) = nil
+                    ensure ensure-reported unresolved-since unresolved-reported
+                    starting-reported) = nil
               ;; An attach ends the outage: the next one walks the ladder from its start.
               with reset-outage = (lambda ()
                                     (setf delay *sync-backoff-base-seconds* failures 0
                                           outage-started nil failure-reported nil
                                           resurrect-attempts 0 last-resurrect nil
-                                          shutdown-reported nil stopping-reported nil
-                                          stopping-since nil))
+                                          shutdown-reported nil))
               ;; A spawn the ladder may make now: counted and stamped, => true.
               with resurrect = (lambda (failures elapsed)
                                  (when (resurrection-due-p
@@ -676,22 +675,11 @@ session the shell ended on, or NIL when it never attached."
                          ;; (FRONT-ORGANISM). One start at a time, each
                          ;; spending the outage's budget as a resurrection
                          ;; does. One that holds it while it stops is
-                         ;; waited out, and said once.
-                         (when (and boot (not pinned) (notany alive (list boot-thread takeover)))
-                           (cond ((ignore-errors (nlk::store-lease-held-p store-path))
-                                  ;; Said only past a second and a half: a stop
-                                  ;; takes under one, and a notice for it only
-                                  ;; flickered.
-                                  (setf stopping-since (or stopping-since (get-internal-real-time)))
-                                  (when (and (not stopping-reported)
-                                             (> (since-ms stopping-since) 1500))
-                                    (setf stopping-reported t)
-                                    (post-shell-notice
-                                     program
-                                     "the nodecode before this one is still stopping; this shell starts its own once it lets go"
-                                     :error-p nil)))
-                                 ((funcall resurrect 1 0)
-                                  (setf takeover (funcall start-organism)))))
+                         ;; waited out.
+                         (when (and boot (not pinned) (notany alive (list boot-thread takeover))
+                                    (not (ignore-errors (nlk::store-lease-held-p store-path)))
+                                    (funcall resurrect 1 0))
+                           (setf takeover (funcall start-organism)))
                          ;; Quiet fast poll — but never SILENT forever:
                          ;; past the threshold (a shell fronting its own
                          ;; boot gets the outage window; a bare attach

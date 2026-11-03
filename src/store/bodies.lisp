@@ -231,17 +231,6 @@ kept whole; NIL for no such row."
           (error "request body ~d rebuilt to ~d bytes that are not ~a" id length sha256))
         (values octets (and (rest chain) (subseq base 0 base-length)))))))
 
-(defvar *last-kept-body* nil
-  "(ID . WEAK-POINTER) to the octets kept last: the next keep's base, without
-a rebuild, for as long as its turn still holds them. Retention: live-only; a
-store opening clears it.")
-
-(defun forget-last-kept-body ()
-  "Drop *LAST-KEPT-BODY*: its id names a row of the store it was kept in."
-  (setf *last-kept-body* nil))
-
-(pushnew 'forget-last-kept-body *store-open-hooks*)
-
 (defun keep-request-body (session-id turn-id round octets &key cap)
   "Keep OCTETS, the exact body round ROUND of TURN-ID in SESSION-ID sent, as
 a delta against the body kept before it; then, while the kept bodies take
@@ -258,11 +247,9 @@ of its row."
                          session-id))
       (let* ((size (length octets))
              (whole (or (null base-id) (> (+ chain size) *request-chain-bytes*)))
-             (kept *last-kept-body*)
-             (delta (encode-delta (cond (whole (make-array 0 :element-type '(unsigned-byte 8)))
-                                        ((and kept (eql base-id (car kept))
-                                              (sb-ext:weak-pointer-value (cdr kept))))
-                                        (t (rebuild-request-body handle base-id)))
+             (delta (encode-delta (if whole
+                                      (make-array 0 :element-type '(unsigned-byte 8))
+                                      (rebuild-request-body handle base-id))
                                   octets)))
         (sqlite:execute-non-query
          handle
@@ -275,7 +262,6 @@ of its row."
           (when whole
             (sqlite:execute-non-query handle "update request_bodies set root = id where id = ?" id))
           ;; Trusted only once the row is: a rolled-back insert's id is free again.
-          (after-commit (lambda () (setf *last-kept-body* (cons id (sb-ext:make-weak-pointer octets)))))
           (when cap
             (let ((total (sqlite:execute-single handle "select sum(bytes) from request_bodies")))
               (when (> total cap)
@@ -297,7 +283,7 @@ a body of another session kept against one of them is kept whole instead."
   ;; written back whole, and the rows under it follow it to their new root,
   ;; which the cap drops them by. Their CHAIN still counts the rows gone: an
   ;; overcount, which only starts a later chain over sooner.
-  (let* ((in (format nil "(~{?~*~^, ~})" ids))
+  (let* ((in (in-list ids))
          (orphans (loop for (id) in (apply #'sql-rows handle
                                            (format nil "select id from request_bodies
                                                          where session_id not in ~a and base in
@@ -345,18 +331,12 @@ round's body was not kept."
   "The body SESSION-ID's newest kept request sent, exactly, or NIL when it
 kept none or no store is open."
   ;; What a turn's first round shares a prefix with: the turn before's last
-  ;; round. Remembered as the next keep's base, which is the same row, so the
-  ;; round that reads it rebuilds it once.
+  ;; round, rebuilt from its delta chain.
   (check-strings session-id)
   (when-store-handle (handle nil)
-    (let ((id (sqlite:execute-single handle "select max(id) from request_bodies where session_id = ?"
-                                     session-id))
-          (kept *last-kept-body*))
-      (when id
-        (or (and kept (eql id (car kept)) (sb-ext:weak-pointer-value (cdr kept)))
-            (let ((octets (rebuild-request-body handle id)))
-              (setf *last-kept-body* (cons id (sb-ext:make-weak-pointer octets)))
-              octets))))))
+    (when-let (id (sqlite:execute-single handle "select max(id) from request_bodies where session_id = ?"
+                                         session-id))
+      (values (rebuild-request-body handle id)))))
 
 (defun request-bodies-size ()
   "What the kept bodies take => (values BYTES COUNT SIZE): the bytes stored,

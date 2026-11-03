@@ -1048,40 +1048,34 @@ otherwise."
                                        (seg-render seg fill
                                                    :force-bg (not (visual-style-p seg.tone))))
                                      lane))))
-              (concatenate 'string
-                           ;; The column before the text is one run with the pads
-                           ;; when the row stands on the panel, so a plain row's
-                           ;; bytes are what they always were.
-                           (let ((lift (if (equal ground surface) 0 col)))
-                             (concatenate 'string
-                                          (if (plusp lead-width)
-                                              (concatenate 'string
-                                                           (fill-run pad-left)
-                                                           (paint lead)
-                                                           (fill-run (+ (- lead-width (segs-display-width lead))
-                                                                        (- col lift))))
-                                              (fill-run (+ pad-left (- col lift))))
-                                          (if (plusp lift) (fill-run lift ground) "")))
-                           (paint kept ground)
-                           ;; The slack is what neither lane took: the gap is
-                           ;; spent in KEPT's budget above, never here, so a row
-                           ;; with a right lane still fills its rect exactly.
-                           (fill-run (- room (segs-display-width kept) right-width) ground)
-                           (paint right ground)
-                           (when bar
+              (let ((lift (if (equal ground surface) 0 col))
+                    (thumb (if (eq scrollbar :thumb) "█" " ")))
+                (concatenate 'string
+                             ;; The column before the text is one run with the pads
+                             ;; when the row stands on the panel, so a plain row's
+                             ;; bytes are what they always were.
+                             (when (plusp lead-width) (concatenate 'string (fill-run pad-left) (paint lead)))
+                             (fill-run (+ (if (plusp lead-width) (- lead-width (segs-display-width lead)) pad-left)
+                                          (- col lift)))
+                             (fill-run lift ground)
+                             (paint kept ground)
+                             ;; The slack is what neither lane took: the gap is
+                             ;; spent in KEPT's budget above, never here, so a row
+                             ;; with a right lane still fills its rect exactly.
+                             (fill-run (- room (segs-display-width kept) right-width) ground)
+                             (paint right ground)
                              ;; The bar cell: the thumb glyph or a track blank,
                              ;; toned for the surface, bare under :none.
-                             (let ((thumb-p (eq scrollbar :thumb)))
+                             (when bar
                                (concatenate 'string
                                             (fill-run bar-gap)
                                             (if surface
-                                                (styled (if thumb-p "█" " ")
-                                                        (style-for-tone (if thumb-p
-                                                                            :scrollbar-thumb
-                                                                            :scrollbar-track)))
-                                                (if thumb-p "█" " "))
-                                            (fill-run bar-gap))))
-                           (fill-run pad-right)))))
+                                                (styled thumb (style-for-tone (if (eq scrollbar :thumb)
+                                                                                  :scrollbar-thumb
+                                                                                  :scrollbar-track)))
+                                                thumb)
+                                            (fill-run bar-gap)))
+                             (fill-run pad-right))))))
       ;; Linked whole: the row the frame keeps is the one its ranges are on.
       (if links (link-plain-row (nlk:narrow-string row) links) row))))
 
@@ -1616,8 +1610,7 @@ row (DOCKED-PANEL-ROW's LEAD): a picture beside it."
                                                  (if thumb-height
                                                      (let ((kept (clip-segs segs lane :mark *dialog-row-overflow-mark*)))
                                                        (append kept
-                                                               (list (seg (make-string (max 0 (- lane (segs-display-width kept))) :initial-element #\Space)
-                                                                          :muted)
+                                                               (list (seg (spaces (- lane (segs-display-width kept))) :muted)
                                                                      (seg " " (if surface (vstyle :bg surface) :muted)))))
                                                      segs)
                                                  width surface

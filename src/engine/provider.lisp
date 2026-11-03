@@ -2360,13 +2360,11 @@ or `unknown' when that is empty."
                           (404 . "not_found") (408 . "timeout") (503 . "overloaded")))))
     ((and (integerp status) (>= status 500)) "server_error")
     ((integerp status) (format nil "http_~d" status))
-    ((typep condition 'provider-connection-refused) "connection_refused")
-    ((typep condition 'provider-slow-start) "slow_start")
-    ((typep condition 'provider-stream-incomplete) "stream_incomplete")
-    ((typep condition 'provider-empty-response) "empty_response")
-    ((typep condition 'provider-refused) "refused")
-    ((typep condition 'provider-malformed-tool-call) "malformed_tool_call")
-    ((typep condition 'provider-reasoning-loop) "reasoning_loop")
+    ((when-let (class (find-if (lambda (class) (typep condition class))
+                               '(provider-connection-refused provider-slow-start provider-stream-incomplete
+                                 provider-empty-response provider-refused provider-malformed-tool-call
+                                 provider-reasoning-loop)))
+       (substitute #\_ #\- (string-downcase (subseq (symbol-name class) (length "provider-"))))))
     ((plusp (length (provider-error-detail condition))) (provider-error-detail condition))
     (t "unknown")))
 
@@ -2629,8 +2627,7 @@ anything else replaces the member, and :REMOVE takes the member out)."
   ;; for its flat pair): a half-written pin names a model under whatever
   ;; provider the file happened to carry, which is exactly how the shared
   ;; config came to hold a model one lane had never served.
-  (if (and (stringp provider) (plusp (length (string-trim '(#\Space #\Tab) provider)))
-           (stringp model) (plusp (length (string-trim '(#\Space #\Tab) model))))
+  (if (and (present-text provider) (present-text model))
       (multiple-value-prog1
           (persist-shared-config (list "general" key)
                                  (list :provider provider :model model))
@@ -2665,7 +2662,7 @@ models.dev catalog holds -- the ids CHECK-MODEL-ID takes on sight."
 listing/catalog display name. Exact ids win; unlisted private ids stay legal."
   ;; Never translate a name into an id: resellers can use different namespaces,
   ;; and one display name can describe several ids. Tell the caller what to pick.
-  (unless (and (stringp model) (plusp (length (nlk:trimmed model))))
+  (unless (present-text model)
     (error 'provider-config-error :provider provider :model model
            :detail "the model id must be a non-empty string"))
   (when (model-listed-p provider model)

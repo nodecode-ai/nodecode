@@ -85,10 +85,8 @@ carrying a .git -- or NIL."
 
 (defun git-output (root &rest args)
   "What git ARGS print in the repository at ROOT, trimmed; NIL when git fails or cannot run."
-  (ignore-errors
-   (bind ((directory (string-right-trim "/\\" (sb-ext:native-namestring root)))
-          ((out _ status) (run-bounded (list* *git-program* "-C" directory args) :seconds 30)))
-     (and (eql status 0) (trimmed out)))))
+  (multiple-value-bind (out code) (apply #'git-in-layer root args)
+    (and (eql code 0) (trimmed out))))
 
 (defun git-dirty-p (root)
   "Whether the repository at ROOT carries uncommitted changes, tracked or
@@ -260,11 +258,10 @@ that moved since its row was read keeps none: its bytes are another folder's."
   ;; generation it restores, whatever its own hash
   (list (getf row :name) (getf row :origin) (or (getf row :tree) (getf row :revision)) (getf row :dirty)))
 
-(defun self-identity (&optional (rows (self-rows)))
-  "What a manifest is compared by: the binary's version, then every row's
+(defun self-identity (&optional (rows (self-rows)) (version *binary-version*))
+  "What a manifest is compared by: the binary's VERSION, then every row's
 (NAME ORIGIN REVISION DIRTY), by name."
-  (cons *binary-version*
-        (sort (mapcar #'row-identity rows) #'string< :key #'first)))
+  (cons version (sort (mapcar #'row-identity rows) #'string< :key #'first)))
 
 (defun short-revision (revision)
   "A commit's first seven characters, a digest's first twelve, anything
@@ -337,8 +334,7 @@ manifest sealed before seals recorded them."
                               "path" "bytes")))
 
 (defun manifest-identity (manifest)
-  (cons (json-value manifest :string "binary" "version")
-        (sort (mapcar #'row-identity (manifest-rows manifest)) #'string< :key #'first)))
+  (self-identity (manifest-rows manifest) (json-value manifest :string "binary" "version")))
 
 (defun sealed-generation (&optional (identity (self-identity)) (manifests (manifests)))
   "The manifest carrying IDENTITY -- the generation the folder stands at --
@@ -748,53 +744,16 @@ TO)."
   (format nil "~{~a~^, ~}~@[ +~d~]" (subseq names 0 (min shown (length names)))
           (and (> (length names) shown) (- (length names) shown))))
 
-(defun layer-numstat (name from to)
-  "=> (COUNT ADDED REMOVED PATHS): the files of folder NAME's repository
-that moved from revision FROM to TO, PATHS the four that moved most; NIL
-when git cannot say."
-  (multiple-value-bind (root pathspec) (folder-repository (list :name name :origin "own"))
-    (when (and root from to (not (equal from to)))
-      (multiple-value-bind (out code)
-          (git-in-layer root "diff" "--numstat" (format nil "~a..~a" from to) "--" pathspec)
-        (when (eql code 0)
-          (let ((files (loop for line in (lines out)
-                             for fields = (uiop:split-string line :separator '(#\Tab))
-                             when (= 3 (length fields))
-                               collect (list (third fields)
-                                             (or (parse-integer (first fields) :junk-allowed t) 0)
-                                             (or (parse-integer (second fields) :junk-allowed t) 0)))))
-            (list (length files) (reduce #'+ files :key #'second) (reduce #'+ files :key #'third)
-                  (mapcar #'first (subseq (stable-sort (copy-list files) #'>
-                                                       :key (lambda (file) (+ (second file) (third file))))
-                                          0 (min 4 (length files)))))))))))
-
 (defun row-named (name rows)
   (find name rows :key (lambda (row) (getf row :name)) :test #'equal))
 
-(defun fold-words (kind all manifests before builtin title-of)
-  "=> (values TITLE WHERE NOTES KEEPS FILES) for a change of KIND whose
-generations are MANIFESTS, oldest first, ALL their parts, BEFORE the manifest
-sealed before them, BUILTIN the names of the cells this binary ships."
+(defun fold-words (kind all manifests builtin title-of)
+  "=> (values TITLE WHERE NOTES KEEPS) for a change of KIND whose
+generations are MANIFESTS, oldest first, ALL their parts, BUILTIN the names
+of the cells this binary ships."
   (labels ((parts (verb) (remove verb all :key #'first :test-not #'eq))
            (origin-words (origin) (or (cdr (assoc origin +origin-words+ :test #'equal)) origin))
-           (builtin-words (origin) (if (equal "release" origin) "a release" "your checkout"))
-           (also (verbs)
-             ;; what else the change carried, two lines at most
-             (let ((notes (distinct
-                           (loop for (verb . detail) in all
-                                 for note = (and (member verb verbs)
-                                                 (case verb
-                                                   (:binary (format nil "also: nodecode ~a → ~a"
-                                                                    (short-version (first detail))
-                                                                    (short-version (second detail))))
-                                                   (:builtin (format nil "also: the ~d built-in cells moved with ~a"
-                                                                     (first detail)
-                                                                     (builtin-words (second detail))))
-                                                   (:added (format nil "also: installed ~a" (first detail)))
-                                                   (:removed (format nil "also: removed ~a" (first detail)))
-                                                   (:moved (format nil "also: ~a changed" (listed (first detail) 2)))))
-                                 when note collect note))))
-               (subseq notes 0 (min 2 (length notes))))))
+           (builtin-words (origin) (if (equal "release" origin) "a release" "your checkout")))
     (let ((newest (car (last manifests))))
       (cond
         ((equal kind "first")
@@ -807,11 +766,7 @@ sealed before them, BUILTIN the names of the cells this binary ships."
                 (names (distinct (mapcar #'keep-name subjects)))
                 (forgot (loop for name in names
                               when (uiop:string-prefix-p "forgot " name) collect (subseq name 7)))
-                (kept (remove-if (lambda (name) (uiop:string-prefix-p "forgot " name)) names))
-                (layer (or (second (first (parts :keeps))) (third (first (parts :restored)))))
-                (files (and layer (layer-numstat
-                                   layer (getf (row-named layer (manifest-rows before)) :revision)
-                                   (getf (row-named layer (manifest-rows newest)) :revision)))))
+                (kept (remove-if (lambda (name) (uiop:string-prefix-p "forgot " name)) names)))
            (values (cond ((equal kind "restore")
                           (format nil "Went back to generation ~d" (second (car (last (parts :restored))))))
                          ((equal subjects (list +kept-edits-subject+)) "Kept the uncommitted edits")
@@ -824,8 +779,7 @@ sealed before them, BUILTIN the names of the cells this binary ships."
                    (cond ((equal kind "restore") "")
                          ((equal subjects (list +kept-edits-subject+)) "from /generations")
                          (t (session-words (parts-session all) title-of)))
-                   (also '(:binary :builtin :added :removed :moved))
-                   names files)))
+                   '() names)))
         ((equal kind "nodecode")
          (let ((binaries (parts :binary))
                (builtins (parts :builtin)))
@@ -838,13 +792,11 @@ sealed before them, BUILTIN the names of the cells this binary ships."
                          (format nil "~{~a~^ · ~}"
                                  (append (and (rest binaries) (list (format nil "~d builds" (length binaries))))
                                          (and builtins (list (format nil "~d built-in cells"
-                                                                     (second (car (last builtins))))))))
-                         (also '(:added :removed :moved))))
+                                                                     (second (car (last builtins))))))))))
                (destructuring-bind (origin from) (subseq (first builtins) 2 4)
                  (values (format nil "Built-in cells ~a → ~a" from (fifth (car (last builtins))))
                          (format nil "~d cells · ~a" (second (car (last builtins)))
-                                 (builtin-words origin))
-                         (also '(:added :removed :moved)))))))
+                                 (builtin-words origin)))))))
         ((equal kind "edits")
          (let* ((names (distinct (mapcar #'second (parts :edits))))
                 (own (remove-if (lambda (name) (member name builtin :test #'equal)) names))
@@ -869,18 +821,16 @@ sealed before them, BUILTIN the names of the cells this binary ships."
            (values (format nil "~:[Removed~;Installed~] ~a" (eq verb :added)
                            (listed (distinct (mapcar #'second found))))
                    (format nil "~{~a~^, ~}" (distinct (loop for (nil nil origin) in found
-                                                             collect (origin-words origin))))
-                   (also '(:binary :builtin :moved)) '() nil)))))))
+                                                             collect (origin-words origin)))))))))))
 
 (defun generation-history (manifests &key (deltas (generation-deltas manifests)) builtin
                                           (title-of #'session-title)
-                                          &aux (folds '()) (by-number (make-hash-table)))
+                                          &aux (folds '()))
   "MANIFESTS (newest first) as the changes they were, newest first, each a
 plist: :kind (agent, nodecode, cell, install, remove, edits, restore, first),
 :from and :to the generations it spans, :first-at and :at when the first and
 the last were sealed, :title and :where in words, :notes, :keeps the names of
-an agent's keeps, :files (COUNT ADDED REMOVED PATHS) the layer's, :version
-the binary at :to, and :nodecode when nodecode alone moved in it -- the
+an agent's keeps, :version the binary at :to, and :nodecode when nodecode alone moved in it -- the
 binary, the cells it ships. DELTAS are GENERATION-DELTAS' of MANIFESTS,
 BUILTIN the names of the cells this binary ships, TITLE-OF a session's title."
   ;; oldest first: a change takes the next generation of its own act
@@ -896,8 +846,7 @@ BUILTIN the names of the cells this binary ships, TITLE-OF a session's title."
         ;; still read as one change; a kind not named never folds
         for minutes = (cdr (assoc kind '(("agent" . 60) ("nodecode" . 60) ("edits" . 180))
                                   :test #'equal))
-        do (setf (gethash (manifest-number manifest) by-number) manifest)
-           (if (and fold minutes (equal kind (getf fold :kind)) (equal session (getf fold :session))
+        do (if (and fold minutes (equal kind (getf fold :kind)) (equal session (getf fold :session))
                     (<= (- at (getf fold :at)) (* 60 minutes)))
                (setf (getf fold :manifests) (append (getf fold :manifests) (list manifest))
                      (getf fold :parts) (append (getf fold :parts) parts)
@@ -908,14 +857,13 @@ BUILTIN the names of the cells this binary ships, TITLE-OF a session's title."
         for generations = (getf fold :manifests)
         for oldest = (first generations)
         for newest = (car (last generations))
-        collect (multiple-value-bind (title where notes keeps files)
-                    (fold-words (getf fold :kind) (getf fold :parts) generations
-                                (gethash (1- (manifest-number oldest)) by-number) builtin title-of)
+        collect (multiple-value-bind (title where notes keeps)
+                    (fold-words (getf fold :kind) (getf fold :parts) generations builtin title-of)
                   (list :kind (getf fold :kind)
                         :from (manifest-number oldest) :to (manifest-number newest)
                         :first-at (json-value oldest :string "sealed_at")
                         :at (json-value newest :string "sealed_at")
-                        :title title :where where :notes notes :keeps keeps :files files
+                        :title title :where where :notes notes :keeps keeps
                         :version (json-value newest :string "binary" "version")
                         :nodecode (and (getf fold :parts)
                                        (every (lambda (part)
@@ -1230,11 +1178,11 @@ refusal. => LINES, what was done, in words."
                                                         (list (row-offer row))
                                                         (shipped-cells)))
                         (push (format nil "~a installed" name) lines)))
-            (:uninstall (if (uninstall-cell name :root root)
-                            (push (format nil "~a taken out" name) lines)
-                            (push (format nil "~a left in place: it is yours, and generation ~d never had it"
-                                          name number)
-                                  lines))))))
+            (:uninstall (push (if (uninstall-cell name :root root)
+                                  (format nil "~a taken out" name)
+                                  (format nil "~a left in place: it is yours, and generation ~d never had it"
+                                          name number))
+                              lines)))))
       (setf lines (append (nreverse lines) (stays-lines steps)))
       (write-json-file (restoring-path) "to" number
                                         "from" (or from :null)

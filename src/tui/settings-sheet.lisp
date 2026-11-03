@@ -131,9 +131,7 @@ check."
 ;;; General), and painted from that every frame: the answer is the authority,
 ;;; a row its projection, rebuilt whole whenever an answer lands.
 
-(defstruct (setting (:constructor make-setting
-                        (&key label kind text value set options doc min part field
-                              apply remote act)))
+(defstruct setting
   "One row of the sheet: what it is called; KIND, how it changes -- :TOGGLE,
 :CHOICE, :NUMBER, :TEXT, :LIST, :IDS (a list the platform names), :SECRET,
 :PASTE (a secret kept by reference), :CHECK, :ACTION (a command it opens),
@@ -147,8 +145,7 @@ on the loop, or REMOTE, (MODEL VALUE) off it; ACT is what an action opens,
 a command's name or a function of the MODEL."
   label kind text value set options doc min part field apply remote act)
 
-(defstruct (settings-section (:constructor make-settings-section
-                                 (&key key label group guide needs json applies head)))
+(defstruct settings-section
   "One section of the sheet, or one page of the rail: its KEY (its config
 section's, or the page's own), LABEL, the GROUP heading it in the rail, its
 GUIDE, what it still NEEDS, when a change APPLIES -- NIL for a page whose
@@ -335,12 +332,17 @@ the model picker sets together and Delete takes out together."
                             (identity-text (funcall value "model") (funcall value "provider"))
                             "The session's own")
                   :doc "The model a reflection runs on: the session's own, sharing its prompt cache, unless one is picked here."
-                  :remote (lambda (model value)
-                            (declare (ignore value))
+                  :remote (lambda-ignoring (model value)
                             (dolist (name set)
                               (gateway-model-http-call model :post "/api/gateway/config"
                                                        (json-object "path" (section-path-to experience name)
                                                                     "remove" t)))))))
+
+(defun pinned-model-setting (page label tab pin unset doc)
+  "A row of PAGE for the model /models' TAB picks: PIN, (PROVIDER MODEL), else UNSET."
+  (make-setting :label label :kind :action :part page :set (and (first pin) t) :doc doc
+                :act (lambda (model) (open-models-provider-picker model :tab tab))
+                :text (if (first pin) (identity-text (second pin) (first pin)) unset)))
 
 (defun models-section (target parts providers)
   "The models the shell runs on: the default a new session starts on, the
@@ -382,20 +384,10 @@ every one of PROVIDERS' settings, each under its name (PROVIDER-PARTS)."
                      (make-setting :label "Reasoning effort" :kind :note :part page
                                    :text (if target "None for this model" "Reading…")
                                    :doc "This model offers no reasoning effort controls."))
-                 (make-setting :label "Auxiliary model" :kind :action :part page
-                               :act (lambda (model) (open-models-provider-picker model :tab "aux"))
-                               :set (and (first aux) t)
-                               :text (if (first aux)
-                                         (identity-text (second aux) (first aux))
-                                         "Same as main")
-                               :doc "Naming a session, a recap, a summary: they run on this model, on /models' Auxiliary tab.")
-                 (make-setting :label "Decider model" :kind :action :part page
-                               :act (lambda (model) (open-models-provider-picker model :tab "decider"))
-                               :set (and (first decider) t)
-                               :text (if (first decider)
-                                         (identity-text (second decider) (first decider))
-                                         "None")
-                               :doc "Judgments as probabilities (POST /v1/systemone): the decider a guard, a triage or a router asks, on /models' Decider tab."))
+                 (pinned-model-setting page "Auxiliary model" "aux" aux "Same as main"
+                                       "Naming a session, a recap, a summary: they run on this model, on /models' Auxiliary tab.")
+                 (pinned-model-setting page "Decider model" "decider" decider "None"
+                                       "Judgments as probabilities (POST /v1/systemone): the decider a guard, a triage or a router asks, on /models' Decider tab."))
            (and experience (list (reflections-model-setting experience)))
            (loop for part in providers append part.rows)))
     (choice-texts page)))
@@ -703,18 +695,24 @@ under a query, else the chosen setting of the open section; NIL on the rail."
       (list :provider provider :model model-id :ladder ladder :effort (getf facts :effort)
             :default-provider (getf facts :default-provider) :default-model (getf facts :default-model)))))
 
+(defun settings-fetch (model)
+  "Off the loop: (CONFIG TARGET), every section and the target Models reads."
+  (list (gateway-model-http-call model :get "/api/gateway/config" nil)
+        (ignore-errors (multiple-value-list (target-snapshot model)))))
+
+(defun settings-take (settings answer)
+  "Keep a SETTINGS-FETCH ANSWER as what the sheet stands on."
+  (setf settings.answer (first answer)
+        settings.target (target-plist (second answer))))
+
 (defun settings-read (model settings)
   "Read every section, and the target Models reads, off the loop; then what
 the release changed."
   (sheet-call model settings
-                 (lambda ()
-                   (list (gateway-model-http-call model :get "/api/gateway/config" nil)
-                         (ignore-errors (multiple-value-list (target-snapshot model)))))
+                 (lambda () (settings-fetch model))
                  (lambda (model answer)
                    (let ((failure (off-loop-failure answer)))
-                     (unless failure
-                       (setf settings.answer (first answer)
-                             settings.target (target-plist (second answer))))
+                     (unless failure (settings-take settings answer))
                      ;; A config that does not read still answers its sections.
                      (setf settings.failed (or failure (json-value settings.answer :text "error")))
                      (settings-rebuild model settings)
@@ -808,6 +806,11 @@ make it again."
                              ;; A false is spelled so on the wire.
                              (json-object "path" path "value" (if (null value) :false value)))))))))
 
+(defun settings-pick (model settings setting value)
+  "Land VALUE, one of SETTING's options: a choice left unset has its member
+taken out; a switch's Off is a false like any other value."
+  (settings-commit model settings setting value :remove (and (null value) (eq setting.kind :choice))))
+
 (defun setting-path (setting)
   "The member keys of SETTING's field from the config's root."
   (concatenate 'vector (json-array (settings-section-json setting.part) "path")
@@ -824,9 +827,7 @@ the model's own, a theme picked, the Developer view."
 (defun settings-reset (model settings setting)
   "Give SETTING its default back."
   (when (settings-resettable-p setting)
-    (if setting.field
-        (settings-commit model settings setting nil :remove t)
-        (settings-commit model settings setting nil))))
+    (settings-commit model settings setting nil :remove t)))
 
 (defun settings-defaults (sections)
   "What Reset to defaults gives back, as (PART . SETTING) in the sheet's
@@ -892,15 +893,12 @@ still written -- and every section read anew."
                     (let ((refused (loop for row in rows
                                          for why = (reset-off-loop model row)
                                          when why collect (format nil "~a: ~a" (reset-label row) why))))
-                      (list (gateway-model-http-call model :get "/api/gateway/config" nil)
-                            (ignore-errors (multiple-value-list (target-snapshot model)))
-                            refused)))
+                      (append (settings-fetch model) (list refused))))
                   (lambda (model answer)
                     (let ((failure (off-loop-failure answer)))
                       (unless failure
-                        (setf settings.answer (first answer)
-                              settings.target (target-plist (second answer))
-                              kept (append kept (third answer))))
+                        (settings-take settings answer)
+                        (setf kept (append kept (third answer))))
                       (settings-rebuild model settings)
                       (cond (failure (settings-say settings asking failure :danger))
                             (kept (settings-say settings asking
@@ -931,12 +929,7 @@ nothing past an end otherwise."
                       (wrap (mod (+ at direction) count))
                       (t (max 0 (min (1- count) (+ at direction)))))))
        (unless (eql at to)
-         (let ((value (car (nth to setting.options))))
-           ;; A choice left unset has its member taken out; a switch's
-           ;; Off is a false like any other value.
-           (if (and (null value) setting.field (eq setting.kind :choice))
-               (settings-commit model settings setting nil :remove t)
-               (settings-commit model settings setting value))))))
+         (settings-pick model settings setting (car (nth to setting.options))))))
     (:number
      (let* ((value setting.value)
             (floor (or setting.min 0))
@@ -958,29 +951,23 @@ a secret, which is never shown."
 (defun settings-edit-submit (model settings &aux (setting (car settings.edit))
                                                  (text (nlk:trimmed (cdr settings.edit))))
   "Enter in a field: write what it holds, or say why not and keep it open."
-  (case setting.kind
-    (:number
-     (if-let (number (ignore-errors (parse-integer text)))
-       (progn (setf settings.edit nil) (settings-commit model settings setting number))
-       (settings-say settings setting "Enter a whole number; nothing was saved." :danger)))
-    (:list
-     (setf settings.edit nil)
-     (settings-commit model settings setting
-                      (coerce (split-words (substitute #\Space #\, text)) 'vector)))
-    (:secret
-     (setf settings.edit nil)
-     (when (plusp (length text)) (settings-commit model settings setting text)))
-    (:paste
-     (setf settings.edit nil)
-     (when (plusp (length text))
-       (settings-write model settings setting
-                       (json-object "path" (json-array (settings-section-json setting.part) "path")
-                                    "secret" text))))
-    (t
-     (setf settings.edit nil)
-     (if (plusp (length text))
-         (settings-commit model settings setting text)
-         (settings-commit model settings setting nil :remove t)))))
+  (let ((number (ignore-errors (parse-integer text))))
+    (if (and (eq setting.kind :number) (null number))
+        (settings-say settings setting "Enter a whole number; nothing was saved." :danger)
+        (progn
+          (setf settings.edit nil)
+          (case setting.kind
+            (:number (settings-commit model settings setting number))
+            (:list (settings-commit model settings setting
+                                    (coerce (split-words (substitute #\Space #\, text)) 'vector)))
+            (:secret (when (plusp (length text)) (settings-commit model settings setting text)))
+            (:paste
+             (when (plusp (length text))
+               (settings-write model settings setting
+                               (json-object "path" (json-array (settings-section-json setting.part) "path")
+                                            "secret" text))))
+            (t (settings-commit model settings setting (and (plusp (length text)) text)
+                                :remove (zerop (length text)))))))))
 
 (defun settings-ask-ids (model settings setting)
   "Ask the platform which ids SETTING may name (SETTINGS-PROBE), and mark
@@ -1268,48 +1255,27 @@ keeps the choice where it is."
   (lambda (model settings)
     (funcall (focus-setting-action index) model settings)
     (unless (equal value setting.value)
-      (if (and (null value) setting.field (eq setting.kind :choice))
-          (settings-commit model settings setting nil :remove t)
-          (settings-commit model settings setting value)))))
+      (settings-pick model settings setting value))))
 
 (defun paint-chips (settings canvas row x width setting focused ground index)
-  "SETTING's options side by side from X on ROW, the one it holds filled --
-or, when WIDTH cannot hold them, the one it holds between arrows and where
-it stands among them. => the column after them."
-  (let* ((options setting.options)
-         (active (position setting.value options :key #'car :test #'equal))
-         (none (eq (effective-color-profile) :none)))
-    (if (<= (options-width setting) width)
-        (let ((at x))
-          (loop for (value . label) in options
-                for position from 0
-                for on = (eql position active)
-                do (canvas-put canvas at row (if (and on none) (format nil "[~a]" label) (format nil " ~a " label))
-                               (cond ((not on) (sheet-ink :muted :ground ground))
-                                     (focused (sheet-ink :sheet-chip-on))
-                                     (setting.set (sheet-ink :sheet-chip-set))
-                                     (t (sheet-ink :sheet-chip))))
-                   (sheet-hit settings row at (+ at 2 (text-display-width label))
-                                 (pick-option-action setting value index))
-                   (incf at (+ 2 (text-display-width label))))
-          at)
-        (let* ((label (or (cdr (nth (or active 0) options)) "Not set"))
-               (count (format nil "~d/~d" (1+ (or active 0)) (length options)))
-               (arrow (sheet-ink (if focused :dialog-accent :muted) :ground ground))
-               (at (canvas-put canvas x row "‹" arrow)))
-          (sheet-hit settings row x (+ x 2)
-                        (pick-option-action setting (car (nth (max 0 (1- (or active 0))) options)) index))
-          (setf at (canvas-put canvas (1+ at) row (clip-text-to-width label (max 3 (- width 6 (length count))))
-                               (sheet-ink (cond (focused :foreground) (setting.set :dialog-accent) (t :system))
-                                             :ground ground :bold focused)))
-          (canvas-put canvas (1+ at) row "›" arrow)
-          (sheet-hit settings row (1+ at) (+ at 3)
-                        (pick-option-action setting (car (nth (min (1- (length options)) (1+ (or active 0)))
-                                                              options))
-                                            index))
-          (when (<= (+ at 4 (length count)) (+ x width))
-            (canvas-put canvas (+ at 4) row count (sheet-ink :muted :ground ground)))
-          (+ at 4 (length count))))))
+  "SETTING's options side by side from X on ROW, the one it holds filled, as
+many as WIDTH holds. => the column after them."
+  (let ((active (position setting.value setting.options :key #'car :test #'equal))
+        (none (eq (effective-color-profile) :none))
+        (at x))
+    (loop for (value . label) in setting.options
+          for position from 0
+          for on = (eql position active)
+          for end = (+ at 2 (text-display-width label))
+          while (<= end (+ x width))
+          do (canvas-put canvas at row (if (and on none) (format nil "[~a]" label) (format nil " ~a " label))
+                         (cond ((not on) (sheet-ink :muted :ground ground))
+                               (focused (sheet-ink :sheet-chip-on))
+                               (setting.set (sheet-ink :sheet-chip-set))
+                               (t (sheet-ink :sheet-chip))))
+             (sheet-hit settings row at end (pick-option-action setting value index))
+             (setf at end))
+    at))
 
 (defun paint-field (settings canvas row x width ground)
   "The open field from X on ROW, WIDTH columns at most: what it holds -- a
@@ -1341,28 +1307,19 @@ caret's cell while its field is open, else NIL."
                                :ground ground))
             (hint (and focused
                        (case setting.kind
-                         (:number nil)
+                         (:note nil)
+                         (:number "←→ steps")
                          (:action (if (stringp setting.act)
                                       (format nil "enter opens /~a" setting.act)
                                       "enter picks a model"))
                          (:check "enter asks now")
-                         (:note nil)
                          (:ids "enter chooses")
                          (:reset "enter reviews")
                          ((:secret :paste) "enter pastes")
                          (t "enter edits")))))
-       (if (and focused (eq setting.kind :number))
-           (let ((at (canvas-put canvas x row "‹ " (sheet-ink :muted :ground ground))))
-             (sheet-hit settings row x (+ x 2)
-                           (lambda (model settings) (settings-nudge model settings setting -1)))
-             (setf at (canvas-put canvas at row (clip-text-to-width text (- width 4))
-                                  (sheet-ink :foreground :ground ground :bold t)))
-             (canvas-put canvas at row " ›" (sheet-ink :dialog-accent :ground ground))
-             (sheet-hit settings row at (+ at 2)
-                           (lambda (model settings) (settings-nudge model settings setting 1))))
-           (let ((at (canvas-put canvas x row (clip-text-to-width text width) ink)))
-             (when (and hint (<= (+ at 2 (length hint)) (+ x width)))
-               (canvas-put canvas (+ at 2) row hint (sheet-ink :muted :ground ground)))))
+       (let ((at (canvas-put canvas x row (clip-text-to-width text width) ink)))
+         (when (and hint (<= (+ at 2 (length hint)) (+ x width)))
+           (canvas-put canvas (+ at 2) row hint (sheet-ink :muted :ground ground))))
        nil))))
 
 (defun focus-extras (settings setting width doc-lines)
@@ -1382,21 +1339,13 @@ cut."
                          collect (list :doc (clip-text-to-width
                                              (format nil "~a  ~a" (reset-label row) (setting-text (cdr row)))
                                              width)))))
-          (t
-           (let ((lines (wrapped-lines setting.doc width)))
-             (when (> (length lines) doc-lines)
-               (setf lines (subseq lines 0 doc-lines))
-               (setf (car (last lines))
-                     (concatenate 'string (take-display-prefix (car (last lines)) (1- width)) "…")))
-             (loop for line in lines
-                   unless (zerop (length line)) collect (list :doc line)))))))
+          (t (loop for line in (cap-lines (wrapped-lines setting.doc width) doc-lines width)
+                   unless (zerop (length line)) collect (list :doc line))))))
 
-(defun setting-lines (settings entries style width label-width control-width doc-lines)
-  "The lines ENTRIES paint in STYLE -- :INLINE, a name column and the
-options beside it on every row, or :QUIET, a name and its value at the right
-edge, the chosen one's options under it when they do not fit beside -- in
-a pane WIDTH columns wide, the chosen one's description at most DOC-LINES
-lines. ENTRIES are (SETTING FOCUSED INDEX), (:HEAD PART) over a page's
+(defun setting-lines (settings entries width doc-lines)
+  "The lines ENTRIES paint, each a name and its value at the right edge, the
+chosen one's options under it when they do not fit beside, in a pane WIDTH
+columns wide, the chosen one's description at most DOC-LINES lines. ENTRIES are (SETTING FOCUSED INDEX), (:HEAD PART) over a page's
 results, or (:PART-HEAD PART APPLIES) over the settings of one section a
 page gathers, a blank line before it. A change of a release is one line,
 the whole of it once it is chosen. => (values LINES FOCUS-LINE)."
@@ -1420,22 +1369,13 @@ the whole of it once it is chosen. => (values LINES FOCUS-LINE)."
                    (push (list :change setting focused index (first said)) lines)
                    (dolist (line (rest said))
                      (push (list :doc line 13 focused) lines))))
-                ((eq style :inline)
-                 (let ((stack (and (> need control-width) (<= need (- width 2)))))
-                   (push (list :field setting focused index stack) lines)
-                   (when stack (push (list :control setting focused index) lines))
-                   (when focused
-                     (dolist (line (focus-extras settings setting (if stack (- width 2) control-width)
-                                                 doc-lines))
-                       (push (append line (list (if stack 2 (+ 3 label-width)) nil)) lines)))))
                 (t
                  (let ((beside (or (not focused) (zerop need)
                                    (<= (+ (text-display-width setting.label) 4 need) (- width 2)))))
                    (push (list :row setting focused index beside) lines)
                    (when focused
-                     (cond ((and settings.edit (eq (car settings.edit) setting))
-                            (push (list :control setting t index) lines))
-                           ((not beside) (push (list :control setting t index) lines)))
+                     (when (or (not beside) (and settings.edit (eq (car settings.edit) setting)))
+                       (push (list :control setting t index) lines))
                      (dolist (line (focus-extras settings setting (- width 2) doc-lines))
                        (push (append line (list 2 t)) lines)))))))))))
     (values (nreverse lines) focus-line)))
@@ -1460,7 +1400,7 @@ APPLIES), APPLIES when a change there applies otherwise than on the page."
   "When a change applies, as a section's head says it: a restart in its own tone."
   (sheet-ink (if (uiop:string-prefix-p "restart" applies) :sheet-restart :muted) :ground ground))
 
-(defun paint-lines (settings canvas lines focus-line top rows px pw label-width ground)
+(defun paint-lines (settings canvas lines focus-line top rows px pw ground)
   "LINES down ROWS rows from TOP in the pane at PX, PW wide, scrolled to keep
 the chosen setting and what it carries in view. => the open field's caret,
 or NIL."
@@ -1484,29 +1424,23 @@ or NIL."
             while line
             do (let* ((kind (first line))
                       (block (case kind
-                               ((:field :row :control :change) (third line))
+                               ((:row :control :change) (third line))
                                ((:doc :said :pick) (car (last line)))))
                       (ground (if block lift ground)))
                  (when block
                    (canvas-fill canvas (- px 2) r (+ pw 4) 1 (sheet-ink nil :ground lift))
-                   (when (and none (member kind '(:field :row :change)))
+                   (when (and none (member kind '(:row :change)))
                      (canvas-put canvas (- px 2) r "›" nil)))
                  (case kind
-                   (:title
+                   ((:title :part-head)
                     (let* ((part (second line))
-                           (applies part.applies)
-                           (at (canvas-put canvas px r (clip-text-to-width part.label pw)
-                                           (sheet-ink :title :ground ground :bold t))))
+                           (title (eq kind :title))
+                           (applies (if title part.applies (third line)))
+                           (at (canvas-put canvas px r (clip-text-to-width (if title part.label (string-upcase (or part.head part.label))) pw)
+                                           (sheet-ink (if title :title :muted) :ground ground :bold title))))
                       (when (and applies (<= (+ at 2 (text-display-width applies)) (+ px pw)))
                         (canvas-put canvas (- (+ px pw) (text-display-width applies)) r applies
                                     (applies-ink applies ground)))))
-                   (:part-head
-                    (destructuring-bind (part applies) (rest line)
-                      (let ((at (canvas-put canvas px r (clip-text-to-width (string-upcase (or part.head part.label)) pw)
-                                            (sheet-ink :muted :ground ground))))
-                        (when (and applies (<= (+ at 2 (text-display-width applies)) (+ px pw)))
-                          (canvas-put canvas (- (+ px pw) (text-display-width applies)) r applies
-                                      (applies-ink applies ground))))))
                    (:change
                     (destructuring-bind (setting focused index text) (rest line)
                       (canvas-put canvas (+ px 2) r setting.text (sheet-ink :muted :ground ground))
@@ -1545,19 +1479,6 @@ or NIL."
                                                (unless (eql index (fourth settings.ids))
                                                  (setf (fourth settings.ids) index)
                                                  t))))))
-                   (:field
-                    (destructuring-bind (setting focused index stack) (rest line)
-                      (when setting.set (canvas-put canvas px r "•" (sheet-ink :dialog-accent :ground ground)))
-                      (canvas-put canvas (+ px 2) r
-                                  (clip-text-to-width setting.label (if stack (- pw 2) label-width))
-                                  (sheet-ink (if focused :dialog-accent :system) :ground ground))
-                      (sheet-hit settings r (- px 2) (+ px 2 label-width 1) (focus-setting-action index))
-                      (sheet-hit settings r (- px 2) (+ px pw 2) nil :hover (hover-setting-action index))
-                      (unless stack
-                        (let ((x (+ px 2 label-width 1)))
-                          (when-let (caret (paint-control settings canvas r x (- (+ px pw) x) setting
-                                                          focused ground index))
-                            (setf cursor caret))))))
                    (:control
                     (destructuring-bind (setting focused index) (rest line)
                       (when-let (caret (paint-control settings canvas r (+ px 2) (- pw 2) setting
@@ -1572,9 +1493,6 @@ or NIL."
                               ((and focused (plusp (options-width setting)))
                                (setf used (options-width setting))
                                (paint-chips settings canvas r (- end used) used setting t ground index))
-                              ((and focused (eq setting.kind :number))
-                               (setf used (+ 4 (text-display-width setting.text)))
-                               (paint-control settings canvas r (- end used) used setting t ground index))
                               (t
                                (let ((shown (clip-tail setting.text (max 8 (floor pw 2)))))
                                  (setf used (text-display-width shown))
@@ -1728,9 +1646,6 @@ options on its row while the pane holds them. => the caret's cell, or NIL."
            (title-row (+ top (if tight 0 1)))
            (content-top (+ title-row 2))
            (rows (- hint-row content-top (if tight 0 1)))
-           (style (if (>= pw 70) :inline :quiet))
-           (label-width (max 10 (min 25 (floor (* pw 36) 100))))
-           (control-width (- pw 2 label-width 1))
            (part (nth settings.section-at settings.sections))
            (cursor nil))
       (canvas-put canvas 3 title-row "Settings" (sheet-ink :title :ground rail :bold t))
@@ -1742,10 +1657,10 @@ options on its row while the pane holds them. => the caret's cell, or NIL."
                            (if (plusp (length settings.query))
                                (result-entries settings)
                                (page-entries part (and (eq settings.focus :pane) settings.setting-at)))
-                           style pw label-width control-width (if (>= rows 18) 3 2))
+                           pw (if (>= rows 18) 3 2))
           (when (eq settings.focus :rail) (setf settings.pane-top 0))
           (when-let (caret (paint-lines settings canvas (append head lines) (+ (length head) focus-line)
-                                        content-top rows px pw label-width pane))
+                                        content-top rows px pw pane))
             (setf cursor caret))))
       (paint-keys settings canvas hint-row px (+ px pw) (settings-keys settings) settings.flash pane)
       cursor)))
@@ -1802,9 +1717,7 @@ keep the chosen one in view."
                        (on (= index settings.section-at))
                        (ground (if on (sheet-ground :sheet-focus) ground)))
                   (when (> columns 1) (push (list index column row) settings.columns))
-                  (when on
-                    (canvas-fill canvas (- x 2) r (+ column-width 4) 1 (sheet-ink nil :ground ground))
-                    (when (eq (effective-color-profile) :none) (canvas-put canvas (- x 2) r "›" nil)))
+                  (when on (paint-lift canvas (- x 2) r (+ column-width 4) ground))
                   (canvas-put canvas x r (clip-text-to-width part.label (- column-width 3))
                               (sheet-ink (if on :dialog-accent :system) :ground ground :bold on))
                   (section-mark canvas (+ x column-width -1) r part ground on)
@@ -1827,11 +1740,11 @@ cell, or NIL."
                  (canvas-put canvas (- (+ px pw) (text-display-width text)) header-row text ink)))
              (lines (entries)
                (multiple-value-bind (lines focus-line)
-                   (setting-lines settings entries :quiet pw 0 0 (if (>= rows 10) 2 1))
+                   (setting-lines settings entries pw (if (>= rows 10) 2 1))
                  (let ((head (settings-failed-lines settings pw)))
                    (when-let (caret (paint-lines settings canvas (append head lines)
                                                  (+ (length head) focus-line)
-                                                 list-top rows px pw 0 pane))
+                                                 list-top rows px pw pane))
                      (setf cursor caret))))))
         (cond
           ((plusp (length settings.query))
@@ -1851,24 +1764,12 @@ cell, or NIL."
              (paint-sections settings canvas (+ list-top (length failed)) (- rows (length failed))
                              px pw pane)))
           (t
-           (let* ((count (length settings.sections))
-                  (where (format nil "‹ ~d/~d ›" (1+ settings.section-at) count))
-                  (at (canvas-put canvas px header-row "Settings › " (sheet-ink :muted :ground pane))))
+           (let ((at (canvas-put canvas px header-row "Settings › " (sheet-ink :muted :ground pane))))
              (sheet-hit settings header-row px at
                            (lambda-ignoring (model settings)
                              (setf settings.focus :rail settings.said nil)))
-             (canvas-put canvas at header-row
-                         (clip-text-to-width part.label (max 1 (- pw 11 (length where) 2)))
+             (canvas-put canvas at header-row (clip-text-to-width part.label (max 1 (- pw 11)))
                          (sheet-ink :title :ground pane :bold t))
-             (when (< (+ (length where) 14) pw)
-               (let ((from (- (+ px pw) (length where))))
-                 (canvas-put canvas from header-row where (sheet-ink :muted :ground pane))
-                 (sheet-hit settings header-row from (+ from 2)
-                               (lambda-ignoring (model settings)
-                                 (settings-step-section settings -1)))
-                 (sheet-hit settings header-row (+ from (length where) -2) (+ from (length where))
-                               (lambda-ignoring (model settings)
-                                 (settings-step-section settings 1)))))
              (lines (page-entries part settings.setting-at))))))
       (paint-keys settings canvas hint-row px (+ px pw) (settings-keys settings) settings.flash pane)
       cursor)))
@@ -1877,17 +1778,13 @@ cell, or NIL."
   "The columns and rows the sheet asks for: what a wide window gives it, the
 whole rail standing in it unscrolled.")
 
-(defun settings-paint (model settings width height)
-  "The sheet for a WIDTH x HEIGHT frame: wide from 84 columns, the rail beside
-the pane; narrower, one view at a time."
-  (paint-sheet model settings width height +settings-sheet-size+ #'paint-wide #'paint-stacked))
-
 (defun slash-settings-op (model &optional section)
   "Open /settings: the sheet at once over the shell, General first -- or the
 page holding the config SECTION once it is read (/cells' Enter) -- every
 section read off the loop."
   (let ((settings (make-settings-sheet :kind :settings :title "Settings"
-                                       :paint #'settings-paint :key #'settings-key
+                                       :paint (sheet-painter +settings-sheet-size+ #'paint-wide #'paint-stacked)
+                                       :key #'settings-key
                                        :paste #'settings-paste :click #'sheet-click
                                        :wheel #'settings-wheel :hover #'settings-hover
                                        :asked section)))

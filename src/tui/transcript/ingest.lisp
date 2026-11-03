@@ -308,11 +308,9 @@ boundary — as a :PENDING-INPUT row: queue state, not conversation."
                        (transcript-rows st)))
                  (tail-row st :kind :pending-input :role "user"
                            :prompt-id prompt-id :hydrated t))))
-    (setf (transcript-row-text row) (or content "")
-          (transcript-row-turn-id row) (or turn-id
-                                           (transcript-row-turn-id row))
-          (transcript-row-steer-p row) (or (and steer t)
-                                           (transcript-row-steer-p row)))))
+    (setf row.text (or content "")
+          row.turn-id (or turn-id row.turn-id)
+          row.steer-p (or (and steer t) row.steer-p))))
 
 (defun clear-pending-input (state prompt-id content)
   "Remove the queued :PENDING-INPUT row that PROMPT-ID (or, for logs that

@@ -645,49 +645,29 @@ or NIL -- a terminal, /dev/null, a socket a launcher holds open, nothing."
       (#.sb-posix:s-ififo :pipe)
       (#.sb-posix:s-ifreg :file))))
 
+(defun stream-octets-to-end (stream limit)
+  "Every byte left on STREAM, or :TOO-LARGE once there are more than LIMIT."
+  ;; A full buffer may have more behind it: it doubles until the stream ends
+  ;; short of it, or the bytes pass LIMIT.
+  (let* ((buffer (make-array 65536 :element-type '(unsigned-byte 8)))
+         (end (read-sequence buffer stream)))
+    (loop while (and (= end (length buffer)) (<= end limit))
+          do (setf buffer (adjust-array buffer (* 2 (length buffer)))
+                   end (read-sequence buffer stream :start end)))
+    (if (> end limit) :too-large (subseq buffer 0 end))))
+
 (defun descriptor-octets-to-end (fd limit &key say-waits)
   "Every byte FD has left until its end, or :TOO-LARGE past LIMIT. With
-SAY-WAITS, the name of what FD is, a read still waiting after a second says
-so on stderr, once."
-  #+win32
-  (let ((stream (sb-sys:make-fd-stream fd :input t :element-type '(unsigned-byte 8)
-                                          :buffering :full :auto-close nil))
-        (chunks '()) (total 0))
-    (declare (ignore say-waits))
-    (loop for buffer = (make-array 65536 :element-type '(unsigned-byte 8))
-          for end = (read-sequence buffer stream)
-          while (plusp end)
-          do (when (> (incf total end) limit)
-               (return-from descriptor-octets-to-end :too-large))
-             (push (subseq buffer 0 end) chunks))
-    (let ((octets (make-array total :element-type '(unsigned-byte 8))) (start 0))
-      (dolist (chunk (nreverse chunks) octets)
-        (replace octets chunk :start1 start)
-        (incf start (length chunk)))))
+SAY-WAITS, the name of what FD is, a read that has nothing after a second
+says so on stderr."
   #-win32
-  (let ((buffer (make-array 65536 :element-type '(unsigned-byte 8)))
-        (chunks '()) (total 0) (said nil))
-    (loop
-      (when (and say-waits (not said) (not (sb-sys:wait-until-fd-usable fd :input 1)))
-        (setf said t)
-        (format *error-output* "~&nodecode: reading the first prompt from ~a until the pipe closes (Ctrl-C stops)~%"
-                say-waits)
-        (finish-output *error-output*))
-      (multiple-value-bind (count errno)
-          (sb-sys:with-pinned-objects (buffer)
-            (sb-unix:unix-read fd (sb-sys:vector-sap buffer) (length buffer)))
-        (cond ((null count)
-               (unless (eql errno sb-unix:eintr)
-                 (error "stdin cannot be read: ~a" (sb-int:strerror errno))))
-              ((zerop count)
-               (return))
-              ((> (incf total count) limit)
-               (return-from descriptor-octets-to-end :too-large))
-              (t (push (subseq buffer 0 count) chunks)))))
-    (let ((octets (make-array total :element-type '(unsigned-byte 8))) (start 0))
-      (dolist (chunk (nreverse chunks) octets)
-        (replace octets chunk :start1 start)
-        (incf start (length chunk))))))
+  (when (and say-waits (not (sb-sys:wait-until-fd-usable fd :input 1)))
+    (format *error-output* "~&nodecode: reading the first prompt from ~a until the pipe closes (Ctrl-C stops)~%"
+            say-waits)
+    (finish-output *error-output*))
+  (stream-octets-to-end (sb-sys:make-fd-stream fd :input t :element-type '(unsigned-byte 8)
+                                                  :buffering :full :auto-close nil)
+                        limit))
 
 #-win32
 (defun keep-on-stdin (octets &optional (target 0))
@@ -697,16 +677,11 @@ start, in place of the pipe they were drained from."
       (sb-posix:mkstemp (uiop:native-namestring
                          (merge-pathnames "nodecode-stdin-XXXXXX" (uiop:temporary-directory))))
     (unwind-protect
-         (progn
+         (let ((out (sb-sys:make-fd-stream fd :output t :element-type '(unsigned-byte 8)
+                                              :buffering :full :auto-close nil)))
            (sb-posix:unlink path)
-           (let ((start 0))
-             (sb-sys:with-pinned-objects (octets)
-               (loop while (< start (length octets))
-                     do (multiple-value-bind (count errno)
-                            (sb-unix:unix-write fd octets start (- (length octets) start))
-                          (cond (count (incf start count))
-                                ((not (eql errno sb-unix:eintr))
-                                 (error "stdin's text cannot be kept: ~a" (sb-int:strerror errno))))))))
+           (write-sequence octets out)
+           (finish-output out)
            (sb-posix:lseek fd 0 sb-posix:seek-set)
            (sb-posix:dup2 fd target))
       (sb-posix:close fd))))

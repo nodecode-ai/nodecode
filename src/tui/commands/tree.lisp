@@ -161,19 +161,6 @@ stretches down to the row that line starts on."
   "Whether listing prompt ENTRY is a reflection's recap: a note on a turn."
   (equal "reflection" (gethash "origin" entry)))
 
-(defun metro-cron (prompt)
-  "A cron fire's (JOB . HH:MM) when PROMPT opens the way a cron prompt does --
-the job's name quoted after `[cron', then `fired', a date and the minute --
-else NIL."
-  (when (and (stringp prompt) (alexandria:starts-with-subseq "[cron \"" prompt))
-    (let* ((close (position #\" prompt :start 7))
-           (clock (and close (+ close 19))))
-      (when (and close
-                 (eql close (search "\" fired " prompt :start2 close))
-                 (< (+ clock 4) (length prompt))
-                 (char= #\: (char prompt (+ clock 2))))
-        (cons (subseq prompt 7 close) (subseq prompt clock (+ clock 5)))))))
-
 (defun metro-clock (ms)
   "The local HH:MM of epoch milliseconds MS; NIL for NIL."
   (when ms
@@ -203,7 +190,7 @@ listed turn above it that is no recap; NIL at a root, or under a turn the
 listing's limit cut), :CALLS (CHILDREN's tool rows under it), :RECAPS (the
 recap rows folded under it), :HEAD-P (it, or a recap of it, is the head),
 :ON-CHAIN, :START (epoch ms), :SPAN (ms; NIL while it runs), :ENDING,
-:STEERS, :CRON (METRO-CRON) and :RETRY (a cancelled ask its parent was asked
+:STEERS and :RETRY (a cancelled ask its parent was asked
 again after). A recap whose turn the listing does not carry stays a node.
 => (values NODES BY-ID), BY-ID the node of each id."
   (dolist (entry entries)
@@ -231,7 +218,6 @@ again after). A recap whose turn the listing does not carry stays a node.
                               :span (metro-span-ms entry)
                               :ending (json-value entry :string "ending")
                               :steers (or (json-value entry :integer "steers") 0)
-                              :cron (metro-cron (gethash "prompt" entry))
                               :retry nil
                               :position (or (json-value entry :integer "log_position") 0)))
                   nodes)))))
@@ -246,8 +232,7 @@ again after). A recap whose turn the listing does not carry stays a node.
   (let ((nodes (stable-sort (nreverse nodes) #'< :key (lambda (node) (getf node :position)))))
     ;; A cancelled ask whose parent was asked the same again later says so.
     (dolist (node nodes)
-      (when (and (equal "cancelled" (getf node :ending)) (getf node :parent)
-                 (null (getf node :cron)))
+      (when (and (equal "cancelled" (getf node :ending)) (getf node :parent))
         (let ((key (metro-ask-key node)))
           (setf (getf node :retry)
                 (and (find-if (lambda (other)
@@ -350,12 +335,6 @@ under row I instead: the rails running on below it. HEAD is the head's id."
   (loop for (text . tone) in cells
         collect (make-seg :text text :tone (or tone :muted))))
 
-(defun metro-label-text (node)
-  "NODE's words on a row: its ask's excerpt, or a cron fire's job and minute."
-  (if-let (cron (getf node :cron))
-    (format nil "cron ~a · fired ~a" (car cron) (cdr cron))
-    (checkpoint-row-excerpt (gethash "prompt" (getf node :entry)))))
-
 (defun selection-edge-seg (selected plain)
   "A picker row's left edge: the accent bar on the SELECTED row, a PLAIN blank on the rest."
   (if selected (make-seg :text "▌" :tone :dialog-accent) (make-seg :text " " :tone plain)))
@@ -397,10 +376,9 @@ under twelve columns. => (values SEGS GROUND)."
 (defun metro-node-paint (row node cells &key clock repeat (arrow "  ") head)
   "The painter (PICKER-ROW-PAINT) of NODE's /tree row ROW: the edge, its CLOCK
 time (blank under a row of the same minute, REPEAT, unless selected), its graph
-CELLS, the HEAD tag on the head's row, the fold's ARROW, its ask -- a cron
-fire's job and minute -- and, flush right, how it ended, its steers, its calls,
-how long it ran, and a pen when a recap folds under it. The
-selected row carries ROW's files chrome after the ask."
+CELLS, the HEAD tag on the head's row, the fold's ARROW, its ask and, flush
+right, how it ended, its steers, its calls, how long it ran, and a pen when a
+recap folds under it. The selected row carries ROW's files chrome after the ask."
   (lambda (selected room)
     (let* ((plain (if selected :system :muted))
            (quiet :sheet-undone)
@@ -408,7 +386,6 @@ selected row carries ROW's files chrome after the ask."
            (span (getf node :span))
            (calls (length (getf node :calls)))
            (steers (getf node :steers))
-           (cron (getf node :cron))
            (left (append
                   (list (selection-edge-seg selected plain)
                         (make-seg :text " " :tone plain)
@@ -423,16 +400,12 @@ selected row carries ROW's files chrome after the ask."
                     (list (make-seg :text " HEAD " :tone (style-for-tone :sheet-chip-on) :bold t)
                           (make-seg :text " " :tone plain)))
                   (list (make-seg :text arrow :tone quiet))))
-           (label (if cron
-                      (list (make-seg :text " cron " :tone (style-for-tone :sheet-chip-set))
-                            (make-seg :text (format nil " ~a" (car cron)) :tone :system)
-                            (make-seg :text (format nil " · fired ~a" (cdr cron)) :tone quiet))
-                      (list (make-seg :text (metro-label-text node)
-                                      :tone (cond (head :title)
-                                                  ((equal ending "cancelled") quiet)
-                                                  ((getf node :on-chain) :foreground)
-                                                  (t :muted))
-                                      :bold head))))
+           (label (list (make-seg :text (checkpoint-row-excerpt (gethash "prompt" (getf node :entry)))
+                                  :tone (cond (head :title)
+                                              ((equal ending "cancelled") quiet)
+                                              ((getf node :on-chain) :foreground)
+                                              (t :muted))
+                                  :bold head)))
            (suffix (let ((text (picker-row-suffix row)))
                      (and selected (plusp (length text)) text)))
            (words (remove nil
@@ -504,11 +477,9 @@ on, as a set."
   chain)
 
 (defun tree-move-name (node)
-  "How a move names NODE's turn: `turn 4', `the 14:31 cron fire', `the wake'."
-  (let ((entry (getf node :entry))
-        (cron (getf node :cron)))
-    (cond (cron (format nil "the ~a cron fire" (cdr cron)))
-          ((gethash "turn_number" entry) (format nil "turn ~a" (gethash "turn_number" entry)))
+  "How a move names NODE's turn: `turn 4', `the wake'."
+  (let ((entry (getf node :entry)))
+    (cond ((gethash "turn_number" entry) (format nil "turn ~a" (gethash "turn_number" entry)))
           ((equal "wake" (gethash "origin" entry)) "the wake")
           (t "this turn"))))
 
@@ -580,7 +551,7 @@ many rows. => painted rows, ROOM wide; NIL for a turn the graph does not hold."
                                 (when tag
                                   (list (make-seg :text (car tag) :tone (style-for-tone (cdr tag)) :bold t)
                                         (make-seg :text " " :tone :muted)))
-                                (list (make-seg :text (metro-label-text turn)
+                                (list (make-seg :text (checkpoint-row-excerpt (gethash "prompt" (getf turn :entry)))
                                                 :tone (cond ((equal id head) :title)
                                                             ((or leaves (equal (getf turn :ending) "cancelled")) :sheet-undone)
                                                             (on :foreground)

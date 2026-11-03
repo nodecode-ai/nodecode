@@ -1137,10 +1137,8 @@ when one serves, else by staging and linking here for the next launch."
                        (format nil "this home's organism: ~a~%this binary: ~a~:[~;, a checkout build (`just release' rebuilds it)~]"
                                text binary (not *installed-build*)))
                       (t text))))
-            (let ((text (update-locally version check)))
-              (if-let (stale (stale-window-text))
-                (format nil "~a~%~a" text stale)
-                text))))))
+            ;; read once the update has linked: the window's PATH against it
+            (format nil "~a~@[~%~a~]" (update-locally version check) (stale-window-text))))))
 
 ;;; --- the route -------------------------------------------------------------
 

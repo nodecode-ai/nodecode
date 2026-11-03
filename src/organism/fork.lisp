@@ -683,27 +683,22 @@ answered, or NIL when it answered none."
                                                             generation (merge-pathnames "cells/" home))))
                                (error (condition)
                                  (list :failed (format nil "generation ~d could not be laid: ~a" generation condition))))))
-         (threads (loop for (generation text) in jobs
-                        for home in homes
-                        for lay in laid
-                        collect (let ((home home) (text text) (lay lay))
-                                  (bt2:make-thread
-                                   (lambda ()
-                                     (if (getf lay :failed)
-                                         (list :score nil :detail (getf lay :failed) :seconds 0.0)
-                                         (let ((began (get-internal-real-time)))
-                                           (handler-case
-                                               (multiple-value-bind (score detail)
-                                                   (trial text :home home :seconds seconds)
-                                                 (list :score score :detail detail :seconds (fork-since began)))
-                                             (error (condition)
-                                               (list :score nil :detail (princ-to-string condition)
-                                                     :seconds (fork-since began)))))))
-                                   :name (format nil "fork-trial-g~d" generation))))))
+         (began (get-internal-real-time)))
     (unwind-protect
-         (loop for thread in threads
-               for lay in laid
-               collect (append (bt2:join-thread thread) (list :notes (getf lay :notes))))
+         (parallel-map (lambda (job)
+                         (destructuring-bind (text home lay) job
+                           (append (cond ((getf lay :failed)
+                                          (list :score nil :detail (getf lay :failed) :seconds 0.0))
+                                         (t (handler-case
+                                                (multiple-value-bind (score detail)
+                                                    (trial text :home home :seconds seconds)
+                                                  (list :score score :detail detail :seconds (fork-since began)))
+                                              (error (condition)
+                                                (list :score nil :detail (princ-to-string condition)
+                                                      :seconds (fork-since began))))))
+                                   (list :notes (getf lay :notes)))))
+                       (mapcar #'list (mapcar #'second jobs) homes laid)
+                       :lanes (max 1 (length jobs)))
       (dolist (home homes)
         (ignore-errors (uiop:delete-directory-tree home :validate t :if-does-not-exist :ignore))))))
 
@@ -909,12 +904,10 @@ KEEP is no layer definition, or that file had none."
                             (first (file-definitions file :name (symbol-name keep) :read-eval t))))
                   (form (and hit
                              (ignore-errors
-                              (destructuring-bind (key fork-start end package) hit
-                                (declare (ignore key))
-                                (with-standard-io-syntax
-                                  (let ((*package* package) (*read-eval* t))
-                                    (read-from-string (uiop:read-file-string file) t nil
-                                                      :start fork-start :end end))))))))
+                              (with-standard-io-syntax
+                                (let ((*package* (fourth hit)) (*read-eval* t))
+                                  (read-from-string (uiop:read-file-string file) t nil
+                                                    :start (second hit) :end (third hit))))))))
              (and (consp form) (string= "DEFUN" (symbol-name (first form))) (eq keep (second form))
                   (list :label (format nil "generation ~d" generation)
                         :source (format nil "generation ~d's layer" generation)
@@ -951,14 +944,6 @@ KEEP its own -- or NIL when it does not compile clean in this image."
           (declare (ignore warned))
           (and (not failed) function))
       (error () nil))))
-
-(defun fork-median (times)
-  "The middle of TIMES, or NIL for none."
-  (let ((sorted (sort (copy-list times) #'<))
-        (count (length times)))
-    (cond ((zerop count) nil)
-          ((oddp count) (nth (floor count 2) sorted))
-          (t (/ (+ (nth (1- (floor count 2)) sorted) (nth (floor count 2) sorted)) 2)))))
 
 (defun fork-nanoseconds ()
   "The monotonic clock, in nanoseconds: fine enough to time one call, which
@@ -1021,7 +1006,7 @@ entrant: (:LABEL :STANDING :CALLS :MEDIAN-US :BROKEN)."
       (bt2:with-lock-held (lock)
         (loop for record in records
               collect (list :label (getf record :label) :standing (getf record :standing)
-                            :calls (getf record :calls) :median-us (fork-median (getf record :times))
+                            :calls (getf record :calls) :median-us (and (getf record :times) (alexandria:median (getf record :times)))
                             :broken (getf record :broken)))))))
 
 (defun fork-timed-records (records)
@@ -1114,10 +1099,9 @@ place, HELD (FORK-SWAP). => the :RACE report."
                        (fork-in-scratch
                         (lambda (scratch)
                           (funcall *fork-ask*
-                                   (cons (list generation (fork-form-text (fork-check-form check directory)))
-                                         (loop for row in fit
-                                               collect (list generation
-                                                             (fork-form-text (fork-check-form check directory (getf row :form))))))
+                                   (loop for version in (cons nil (mapcar (lambda (row) (getf row :form)) fit))
+                                         collect (list generation
+                                                       (fork-form-text (fork-check-form check directory version))))
                                    scratch)))))
          (standing-passed (eql 1 (getf (first answers) :score)))
          (tried (loop for row in fit

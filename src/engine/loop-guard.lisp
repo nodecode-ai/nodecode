@@ -207,9 +207,11 @@ are fewer than three."
   (judged 0)
   (stall 0))
 
-(defun exact-cycle-detail (unit count)
-  "The words a detected exact cycle is reported in."
-  (format nil "repeated one ~d-character passage ~d times back to back" (length unit) count))
+(defun exact-cycle-detail (text)
+  "The exact cycle TEXT ends in (EXACT-SUFFIX-CYCLE) in the words it is
+reported in, or NIL."
+  (multiple-value-bind (unit count) (exact-suffix-cycle text)
+    (and unit (format nil "repeated one ~d-character passage ~d times back to back" (length unit) count))))
 
 (defun loop-detector-push (detector delta)
   "Feed DELTA, the next streamed text, to DETECTOR: the loop it completes, in
@@ -223,9 +225,8 @@ words, or NIL."
   (when (or (>= (incf (loop-detector-unscanned detector) (length delta)) +loop-check-stride+)
             (>= (length delta) +loop-check-stride+))
     (setf (loop-detector-unscanned detector) 0)
-    (multiple-value-bind (unit count) (exact-suffix-cycle (loop-detector-tail detector))
-      (when unit
-        (return-from loop-detector-push (exact-cycle-detail unit count)))))
+    (when-let (hit (exact-cycle-detail (loop-detector-tail detector)))
+      (return-from loop-detector-push hit)))
   (when (loop-detector-semantic-p detector)
     (setf (loop-detector-pending detector) (concatenate 'string (loop-detector-pending detector) delta))
     (loop
@@ -246,9 +247,8 @@ words, or NIL."
   "Judge what DETECTOR still holds at the end of its stream: the exact check
 once more, whatever its cadence, and the last paragraph, which may be the one
 that completes a cluster. The loop, in words, or NIL."
-  (multiple-value-bind (unit count) (exact-suffix-cycle (loop-detector-tail detector))
-    (when unit
-      (return-from loop-detector-flush (exact-cycle-detail unit count))))
+  (when-let (hit (exact-cycle-detail (loop-detector-tail detector)))
+    (return-from loop-detector-flush hit))
   (when (and (loop-detector-semantic-p detector) (plusp (length (loop-detector-pending detector))))
     (let ((rest (loop-detector-pending detector)))
       (setf (loop-detector-pending detector) "")
@@ -341,7 +341,8 @@ or NIL when its model is not guarded."
 (defun loop-guard-observe (guard part)
   "Feed PART, the attempt's next stream part, to GUARD, and fail the attempt
 with PROVIDER-REASONING-LOOP when what it streamed has started to loop."
-  (flet ((push-text (detector text) (and text (loop-detector-push detector text))))
+  (flet ((push-text (detector text) (and text (loop-detector-push detector text)))
+         (said (whose loop) (and loop (format nil "its ~a ~a" whose loop))))
     (let* ((reasoning (loop-guard-reasoning guard))
            (text (loop-guard-text guard))
            (detail
@@ -349,24 +350,19 @@ with PROVIDER-REASONING-LOOP when what it streamed has started to loop."
                (:reasoning-delta
                 (unless (loop-guard-answering-p guard)
                   (setf (loop-guard-reasoning-p guard) t)
-                  (when-let (loop (push-text reasoning (stream-part-text part)))
-                    (format nil "its reasoning ~a" loop))))
+                  (said "reasoning" (push-text reasoning (stream-part-text part)))))
                (:reasoning-end
-                (when-let (loop (and (loop-guard-reasoning-p guard) (loop-detector-flush reasoning)))
-                  (format nil "its reasoning ~a" loop)))
+                (said "reasoning" (and (loop-guard-reasoning-p guard) (loop-detector-flush reasoning))))
                (:text-delta
                 (when (plusp (length (stream-part-text part)))
                   (setf (loop-guard-reasoning-p guard) nil
                         (loop-guard-answering-p guard) t))
-                (when-let (loop (and (loop-guard-text-p guard) (push-text text (stream-part-text part))))
-                  (format nil "its answer ~a" loop)))
+                (said "answer" (and (loop-guard-text-p guard) (push-text text (stream-part-text part)))))
                ((:tool-input-start :tool-input-delta :tool-call)
                 (setf (loop-guard-text-p guard) nil))
                (:finish
-                (or (when-let (loop (and (loop-guard-reasoning-p guard) (loop-detector-flush reasoning)))
-                      (format nil "its reasoning ~a" loop))
-                    (when-let (loop (and (loop-guard-text-p guard) (loop-detector-flush text)))
-                      (format nil "its answer ~a" loop)))))))
+                (or (said "reasoning" (and (loop-guard-reasoning-p guard) (loop-detector-flush reasoning)))
+                    (said "answer" (and (loop-guard-text-p guard) (loop-detector-flush text))))))))
       (when (stringp detail)
         (error 'provider-reasoning-loop
                :detail (format nil "the model looped: ~a" detail))))))

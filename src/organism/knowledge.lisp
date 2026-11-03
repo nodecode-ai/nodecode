@@ -40,8 +40,7 @@
 (defun knowledge-folder-p (directory)
   "Whether DIRECTORY is a knowledge cell: its .asd declares a LAYER system
 carrying (:knowledge . t) in :properties."
-  (and directory (uiop:directory-exists-p directory)
-       (cell-folder-knowledge-p (make-cell-folder (uiop:ensure-directory-pathname directory)))))
+  (eq (kept-folder-kind directory) :knowledge))
 
 (defun kept-folder-kind (directory)
   "What DIRECTORY keeps, read from its .asd as data: :KNOWLEDGE for a
@@ -509,8 +508,7 @@ line; the rest do not fit."
                                                   (stats (knowledge-stats :stale-days stale)))
   "=> (values HOT COLD STATS) of what SESSION-ID reads, under SETTINGS
 (:stale-days), STATS the ledger's (KNOWLEDGE-STATS) they were ranked by."
-  (multiple-value-bind (hot cold) (hot-knowledge (visible-entries session-id) stats stale)
-    (values hot cold stats)))
+  (multiple-value-call #'values (hot-knowledge (visible-entries session-id) stats stale) stats))
 
 (defun knowledge-surface (session-id settings)
   "The index SESSION-ID reads: a first line saying how to read one and how

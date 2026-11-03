@@ -399,48 +399,40 @@ endpoint only once the catalog or the gateway's cells have landed.")
   "Where measurements are kept, else the home's connection-checks.sexp.")
 
 (defvar *connection-memory* :unread
-  "URL => (UNIVERSAL-TIME . PROBE) as kept on disk, :UNREAD until first asked.")
+  "((URL TIME . PROBE) ...) as kept on disk, :UNREAD until first asked.")
 
 (defvar *connection-memory-lock* (sb-thread:make-mutex :name "connection memory"))
 
-(defun connection-memory-file ()
-  (or *connection-memory-path* (nlk:home "connection-checks.sexp")))
-
 (defun connection-memory ()
-  "The kept measurements, read from disk once."
+  "The kept measurements, read from disk once; a file that will not read keeps nothing."
   (sb-thread:with-recursive-lock (*connection-memory-lock*)
     (when (eq *connection-memory* :unread)
-      (setf *connection-memory*
-            (let ((table (make-hash-table :test #'equal))
-                  (kept (ignore-errors
-                         (with-open-file (in (connection-memory-file) :if-does-not-exist nil)
-                           (and in (with-standard-io-syntax
-                                     (let ((*read-eval* nil) (*package* (find-package :cl-user)))
-                                       (read in nil nil))))))))
-              (loop for (url time . probe) in (and (listp kept) kept)
-                    when (and (stringp url) (integerp time)) do (setf (gethash url table) (cons time probe)))
-              table)))
+      (let ((kept (ignore-errors (with-standard-io-syntax
+                                   (let ((*read-eval* nil) (*package* (find-package :cl-user)))
+                                     (uiop:read-file-form (or *connection-memory-path*
+                                                              (nlk:home "connection-checks.sexp"))))))))
+        (setf *connection-memory*
+              (and (listp kept) (remove-if-not (lambda (row) (and (consp row) (stringp (car row))
+                                                                  (consp (cdr row)) (integerp (cadr row))))
+                                               kept)))))
     *connection-memory*))
 
 (defun remembered-probe (url)
   "What URL's host measured within *CONNECTION-MEMORY-DAYS*, with today's proxy, else NIL."
-  (when-let (kept (sb-thread:with-recursive-lock (*connection-memory-lock*)
-                    (gethash url (connection-memory))))
-    (and (< (- (get-universal-time) (car kept)) (* *connection-memory-days* 86400))
-         (list* :proxy (connection-proxy) (alexandria:remove-from-plist (cdr kept) :proxy)))))
+  (destructuring-bind (&optional time &rest probe) (cdr (assoc url (connection-memory) :test #'equal))
+    (and time (< (- (get-universal-time) time) (* *connection-memory-days* 86400))
+         (list* :proxy (connection-proxy) (alexandria:remove-from-plist probe :proxy)))))
 
 (defun remember-probe (url probe)
-  "Keep PROBE, a measurement that succeeded, as URL's."
+  "Keep PROBE, a measurement that succeeded, as URL's, on disk too."
   (sb-thread:with-recursive-lock (*connection-memory-lock*)
-    (let ((table (connection-memory)))
-      (setf (gethash url table) (cons (get-universal-time) (alexandria:remove-from-plist probe :proxy)))
-      (ignore-errors
-       (nlk:write-file-atomically
-        (connection-memory-file)
-        (with-standard-io-syntax
-          (let ((*package* (find-package :cl-user)) (*print-readably* nil))
-            (prin1-to-string (loop for url being the hash-keys of table using (hash-value (time . probe))
-                                   collect (list* url time probe))))))))))
+    (setf *connection-memory* (acons url (list* (get-universal-time) (alexandria:remove-from-plist probe :proxy))
+                                     (remove url (connection-memory) :key #'car :test #'equal)))
+    (ignore-errors
+     (nlk:write-file-atomically (or *connection-memory-path* (nlk:home "connection-checks.sexp"))
+                                (with-standard-io-syntax
+                                  (let ((*package* (find-package :cl-user)) (*print-readably* nil))
+                                    (prin1-to-string *connection-memory*)))))))
 
 (defvar *connection-checks* (make-hash-table :test #'equal :synchronized t)
   "(PROVIDER . MODEL) => that pick's CONNECTION-VERDICT, or :CHECKING while it is measured.")

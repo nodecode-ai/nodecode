@@ -1055,22 +1055,20 @@ under way."
                  (let* ((plist (cddr form))
                         (layer (eq (getf plist :class) 'layer))
                         (components (getf plist :components))
+                        ;; an alist, or as good as none
+                        (properties (let ((properties (getf plist :properties)))
+                                      (and (listp properties) (every #'consp properties) properties)))
+                        (serves (cdr (assoc :serves properties)))
                         (odd (and layer
                                   (listp components)
                                   (find-if-not #'file-component-p components))))
                    (make-declared-system
                     name
                     :layer layer
-                    :knowledge (let ((properties (getf plist :properties)))
-                                 (and layer (listp properties) (every #'consp properties)
-                                      (eq t (cdr (assoc :knowledge properties)))))
+                    :knowledge (and layer (eq t (cdr (assoc :knowledge properties))))
                     :description (let ((text (getf plist :description)))
                                    (if (stringp text) text ""))
-                    :serves (let ((properties (getf plist :properties)))
-                              (and (listp properties) (every #'consp properties)
-                                   (let ((serves (cdr (assoc :serves properties))))
-                                     (and (listp serves) (every #'listp serves)
-                                          (serves-entries serves)))))
+                    :serves (and (listp serves) (every #'listp serves) (serves-entries serves))
                     :depends-on (loop for dependency in (let ((names (getf plist :depends-on)))
                                                           (and (listp names) names))
                                       when (or (stringp dependency) (symbolp dependency))
@@ -1556,21 +1554,13 @@ when it loaded, the reason it was skipped, as the boot line prints it, or
               ;; <cache>/<stamp>/<folder>/<name>-<twelve hex of the text's sha256>.fasl:
               ;; the text is the key, the stamp directory this build's alone
               (let* ((fasl (layer-fasl-path path))
-                     ;; (LIST) when the fasl and the list beside it both read, else NIL
+                     ;; (LIST) when the fasl and the list beside it both read, else NIL;
+                     ;; the list is written whole before its fasl is published
                      (read-back (and (probe-file fasl)
                                      (ignore-errors
-                                      (list (uiop:safe-read-file-form (missing-names-path fasl))))))
-                     (names (first read-back)))
-                ;; The list reads back whole or the file compiles again: a torn or
-                ;; foreign list must not decide what loads.
-                (if (and read-back
-                         (listp names)
-                         (every (lambda (entry)
-                                  (and (listp entry) (= 4 (length entry))
-                                       (member (first entry) '(:function :variable :binding))
-                                       (stringp (second entry)) (stringp (third entry))))
-                                names))
-                    (values fasl names)
+                                      (list (uiop:safe-read-file-form (missing-names-path fasl)))))))
+                (if (and read-back (listp (first read-back)))
+                    (values fasl (first read-back))
                     (progn (ensure-directories-exist fasl)
                            (compile-layer-file path fasl))))
             (error () nil))
@@ -2623,10 +2613,8 @@ and the caller fetches the repository."
                (http :get entry.archive :binary t :max-bytes (* 16 1024 1024) :timeout 20))
            (when (and (eql status 200) (typep body '(vector (unsigned-byte 8)))
                       (string= (sha256-text body) (format nil "sha256:~a" entry.sha256)))
-             (ensure-directories-exist staging)
-             (with-open-file (out (merge-pathnames ".archive.tar.gz" staging) :direction :output
-                                  :element-type '(unsigned-byte 8) :if-exists :supersede)
-               (write-sequence body out))
+             ;; STAGING is made with it
+             (write-file-atomically (merge-pathnames ".archive.tar.gz" staging) body)
              ;; a name relative to the working directory: Git for Windows' tar
              ;; reads the colon of a drive as a host to fetch the archive from
              (multiple-value-bind (out err status)
@@ -2710,16 +2698,15 @@ installer's. => TARGET."
           ;; the index's copy of the .asd is what the chooser showed and judged;
           ;; an entry no index listed -- a generation's row, put back at the pin
           ;; its seal recorded (ROW-OFFER) -- carries no copy to hold it to (T-347)
+          ;; -- serves among them: what a picker offered the folder by is what the
+          ;; folder says it serves
           (when entry.index
-            (unless (string= entry.description primary.description)
-              (error "~a: the index's description is not the .asd's, ~s" entry.name primary.description))
-            (unless (null (set-exclusive-or declared entry.depends-on :test #'string-equal))
-              (error "~a: the index's depends_on ~s is not the .asd's ~s"
-                     entry.name entry.depends-on declared))
-            ;; what a picker offered the folder by is what the folder says it serves
-            (unless (null (set-exclusive-or primary.serves entry.serves :test #'equal))
-              (error "~a: the index's serves ~s is not the .asd's ~s"
-                     entry.name entry.serves primary.serves)))
+            (loop for (field index asd test)
+                    in (list (list "description" (list entry.description) (list primary.description) #'string=)
+                             (list "depends_on" entry.depends-on declared #'string-equal)
+                             (list "serves" entry.serves primary.serves #'equal))
+                  when (set-exclusive-or index asd :test test)
+                    do (error "~a: the index's ~a is not the .asd's: ~s, not ~s" entry.name field index asd)))
           (when-let (links (repository-links source))
             (error "~a carries symbolic link~p (~{~a~^, ~}); a cell may not"
                    entry.name (length links) links))

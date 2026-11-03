@@ -175,6 +175,15 @@ ROWS X Y CARET)."
         (values (canvas-rows canvas) x y
                 (and caret (cons (+ x (car caret)) (+ y (cdr caret)))))))))
 
+(defun paint-lift (canvas x r width ground)
+  "Row R from X, WIDTH wide, on GROUND as the chosen row: a › marks it where no colour shows."
+  (canvas-fill canvas x r width 1 (sheet-ink nil :ground ground))
+  (when (eq (effective-color-profile) :none) (canvas-put canvas x r "›" nil)))
+
+(defun sheet-painter (size wide stacked)
+  "A sheet's :PAINT, (MODEL SHEET WIDTH HEIGHT): PAINT-SHEET with SIZE, WIDE and STACKED."
+  (lambda (model sheet width height) (paint-sheet model sheet width height size wide stacked)))
+
 (defun paint-search-field (canvas x row width query placeholder ground)
   "The search field WIDTH wide from X on ROW: QUERY, else PLACEHOLDER quiet. => the caret's cell, or NIL."
   (canvas-fill canvas (1- x) row (+ width 2) 1 (sheet-ink nil :ground ground))
@@ -233,8 +242,7 @@ that key (HINT-KEY-PRESS)."
                (when (hint-key-press key)
                  (let ((key key))
                    (sheet-hit sheet row start at
-                              (lambda (model sheet)
-                                (declare (ignore model sheet))
+                              (lambda-ignoring (model sheet)
                                 (hint-key-press key))))))
              (incf used width))
     (when (and flash-text (<= from (- to (text-display-width flash-text))))

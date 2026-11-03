@@ -15,13 +15,19 @@
 
 (defun usage-dialog-rows (range usage)
   "RANGE's rows in the /usage dialog, each keyed by RANGE so its tab shows
-them: the sentence, the totals, spend by day, the models, the costliest
+them: the sentence, the totals, the models, the costliest
 sessions -- Enter opens one -- and the folders. NIL USAGE is a read still
 out; an OFF-LOOP failure is said in one row."
-  (flet ((row (label detail &key value (mark "") (tone :muted))
-           (make-picker-row :key range :label label :detail detail :value value
-                            :mark mark :mark-tone tone))
-         (pad (text) (format nil "~34a" (stub-clip (or text "") 34))))
+  (labels ((row (label detail &key value (mark "") (tone :muted))
+             (make-picker-row :key range :label label :detail detail :value value
+                              :mark mark :mark-tone tone))
+           (pad (text) (format nil "~34a" (stub-clip (or text "") 34)))
+           (table (title header items label detail &optional (value (constantly nil)))
+             (when items
+               (cons (row (pad title) header)
+                     (loop for item in items
+                           collect (row (pad (format nil "  ~a" (funcall label item))) (funcall detail item)
+                                        :value (funcall value item)))))))
     (cond
       ((null usage) (list (row "Adding it up…" "")))
       ((off-loop-failure usage)
@@ -29,7 +35,6 @@ out; an OFF-LOOP failure is said in one row."
       (t
        (let* ((totals (usage-field usage "totals"))
               (cost (usage-field totals "cost_usd"))
-              (days (coerce (or (usage-field usage "days") #()) 'list))
               (models (coerce (or (usage-field usage "models") #()) 'list))
               (sessions (coerce (or (usage-field usage "sessions") #()) 'list))
               (folders (coerce (or (usage-field usage "folders") #()) 'list)))
@@ -50,59 +55,31 @@ out; an OFF-LOOP failure is said in one row."
                      (format nil "~:d  ~a" (or (usage-field totals "sessions") 0)
                              (counted (or (usage-field totals "turns") 0) "turn")))
                 (row (pad "From cache")
-                     (format nil "~a  cache hit~@[ · ~a~]"
-                             (share-text (usage-field totals "cached_share"))
-                             (let ((saved (usage-field totals "saved_usd")))
-                               (cond ((not (realp saved)) nil)
-                                     ((> saved 0.005) (format nil "saved about ~a" (usd-text saved)))
-                                     ((< saved -0.005)
-                                      (format nil "writes cost ~a more than reads saved" (usd-text (- saved))))))))
+                     (format nil "~a  cache hit" (share-text (usage-field totals "cached_share"))))
                 (row (pad "First word, typical")
                      (format nil "~a  TTFT p50 · p90 ~a" (ms-text (usage-field usage "wait_p50_ms"))
                              (ms-text (usage-field usage "wait_p90_ms"))))
                 (row (pad "Failed turns")
                      (format nil "~:d  turn.failed" (or (usage-field totals "failed_turns") 0))))
-          (when (rest days)
-            (let* ((priced (some (lambda (day) (usage-field day "cost_usd")) days))
-                   (shown (last days 60))
-                   (values (mapcar (lambda (day) (or (usage-field day (if priced "cost_usd" "calls")) 0))
-                                   shown))
-                   (top (reduce #'max values :initial-value 0)))
-              (list (row (pad (if priced "Spend by day" "Model calls by day"))
-                         (format nil "~a  ~a – ~a"
-                                 (map 'string (lambda (value)
-                                                (if (or (zerop top) (zerop value))
-                                                    #\·
-                                                    (char "▁▂▃▄▅▆▇█" (min 7 (floor (* 8 value) (* 1.0001 top))))))
-                                      values)
-                                 (subseq (usage-field (first shown) "day") 5)
-                                 (subseq (usage-field (car (last shown)) "day") 5))))))
-          (when models
-            (cons (row (pad "Models") "calls · from cache · spend")
-                  (loop for model in (subseq models 0 (min 8 (length models)))
-                        collect (row (pad (format nil "  ~a" (usage-field model "model")))
-                                     (format nil "~:d · ~a · ~a" (usage-field model "calls")
-                                             (share-text (usage-field model "cached_share"))
-                                             (usd-text (usage-field model "cost_usd")))))))
-          (when sessions
-            (cons (row (pad (if cost "Costliest sessions" "Busiest sessions")) "enter opens one")
-                  (loop for session in sessions
-                        for title = (usage-field session "title")
-                        collect (row (pad (format nil "  ~a" (if (plusp (length title)) title
-                                                                 (usage-field session "id"))))
-                                     (format nil "~a · ~a · ~a" (folder-tail (usage-field session "folder"))
-                                             (ms-text (usage-field session "ms"))
-                                             (if (usage-field session "cost_usd")
-                                                 (usd-text (usage-field session "cost_usd"))
-                                                 (counted (usage-field session "calls") "call")))
-                                     :value (list :session (usage-field session "id"))))))
-          (when folders
-            (cons (row (pad "Folders") "sessions · time · spend")
-                  (loop for folder in folders
-                        collect (row (pad (format nil "  ~a" (folder-tail (usage-field folder "folder"))))
-                                     (format nil "~:d · ~a · ~a" (usage-field folder "sessions")
-                                             (ms-text (usage-field folder "ms"))
-                                             (usd-text (usage-field folder "cost_usd")))))))))))))
+          (table "Models" "calls · from cache · spend" (subseq models 0 (min 8 (length models)))
+                 (lambda (model) (usage-field model "model"))
+                 (lambda (model) (format nil "~:d · ~a · ~a" (usage-field model "calls")
+                                         (share-text (usage-field model "cached_share"))
+                                         (usd-text (usage-field model "cost_usd")))))
+          (table (if cost "Costliest sessions" "Busiest sessions") "enter opens one" sessions
+                 (lambda (session &aux (title (usage-field session "title")))
+                   (if (plusp (length title)) title (usage-field session "id")))
+                 (lambda (session) (format nil "~a · ~a · ~a" (folder-tail (usage-field session "folder"))
+                                           (ms-text (usage-field session "ms"))
+                                           (if (usage-field session "cost_usd")
+                                               (usd-text (usage-field session "cost_usd"))
+                                               (counted (usage-field session "calls") "call"))))
+                 (lambda (session) (list :session (usage-field session "id"))))
+          (table "Folders" "sessions · time · spend" folders
+                 (lambda (folder) (folder-tail (usage-field folder "folder")))
+                 (lambda (folder) (format nil "~:d · ~a · ~a" (usage-field folder "sessions")
+                                          (ms-text (usage-field folder "ms"))
+                                          (usd-text (usage-field folder "cost_usd")))))))))))
 
 (defun dialog-read (model thunk continuation &aux (dialog model.dialog))
   "OFF-LOOP for the dialog open now: CONTINUATION takes (MODEL DIALOG VALUE)
