@@ -170,7 +170,7 @@ OpenAI Codex's base url, the welcome's note among the notifications.")
                      ((equal type "boolean") :toggle)
                      ((equal type "choice") :choice)
                      ((equal type "integer") :number)
-                     ((equal type "list") :list)
+                     ((equal type "list") (if (json-value field :boolean "choices") :ids :list))
                      (t :text))))
     (make-setting
      :label (let ((name (json-value field :string "name")))
@@ -181,7 +181,7 @@ OpenAI Codex's base url, the welcome's note among the notifications.")
      :value (let ((value (settings-field-value field)))
               (case kind
                 (:toggle (json-true-p value))
-                (:list (coerce (or (json-value value :array) #()) 'list))
+                ((:list :ids) (coerce (or (json-value value :array) #()) 'list))
                 (:secret nil)
                 (t value)))
      :set (json-value field :boolean "set")
@@ -586,7 +586,8 @@ is -- FOCUS on the :RAIL of sections or the :PANE of one, the SECTION-AT
 and SETTING-AT chosen, the first row each list shows (RAIL-TOP, PANE-TOP),
 the QUERY typed and the result HIT under it, the focus the query came from
 (BACK) -- and what is under way: the field typed into (EDIT, (SETTING .
-TEXT)), what was SAID under a setting ((TEXT TONE KEY LABEL)), and the rows a reset asked to
+TEXT)), the ids being marked (IDS, (SETTING CHOICES MARKS CURSOR)), what was
+SAID under a setting ((TEXT TONE KEY LABEL)), and the rows a reset asked to
 give their defaults back (ARMED, ((PART . SETTING) ...)). The key row's line,
 whether a call is busy and the pointer's targets are the sheet's own
 (SHEET-DIALOG). The
@@ -594,7 +595,7 @@ section /settings was ASKED to open at stays until the first read lands."
   (answer nil) (target nil) (release nil) (sections '()) (failed nil)
   (focus :rail) (section-at 0) (setting-at 0) (rail-top 0) (pane-top 0)
   (query "" :type string) (hit 0) (back :rail)
-  (edit nil) (said nil) (armed nil)
+  (edit nil) (ids nil) (said nil) (armed nil)
   (asked nil))
 
 (nlk:access (settings settings-sheet))
@@ -967,6 +968,29 @@ a secret, which is never shown."
             (t (settings-commit model settings setting (and (plusp (length text)) text)
                                 :remove (zerop (length text)))))))))
 
+(defun settings-ask-ids (model settings setting)
+  "Ask the platform which ids SETTING may name (SETTINGS-PROBE), and mark
+the ones it names now; an id it names that the platform did not offer stays
+a choice."
+  (unless settings.busy
+    (setf settings.said nil)
+    (sheet-call model settings
+                   (lambda () (settings-probe model (settings-section-json setting.part)
+                                              (json-value setting.field :string "name")))
+                   (lambda-ignoring (model answer)
+                     (if-let (failure (off-loop-failure answer))
+                       (settings-say settings setting failure :danger)
+                       (let* ((offered (loop for choice across (or (json-value answer :array "choices") #())
+                                             collect (cons (json-value choice :string "id")
+                                                           (or (json-value choice :text "label")
+                                                               (json-value choice :string "id")))))
+                              (kept (loop for id in setting.value
+                                          unless (assoc id offered :test #'equal)
+                                            collect (cons id "kept from the config"))))
+                         (setf settings.ids (list setting (append offered kept)
+                                                  (copy-list setting.value) 0)))))
+                   "Asking…")))
+
 (defun settings-check (model settings setting)
   "Run SETTING's section's own check where the organism runs it, and say its
 answer -- or its refusal -- under the row."
@@ -985,11 +1009,12 @@ answer -- or its refusal -- under the row."
 
 (defun settings-act (model settings setting)
   "Enter on SETTING: a switch or a choice steps on, a value opens its field,
-a check runs, an action closes the sheet for its
+ids ask the platform, a check runs, an action closes the sheet for its
 command or its picker."
   (case setting.kind
     ((:toggle :choice) (settings-nudge model settings setting 1 :wrap t))
     ((:number :text :list :secret :paste) (settings-edit-begin settings setting))
+    (:ids (settings-ask-ids model settings setting))
     (:check (settings-check model settings setting))
     (:reset (settings-arm settings setting))
     (:action
@@ -1050,11 +1075,34 @@ the rest edits it."
     (t (when-let (text (edit-text-field (cdr settings.edit) key :ctrl ctrl :alt alt))
          (setf (cdr settings.edit) text)))))
 
+(defun settings-ids-key (model settings key)
+  "A key while ids are marked: the arrows move, Space marks, Enter writes
+the marks, Esc leaves them as they were."
+  (destructuring-bind (setting choices marks cursor) settings.ids
+    (case key
+      ((:up :down)
+       (setf (fourth settings.ids)
+             (max 0 (min (1- (length choices)) (+ cursor (if (eq key :up) -1 1))))))
+      (:escape (setf settings.ids nil))
+      (:enter
+       (setf settings.ids nil)
+       (settings-commit model settings setting
+                        (coerce (loop for (id) in choices
+                                      when (member id marks :test #'equal) collect id)
+                                'vector)))
+      (t (when (and (eql key #\Space) choices)
+           (let ((id (car (nth cursor choices))))
+             (setf (third settings.ids)
+                   (if (member id marks :test #'equal)
+                       (remove id marks :test #'equal)
+                       (append marks (list id))))))))))
+
 (defun settings-key (model settings key &key ctrl alt shift)
   "Every key the shell's chords leave the open sheet."
   (let ((setting (settings-current settings)))
     (cond
       (settings.edit (settings-edit-key model settings key ctrl alt))
+      (settings.ids (settings-ids-key model settings key))
       ;; Asked to reset: Enter does, Esc keeps every setting as it is.
       ((and (settings-armed settings setting) (member key '(:enter :escape)))
        (if (eq key :enter)
@@ -1113,7 +1161,7 @@ the rest edits it."
   "A notch over the sheet moves the choice the way the arrows do, in the
 list under the pointer: over the rail the page, over the pane its settings."
   (declare (ignore model y))
-  (unless settings.edit
+  (unless (or settings.edit settings.ids)
     (when (and settings.layout (zerop (length settings.query)))
       (destructuring-bind (rows left top width) settings.layout
         (declare (ignore rows top))
@@ -1142,11 +1190,13 @@ list under the pointer: over the rail the page, over the pane its settings."
                     (:number '(("→" "up") ("enter" "type")))
                     (:action '(("enter" "open")))
                     (:check '(("enter" "check")))
+                    (:ids '(("enter" "choose")))
                     (:reset '(("enter" "review")))
                     ((:note :change) '())
                     (t '(("enter" "edit"))))))
         (reset (and (settings-resettable-p setting) '(("del" "default")))))
     (cond (settings.edit '(("enter" "save") ("esc" "cancel") ("ctrl+u" "clear")))
+          (settings.ids '(("space" "mark") ("enter" "save") ("esc" "cancel")))
           ((settings-armed settings setting) '(("enter" "reset") ("esc" "keep")))
           ((plusp (length settings.query)) (append act '(("↑↓" "move") ("esc" "clear")) reset))
           ((eq settings.focus :rail) '(("↑↓" "section") ("→" "open") ("type" "search") ("esc" "close")))
@@ -1224,6 +1274,7 @@ caret's cell while its field is open, else NIL."
                                       (format nil "enter opens /~a" setting.act)
                                       "enter picks a model"))
                          (:check "enter asks now")
+                         (:ids "enter chooses")
                          (:reset "enter reviews")
                          ((:secret :paste) "enter pastes")
                          (t "enter edits")))))
@@ -1233,11 +1284,16 @@ caret's cell while its field is open, else NIL."
        nil))))
 
 (defun focus-extras (settings setting width doc-lines)
-  "The lines a chosen SETTING carries under it, WIDTH columns wide: what was
-said -- whole -- and under a reset's ask the rows it gives back, else at
-most DOC-LINES of its description, an … where it was cut."
+  "The lines a chosen SETTING carries under it, WIDTH columns wide: the ids
+being marked, what was said -- whole -- and under a reset's ask the rows it
+gives back, else at most DOC-LINES of its description, an … where it was
+cut."
   (let ((said (settings-said settings setting)))
-    (cond (said
+    (cond ((and settings.ids (eq (first settings.ids) setting))
+           (loop for choice in (second settings.ids)
+                 for index from 0
+                 collect (list :pick setting choice index)))
+          (said
            (append (loop for line in (wrapped-lines (first said) width)
                          collect (list :said line (second said)))
                    (loop for row in (settings-armed settings setting)
@@ -1313,10 +1369,13 @@ or NIL."
          (cursor nil)
          (lift (sheet-ground :sheet-focus))
          (none (eq (effective-color-profile) :none)))
-    ;; The chosen setting's own lines follow it.
+    ;; The chosen setting's own lines follow it; marking ids, the cursor is
+    ;; the line kept in view.
     (loop while (and (nth (1+ last) lines)
-                     (member (first (nth (1+ last) lines)) '(:control :doc :said)))
+                     (member (first (nth (1+ last) lines)) '(:control :doc :said :pick)))
           do (incf last))
+    (when settings.ids
+      (setf last (min last (+ focus-line 1 (fourth settings.ids)))))
     (let ((top-line (max 0 (min settings.pane-top (1- focus-line)))))
       (setf top-line (min focus-line (max top-line (- last rows -1)))
             settings.pane-top top-line)
@@ -1327,7 +1386,7 @@ or NIL."
             do (let* ((kind (first line))
                       (block (case kind
                                ((:row :control :change) (third line))
-                               ((:doc :said) (car (last line)))))
+                               ((:doc :said :pick) (car (last line)))))
                       (ground (if block lift ground)))
                  (when block
                    (canvas-fill canvas (- px 2) r (+ pw 4) 1 (sheet-ink nil :ground lift))
@@ -1360,6 +1419,22 @@ or NIL."
                                      (sheet-ink :muted :ground ground)))
                    (:said (canvas-put canvas (+ px (fourth line)) r (second line)
                                       (sheet-ink (third line) :ground ground)))
+                   (:pick
+                    (destructuring-bind (setting (id . label) index x block) (rest line)
+                      (declare (ignore setting block))
+                      (let* ((marked (member id (third settings.ids) :test #'equal))
+                             (here (= index (fourth settings.ids)))
+                             (at (canvas-put canvas (+ px x) r (if marked "[x] " "[ ] ")
+                                             (sheet-ink (if marked :dialog-accent :muted) :ground ground))))
+                        (setf at (canvas-put canvas at r (clip-text-to-width label (- (+ px pw) at 2))
+                                             (sheet-ink (if here :dialog-accent :system) :ground ground
+                                                                                            :bold here)))
+                        (unless (equal id label)
+                          (canvas-put canvas (+ at 2) r id (sheet-ink :muted :ground ground) (+ px pw)))
+                        (sheet-hit settings r (- px 2) (+ px pw 2)
+                                      (lambda-ignoring (model settings)
+                                        (setf (fourth settings.ids) index)
+                                        (settings-ids-key nil settings #\Space))))))
                    (:control
                     (destructuring-bind (setting focused index) (rest line)
                       (when-let (caret (paint-control settings canvas r (+ px 2) (- pw 2) setting
