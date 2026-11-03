@@ -282,6 +282,9 @@ of stacking."
      ;; image-fit shrinks, named in *IMAGE-DECODERS* there for image/gif.
      (:file "engine/image/gif")
      (:file "engine/turn")
+     ;; policy-replay: what an edit to the agent's own policy would change in
+     ;; its real decisions, the evidence policy-review judges by.
+     (:file "engine/policy-replay")
      ;; policy-review: an edit to the agent's own policy, draft to verdict;
      ;; after turn, whose system prompt it reads under policy.self.
      (:file "engine/policy-review")
@@ -583,6 +586,7 @@ of stacking."
      (:file "engine/provider-watchdog-test")
      (:file "engine/turn-test")
      (:file "engine/policy-review-test")
+     (:file "engine/policy-replay-test")
      ;; meter-test follows turn-test: its budget turns drive the tool-call
      ;; seam through turn-test's wire helpers and probe schema.
      (:file "engine/meter-test")
