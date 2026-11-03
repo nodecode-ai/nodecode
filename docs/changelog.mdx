@@ -47,6 +47,7 @@ Linux, macOS and Windows. Changes since 0.1.7 (`2629050e1`).
 - A session's page steers or stops its helpers, one by one or all at once. A helper you steer answers with what the steer asked.
 - The guard asks Allow once or Deny before it refuses a call, and the page draws the question.
 - MCP: a remote server signs in with OAuth. The MCP tab is one line a server, its tools folded out, with a find across them.
+- MCP: a server whose command signs in on its own, such as `npx mcp-remote URL`, fails in seconds and names the sign-in instead of waiting out its deadline. `(mcp:login NAME ADDRESS)` hands it a browser's landing address from another machine.
 - The cron cell wakes a session on its own when something outside changes, such as a red CI run or an answer waiting.
 - `/cells new`, or New cell in the Cells tab, makes a cell by talking.
 - `nodecode gateway setup` opens the shell on a step-by-step setup sheet. Discord sets up from the bot token alone, and `/channels` picks its channels, people and roles.
