@@ -219,11 +219,8 @@ from the ones COLLECT-DURING-WAIT hid inside provider wait."
            ;; history keys stay cursor keys: a walk would replace the text
            ;; the peels put there for editing.
            ((and (null (held-prompt (chat-model-state model)))
-                 (model-key-matches-p model :history-previous key mod)
-                 (composer-history-previous model)))
-           ((and (null (held-prompt (chat-model-state model)))
-                 (model-key-matches-p model :history-next key mod)
-                 (composer-history-next model)))
+                 (or (and (model-key-matches-p model :history-previous key mod) (composer-history-previous model))
+                     (and (model-key-matches-p model :history-next key mod) (composer-history-next model)))))
 
            ;; Transcript paging. These belong to the chat window, not the
            ;; composer — the composer scrolls internally with the cursor.
