@@ -78,7 +78,10 @@ and each TYPE are SB-ALIEN's, or SAP, INT or STR for the three most written."
     ("FlushFileBuffers" %flush-file-buffers int (handle sb-win32::handle))
     ("GetFileType" %get-file-type sb-win32::dword (handle sb-win32::handle))
     ("SetStdHandle" %set-std-handle int (which sb-win32::dword) (handle sb-win32::handle))
-    ("SetEnvironmentVariableA" %set-environment-variable int (name str) (value str))
+    ("SetEnvironmentVariableW" %set-environment-variable int (name sb-win32::system-string)
+     (value sb-win32::system-string))
+    ("GetEnvironmentStringsW" %get-environment-strings sap)
+    ("FreeEnvironmentStringsW" %free-environment-strings int (block sap))
     ("SetProcessWorkingSetSize" %set-process-working-set-size int (process sb-win32::handle)
      (minimum (sb-alien:unsigned 64)) (maximum (sb-alien:unsigned 64)))
     ("K32GetProcessMemoryInfo" %get-process-memory-info int (process sb-win32::handle)
@@ -96,6 +99,7 @@ and each TYPE are SB-ALIEN's, or SAP, INT or STR for the three most written."
   (defconstant +open-always+ 4)
   (defconstant +file-attribute-normal+ #x80)
   (defconstant +detached-process+ #x8)
+  (defconstant +create-unicode-environment+ #x400)
   (defconstant +std-input-handle+ #xFFFFFFF6)
   (defconstant +std-output-handle+ #xFFFFFFF5)
   (defconstant +std-error-handle+ #xFFFFFFF4))
@@ -417,17 +421,92 @@ spawned after this inherits, and what this process's own reads answer."
   #+win32 (%set-environment-variable name value)
   value)
 
-(defun environment-with (overrides)
-  "This process's environment with OVERRIDES — \"NAME=value\" strings — laid
-over it: a name in OVERRIDES replaces every inherited entry of that name
-(case-blind on Windows, as the OS reads them), the rest ride along."
-  (flet ((name (entry) (subseq entry 0 (or (position #\= entry) (length entry)))))
-    (let ((names (mapcar #'name overrides)))
-      (append overrides
-              (remove-if (lambda (entry)
-                           (member (name entry) names
-                                   :test #+win32 #'string-equal #-win32 #'string=))
-                         (sb-ext:posix-environ))))))
+(defun process-environment ()
+  "This process's environment, as \"NAME=value\" strings."
+  ;; SB-EXT:POSIX-ENVIRON on Windows decodes the ANSI block (GetEnvironmentStrings:
+  ;; the code page's bytes, a `?' for every character outside it) as UTF-8, so a
+  ;; single value holding a `ü' signals. The wide block is the environment itself.
+  #-win32 (sb-ext:posix-environ)
+  #+win32
+  (let ((block (%get-environment-strings)))
+    (unless (zerop (sb-sys:sap-int block))
+      (with-cleanup ((%free-environment-strings block))
+        (loop with start = 0
+              until (zerop (sb-sys:sap-ref-16 block start))
+              collect (let* ((end (loop for at from start by 2
+                                        until (zerop (sb-sys:sap-ref-16 block at))
+                                        finally (return at)))
+                             (octets (make-array (- end start) :element-type '(unsigned-byte 8))))
+                        (dotimes (i (length octets))
+                          (setf (aref octets i) (sb-sys:sap-ref-8 block (+ start i))))
+                        (setf start (+ end 2))
+                        (sb-ext:octets-to-string octets :external-format
+                                                 '(:utf-16le :replacement #\?))))))))
+
+(defun environment-entry-name (entry)
+  "The NAME of ENTRY, a \"NAME=value\" string or a bare NAME: up to its first `=',
+which a name may only begin with (Windows' hidden \"=C:=C:\\work\" entries)."
+  (subseq entry 0 (or (position #\= entry :start (min 1 (length entry))) (length entry))))
+
+(defun environment-with (overrides &optional (environment (process-environment)))
+  "ENVIRONMENT, this process's by default, with OVERRIDES laid over it: a
+\"NAME=value\" replaces every entry of that name (case-blind on Windows, as
+the OS reads them), a bare \"NAME\" removes them, the rest ride along."
+  (let ((names (mapcar #'environment-entry-name overrides)))
+    (append (remove-if (lambda (entry) (string= entry (environment-entry-name entry))) overrides)
+            (remove-if (lambda (entry)
+                         (member (environment-entry-name entry) names
+                                 :test #+win32 #'string-equal #-win32 #'string=))
+                       environment))))
+
+;;; --- a Windows child's environment, in Unicode ------------------------------
+;;; SBCL's RUN-PROGRAM hands CreateProcessW an explicit environment as bytes in
+;;; the C-string external format, UTF-8, with no CREATE_UNICODE_ENVIRONMENT, so
+;;; Windows reads them in the ANSI code page: a child given its parent's own
+;;; environment read C:\Users\JÃ¼rgen where an inheriting one reads
+;;; C:\Users\Jürgen, and a character outside the code page was lost outright.
+;;; SPAWN-PROGRAM gives RUN-PROGRAM no environment on Windows and binds the
+;;; wide block here instead; SBCL's one CreateProcessW call, wrapped, hands it
+;;; on flagged as Unicode, so the child reads every value as an heir would.
+
+#+win32
+(progn
+  (defvar *unicode-environment* nil
+    "The block SPAWN-PROGRAM is starting a child with on this thread, as
+UNICODE-ENVIRONMENT-BLOCK makes it, or NIL for a child that inherits.")
+
+  (defun unicode-environment-block (environment)
+    "ENVIRONMENT, \"NAME=value\" strings, as the block CreateProcessW takes under
+CREATE_UNICODE_ENVIRONMENT: each entry UTF-16LE and NUL-ended, sorted by
+name case-blind as Windows keeps its own, one more NUL closing it."
+    (sb-ext:string-to-octets
+     (with-output-to-string (out)
+       (dolist (entry (stable-sort (copy-list environment) #'string<
+                                   :key (lambda (entry)
+                                          (string-upcase (environment-entry-name entry)))))
+         (write-string entry out)
+         (write-char #\Nul out))
+       (write-char #\Nul out)
+       (unless environment (write-char #\Nul out)))
+     :external-format :utf-16le))
+
+  (defun %create-process-in-unicode (create-process application command-line
+                                     process-security thread-security inheritp
+                                     flags environment &rest more)
+    "SB-WIN32::CREATE-PROCESS, given *UNICODE-ENVIRONMENT* when one is bound."
+    (let ((block *unicode-environment*))
+      (if block
+          (sb-sys:with-pinned-objects (block)
+            (apply create-process application command-line process-security
+                   thread-security inheritp (logior flags +create-unicode-environment+)
+                   (sb-sys:vector-sap block) more))
+          (apply create-process application command-line process-security
+                 thread-security inheritp flags environment more))))
+
+  ;; By name, so a reload of the wrapper reaches the encapsulation already in place.
+  (sb-ext:without-package-locks
+    (sb-int:encapsulate 'sb-win32::create-process 'unicode-environment
+                        '%create-process-in-unicode)))
 
 ;;; --- starting a child without copying this image --------------------------
 ;;; SB-EXT:RUN-PROGRAM forks, and a fork copies the page tables of the whole
@@ -625,15 +704,18 @@ process: DIRECTORY its working directory when given, ENVIRONMENT
           #-win32 (%spawn-posix argv directory environment (or output "/dev/null")
                                 (or errors "/dev/null") input)
           #+win32 (error "no posix_spawn on this platform")
-          (let ((process (apply #'sb-ext:run-program (first argv) (rest argv)
-                                :search t :wait nil
-                                :input (and (eq input :stream) :stream)
-                                :output output :if-output-exists :append
-                                :error errors :if-error-exists :append
-                                :external-format *child-external-format*
-                                :directory directory
-                                (when environment
-                                  (list :environment environment)))))
+          (let* (#+win32 (*unicode-environment*
+                          (and environment (unicode-environment-block environment)))
+                 #+win32 (environment nil)
+                 (process (apply #'sb-ext:run-program (first argv) (rest argv)
+                                 :search t :wait nil
+                                 :input (and (eq input :stream) :stream)
+                                 :output output :if-output-exists :append
+                                 :error errors :if-error-exists :append
+                                 :external-format *child-external-format*
+                                 :directory directory
+                                 (when environment
+                                   (list :environment environment)))))
             (values (sb-ext:process-pid process)
                     (and (eq output :stream) (sb-ext:process-output process))
                     (and (eq errors :stream) (sb-ext:process-error process))

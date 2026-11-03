@@ -2014,20 +2014,17 @@ which every home has one of and no one works in."
        session-id))
 
 (defun session-shell-environment (&optional (session-id nlk:*scribe-session-id*)
-                                            (environment (sb-ext:posix-environ)))
+                                            (environment (nlk:process-environment)))
   "ENVIRONMENT, this process's by default, for a shell child of SESSION-ID's
 snippet: NODECODE_SESSION_ID the id exactly, case kept, or no
 NODECODE_SESSION_ID at all where CLAIMABLE-SESSION-ID refuses it -- a
 Nodecode started from another Nodecode's shell inherits that one's id, and
 must not hand it on as its own."
-  (let* ((id (claimable-session-id session-id))
-         (prefix (format nil "~a=" +session-id-variable+))
-         (others (remove-if (lambda (entry)
-                              (and (>= (length entry) (length prefix))
-                                   (#+win32 string-equal #-win32 string= prefix entry
-                                    :end2 (length prefix))))
-                            environment)))
-    (if id (cons (concatenate 'string prefix id) others) others)))
+  (let ((id (claimable-session-id session-id)))
+    (nlk:environment-with (list (if id
+                                    (format nil "~a=~a" +session-id-variable+ id)
+                                    +session-id-variable+))
+                          environment)))
 
 (defun sh (command &key directory timeout)
   "Run COMMAND — a string through the shell's -c (*SHELL*: bash where the

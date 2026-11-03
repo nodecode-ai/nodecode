@@ -191,6 +191,38 @@
     (is (member "NODECODE_OS_NEW=1" environment :test #'equal) "a new name is added")
     (is (find "HOME=" environment :test #'uiop:string-prefix-p))))
 
+(deftest environment-with-removes-a-bare-name ()
+  (let ((environment (nlk:environment-with (list "NODECODE_OS_GONE")
+                                           (list "PATH=/bin" "NODECODE_OS_GONE=1" "NODECODE_OS_GONE_NOT=2"))))
+    (is (equal '("PATH=/bin" "NODECODE_OS_GONE_NOT=2") environment) "the name goes, a longer one stays, the bare name is not added")))
+
+(defun child-read (name &rest keys)
+  "NAME's value as a child RUN-BOUNDED starts with KEYS reads it."
+  ;; On Windows as its UTF-16 code units, numbers no console code page can bend.
+  (let ((output (string-right-trim
+                 '(#\Return #\Newline)
+                 (apply #'nlk:run-bounded
+                        #-win32 (list "printenv" name)
+                        #+win32 (list "powershell" "-NoProfile" "-Command"
+                                      (format nil "[string]::Join(' ', [int[]][char[]]$env:~a)" name))
+                        :seconds 30 keys))))
+    #-win32 output
+    #+win32 (map 'string (lambda (unit) (code-char (parse-integer unit)))
+                 (uiop:split-string output :separator " "))))
+
+;; A value outside ASCII, and outside every Windows ANSI code page, crosses into
+;; a child exactly: inherited, or handed in the environment the child is given.
+(deftest a-child-reads-a-value-outside-ascii-exactly ()
+  (let ((value (map 'string #'code-char '(#x141 #x75 #x6B #x61 #x73 #x7A #x2D #x4A #xFC
+                                          #x72 #x67 #x65 #x6E #x2D #x65E5))))
+    (nlk::set-environment-variable "NODECODE_OS_WIDE_SET" value)
+    (let ((entry (format nil "NODECODE_OS_WIDE_SET=~a" value))
+          (handed (list (format nil "NODECODE_OS_WIDE=~a" value))))
+      (is (member entry (nlk:process-environment) :test #'equal) "this process reads back what it set")
+      (is (equal value (child-read "NODECODE_OS_WIDE_SET")) "a child that inherits it")
+      (is (equal value (child-read "NODECODE_OS_WIDE_SET" :environment handed)) "a child handed this process's environment")
+      (is (equal value (child-read "NODECODE_OS_WIDE" :environment handed)) "a child handed the value itself"))))
+
 (defmacro with-lock-holder ((path &optional (text "")) &body body
                            &aux (holder (gensym "HOLDER")))
   "Run BODY while a python3 child holds an exclusive lock on PATH — the

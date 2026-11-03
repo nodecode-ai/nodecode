@@ -69,13 +69,12 @@ died: ORGANISM-EXITED, with the last line it wrote to its log."
          ;; thing put in it: without this, the spawn opening it fails.
          (log (ensure-directories-exist (stdio-log-path store-path)))
          (from (or (nlk:file-bytes log) 0))
-         (word (format nil "~a=" +front-variable+))
          (exited (list nil)))
     (bind (((pid _ _ process pipe)
             (spawn-program (session-argv command)
-                           :environment (cons (format nil "~a~d" word (sb-posix:getpid))
-                                              (remove-if (lambda (entry) (uiop:string-prefix-p word entry))
-                                                         (sb-ext:posix-environ)))
+                           :environment (environment-with
+                                         (list (format nil "~a=~d" +front-variable+
+                                                       (sb-posix:getpid))))
                            :output log :error-output :output :input :stream)))
       (nlk:note-boot-phase "organism-spawned" pid)
       (setf *front* (list :pipe pipe
