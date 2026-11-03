@@ -175,6 +175,11 @@ ROWS X Y CARET)."
         (values (canvas-rows canvas) x y
                 (and caret (cons (+ x (car caret)) (+ y (cdr caret)))))))))
 
+(defun paint-lift (canvas x r width ground)
+  "Row R from X, WIDTH wide, on GROUND as the chosen row: a › marks it where no colour shows."
+  (canvas-fill canvas x r width 1 (sheet-ink nil :ground ground))
+  (when (eq (effective-color-profile) :none) (canvas-put canvas x r "›" nil)))
+
 (defun sheet-painter (size wide stacked)
   "A sheet's :PAINT, (MODEL SHEET WIDTH HEIGHT): PAINT-SHEET with SIZE, WIDE and STACKED."
   (lambda (model sheet width height) (paint-sheet model sheet width height size wide stacked)))

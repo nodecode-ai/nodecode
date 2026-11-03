@@ -576,9 +576,7 @@ wants a look, lifted when CHOSEN."
          (here (if chosen lift ground))
          (on (json-value cell :boolean "on"))
          (offered (cell-offered-p cell)))
-    (when chosen
-      (canvas-fill canvas x r width 1 (sheet-ink nil :ground lift))
-      (when (eq (effective-color-profile) :none) (canvas-put canvas x r "›" nil)))
+    (when chosen (paint-lift canvas x r width lift))
     (canvas-put canvas (+ x 2) r (cond (offered "+ ") (on "━●") (t "●━"))
                 (cond (offered (sheet-ink :muted :ground here))
                       ((and on (not (cell-fixed-p cell))) (sheet-ink (sheet-ground :sheet-chip-on) :ground here))
@@ -673,9 +671,7 @@ switch at the right."
 starts one."
   (let* ((lift (sheet-ground :sheet-focus))
          (here (if chosen lift ground)))
-    (when chosen
-      (canvas-fill canvas x r width 1 (sheet-ink nil :ground lift))
-      (when (eq (effective-color-profile) :none) (canvas-put canvas x r "›" nil)))
+    (when chosen (paint-lift canvas x r width lift))
     (canvas-put canvas (+ x 2) r "+ " (sheet-ink :dialog-accent :ground here :bold t))
     (canvas-put canvas (+ x 5) r (clip-text-to-width "New cell" (max 1 (- width 8)))
                 (sheet-ink (if chosen :dialog-accent :foreground) :ground here :bold chosen))

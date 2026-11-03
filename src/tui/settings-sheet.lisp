@@ -1773,9 +1773,7 @@ keep the chosen one in view."
                        (on (= index settings.section-at))
                        (ground (if on (sheet-ground :sheet-focus) ground)))
                   (when (> columns 1) (push (list index column row) settings.columns))
-                  (when on
-                    (canvas-fill canvas (- x 2) r (+ column-width 4) 1 (sheet-ink nil :ground ground))
-                    (when (eq (effective-color-profile) :none) (canvas-put canvas (- x 2) r "›" nil)))
+                  (when on (paint-lift canvas (- x 2) r (+ column-width 4) ground))
                   (canvas-put canvas x r (clip-text-to-width part.label (- column-width 3))
                               (sheet-ink (if on :dialog-accent :system) :ground ground :bold on))
                   (section-mark canvas (+ x column-width -1) r part ground on)
