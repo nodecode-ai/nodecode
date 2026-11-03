@@ -345,77 +345,17 @@ round has followed yet."
                (push (list tokens pending) rounds)
                (setf pending nil)))))))))
 
-(defun context-time-picture (rounds scale window)
-  "ROUNDS (CONTEXT-ROUNDS) as a column chart in the grid's palette: each of
-+CONTEXT-GRID-WIDTH+ columns the largest prompt of the rounds it spans,
-over SCALE tokens, a column holding the first round after an eviction in
-the eviction's tone."
-  (let* ((count (length rounds))
-         (columns (loop for column below +context-grid-width+
-                        for from = (floor (* column count) +context-grid-width+)
-                        for to = (max (1+ from) (floor (* (1+ column) count) +context-grid-width+))
-                        for span = (subseq rounds (min from (1- count)) (min to count))
-                        collect (cons (reduce #'max span :key #'first)
-                                      (some #'second span)))))
-    (loop for row below +context-grid-height+
-          for level = (- +context-grid-height+ row)
-          collect (coerce
-                   (loop for (tokens . evicted) in columns
-                         collect (context-palette-char
-                                  (cond ((>= (* +context-grid-height+ (/ tokens scale)) (- level 0.5))
-                                         (if evicted "disclosure-hover" "thought"))
-                                        ((and window (>= (/ (- level 0.5) +context-grid-height+)
-                                                         *context-eviction-trigger-ratio*))
-                                         "context-zone")
-                                        (t "context-free"))))
-                   'string))))
-
-(defun context-eviction-row (label eviction before after)
-  "The over-time row of EVICTION, a session.context.evicted fact: LABEL (the
-round it came before), the turns it took, the prompt BEFORE it and AFTER."
-  (list :key "▾"
-        :label (format nil "~a · ~d turn~:p" label (nlk:context-evicted-turn-count eviction))
-        :detail (format nil "~a → ~a · ~a"
-                        (format-token-count before)
-                        (format-token-count after)
-                        (let ((reason (nlk:context-evicted-reason eviction)))
-                          (dispatch reason equal
-                            ("operator_requested" "asked") ("budget_fill" "at the line")
-                            ("provider_rejected" "refused by the provider") (t reason))))))
-
 (defun context-time-answer (rounds trailing breakdown window)
-  "/context time => (values TEXT DIALOG): each round's prompt from the log as
-a chart, and each eviction as a row -- the round it came before, the turns it
-took, the prompt before and after it; TRAILING, one no round has followed,
-against the occupancy now."
+  "/context time: the session's provider rounds from the log as one line --
+how many, the peak and now, and the evictions between them."
+  (declare (ignore window))
   (if (null rounds)
       "no provider round in the log yet"
-      (let* ((peak (reduce #'max rounds :key #'first))
-             (scale (or window (max 1 peak)))
-             (now (if breakdown (getf breakdown :total) (first (car (last rounds)))))
-             (rows (append
-                    (loop for (tokens eviction) in rounds
-                          for previous = 0 then before
-                          for before = tokens
-                          for number from 1
-                          when eviction
-                            collect (context-eviction-row (format nil "round ~d" number)
-                                                          eviction previous tokens))
-                    (when trailing
-                      (list (context-eviction-row "now" trailing (first (car (last rounds))) now)))
-                    (list (list :label "peak" :detail (format-token-count peak))
-                          (list :label "now" :detail (format-token-count now))))))
-        (values (format nil "~d round~:p · peak ~a~%~{~a~%~}" (length rounds) (format-token-count peak)
-                        (loop for row in rows
-                              collect (format nil "  ~a  ~a" (getf row :label) (getf row :detail))))
-                (dialog-json
-                 (list-dialog
-                  :title "Context / over time"
-                  :context (format nil "~d round~:p · top: ~a" (length rounds) (format-token-count scale))
-                  :summary "each round's prompt, read from the session log" :summary-tone :muted
-                  :picture (context-picture (context-time-picture rounds scale window))
-                  :hint "esc back  up/down navigate"
-                  :rows rows))))))
+      (format nil "~d round~:p · peak ~a · now ~a · ~d eviction~:p"
+              (length rounds)
+              (format-token-count (reduce #'max rounds :key #'first))
+              (format-token-count (if breakdown (getf breakdown :total) (first (car (last rounds)))))
+              (+ (count-if #'second rounds) (if trailing 1 0)))))
 
 (defun headless-context (args session-id)
   "The /context answer without a shell: SESSION-ID's usage facts folded
