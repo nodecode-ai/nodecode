@@ -27,7 +27,6 @@
                              world.skip
                              world.enter
                              world.retire
-                             world.tally
                              (list world.last-used world.takeover-unit)))
         (is (or (null value) (stringp value))
             (format nil "~a carries only strings, never code" name)))))

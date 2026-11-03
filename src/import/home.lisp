@@ -604,10 +604,9 @@ under a projects/ folder, which reads Claude Code's project roots."
           (visit (uiop:native-namestring root) (file-namestring root) '() (file-namestring root)))))
   (values (nreverse visits) projects))
 
-(defun read-homes (homes &key (sessions t) (text t) tally)
+(defun read-homes (homes &key (sessions t) (text t))
   "Every one of HOMES read into facts, each HOME filled in as it goes; TEXT
-nil leaves their prose unread, TALLY reads which models each ran (TALLY-FACTS).
-A home whose read fails keeps the failure as a note, and no facts."
+nil leaves their prose unread. A home whose read fails keeps the failure as a note, and no facts."
   ;; SESSIONS nil leaves the conversations alone — what the first frame wants,
   ;; since a transcript store is gigabytes and a provider key is bytes. TEXT
   ;; nil is a plan of keys and config alone: the setup walk's first, which
@@ -637,12 +636,9 @@ A home whose read fails keeps the failure as a note, and no facts."
            (settings (let ((*normal-names* (make-hash-table :test #'equal)))
                        (loop for (home nil . function) in (funcall jobs :settings)
                              collect (funcall (guarded #'read-in) home function))))
-           ;; here too, beside the prose: a few indexed queries a home
-           (tallies (mapcar (lambda (home) (and tally (tally-facts home))) homes))
            (prose (bt2:join-thread prose)))
       (loop for home in homes
             for walk in walks
-            for (tallied noted) in tallies
             do (let ((reads (and (consp walk)
                                  (loop for (kind) in (first walk)
                                        collect (if (eq kind :prose) (pop prose) (pop settings))))))
@@ -653,8 +649,7 @@ A home whose read fails keeps the failure as a note, and no facts."
                            do (setf home.unmapped (append unmapped home.unmapped)
                                     home.notes (append notes home.notes)
                                     facts (revappend found facts)))
-                     (setf facts (append (nreverse facts) tallied)
-                           home.notes (append noted home.notes))
+                     (setf facts (nreverse facts))
                      (when sessions
                        (setf facts (append facts (session-facts home))))
                      (setf home.facts facts

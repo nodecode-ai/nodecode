@@ -31,7 +31,7 @@
 (define-record (agent-world (:copier nil) (:export :predicate :readers)
                             (:constructor make-agent-world
                                 (&key name label roots evidence (last-used (first evidence))
-                                      skip enter retire tally takeover-unit)))
+                                      skip enter retire takeover-unit)))
   "One harness's home, as data."
   ;; NAME is what `/import <name>' says and what its marker is filed under;
   ;; LABEL what a report calls it; ROOTS the paths under $HOME it keeps,
@@ -43,9 +43,7 @@
   ;; ENTER the hidden ones worth entering, which every world skips; RETIRE
   ;; the standing sections the world's carriers pinned on this organism's
   ;; own sessions, which a conversion unpins (only this organism's own
-  ;; retired carriers ever pinned any); TALLY the paths, a name maybe wild,
-  ;; where the world records which models it ran and how much (import
-  ;; tally.lisp reads them by shape);
+  ;; retired carriers ever pinned any);
   ;; TAKEOVER-UNIT the systemd user unit that must stop before this organism
   ;; can answer on that harness's bots, which every world whose home can carry
   ;; a bot names: its program, the unit's name up to its first `-' or `.', is
@@ -58,7 +56,6 @@
   (skip '() :type list)
   (enter '() :type list)
   (retire '() :type list)
-  (tally '() :type list)
   (takeover-unit nil))
 
 (access (world agent-world))
@@ -70,28 +67,24 @@
                      :evidence '(".hermes/config.yaml" ".hermes/state.db")
                      :last-used ".hermes/state.db"
                      :skip '("hermes-agent" "audio_cache" "image_cache" "hooks")
-                     :tally '(".hermes/state.db")
                      :takeover-unit "hermes-gateway.service")
    (make-agent-world :name "codex" :label "Codex"
                      :roots '(".codex/")
                      :evidence '(".codex/config.toml" ".codex/auth.json")
                      :last-used ".codex/history.jsonl"
-                     :skip '("attachments" "handoffs" "archive" "decisions")
-                     :tally '(".codex/state_*.sqlite"))
+                     :skip '("attachments" "handoffs" "archive" "decisions"))
    (make-agent-world :name "claude" :label "Claude Code"
                      :roots '(".claude/" ".claude.json")
                      :evidence '(".claude.json" ".claude/settings.json")
                      ;; subagents/: a session's subagent transcripts, its sidechains, never a conversation
-                     :skip '("shell-snapshots" "statsig" "ide" "file-history" "todos" "subagents")
-                     :tally '(".claude/stats-cache.json"))
+                     :skip '("shell-snapshots" "statsig" "ide" "file-history" "todos" "subagents"))
    (make-agent-world :name "opencode" :label "OpenCode"
                      :roots '(".config/opencode/" ".local/share/opencode/")
                      :evidence '(".config/opencode/opencode.json"
                                  ".config/opencode/opencode.jsonc"
                                  ".local/share/opencode/auth.json")
                      :last-used ".local/share/opencode/opencode.db"
-                     :skip '("repos" "node_modules")
-                     :tally '(".local/share/opencode/opencode.db"))
+                     :skip '("repos" "node_modules"))
    (make-agent-world :name "cursor" :label "Cursor CLI"
                      :roots '(".cursor/")
                      :evidence '(".cursor/cli-config.json" ".cursor/mcp.json")

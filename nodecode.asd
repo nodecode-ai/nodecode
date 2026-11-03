@@ -438,7 +438,6 @@ of stacking."
      (:file "import/shape")
      (:file "import/home")
      (:file "import/transcripts")
-     (:file "import/tally")
      (:file "import/takeover")
      (:file "import/plan")
      (:file "import/source")
