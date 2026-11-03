@@ -358,6 +358,7 @@ of stacking."
      (:file "tui/commands/models")
      (:file "tui/commands/accounts")
      (:file "tui/commands/cell-control")
+     (:file "tui/commands/draft-effect")
      (:file "tui/commands/headless")
      (:file "tui/commands/context-view")
      (:file "tui/commands/tree")
