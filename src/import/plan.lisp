@@ -666,45 +666,14 @@ line, its trailing blanks off -- a string of several split as NLK:LINES
 splits one, an empty one an empty line -- the closing paren on a line of
 its own. The second value is the form without its lines, which reads as
 the same form."
-  ;; Made at its length, a line copied once from where it stands: split into
-  ;; strings and written through a stream.
-  (flet ((each-line (function)
-           ;; FUNCTION over each line's (STRING START END), END past its trailing blanks
-           (dolist (string lines)
-             (let ((pieces '()))
-               (loop for start = 0 then (1+ newline)
-                     for newline = (position #\Newline string :start start)
-                     for end = (or newline (length string))
-                     do (push (cons start (if (and newline (> end start)
-                                                   (char= #\Return (char string (1- end))))
-                                              (1- end)
-                                              end))
-                              pieces)
-                     while newline)
-               (unless (zerop (length string))
-                 (loop while (and pieces (= (car (first pieces)) (cdr (first pieces)))) do (pop pieces)))
-               (loop for (start . end) in (nreverse pieces)
-                     do (funcall function string start
-                                 (let ((last (position-if-not (lambda (char) (member char '(#\Space #\Tab #\Return)))
-                                                              string :start start :end end :from-end t)))
-                                   (if last (1+ last) start))))))))
-    (let ((text (make-string (+ (length head) 4
-                                (let ((size 0))
-                                  (each-line (nlk:lambda-ignoring (string start end)
-                                               (incf size (+ 5 (if (> end start) (1+ (- end start)) 0)))))
-                                  size))))
-          (at (length head)))
-      (replace text head)
-      (each-line (lambda (string start end)
-                   (replace text #.(format nil "~%  ;;") :start1 at)
-                   (incf at 5)
-                   (when (> end start)
-                     (setf (char text at) #\Space)
-                     (replace text string :start1 (1+ at) :start2 start :end2 end)
-                     (incf at (1+ (- end start))))))
-      (replace text #.(format nil "~%  )") :start1 at)
-      (values text (concatenate 'string head ")")))))
-
+  (values (with-output-to-string (out)
+            (write-string head out)
+            (dolist (string lines)
+              (dolist (line (if (equal string "") '("") (nlk:lines string)))
+                (let ((line (string-right-trim '(#\Space #\Tab #\Return) line)))
+                  (format out "~%  ;;~:[ ~a~;~]" (equal line "") line))))
+            (format out "~%  )"))
+          (concatenate 'string head ")")))
 (defun definable-name-p (name)
   "Whether NAME reads as the symbol a definition takes: lower case, digits
 and . _ -, never a number."
