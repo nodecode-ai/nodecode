@@ -851,12 +851,10 @@ KEEP is no layer definition, or that file had none."
                             (first (file-definitions file :name (symbol-name keep) :read-eval t))))
                   (form (and hit
                              (ignore-errors
-                              (destructuring-bind (key fork-start end package) hit
-                                (declare (ignore key))
-                                (with-standard-io-syntax
-                                  (let ((*package* package) (*read-eval* t))
-                                    (read-from-string (uiop:read-file-string file) t nil
-                                                      :start fork-start :end end))))))))
+                              (with-standard-io-syntax
+                                (let ((*package* (fourth hit)) (*read-eval* t))
+                                  (read-from-string (uiop:read-file-string file) t nil
+                                                    :start (second hit) :end (third hit))))))))
              (and (consp form) (string= "DEFUN" (symbol-name (first form))) (eq keep (second form))
                   (list :label (format nil "generation ~d" generation)
                         :source (format nil "generation ~d's layer" generation)
@@ -1048,10 +1046,9 @@ place, HELD (FORK-SWAP). => the :RACE report."
                        (fork-in-scratch
                         (lambda (scratch)
                           (funcall *fork-ask*
-                                   (cons (list generation (fork-form-text (fork-check-form check directory)))
-                                         (loop for row in fit
-                                               collect (list generation
-                                                             (fork-form-text (fork-check-form check directory (getf row :form))))))
+                                   (loop for version in (cons nil (mapcar (lambda (row) (getf row :form)) fit))
+                                         collect (list generation
+                                                       (fork-form-text (fork-check-form check directory version))))
                                    scratch)))))
          (standing-passed (eql 1 (getf (first answers) :score)))
          (tried (loop for row in fit
