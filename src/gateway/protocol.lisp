@@ -221,6 +221,9 @@ as JSON text, or with OCTETS as its UTF-8 octets."
             ;; The pending-exec view's own gesture (client/client.lisp SEND-INTERRUPT-EXEC):
             ;; one more request-reply kind, decoded and answered like every other.
             :interrupt-exec
+            ;; The question card's gesture (questions.lisp ANSWER-OPERATOR-QUESTION):
+            ;; a choice for the question a session's turn waits on.
+            :answer-question
             ;; A read: the session as it stands, in its command result (gateway.lisp
             ;; SESSION-STATE-JSON), what a program asks before it acts.
             :get-state))
@@ -295,7 +298,12 @@ table, so the two directions cannot drift apart.")
     ;; commands every shell read at attach are stale; the client refetches
     ;; them off the loop thread. Never replayed -- GET /api/gateway/slash is
     ;; the one authority and a fresh shell reads it at attach.
-    "commands_changed")
+    "commands_changed"
+    ;; Live-only, unsequenced: the questions turns wait on an
+    ;; answer to (questions.lisp ASK-OPERATOR), the whole board
+    ;; each time it changes; sent only to a shell that said it
+    ;; answers them.
+    "organism.questions")
   "Every session-less frame kind carried outside session sequencing.
 ONE LIST, BOTH DIRECTIONS: ENCODE-UNSEQUENCED-FRAME and the gateway's
 BROADCAST-ORGANISM write exactly these kinds, and PROJECTION-KIND admits
@@ -517,7 +525,9 @@ so the payload need not carry the token again."
        ;; SEND-SUBSCRIBE): the gateway names each attached shell's
        ;; process in the image section, and skips the shell in its own
        ;; process when a source load is sent out (SOURCE-LOADED).
-       (when-let (pid (json-value request :integer "pid")) (setf (gethash "pid" table) pid)))
+       (when-let (pid (json-value request :integer "pid")) (setf (gethash "pid" table) pid))
+       ;; A surface that draws questions and sends their answers says so.
+       (when (json-value request :boolean "answers") (setf (gethash "answers" table) t)))
       (otherwise
        (maphash (lambda (key value) (setf (gethash key table) value)) request)))
     (encode-json-object (make-json-object "type" "client_command" "command" table))))
@@ -552,7 +562,8 @@ so the payload need not carry the token again."
          (unless (vectorp subscriptions)
            (protocol-refuse :invalid-command "subscriptions must be an array"))
          (setf (gethash "subscriptions" request) subscriptions)
-         (when-let (pid (json-value command :integer "pid")) (setf (gethash "pid" request) pid))))
+         (when-let (pid (json-value command :integer "pid")) (setf (gethash "pid" request) pid))
+         (when (json-value command :boolean "answers") (setf (gethash "answers" request) t))))
       (otherwise
        (maphash (lambda (key value)
                   (unless (member key '("type" "command_id" "correlation_id") :test #'string=)

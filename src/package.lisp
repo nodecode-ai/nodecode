@@ -441,6 +441,9 @@ renderer, the program loop.")
    ;; --- the organism's own voice (gateway.lisp): every attached shell, the
    ;; standing board the live tail of every round's prompt shows the model ---
    #:notice
+   ;; --- one question put to the person watching a session, waited on
+   ;; (gateway/questions.lisp) ---
+   #:ask-operator
    ;; --- work that outlives the shell (gateway.lisp): a cell's one word
    ;; for it, and the kernel turns the background gateway on, once ---
    #:keep-running

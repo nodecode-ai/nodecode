@@ -24,6 +24,7 @@
         "cancel_turn",
         "navigate_checkpoint",
         "interrupt_exec",
+        "answer_question",
         "get_state"
       ]
     },
@@ -35,6 +36,7 @@
         { "$ref": "#/$defs/WithdrawPrompt" },
         { "$ref": "#/$defs/CancelTurn" },
         { "$ref": "#/$defs/InterruptExec" },
+        { "$ref": "#/$defs/AnswerQuestion" },
         { "$ref": "#/$defs/NavigateCheckpoint" },
         { "$ref": "#/$defs/GetState" },
         { "$ref": "#/$defs/SetSessionSubscriptions" }
@@ -148,6 +150,18 @@
         "exec_id": { "type": "integer" }
       }
     },
+    "AnswerQuestion": {
+      "description": "Answer a question the session's turn waits on (organism.questions): answer is one of its choices. The first answer wins.",
+      "type": "object",
+      "required": ["type", "question_id", "answer"],
+      "allOf": [{ "$ref": "#/$defs/CommandIdentity" }],
+      "properties": {
+        "type": { "const": "answer_question" },
+        "session_id": { "type": "string" },
+        "question_id": { "type": "string", "minLength": 1 },
+        "answer": { "type": "string", "minLength": 1 }
+      }
+    },
     "NavigateCheckpoint": {
       "description": "Move the session's head: to a turn, or one step with direction undo or redo. Every attached client is then sent session_resync_required and subscribes again.",
       "type": "object",
@@ -180,6 +194,7 @@
       "properties": {
         "type": { "const": "set_session_subscriptions" },
         "pid": { "type": "integer" },
+        "answers": { "type": "boolean", "description": "This client draws organism.questions and sends answer_question: only such a client is sent them, and a turn asks only while one is attached." },
         "subscriptions": {
           "type": "array",
           "items": {
@@ -314,7 +329,8 @@
             "organism.cells",
             "model_changed",
             "session_titled",
-            "commands_changed"
+            "commands_changed",
+            "organism.questions"
           ]
         }
       },
@@ -423,6 +439,24 @@
               "text": { "type": "string" },
               "level": { "type": "string" },
               "key": { "type": "string" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "organism.questions" } } },
+          "then": {
+            "description": "Every question a turn waits on, whole each time the set changes; expires_at is Unix seconds.",
+            "required": ["questions"],
+            "properties": {
+              "now": { "type": "integer", "description": "The gateway's clock, Unix seconds." },
+              "questions": {
+                "type": "array",
+                "items": { "type": "object", "required": ["question_id", "session_id", "title", "choices", "expires_at"],
+                           "properties": { "question_id": { "type": "string" }, "session_id": { "type": "string" },
+                                           "title": { "type": "string" }, "detail": { "type": "string" },
+                                           "choices": { "type": "array", "items": { "type": "string" } },
+                                           "expires_at": { "type": "integer" } } }
+              }
             }
           }
         },
