@@ -256,6 +256,11 @@ of stacking."
      (:file "engine/meter")
      ;; the agent's own policy store, ahead of the context that reads it
      (:file "engine/policy")
+     ;; engine/policy-guard and engine/policy-record: the fixed rules a tool
+     ;; call cannot write while policy.self is on, and the record of what the
+     ;; review adopted and dropped, pushed to a protected branch.
+     (:file "engine/policy-guard")
+     (:file "engine/policy-record")
      ;; context precedes turn: the context engine
      ;; (log->events->units->boundary->compiled context) is a pure layer
      ;; between provider's frozen structs and the loop's ambient-state freeze.
@@ -586,6 +591,8 @@ of stacking."
      (:file "engine/context-test")
      ;; policy-test follows context-test: the same turn fixtures, the policy sections they carry
      (:file "engine/policy-test")
+     (:file "engine/policy-guard-test")
+     (:file "engine/policy-record-test")
      ;; tool-call-id-test follows turn-test: it drives turn-test's canned SSE helpers.
      (:file "engine/tool-call-id-test")
      ;; wire-pairing-test pins proofs/WirePairing.lean's traces on the fold.

@@ -1,0 +1,88 @@
+---
+title: Self-policy
+summary: "Let the agent write its own rules, identity and system prompt, under a review it runs on itself, while you keep the switch and the fixed rules."
+---
+
+With `policy.self` on, the agent writes its own `AGENTS.md`, `SOUL.md` and system prompt. A change binds only once a review adopts it, and every change is a git commit you can read and revert. You keep the switch and the fixed rules. The mode is off by default, and off is exactly how Nodecode behaved before it.
+
+{/* source: src/engine/policy.lisp */}
+## Turn it on
+
+Edit `~/.nodecode/config.jsonc` by hand:
+
+```jsonc
+"policy": {
+  "self": true,
+  // optional: where the record of adopted changes is pushed
+  "record": "git@github.com:you/agent-policy.git"
+}
+```
+
+The agent cannot set `policy` itself, in either mode: `config-set` refuses the member to a tool call. Turning the mode on is your hand, never its own.
+
+To turn it off, set `"self": false` or remove it. The store stays on disk, nothing in it binds, and the files are read as before.
+
+## Off and on
+
+| | Off (default) | On |
+| --- | --- | --- |
+| Your `AGENTS.md` in the home | `operator-rules`: your rules | The charter: your fixed rules, which outrank the agent's and which it cannot edit |
+| The agent's own rules | None | `AGENTS.md` in the store, as the `agent-rules` section |
+| Identity | `SOUL.md` from the channel's `soul_file`, chat only | `SOUL.md` in the store, in chat and in the terminal |
+| System prompt | The shipped one | The store's, seeded from the shipped one |
+| Who changes them | You, by hand | The agent proposes; the review adopts or drops |
+| History | None | Every adopted or dropped change is a commit on `adopted` |
+| Record off the box | None | `adopted` pushed to `policy/adopted` on `policy.record`, never forced |
+
+## How a change binds
+
+The store is `~/.nodecode/policy/`, a git repository of its own. Its working tree holds the agent's drafts, which bind nothing. What binds is the commit the `adopted` branch names.
+
+| Change | What happens |
+| --- | --- |
+| Stricter: asks first more often, refuses more | Binds at once. A review reads it again later, and a stricter change that turns out to loosen anything is reverted. |
+| Looser, or unclear | Waits 24 hours in shadow, binding nothing. A fresh session, still under the old text, replays the turns since under the old and the new text, then adopts or drops it. |
+| Any edit of the system prompt | Always waits in shadow. |
+| Not reviewed in time | Lapses. Nothing binds by default. |
+| Dropped | Recorded on `adopted`. The same change is refused if it comes back, on any later base or reached by other steps. |
+
+{/* source: src/engine/policy-guard.lisp */}
+## Fixed rules
+
+With the mode on, the agent's own verbs refuse to write the fixed rules when a tool call runs them. Your own edits, from a shell's `/config`, a settings page or a text editor, are no tool call and pass.
+
+| Fixed rule | What a tool call is refused |
+| --- | --- |
+| The charter | `edit` or `write-file` of the home `AGENTS.md`, through a link too, or creating one where there was none |
+| The config | `edit` or `write-file` of `config.jsonc` as a whole. Other members stay the agent's to set with `config-set`. |
+| The switch | `config-set` of `policy`, in either mode |
+| Who the operator is | `config-set` of any channel's `owner` |
+| The guard | `config-set` of `guard`, or a `cells` list without `nodecode-guard` |
+| The history | `edit` or `write-file` under `~/.nodecode/policy/.git/` |
+| A proposal | Any name that is not a plain file of the store: a path, `..`, a dot file |
+
+{/* source: src/engine/policy-record.lisp */}
+## The record
+
+When `policy.record` names a git remote, every adopt and every drop pushes `adopted` to `refs/heads/policy/adopted` there. The push is never forced. If the history on the box was rewritten, the remote refuses the push, and a standing notice `policy record` says so until a push lands.
+
+On the remote:
+
+- Protect `policy/adopted`: no force-push, no deletion, and the rule applies to admins too. Without that, the record is only as safe as the box.
+- The record's commits carry the store's git identity. Set `user.name` and `user.email` in the store to the account the remote's rules allow.
+
+## What this does not protect
+
+The agent owns its own process. `sh` can write any file the agent's user can, and a redefinition lifts any check written inside the program, the kernel's included, since `unlock-floor` lets the agent lower its own floor by design. The fixed rules above are a tripwire: no turn crosses one by accident, and one that tries is told why.
+
+What catches a bypass is outside the agent: the record a rewritten history cannot replace, and the replay, which shows what the agent did against what its adopted policy says. What blocks one is step 0.
+
+## Step 0, before you turn it on
+
+| Step | Why |
+| --- | --- |
+| Push with a token that has no admin rights and no Workflows permission | An admin token merges past required checks and changes branch protection back |
+| Turn on branch protection with admins included (`enforce_admins`) | Otherwise the protection does not apply to the account the agent pushes as |
+| Remove any admin login from the box: a `gh` login, `GH_TOKEN` | The agent reads every file its user can |
+| Set a spending cap at each model provider | Nodecode has no spending cap of its own |
+| Keep keys off the box, or make `sudo` ask for a password | With passwordless `sudo`, no user on the box keeps a key from the agent |

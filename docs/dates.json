@@ -22,6 +22,7 @@
   "quickstart": "2026-10-22",
   "rpc": "2026-10-17",
   "security": "2026-10-22",
+  "self-policy": "2026-11-03",
   "sessions": "2026-10-22",
   "shell": "2026-10-22",
   "slash-commands": "2026-10-22",

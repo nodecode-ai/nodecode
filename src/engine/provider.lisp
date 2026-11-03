@@ -2832,6 +2832,12 @@ added, 0 replaced)'."
   ;; through a member that is not an object, or a value that would write a
   ;; secret's `[set]' back over the secret signals instead of guessing, and
   ;; nothing is written.
+  ;; A tool call's write of a member the operator owns -- the `policy' switch,
+  ;; and with it on each `owner', `guard' and the guard cell's row -- is
+  ;; refused before anything is written (POLICY-CONFIG-REFUSAL,
+  ;; engine/policy-guard).
+  (when-let (said (policy-config-refusal path value))
+    (error "config-set ~{~a~^.~}: ~a" (config-path path) said))
   (multiple-value-bind (outcome detail)
       (persist-shared-config (config-path path) value)
     (ecase outcome

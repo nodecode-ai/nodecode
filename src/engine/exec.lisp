@@ -2146,6 +2146,10 @@ spans instead of stale ones."
   ;; partially written source file. The temp the rename brings in has a fresh
   ;; file's mode, 0644 under the usual umask: without :KEEP an edit drops a
   ;; script's executable bit and widens a 0600 secret to world-readable.
+  ;; With policy.self on, a tool call's write of a fixed rule is refused here,
+  ;; before anything is written (POLICY-WRITE-REFUSAL, engine/policy-guard).
+  (when-let (said (policy-write-refusal path))
+    (error "~a" said))
   (nlk:write-file-atomically path text :mode :keep)
   (nlk:forget-shipped-definitions))
 

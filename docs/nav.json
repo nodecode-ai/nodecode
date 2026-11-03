@@ -19,7 +19,7 @@
       "pages": [
         { "fold": "Shell", "pages": ["shell", "sessions", "slash-commands", "cli"] },
         { "fold": "Configuration", "pages": ["models", "config", "environment", "files", "instructions", "profiles"] },
-        { "fold": "Operations", "pages": ["updates", "security", "gateway", "channels", "rpc", "operations"] }
+        { "fold": "Operations", "pages": ["updates", "security", "self-policy", "gateway", "channels", "rpc", "operations"] }
       ]
     },
     {
