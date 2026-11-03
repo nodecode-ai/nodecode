@@ -15,7 +15,7 @@
 
 (defun usage-dialog-rows (range usage)
   "RANGE's rows in the /usage dialog, each keyed by RANGE so its tab shows
-them: the sentence, the totals, spend by day, the models, the costliest
+them: the sentence, the totals, the models, the costliest
 sessions -- Enter opens one -- and the folders. NIL USAGE is a read still
 out; an OFF-LOOP failure is said in one row."
   (labels ((row (label detail &key value (mark "") (tone :muted))
@@ -35,7 +35,6 @@ out; an OFF-LOOP failure is said in one row."
       (t
        (let* ((totals (usage-field usage "totals"))
               (cost (usage-field totals "cost_usd"))
-              (days (coerce (or (usage-field usage "days") #()) 'list))
               (models (coerce (or (usage-field usage "models") #()) 'list))
               (sessions (coerce (or (usage-field usage "sessions") #()) 'list))
               (folders (coerce (or (usage-field usage "folders") #()) 'list)))
@@ -56,33 +55,12 @@ out; an OFF-LOOP failure is said in one row."
                      (format nil "~:d  ~a" (or (usage-field totals "sessions") 0)
                              (counted (or (usage-field totals "turns") 0) "turn")))
                 (row (pad "From cache")
-                     (format nil "~a  cache hit~@[ · ~a~]"
-                             (share-text (usage-field totals "cached_share"))
-                             (let ((saved (usage-field totals "saved_usd")))
-                               (cond ((not (realp saved)) nil)
-                                     ((> saved 0.005) (format nil "saved about ~a" (usd-text saved)))
-                                     ((< saved -0.005)
-                                      (format nil "writes cost ~a more than reads saved" (usd-text (- saved))))))))
+                     (format nil "~a  cache hit" (share-text (usage-field totals "cached_share"))))
                 (row (pad "First word, typical")
                      (format nil "~a  TTFT p50 · p90 ~a" (ms-text (usage-field usage "wait_p50_ms"))
                              (ms-text (usage-field usage "wait_p90_ms"))))
                 (row (pad "Failed turns")
                      (format nil "~:d  turn.failed" (or (usage-field totals "failed_turns") 0))))
-          (when (rest days)
-            (let* ((priced (some (lambda (day) (usage-field day "cost_usd")) days))
-                   (shown (last days 60))
-                   (values (mapcar (lambda (day) (or (usage-field day (if priced "cost_usd" "calls")) 0))
-                                   shown))
-                   (top (reduce #'max values :initial-value 0)))
-              (list (row (pad (if priced "Spend by day" "Model calls by day"))
-                         (format nil "~a  ~a – ~a"
-                                 (map 'string (lambda (value)
-                                                (if (or (zerop top) (zerop value))
-                                                    #\·
-                                                    (char "▁▂▃▄▅▆▇█" (min 7 (floor (* 8 value) (* 1.0001 top))))))
-                                      values)
-                                 (subseq (usage-field (first shown) "day") 5)
-                                 (subseq (usage-field (car (last shown)) "day") 5))))))
           (table "Models" "calls · from cache · spend" (subseq models 0 (min 8 (length models)))
                  (lambda (model) (usage-field model "model"))
                  (lambda (model) (format nil "~:d · ~a · ~a" (usage-field model "calls")
