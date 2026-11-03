@@ -365,14 +365,3 @@ when it is a problem, and the config section it is about when it is about one."
   "GET /api/gateway/health — HEALTH-FACTS for a screen (HEALTH-FACTS-JSON)."
   (:route :get "/api/gateway/health" "health")
   (health-facts-json (health-facts)))
-
-(define-gateway-route handle-gateway-doctor-http (env)
-  "POST /api/gateway/doctor — DOCTOR-FACTS, looked at now, as the health
-route answers facts, with how long the looks took. => {facts, seconds}."
-  ;; A POST because it goes and looks: it reads the whole store, and dials the
-  ;; default provider's listing.
-  (:route :post "/api/gateway/doctor" "doctor")
-  (let* ((start (get-internal-real-time))
-         (facts (health-facts-json (doctor-facts))))
-    (json-object "facts" facts
-                 "seconds" (float (/ (- (get-internal-real-time) start) internal-time-units-per-second)))))
