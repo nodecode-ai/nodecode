@@ -1,0 +1,187 @@
+---
+title: Cells reference
+summary: "The kinds of cell, asking for one, finding, turning on and off, setup, the hub, installing from git, updates and loading."
+---
+
+A cell is a folder of code under `~/.nodecode/cells/` that carries an `.asd` file. What a cell is for: [Cells](/cells).
+
+{/* source: src/CELLS.md */}
+## Rules
+
+- A folder that is present is on. Every Nodecode process loads it at boot.
+- Remove the folder to remove the cell.
+- No config key names cells. A config key `addons` is ignored with a warning.
+- A cell runs inside Nodecode with full authority over the host. See [Security](/security).
+- A profile has its own `cells/` folder. See [Profiles](/profiles).
+
+| Kind | What it is |
+| --- | --- |
+| Layer | The definitions the agent wrote and kept, one file each, in a git repository. You do not write it. |
+| Made | A cell the agent made when you asked for one: `<you>-NAME/`, its code one file per definition, in a git repository of its own. See [Ask for one](#ask-for-one). |
+| Peripheral | Any other cell. It exports `start-cell`, which the gateway calls with the parsed config. |
+| Library | A folder with no `start-cell`. It loads. Nothing starts. |
+| Knowledge | The memories and skills the agent kept, one file each, in a git repository: `<name>-memory/` and any `:cell "topic"` folder. Listed, never loaded. |
+
+The gateway is the local server that shells attach to. A shell is the terminal UI.
+
+{/* source: src/organism/made-cells.lisp */}
+## Ask for one
+
+Say what the cell should do. The agent asks what it cannot work out, builds the cell, runs it once and tells you how to reach it.
+
+| Way | How |
+| --- | --- |
+| Say it | "Make a cell with a `/tokyo-time` command that says the time in Tokyo." |
+| Shell | Run `/cells` and pick **+ New cell**, or run `/cells new NAME`. Either puts "Make a cell that " in the message box. |
+| Web page | Open Settings, then the Cells tab, then **New cell**. |
+| After the fact | "Make what we just built a cell called temperature." |
+
+| Case | Result |
+| --- | --- |
+| The ask says what it does and how you reach it | The agent builds it without a question. |
+| A thin ask: "make me a cell" | The agent asks first: what it does, how you reach it (a `/command`, a tool it calls, something that runs on its own) and what it needs, such as an API key. |
+| Built | `~/.nodecode/cells/<you>-NAME/`, loaded at once. `/cells` lists it under Your own as `<you>-NAME`. |
+| A command or a tool | It works at once, in every attached shell. |
+| Built from what the agent already kept | The definitions move out of the layer into the cell. They load from the cell at the next start. |
+| A key or a setting | It goes in the cell's config section, set in `/settings`. Never in a file of the cell. |
+
+The cell is a git repository of its own: push it anywhere to share it, and [Install from git](#install-from-git) takes it in elsewhere. How the agent writes it: [Cell API](/cell-api#ask-for-one).
+
+{/* source: src/organism/cells.lisp */}
+## Find one
+
+Every cell you can add is listed under <CellsTab /> in the bar.
+
+| Where | What it shows |
+| --- | --- |
+| <CellsTab /> | Nodecode's cells and the community's, each pinned to one commit. |
+| `/cells` in the shell | The cells installed here, their state, and every standing notice. |
+| `(help :TOPIC)` through `eval` | A running cell's manual. |
+
+How a cell is written: [Cell API](/cell-api).
+
+{/* source: src/gateway/control.lisp */}
+## Turn one on
+
+| Way | How |
+| --- | --- |
+| Shell | Run `/cells`. Press Space on the highlighted cell. |
+| Web page | Open Settings, then the Cells tab. |
+| Command line | Run `nodecode add nc://NAME`. |
+
+```sh
+nodecode add nc://NAME [--yes]
+```
+
+| Case | Result |
+| --- | --- |
+| `NAME` | The cell's name. The `nodecode-` prefix is optional. |
+| Hub cell | Its repository, pinned commit and contents are shown first. It installs on a yes. |
+| `--yes` | Answers yes on the line. |
+| No terminal, no `--yes` | Nothing is installed. |
+| Nodecode is running | The cell turns on at once, in every attached shell. |
+| Nodecode is stopped | The cell loads at the next launch. |
+
+A shipped cell is installed as a symlink to the build's own folder. Windows gets a copy.
+
+{/* source: cells/channels/kit/setup.lisp */}
+## Set one up
+
+Some cells need a config section before they start. A channel is one: `nodecode gateway setup discord` walks it. See [Channels](/channels).
+
+{/* source: src/gateway/control.lisp */}
+## Turn one off
+
+Use the same toggle: Space in `/cells`, or the Cells tab of the web page.
+
+| Case | Result |
+| --- | --- |
+| Symlink, shipped copy or hub clone | The folder is removed. The cell stops. |
+| Another installed cell depends on it | Refused. Turn that one off first. |
+| A folder you put there yourself, or one the agent made | Kept. Space in `/cells` puts a `.off` marker in, the boot skips the folder, and `/cells` lists it under Off. Space again turns it back on at once. The web page's Cells tab has no switch for these. |
+| The layer, or a knowledge cell | No switch. |
+| After turning off | The code stays loaded until Nodecode restarts. |
+
+To keep the folder but start nothing, set `"enabled": false` in its config section:
+
+```jsonc
+"NAME": { "enabled": false }
+```
+
+After a config change, run `(restart-cells)` through `eval`, or `(restart-cells "NAME")` for one folder.
+
+{/* source: src/organism/cells.lisp */}
+## Hub
+
+Cells outside the release are listed in two indexes.
+
+| Index | URL | Override |
+| --- | --- | --- |
+| Nodecode's own | `https://nodecode.ai/dl/cells/index.json` | `$NODECODE_HUB_INDEX` |
+| Community | `https://nodecode.ai/cells/community.json` | `$NODECODE_COMMUNITY_INDEX` |
+
+Entry fields:
+
+| Field | Meaning |
+| --- | --- |
+| `name` | The primary system's name. |
+| `git` | The repository. HTTPS only. |
+| `commit` | A full commit id. The entry is pinned to it. |
+| `description` | What the folder's `.asd` says. |
+| `license` | The license. |
+| `depends_on` | What the folder's `.asd` depends on. |
+| `platforms` | Optional. Any of `linux`, `macos`, `windows`. |
+| `path` | Optional. The folder inside the repository. |
+
+Install checks:
+
+- HEAD is the pinned commit.
+- The primary system has the entry's name, description and `depends_on`.
+- The clone holds no symbolic link.
+- Every dependency is found.
+- No git hook runs. No submodule is fetched.
+
+A hub cell gets a `.hub` marker file. A release never moves it from its pinned commit.
+
+{/* source: src/CELLS.md */}
+## Install from git
+
+Clone the repository into the cells folder. It loads at the next launch.
+
+```sh
+git clone <url> ~/.nodecode/cells/<name>
+```
+
+{/* source: src/organism/cells.lisp */}
+## Updates
+
+Shipped cells follow the binary. The check runs at launch, before the folder loads.
+
+| Installed as | At launch |
+| --- | --- |
+| Symlink into another build | Pointed at this build's folder. |
+| Copy made by another build | Made again from this build. |
+| Folder this build no longer ships, from another release | Removed. The boot line says so. |
+| Hub cell | Left at its pinned commit. |
+
+Your own cells and hub cells compile into `~/.cache/nodecode/peripherals/<build stamp>/` at their first load under each build.
+
+{/* source: src/organism/cells.lisp */}
+## Loading
+
+Order:
+
+1. Every folder is registered.
+2. Dependencies load first.
+3. Other folders load in alphabetical order.
+4. Layers load after every peripheral.
+
+The gateway starts each peripheral after recovery.
+
+| Failure | Result |
+| --- | --- |
+| A folder fails to load | The other folders still load. `/cells` lists the failure. |
+| A config section is wrong | `/cells` says its start was refused. A notice names the folder. The other cells still start. |
+| An installed folder is gone | The boot reports it as failed. |
+
+The gateway always boots.
