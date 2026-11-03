@@ -1740,11 +1740,11 @@ cell, or NIL."
                  (canvas-put canvas (- (+ px pw) (text-display-width text)) header-row text ink)))
              (lines (entries)
                (multiple-value-bind (lines focus-line)
-                   (setting-lines settings entries :quiet pw 0 0 (if (>= rows 10) 2 1))
+                   (setting-lines settings entries pw (if (>= rows 10) 2 1))
                  (let ((head (settings-failed-lines settings pw)))
                    (when-let (caret (paint-lines settings canvas (append head lines)
                                                  (+ (length head) focus-line)
-                                                 list-top rows px pw 0 pane))
+                                                 list-top rows px pw pane))
                      (setf cursor caret))))))
         (cond
           ((plusp (length settings.query))
