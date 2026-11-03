@@ -4346,10 +4346,6 @@ One thread per folder; none outside a serving gateway."
     (notice (and error-text
                  (format nil "cells started without shared config: ~a" error-text))
             :level :warning :key "shared config")
-    (when (and (hash-table-p config) (nth-value 1 (gethash "addons" config)))
-      (notice (format nil "config key `addons` is not read: a cell is a folder under ~a"
-                      (namestring nlk::*cells-directory*))
-              :level :warning))
     (dolist (cell (nlk:cells))
       (when (and (cell-selected-p cell names)
                  ;; a start declared since the load is taken up here
