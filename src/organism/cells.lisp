@@ -617,6 +617,93 @@ LOAD-SOURCE answers them."
               sent '()))
       (values live held sent))))
 
+;;; --- a cell's file is its record: the image follows it both ways ------------
+;;; A definition a write cuts from a cell's file leaves the image with it --
+;;; nothing else records a cell's code, so nothing else would take it away.
+;;; Shipped source and an override are not cells' own records: their
+;;; definitions go only through FORGET or a release.
+
+(defvar *source-texts* (make-hash-table :test 'equal :synchronized t)
+  "Truename namestring -> the text this image last made live from that file
+(LOAD-SOURCE): what RELOAD-CELL diffs a file edited outside this image
+against.")
+
+(defun cell-source-p (path)
+  "True when PATH -- as written or through its links -- is a file of a cell
+folder, under *CELLS-DIRECTORY* or the shipped cells beside the source:
+where a file is the only record of its definitions."
+  (let ((names (remove nil (list (ignore-errors (namestring (merge-pathnames path)))
+                                 (ignore-errors (namestring (truename path)))))))
+    (some (lambda (root)
+            (when-let (directory (ignore-errors (namestring (truename root))))
+              (some (lambda (name) (uiop:string-prefix-p directory name)) names)))
+          (list (ignore-errors (probe-file *cells-directory*))
+                (ignore-errors (shipped-cells-directory))))))
+
+(defun method-specializer (text package)
+  "The specializer TEXT, a DEFMETHOD key's specializer string, names under
+PACKAGE: a class, or an EQL specializer of a keyword, number or quoted form."
+  (let ((form (let ((*package* package) (*read-eval* nil)) (read-from-string text))))
+    (if (and (consp form) (eq (first form) 'eql))
+        (sb-mop:intern-eql-specializer
+         (let ((object (second form)))
+           (if (and (consp object) (eq (first object) 'quote)) (second object) object)))
+        (find-class form))))
+
+(defun take-definition-away (key package)
+  "Take the definition KEY -- a TOPLEVEL-DEFINITIONS key, read under PACKAGE
+-- out of this image. => NIL once it is gone, else why it stays."
+  ;; A function or variable whose name lives in a locked (shipped) package is
+  ;; an override, put back by FORGET, never unbound here.
+  (bind ((operator (getf key :operator))
+         (name (getf key :name))
+         (symbol (and (packagep package) (definition-name-symbol name package)))
+         (designator (and symbol (if (uiop:string-prefix-p "(SETF " name) (list 'setf symbol) symbol)))
+         (shipped (and symbol (symbol-package symbol)
+                       (sb-ext:package-locked-p (symbol-package symbol)))))
+    (handler-case
+        (cond ((null symbol) nil)
+              ((member operator '("DEFUN" "DEFMACRO" "DEFGENERIC") :test #'string=)
+               (cond (shipped "a shipped name: (forget ...) puts the release's back")
+                     (t (when (fboundp designator) (fmakunbound designator)) nil)))
+              ((member operator '("DEFVAR" "DEFPARAMETER") :test #'string=)
+               (cond (shipped "a shipped name: (forget ...) puts the release's back")
+                     (t (makunbound symbol) nil)))
+              ((string= operator "DEFMETHOD")
+               (let ((generic (and (fboundp designator) (fdefinition designator))))
+                 (when (typep generic 'generic-function)
+                   (when-let (method (find-method generic
+                                                  (mapcar (lambda (qualifier) (intern qualifier '#:keyword))
+                                                          (getf key :qualifiers))
+                                                  (mapcar (lambda (text) (method-specializer text package))
+                                                          (getf key :specializers))
+                                                  nil))
+                     (remove-method generic method)))
+                 nil))
+              ((string= operator "DEFINE-HOOK")
+               (unhook (if (uiop:string-prefix-p ":" name)
+                           (intern (subseq name 1) '#:keyword)
+                           designator)
+                       (first (getf key :qualifiers)))
+               nil)
+              (t (format nil "a ~(~a~) leaves at the next start" operator)))
+      (error (condition) (first-line condition)))))
+
+(defun take-definitions-away (entries text)
+  "Take ENTRIES -- TOPLEVEL-DEFINITIONS entries of TEXT, the file's text
+before a write -- out of this image. => (values GONE STAYED): the labels
+taken, and ((LABEL . WHY) ...) for those that stay."
+  ;; An override's file is FORGET's: the release's definition comes back
+  ;; through it, which an unbind here would not do.
+  (let ((gone '()) (stayed '()) (override (search +override-marker+ text)))
+    (dolist (entry entries)
+      (let* ((label (definition-key-label (first entry)))
+             (why (if override
+                      "an override: (forget ...) puts the release's back"
+                      (take-definition-away (first entry) (fourth entry)))))
+        (if why (push (cons label why) stayed) (push label gone))))
+    (values (nreverse gone) (nreverse stayed))))
+
 (defun load-source (path &key before only verify &aux (truename (ignore-errors (truename path))))
   "Make this image agree with the Lisp file at PATH: every definition the file
 gained, and every one whose text differs from BEFORE — the file's text before
@@ -632,8 +719,11 @@ names is defined here (MAKE-DEFINITIONS-LIVE)."
   ;; => (values LINE LIVE HELD GONE): LINE the clause a receipt carries, NIL when
   ;; there is nothing to say; LIVE the labels now live here; HELD ((LABEL . REASON)
   ;; ...), what was named instead of evaluated; GONE the definitions BEFORE carried
-  ;; and the file no longer does — still in the image, since taking a definition
-  ;; away is FORGET's act, not a write's.
+  ;; and the file no longer does that are still in the image. In a cell's folder
+  ;; (CELL-SOURCE-P) the file is the only record, so what it lost is taken out
+  ;; of the image with it (TAKE-DEFINITIONS-AWAY) and GONE names only what
+  ;; would not go; elsewhere -- shipped source -- taking a definition away is
+  ;; FORGET's act or a release's, not a write's.
   ;;
   ;; What went live here is announced through SOURCE-LOADED, and LINE counts
   ;; the shells told — unless ONLY named it: a shell evaluating what it was
@@ -662,7 +752,7 @@ names is defined here (MAKE-DEFINITIONS-LIVE)."
              ;; new or moved since BEFORE, GONE the ones the file lost, DIFFERS
              ;; whether anything outside a definition moved, AFTER every definition
              ;; the file holds — which is what :ONLY walks, changed or not.
-             ((changes gone differs after) (definition-changes before text))
+             ((changes gone differs after old) (definition-changes before text))
              ((live held sent)
               (make-definitions-live
                text after
@@ -679,7 +769,18 @@ names is defined here (MAKE-DEFINITIONS-LIVE)."
                ;; write knows its definition is new only when BEFORE lacks it.
                (lambda (entry)
                  (and (not only) (or (null before) (cdr (assoc entry changes :test #'eq)))))
-               verify)))
+               verify))
+             ;; in a cell's folder the file is the record: what it lost leaves the image too
+             ((taken stayed)
+              (if (and gone (not only) (cell-source-p path))
+                  (take-definitions-away (remove-if (lambda (entry) (assoc (first entry) after :test #'equal))
+                                                    old)
+                                         before)
+                  (values '() '())))
+             (gone (if (or taken stayed)
+                       (mapcar (lambda (entry) (format nil "~a (~a)" (car entry) (cdr entry))) stayed)
+                       gone)))
+        (setf (gethash (namestring truename) *source-texts*) text)
         (let ((told (if (or only (null sent))
                         0
                         (handler-case (source-loaded truename sent) (error () 0)))))
@@ -703,6 +804,9 @@ names is defined here (MAKE-DEFINITIONS-LIVE)."
                                                                                (format nil "~a — ~a"
                                                                                        (car entry) (cdr entry)))
                                                                              held))))
+                                                   (when taken
+                                                     (format nil "taken out of the image with it: ~a"
+                                                             (listed taken)))
                                                    (when gone
                                                      (format nil "gone from the file, still in the image: ~a"
                                                              (listed gone)))
@@ -710,6 +814,71 @@ names is defined here (MAKE-DEFINITIONS-LIVE)."
                                                      "changes outside any definition are not live"))))
                       (format nil "~{~a~^; ~}" parts)))
                   live held gone))))))
+
+(defun cell-loaded-files (directory)
+  "The Lisp files the cell folder DIRECTORY loads that are there now: its
+systems' components in load order, else every .lisp directly in it."
+  (let ((files (ignore-errors
+                (loop for declared in (cell-folder-systems (make-cell-folder directory))
+                      for system = (asdf:find-system (declared-system-name declared) nil)
+                      append (if (declared-system-files declared)
+                                 (mapcar (lambda (file) (merge-pathnames (format nil "~a.lisp" file) directory))
+                                         (declared-system-files declared))
+                                 (and system
+                                      (mapcar #'asdf:component-pathname
+                                              (asdf:required-components
+                                               system :other-systems nil
+                                                      :component-type 'asdf:cl-source-file))))))))
+    (remove-duplicates (remove-if-not #'probe-file
+                                      (or files (directory (merge-pathnames "*.lisp" directory))))
+                       :test #'equal :key (lambda (path) (namestring (truename path))) :from-end t)))
+
+(defun reload-cell (name &aux (directory (or (and *cells-directory* (probe-file (folder-under name *cells-directory*)))
+                                             (error "no cell folder named ~a" name)))
+                              (root (namestring (truename directory))))
+  "Make this image agree with the cell folder NAME's files as they are now --
+an edit made outside it, by an editor or a git pull in the repository the
+folder links to: each file diffed against the text this image last made live
+from it (LOAD-SOURCE), what it gained or changed evaluated, what it lost taken
+out of the image, and every definition of a file the folder no longer loads
+taken out too. The cell restarts when its DEFINE-CELL changed. => the report."
+  ;; A file this image never loaded through LOAD-SOURCE has no earlier text
+  ;; here: it is evaluated whole, and nothing of it is taken away.
+  (let* ((files (cell-loaded-files directory))
+         (now (mapcar (lambda (path) (namestring (truename path))) files))
+         (lines '())
+         (restart nil))
+    ;; a file the folder loaded and loads no more: all it defined goes
+    (dolist (old (loop for key being the hash-keys of *source-texts*
+                       when (and (uiop:string-prefix-p root key) (not (member key now :test #'string=)))
+                         collect key))
+      (let ((text (gethash old *source-texts*)))
+        (remhash old *source-texts*)
+        (multiple-value-bind (gone stayed)
+            (take-definitions-away (ignore-errors (toplevel-definitions text :read-eval t)) text)
+          (push (format nil "~a: no longer loaded~@[; taken out of the image: ~{~a~^, ~}~]~@[; still in the image: ~{~a~^, ~}~]"
+                        (enough-namestring old root) gone
+                        (mapcar (lambda (entry) (format nil "~a (~a)" (car entry) (cdr entry))) stayed))
+                lines)
+          (when (search "(define-cell" text) (setf restart t)))))
+    (loop for path in files
+          for key in now
+          for before = (gethash key *source-texts*)
+          for text = (uiop:read-file-string path :external-format :utf-8)
+          unless (equal before text)
+            do (let ((line (load-source path :before before)))
+                 (when (search "(define-cell" text) (setf restart t))
+                 (push (format nil "~a: ~:[unchanged definitions~;~:*~a~]" (enough-namestring key root) line)
+                       lines)))
+    ;; RESTART-CELLS is the gateway's (EVOLVED), loaded after this file
+    (let ((restart-cells (find-symbol "RESTART-CELLS" '#:nodecode.evolved)))
+      (when (and restart (find-cell name) restart-cells (fboundp restart-cells))
+        (push (format nil "restarted: ~a"
+                      (handler-case (first-line (funcall restart-cells name))
+                        (error (condition) (format nil "refused: ~a" (first-line condition)))))
+              lines)))
+    (format nil "~a~{~%~a~}" (if lines (format nil "~a reloaded from its files" name) (format nil "~a: its files are what this image runs" name))
+            (reverse lines))))
 
 (defun report-unkept-changes (before form kept)
   "Name, on the eval's own output, what FORM changed in the image that the
