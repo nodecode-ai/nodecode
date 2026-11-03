@@ -285,35 +285,6 @@ money went, turn by turn (SESSION-TIMELINE-JSON)."
   (:route :get "timeline" "session timeline")
   (session-timeline-json session-id))
 
-;;; --- what a call sent: its request body, byte for byte -----------------------
-;;; The bytes as they went out (NLK:KEPT-REQUEST-BODY), and beside them, in
-;;; headers, how much the request kept before them already sent and where
-;;; they first differ: the request fact's own diagnosis (REQUEST-PREFIX-
-;;; DIAGNOSIS), which a session's first request lacks -- it had nothing
-;;; before it -- and the kept chain does not.
-
-(define-gateway-route handle-gateway-request-http (env session-id)
-  "GET /api/gateway/sessions/<id>/request?turn=<turn_id>&round=<n> — the
-exact body that model call sent, application/json, byte for byte; beside it
-X-Shared-Bytes and X-Diverged-In, what it shares with the request kept before
-it and where they part, and X-Previous, that request as `SESSION TURN ROUND'.
-404 not_kept when it was not kept: recorded before bodies were, or dropped
-past request_bodies.keep_mb."
-  (:route :get "request" "request body")
-  (let* ((query (gateway-query-parameters env))
-         (turn (cdr (assoc "turn" query :test #'string=)))
-         (round (parse-integer (or (cdr (assoc "round" query :test #'string=)) "") :junk-allowed t)))
-    (multiple-value-bind (body previous from) (and turn round (nlk:kept-request-body session-id turn round))
-      (if body
-          (multiple-value-bind (shared diverged) (request-prefix-diagnosis previous body)
-            (list 200 (list* :content-type "application/json" :content-length (length body)
-                             :cache-control "private, no-cache"
-                             (append (and shared (list :x-shared-bytes (princ-to-string shared)
-                                                       :x-diverged-in diverged))
-                                     (and from (list :x-previous (format nil "~{~a~^ ~}" from)))))
-                  body))
-          (gateway-error-response 404 "not_kept" "that call's request body was not kept")))))
-
 ;;; --- usage: every session over a range ---------------------------------------
 
 (defun payload-columns (&rest keys)
