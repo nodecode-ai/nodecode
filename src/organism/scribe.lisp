@@ -853,22 +853,9 @@ and commit it as MESSAGE, making the repository on first need."
     (let* ((names (mapcar #'file-namestring only))
            (ours (string-set names)))
       (unless (and only-p (null names))
-        ;; Without writing objects by eight processes at once, a keep of
-        ;; hundreds would wait on git deflating and writing each object in
-        ;; turn; written first, the index finds them there.
         ;; An operator's uncommitted edits ride along, unless ONLY names the files the
         ;; commit takes; a git that cannot run costs the caller nothing but the commit,
         ;; the files being written already.
-        (when (> (length names) 256)
-          (let* ((present (string-set (directory-names (sb-ext:native-namestring directory))))
-                 (blobs (remove-if-not (lambda (name) (gethash name present)) names))
-                 (size (ceiling (length blobs) 8)))
-            (parallel-map (lambda (chunk)
-                            (apply #'git-in-layer directory "hash-object" "-w" "--" chunk))
-                          (loop for rest = blobs then (nthcdr size rest)
-                                while rest
-                                collect (subseq rest 0 (min size (length rest))))
-                          :lanes 8)))
         ;; ONLY's files as they stand, by name: each a pathspec of `add'.
         (if only-p
             (apply #'run "update-index" "--add" "--remove" "--" names)
@@ -1150,10 +1137,7 @@ out of every one."
               (spans :unread)
               (listed :unread)
               ;; the knowledge folders this call holds the lock of (FOLDER)
-              (*kept-locks* '())
-              ;; the knowledge files it has yet to write (HOLD), and their names
-              (holding '())
-              (held-names (make-hash-table :test #'equal)))
+              (*kept-locks* '()))
           (labels ((touched (directory)
                      (find (namestring directory) folders
                            :key (lambda (kept) (namestring kept.directory)) :test #'string=))
@@ -1172,21 +1156,6 @@ out of every one."
                                       folders)))))
                    (listed-folders ()
                      (if (eq listed :unread) (setf listed (definition-folders)) listed))
-                   (hold (path content)
-                     ;; a knowledge file, written with the call's others
-                     ;; (WRITE-HELD); those first when one carries its
-                     ;; name, which the next member's folder and its move
-                     ;; look for on disk
-                     (when (gethash (file-namestring path) held-names)
-                       (write-held))
-                     (setf (gethash (file-namestring path) held-names) t)
-                     (push (cons path content) holding))
-                   (write-held ()
-                     ;; eight at a time
-                     (when holding
-                       (parallel-map (lambda (write) (write-file-atomically (car write) (cdr write)))
-                                     (reverse (shiftf holding '())))
-                       (clrhash held-names)))
                    (forget-file (kept path keys)
                      (call-with-kept-lock kept.knowledge kept.directory
                                           (lambda ()
@@ -1201,8 +1170,6 @@ out of every one."
               (bt2:with-lock-held (*layer-lock*)
                 (dolist (act acts)
                   (destructuring-bind (kind key sub) act
-                    ;; a forget reads the folders as they stand
-                    (unless (eq kind :define) (write-held))
                     (if (eq kind :define)
                         (multiple-value-bind (directory knowledge) (definition-folder key sub (listed-folders) session-id)
                           ;; a folder this call already wrote to has passed
@@ -1249,14 +1216,13 @@ out of every one."
                                                                                                    :start (second own) :end (third own))
                                                                      out)
                                                      (write-byte 10 out))))
-                                     (cond (knowledge
-                                            ;; once a call: it lists nothing, so only its absence matters
-                                            (unless kept.written (ensure-knowledge-system directory))
-                                            (hold path content))
-                                           (t (write-file-atomically path content)
-                                              (let ((name (folder-name directory)))
-                                                (write-layer-system (layer-system-file name) name
-                                                                    (pathname-name path))))))))
+                                     (write-file-atomically path content)
+                                     (if knowledge
+                                         ;; once a call: it lists nothing, so only its absence matters
+                                         (unless kept.written (ensure-knowledge-system directory))
+                                         (let ((name (folder-name directory)))
+                                           (write-layer-system (layer-system-file name) name
+                                                               (pathname-name path)))))))
                                 ;; a folder this write made is one the next member may move a name out of
                                 (unless (find (folder-name directory) (listed-folders)
                                               :key #'folder-name :test #'string=)
@@ -1307,7 +1273,6 @@ out of every one."
                                     (dolist (file files)
                                       (dolist (key (forget-file kept (car file) (cdr file)))
                                         (push key kept.forgotten))))))))))))
-              (write-held)
               (setf folders (nreverse folders) defined (nreverse defined))
               (dolist (kept folders)
                 (setf kept.written (nreverse kept.written) kept.removed (nreverse kept.removed)
