@@ -1211,6 +1211,24 @@ query, the row of the open section otherwise."
         (setf settings.hit index)
         (setf settings.setting-at index settings.focus :pane))))
 
+(defun hover-setting-action (index)
+  "The pointer's action resting on the setting at INDEX: choose it as a click
+does, unless it is chosen already or a list is open. => whether it moved."
+  (lambda (model settings)
+    (unless (or settings.ids
+                (if (plusp (length settings.query))
+                    (eql index settings.hit)
+                    (and (eq settings.focus :pane) (eql index settings.setting-at))))
+      (funcall (focus-setting-action index) model settings)
+      t)))
+
+(defun settings-hover (model settings x y)
+  "The pointer resting on a row chooses it, the way the arrows would: a page
+in the rail, a setting in the pane, an id in an open list. An open field
+keeps the choice where it is."
+  (unless settings.edit
+    (sheet-hover model settings x y)))
+
 (defun pick-option-action (setting value index)
   "A click's action that chooses SETTING at INDEX and lands VALUE as its."
   (lambda (model settings)
@@ -1407,7 +1425,8 @@ or NIL."
                       (canvas-put canvas (+ px 2) r setting.text (sheet-ink :muted :ground ground))
                       (canvas-put canvas (+ px 13) r text
                                   (sheet-ink (if focused :dialog-accent :system) :ground ground))
-                      (sheet-hit settings r (- px 2) (+ px pw 2) (focus-setting-action index))))
+                      (sheet-hit settings r (- px 2) (+ px pw 2) (focus-setting-action index)
+                                 :hover (hover-setting-action index))))
                    ((:guide :note) (canvas-put canvas px r (clip-text-to-width (second line) pw)
                                                (sheet-ink :muted :ground ground)))
                    (:needs (canvas-put canvas px r (clip-text-to-width (second line) pw)
@@ -1434,7 +1453,11 @@ or NIL."
                         (sheet-hit settings r (- px 2) (+ px pw 2)
                                       (lambda-ignoring (model settings)
                                         (setf (fourth settings.ids) index)
-                                        (settings-ids-key nil settings #\Space))))))
+                                        (settings-ids-key nil settings #\Space))
+                                      :hover (lambda-ignoring (model settings)
+                                               (unless (eql index (fourth settings.ids))
+                                                 (setf (fourth settings.ids) index)
+                                                 t))))))
                    (:control
                     (destructuring-bind (setting focused index) (rest line)
                       (when-let (caret (paint-control settings canvas r (+ px 2) (- pw 2) setting
@@ -1461,7 +1484,9 @@ or NIL."
                                     (clip-text-to-width setting.label (max 1 (- pw 2 used 2)))
                                     (sheet-ink (if focused :dialog-accent :system) :ground ground))
                         (sheet-hit settings r (- px 2) (max (+ px 2) (- end used))
-                                      (focus-setting-action index))))))))
+                                      (focus-setting-action index))
+                        (sheet-hit settings r (- px 2) (+ px pw 2) nil
+                                   :hover (hover-setting-action index))))))))
       (paint-scroll-marks canvas (+ px pw 1) top (+ top rows -1) top-line rows (length lines) ground))
     cursor))
 
@@ -1510,6 +1535,17 @@ badge until it is chosen, else a dot while any of its settings is set."
     (settings-choose settings index)
     (setf settings.query "" settings.focus :pane)))
 
+(defun hover-section-action (index)
+  "The pointer's action resting on the section at INDEX: choose it, the keys
+on the rail, as the arrows there would; under a query or an open list,
+nothing. => whether it moved."
+  (lambda-ignoring (model settings)
+    (unless (or settings.ids (plusp (length settings.query))
+                (and (= index settings.section-at) (eq settings.focus :rail)))
+      (unless (= index settings.section-at) (settings-choose settings index))
+      (setf settings.focus :rail)
+      t)))
+
 (defun paint-rail (settings canvas top rows width rail pane)
   "The rail's sections down ROWS rows from TOP, WIDTH columns, scrolled to
 keep the chosen one in view: the chosen one on the pane's ground, so it
@@ -1538,7 +1574,8 @@ reads as the tab the pane hangs from."
                                                    (t :foreground))
                                              :ground ground :bold on))
                    (section-mark canvas (- width 3) r part ground on)
-                   (sheet-hit settings r 0 width (open-section-action index))))))
+                   (sheet-hit settings r 0 width (open-section-action index)
+                              :hover (hover-section-action index))))))
     (paint-scroll-marks canvas (- width 2) top (+ top rows -1) offset rows (length entries) rail)))
 
 (defun settings-failed-lines (settings width)
@@ -1618,7 +1655,7 @@ section read off the loop."
                                        :paint (sheet-painter +settings-sheet-size+ #'paint-wide #'paint-wide)
                                        :key #'settings-key
                                        :paste #'settings-paste :click #'sheet-click
-                                       :wheel #'settings-wheel
+                                       :wheel #'settings-wheel :hover #'settings-hover
                                        :asked section)))
     (setf (chat-model-dialog model) settings)
     (settings-rebuild model settings)
