@@ -2854,25 +2854,30 @@ reads, since a cell's lanes and inventory hooks run here only."
 
 (define-gateway-route handle-gateway-slash-http (env)
   "GET /api/gateway/slash — the commands a client can run, in /help order
-(SLASH-CATALOG), each saying whether it acts on a session; POST {line,
-session_id?, effects?} runs one against that session and answers {text,
-dialog?, effects?}, what a shell would show: the line, the panel a command
-answers with, and the effects of the kinds the request's EFFECTS names, which
-the caller applies itself; any other effect is said in the text (SLASH). A
-failure is the verb's own 400."
+(SLASH-CATALOG), each saying whether it acts on a session and what it reads
+(reads: [\"draft\"]); POST {line, session_id?, draft?, effects?} runs one
+against that session and answers {text, dialog?, effects?}, what a shell
+would show: the line, the panel a command answers with, and the effects of
+the kinds the request's EFFECTS names, which the caller applies itself; any
+other effect is said in the text (SLASH). DRAFT is the input box's text,
+which a shell sends only to a command that reads it. A failure is the verb's
+own 400."
   (:route (:get :post) "/api/gateway/slash" "slash")
   (case (getf env :request-method)
     (:get (make-json-object
            "commands" (map 'vector
                            (lambda (entry)
                              (json-object (:getf entry "name" "description" "usage" "session")
-                                          (:getf entry :opt "autocomplete" "trigger")))
+                                          (:getf entry :opt "autocomplete" "trigger")
+                                          :opt "reads" (when-let (reads (getf entry :reads))
+                                                         (map 'vector #'string-downcase reads))))
                            (slash-catalog))))
     (:post (let* ((request (gateway-request-json env))
                   (line (gethash "line" request)))
              (require-non-empty (list line) "line must be a non-empty string" :required t)
              (multiple-value-bind (text dialog effects)
                  (slash line :session-id (json-value request :string "session_id")
+                             :draft (json-value request :string "draft")
                              :effects (coerce (remove-if-not #'stringp (json-array request "effects"))
                                               'list))
                (json-object "text" text :opt "dialog" dialog :opt "effects" effects))))))
@@ -3368,7 +3373,7 @@ fallback after it, and the effects the caller applies (a vector, or NIL)."
 
 (defun register-command (owner command run &key description argument-hint
                                                    (label command) (catches 'error)
-                                                   (session t) trigger complete)
+                                                   (session t) trigger complete reads)
   "Put the slash command COMMAND, which RUN answers, in the catalog under the
 key OWNER, replacing any command of that name; SESSION NIL says it acts on no
 session, so a client with none open runs it as it is, TRIGGER, a
@@ -3376,7 +3381,9 @@ one-character string, is what the shell's composer opens it on when it is
 typed at a word's start (the index's `$'), and COMPLETE completes the
 argument while it is typed (SLASH-COMPLETIONS): it takes the tail typed so
 far and the session id, as RUN takes its argument, and answers (:name
-:value) plists. => COMMAND's entry."
+:value) plists. READS is what the shell that runs the command sends along
+with its line: (:DRAFT) for the input box's text, which RUN then takes as
+its :DRAFT keyword -- NIL from a caller with no input box. => COMMAND's entry."
   ;; RUN is a function designator, so a command whose whole implementation is
   ;; one defun passes the symbol and a reload of that file reaches the command
   ;; without a re-install. RUN takes the command's argument string and the
@@ -3388,16 +3395,21 @@ far and the session id, as RUN takes its argument, and answers (:name
   (check-type owner string)
   (unless (json-value command :text)
     (error "a registered command needs a non-empty name"))
+  (dolist (read reads)
+    (unless (eq read :draft)
+      (error "/~a reads ~s; a command reads only :draft" command read)))
   (let ((entry (make-slash-command
                 command (or description "")
                 :usage (if (json-value argument-hint :text)
                            (format nil "/~a ~a" command argument-hint)
                            "")
                 :dispatch nil :owner owner :session session :trigger trigger
-                :completer complete
+                :completer complete :reads reads
                 :headless (lambda (args session-id)
                             (multiple-value-bind (text dialog effects)
-                                (handler-case (funcall run args session-id)
+                                (handler-case (if (member :draft reads)
+                                                  (funcall run args session-id :draft *slash-draft*)
+                                                  (funcall run args session-id))
                                   (error (it)
                                     (if (typep it catches)
                                         (format nil "~a: ~a" label it)
