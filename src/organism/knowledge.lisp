@@ -508,8 +508,7 @@ line; the rest do not fit."
                                                   (stats (knowledge-stats :stale-days stale)))
   "=> (values HOT COLD STATS) of what SESSION-ID reads, under SETTINGS
 (:stale-days), STATS the ledger's (KNOWLEDGE-STATS) they were ranked by."
-  (multiple-value-bind (hot cold) (hot-knowledge (visible-entries session-id) stats stale)
-    (values hot cold stats)))
+  (multiple-value-call #'values (hot-knowledge (visible-entries session-id) stats stale) stats))
 
 (defun knowledge-surface (session-id settings)
   "The index SESSION-ID reads: a first line saying how to read one and how
