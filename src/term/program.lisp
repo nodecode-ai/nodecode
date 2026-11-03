@@ -26,7 +26,7 @@
 
 (in-package #:nodecode.term)
 
-(nlk:access (previous mouse-wheel-msg) (vs view-state))
+(nlk:access (vs view-state))
 
 ;;; --- frame pacing --------------------------------------------------------
 
@@ -194,19 +194,6 @@ sends the message it answers."
 
 ;;; --- the loop ------------------------------------------------------------
 
-(defun coalesce-wheel (messages &aux (result '())
-                                     (previous nil))
-  "Consecutive wheel messages in one direction folded into the first, its
-COUNT the number folded."
-  (dolist (msg messages)
-    (cond ((and (mouse-wheel-msg-p msg)
-                previous
-                (eq (mouse-wheel-direction msg) (mouse-wheel-direction previous)))
-           (incf previous.count))
-          (t (push msg result)
-             (setf previous (and (mouse-wheel-msg-p msg) msg)))))
-  (nreverse result))
-
 (defun handle-messages (program messages &key (paint-p t) &aux (renderer program.renderer)
                                                                (updated nil)
                                                                (commands '()))
@@ -227,7 +214,7 @@ COUNT the number folded."
   ;; message would unwind to the loop, taking every message drained behind it
   ;; and every command the batch had answered; a shell folding one stream
   ;; frame in each batch would fall behind its gateway and never catch up.
-  (dolist (msg (coalesce-wheel messages))
+  (dolist (msg messages)
     (cond
       ((quit-msg-p msg)
        (setf program.running nil)
