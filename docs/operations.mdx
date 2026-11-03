@@ -16,9 +16,9 @@ One process owns a home's store at a time. The home is `~/.nodecode/`. A shell i
 | The background gateway | By itself at the first boot of `~/.nodecode/` or a named profile, or `nodecode gateway on` | You run `nodecode gateway off`, or turn it off in `/settings`. | By the service manager, after 5 s. |
 | A headless process | `nodecode serve` | You stop it. | By the attached shells. With no shell attached, nothing restarts it. |
 
-Later shells attach to the owner. While a shell owns the store, the gateway waits. It takes the organism over when that shell closes. See [The organism](/organism).
+Later shells attach to the owner. While a shell owns the store, the gateway waits. It takes the organism over when that shell closes. See [The organism](organism.mdx).
 
-Use the background gateway for bots, cron jobs and the link. See [The gateway](/gateway).
+Use the background gateway for bots, cron jobs and the link. See [The gateway](gateway.mdx).
 
 Windows: no background gateway. Use `nodecode serve` in a terminal you keep open.
 
@@ -133,7 +133,7 @@ A cell is a folder of code under `~/.nodecode/cells/`. It reads its config secti
 | `(config-get '("a" "b"))` | Reads the config at a path. A secret reads as `"[set]"`. |
 | `(config-set '("a" "b") value)` | Writes one member. Keeps every comment. Answers the diff. |
 
-See [Config](/config).
+See [Config](config.mdx).
 
 {/* source: src/organism/profile.lisp */}
 ## What survives a restart

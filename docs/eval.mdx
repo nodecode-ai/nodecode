@@ -158,7 +158,7 @@ The agent can lower the lock itself:
 
 All three arguments are required. An `organism.floor_lowered` event is recorded before the unlock.
 
-<Note head="No sandbox">The kernel lock is not a security boundary. `eval` has full host authority. See [Safety and trust](/security).</Note>
+<Note head="No sandbox">The kernel lock is not a security boundary. `eval` has full host authority. See [Safety and trust](security.mdx).</Note>
 
 {/* source: src/organism/provisional.lisp */}
 ## Held definitions
@@ -228,4 +228,4 @@ Forget a definition with a top-level form. The name leaves the image. Its file i
 
 A forgetting form computed inside another form is not seen.
 
-Undo a whole change with a generation. `(generations)` or `/generations` lists them. `(rollback N)` or `nodecode rollback N` puts every folder back to what N recorded. The layer takes one commit forward and keeps its history. The binary stays on the release that runs. See [Updates](/updates). The organism exits once no turn is running, and the next launch runs N. Under `--pristine` nothing is kept.
+Undo a whole change with a generation. `(generations)` or `/generations` lists them. `(rollback N)` or `nodecode rollback N` puts every folder back to what N recorded. The layer takes one commit forward and keeps its history. The binary stays on the release that runs. See [Updates](updates.mdx). The organism exits once no turn is running, and the next launch runs N. Under `--pristine` nothing is kept.
