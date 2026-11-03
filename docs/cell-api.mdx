@@ -154,7 +154,7 @@ Clauses go in any order. They install in the order written and come off in rever
 | `(:section (PATH...) CLAUSE...)` | Required. `nlk:define-section`, verbatim. | — |
 | `(:settings FUNCTION)` | `(lambda (values table) ...)` answers the plist the cell runs on, for a section the declaration cannot carry. | — |
 | `(:tool NAME SCHEMA FN)` | `nle:register-tool`. SCHEMA is a contract. See [Tool arguments](#tool-arguments). | Unregistered. |
-| `(:command NAME RUN &key ...)` | `/NAME` in the one slash catalog. RUN takes `(args session-id)` and answers `(values TEXT DIALOG)`. | Out of the catalog. |
+| `(:command NAME RUN &key ...)` | `/NAME` in the one slash catalog. RUN takes `(args session-id)` and answers `(values TEXT DIALOG EFFECTS)`. See [Command effects](#command-effects). | Out of the catalog. |
 | `(:help TOPIC SUMMARY TEXT)` | `(help TOPIC)` answers TEXT. Every request's `help` section carries SUMMARY. | Topic removed. |
 | `(:hook NAME FN)` | `nle:hook` on a point or a function name. | Unhooked. |
 | `(:route PATH FN &key public)` | PATH answered on the gateway's own port, to the operator's token; to anyone under `:public`. A PATH ending in `/` answers everything under it. | Route removed. |
@@ -170,6 +170,34 @@ A `:command` takes these keys:
 | `:session` | `nil` for a command that acts on no session. |
 | `:trigger` | One character that opens it at a word's start. |
 | `:complete` | Takes `(text session-id)` and answers `(:name :value)` plists while the argument is typed. |
+
+### Command effects
+
+A command runs where the cell runs, which may not be where the person sits. EFFECTS, the optional third value, is a list of things the shell that ran the command does itself:
+
+| Effect | The shell |
+| --- | --- |
+| `(:clipboard TEXT)` | Copies TEXT with its own clipboard writer, so it lands on the person's desktop. |
+| `(:draft TEXT)` | Replaces the composer's draft with TEXT. |
+| `(:draft TEXT :how :insert)` | Inserts TEXT at the caret. |
+| `(:draft TEXT :how :append)` | Adds TEXT at the end of the draft. |
+
+The shell does them in order, then shows TEXT as usual. A row's `:run` line can answer effects too, so Space on a row can copy it. After a row's line, the list opens again, unless the answer set the draft: then it stays closed, because the composer is where the person goes next. A shell passes over an effect it does not know. A malformed effect, one that is not a plist with keyword keys, signals and names it.
+
+`nle:*slash-effects*` holds the effects the caller performs while RUN runs: `(:clipboard :draft)` from a shell, `nil` from the web page, rooms, `nodecode rpc` and `(nle:slash LINE)` from eval, which show TEXT alone. `(nle:slash LINE :effects '(:clipboard))` names them from eval. Word TEXT by it, so it never claims a copy that did not happen:
+
+`nle:*slash-effects*` is bound while RUN runs, so read it there: a thread RUN starts does not see it.
+
+```lisp
+(defun copy-last (args session-id)
+  (declare (ignore args))
+  (let ((reply (last-reply session-id)))   ; the cell's own reader
+    (if (member :clipboard nle:*slash-effects*)
+        (values "Copied the last reply" nil (list (list :clipboard reply)))
+        reply)))
+```
+
+{/* source: src/gateway/gateway.lisp, src/tui/commands/cell-control.lisp */}
 
 <Screen name="cell-manual" />
 

@@ -471,7 +471,7 @@ renderer, the program loop.")
    ;; without a shell against a session, and the catalog it can run — what
    ;; a channel publishes as its menu, a cron job or an eval snippet calls --
    ;; and the one reading of a typed line as a command (slash.lisp) ---
-   #:slash #:slash-catalog #:slash-completions #:parse-slash-input
+   #:slash #:slash-catalog #:slash-completions #:parse-slash-input #:*slash-effects*
    ;; --- the auxiliary target (provider.lisp): the model side work runs
    ;; on, the pick that moves it, the binding a layer or a cell runs its
    ;; own side call under, and the call itself ---

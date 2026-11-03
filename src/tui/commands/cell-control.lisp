@@ -27,7 +27,10 @@ SET-GATEWAY-COMMANDS takes."
 run in MODEL's session."
   (gateway-model-http-call
    model :post "/api/gateway/slash"
-   (json-object "line" line :opt "session_id" (json-value model.session-id :text))))
+   ;; This shell performs both effects there are (PERFORM-ANSWER-EFFECTS), and
+   ;; says so, so a command words its text by what will happen here.
+   (json-object "line" line :opt "session_id" (json-value model.session-id :text)
+                "effects" #("clipboard" "draft"))))
 
 (defun run-gateway-command (model entry args &key trigger)
   "Run ENTRY, a cell's command MODEL's gateway serves, with its verbatim
@@ -38,9 +41,31 @@ it."
          (line (format nil "/~a~@[ ~a~]" name (json-value args :text))))
     (with-slash-notice ((format nil "/~a" name))
       (let ((answer (gateway-slash-answer model line)))
+        (perform-answer-effects model answer)
         (if (json-value answer :object "dialog")
             (progn (open-answer-dialog model answer :line line :trigger trigger) nil)
             (json-value answer :string "text"))))))
+
+;;; --- the effects a command's answer carries -------------------------------
+;;; What only this shell can do for a cell (GATEWAY.LISP EFFECTS-JSON): copy
+;;; with its own clipboard writer, where the person sits, and set its own
+;;; draft. An effect this shell does not know is passed over; the answer's
+;;; text is the notice either way.
+
+(defun perform-answer-effects (model answer)
+  "Do in MODEL's shell what ANSWER's effects ask, in order."
+  (loop with editor = model.editor
+        for effect across (or (json-value answer :array "effects") #())
+        for draft = (json-value effect :string "draft")
+        do (cond ((json-value effect :string "clipboard")
+                  (write-model-clipboard model (json-value effect :string "clipboard")))
+                 (draft
+                  (nlk:dispatch (or (json-value effect :string "how") "set") equal
+                    ("set" (editor-reset editor) (editor-insert editor draft))
+                    ("insert" (editor-insert editor draft))
+                    ("append" (setf editor.row (1- (editor-line-count editor)))
+                              (editor-cursor-end editor)
+                              (editor-insert editor draft)))))))
 
 ;;; --- the dialog a command's answer carries --------------------------------
 ;;; A command's answer may carry a docked picker (GATEWAY.LISP LIST-DIALOG):
@@ -146,12 +171,20 @@ A command whose answer is its text alone opens nothing."
   "Run LINE, the line a row's key names in the answer dialog atop STACK, where
 the command ran: a dialog it answers opens over STACK; else what it says is a
 toast, the one line the panel leaves in sight, and STACK is read again
-(REOPEN-ANSWER-DIALOG)."
+(REOPEN-ANSWER-DIALOG) -- unless the answer set the draft: the composer is
+where the person goes next, so the stack stays closed."
   (multiple-value-bind (answer failed) (with-slash-notice (line) (gateway-slash-answer model line))
-    (if (and (not failed) (json-value answer :object "dialog"))
-        (open-answer-dialog model answer :line line :under stack)
-        (progn (show-status model (if failed answer (json-value answer :string "text")) :error-p failed)
-               (reopen-answer-dialog model stack)))))
+    (unless failed (perform-answer-effects model answer))
+    (cond ((and (not failed) (json-value answer :object "dialog"))
+           (open-answer-dialog model answer :line line :under stack))
+          (t (show-status model (if failed answer (json-value answer :string "text")) :error-p failed)
+             (unless (and (not failed) (answer-sets-draft-p answer))
+               (reopen-answer-dialog model stack))))))
+
+(defun answer-sets-draft-p (answer)
+  "Whether ANSWER's effects put anything in the composer."
+  (some (lambda (effect) (json-value effect :string "draft"))
+        (or (json-value answer :array "effects") #())))
 
 (defun reopen-answer-dialog (model stack)
   "Open the answer dialog atop STACK -- (LINE SELECTION LABEL) entries,

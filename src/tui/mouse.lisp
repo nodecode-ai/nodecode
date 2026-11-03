@@ -873,19 +873,26 @@ on pure motion. => whether anything a frame shows moved."
                             ;; Only a painted rail shows the change.
                             (plusp (band-window-max-offset (chat-model-band model)))))))
       (or changed hover-changed rail-changed))))
-(defun copy-frame-selection (model &aux (text (frame-selection-text model))
-                                        (program (chat-model-program model)))
+(defun copy-frame-selection (model &aux (text (frame-selection-text model)))
   "Hand MODEL's marked text to the program's clipboard writer, which never
 waits behind the worker (a turn occupies it), and say in the hint lane what
 became of it once the writer knows (CLIPBOARD-OUTCOME-NOTICE): copied only
 when a clipboard tool took it. With nothing marked it says so, and with no
 live program that nothing was written. The release that ends a drag and the
 :COPY-SELECTION key both come here."
-  (cond ((zerop (length text)) (show-status model +selection-empty-hint+))
-        ((null program) (show-status model +selection-copy-failed-hint+ :error-p t))
-        (t (nlt:write-clipboard program text
-                                (lambda (outcome)
-                                  (nlt:send program (clipboard-outcome-notice outcome)))))))
+  (if (zerop (length text))
+      (show-status model +selection-empty-hint+)
+      (write-model-clipboard model text)))
+
+(defun write-model-clipboard (model text &aux (program (chat-model-program model)))
+  "Put TEXT on the clipboard through MODEL's program, saying in the hint lane
+what became of it once the writer knows; with no live program, that nothing
+was written."
+  (if (null program)
+      (show-status model +selection-copy-failed-hint+ :error-p t)
+      (nlt:write-clipboard program text
+                           (lambda (outcome)
+                             (nlt:send program (clipboard-outcome-notice outcome))))))
 
 (defun clipboard-outcome-notice (outcome)
   "The composer status a clipboard write's OUTCOME (NLT:WRITE-CLIPBOARD)
