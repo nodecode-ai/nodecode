@@ -476,12 +476,11 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
   ;; behind the @FILE words' blocks (LAUNCH-FILES), and IMAGES the image
   ;; files among them as (MEDIA-TYPE . BASE64). Text piped into stdin is
   ;; MAIN's to add, once the line is known to open a shell (PIPED-LAUNCH).
-  (let ((cut (position "--" args :test #'string=)))
-    (when cut
-      (setf prompt (format nil "~{~a~^ ~}" (nthcdr (1+ cut) args))
-            args (subseq args 0 cut))
-      (when (zerop (length (string-trim '(#\Space #\Tab #\Newline) prompt)))
-        (launch-usage-error "-- needs the PROMPT after it: nodecode -- \"what the session should do\""))))
+  (when-let (cut (position "--" args :test #'string=))
+    (setf prompt (format nil "~{~a~^ ~}" (nthcdr (1+ cut) args))
+          args (subseq args 0 cut))
+    (when (zerop (length (string-trim '(#\Space #\Tab #\Newline) prompt)))
+      (launch-usage-error "-- needs the PROMPT after it: nodecode -- \"what the session should do\"")))
   (setf args (loop while args
                    for arg = (pop args)
                    if (member arg '("-p" "--profile") :test #'string=)

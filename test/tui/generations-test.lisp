@@ -269,19 +269,6 @@ an edits call names, the number a rollback does."
         (press model :tab) (press model :tab) (press model :tab)
         (is (eq :all (nle::generations-sheet-filter history)) "round to All")))))
 
-(deftest the-days-rail-opens-a-day-and-esc-closes ()
-  (with-frame-model (model 120 40 :session-id "history-rail")
-    (with-history-gateway (calls)
-      (let ((history (history-sheet model)))
-        (press model :left)
-        (is (eq :rail (nle::generations-sheet-focus history)))
-        (press model :down) (press model :down)
-        (press model :right)
-        (is (eq :pane (nle::generations-sheet-focus history)))
-        (is (equal "Installed nodecode-lsp" (nle::history-change-title (history-on model))) "the day's newest change")
-        (press model :escape) (press model :escape)
-        (is (null model.dialog))))))
-
 (deftest generations-n-asks-about-n-in-place ()
   (with-frame-model (model 120 40 :session-id "history-n")
     (with-history-gateway (calls)
@@ -297,10 +284,9 @@ an edits call names, the number a rollback does."
       (is (sheet-row model "There is no generation 70: 1 to 9 are sealed")))))
 
 (deftest the-sheet-folds-to-the-window-and-never-loses-the-change ()
-  ;; Wide from 84 columns, the days beside the changes; narrower, the days or
-  ;; the changes one view at a time; under 50 columns or 16 rows the whole
-  ;; frame. Every row is the window's width, and the chosen change shows at
-  ;; every size.
+  ;; One layout at every width, the changes under their day heads; under 50
+  ;; columns or 16 rows the whole frame. Every row is the window's width, and
+  ;; the chosen change shows at every size.
   (with-frame-model (model 120 40 :session-id "history-sizes")
     (with-history-gateway (calls)
       (history-sheet model)
@@ -317,10 +303,7 @@ an edits call names, the number a rollback does."
             (destructuring-bind (painted x y width) (nle::sheet-dialog-layout model.dialog)
               (declare (ignore x y))
               (is (every (lambda (row) (= width (nle::text-display-width (nle::plain-frame-row row)))) painted)
-                  (format nil "~{~ax~a~} rows are the window's width" size)))))
-        (is (row-carrying "Generations › " (size 70 20)) "narrow: the day it is on")
-        (press model :left)
-        (is (row-carrying "type to search" (size 70 20)) "narrow: the days alone")))))
+                  (format nil "~{~ax~a~} rows are the window's width" size)))))))))
 ;;; --- /generations without a shell: a room's card ------------------------------
 ;;; A room, the model's eval and the headless surface read the history the
 ;;; sheet does: one card of the changes to page and pick from, a pick that

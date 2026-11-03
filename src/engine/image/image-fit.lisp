@@ -9,14 +9,12 @@
 ;;;; smaller, so a photo goes as a JPEG and a screenshot as a PNG; when
 ;;;; neither fits, JPEG at lower qualities, then a quarter smaller a side. An
 ;;;; image within both goes as its own bytes. PNG is read and written here,
-;;;; JPEG written through cl-jpeg and read in jpeg.lisp, WebP read in
-;;;; webp.lisp, a GIF's first frame in gif.lisp. The rare file none of them
-;;;; reads -- an arithmetic-coded or 12-bit JPEG -- goes through whichever
-;;;; transcoder the box has (nlt:*PNG-TRANSCODERS*) and then through the PNG
-;;;; reader, and with none installed it goes as itself when it is within
-;;;; what a provider takes whole. No codec is a program the box must have:
-;;;; PNG, JPEG, GIF and WebP, what screenshots, cameras and browsers write,
-;;;; fit on every platform the binary runs on.
+;;;; JPEG written through cl-jpeg, WebP read in webp.lisp, a GIF's first
+;;;; frame in gif.lisp. A JPEG, and any file none of them reads, goes through
+;;;; whichever transcoder the box has (nlt:*PNG-TRANSCODERS*) and then
+;;;; through the PNG reader, and with none installed it goes as itself when
+;;;; it is within what a provider takes whole. PNG, GIF and WebP fit on every
+;;;; platform the binary runs on with no program beside it.
 
 (in-package #:nodecode.evolved)
 
@@ -302,8 +300,7 @@ filter's type byte, then its bytes under that filter."
 
 ;;; --- JPEG ----------------------------------------------------------------------
 ;;; Written through cl-jpeg, as baseline JPEG, whose samples run blue, green,
-;;; red where a pixel here runs red first. Read in jpeg.lisp (JPEG-PIXELS),
-;;; baseline and progressive alike, to the pixels libjpeg gives.
+;;; red where a pixel here runs red first.
 
 (defparameter +jpeg-luminance+
   #(16 11 10 16 24 40 51 61 12 12 14 19 26 58 60 55 14 13 16 24 40 57 69 56
@@ -507,8 +504,8 @@ of each times its next weight, the weights of each summing to 1."
 
 ;;; --- decoding, whatever the format ---------------------------------------------
 
-(defparameter *image-decoders* '(("image/png" . png-pixels) ("image/jpeg" . jpeg-pixels)
-                                 ("image/webp" . webp-pixels) ("image/gif" . gif-pixels))
+(defparameter *image-decoders* '(("image/png" . png-pixels) ("image/webp" . webp-pixels)
+                                 ("image/gif" . gif-pixels))
   "Media type -> the function that decodes such bytes to PIXELS here, as they
 are stored, signalling IMAGE-UNFIT on bytes it cannot read. A type with no
 entry, or bytes its entry refuses, goes through a transcoder.")

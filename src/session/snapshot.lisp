@@ -1045,23 +1045,22 @@ handler AFTER the head move commits and outside any store transaction."
               (anchor-tree store preimage "undo-redo-preimage")
               (if (equal preimage target-tree-sha)
                   (outcome :restored preimage '() '() nil)
-                  (let* ((changes (changed-paths store target-tree-sha))
+                  (bind ((changes (changed-paths store target-tree-sha))
                          (expected
                            (loop for change in changes
                                  collect (and session-head-tree-sha
                                               (hash-in-tree store session-head-tree-sha
-                                                            (getf change :path))))))
-                    (multiple-value-bind (restored conflicts)
-                        (restore-paths store target-tree-sha changes expected)
-                      (outcome :restored preimage restored
-                               (loop for conflict in conflicts
-                                     for path = (getf conflict :path)
-                                     collect (append conflict
-                                                     (list :expected-sha
-                                                           (hash-in-tree store target-tree-sha path)
-                                                           :actual-sha
-                                                           (hash-path-contents store path))))
-                               nil))))))))))
+                                                            (getf change :path)))))
+                         ((restored conflicts) (restore-paths store target-tree-sha changes expected)))
+                    (outcome :restored preimage restored
+                             (loop for conflict in conflicts
+                                   for path = (getf conflict :path)
+                                   collect (append conflict
+                                                   (list :expected-sha
+                                                         (hash-in-tree store target-tree-sha path)
+                                                         :actual-sha
+                                                         (hash-path-contents store path))))
+                             nil)))))))))
 
 ;;; --- retention / repack lane ---------------------------------------------
 

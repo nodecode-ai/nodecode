@@ -49,7 +49,7 @@ of stacking."
 (defsystem "nodecode"
   :description "A self-modifying agent organism in SBCL: gateway, session, turn loop, and heredity."
   :license "MIT"
-  :version "0.1.7"
+  :version "0.1.8"
   ;; Dependency amendment seam.
   ;; A1 added: shasht (JSON codec) and two SBCL contribs.
   ;;
@@ -267,10 +267,6 @@ of stacking."
      ;; webp follows image-fit: it decodes to the PIXELS image-fit shrinks,
      ;; named in *IMAGE-DECODERS* there for image/webp.
      (:file "engine/image/webp")
-     ;; jpeg follows image-fit: it reads every JPEG to the PIXELS image-fit
-     ;; shrinks, cl-jpeg's baseline and the progressive form cl-jpeg cannot,
-     ;; named in *IMAGE-DECODERS* there for image/jpeg.
-     (:file "engine/image/jpeg")
      ;; gif follows image-fit: it reads a GIF's first frame to the PIXELS
      ;; image-fit shrinks, named in *IMAGE-DECODERS* there for image/gif.
      (:file "engine/image/gif")
@@ -690,9 +686,7 @@ of stacking."
      (:file "engine/image/image-fit-test")
      ;; webp-test follows image-fit-test: it shrinks a WebP through FIT-IMAGE.
      (:file "engine/image/webp-test")
-     ;; jpeg-test and gif-test follow image-fit-test: each shrinks its
-     ;; format through FIT-IMAGE.
-     (:file "engine/image/jpeg-test")
+     ;; gif-test follows image-fit-test: it shrinks a GIF through FIT-IMAGE.
      (:file "engine/image/gif-test")
      ;; background-steer-test follows exec-test: it drives the drained
      ;; registry beside it, turn-test's wire helpers and the provider stub.

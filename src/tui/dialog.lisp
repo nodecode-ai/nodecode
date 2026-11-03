@@ -1210,11 +1210,57 @@ query began."
   ;; fold closing gives the rows back. A query alone holds it: the search row is
   ;; the panel's top edge, so a query narrowing the list would move the caret
   ;; under the typing. Cleared, the box lets the panel follow its rows again.
-  (let ((rows (if-let (field (dialog-field-rows dialog width nil))
-                (length field)
-                (max 1 (length (picker-visible-rows dialog)))))
+  (let ((rows (dialog-content-rows dialog width))
         (held (and (plusp (length dialog.search)) (picker-body-floor dialog))))
     (setf (picker-body-floor dialog) (max rows (or held 0)))))
+
+(defun dialog-content-rows (dialog width)
+  "The body rows DIALOG's content fills at WIDTH: its field rows, else one
+for each row its list shows, or one for its empty label."
+  (if-let (field (dialog-field-rows dialog width nil))
+    (length field)
+    (max 1 (length (picker-visible-rows dialog)))))
+
+(defun docked-dialog-heights (model dialog &aux (height (max 4 (chat-model-term-height model))))
+  "=> (values DOCKED REACH WHOLE) for DIALOG in MODEL's window: the rows its
+docked panel spans, the rows a fullscreen one spans, and the rows its whole
+content would take -- chrome, picture and every body row."
+  (let* (;; Every row under the frame head down to the shell footer, the
+         ;; whole of a fullscreen panel. The head is three rows — the
+         ;; blank, the header, the chat top-padding row — and the panel
+         ;; reaches none of them: Zig's full-height panel covers the
+         ;; padding row, so a fullscreen panel sits one canvas row under
+         ;; the header the way a docked one sits one under the transcript.
+         (reach (if (shell-footer-p height) (- height 5) (- height 3)))
+         ;; The padding row and the canvas gap beside the header and footer.
+         (chrome (+ (dialog-header-row-count dialog) (dialog-footer-row-count dialog) 2))
+         (width (frame-width model)))
+    ;; A picture is painted whole or not at all, so the panel grows past the
+    ;; list's cap to hold it whole and the list under it; the line standing
+    ;; in for it is two rows of the list's panel. A picture beside the list
+    ;; holds the body to its own lines however short the list.
+    (multiple-value-bind (picture whole lead)
+        (dialog-picture-rows dialog (- reach chrome) width)
+      (let ((beside (if lead (ceiling (length (getf (picker-pictures dialog) :rows)) 2) 0)))
+        (values (min reach (+ chrome picture (max (dialog-body-height dialog width) beside))
+                     ;; /status and the privacy box are read whole, never scrolled.
+                     (if (or whole (member (picker-dialog-kind dialog) '(:status :privacy)))
+                         reach *dialog-frame-max-height*))
+                reach
+                (+ chrome picture (max (dialog-content-rows dialog width) beside)))))))
+
+(defun dialog-fullscreen-hint (model dialog)
+  "The key row's fullscreen pair, (CHORD . VERB) under the chord MODEL's
+keymap binds: `restore' while the panel is full, `full screen' only while
+the docked panel cuts off rows a full one would show; NIL otherwise."
+  ;; A dialog whose rows all fit, or a window the docked panel already fills,
+  ;; gains nothing from the key, so its row does not offer it.
+  (when-let (chord (first (gethash :toggle-dialog-fullscreen (chat-model-keymap model))))
+    (let ((verb (if (chat-model-dialog-fullscreen model)
+                    "restore"
+                    (multiple-value-bind (docked reach whole) (docked-dialog-heights model dialog)
+                      (and (< docked (min reach whole)) "full screen")))))
+      (and verb (cons (format nil "~(~a~)" (key-chord-label chord)) verb)))))
 
 (defun docked-dialog-frame-rows (model)
   "=> (values PANEL-HEIGHT ROWS-ABOVE ROWS-BELOW) for the open dialog, or NIL."
@@ -1238,34 +1284,8 @@ query began."
   (when-let (dialog (and (not (sheet-dialog-p (chat-model-dialog model)))
                          (chat-model-dialog model)))
     (let* ((height (max 4 (chat-model-term-height model)))
-           ;; Every row under the frame head down to the shell footer, the
-           ;; whole of a fullscreen panel. The head is three rows — the
-           ;; blank, the header, the chat top-padding row — and the panel
-           ;; reaches none of them: Zig's full-height panel covers the
-           ;; padding row, so a fullscreen panel sits one canvas row under
-           ;; the header the way a docked one sits one under the transcript.
-           (reach (if (shell-footer-p height) (- height 5) (- height 3)))
-           ;; The padding row and the canvas gap beside the header and footer.
-           (chrome (+ (dialog-header-row-count dialog) (dialog-footer-row-count dialog) 2))
-           (width (frame-width model))
-           (panel (if (chat-model-dialog-fullscreen model)
-                      reach
-                      ;; A picture is painted whole or not at all, so the
-                      ;; panel grows past the list's cap to hold it whole
-                      ;; and the list under it; the line standing in for it
-                      ;; is two rows of the list's panel.
-                      ;; A picture beside the list holds the body to its
-                      ;; own lines however short the list.
-                      (multiple-value-bind (picture whole lead)
-                          (dialog-picture-rows dialog (- reach chrome) width)
-                        (min reach (+ chrome picture
-                                      (max (dialog-body-height dialog width)
-                                           (if lead
-                                               (ceiling (length (getf (picker-pictures dialog) :rows)) 2)
-                                               0)))
-                             ;; /status and the privacy box are read whole, never scrolled.
-                             (if (or whole (member (picker-dialog-kind dialog) '(:status :privacy)))
-                                 reach *dialog-frame-max-height*))))))
+           (panel (multiple-value-bind (docked reach) (docked-dialog-heights model dialog)
+                    (if (chat-model-dialog-fullscreen model) reach docked))))
       ;; Under 5 rows no panel: Zig's header-only strip has no shape in this shell.
       (when (>= panel 5)
         (if (shell-footer-p height)
@@ -1602,25 +1622,24 @@ row (DOCKED-PANEL-ROW's LEAD): a picture beside it."
                                             ;; ground it names, and keeps one
                                             ;; cell of the panel's between it
                                             ;; and the bar.
-                                            (let ((lane (- (+ room *docked-panel-content-col*)
-                                                           (if thumb-height 1 0))))
-                                              (multiple-value-bind (segs ground)
-                                                  (funcall paint (= index selection) lane)
-                                                (docked-panel-row
-                                                 (if thumb-height
-                                                     (let ((kept (clip-segs segs lane :mark *dialog-row-overflow-mark*)))
-                                                       (append kept
-                                                               (list (seg (spaces (- lane (segs-display-width kept))) :muted)
-                                                                     (seg " " (if surface (vstyle :bg surface) :muted)))))
-                                                     segs)
-                                                 width surface
-                                                 :col 0
-                                                 :ground (if (and surface ground)
-                                                             (visual-style-bg (style-for-tone ground))
-                                                             surface)
-                                                 :scrollbar (scrollbar-cell thumb-top thumb-height row)
-                                                 :mark *dialog-row-overflow-mark*
-                                                 :lead (nth row lead) :lead-width lead-width)))
+                                            (bind ((lane (- (+ room *docked-panel-content-col*)
+                                                            (if thumb-height 1 0)))
+                                                   ((segs ground) (funcall paint (= index selection) lane)))
+                                              (docked-panel-row
+                                               (if thumb-height
+                                                   (let ((kept (clip-segs segs lane :mark *dialog-row-overflow-mark*)))
+                                                     (append kept
+                                                             (list (seg (spaces (- lane (segs-display-width kept))) :muted)
+                                                                   (seg " " (if surface (vstyle :bg surface) :muted)))))
+                                                   segs)
+                                               width surface
+                                               :col 0
+                                               :ground (if (and surface ground)
+                                                           (visual-style-bg (style-for-tone ground))
+                                                           surface)
+                                               :scrollbar (scrollbar-cell thumb-top thumb-height row)
+                                               :mark *dialog-row-overflow-mark*
+                                               :lead (nth row lead) :lead-width lead-width))
                                             (docked-panel-row
                                              (when entry
                                                (dialog-entry-segs
@@ -1656,8 +1675,9 @@ the band's tail, the transcript/composer gap, and the composer."
            ;; The key-hint sets by dialog kind, verbatim from the Zig renderDockedKeyHintFooter
            ;; call sites — keys and their trailing spacing exactly as Zig writes them,
            ;; minus chords this shell does not bind (the session tree's ctrl+f fork and
-           ;; tab filter, both Zig-only, would name keys that do nothing here; ctrl+f
-           ;; is the fullscreen toggle every dialog shares, appended once below).
+           ;; tab filter, both Zig-only, would name keys that do nothing here; the
+           ;; fullscreen toggle every dialog shares is appended below while it
+           ;; would show more, DIALOG-FULLSCREEN-HINT).
            ;; /sessions says only what its rows do -- Esc, the arrows and typing
            ;; are every list's -- so its row holds five caps.
            (hints (if (consp dialog.footer-hints)
@@ -1671,7 +1691,6 @@ the band's tail, the transcript/composer gap, and the composer."
                                 (:checkpoint ("enter" . "select") ("esc" . "close")
                                  ("up/down" . "navigate"))
                                 (:help ("esc" . "close") ("up/down" . "navigate")))))))
-           (verb (if (chat-model-dialog-fullscreen model) "restore" "full screen"))
            ;; A docked panel stands where the composer was, so its key row says
            ;; the composer status for its first five seconds: a pick refused, a
            ;; key saved, a row's line run, while the panel stays or comes back.
@@ -1713,7 +1732,8 @@ the band's tail, the transcript/composer gap, and the composer."
                                            :disclosure-hover
                                            :muted)))
                                 (loop for unit in (append (or hints (hint-key-units hint))
-                                                          `(("ctrl+f" . ,verb)))
+                                                          (when-let (pair (dialog-fullscreen-hint model dialog))
+                                                            (list pair)))
                                       collect (if (consp unit)
                                                   (let ((target (target (car unit))))
                                                     (list (seg (format nil " ~a " (car unit)) (style-for-tone :key-chip) :link target)

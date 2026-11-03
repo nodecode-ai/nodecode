@@ -3026,12 +3026,11 @@ did not say."
                ;; again at once, rebuilt the way the model takes. Sealed and
                ;; journaled as a retry with no wait, as a withholding is.
                ;; => T when the round goes again.
-               (let ((lesson (and (< relearnings +max-relearnings+)
-                                  (relearned-request e config))))
-                 (when lesson
-                   (incf relearnings)
-                   (rerun-at-once e (format nil "~a, after: ~a" lesson
-                                            (provider-said (provider-error-detail e)))))))
+               (when-let (lesson (and (< relearnings +max-relearnings+)
+                                      (relearned-request e config)))
+                 (incf relearnings)
+                 (rerun-at-once e (format nil "~a, after: ~a" lesson
+                                          (provider-said (provider-error-detail e))))))
              (withhold-images-and-retarget (e)
                ;; The other recovery step: the request carried images and
                ;; failed, so the round is re-sent without them, a note
@@ -4355,14 +4354,13 @@ and where a terminal answer would end the turn."
              ;; turn, not another round of this one, and that turn reads them
              ;; first. HANDOFF-P rides out with it: a word spoken right after
              ;; work was handed off is status, not the ask's answer.
-             (t (let ((ids (unless (and *current-durable-turn*
-                                        (nlk:steer-parked-p *current-durable-turn*))
-                             (claim-turn-exits session))))
-                  (if ids
-                      (read-turn-exits session ids :round (1+ round)
-                                                   :context (next-round-context context response-metadata)
-                                                   :handoff-p handoff-p)
-                      (values message nil handoff-p))))))))))
+             (t (if-let (ids (unless (and *current-durable-turn*
+                                          (nlk:steer-parked-p *current-durable-turn*))
+                               (claim-turn-exits session)))
+                    (read-turn-exits session ids :round (1+ round)
+                                                 :context (next-round-context context response-metadata)
+                                                 :handoff-p handoff-p)
+                    (values message nil handoff-p)))))))))
 
 
 ;;; --- operator entry point -----------------------------------------------
