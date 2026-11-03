@@ -358,6 +358,7 @@ of stacking."
      (:file "tui/commands/models")
      (:file "tui/commands/accounts")
      (:file "tui/commands/cell-control")
+     (:file "tui/commands/open-effect")
      (:file "tui/commands/headless")
      (:file "tui/commands/context-view")
      (:file "tui/commands/tree")
@@ -605,6 +606,7 @@ of stacking."
      (:file "tui/slash-test")
      ;; own-models-test reuses slash-test's listing fixtures.
      (:file "tui/own-models-test")
+     (:file "tui/open-effect-test")
      (:file "tui/profile-delete-test")
      (:file "tui/composer-test")
      (:file "tui/setup-test")

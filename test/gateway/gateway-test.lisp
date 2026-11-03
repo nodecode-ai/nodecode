@@ -5550,10 +5550,12 @@ default target is PROVIDER/MODEL-ID, restored after."
     (is (equal '("draft" "append" "more" "said")
                (members (effect '(:draft :append "more" :fallback "said")) "kind" "mode" "text" "fallback")))
     ;; A session says the command that opens it, the prompt one shell word.
-    (is (equal (list "s-1" "go on" "Open it in a terminal: `nodecode resume s-1 -- 'go on'`")
-               (members (effect '(:open :session "s-1" :prompt "go on")) "session" "prompt" "fallback")))
-    (is (equal "Open it in a terminal: `nodecode resume s-1 -- 'it'\\''s'`"
-               (nlk:json-value (effect '(:open :session "s-1" :prompt "it's")) :string "fallback")))
+    ;; The line is this home's own (SHELL-RESUME-ARGV): a profile or a home
+    ;; of its own rides ahead of `nodecode resume'.
+    (is (equal (list "s-1" "go on") (members (effect '(:open :session "s-1" :prompt "go on")) "session" "prompt")))
+    (is (search "nodecode resume s-1 -- 'go on'`" (nlk:json-value (effect '(:open :session "s-1" :prompt "go on")) :string "fallback")))
+    (is (uiop:string-prefix-p "Open it in a terminal: `" (nlk:json-value (effect '(:open :session "s-1")) :string "fallback")))
+    (is (search "resume s-1 -- 'it'\\''s'`" (nlk:json-value (effect '(:open :session "s-1" :prompt "it's")) :string "fallback")))
     (is (equal '("https://x.test/" nil) (members (effect '(:open :url "https://x.test/")) "fallback" "session")))
     (signals-error error (effect '(:draft :replace "x")))
     (signals-error error (effect '(:open)))

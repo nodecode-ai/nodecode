@@ -418,6 +418,11 @@ the same pid."
         (t (list "env" (format nil "NODECODE_HOME=~a" (uiop:native-namestring (nlk:home)))
                  "nodecode" "resume" session-id))))
 
+(defun open-session-argv (session-id prompt)
+  "The command that opens a shell on SESSION-ID in this home, PROMPT, when
+given, its first prompt: `nodecode resume SESSION-ID -- PROMPT'."
+  (append (shell-resume-argv session-id) (and prompt (list "--" prompt))))
+
 (defun sweep-shell-presence (path)
   "Delete the records beside PATH whose shell is gone: a shell killed before
 its unwind leaves one."

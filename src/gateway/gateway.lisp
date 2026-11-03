@@ -3341,8 +3341,8 @@ needs, signals -- the cell's mistake, said where its command ran."
                         :opt "file" (and file (text file "its file"))
                         "fallback"
                         (or fallback
-                            (cond (session (format nil "Open it in a terminal: `nodecode resume ~a~@[ -- ~a~]`"
-                                                   session (and prompt (shell-word prompt))))
+                            (cond (session (format nil "Open it in a terminal: `~{~a~^ ~}`"
+                                                   (mapcar #'shell-word (open-session-argv session prompt))))
                                   (url url)
                                   (t file))))))))))
 
