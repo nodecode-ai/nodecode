@@ -3,7 +3,7 @@
 ;;;;
 ;;;; SPDX-License-Identifier: MIT
 ;;;;
-;;;; (fork "task" ... &key seconds from) forks the calling session at
+;;;; (fork "task" ... &key seconds from check) forks the calling session at
 ;;;; the turn running it, once per task, puts each task to its fork and waits
 ;;;; for every fork's turn to end. A fork is an anchored child
 ;;;; (CREATE-SESSION :PARENT :ANCHOR-TURN-ID): its history composes the
@@ -13,9 +13,19 @@
 ;;;; on it, which the fold answers `no result recorded (interrupted)': the
 ;;;; task's words say why, and that a fork does not fork.
 ;;;;
-;;;; Going back is the same verb, never a second one: :FROM an earlier turn
-;;;; -- -N for N turns back, or its id -- anchors the forks there: they hold
-;;;; what the session knew when that turn ended, and nothing after it.
+;;;; Going back is the same verb, never a second one:
+;;;;
+;;;; :FROM an earlier turn -- -N for N turns back, or its id -- anchors the
+;;;; forks there: they hold what the session knew when that turn ended, and
+;;;; nothing after it.
+;;;;
+;;;; :FROM a generation G, or an (OLD NEW) pair, with :CHECK is the way back
+;;;; through the generations this home sealed. The check -- a form answering
+;;;; true, or a shell command exiting 0 -- is put to a few generations at once,
+;;;; each laid into a throwaway home of its own (BUILD-GENERATION) and asked in
+;;;; a fresh process of today's binary (TRIAL), so neither the live image nor
+;;;; the operator's home is touched; the search halts at the step where the
+;;;; check turned false, and says what moved in it.
 ;;;;
 ;;;; Why the kernel: a fork runs in the operator's own image, so what keeps it
 ;;;; from displacing what stands, or from writing the layer, is the kernel's own
@@ -81,12 +91,22 @@ and whether it has siblings.")
   "A fork's input when its call took it back to an earlier turn, over the same
 four.")
 
+(defparameter *fork-bisect-input*
+  "~%~%Before you were made, this call went back through the generations this home sealed: ~a"
+  "What a way back adds to each task: what it found, in words.")
+
 ;;; --- the forks -------------------------------------------------------------------
 
 (defparameter +fork-most+ 4 "The forks one call may make.")
 
+(defparameter +fork-width+ 4
+  "How many generations a way back asks at once, each a fresh process booting.")
+
 (defparameter *fork-grace-seconds* 60
   "How long past its budget a fork's turn may still run before it is cancelled.")
+
+(defparameter *fork-probe-seconds* 300
+  "How long one fresh process may take to answer a check.")
 
 (defvar *fork-waiting* (make-hash-table :test #'equal :synchronized t)
   "The forks a call is waiting on, by session id: (:SEMAPHORE S :SECONDS N
@@ -130,28 +150,37 @@ turn running it, or a refusal."
   (or (stringp from) (and (integerp from) (minusp from))))
 
 (defun fork-parse (arguments)
-  "(values TASKS SECONDS FROM) of fork's ARGUMENTS: the tasks, strings, then
-:SECONDS N and :FROM X; or a refusal."
+  "(values TASKS SECONDS FROM CHECK) of fork's ARGUMENTS: the tasks, strings,
+then :SECONDS N, :FROM X and :CHECK C; or a refusal."
   (let* ((at (or (position-if-not #'stringp arguments) (length arguments)))
          (tasks (subseq arguments 0 at))
          (options (nthcdr at arguments)))
     (unless (and (evenp (length options))
                  (loop for (key) on options by #'cddr
-                       always (member key '(:seconds :from))))
-      (fork-fail "fork takes the tasks, strings, then :seconds N and :from X; it was given ~s" options))
-    (let ((seconds (getf options :seconds (fork-setting :seconds)))
-          (from (getf options :from)))
+                       always (member key '(:seconds :from :check))))
+      (fork-fail "fork takes the tasks, strings, then :seconds N, :from X and :check C; it was given ~s" options))
+    (let* ((seconds (getf options :seconds (fork-setting :seconds)))
+           (from (getf options :from))
+           (check (getf options :check))
+           (back (and from (not (fork-turn-from-p from)))))
       (cond ((> (length tasks) +fork-most+)
              (fork-fail "fork makes at most ~d forks a call; it was given ~d tasks" +fork-most+ (length tasks)))
             ((some (lambda (task) (zerop (length (trimmed task)))) tasks)
              (fork-fail "a task is words, and one was blank"))
             ((not (and (integerp seconds) (plusp seconds)))
              (fork-fail ":seconds is a whole number of seconds above zero, not ~s" seconds))
-            ((and from (not (fork-turn-from-p from)))
-             (fork-fail ":from is an earlier turn -- -N for N turns back, or its id; not ~s" from))
-            ((null tasks)
+            ((and from (not (or (fork-turn-from-p from)
+                                (and (integerp from) (plusp from))
+                                (and (consp from) (= 2 (length from))
+                                     (every (lambda (n) (and (integerp n) (plusp n))) from)))))
+             (fork-fail ":from is an earlier turn -- -N for N turns back, or its id -- or a generation G, or an (old new) pair of them; not ~s" from))
+            ((and back (null check))
+             (fork-fail "going back through generations is judged by a check: give :check, a form answering true or a shell command exiting 0"))
+            ((and check (not back))
+             (fork-fail ":check judges a way back: give :from G (a generation, or an (old new) pair) beside it"))
+            ((and (null tasks) (not back))
              (fork-fail "fork needs a task: (fork \"task\" ...)"))
-            (t (values tasks seconds from))))))
+            (t (values tasks seconds from check))))))
 
 (defun fork-earlier-turn (session turn from)
   "FROM -- -N, or a turn's id -- as a turn of SESSION before TURN, or a refusal."
@@ -486,22 +515,269 @@ other."
          nil)
         (t nil)))
 
+;;; --- a check, in a fresh process -------------------------------------------------
+
+(defvar *fork-ask* 'fork-ask-at-once
+  "How checks are put to fresh processes: (lambda (JOBS DIRECTORY)) => a row a
+job, as FORK-ASK-AT-ONCE answers them. A test's stub.")
+
+(defun fork-check-said (check)
+  "CHECK as the words that name it."
+  (let ((*package* (find-package '#:nodecode.evolved)) (*print-case* :downcase) (*print-pretty* t))
+    (if (stringp check)
+        (format nil "the shell command ~s exits 0" check)
+        (format nil "~s answers true" check))))
+
+(defun fork-check-form (check directory)
+  "What a fresh process answers for CHECK: 1 when it passes, 0 when it does
+not, -1 when it signals. A string is a shell command, run in DIRECTORY, that
+passes by exiting 0."
+  `(handler-case
+       ,(if (stringp check)
+            `(if (eql 0 (nth-value 2 (run-bounded (list "sh" "-c" ,check)
+                                                      :seconds 120 :directory ,directory)))
+                 1 0)
+            `(if ,check 1 0))
+     (error () -1)))
+
+(defun fork-form-text (form)
+  "FORM as text that reads back the same in any package: every symbol written
+with its own."
+  (with-standard-io-syntax
+    (let ((*package* (find-package '#:keyword))
+          (*print-circle* t))
+      (prin1-to-string form))))
+
+(defun fork-answer-words (answer)
+  "Why a fresh process's ANSWER to a check is no pass, in words."
+  (case (getf answer :score)
+    (0 "the check answered false")
+    (-1 "the check signalled")
+    (t (format nil "the check could not be asked: ~a" (or (getf answer :detail) "no answer")))))
+
+(defun fork-since (began)
+  "Seconds since BEGAN, an internal real time."
+  (/ (float (- (get-internal-real-time) began)) internal-time-units-per-second))
+
+(defun fork-in-scratch (function)
+  "FUNCTION called on a fresh directory under this home's tmp/, deleted after."
+  (let ((directory (uiop:ensure-directory-pathname
+                    (home-path (format nil "tmp/fork-~36r/" (random (expt 36 10) (make-random-state t)))))))
+    (ensure-directories-exist directory)
+    (unwind-protect (funcall function directory)
+      (ignore-errors (uiop:delete-directory-tree directory :validate t :if-does-not-exist :ignore)))))
+
+(defun fork-ask-at-once (jobs directory)
+  "Each JOB, (GENERATION TEXT): GENERATION laid into a throwaway home of its own
+under DIRECTORY, one after another, then every TEXT asked at once, each in a
+fresh process of this organism under its home (TRIAL). => a row a job, in
+order: (:SCORE S :DETAIL D :NOTES N :SECONDS T), S the number the process
+answered, or NIL when it answered none."
+  (let* ((seconds *fork-probe-seconds*)
+         (homes (loop for (generation) in jobs
+                      for k from 1
+                      collect (merge-pathnames (format nil "~d-g~d/" k generation) directory)))
+         (laid (loop for (generation) in jobs
+                     for home in homes
+                     collect (handler-case
+                                 (list :notes (nth-value 1 (build-generation
+                                                            generation (merge-pathnames "cells/" home))))
+                               (error (condition)
+                                 (list :failed (format nil "generation ~d could not be laid: ~a" generation condition))))))
+         (threads (loop for (generation text) in jobs
+                        for home in homes
+                        for lay in laid
+                        collect (let ((home home) (text text) (lay lay))
+                                  (bt2:make-thread
+                                   (lambda ()
+                                     (if (getf lay :failed)
+                                         (list :score nil :detail (getf lay :failed) :seconds 0.0)
+                                         (let ((began (get-internal-real-time)))
+                                           (handler-case
+                                               (multiple-value-bind (score detail)
+                                                   (trial text :home home :seconds seconds)
+                                                 (list :score score :detail detail :seconds (fork-since began)))
+                                             (error (condition)
+                                               (list :score nil :detail (princ-to-string condition)
+                                                     :seconds (fork-since began)))))))
+                                   :name (format nil "fork-trial-g~d" generation))))))
+    (unwind-protect
+         (loop for thread in threads
+               for lay in laid
+               collect (append (bt2:join-thread thread) (list :notes (getf lay :notes))))
+      (dolist (home homes)
+        (ignore-errors (uiop:delete-directory-tree home :validate t :if-does-not-exist :ignore))))))
+
+;;; --- the way back ----------------------------------------------------------------
+
+(defun fork-spread (items width)
+  "At most WIDTH of ITEMS, evenly spaced across them."
+  (let ((count (length items)))
+    (if (<= count width)
+        items
+        (loop for k from 1 to width collect (nth (floor (* k count) (1+ width)) items)))))
+
+(defun fork-bisect (numbers ask &optional (width +fork-width+))
+  "Where NUMBERS -- generations, ascending, two at least -- turn from passing to
+failing. ASK takes some of them and answers a row each, asked at once:
+(:SCORE S ...), S 1 passing, 0 or -1 failing, NIL unanswered. Both ends go
+first, then up to WIDTH numbers between the newest pass and the oldest
+failure, a round at a time, until no unasked one lies between; one that
+answers nothing is stepped over, never read as the break. The step found is
+asked again, both its ends: a fresh boot that answers otherwise the second
+time names no step. => (:VERDICT V :GOOD G :BAD B :ROUNDS R :TESTED ROWS
+:AGAIN ROWS): V :FOUND, :UNSTEADY when the step's second answers differ,
+:CLEAN when the newest passes, :PROGRAM when the oldest fails too,
+:UNANSWERED when an end answered nothing."
+  (let ((all (coerce numbers 'vector))
+        (rows (make-hash-table))
+        (rounds 0))
+    (labels ((ask (indices)
+               (incf rounds)
+               (loop for index in indices
+                     for row in (funcall ask (mapcar (lambda (index) (aref all index)) indices))
+                     do (setf (gethash index rows) (list* :number (aref all index) row))))
+             (score (index) (getf (gethash index rows) :score))
+             (passed (index) (eql 1 (score index)))
+             (failed (index) (member (score index) '(0 -1)))
+             (answer (verdict good bad)
+               (list :verdict verdict
+                     :good (and good (aref all good)) :bad (and bad (aref all bad))
+                     :rounds rounds
+                     :tested (sort (loop for row being the hash-values of rows collect row)
+                                   #'< :key (lambda (row) (getf row :number))))))
+      (let ((good 0) (bad (1- (length all))))
+        (ask (list good bad))
+        (cond ((passed bad) (answer :clean bad nil))
+              ((failed good) (answer :program nil good))
+              ((not (and (passed good) (failed bad))) (answer :unanswered nil nil))
+              (t (loop for between = (loop for index from (1+ good) below bad
+                                           unless (nth-value 1 (gethash index rows)) collect index)
+                       while between
+                       do (ask (fork-spread between width))
+                          (let ((failure (loop for index from (1+ good) below bad
+                                               when (failed index) return index)))
+                            (when failure (setf bad failure)))
+                          (let ((pass (loop for index downfrom (1- bad) above good
+                                            when (passed index) return index)))
+                            (when pass (setf good pass))))
+                 (incf rounds)
+                 (let ((again (loop for index in (list good bad)
+                                    for row in (funcall ask (list (aref all good) (aref all bad)))
+                                    collect (list* :number (aref all index) row))))
+                   (append (answer (if (and (eql 1 (getf (first again) :score))
+                                            (member (getf (second again) :score) '(0 -1)))
+                                       :found
+                                       :unsteady)
+                                   good bad)
+                           (list :again again)))))))))
+
+(defun fork-manifest (number)
+  "Generation NUMBER's manifest."
+  (find number (manifests) :key #'manifest-number))
+
+(defun fork-generations (from)
+  "The generations FROM spans, ascending: G to the newest, or an (OLD NEW) pair;
+a refusal when they are fewer than two."
+  (let* ((sealed (sort (mapcar #'manifest-number (manifests)) #'<))
+         (old (if (consp from) (reduce #'min from) from))
+         (new (if (consp from) (reduce #'max from) (car (last sealed))))
+         (numbers (remove-if-not (lambda (number) (and new (<= old number new))) sealed)))
+    (when (< (length numbers) 2)
+      (fork-fail "a way back needs two sealed generations to tell apart, and ~s spans ~d of this home's ~d"
+            from (length numbers) (length sealed)))
+    numbers))
+
+(defun fork-change-line (change)
+  "One change between two generations, as a line."
+  (flet ((short (revision) (and (stringp revision) (subseq revision 0 (min 7 (length revision)))))
+         (subject (commit) (format nil "~a ~a" (getf commit :sha) (clip (getf commit :subject) 90))))
+    (let ((row (getf change :row))
+          (before (getf change :before)))
+      (case (getf change :change)
+        (:binary (format nil "the binary ~a -> ~a" (getf change :from) (getf change :to)))
+        (:added (format nil "~a added" (getf row :name)))
+        (:removed (format nil "~a taken away" (getf row :name)))
+        (t (format nil "~a ~:[~a -> ~a~;~2*edited~]~:[~; (uncommitted edits)~]~@[: ~{~a~^; ~}~]"
+                   (getf row :name)
+                   (equal (getf before :revision) (getf row :revision))
+                   (short (getf before :revision)) (short (getf row :revision))
+                   (getf row :dirty)
+                   (mapcar #'subject (getf change :keeps))))))))
+
+(defun fork-bisect-report (numbers found check)
+  "FOUND, what BISECT answered over NUMBERS, as the :BISECT report."
+  (let* ((verdict (getf found :verdict))
+         (good (getf found :good))
+         (bad (getf found :bad))
+         (tested (getf found :tested))
+         (changes (and (eq verdict :found)
+                       (mapcar #'fork-change-line (generation-changes (fork-manifest good) (fork-manifest bad)))))
+         (silent (loop for row in tested unless (getf row :score) collect (getf row :number)))
+         (ends (intersection silent (list (first numbers) (car (last numbers)))))
+         (said (fork-check-said check)))
+    (list :verdict verdict :range (list (first numbers) (car (last numbers)))
+          :good good :bad bad :changes changes :rounds (getf found :rounds) :tested tested
+          :again (getf found :again)
+          :says (ecase verdict
+                  (:found
+                   (format nil "~a: it held at generation ~d, and had gone by ~d, both asked twice~@[ (~{~d~^, ~} between could not be asked)~]. ~:[No folder moved in that step, so the break is outside what a generation records.~;What moved: ~:*~{~a~^; ~}.~]"
+                           said good bad
+                           (remove-if-not (lambda (number) (< good number bad)) silent)
+                           changes))
+                  (:unsteady
+                   (format nil "~a held at generation ~d and had gone by ~d, but asked again a fresh boot of them answered ~{~a~^ and ~}: the check does not answer the same way twice, so no step is named. A check that reads what a boot evaluates -- a layer variable fetched at load, the network -- answers that way; check what a boot cannot vary."
+                           said good bad
+                           (mapcar (lambda (row) (format nil "~d: ~a" (getf row :number) (getf row :score)))
+                                   (getf found :again))))
+                  (:clean
+                   (format nil "~a holds at the newest generation, ~d: nothing this home sealed explains the break, so it lies outside what a generation records -- the box, a secret, the world the work runs in."
+                           said good))
+                  (:program
+                   (format nil "~a fails as far back as generation ~d, the oldest asked: every generation ran on today's binary, so no change this home sealed explains it, and the program itself is to blame. Rebuilding old binaries is not built yet."
+                           said bad))
+                  (:unanswered
+                   (format nil "generation~p ~{~d~^ and ~} answered nothing (~a), and a way back needs both ends to answer: give a range whose ends boot."
+                           (length ends) ends
+                           (getf (find (first ends) tested :key (lambda (row) (getf row :number))) :detail)))))))
+
+(defun fork-way-back (from check session)
+  "The way back FROM spans -- G to the newest, or an (OLD NEW) pair -- judged by
+CHECK in SESSION's folder. => the :BISECT report."
+  (let* ((numbers (fork-generations from))
+         (text (fork-form-text (fork-check-form check (find-session-cwd session))))
+         (found (fork-in-scratch
+                 (lambda (scratch)
+                   (fork-bisect numbers
+                           (lambda (batch)
+                             (funcall *fork-ask* (mapcar (lambda (number) (list number text)) batch) scratch)))))))
+    (fork-bisect-report numbers found check)))
+
 ;;; --- the verb --------------------------------------------------------------------
 
 (defun fork (&rest arguments)
   "Fork the calling session at the turn running it, once per task, and wait
-for every fork's turn to end, or taken back to an earlier turn (:FROM -N, or
-a turn's id). => one plist a task, in order: (:TASK :SESSION :STATUS :ANSWER
-:RAN)."
-  (multiple-value-bind (tasks seconds from) (fork-parse arguments)
+for every fork's turn to end -- taken back to an earlier turn (:FROM -N, or
+a turn's id), or after a way back through the generations (:FROM G, or an
+(OLD NEW) pair, with :CHECK). => one plist a task, in order: (:TASK :SESSION
+:STATUS :ANSWER :RAN); with a way back, (:BISECT REPORT :FORKS RESULTS), the
+forks there when the call made them."
+  (multiple-value-bind (tasks seconds from check) (fork-parse arguments)
     (multiple-value-bind (session turn) (fork-caller)
-      (let ((anchor (if from (fork-earlier-turn session turn from) turn)))
-        (fork-tasks session anchor tasks
-                    (loop for task in tasks
-                          for n from 1
-                          collect (format nil (if from *fork-earlier-input* *fork-task-input*)
-                                          n (length tasks) task (rest tasks)))
-                    seconds)))))
+      (let* ((anchor (if (fork-turn-from-p from) (fork-earlier-turn session turn from) turn))
+             (fork-bisect (and from (not (fork-turn-from-p from)) (fork-way-back from check session)))
+             (results (and tasks
+                           (fork-tasks session anchor tasks
+                                       (loop for task in tasks
+                                             for n from 1
+                                             collect (format nil "~?~@[~a~]"
+                                                             (if (equal anchor turn) *fork-task-input* *fork-earlier-input*)
+                                                             (list n (length tasks) task (rest tasks))
+                                                             (and fork-bisect (format nil *fork-bisect-input* (getf fork-bisect :says)))))
+                                       seconds))))
+        (if fork-bisect
+            (append (list :bisect fork-bisect) (and tasks (list :forks results)))
+            results)))))
 
 ;;; --- the budget ------------------------------------------------------------------
 
