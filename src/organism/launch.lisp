@@ -677,16 +677,11 @@ start, in place of the pipe they were drained from."
       (sb-posix:mkstemp (uiop:native-namestring
                          (merge-pathnames "nodecode-stdin-XXXXXX" (uiop:temporary-directory))))
     (unwind-protect
-         (progn
+         (let ((out (sb-sys:make-fd-stream fd :output t :element-type '(unsigned-byte 8)
+                                              :buffering :full :auto-close nil)))
            (sb-posix:unlink path)
-           (let ((start 0))
-             (sb-sys:with-pinned-objects (octets)
-               (loop while (< start (length octets))
-                     do (multiple-value-bind (count errno)
-                            (sb-unix:unix-write fd octets start (- (length octets) start))
-                          (cond (count (incf start count))
-                                ((not (eql errno sb-unix:eintr))
-                                 (error "stdin's text cannot be kept: ~a" (sb-int:strerror errno))))))))
+           (write-sequence octets out)
+           (finish-output out)
            (sb-posix:lseek fd 0 sb-posix:seek-set)
            (sb-posix:dup2 fd target))
       (sb-posix:close fd))))
