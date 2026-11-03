@@ -59,7 +59,10 @@ there. An https URL that is no repository's is an error, never a path."
                         (list :url (or url (format nil "https://~a/~a/~a" host owner repo))
                               :name (format nil "~a/~a/~a" host owner repo)
                               :ref ref
-                              :path (and path (format nil "~{~a~^/~}" path)))))))
+                              :path (and path (format nil "~{~a~^/~}" path))))))
+               (github (parts)
+                 (and (>= (length parts) 2)
+                      (named nil "github.com" (first parts) (second parts) (cddr parts)))))
         (cond
           ((uiop:string-prefix-p "file://" text)
            (let ((parts (segments (subseq text 7))))
@@ -77,17 +80,13 @@ there. An https URL that is no repository's is an error, never a path."
                    (fail "~a names no repository: https://HOST/OWNER/REPO, or a GitHub ~
                           /tree/REF/FOLDER URL" text)))))
           ((uiop:string-prefix-p "github:" text)
-           (let ((parts (segments (subseq text 7))))
-             (or (and (>= (length parts) 2)
-                      (named nil "github.com" (first parts) (second parts) (cddr parts)))
-                 (fail "~a names no repository: github:OWNER/REPO" text))))
+           (or (github (segments (subseq text 7)))
+               (fail "~a names no repository: github:OWNER/REPO" text)))
           ;; OWNER/REPO[/FOLDER] is GitHub's, when nothing of that name is here
           ((and (not (find (char text 0) "./~"))
                 (find #\/ text)
                 (not (ignore-errors (probe-file (nlk:expand-home text)))))
-           (let ((parts (segments text)))
-             (and (>= (length parts) 2)
-                  (named nil "github.com" (first parts) (second parts) (cddr parts))))))))))
+           (github (segments text))))))))
 
 (defun source-kinds (only &aux (asked (kind-list only)))
   "ONLY, the kinds asked of a repository source, narrowed to the ones a
