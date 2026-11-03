@@ -274,37 +274,15 @@ UTF-8, or longer than LIMIT bytes."
 (defun append-json-line (path value)
   "VALUE as one compact JSON line appended to PATH, the file and its parents
 made when absent: what a line-oriented ledger reads back (READ-JSON-LINES)."
-  ;; The directory is made when the open finds none. Off Windows the line
-  ;; is one write to a descriptor opened to append; without this each line
-  ;; would make a stream and its buffer.
-  (let ((line (concatenate 'string (encode-json-object value) (string #\Newline))))
-    #-win32
-    (let* ((octets (sb-ext:string-to-octets line :external-format :utf-8))
-           (native (sb-ext:native-namestring (merge-pathnames path) :as-file t))
-           (fd (flet ((open-end ()
-                        (sb-posix:open native (logior sb-posix:o-wronly sb-posix:o-append sb-posix:o-creat)
-                                       #o666)))
-                 (with-handlers ((sb-posix:syscall-error (condition)
-                                   (unless (= (sb-posix:syscall-errno condition) sb-posix:enoent)
-                                     (error condition))
-                                   (ensure-directories-exist path)
-                                   (open-end)))
-                   (open-end)))))
-      (with-cleanup ((sb-posix:close fd))
-        (sb-sys:with-pinned-objects (octets)
-          (loop with start = 0
-                while (< start (length octets))
-                do (incf start (sb-posix:write fd (sb-sys:sap+ (sb-sys:vector-sap octets) start)
-                                               (- (length octets) start)))))))
-    #+win32
-    (flet ((open-end ()
-             (open path :direction :output :if-exists :append :if-does-not-exist :create
-                        :external-format :utf-8)))
-      (with-open-stream (out (with-handlers ((file-error ()
-                                               (ensure-directories-exist path)
-                                               (open-end)))
-                               (open-end)))
-        (write-string line out))))
+  ;; The directory is made when the open finds none.
+  (flet ((open-end ()
+           (open path :direction :output :if-exists :append :if-does-not-exist :create
+                      :external-format :utf-8)))
+    (with-open-stream (out (with-handlers ((file-error ()
+                                             (ensure-directories-exist path)
+                                             (open-end)))
+                             (open-end)))
+      (write-line (encode-json-object value) out)))
   value)
 
 (defun read-json-lines (path &key (test #'hash-table-p))
