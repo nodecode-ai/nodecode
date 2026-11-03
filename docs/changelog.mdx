@@ -13,7 +13,7 @@ curl -fsSL https://nodecode.ai/dl/stable-x86_64-linux
 ```
 
 ```output
-2629050e1
+c27e63333
 ```
 
 The other two are `stable-x86_64-windows` and `stable-arm64-darwin`. Every release is also a version on [GitHub's releases page](https://github.com/nodecode-ai/nodecode/releases), with its commits listed.
@@ -26,7 +26,7 @@ nodecode --version
 ```
 
 ```output
-nodecode 0.1.7+2629050e1
+nodecode 0.1.8+c27e63333
 ```
 
 The version comes first and the build label, the commit the release was built from, follows the `+`. An installed build moves to a new release by itself, between turns. `nodecode update` moves it now. See [Updates](/updates).
@@ -34,7 +34,7 @@ The version comes first and the build label, the commit the release was built fr
 {/* source: tools/release/publish.sh */}
 ## 0.1.8
 
-Linux, macOS and Windows. Changes since 0.1.7 (`2629050e1`).
+Linux, macOS and Windows, 2026-11-03, build `c27e63333`. Changes since 0.1.7 (`2629050e1`).
 
 - Anthropic: a session whose history holds a tool result twice, or one that landed after a later message, no longer fails every turn with a 400. A repaired call id never reuses one already stored.
 - A stream that stops sending content is cut after three idle timeouts, however many keep-alives still arrive, and an attempt that sends no content at all is cut after fifteen. Either goes to the next attempt or the backup model.
