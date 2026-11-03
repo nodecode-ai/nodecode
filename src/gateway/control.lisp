@@ -876,3 +876,87 @@ organism on PORT, PID, when one serves this home -- within SECONDS
                                  label brings))
                         (t (format nil "~a is already installed; it loads at the next launch" label)))
                   0 :output))))))
+
+;;; --- the profiles ------------------------------------------------------------------
+;;; `nodecode profile' from the page: the roster, a new home, the one a bare
+;;; launch boots, a home taken away, an archive to hand on -- each the
+;;; kernel's verb (organism/profile.lisp), refused as the verb refuses. A
+;;; profile is another home and so another organism, with a gateway and a
+;;; page of its own: nothing here moves this page into one.
+
+(defun profile-row (record &aux (name (nlk:profile-record-name record))
+                                (home (nlk:profile-record-home record))
+                                (store (nlk::home-store-path home)))
+  "The profile RECORD as the page lists it: what NLK:PROFILES says of it,
+what its manifest says it was cloned as and shares, its store's size,
+whether it has a SOUL.md, and why it cannot be deleted when it cannot
+(NLK::DELETABLE-PROFILE)."
+  (json-object "name" name
+               "home" (namestring home)
+               "description" (or (nlk:profile-record-description record) "")
+               :opt "source" (nlk:profile-record-source record)
+               :opt "created_at" (nlk:profile-record-created-at record)
+               :opt "clone" (json-value (nlk::read-manifest home) :string "clone")
+               :opt "shares" (when-let (shared (nlk::manifest-list home "shared"))
+                               (coerce shared 'vector))
+               "current" (nlk:profile-record-current-p record)
+               "sticky" (nlk:profile-record-sticky-p record)
+               :opt "pid" (nlk:profile-record-pid record)
+               :opt "port" (nlk:profile-record-port record)
+               :opt "store_bytes" (and (probe-file store) (store-bytes store))
+               "soul" (and (probe-file (merge-pathnames "SOUL.md" home)) t)
+               :opt "kept" (handler-case (progn (nlk::deletable-profile name) nil)
+                             (nlk:profile-error (refusal) (princ-to-string refusal)))))
+
+(defun profiles-json (&optional text)
+  "Every profile as PROFILE-ROW says it, the default home first; the profile
+this gateway runs and its home, which a custom $NODECODE_HOME keeps off the
+roster; the folder named profiles are made in; and TEXT, what a verb said."
+  (json-object :opt "text" text
+               "this" (nlk:profile-label)
+               "home" (namestring nlk:*home*)
+               "folder" (namestring nlk:*profiles-directory*)
+               "profiles" (map 'vector #'profile-row (nlk:profiles))))
+
+(defparameter +profile-clones+ '(("settings" . :settings) ("all" . :all) ("blank" . :blank))
+  "What NLK:PROFILE-CREATE starts a home with, by the word a request says it in.")
+
+(define-gateway-route handle-gateway-profiles-http (env)
+  "GET /api/gateway/profiles — PROFILES-JSON. POST {name, clone, from,
+description} makes a profile (NLK:PROFILE-CREATE): clone is settings
+(the default), all or blank; from the profile it clones, this gateway's own
+when left out. DELETE
+?name=NAME takes one away (NLK:PROFILE-DELETE), refused as
+NLK::DELETABLE-PROFILE refuses. Each answers the listing, with what came of
+it as text."
+  (:route nil "/api/gateway/profiles")
+  (:on (nlk:profile-error 400 "refused"))
+  (profiles-json
+   (case (getf env :request-method)
+     (:post (let* ((request (gateway-request-json env))
+                   (name (json-value request :string "name"))
+                   (word (or (json-value request :string "clone") "settings"))
+                   (clone (or (cdr (assoc word +profile-clones+ :test #'string=))
+                              (nlk::protocol-refuse :invalid_request
+                                                    "clone is settings, all or blank, not ~s" word)))
+                   (from (json-value request :string "from")))
+              (require-non-empty (list name) "name must be a non-empty string" :required t)
+              (let ((home (nlk:profile-create name :clone clone :from from
+                                                   :description (json-value request :string "description"))))
+                (nlk::profile-created-text name home clone from))))
+     (:delete (let ((name (folder-query env "name")))
+                (require-non-empty (list name) "name=NAME says which profile" :required t)
+                (nlk:profile-delete name)
+                (format nil "deleted ~a: its whole home is gone" name))))))
+
+(define-gateway-route handle-gateway-profile-use-http (env)
+  "POST /api/gateway/profiles/use {name} — NAME becomes the profile a launch
+that names none boots into (NLK:PROFILE-USE); this gateway stays where it
+is. Answers the listing."
+  (:route :post "/api/gateway/profiles/use" "profile use")
+  (:on (nlk:profile-error 400 "refused"))
+  (let ((name (json-value (gateway-request-json env) :string "name")))
+    (require-non-empty (list name) "name must be a non-empty string" :required t)
+    (nlk:profile-use name)
+    (profiles-json (format nil "~a boots by default from the next launch on; this gateway stays on ~a"
+                           name (nlk:profile-label)))))
