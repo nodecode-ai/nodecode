@@ -41,8 +41,7 @@
      :context "Address" :input-label ""
      ;; a control string: CONNECT-ENTER-STEP fills in the provider and the blank
      :subtitle "~a's address needs ~a."
-     :hint "enter continue  esc back  ctrl+u clear  type value"
-     :empty-label "")
+     :hint "enter continue  esc back  ctrl+u clear  type value")
     (:api-key
      :context "API key" :input-label "API key" :input-secret-p t
      ;; a control string: CONNECT-ENTER-STEP fills in the provider and the
@@ -55,31 +54,26 @@
      ;; a control string: CONNECT-ENTER-STEP fills in the provider and the
      ;; seconds PROVIDER-KEY-CHECK waits
      :subtitle "Asking ~a whether it takes this key, waiting up to ~d seconds."
-     :hint "esc back"
-     :empty-label "")
+)
     (:installing
      :context "Install"
      ;; a control string: CONNECT-INSTALL fills in the folder and its pin
      :subtitle "Installing ~a~@[ at ~a~], the cell that serves this provider."
-     :hint "esc back"
-     :empty-label "")
+)
     (:starting
      :context "Start"
      ;; a control string: CONNECT-AWAIT-START fills in the folder
      :subtitle "Starting ~a, the cell that serves this provider."
-     :hint "esc back"
-     :empty-label "")
+)
     (:signing-in
      :context "Sign in"
      ;; none: the panel names the provider under the page already
      :subtitle ""
-     :hint "esc back"
-     :empty-label "")
+)
     (:result
      :context "Errors"
      :subtitle "Credential setup needs attention."
-     :hint "enter retry  esc back"
-     :empty-label ""))
+     :hint "enter retry  esc back"))
   "The Zig connectDialogView switch, one row per step, keyed by the PICKER
 slot each string lands in: the muted context label beside the Connect tab
 (connectHeaderStepLabel), the summary the header's third row carries
@@ -105,9 +99,11 @@ slots the panel already reads."
   ;; every paint — is what keeps one panel shape: past this line the wizard is
   ;; an ordinary picker whose header and footer move.
   (setf (connect-dialog-step dialog) step)
+  ;; A step that names no HINT says `esc back', and no EMPTY-LABEL an empty one.
   (dolist (slot '(searchable context subtitle hint empty-label no-match-label
                   input-label input-secret-p))
-    (setf (slot-value dialog slot) (getf spec (intern (string slot) :keyword))))
+    (let ((key (intern (string slot) :keyword)))
+      (setf (slot-value dialog slot) (getf spec key (getf '(:hint "esc back" :empty-label "") key)))))
   ;; The sign-in step has no summary: its header is the title row and a
   ;; blank, so the clock sits one blank under the title, not three.
   (setf dialog.header-rows (and (eq step :signing-in) 2))
@@ -132,8 +128,7 @@ slots the panel already reads."
                                                     (get-internal-real-time))
         dialog.on-tick (and (connect-waiting-step-p step)
                             (let ((shown nil))
-                              (lambda (model dialog &aux (now (connect-checking-clock dialog)))
-                                (declare (ignore model))
+                              (lambda-ignoring (model dialog &aux (now (connect-checking-clock dialog)))
                                 (unless (equal now shown)
                                   (setf shown now))))))
   ;; The two text steps are the picker's input mode (a step with no
@@ -154,7 +149,7 @@ slots the panel already reads."
         dialog.input-context (case step
                                (:api-key "")
                                (:address (or (catalog-address-template (connect-dialog-provider-id dialog)) ""))
-                               (t (getf spec :empty-label)))))
+                               (t (getf spec :empty-label "")))))
 
 (defun connect-checking-clock (dialog &aux (since (connect-dialog-checking-since dialog)))
   "`checking… 1.3s', the checking step's body line, counting from when the
