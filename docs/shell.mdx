@@ -187,6 +187,17 @@ Override keys in `~/.nodecode/keybinds.json`. The file is one JSON object: actio
 
 Example: `{"toggle_viewport": "ctrl+t", "help": "none"}`.
 
+A key that starts with `/` binds a slash line instead of an action: `{"/details developer": "ctrl+g"}`. The chord runs the line as if typed and entered, built-in or cell command alike, and leaves the composer's text where it stands.
+
+| Slash binding rule | Detail |
+| --- | --- |
+| Collision | An action's chord, default or overridden, wins: the binding is dropped. Without ctrl a letter's case stands in for shift, so `alt+shift+r` collides with `alt+r`. With ctrl the shift decides: `ctrl+shift+y` binds beside `ctrl+y`, and answers only in a terminal that reports the shift (the kitty keyboard protocol: Ghostty and kitty, WezTerm with `enable_kitty_keyboard`); elsewhere the press arrives as `ctrl+y`. |
+| Editing keys | A binding is read before the composer, so it takes a chord such as `alt+u` from it. |
+| Typing keys | A chord with neither `ctrl` nor `alt` binds only F1 to F12; `q` or `shift+x` would take a letter from typing, so the binding is dropped. |
+| Open dialog | The dialog keeps its keys; the binding waits. |
+| Unknown command | Pressing the chord says so in the composer status. |
+| Malformed chord | The binding is dropped. |
+
 | Rule | Detail |
 | --- | --- |
 | Chord | Modifiers `ctrl` (or `mod`), `alt`, `shift` and one key, joined by `+`. |

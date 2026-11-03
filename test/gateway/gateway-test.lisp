@@ -5486,6 +5486,26 @@ default target is PROVIDER/MODEL-ID, restored after."
         (nle:unregister-commands "demo-pack")
         (is (search "unknown command /greet" (nle::execute-slash-command model "greet" "")))))))
 
+(deftest a-key-runs-a-cell-command-and-keeps-the-draft (with-temp-gateway (port))
+  ;; Given a cell command and keybinds.json binding a line of it to Ctrl+G,
+  ;; When the operator presses Ctrl+G with a draft in the composer,
+  ;; Then the command runs on the gateway with the line's tail and this
+  ;; shell's session, its answer is the notice, and the draft stands.
+  (let ((calls '()))
+    (with-saved-globals (nle::*registered-commands* nle::*gateway-commands*)
+      (nle:register-command "demo-pack" "greet"
+                            (lambda (args session-id)
+                              (push (list args session-id) calls)
+                              (format nil "hi ~a" args))
+                            :description "Say hello")
+      (let ((model (gateway-frame-model port "ext-key")))
+        (setf model.keymap (nle::resolve-keybinds '(("/greet World" . "ctrl+g"))))
+        (type-string model "a draft")
+        (press model #\g :mod nlt:+mod-ctrl+)
+        (is (equal '("World" "ext-key") (first calls)))
+        (is (equal "hi World" (nle::status-said model)))
+        (is (equal "a draft" (composer-value model)))))))
+
 (deftest cell-command-answer-opens-its-dialog (with-temp-gateway (port))
   (with-saved-globals (nle::*registered-commands* nle::*gateway-commands*)
     (register-picker-command)

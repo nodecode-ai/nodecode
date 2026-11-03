@@ -3401,6 +3401,71 @@ nothing opens: the target, or NIL."
       (press model #\o :mod nlt:+mod-ctrl+)
       (is (eq :developer model.tool-detail)))))
 
+(deftest a-keybind-runs-a-slash-line-and-keeps-the-draft ()
+  ;; Given keybinds.json binding slash lines next to an action override: one
+  ;; on a free chord, one on a chord a built-in action owns, one naming no
+  ;; command, and one whose chord does not parse.
+  ;; When the operator, with a draft in the composer, presses those chords,
+  ;; Then the free one runs its line as if typed and entered while the draft
+  ;; stays where it stood; the built-in action keeps its chord; an unknown
+  ;; command says so in the status, draft kept; the malformed one binds
+  ;; nothing.
+  (with-temp-file (nle::*keybinds-path*
+                   :contents "{\"/details developer\": \"ctrl+g\",
+                               \"/details standard\": \"ctrl+r\",
+                               \"/nope\": \"alt+x\",
+                               \"/help\": \"ctrl+wat\",
+                               \"toggle_viewport\": \"f5\"}")
+    (is (equal '("/details developer" "/nope")
+               (mapcar #'cdr (nle::keybind-slash-lines (nle::resolve-keybinds)))) "the colliding and the malformed bindings are dropped")
+    (with-frame-model (model 80 24 :session-id "kb-slash")
+      (type-string model "half a thought")
+      (is (eq :standard model.tool-detail))
+      (press model #\g :mod nlt:+mod-ctrl+)
+      (is (eq :developer model.tool-detail) "Ctrl+G ran /details developer")
+      (is (equal "half a thought" (composer-value model)) "and the draft stayed")
+      (press model #\r :mod nlt:+mod-ctrl+)
+      (is (eq :prompt-history (nle::picker-dialog-kind model.dialog)) "Ctrl+R is still the history picker's")
+      (is (eq :developer model.tool-detail) "and /details standard did not run")
+      (nle::picker-dialog-key model :escape)
+      (press model #\x :mod nlt:+mod-alt+)
+      (is (search "unknown command /nope" (nle::status-said model)) "an unknown line says so")
+      (is (equal "half a thought" (composer-value model)) "and keeps the draft")
+      (press model :f5)
+      (is (eq :standard model.tool-detail) "the action override still binds"))))
+
+(deftest a-slash-binding-waits-for-a-dialog-and-never-takes-a-typing-key ()
+  ;; Given keybinds.json binding slash lines to Ctrl+G, to a bare letter, to
+  ;; shift and a letter, to a function key, to Ctrl+R, the history picker's
+  ;; own chord, and to Ctrl+Shift+R, which a kitty-protocol terminal sends
+  ;; apart from it (Pi's code block picker sits on Ctrl+Shift+Y beside the
+  ;; transcript's Ctrl+Y),
+  ;; When the keymap resolves and the operator presses Ctrl+G over a picker,
+  ;; Then a chord typing would make (no ctrl, no alt, not F1-F12) binds
+  ;; nothing, Ctrl+R loses to the action, Ctrl+Shift+R and the function key
+  ;; bind, and the open picker keeps Ctrl+G: the line does not run.
+  (with-temp-file (nle::*keybinds-path*
+                   :contents "{\"/details developer\": \"ctrl+g\",
+                               \"/details standard\": \"q\",
+                               \"/help\": \"shift+x\",
+                               \"/nope\": \"f6\",
+                               \"/tree\": \"ctrl+r\",
+                               \"/clear\": \"ctrl+shift+r\"}")
+    ;; Typing keys and the action's chord are not bound.
+    (let ((keymap (nle::resolve-keybinds)))
+      (is (equal '("/clear" "/details developer" "/nope")
+                 (sort (mapcar #'cdr (nle::keybind-slash-lines keymap)) #'string<)))
+      (is (equal "/clear" (nle::keybind-slash-line keymap #\r (logior nlt:+mod-ctrl+ nlt:+mod-shift+))))
+      ;; Ctrl+R with no shift is the picker's, not the line's.
+      (is (null (nle::keybind-slash-line keymap #\r nlt:+mod-ctrl+))))
+    (with-frame-model (model 80 24 :session-id "kb-slash-wait")
+      (press model #\q)
+      (is (equal "q" (composer-value model)) "a bare letter still types")
+      (press model #\r :mod nlt:+mod-ctrl+)
+      (is (eq :prompt-history (nle::picker-dialog-kind model.dialog)) "a picker is open")
+      (press model #\g :mod nlt:+mod-ctrl+)
+      (is (eq :standard model.tool-detail) "the binding waits while a dialog is open"))))
+
 (deftest ctrl-f-expands-every-dialog-to-the-window ()
   ;; Ctrl+F over an open dialog lifts the docked panel from the Zig docked
   ;; height — and from a dialog's own BODY-ROWS — to every row under the

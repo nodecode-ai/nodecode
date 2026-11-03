@@ -227,21 +227,41 @@ a held one until the composer's text moves off the draft it was said over."
       (setf (chat-model-slash-selection model) 0)
       (cond (entry
              (editor-reset (chat-model-editor model))
-             ;; What stood there before is over; an op that says its own status
-             ;; (/fork, /themes NAME) answers NIL, and its line stands.
-             (show-status model nil)
-             (multiple-value-bind (notice cmd)
-                 (execute-slash-command model (slash-command-name entry) args)
-               ;; The answer stands in the composer status.
-               (when notice
-                 (show-status model notice :title (format nil "/~a~@[ ~a~]" (slash-command-name entry)
-                                                          (json-value args :text))))
-               (render-state model)
-               (values t cmd)))
-            (t (show-status model (format nil "unknown command /~a — /help lists commands" name)
-                            :error-p t)
-               (render-state model)
-               (values t nil))))))
+             (run-slash-entry model entry args))
+            (t (show-unknown-slash model name))))))
+
+(defun run-slash-entry (model entry args)
+  "Run the catalog ENTRY with ARGS and say its answer in the composer status.
+Returns (values t cmd), SUBMIT-SLASH's."
+  ;; What stood there before is over; an op that says its own status
+  ;; (/fork, /themes NAME) answers NIL, and its line stands.
+  (show-status model nil)
+  (multiple-value-bind (notice cmd)
+      (execute-slash-command model (slash-command-name entry) args)
+    ;; The answer stands in the composer status.
+    (when notice
+      (show-status model notice :title (format nil "/~a~@[ ~a~]" (slash-command-name entry)
+                                               (json-value args :text))))
+    (render-state model)
+    (values t cmd)))
+
+(defun show-unknown-slash (model name)
+  "Say that no command is named NAME. Returns (values t nil)."
+  (show-status model (format nil "unknown command /~a — /help lists commands" name)
+               :error-p t)
+  (render-state model)
+  (values t nil))
+
+(defun run-bound-slash-line (model line)
+  "Run LINE, a slash line keybinds.json binds to a chord, as if typed and
+entered -- but around the composer: its draft and the dropdown stay as they
+stand. Returns the command to run after the update, or NIL."
+  ;; The draft is left alone because a bound line is a gesture over it, not
+  ;; its replacement: a command that sets the draft aside reads it as it was.
+  (multiple-value-bind (name args) (parse-slash-input line)
+    (nth-value 1 (if-let (entry (find-slash-command name))
+                   (run-slash-entry model entry args)
+                   (show-unknown-slash model name)))))
 
 (defun composer-token-filter (text trigger)
   "The bare token after the last TRIGGER character, or NIL once whitespace

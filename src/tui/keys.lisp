@@ -254,17 +254,23 @@ keybinds config shape). NIL disables overrides; tests bind.")
 
 (defun load-keybind-overrides ()
   "The persisted override document as an alist (ACTION . CHORD-STRING),
-or NIL — the document keys actions by their snake-case names."
+or NIL — the document keys actions by their snake-case names. A key that
+is a slash line (\"/codeblocks\") rides along as (LINE . CHORD-STRING)."
   ;; Unreadable state is ignored: keybinds are convenience, never worth
   ;; refusing the shell over.
   (when *keybinds-path*
     (with-handlers ((error () nil))
       (let ((document (nlk:decode-json (nlk:read-text *keybinds-path*))))
-        (loop for (action) in *keybind-actions*
-              for value = (json-value document :string
-                                      (substitute #\_ #\- (string-downcase (symbol-name action))))
-              when value
-                collect (cons action value))))))
+        (append
+         (loop for (action) in *keybind-actions*
+               for value = (json-value document :string
+                                       (substitute #\_ #\- (string-downcase (symbol-name action))))
+               when value
+                 collect (cons action value))
+         (when (hash-table-p document)
+           (loop for line being the hash-keys of document using (hash-value value)
+                 when (and (stringp value) (eql 0 (position #\/ line)))
+                   collect (cons (nlk:trimmed line) value))))))))
 
 ;;; It is how a reader tells whether a resolved keymap still speaks for the
 ;;; action table now in force, which is what makes a keybind row defined into
@@ -275,8 +281,41 @@ or NIL — the document keys actions by their snake-case names."
 keymap it answers — never an action name, so no reader of a chord can meet
 it.")
 
+(defparameter +keybind-slash-key+ :keybind-slash-lines
+  "The entry RESOLVE-KEYBINDS files the slash-line bindings under: a list of
+(KEY-CHORD . LINE), never an action name.")
+
+(defun keybind-slash-lines (keymap)
+  "KEYMAP's slash-line bindings, (KEY-CHORD . LINE) in file order."
+  (gethash +keybind-slash-key+ keymap))
+
+(defun function-key-p (code)
+  "Whether CODE is one of F1-F12, a key no typing makes."
+  (and (member code +key-names+ :key #'car)
+       (keywordp code)
+       (char= #\F (char (symbol-name code) 0))
+       (every #'digit-char-p (subseq (symbol-name code) 1))))
+
+(defun key-chords-overlap-p (a b)
+  "Whether one key press could match both chords A and B."
+  ;; KEY-CHORD-MATCHES-P lets a letter's case stand in for shift, so a
+  ;; letter chord with shift and one without both answer a capital. A
+  ;; capital comes only without ctrl (ESC Y for alt+shift+y): a terminal
+  ;; sends ctrl+shift+y as the control code ctrl+y is, or, under the kitty
+  ;; protocol the shell asks for, as y with ctrl and shift. So with ctrl
+  ;; the shift decides, as it does for every key that is not a letter.
+  (flet ((same (reader) (eq (not (funcall reader a)) (not (funcall reader b)))))
+    (let ((code (key-chord-code a)) (other (key-chord-code b)))
+      (and (same #'key-chord-ctrl) (same #'key-chord-alt)
+           (if (characterp code)
+               (and (characterp other) (char-equal code other)
+                    (or (and (alpha-char-p code) (not (key-chord-ctrl a)))
+                        (same #'key-chord-shift)))
+               (and (eq code other) (same #'key-chord-shift)))))))
+
 (defun resolve-keybinds (&optional (overrides (load-keybind-overrides)))
-  "The resolved keymap: ACTION -> list of KEY-CHORD."
+  "The resolved keymap: ACTION -> list of KEY-CHORD, and the slash-line
+bindings under +KEYBIND-SLASH-KEY+."
   ;; An override replaces every default chord for its action with the one
   ;; configured spec; "none" unbinds the action; a malformed spec keeps the
   ;; defaults (the Zig fromConfigEntries skip-on-parse-failure rule). The
@@ -287,9 +326,23 @@ it.")
                    (remove-if-not #'key-chord-p (mapcar #'parse-key-chord defaults))))
     (loop for (action . spec) in overrides
           for chord = (parse-key-chord spec)
-          do (cond ((eq chord :none) (setf (gethash action keymap) '()))
-                   ((key-chord-p chord)
-                    (setf (gethash action keymap) (list chord)))))
+          when (symbolp action)
+            do (cond ((eq chord :none) (setf (gethash action keymap) '()))
+                     ((key-chord-p chord)
+                      (setf (gethash action keymap) (list chord)))))
+    ;; A slash line binds only a chord that parses, that typing does not make,
+    ;; and that no action holds once the overrides are in: a built-in action
+    ;; wins its chord, so a binding never takes a key the shell already
+    ;; answers to, and the binding is read ahead of the editor, so a chord
+    ;; without ctrl or alt would take a key from the draft.
+    (setf (gethash +keybind-slash-key+ keymap)
+          (loop for (line . spec) in overrides
+                for chord = (and (stringp line) (parse-key-chord spec))
+                when (and (key-chord-p chord)
+                          (or chord.ctrl chord.alt (function-key-p chord.code))
+                          (loop for (action) in *keybind-actions*
+                                never (find chord (gethash action keymap) :test #'key-chords-overlap-p)))
+                  collect (cons chord line)))
     (setf (gethash +keybind-source-key+ keymap) *keybind-actions*)
     keymap))
 
@@ -304,18 +357,27 @@ it.")
 ;;; every chord arrives fully modified; a kitty-reported Ctrl+Enter keeps
 ;;; its ctrl bit and matches no default.
 
+(defun key-chord-matches-p (chord code mod &aux (spec-code chord.code))
+  "Whether the pressed CODE+MOD is CHORD."
+  (flet ((agrees (bit flag) (eq (not (nlt:mod-contains mod bit)) (not flag))))
+    (let ((shifted (agrees nlt:+mod-shift+ chord.shift)))
+      (and (agrees nlt:+mod-ctrl+ chord.ctrl)
+           (agrees nlt:+mod-alt+ chord.alt)
+           ;; Zig KeySpec.matches: a letter's case stands in for shift either way.
+           (if (characterp spec-code)
+               (and (characterp code) (char-equal spec-code code)
+                    (or (not (alpha-char-p code)) (upper-case-p code) shifted))
+               (and (eq spec-code code) shifted))))))
+
 (defun keybind-matches-p (keymap action code mod)
   "Whether the pressed key dispatches ACTION under KEYMAP."
-  (flet ((agrees (bit flag) (eq (not (nlt:mod-contains mod bit)) (not flag))))
-    (some (lambda (chord &aux (spec-code chord.code) (shifted (agrees nlt:+mod-shift+ chord.shift)))
-            (and (agrees nlt:+mod-ctrl+ chord.ctrl)
-                 (agrees nlt:+mod-alt+ chord.alt)
-                 ;; Zig KeySpec.matches: a letter's case stands in for shift either way.
-                 (if (characterp spec-code)
-                     (and (characterp code) (char-equal spec-code code)
-                          (or (not (alpha-char-p code)) (upper-case-p code) shifted))
-                     (and (eq spec-code code) shifted))))
-          (gethash action keymap))))
+  (some (lambda (chord) (key-chord-matches-p chord code mod))
+        (gethash action keymap)))
+
+(defun keybind-slash-line (keymap code mod)
+  "The slash line KEYMAP binds to the pressed CODE+MOD, else NIL."
+  (cdr (find-if (lambda (chord) (key-chord-matches-p chord code mod))
+                (keybind-slash-lines keymap) :key #'car)))
 
 (defun key-chord-label (chord &aux (code chord.code)
                                    (row (assoc code +key-names+)))
