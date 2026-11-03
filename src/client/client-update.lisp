@@ -114,18 +114,24 @@ thread reads it and clears this place.")
                      (anchor-turn-clock model)
                      (setf model.active-turn-id (gethash "turn_id" model.state)))
                     (t (note-turn-flight-settled model)))
-              (setf model.quiet-resync nil)
-              (reconcile-pending-command model payload)
-              (send-launch-prompt model)
-              (keep-window-from-bottom model (lambda () (render-state model)))
-              (nlk:note-boot-phase "transcript-replayed" frame.session-id)
-              ;; The frame the attach was for is on screen now. A replay
-              ;; paints once, at its end, so the screen stands still while it
-              ;; folds; a trim armed at the attach would take that stillness
-              ;; for a settled shell and run its stop-the-world collection
-              ;; inside the replay it was meant to wait out.
-              (trim-behind-the-ready-frame)
-              (refresh-composer-catalogs-behind-the-frame model)))
+              (cond
+                ;; The first pass: painted, and nothing else is settled on it.
+                ((gethash "replay_tail" payload)
+                 (keep-window-from-bottom model (lambda () (render-state model)))
+                 (nlk:note-boot-phase "transcript-painted" frame.session-id))
+                (t
+                 (setf model.quiet-resync nil)
+                 (reconcile-pending-command model payload)
+                 (send-launch-prompt model)
+                 (keep-window-from-bottom model (lambda () (render-state model)))
+                 (nlk:note-boot-phase "transcript-replayed" frame.session-id)
+                 ;; The frame the attach was for is on screen now. A replay
+                 ;; paints once, at its end, so the screen stands still while it
+                 ;; folds; a trim armed at the attach would take that stillness
+                 ;; for a settled shell and run its stop-the-world collection
+                 ;; inside the replay it was meant to wait out.
+                 (trim-behind-the-ready-frame)
+                 (refresh-composer-catalogs-behind-the-frame model)))))
            ((string= kind "gateway_turn_command_result")
             (gateway-command-result model (gethash "result" payload))
             (render-state model))
