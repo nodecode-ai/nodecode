@@ -198,6 +198,23 @@
       (is (find path allow :test #'string=) (format nil "~a reads back" path)))
     (is (not (find (nle::sandbox-expand "~/.ssh") allow :test #'string=)) "and nothing of the credentials does")))
 
+(deftest sandbox-settings-deny-the-accounts-own-home-under-another-home ()
+  ;; $HOME pointed elsewhere (a wrapper, sudo, a CI user) moved the whole-home
+  ;; deny there, and the account's real home -- ~/.ssh with it -- read open.
+  (let ((saved (uiop:getenv "HOME"))
+        (own (uiop:native-namestring
+              (uiop:ensure-directory-pathname
+               (sb-posix:passwd-dir (sb-posix:getpwuid (sb-posix:getuid)))))))
+    (unwind-protect
+         (progn
+           (nlk::set-environment-variable "HOME" "/nonexistent-home-for-test/")
+           (let ((deny (nlk:json-value (sandbox-test-settings) :array "filesystem" "denyRead")))
+             (is (find "/nonexistent-home-for-test/" deny :test #'string=)
+                 "the home $HOME names is read-denied")
+             (is (find own deny :test #'string=)
+                 "the account's own home is read-denied too")))
+      (nlk::set-environment-variable "HOME" (or saved "")))))
+
 (deftest sandbox-hides-the-homes-own-secrets ()
   (let* ((settings (nle::sandbox-settings :home "/h/.nodecode/" :folder "/w/proj/" :binary "/opt/nc/nodecode"
                                           :exists (constantly t) :run-directory nil :deny-home nil

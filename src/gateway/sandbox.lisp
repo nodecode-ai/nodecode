@@ -117,6 +117,20 @@ secret, and every file under secrets/ that is not MASKED (a list of paths)."
                   for name = (uiop:native-namestring path)
                   unless (member name masked :test #'string=) collect name))))
 
+(defun sandbox-user-homes ()
+  "The user's home directories the jail read-denies whole: the one $HOME
+names, and the account's own (its passwd entry) when $HOME names another."
+  ;; A $HOME pointed elsewhere -- a wrapper, sudo, a CI user -- would
+  ;; otherwise leave the account's real home, ~/.ssh with it, readable.
+  (remove-duplicates
+   (remove nil (list (uiop:native-namestring (user-homedir-pathname))
+                     #-win32
+                     (ignore-errors
+                      (uiop:native-namestring
+                       (uiop:ensure-directory-pathname
+                        (sb-posix:passwd-dir (sb-posix:getpwuid (sb-posix:getuid))))))))
+   :test #'string= :from-end t))
+
 (defun sandbox-settings (&key home folder binary srt-dir policy secret-files provider-hosts
                               hidden (deny-home t)
                               (exists #'probe-file) (run-directory (sandbox-run-directory)))
@@ -140,7 +154,7 @@ entries are mounted (srt refuses a path that is not there)."
                                                (getf policy :allowed-domains))))
          (deny-read (funcall string-list
                              (funcall present
-                                      (append (and deny-home (list (uiop:native-namestring (user-homedir-pathname))))
+                                      (append (and deny-home (sandbox-user-homes))
                                               ;; the host's /tmp, whose sockets (tmux, agents, a
                                               ;; desktop's input) are ways out: the jail's /tmp is
                                               ;; an empty one of its own
