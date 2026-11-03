@@ -540,7 +540,7 @@ gateway."
   ;; or /sessions must not re-attach the boot session -- and the session
   ;; its preview lane follows. The subscribe is what proves the link:
   ;; its frames carry the replay that paints the transcript.
-  (send-subscribe link (subscription-entries model))
+  (send-subscribe link (subscription-entries model) :answers-own t)
   (note-shell-presence model.session-id))
 
 (defun gateway-client (port token)

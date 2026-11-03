@@ -161,6 +161,12 @@ thread reads it and clears this place.")
             (when (nth-value 1 (ingest-session-activity model payload))
               (refresh-sessions-dialog model))
             (refresh-status-dialog model :activity t))
+           ((string= kind "organism.questions")
+            ;; The organism's open questions (questions.lisp ASK-OPERATOR):
+            ;; this shell answers its own session's, so the oldest of those
+            ;; goes up as a dialog and one the board no longer holds comes
+            ;; down (tui/questions-dialog.lisp). Live-only, never replayed.
+            (show-session-questions model payload))
            ((string= kind "organism.notices")
             (refresh-status-dialog model :board payload))
            ((string= kind "organism.notice")
@@ -336,7 +342,7 @@ thread reads it and clears this place.")
               (cond ((string/= kind "session_resync_required")
                      (show-status model "Gateway resync required"))
                     ((not model.quiet-resync) (show-status model "History rewound; resyncing")))
-              (send-subscribe model.ws (subscription-entries model))
+              (send-subscribe model.ws (subscription-entries model) :answers-own t)
               (note-shell-presence model.session-id)
               (render-state model)))
            ((eq (gateway-frame-accepted-p model frame) :apply)

@@ -352,6 +352,7 @@ of stacking."
      ;; update, the organism it fronts, the slash commands it runs
      ;; (tui/commands/), and the sessions it lists and attaches to.
      (:file "client/client")
+     (:file "tui/questions-dialog")
      (:file "client/client-update")
      (:file "client/client-boot")
      (:file "tui/commands/dispatch")

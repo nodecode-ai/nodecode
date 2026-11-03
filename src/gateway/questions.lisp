@@ -58,6 +58,44 @@
                    (loop for peer being the hash-keys of *gateway-peer-states*
                          collect peer))))
 
+(defvar *own-answering-peers* (make-hash-table :test #'eq :weakness :key :synchronized t)
+  "The peers that answer only the questions of the sessions they subscribe
+to: a terminal shell, which shows one session, where a page answers every
+session's.")
+
+(defun note-own-answering-peer (peer answers-own)
+  "Record whether PEER answers its own sessions' questions, as its subscribe
+said."
+  (if answers-own
+      (setf (gethash peer *own-answering-peers*) t)
+      (remhash peer *own-answering-peers*)))
+
+(defun own-answering-peer-p (peer)
+  (and (gethash peer *own-answering-peers*)
+       (let ((state (find-gw-peer-state peer)))
+         (and state (gw-peer-state-attached-p state) (not (gw-peer-state-closed-p state))))))
+
+(defun session-subscribed-peers (session-id)
+  "The peers subscribed to SESSION-ID."
+  (when-let (gws (sb-ext:with-locked-hash-table (*gateway-sessions*)
+                   (gethash session-id *gateway-sessions*)))
+    (bt2:with-lock-held ((gw-session-lock gws)) (copy-list (gw-session-peers gws)))))
+
+(defun answering-peers-for (session-id)
+  "The peers that answer SESSION-ID's questions: every page, and each shell
+that answers its own and shows SESSION-ID. With none, nobody is asked: a
+channel lane's turn with only a terminal open on another session is not
+made to wait on it."
+  (union (answering-peers)
+         (remove-if-not #'own-answering-peer-p (session-subscribed-peers session-id))))
+
+(defun question-board-peers ()
+  "The peers the board goes to: every page, and every shell that answers its
+own, which keeps its session's questions from the whole board."
+  (union (answering-peers)
+         (remove-if-not #'own-answering-peer-p
+                        (loop for peer being the hash-keys of *own-answering-peers* collect peer))))
+
 (defun questions-payload ()
   (json-object
    ;; The gateway's clock, so a surface on another machine counts down true.
@@ -82,7 +120,7 @@
                (lambda (op)
                  (let ((encoded (nlk:encode-unsequenced-frame "organism.questions"
                                                               (getf op :payload))))
-                   (loop for peer in (answering-peers)
+                   (loop for peer in (question-board-peers)
                          count (enqueue-peer-frame peer encoded))))
                :isolate t))
 
@@ -96,7 +134,7 @@ answers is attached) or :TIMEOUT."
   (assert (and choices (every #'stringp choices)) (choices)
           "a question offers at least one choice, each a string")
   (let ((sid (or session-id (getf (turn) :session-id))))
-    (unless (and (stringp sid) (answering-peers))
+    (unless (and (stringp sid) (answering-peers-for sid))
       (return-from ask-operator (values nil :nobody)))
     (let ((question (make-operator-question
                      :id (format nil "q-~(~36r~)" (random (expt 36 10)))

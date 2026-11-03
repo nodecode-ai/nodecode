@@ -95,7 +95,7 @@
                              (:gateway-connect-challenge
                               (answer-gateway-challenge ws frame "tui" "warm-token" "warm"))
                              (:gateway-connect-ack
-                              (send-subscribe ws (subscription-entries model)))
+                              (send-subscribe ws (subscription-entries model) :answers-own t))
                              (:projection
                               (nlt:update model (make-instance 'gw-projection-msg :frame frame))
                               (bt2:signal-semaphore replayed)))))

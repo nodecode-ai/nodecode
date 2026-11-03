@@ -2159,7 +2159,8 @@ position (the cursor a resume names), the target its next turn binds
 
 (define-sync-command :set-session-subscriptions ((subscriptions :array "subscriptions")
                                                  (pid :integer "pid")
-                                                 (answers :boolean "answers"))
+                                                 (answers :boolean "answers")
+                                                 (answers-own :boolean "answers_own"))
   ;; The decoder (NLK::DECODE-COMMAND) admits this command only with its
   ;; subscriptions array, and carries the pid only when it is an integer. An
   ;; entry names a session; a live_only entry (a preview lane's follow) gets no
@@ -2197,8 +2198,11 @@ position (the cursor a resume names), the target its next turn binds
         (setf state.pid pid))
       (when-let (state (find-gw-peer-state peer))
         (setf state.answers-p (and answers t))
+        ;; A terminal shell answers its own session's questions alone
+        ;; (questions.lisp ANSWERING-PEERS-FOR).
+        (note-own-answering-peer peer answers-own)
         ;; The open questions, so a page that reloaded mid-question shows it.
-        (when answers (tell "organism.questions" (questions-payload))))
+        (when (or answers answers-own) (tell "organism.questions" (questions-payload))))
       (remove-peer (car subscription-list) peer)
       (close-rows-views peer rows)
       (setf (car subscription-list) new-ids)

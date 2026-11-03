@@ -347,7 +347,7 @@ while it is still exactly what the peel wrote, and a hint says why."
                 ;; value wanted.
                 :when (not restore-files) "restore_files" nil)))
 
-(defun send-subscribe (ws session-ids)
+(defun send-subscribe (ws session-ids &key answers-own)
   "Send a typed set_session_subscriptions command."
   ;; The shell's pid rides it: the gateway's image section names each attached
   ;; shell with the process it runs in, so the model knows which shells a
@@ -364,7 +364,10 @@ while it is still exactly what the peel wrote, and a hint says why."
                        (json-object "session_id" (if (consp entry) (first entry) entry)
                                     (:getf options :opt "live_only" "cursor")))
                      session-ids)
-                "pid" (sb-posix:getpid))))
+                "pid" (sb-posix:getpid)
+                ;; A terminal shell puts up its own session's questions
+                ;; (tui/questions-dialog.lisp); rpc and the context view do not.
+                :when answers-own "answers_own" t)))
 
 (defun subscription-entries (model &aux (followed model.preview-session-id))
   "What MODEL subscribes to: its session, and the session its preview lane
@@ -475,7 +478,7 @@ before the follow, is the base."
     (setf model.preview-session-id session-id model.preview-activity nil)
     ;; A shell that has no socket yet subscribes when it connects, with
     ;; the follow in the list (SUBSCRIPTION-ENTRIES).
-    (when model.ws (send-subscribe model.ws (subscription-entries model)))))
+    (when model.ws (send-subscribe model.ws (subscription-entries model) :answers-own t))))
 
 (defun gateway-event-payload (event)
   "Normalize wrappers and replay/live event shapes to one event object."

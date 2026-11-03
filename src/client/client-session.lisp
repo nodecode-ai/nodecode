@@ -687,7 +687,7 @@ session alone again — and repaint the live transcript."
   (when model.preview-session-id
     (setf model.preview-session-id nil
           model.preview-activity nil)
-    (when model.ws (send-subscribe model.ws (subscription-entries model))))
+    (when model.ws (send-subscribe model.ws (subscription-entries model) :answers-own t)))
   (when model.transcript-preview (setf model.transcript-preview nil) (render-state model)))
 
 (defun sessions-preview-install (model session-id entry position &key (follow t))

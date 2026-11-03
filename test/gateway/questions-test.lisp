@@ -113,6 +113,30 @@
         (subscribe nil)
         (is (not (nle::gw-peer-state-answers-p state)) "a subscribe without it unmarks it")))))
 
+(deftest a-shell-answers-only-its-own-sessions-questions ()
+  ;; A terminal shell shows one session: its subscribe says "answers_own",
+  ;; it is sent the board, and it is asked only for the session it shows --
+  ;; a turn of another session, a channel lane's, is not made to wait on it.
+  (with-session-store ("ask-own")
+    (nlk:create-session :id "ask-elsewhere")
+    (with-silent-peer (peer state :ask-shell)
+      (setf (nle::gw-peer-state-attached-p state) t)
+      (funcall (gethash :set-session-subscriptions nle::*sync-command-handlers*)
+               peer
+               (nlk::make-json-object "subscriptions" (vector (nlk::make-json-object "session_id" "ask-own"))
+                                      "answers_own" t)
+               nil nil (list '()))
+      (is (not (nle::gw-peer-state-answers-p state)) "it is not a page")
+      (is (question-boards state) "yet it is sent the open questions at once")
+      (is (member peer (nle::answering-peers-for "ask-own")) "it answers the session it shows")
+      (is (equal '(nil :nobody) (multiple-value-list
+                                 (nle:ask-operator "Run it?" :session-id "ask-elsewhere" :seconds 30))) "and nobody is asked for another session")
+      (let ((asking (asking-thread "Trust it?" :session-id "ask-own" :seconds 10 :choices '("Yes" "No"))))
+        (is-eventually (some #'identity (question-boards state)) "its own session's question reaches it")
+        (let ((question (first (car (last (question-boards state))))))
+          (drive-answer peer "ask-own" (gethash "question_id" question) "Yes")
+          (is (equal '(("Yes" :answered)) (list (bt2:join-thread asking))) "and its answer ends the wait"))))))
+
 (deftest answer-question-and-the-answers-flag-ride-the-wire ()
   (let ((command (nlk::decode-command
                   (nlk::make-json-object "type" "answer_question" "command_id" "c" "correlation_id" "c"
