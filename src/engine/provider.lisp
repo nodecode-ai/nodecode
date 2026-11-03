@@ -4368,67 +4368,6 @@ KEEP-ALIVE-STREAM against its character DECODING-STREAM."
 path (dexador request: (format nil \"~A://~A\" scheme authority))."
   (subseq endpoint 0 (and start (position #\/ endpoint :start (+ start 3)))))
 
-;;; --- a body sent as a delta ------------------------------------------------
-;;; A conversation's next request repeats the one before it but for what the
-;;; round added. Without this, over a slow, distant link that repeat would be
-;;; most of the first token's wait. A relay beside the server
-;;; (tools/probes/body-relay.py) keeps the bodies it forwarded by SHA-256 and
-;;; says so on every response (X-Body-Delta); to an endpoint that said so, a
-;;; body goes as a delta (NLK:ENCODE-DELTA, the request_bodies encoding)
-;;; against the one its session sent before. Every body still arrives whole
-;;; at the server, checked against its hash, so the prefix cache sees the
-;;; same bytes. Live-only: after a restart the first body goes against
-;;; nothing, which the relay rebuilds from the delta alone.
-
-(defvar *delta-endpoints* (make-hash-table :test 'equal :synchronized t)
-  "Connection keys (PROVIDER-CONNECTION-KEY) whose responses said they take a
-body as a delta. Live-only.")
-
-(defvar *sent-bodies* (make-hash-table :test 'equal :synchronized t)
-  "Session id -> (SHA256-HEX OCTETS . STAMP): the body that session sent last
-to an endpoint taking deltas, the base of its next. Live-only.")
-
-(defparameter *sent-bodies-limit* 32
-  "How many sessions' last bodies stay: past it the longest unused goes, and
-that session's next body goes against nothing.")
-
-(defun request-octets (request-json)
-  "REQUEST-JSON as the octets that go on the wire."
-  (if (stringp request-json)
-      (sb-ext:string-to-octets request-json :external-format :utf-8)
-      request-json))
-
-(defun body-wire (endpoint request-json session &key whole)
-  "How REQUEST-JSON goes to ENDPOINT for SESSION => (values CONTENT HEADERS):
-the JSON as it is, or, to an endpoint that takes deltas, the delta against
-SESSION's last body there -- against nothing when WHOLE or there is none --
-with the headers naming its base and the hash of the body it rebuilds."
-  (if (gethash (provider-connection-key endpoint) *delta-endpoints*)
-      (let* ((octets (request-octets request-json))
-             (base (and (not whole) session (gethash session *sent-bodies*))))
-        (values (nlk:encode-delta (or (second base) (make-array 0 :element-type '(unsigned-byte 8)))
-                                  octets)
-                (list (cons "content-type" "application/octet-stream")
-                      (cons "x-body-delta" (if base (car base) "empty"))
-                      (cons "x-body-sha256" (subseq (nlk:sha256-text octets) 7)))))
-      (values request-json (list (cons "content-type" "application/json")))))
-
-(defun note-body-wire (endpoint request-json session response-headers)
-  "After ENDPOINT answered: when RESPONSE-HEADERS say it takes deltas, mark
-it so, and keep REQUEST-JSON as SESSION's base there -- the relay now holds
-the body under its hash whichever way it went."
-  (when (json-value response-headers :string "x-body-delta")
-    (setf (gethash (provider-connection-key endpoint) *delta-endpoints*) t)
-    (when session
-      (let ((octets (request-octets request-json)))
-        (sb-ext:with-locked-hash-table (*sent-bodies*)
-          (setf (gethash session *sent-bodies*)
-                (list* (subseq (nlk:sha256-text octets) 7) octets (get-internal-real-time)))
-          (when (> (hash-table-count *sent-bodies*) *sent-bodies-limit*)
-            (remhash (alexandria:extremum (alexandria:hash-table-keys *sent-bodies*) #'<
-                                          :key (lambda (key) (cddr (gethash key *sent-bodies*))))
-                     *sent-bodies*)))))))
-
 (defun pooled-connection-count (endpoint &aux (pool dexador.connection-cache:*connection-pool*))
   "How many idle sockets the pool holds for ENDPOINT's host — 0 means the
 next request dials and pays the TCP + TLS handshake (~130 ms to
@@ -4789,58 +4728,42 @@ functions below."
   (when (credential-env "NODECODE_PHASE_LOG")
     (note-phase "connect pooled=~d ~a"
                 (pooled-connection-count endpoint) (provider-connection-key endpoint)))
-  (let ((seconds config.request-timeout)
-        (session (eval-session-id)))
+  (let ((seconds config.request-timeout))
     (multiple-value-bind (stream status response-headers)
         (with-idle-cut (seconds)
             (with-read-deadline (seconds)
-              (flet ((post (whole)
-                       (multiple-value-bind (content content-headers)
-                           (body-wire endpoint request-json session :whole whole)
-                         (cancellable-post (request-json (or config.proxy dex:*default-proxy* endpoint))
-                           (dex:post endpoint
-                                     ;; the lane's headers, then whatever the credential brings,
-                                     ;; then the app's name for a host that ranks apps
-                                     :headers (with-user-agent
-                                               (with-app-attribution
-                                                endpoint
-                                                (append content-headers
-                                                        headers
-                                                        (credential-attribute config :headers))))
-                                     :content content
-                                     ;; usocket makes :READ-TIMEOUT the fd-stream's timeout,
-                                     ;; which cuts a plain-http socket (a local model server)
-                                     ;; and never a TLS one; at the configured number it
-                                     ;; raced the idle clock to the verdict over plain http
-                                     ;; with its own IO-TIMEOUT wording. Four times over it
-                                     ;; is a backstop that fires only if the deadline itself
-                                     ;; is gone. :CONNECT-TIMEOUT is a real deadline on the dial.
-                                     :read-timeout (* 4 seconds)
-                                     :connect-timeout seconds
-                                     :proxy (or config.proxy dex:*default-proxy*)
-                                     :want-stream t
-                                     ;; Octets: dexador's own character decoding fills a
-                                     ;; 128-byte buffer INSIDE the POST — a park where a
-                                     ;; cut leaks the socket (its cleanup has already
-                                     ;; nilled the stream it would close) — and every
-                                     ;; refill after waits for 128 more, so a short line
-                                     ;; sat until the next one or EOF. The walk splits
-                                     ;; and decodes lines itself (READ-OCTET-LINE), under
-                                     ;; its clock, with the socket in hand.
-                                     :force-binary t
-                                     :use-connection-pool t)))))
-                ;; A relay that no longer holds the base (restarted, or past its
-                ;; budget) says so with 412: the body goes again against nothing,
-                ;; which rebuilds from the delta alone.
-                (multiple-value-bind (stream status response-headers)
-                    (handler-case (post nil)
-                      (provider-error (e)
-                        (if (and (eql 412 (provider-error-status e))
-                                 (gethash (provider-connection-key endpoint) *delta-endpoints*))
-                            (post t)
-                            (error e))))
-                  (note-body-wire endpoint request-json session response-headers)
-                  (values stream status response-headers))))
+              (cancellable-post (request-json (or config.proxy dex:*default-proxy* endpoint))
+                (dex:post endpoint
+                          ;; the lane's headers, then whatever the credential brings,
+                          ;; then the app's name for a host that ranks apps
+                          :headers (with-user-agent
+                                    (with-app-attribution
+                                     endpoint
+                                     (append (list (cons "content-type" "application/json"))
+                                             headers
+                                             (credential-attribute config :headers))))
+                          :content request-json
+                          ;; usocket makes :READ-TIMEOUT the fd-stream's timeout,
+                          ;; which cuts a plain-http socket (a local model server)
+                          ;; and never a TLS one; at the configured number it
+                          ;; raced the idle clock to the verdict over plain http
+                          ;; with its own IO-TIMEOUT wording. Four times over it
+                          ;; is a backstop that fires only if the deadline itself
+                          ;; is gone. :CONNECT-TIMEOUT is a real deadline on the dial.
+                          :read-timeout (* 4 seconds)
+                          :connect-timeout seconds
+                          :proxy (or config.proxy dex:*default-proxy*)
+                          :want-stream t
+                          ;; Octets: dexador's own character decoding fills a
+                          ;; 128-byte buffer INSIDE the POST — a park where a
+                          ;; cut leaks the socket (its cleanup has already
+                          ;; nilled the stream it would close) — and every
+                          ;; refill after waits for 128 more, so a short line
+                          ;; sat until the next one or EOF. The walk splits
+                          ;; and decodes lines itself (READ-OCTET-LINE), under
+                          ;; its clock, with the socket in hand.
+                          :force-binary t
+                          :use-connection-pool t)))
           (error (or (attempt-cut-condition :scope :request
                                             :evidence-request-body (bounded-evidence request-json))
                      (make-condition 'provider-error :scope :request
