@@ -76,8 +76,7 @@ one emphasis span."
                                        (pending-added '())
                                        (old-num 0)
                                        (new-num 0)
-                                       (in-hunk nil)
-                                       (first-hunk t))
+                                       (in-hunk nil))
   "One \"diff --git\" section's unified patch text as diff document lines."
   ;; File headers before the first hunk drop; later hunks separate with a
   ;; "..." elision row; each hunk's contiguous removed-then-added run is
@@ -100,10 +99,10 @@ one emphasis span."
         (cond
           (old-start
            (flush)
-           (unless first-hunk
+           ;; Nothing stands in RESULT before the first hunk: headers drop.
+           (when result
              (push (diff-line :context nil "...") result))
-           (setf first-hunk nil
-                 in-hunk t
+           (setf in-hunk t
                  old-num old-start
                  new-num new-start))
           ((not in-hunk))
@@ -699,15 +698,11 @@ does a voided attempt's row — kept, but not the answer."
   ;; voided row whose seal label has landed closes with that label as a status
   ;; line. The model's words keep the foreground however much work followed
   ;; them: greyed, every message but a turn's answer read as spent.
-  (let* ((lines (row-llines row width))
-         (voided row.voided)
-         (lines (if (or row.evicted-p voided)
-                    (mapcar (lambda (line) (copy-with lline line :dim t)) lines)
-                    lines)))
-    (if (stringp voided)
-        (append lines
-                (list (make-lline :text voided :tone :muted :role :status
-                                  :dim t)))
+  (let ((lines (row-llines row width)))
+    (when (or row.evicted-p row.voided)
+      (setf lines (mapcar (lambda (line) (copy-with lline line :dim t)) lines)))
+    (if (stringp row.voided)
+        (append lines (list (make-lline :text row.voided :tone :muted :role :status :dim t)))
         lines)))
 
 (defun row-block-fill (item)

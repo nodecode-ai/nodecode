@@ -814,23 +814,15 @@ line of its answer. NIL for a call that forked nothing."
          (list title)
          ;; `$ <command>' lines for the commands a closed card's title could not carry whole.
          (when (and (not (detail-open-p (tool-row-expand-key row))) (eq :command activity.family))
-           (loop for entry in (activity-entries activity)
-                 for source = (second entry)
-                 when (and (eq :command (first entry))
-                           (stringp source)
-                           (plusp (length (string-trim '(#\Space #\Tab #\Newline)
-                                                       source)))
+           (loop for (kind source) in (activity-entries activity)
+                 when (and (eq :command kind) (stringp source) (plusp (length (nlk:trimmed source)))
                            (not (search source title.text)))
                    ;; The `$ ' line is the source's first line, trimmed — the head
                    ;; names what the call runs, and a heredoc's body is not a
                    ;; source (the receipt's own rule). Tabs become spaces so the
                    ;; painted row cannot jump.
-                   collect (make-lline
-                            :text (format nil "$ ~a"
-                                          (string-trim
-                                           '(#\Space #\Tab)
-                                           (substitute #\Space #\Tab (first-line source))))
-                            :tone :muted :dim t :role :tool-cont)))
+                   collect (make-lline :text (format nil "$ ~a" (nlk:trimmed (substitute #\Space #\Tab (first-line source))))
+                                       :tone :muted :dim t :role :tool-cont)))
          (when (detail-open-p (tool-row-expand-key row))
            (let ((snippet (tool-command-llines row)))
              ;; A one-line snippet already stands as its own title.
