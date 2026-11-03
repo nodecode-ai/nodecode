@@ -138,9 +138,7 @@ over since it was registered, and whether that was said (:SAYING, :SAID).")
          (line (subseq said 0 (or (position #\Newline said) (length said)))))
     (format nil "hook ~(~s~) ~s failed and is skipped wherever it fails, until ~
                  it is registered again or unhooked: ~a"
-            name key (if (> (length line) 300)
-                         (concatenate 'string (subseq line 0 300) "...")
-                         line))))
+            name key (clip line 300))))
 
 (defun note-hook-failure (name key condition)
   "Say that NAME's hook KEY failed with CONDITION and stand it on the board,
