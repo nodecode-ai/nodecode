@@ -1219,43 +1219,24 @@ query, the row of the open section otherwise."
       (settings-pick model settings setting value))))
 
 (defun paint-chips (settings canvas row x width setting focused ground index)
-  "SETTING's options side by side from X on ROW, the one it holds filled --
-or, when WIDTH cannot hold them, the one it holds between arrows and where
-it stands among them. => the column after them."
-  (let* ((options setting.options)
-         (active (position setting.value options :key #'car :test #'equal))
-         (none (eq (effective-color-profile) :none)))
-    (if (<= (options-width setting) width)
-        (let ((at x))
-          (loop for (value . label) in options
-                for position from 0
-                for on = (eql position active)
-                do (canvas-put canvas at row (if (and on none) (format nil "[~a]" label) (format nil " ~a " label))
-                               (cond ((not on) (sheet-ink :muted :ground ground))
-                                     (focused (sheet-ink :sheet-chip-on))
-                                     (setting.set (sheet-ink :sheet-chip-set))
-                                     (t (sheet-ink :sheet-chip))))
-                   (sheet-hit settings row at (+ at 2 (text-display-width label))
-                                 (pick-option-action setting value index))
-                   (incf at (+ 2 (text-display-width label))))
-          at)
-        (let* ((label (or (cdr (nth (or active 0) options)) "Not set"))
-               (count (format nil "~d/~d" (1+ (or active 0)) (length options)))
-               (arrow (sheet-ink (if focused :dialog-accent :muted) :ground ground))
-               (at (canvas-put canvas x row "‹" arrow)))
-          (sheet-hit settings row x (+ x 2)
-                        (pick-option-action setting (car (nth (max 0 (1- (or active 0))) options)) index))
-          (setf at (canvas-put canvas (1+ at) row (clip-text-to-width label (max 3 (- width 6 (length count))))
-                               (sheet-ink (cond (focused :foreground) (setting.set :dialog-accent) (t :system))
-                                             :ground ground :bold focused)))
-          (canvas-put canvas (1+ at) row "›" arrow)
-          (sheet-hit settings row (1+ at) (+ at 3)
-                        (pick-option-action setting (car (nth (min (1- (length options)) (1+ (or active 0)))
-                                                              options))
-                                            index))
-          (when (<= (+ at 4 (length count)) (+ x width))
-            (canvas-put canvas (+ at 4) row count (sheet-ink :muted :ground ground)))
-          (+ at 4 (length count))))))
+  "SETTING's options side by side from X on ROW, the one it holds filled, as
+many as WIDTH holds. => the column after them."
+  (let ((active (position setting.value setting.options :key #'car :test #'equal))
+        (none (eq (effective-color-profile) :none))
+        (at x))
+    (loop for (value . label) in setting.options
+          for position from 0
+          for on = (eql position active)
+          for end = (+ at 2 (text-display-width label))
+          while (<= end (+ x width))
+          do (canvas-put canvas at row (if (and on none) (format nil "[~a]" label) (format nil " ~a " label))
+                         (cond ((not on) (sheet-ink :muted :ground ground))
+                               (focused (sheet-ink :sheet-chip-on))
+                               (setting.set (sheet-ink :sheet-chip-set))
+                               (t (sheet-ink :sheet-chip))))
+             (sheet-hit settings row at end (pick-option-action setting value index))
+             (setf at end))
+    at))
 
 (defun paint-field (settings canvas row x width ground)
   "The open field from X on ROW, WIDTH columns at most: what it holds -- a
@@ -1287,7 +1268,8 @@ caret's cell while its field is open, else NIL."
                                :ground ground))
             (hint (and focused
                        (case setting.kind
-                         ((:number :note) nil)
+                         (:note nil)
+                         (:number "←→ steps")
                          (:action (if (stringp setting.act)
                                       (format nil "enter opens /~a" setting.act)
                                       "enter picks a model"))
@@ -1296,18 +1278,9 @@ caret's cell while its field is open, else NIL."
                          (:reset "enter reviews")
                          ((:secret :paste) "enter pastes")
                          (t "enter edits")))))
-       (if (and focused (eq setting.kind :number))
-           (let ((at (canvas-put canvas x row "‹ " (sheet-ink :muted :ground ground))))
-             (sheet-hit settings row x (+ x 2)
-                           (lambda (model settings) (settings-nudge model settings setting -1)))
-             (setf at (canvas-put canvas at row (clip-text-to-width text (- width 4))
-                                  (sheet-ink :foreground :ground ground :bold t)))
-             (canvas-put canvas at row " ›" (sheet-ink :dialog-accent :ground ground))
-             (sheet-hit settings row at (+ at 2)
-                           (lambda (model settings) (settings-nudge model settings setting 1))))
-           (let ((at (canvas-put canvas x row (clip-text-to-width text width) ink)))
-             (when (and hint (<= (+ at 2 (length hint)) (+ x width)))
-               (canvas-put canvas (+ at 2) row hint (sheet-ink :muted :ground ground)))))
+       (let ((at (canvas-put canvas x row (clip-text-to-width text width) ink)))
+         (when (and hint (<= (+ at 2 (length hint)) (+ x width)))
+           (canvas-put canvas (+ at 2) row hint (sheet-ink :muted :ground ground))))
        nil))))
 
 (defun focus-extras (settings setting width doc-lines)
@@ -1476,9 +1449,6 @@ or NIL."
                               ((and focused (plusp (options-width setting)))
                                (setf used (options-width setting))
                                (paint-chips settings canvas r (- end used) used setting t ground index))
-                              ((and focused (eq setting.kind :number))
-                               (setf used (+ 4 (text-display-width setting.text)))
-                               (paint-control settings canvas r (- end used) used setting t ground index))
                               (t
                                (let ((shown (clip-tail setting.text (max 8 (floor pw 2)))))
                                  (setf used (text-display-width shown))
