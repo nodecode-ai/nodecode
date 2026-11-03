@@ -131,9 +131,7 @@ check."
 ;;; General), and painted from that every frame: the answer is the authority,
 ;;; a row its projection, rebuilt whole whenever an answer lands.
 
-(defstruct (setting (:constructor make-setting
-                        (&key label kind text value set options doc min part field
-                              apply remote act)))
+(defstruct setting
   "One row of the sheet: what it is called; KIND, how it changes -- :TOGGLE,
 :CHOICE, :NUMBER, :TEXT, :LIST, :IDS (a list the platform names), :SECRET,
 :PASTE (a secret kept by reference), :CHECK, :ACTION (a command it opens),
@@ -147,8 +145,7 @@ on the loop, or REMOTE, (MODEL VALUE) off it; ACT is what an action opens,
 a command's name or a function of the MODEL."
   label kind text value set options doc min part field apply remote act)
 
-(defstruct (settings-section (:constructor make-settings-section
-                                 (&key key label group guide needs json applies head)))
+(defstruct settings-section
   "One section of the sheet, or one page of the rail: its KEY (its config
 section's, or the page's own), LABEL, the GROUP heading it in the rail, its
 GUIDE, what it still NEEDS, when a change APPLIES -- NIL for a page whose
