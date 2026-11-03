@@ -78,6 +78,11 @@
                             :dispatch :args :headless 'headless-rename
                             :help-detail
                             "The name /sessions and the web sidebar show: one line, at most 64 characters. Bare /rename shows it; /rename default gives back the name the first prompt makes. F2 on a row in /sessions renames that session")
+        (make-slash-command "trust" "Show or change which folders may hand this session skills"
+                            :usage "/trust [yes | session | no | forget]"
+                            :dispatch :args :headless 'headless-trust
+                            :help-detail
+                            "A folder's AGENTS.md is always read. Skills it keeps under .agents/skills/ or .claude/skills/ wait for your OK: bare /trust lists each folder above this session that carries any and what you decided; yes trusts them, session trusts them until this session ends, no stops the ask, forget clears the answer so the next turn asks again.")
         (make-slash-command "export" "Save this session as Markdown"
                             :usage "/export [path]" :dispatch :args
                             :help-detail

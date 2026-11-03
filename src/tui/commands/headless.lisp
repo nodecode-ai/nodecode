@@ -250,6 +250,13 @@ together, pinning no session -- `default' taking it out."
   (with-slash-notice ("rename")
     (json-value (gateway-slash-answer model (format nil "/rename ~a" args)) :string "text")))
 
+(defun slash-trust-op (model args)
+  "/trust on a shell: the gateway's HEADLESS-TRUST for this shell's session."
+  ;; The decisions are the gateway's -- its home's trust.json and the
+  ;; session-only ones it holds -- so that image answers.
+  (with-slash-notice ("trust")
+    (json-value (gateway-slash-answer model (format nil "/trust ~a" args)) :string "text")))
+
 (defun markdown-export-path (args name)
   "Where /export ARGS writes the file the gateway named NAME: ARGS as a path
 from this shell's folder, NAME inside it when it is a folder, NAME in this

@@ -258,6 +258,7 @@ of stacking."
      ;; (log->events->units->boundary->compiled context) is a pure layer
      ;; between provider's frozen structs and the loop's ambient-state freeze.
      (:file "engine/context")
+     (:file "engine/trust")
      ;; Revisions reuse context units; the request loop publishes their working copy.
      (:file "engine/working-context")
      ;; image-fit precedes turn: every picture the turn stages is first
@@ -575,6 +576,7 @@ of stacking."
      ;; context-test follows turn-test: it drives the same store fixtures and
      ;; seed helpers.
      (:file "engine/context-test")
+     (:file "engine/trust-test")
      ;; tool-call-id-test follows turn-test: it drives turn-test's canned SSE helpers.
      (:file "engine/tool-call-id-test")
      ;; wire-pairing-test pins proofs/WirePairing.lean's traces on the fold.

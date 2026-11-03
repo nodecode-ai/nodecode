@@ -64,6 +64,27 @@ Nodecode looks in the session's folder for `AGENTS.md`, then `CLAUDE.md`, then `
 </Mistake>
 </Mistakes>
 
+{/* source: src/engine/trust.lisp */}
+## Trusted folders
+
+A folder's `AGENTS.md` is words, read without asking. A folder can also carry things that do more:
+
+| Folder carries | Where | What trust does |
+| --- | --- | --- |
+| Skills | `.agents/skills/<name>/SKILL.md`, `.claude/skills/<name>/SKILL.md` | Each skill rides the session's `project-skills` block as one line: its name, what it is for, and its file, which the model reads before following it. |
+| Cells | `.nodecode/cells/<name>/` | Found and shown. Not turned on yet. |
+| MCP servers | `.mcp.json`, under `mcpServers` | Found and shown. Not started yet. |
+
+The first turn of a session in such a folder asks the person watching it, once: **Trust this folder**, **This session only** or **Not now**. The terminal shell, the web page and the desktop app each show the question. Nobody watching, or no answer before it expires, counts as **Not now**: the turn goes on without the skills, nothing is saved, and the next session asks again.
+
+| Rule | Detail |
+| --- | --- |
+| Each folder its own | A decision covers the folder that carries the skills, never the folders under it. Trusting `~` does not trust every repository you clone. |
+| Saved | `~/.nodecode/trust.json`, one entry per folder. A profile has its own. |
+| Session only | Held by the running image. It ends with the session or a restart. |
+| Your own win | A skill or memory of your own with the same name wins over the folder's. Of two folders with the same skill name, the nearer one wins. |
+| Change it | `/trust` lists the folders and what you decided. `/trust yes`, `/trust session`, `/trust no` (stops the ask), `/trust forget` (asks again). |
+
 {/* source: src/engine/context.lisp */}
 ## Size limit
 

@@ -28,6 +28,7 @@ In a chat room or eval, a shell-only command answers `/name needs an interactive
 | `/sessions`, `/agents` | Opens the session picker. | No |
 | `/rename [name \| default]` | Names the session, 64 characters at most. Bare: shows the name. | Yes |
 | `/export [path]` | Saves the session as Markdown. | No |
+| `/trust [yes \| session \| no \| forget]` | Shows which folders above the session carry skills, cells or MCP servers, and what you decided. `yes` trusts them, `session` until the session ends, `no` stops the ask, `forget` asks again. | Yes |
 | `/execs` | Shows an exec's output. Ctrl+X or Delete interrupts it. | No |
 | `/tree`, `/checkpoints` | Opens the session tree. Continue from a turn, or rewind. | No |
 | `/undo` | Rewinds the last turn. | Yes |

@@ -1888,6 +1888,14 @@ a durable row of its own, and rides behind every other (INDEX-LAST)."
                                                               (list cwd (string-right-trim "/" (namestring (nlk:home))))
                                                               (uiop:os-windows-p))))
                              (instructions-section files)
+                             ;; a trusted folder's skills, one line each; the
+                             ;; person watching is asked first, once per
+                             ;; session, and only from inside its own turn
+                             ;; (trust.lisp ASK-FOLDER-TRUST)
+                             (and cwd (progn
+                                        (when (equal session-id (getf (turn) :session-id))
+                                          (ask-folder-trust session-id cwd))
+                                        (project-skills-section session-id cwd)))
                              ;; a line a topic of the manual: what the image and its
                              ;; running cells can do, the texts left to (help)
                              (cons "help" (format nil *help-section*
