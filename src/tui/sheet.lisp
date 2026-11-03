@@ -108,11 +108,10 @@ cell behind."
 
 ;;; --- painting -----------------------------------------------------------------
 
-(defun sheet-hit (sheet row from to action &key hover)
+(defun sheet-hit (sheet row from to action)
   "Make the cells FROM below TO of ROW a pointer target: a click there runs
-ACTION with (MODEL SHEET), the pointer resting there HOVER, which answers
-whether it moved anything. Either may be NIL."
-  (push (list row from to action hover) sheet.hits))
+ACTION with (MODEL SHEET)."
+  (push (list row from to action) sheet.hits))
 
 (defun paint-lanes (canvas edges lanes)
   "Fill each (X WIDTH GROUND) of LANES down CANVAS: with EDGES its first and
@@ -251,28 +250,21 @@ that key (HINT-KEY-PRESS)."
 
 ;;; --- the pointer --------------------------------------------------------------
 
-(defun sheet-target (sheet x y which)
-  "The WHICH (:action or :hover) of the first target the last paint put on
-the frame cell X, Y of SHEET, or NIL."
+(defun sheet-target (sheet x y)
+  "The action of the first target the last paint put on the frame cell X, Y
+of SHEET, or NIL."
   (destructuring-bind (rows left top width) sheet.layout
     (declare (ignore rows width))
     (let ((column (- x left)) (row (- y top)))
-      (loop for (at from to action hover) in sheet.hits
-            for target = (if (eq which :hover) hover action)
-            when (and target (= at row) (<= from column) (< column to))
-              return target))))
+      (loop for (at from to action) in sheet.hits
+            when (and action (= at row) (<= from column) (< column to))
+              return action))))
 
 (defun sheet-click (model sheet x y)
   "A left click on the frame cell X, Y of SHEET: the target the last
 paint put there, if any."
-  (when-let (action (sheet-target sheet x y :action))
+  (when-let (action (sheet-target sheet x y))
     (funcall action model sheet)))
-
-(defun sheet-hover (model sheet x y)
-  "The pointer resting on the frame cell X, Y of SHEET: the hover the last
-paint put there, if any. => whether it moved anything."
-  (when-let (hover (sheet-target sheet x y :hover))
-    (funcall hover model sheet)))
 
 ;;; --- the key row's line, and calls off the loop ------------------------------
 
