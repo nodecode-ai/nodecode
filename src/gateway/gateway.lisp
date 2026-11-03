@@ -155,7 +155,9 @@ transport."
   (id (error "id required") :type string)
   (lock (bt2:make-lock :name "gw-session") :read-only t)
   (peers '() :type list)
-  (turn-active-p nil :type boolean))
+  (turn-active-p nil :type boolean)
+  ;; What the running turn streamed that no fact holds yet (STREAM-PARTIAL).
+  (partial nil))
 
 (nlk:access (gws gw-session))
 (nlk:access (stored nlk::stored-fact))
@@ -567,6 +569,7 @@ its subscriptions. NIL is quiet."
               (destructuring-bind (&key session-id kind payload cursor durable-p) op
                 (let ((gws (find-or-create-gw-session session-id)))
                   (bt2:with-lock-held ((gw-session-lock gws))
+                    (note-stream-frame gws kind payload (and durable-p cursor))
                     (plusp (loop for target in (copy-list (gw-session-peers gws))
                                  count (send-frame-under-lock gws target kind payload
                                                               :cursor cursor :durable-p durable-p)))))))
@@ -899,7 +902,8 @@ would; else NIL."
        after))
 
 (defun send-replay-under-lock (gws peer &optional after &aux (session-id gws.id))
-  "Queue one bounded replay job before subsequent live publications.
+  "Queue one bounded replay job before subsequent live publications, and
+behind it what the round in flight streamed that the log does not hold yet.
 AFTER, the log position the peer holds, makes it a resume when one can be
 (RESUME-POSITION), else the whole replay goes."
   ;; Runs under the session's lock so the job orders ahead of later live
@@ -910,9 +914,18 @@ AFTER, the log position the peer holds, makes it a resume when one can be
                                    :cursor cursor
                                    :admission-state (replay-admission-state session-id)
                                    :title (nlk::session-title session-id)
-                                   :after resume)))
-    (enqueue-peer-frame peer job :session-id session-id
-                        :cursor cursor :cursor-present-p (plusp cursor))))
+                                   :after resume))
+         (partial (stream-partial-payloads gws cursor)))
+    ;; A resumed peer keeps what it folded of the round in flight, and the
+    ;; partial carries each row whole: it voids its own first, as at a retry.
+    (when (and resume partial)
+      (push (make-json-object "turn_id" (gethash "turn_id" (first partial))
+                              "delta" (make-json-object "type" "stream_reset"))
+            partial))
+    (prog1 (enqueue-peer-frame peer job :session-id session-id
+                               :cursor cursor :cursor-present-p (plusp cursor))
+      (dolist (payload partial)
+        (send-frame-under-lock gws peer "item_delta" payload)))))
 
 (defun session-facts-after (session-id cursor)
   "SESSION-ID's committed facts above log position CURSOR, oldest first: all
@@ -1014,6 +1027,152 @@ item_delta wire shape."
           :text-start :text-end :reasoning-start :reasoning-end
           :reasoning-signature :tool-input-end :tool-call :error :finish)
          nil)))))
+
+;;; --- the round in flight ----------------------------------------------------
+;;; The item_delta frames above are live-only: the log holds a round's text,
+;;; thinking and calls once the fact that closes the round commits, and not a
+;;; word before. Without this, a shell or a page that subscribes mid-round --
+;;; a reload, a reconnect, a second tab, a switch away and back -- would
+;;; replay the log and open on whatever streamed next, mid-sentence, the
+;;; paragraphs before it gone until the turn ended. So a session keeps what
+;;; its peers were streamed of the round in flight, folded under its lock
+;;; beside the fan-out (PUBLISH-EVENT), and a replay carries it
+;;; (SEND-REPLAY-UNDER-LOCK): one item_delta per streamed row, the row whole
+;;; so far, which the live deltas behind it append to.
+;;;
+;;; Retention: live-only. A row leaves when the fact that seats it is
+;;; published -- the pairing a shell's fold makes (tui/transcript/ingest.lisp INGEST-MESSAGE-FACT,
+;;; INGEST-TOOL-CALL-FACT, INGEST-ATTEMPT-VOIDED-FACT) -- and every row with
+;;; the turn's end.
+
+(defstruct (stream-partial (:copier nil))
+  "What a session's peers were streamed of the round in flight."
+  (turn-id nil)
+  ;; Oldest first, as a shell's tail holds them: (:TEXT BUFFER),
+  ;; (:REASONING BUFFER) or (:TOOL-CALL INDEX NAME ARGUMENTS).
+  (rows '())
+  ;; The stream_reset a retry sent, until the stream moves again: the
+  ;; countdown a shell's bar reads, and the internal time it was sent.
+  (reset nil)
+  (reset-at 0)
+  ;; The newest fact that seated a row: a fact is published by every
+  ;; publisher that reaches it (PUBLISH-TURN-FACTS), and seats once.
+  (seated 0))
+
+(nlk:access (partial stream-partial))
+
+(defparameter +stream-seating-kinds+
+  (list nlk::+kind-assistant-completed+ nlk::+kind-attempt-voided+ nlk::+kind-tool-call-started+
+        nlk::+kind-turn-completed+ nlk::+kind-turn-failed+ nlk::+kind-turn-cancelled+)
+  "The facts that seat what a round streamed: its message, its voided
+attempt, each of its calls, and the turn's end.")
+
+(defun stream-partial-delta (partial turn-id delta)
+  "Fold one item_delta's DELTA, of TURN-ID, into PARTIAL as a shell's fold
+does (client/client.lisp APPLY-GATEWAY-EVENT): text and thinking onto the newest
+row when it is of their kind, a call's fragments onto its stream index's."
+  (unless (equal turn-id partial.turn-id)
+    (setf partial.turn-id turn-id partial.rows '() partial.reset nil))
+  (let ((type (json-value delta :string "type")))
+    (cond
+      ((member type '("text" "reasoning") :test #'equal)
+       (let ((kind (if (equal type "text") :text :reasoning))
+             (text (or (json-value delta :string "text") ""))
+             (newest-row (car (last partial.rows))))
+         (setf partial.reset nil)
+         (if (eq kind (first newest-row))
+             (loop for char across text do (vector-push-extend char (second newest-row)))
+             (setf partial.rows (append partial.rows (list (list kind (stream-text-buffer text))))))))
+      ((equal type "tool_call")
+       (let ((index (or (json-value delta :integer "index") 0))
+             (name (or (json-value delta :string "name") ""))
+             (arguments (or (json-value delta :string "arguments") "")))
+         (setf partial.reset nil)
+         (if-let (row (find-if (lambda (row) (and (eq :tool-call (first row)) (eql index (second row))))
+                               partial.rows :from-end t))
+           (setf (third row) name (fourth row) arguments)
+           (setf partial.rows (append partial.rows (list (list :tool-call index name arguments)))))))
+      ;; The attempt's text and thinking were seated, voided, by its fact,
+      ;; which lands first; its calls never ran.
+      ((equal type "stream_reset")
+       (setf partial.rows '()
+             partial.reset (and (json-value delta :object "retry") delta)
+             partial.reset-at (get-internal-real-time))))))
+
+(defun stream-partial-replayed-reset (partial)
+  "PARTIAL's stream_reset as a peer attaching now is sent it: its retry's
+delay less what has passed since it was sent."
+  ;; A shell switched back mid-backoff counted the whole delay down again.
+  (let ((retry (alexandria:copy-hash-table (json-value partial.reset :object "retry")))
+        (passed (/ (- (get-internal-real-time) partial.reset-at) internal-time-units-per-second)))
+    (when-let (delay (json-value retry :number "delay_seconds"))
+      (setf (gethash "delay_seconds" retry) (float (max 0 (- delay passed)))))
+    (make-json-object "type" "stream_reset" "retry" retry)))
+
+(defun stream-partial-seat (partial kind position payload)
+  "Fold the fact of KIND at log POSITION, carrying PAYLOAD, into PARTIAL:
+the rows it seats leave, once."
+  (when (and (member kind +stream-seating-kinds+ :test #'equal)
+             (> position partial.seated))
+    (setf partial.seated position)
+    (cond ((equal kind nlk::+kind-tool-call-started+)
+           ;; The oldest call of its name: a round's calls stream and start in
+           ;; the model's order.
+           (let ((name (json-value payload :string "tool-name")))
+             (setf partial.rows (remove-if (lambda (row) (and (eq :tool-call (first row))
+                                                              (equal name (third row))))
+                                           partial.rows :count 1))))
+          ((member kind (list nlk::+kind-assistant-completed+ nlk::+kind-attempt-voided+)
+                   :test #'equal)
+           (setf partial.rows (remove-if (lambda (row) (member (first row) '(:text :reasoning)))
+                                         partial.rows)))
+          (t (setf partial.rows '() partial.reset nil)))))
+
+(defun note-stream-frame (gws kind payload cursor)
+  "Fold one frame of KIND, PAYLOAD, that GWS's peers are sent -- a durable
+one at log position CURSOR -- into what the round in flight streamed."
+  ;; The caller holds GWS's lock, as a replay takes the partial under it: a
+  ;; peer that subscribes is sent each delta once, in the partial or live.
+  (cond ((equal kind "item_delta")
+         (stream-partial-delta (or gws.partial
+                                   ;; Every fact that seats a row streamed before
+                                   ;; this first delta was published before it.
+                                   (setf gws.partial (make-stream-partial
+                                                      :seated (session-cursor gws.id))))
+                               (json-value payload :string "turn_id")
+                               (json-value payload :object "delta")))
+        ((and gws.partial cursor (equal kind "session_stream_event"))
+         (stream-partial-seat gws.partial (json-value payload :string "frame" "event" "type") cursor
+                              (json-value payload :object "frame" "event" "payload")))))
+
+(defun stream-partial-payloads (gws cursor)
+  "The item_delta payloads that hand a peer whose replay ends at log
+position CURSOR what GWS's peers were streamed of the round in flight: a
+retry's countdown, or each streamed row whole so far."
+  ;; The caller holds GWS's lock. The replay reads the log, which may already
+  ;; hold a fact its publisher has not reached: it is seated here first, as
+  ;; its publication would seat it, so its row never reaches the peer twice.
+  (when-let (partial gws.partial)
+    (when (or partial.rows partial.reset)
+      (loop with after = partial.seated
+            while (< after cursor)
+            do (let ((events (session-facts-after gws.id after)))
+                 (unless events (return))
+                 (dolist (event events)
+                   (when (> event.log-position cursor) (return))
+                   (stream-partial-seat partial event.kind event.log-position event.payload))
+                 (setf after (min cursor (nlk:event-log-position (car (last events)))))))
+      (flet ((payload (delta) (make-json-object "turn_id" partial.turn-id "delta" delta)))
+        (if partial.reset
+            (list (payload (stream-partial-replayed-reset partial)))
+            ;; A row is (:TEXT BUFFER), (:REASONING BUFFER) or (:TOOL-CALL INDEX NAME ARGUMENTS).
+            (loop for (kind buffer-or-index name arguments) in partial.rows
+                  collect (payload
+                           (if (eq kind :tool-call)
+                               (make-json-object "type" "tool_call" "index" buffer-or-index
+                                                 "name" name "arguments" arguments)
+                               (make-json-object "type" (if (eq kind :text) "text" "reasoning")
+                                                 "text" (copy-seq buffer-or-index))))))))))
 
 ;;; The latch is only ever held transiently — a finishing worker holds it
 ;;; between its terminal fact and its cleanup — so expiry means the invariant
