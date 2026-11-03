@@ -80,9 +80,9 @@ Right into it, Down to the setting."
     (is (sheet-row model "Search every setting"))))
 
 (deftest settings-sheet-folds-to-the-window-and-never-loses-its-settings ()
-  ;; Wide, the rail of sections beside the open one; under 84 columns one
-  ;; view at a time; under 50 columns or 16 rows the whole frame. The docked
-  ;; panel this replaced showed no setting at all below 15 rows.
+  ;; The rail of sections beside the open one at every width, slimmer when
+  ;; narrow; under 50 columns or 16 rows the whole frame. The docked panel
+  ;; this replaced showed no setting at all below 15 rows.
   (with-quick-settings (model port config :width 120 :height 40)
     (nle::slash-settings-op model)
     (flet ((size (width height)
@@ -90,12 +90,10 @@ Right into it, Down to the setting."
              (sheet-rows model)))
       (is (row-carrying "Search every setting" (size 120 40)) "wide: the search field over the pane")
       (is (row-carrying "General" (size 120 40)))
-      (is (row-carrying "type to search" (size 80 24)) "narrow: the sections alone")
       (destructuring-bind (rows x y width) (progn (size 48 12) (nle::sheet-dialog-layout model.dialog))
         (is (and (zerop x) (zerop y) (= width 48)) "tiny: the whole frame")
         (is (every (lambda (row) (= 48 (nle::text-display-width (nle::plain-frame-row row)))) rows)))
       (select-setting model "nl-settings.lane" "Loud")
-      (is (row-carrying "Mode" (size 70 14)) "70x14 shows the chosen setting's neighbours")
       (dolist (size '((70 14) (60 12) (48 12)))
         (is (row-carrying "Loud" (apply #'size size)) (format nil "~{~ax~a~} still shows the setting" size))))))
 
@@ -707,25 +705,6 @@ Right into it, Down to the setting."
         (nle::slash-settings-op model)
         (dialog-keys model :down :down)
         (is (sheet-row model "no list of what tv10 changed") "a release the host lists nothing for says so")))))
-
-(deftest settings-a-narrow-sheet-keeps-each-group-whole-in-a-column ()
-  ;; Which group opens the second column follows from how many pages the
-  ;; core declares: the fork section's page took SYSTEM to seven lines, more
-  ;; than the first column has left at 24 rows, and SYSTEM itself moved over
-  ;; ahead of NL SETTINGS. The claim is the shape: the second column opens on
-  ;; a group's name, never on the tail of a group the first could not hold.
-  (with-quick-settings (model port config :width 80 :height 24)
-    (nle::slash-settings-op model)
-    (let* ((rows (mapcar #'nle::plain-frame-row (sheet-rows model)))
-           (system (position-if (lambda (row) (search "SYSTEM" row)) rows))
-           (general (position-if (lambda (row) (search "General" row)) rows))
-           (beside (and general (let ((row (nth general rows))) (subseq row (+ (search "General" row) (length "General"))))))
-           (start (and beside (position-if #'alpha-char-p beside)))
-           (opener (and start (subseq beside start (or (search "  " beside :start2 start) (length beside))))))
-      (is system)
-      (is (eql (search "SYSTEM" (nth system rows)) (search "Updates" (nth (1+ system) rows))) "a group's pages under its name")
-      (is (and opener (string= opener (string-upcase opener)))
-          (format nil "a group a column cannot hold whole starts the next one:~%~{  ~a~%~}" rows)))))
 
 (deftest settings-the-gateway-runs-in-the-background-until-turned-off-there ()
   ;; Hermes' setup offers a user service first; here the gateway is on from

@@ -1602,25 +1602,24 @@ row (DOCKED-PANEL-ROW's LEAD): a picture beside it."
                                             ;; ground it names, and keeps one
                                             ;; cell of the panel's between it
                                             ;; and the bar.
-                                            (let ((lane (- (+ room *docked-panel-content-col*)
-                                                           (if thumb-height 1 0))))
-                                              (multiple-value-bind (segs ground)
-                                                  (funcall paint (= index selection) lane)
-                                                (docked-panel-row
-                                                 (if thumb-height
-                                                     (let ((kept (clip-segs segs lane :mark *dialog-row-overflow-mark*)))
-                                                       (append kept
-                                                               (list (seg (spaces (- lane (segs-display-width kept))) :muted)
-                                                                     (seg " " (if surface (vstyle :bg surface) :muted)))))
-                                                     segs)
-                                                 width surface
-                                                 :col 0
-                                                 :ground (if (and surface ground)
-                                                             (visual-style-bg (style-for-tone ground))
-                                                             surface)
-                                                 :scrollbar (scrollbar-cell thumb-top thumb-height row)
-                                                 :mark *dialog-row-overflow-mark*
-                                                 :lead (nth row lead) :lead-width lead-width)))
+                                            (bind ((lane (- (+ room *docked-panel-content-col*)
+                                                            (if thumb-height 1 0)))
+                                                   ((segs ground) (funcall paint (= index selection) lane)))
+                                              (docked-panel-row
+                                               (if thumb-height
+                                                   (let ((kept (clip-segs segs lane :mark *dialog-row-overflow-mark*)))
+                                                     (append kept
+                                                             (list (seg (spaces (- lane (segs-display-width kept))) :muted)
+                                                                   (seg " " (if surface (vstyle :bg surface) :muted)))))
+                                                   segs)
+                                               width surface
+                                               :col 0
+                                               :ground (if (and surface ground)
+                                                           (visual-style-bg (style-for-tone ground))
+                                                           surface)
+                                               :scrollbar (scrollbar-cell thumb-top thumb-height row)
+                                               :mark *dialog-row-overflow-mark*
+                                               :lead (nth row lead) :lead-width lead-width))
                                             (docked-panel-row
                                              (when entry
                                                (dialog-entry-segs

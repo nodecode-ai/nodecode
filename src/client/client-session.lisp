@@ -410,14 +410,13 @@ a root: its PARENT_ID, one the listing's own rows answer to and not the id itsel
   "The /sessions dialog's context label: how many sessions are running right
 now, under the live spinner, or nothing -- the tabs beside it already count
 the ones listed."
-  (let ((started (loop for entry in fold.entries
-                       for at = (and activity (gethash (gethash "id" entry) activity))
-                       when at collect at)))
-    (if started
-        (format nil "~a ~d running"
-                (status-mark (or (running-elapsed-ms (first started) (iso-8601-ms (nlk::iso-now))) 0))
-                (length started))
-        "")))
+  (if-let (started (loop for entry in fold.entries
+                         for at = (and activity (gethash (gethash "id" entry) activity))
+                         when at collect at))
+      (format nil "~a ~d running"
+              (status-mark (or (running-elapsed-ms (first started) (iso-8601-ms (nlk::iso-now))) 0))
+              (length started))
+      ""))
 
 (defun sessions-fold-directory (fold id &aux (seen (make-hash-table :test #'equal)))
   "The folder ID's tree was opened in: the working directory of the session
@@ -1815,11 +1814,10 @@ quietly."
 on MODEL before its first frame: the target held, and the prompt in the
 composer -- a large one collapsed to its [Paste #N] marker, as a paste is --
 waiting to be sent."
-  (let ((target (loop for (key value) on launch by #'cddr
-                      when (and value (member key '(:provider :model :effort)))
-                        append (list key value))))
-    (when target
-      (setf model.launch-target (list* :session-id session-id target))))
+  (when-let (target (loop for (key value) on launch by #'cddr
+                          when (and value (member key '(:provider :model :effort)))
+                            append (list key value)))
+    (setf model.launch-target (list* :session-id session-id target)))
   ;; The composer is made by the program's INIT, which runs after this: the
   ;; prompt waits for it there (the INIT method below).
   (when-let (prompt (getf launch :prompt))
