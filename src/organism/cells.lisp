@@ -2702,16 +2702,15 @@ installer's. => TARGET."
           ;; the index's copy of the .asd is what the chooser showed and judged;
           ;; an entry no index listed -- a generation's row, put back at the pin
           ;; its seal recorded (ROW-OFFER) -- carries no copy to hold it to (T-347)
+          ;; -- serves among them: what a picker offered the folder by is what the
+          ;; folder says it serves
           (when entry.index
-            (unless (string= entry.description primary.description)
-              (error "~a: the index's description is not the .asd's, ~s" entry.name primary.description))
-            (unless (null (set-exclusive-or declared entry.depends-on :test #'string-equal))
-              (error "~a: the index's depends_on ~s is not the .asd's ~s"
-                     entry.name entry.depends-on declared))
-            ;; what a picker offered the folder by is what the folder says it serves
-            (unless (null (set-exclusive-or primary.serves entry.serves :test #'equal))
-              (error "~a: the index's serves ~s is not the .asd's ~s"
-                     entry.name entry.serves primary.serves)))
+            (loop for (field index asd test)
+                    in (list (list "description" (list entry.description) (list primary.description) #'string=)
+                             (list "depends_on" entry.depends-on declared #'string-equal)
+                             (list "serves" entry.serves primary.serves #'equal))
+                  when (set-exclusive-or index asd :test test)
+                    do (error "~a: the index's ~a is not the .asd's: ~s, not ~s" entry.name field index asd)))
           (when-let (links (repository-links source))
             (error "~a carries symbolic link~p (~{~a~^, ~}); a cell may not"
                    entry.name (length links) links))
