@@ -206,14 +206,17 @@ A command whose answer is its text alone opens nothing."
   "Run LINE, the line a row's key names in the answer dialog atop STACK, where
 the command ran: a dialog it answers opens over STACK; else what it says is a
 toast, the one line the panel leaves in sight, and STACK is read again
-(REOPEN-ANSWER-DIALOG)."
+(REOPEN-ANSWER-DIALOG) -- unless the answer put a draft in the box, where
+the person goes next: the panels close on it."
   (multiple-value-bind (answer failed) (with-slash-notice (line) (gateway-slash-answer model line))
-    (unless failed
-      (apply-answer-effects model (json-array answer "effects") :said t))
-    (if (and (not failed) (json-value answer :object "dialog"))
-        (open-answer-dialog model answer :line line :under stack)
-        (progn (show-status model (if failed answer (json-value answer :string "text")) :error-p failed)
-               (reopen-answer-dialog model stack)))))
+    (let ((effects (and (not failed) (json-array answer "effects"))))
+      (apply-answer-effects model effects :said t)
+      (if (and (not failed) (json-value answer :object "dialog"))
+          (open-answer-dialog model answer :line line :under stack)
+          (progn (show-status model (if failed answer (json-value answer :string "text")) :error-p failed)
+                 (unless (find "draft" effects :key (lambda (effect) (json-value effect :string "kind"))
+                                               :test #'equal)
+                   (reopen-answer-dialog model stack)))))))
 
 (defun reopen-answer-dialog (model stack)
   "Open the answer dialog atop STACK -- (LINE SELECTION LABEL) entries,

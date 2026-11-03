@@ -2348,3 +2348,31 @@ from ARGUMENTS, the text bound as TEXT."
           (is (equal "half a thought" (gethash "draft" stash)) "the reader gets the box")
           (is (null (nth-value 1 (gethash "draft" plain))) "the rest never see it"))
         (is (equal "half a thought" (nle::editor-value model.editor)) "sending it leaves the box as it was")))))
+
+(deftest a-draft-effect-sets-inserts-or-appends-the-input-box ()
+  ;; #199: an answer's (:draft MODE TEXT) is this shell's to apply, so the
+  ;; request names the kind; :set replaces the box, :insert lands at the
+  ;; caret, :append after the last line. A gesture whose answer set the
+  ;; draft ends in the box: the panel it came from is not read again.
+  (with-frame-model (model 120 40 :session-id "draft-effect")
+    (flet ((apply-one (mode text)
+             (nle::apply-answer-effects model (nle::answer-effects-json (list (list :draft mode text))))
+             (nle::editor-value model.editor)))
+      (is (member "draft" (nle::answer-effect-kinds) :test #'equal) "the shell names the kind it applies")
+      (nle::editor-insert model.editor "ab")
+      (nle::editor-cursor-left model.editor)
+      (is (equal "aXb" (apply-one :insert "X")) "insert lands at the caret")
+      (is (equal (format nil "aXb~%tail") (apply-one :append (format nil "~%tail"))) "append goes after the last line")
+      (is (equal "fresh" (apply-one :set "fresh")) "set replaces the draft")
+      (is (equal "" (apply-one :set "")) "set to nothing empties the box"))
+    (let ((reads 0))
+      (with-stubbed-fdefinition (nle::gateway-model-http-call (model method path body &rest keys)
+                                  (declare (ignore model method path keys))
+                                  (if (equal (nlk:json-value body :string "line") "/t-stash pop 1")
+                                      (nlk:decode-json "{\"text\":\"back\",\"effects\":[{\"kind\":\"draft\",\"mode\":\"set\",\"text\":\"kept words\"}]}")
+                                      (progn (incf reads)
+                                             (nlk:decode-json "{\"text\":\"list\",\"dialog\":{\"title\":\"Stash\",\"rows\":[{\"label\":\"kept words\",\"run\":{\"enter\":\"/t-stash pop 1\"}}]}}"))))
+        (nle::answer-gesture model "/t-stash pop 1" (list (list "/t-stash" 0 "kept words")))
+        (is (equal "kept words" (nle::editor-value model.editor)) "the row's line brought the draft back")
+        (is (zerop reads) "and the stash's panel was not read again over it")
+        (is (null model.dialog) "no panel stands over the box")))))
