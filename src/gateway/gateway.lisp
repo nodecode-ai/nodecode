@@ -3302,7 +3302,7 @@ a surface that draws one wears (a room's card its edge), NIL for none."
 ;;; page, a channel's room, rpc, a bare (slash LINE). A caller names the
 ;;; kinds it applies itself (SLASH's :EFFECTS); the rest reach it as text.
 
-(defparameter +answer-effect-kinds+ '(:clipboard :draft :open)
+(defparameter +answer-effect-kinds+ '(:clipboard :draft :open :run)
   "The kinds of effect an answer may carry, as their tags.")
 
 (defun shell-word (text)
@@ -3345,6 +3345,12 @@ needs, signals -- the cell's mistake, said where its command ran."
            (json-object "kind" "draft" "mode" (string-downcase mode)
                         "text" (text text "its text")
                         "fallback" (or fallback (fence text)))))
+        (:run
+         (destructuring-bind (line &key fallback) arguments
+           (unless (uiop:string-prefix-p "/" (text line "its line"))
+             (error "answer effect ~s: the line is a slash line" effect))
+           (json-object "kind" "run" "line" line
+                        "fallback" (or fallback (format nil "Run `~a`" line)))))
         (:open
          (destructuring-bind (&key session prompt url file fallback) arguments
            (unless (= 1 (count-if #'identity (list session url file)))

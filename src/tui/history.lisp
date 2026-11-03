@@ -24,7 +24,16 @@ included), then every keybind action with its resolved key label."
          collect (make-picker-row
                   :label (keybind-chords-label (chat-model-keymap model)
                                                action)
-                  :detail label))))
+                  :detail label))
+   ;; The slash lines keybinds.json binds (#199): one an action's chord
+   ;; took says which, since that key runs the action instead.
+   (loop for (chord line taken) in (gethash +keybind-lines-key+ (chat-model-keymap model))
+         collect (make-picker-row
+                  :label (key-chord-label chord)
+                  :detail (if taken
+                              (format nil "~a (the key is taken by ~a)" line
+                                      (second (assoc taken *keybind-actions*)))
+                              line)))))
 
 (defun open-help-dialog (model)
   "Open the keyboard help dialog (the `?` trigger and the /help command)."

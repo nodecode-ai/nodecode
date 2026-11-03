@@ -5597,6 +5597,10 @@ default target is PROVIDER/MODEL-ID, restored after."
     (signals-error error (effect '(:open :url "u" :file "f")))
     (signals-error error (effect '(:clipboard 3)))
     (signals-error error (effect '(:paste "x")))
+    ;; A line the shell runs as if typed; a room is told to type it.
+    (is (equal '("run" "/t-stash pop" "Run `/t-stash pop`")
+               (members (effect '(:run "/t-stash pop")) "kind" "line" "fallback")))
+    (signals-error error (effect '(:run "no slash")))
     (is (null (nle::answer-effects-json nil)) "no effects is no member")))
 
 (deftest cell-command-clipboard-effect-lands-on-the-shells-clipboard (with-temp-gateway (port))

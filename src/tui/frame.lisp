@@ -241,6 +241,14 @@ from the ones COLLECT-DURING-WAIT hid inside provider wait."
            ;; own default would insert a newline behind the operator's
            ;; configuration.
            ((eq key :enter))
+           ;; A chord keybinds.json binds to a slash line (#199) runs it as
+           ;; if typed, the input box left as it stands, so a command that
+           ;; reads the draft gets what the person was writing. Asked after
+           ;; every chord above has declined the key: a built-in wins.
+           ((when-let (line (keybind-line (chat-model-keymap model) key mod))
+              (when-let (cmd (run-slash-line model line))
+                (return-from update (values model cmd)))
+              t))
            (t (setf pass-to-editor t)))))
 
       ;; Window resize

@@ -86,6 +86,24 @@ SAID is true when the answer's own text is the notice they land under."
   (copy-to-shell-clipboard model (or (json-value effect :string "text") "")
                            :copied (if *answer-said* nil +answer-copied-hint+)))
 
+(defvar *answer-run-depth* 0
+  "How many (:run LINE) effects deep the shell stands: a line whose answer
+runs a line runs, and one that would run itself stops at +ANSWER-RUN-MOST+.")
+
+(defparameter +answer-run-most+ 4
+  "The (:run LINE) effects one key or one line may chain.")
+
+(define-answer-effect "run" (model effect)
+  ;; A line the person could have typed, run as a chord bound to it runs it
+  ;; (RUN-SLASH-LINE): the box kept, the answer in the status.
+  (let ((line (or (json-value effect :string "line") "")))
+    (if (< *answer-run-depth* +answer-run-most+)
+        (let ((*answer-run-depth* (1+ *answer-run-depth*)))
+          (run-slash-line model line))
+        (show-status model (format nil "~a was not run: ~d lines ran each other's answers"
+                                   line +answer-run-most+)
+                     :error-p t))))
+
 (defun run-gateway-command (model entry args &key trigger)
   "Run ENTRY, a cell's command MODEL's gateway serves, with its verbatim
 argument tail ARGS, and answer the notice: the answer's text, or NIL when the

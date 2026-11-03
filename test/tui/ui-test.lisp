@@ -3401,6 +3401,67 @@ nothing opens: the target, or NIL."
       (press model #\o :mod nlt:+mod-ctrl+)
       (is (eq :developer model.tool-detail)))))
 
+(deftest a-keybind-runs-a-slash-line-and-keeps-the-box ()
+  ;; #199 need 5: keybinds.json binds a chord to a slash line. The shell runs
+  ;; it as if typed, the input box left as it stands, so a command that
+  ;; reads the draft gets it. An action's chord wins a collision, help says
+  ;; which action took it, and a chord an override freed is the line's.
+  (with-temp-file (nle::*keybinds-path*
+                   :contents "{\"/t-stash save\": \"alt+k\", \"/t-clash\": \"ctrl+r\", \"toggle_viewport\": \"ctrl+g\", \"/t-freed\": \"ctrl+o\"}")
+    (with-frame-model (model 80 24 :session-id "kb-line")
+      (let ((lines '())
+            (drafts '())
+            (nle::*gateway-commands* nil))
+        (with-stubbed-fdefinition (nle::gateway-model-http-call (model method path body &rest keys)
+                                    (declare (ignore model keys))
+                                    (cond ((and (eq method :get) (equal path "/api/gateway/slash"))
+                                           (nlk:decode-json "{\"commands\":[{\"name\":\"t-stash\",\"reads\":[\"draft\"]},{\"name\":\"t-clash\"},{\"name\":\"t-freed\"}]}"))
+                                          (t (push (gethash "line" body) lines)
+                                             (push (gethash "draft" body) drafts)
+                                             (nlk:decode-json "{\"text\":\"done\"}"))))
+          (nle::set-gateway-commands (nle::gateway-command-entries model))
+          (is (equal "/t-stash save" (nle::keybind-line model.keymap #\k nlt:+mod-alt+)) "the file's line is on its chord")
+          (type-string model "half a thought")
+          (press model #\k :mod nlt:+mod-alt+)
+          (is (equal '("/t-stash save") lines) "the chord ran its line")
+          (is (equal '("half a thought") drafts) "a command that reads the box got it")
+          (is (equal "half a thought" (composer-value model)) "and the box stands as it was")
+          (press model #\r :mod nlt:+mod-ctrl+)
+          (is (= 1 (length lines)) "Ctrl+R stays the history picker's")
+          (is model.dialog "which opened")
+          (setf model.dialog nil)
+          (is (find "/t-clash (the key is taken by Browse every past prompt)"
+                    (nle::help-dialog-rows model) :key #'nle::picker-row-detail :test #'equal)
+              "help names the action that took the key")
+          (is (find "/t-stash save" (nle::help-dialog-rows model) :key #'nle::picker-row-detail :test #'equal)
+              "and lists the line on its chord")
+          (press model #\o :mod nlt:+mod-ctrl+)
+          (is (equal "/t-freed" (first lines)) "a chord an override moved off is free for a line")
+          (is (eq :standard model.tool-detail) "and no longer switches the viewport"))))))
+
+(deftest a-run-effect-runs-its-line-and-stops-a-loop ()
+  ;; #199: (:run LINE) is the line a chord or a row would run, so an answer
+  ;; can chain one; a line whose answer runs itself stops after a few.
+  (with-frame-model (model 80 24 :session-id "run-effect")
+    (let ((lines '())
+          (nle::*gateway-commands* nil))
+      (with-stubbed-fdefinition (nle::gateway-model-http-call (model method path body &rest keys)
+                                  (declare (ignore model keys))
+                                  (cond ((and (eq method :get) (equal path "/api/gateway/slash"))
+                                         (nlk:decode-json "{\"commands\":[{\"name\":\"t-loop\"},{\"name\":\"t-once\"}]}"))
+                                        (t (push (gethash "line" body) lines)
+                                           (nlk:decode-json
+                                            (if (equal "/t-loop" (gethash "line" body))
+                                                "{\"text\":\"again\",\"effects\":[{\"kind\":\"run\",\"line\":\"/t-loop\"}]}"
+                                                "{\"text\":\"ok\"}")))))
+        (nle::set-gateway-commands (nle::gateway-command-entries model))
+        (is (member "run" (nle::answer-effect-kinds) :test #'equal) "the shell names the kind it applies")
+        (nle::apply-answer-effects model (nle::answer-effects-json '((:run "/t-once"))))
+        (is (equal '("/t-once") lines) "the effect ran its line")
+        (setf lines '())
+        (nle::apply-answer-effects model (nle::answer-effects-json '((:run "/t-loop"))))
+        (is (= nle::+answer-run-most+ (length lines)) "a line that runs itself stops")))))
+
 (deftest ctrl-f-expands-every-dialog-to-the-window ()
   ;; Ctrl+F over an open dialog lifts the docked panel from the Zig docked
   ;; height — and from a dialog's own BODY-ROWS — to every row under the

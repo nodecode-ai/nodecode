@@ -247,6 +247,25 @@ a held one until the composer's text moves off the draft it was said over."
                (render-state model)
                (values t nil))))))
 
+(defun run-slash-line (model line)
+  "Run the slash LINE as if typed and entered, the input box left as it
+stands: what a chord keybinds.json binds to LINE does (#199). The answer
+stands in the composer status; => the program command it asks for, or NIL."
+  ;; Unlike SUBMIT-SLASH, nothing is reset: the box is not where the line
+  ;; came from, and a command declaring :reads (:draft) reads it.
+  (multiple-value-bind (name args) (parse-slash-input line)
+    (let ((entry (find-slash-command name)))
+      (cond (entry
+             (multiple-value-bind (notice cmd)
+                 (execute-slash-command model (slash-command-name entry) args)
+               (when notice (show-status model notice :title line))
+               (render-state model)
+               cmd))
+            (t (show-status model (format nil "~a is bound to a key, but no command /~a stands; /help lists commands" line name)
+                            :error-p t)
+               (render-state model)
+               nil)))))
+
 (defun composer-token-filter (text trigger)
   "The bare token after the last TRIGGER character, or NIL once whitespace
 follows it (Zig composerFileMentionFilterAtCursor with the cursor at end of
