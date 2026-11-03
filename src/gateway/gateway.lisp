@@ -4948,21 +4948,13 @@ installed binary started."
         #-win32
         ((and *serving* (not *fronted*) (nlk:organism-binary)) :exec)))
 
-(defun exit-for-restart (to)
-  ;; A headless owner no unit runs is its own next launch: it lets the store
-  ;; go and execs `current' in place (SERVE-NEXT :RESTART). An exit there
-  ;; would leave nothing serving until a shell happened to start one.
-  (when (eq (restart-way) :exec)
-    (format t "~&restart: ~a runs now; running `current' again in place~%" to)
-    (finish-output)
-    (setf *stop-reason* (or *restart-reason* "a restart"))
-    (return-from exit-for-restart (serve-next :restart)))
-  (format t "~&restart: ~a runs at the next launch; exiting for it~%" to)
+(defun exit-for-restart (to &aux (in-place (eq (restart-way) :exec)))
+  (format t "~&restart: ~a ~:[runs at the next launch; exiting for it~;runs now; running `current' again in place~]~%"
+          to in-place)
   (finish-output)
   (setf *stop-reason* (or *restart-reason* "a restart"))
-  ;; Stopped and closed here, then gone at once. Left to the main thread's
-  ;; unwind, SBCL's exit would end the listener thread first and the server's
-  ;; own stop would fail joining it; a unit's stop by signal is no cleaner.
+  (when in-place
+    (return-from exit-for-restart (serve-next :restart)))
   (ignore-errors (stop-gateway))
   (ignore-errors (nlk:close-store))
   (sb-ext:exit :code 0 :abort t))
