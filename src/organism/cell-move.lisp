@@ -82,9 +82,8 @@ from the cell. A file that defines a name NAMES leaves out stays whole."
                             :only (cons system to) :notice #'notice)))))
     (dolist (path shared)
       (format t "~&[layer: ~a defines more than you named; left whole in the layer]~%" (file-namestring path)))
-    (let ((missing (set-difference wanted found :test #'string=)))
-      (when missing
-        (format t "~&[layer: no layer file defines ~{~(~a~)~^, ~}]~%" missing)))
+    (when-let (missing (set-difference wanted found :test #'string=))
+      (format t "~&[layer: no layer file defines ~{~(~a~)~^, ~}]~%" missing))
     (when labels
       (format t "~&[layer: moved ~{~a~^, ~} to ~a; nothing live changed, the next boot loads them from there]~%"
               labels (folder-name directory)))

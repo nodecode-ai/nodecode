@@ -285,8 +285,7 @@ mid-escape while it streams — decoded."
    "(?s)\\\\(?:u(.{0,4})|(.)|\\z)" encoded
    (lambda-ignoring (match hex other)
      (cond ((and hex (= 4 (length hex)))
-            (let ((code (parse-integer hex :radix 16 :junk-allowed t)))
-              (if code (string (code-char code)) "")))
+            (if-let (code (parse-integer hex :radix 16 :junk-allowed t)) (string (code-char code)) ""))
            ;; \" \\ and \/ give their own character, as does an unknown escape
            (other (string (case (char other 0)
                             (#\n #\Newline) (#\t #\Tab) (#\r #\Return)

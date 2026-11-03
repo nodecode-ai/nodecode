@@ -2227,21 +2227,20 @@ entry, NOTE the string NOTE-FN answers for that group's image count."
   ;; identity is what the history memo (provider.lisp *HISTORY-MEMO*)
   ;; remembers encodings by, so a message the hydration cache keeps EQ is
   ;; encoded once for as long as it is kept.
-  (let* ((history-turns request.history-turns)
+  (bind ((history-turns request.history-turns)
          (turns (or history-turns
                     (list (make-history-turn :messages request.messages :terminal-p t))))
          (images request.visible-images)
          (retained (if history-turns
                        (messages-at-boundary turns request.history-boundary request.history-floors)
-                       request.messages)))
-    (multiple-value-bind (system-prompt head)
-        (prompt-messages request.base-system-prompt request.harness-sections)
-      ;; every other slot of the request rides into the context of its name as it is
-      (record-with #'make-compiled-turn-context request
-                   :system-prompt system-prompt
-                   :head-message head
-                   :messages (coerce (messages-with-visible-images retained images) 'simple-vector)
-                   :history-turns turns))))
+                       request.messages))
+         ((system-prompt head) (prompt-messages request.base-system-prompt request.harness-sections)))
+    ;; every other slot of the request rides into the context of its name as it is
+    (record-with #'make-compiled-turn-context request
+                 :system-prompt system-prompt
+                 :head-message head
+                 :messages (coerce (messages-with-visible-images retained images) 'simple-vector)
+                 :history-turns turns)))
 
 (defun context-with (context &key messages provider-config boundary history-turns
                                floors visible-images)
