@@ -3982,6 +3982,19 @@ request."
     (with-gateway-http (port :post "/api/gateway/slash" :body "{\"line\":\"/help\"}")
       (is (null (nlk:json-value body :any "dialog")) "a line alone carries no panel"))))
 
+(deftest gateway-json-body-reads-as-utf-8 (with-temp-gateway (port))
+  ;; A JSON body is UTF-8 (RFC 8259): a non-ASCII line or draft a shell posts
+  ;; reaches the command as written, not as its Latin-1 bytes (#199).
+  (nlk:with-cleanup ((nle:unregister-commands "t-utf8"))
+    (nle:register-command "t-utf8" "t-echo"
+                          (lambda (args session-id &key draft)
+                            (declare (ignore session-id))
+                            (format nil "~a|~a" args draft))
+                          :session nil :reads '(:draft))
+    (with-gateway-http (port :post "/api/gateway/slash"
+                             :body "{\"line\":\"/t-echo café\",\"draft\":\"über — あ 🦎\"}")
+      (is (equal "café|über — あ 🦎" (gethash "text" body)) "the line and the draft arrive as written"))))
+
 ;;; --- gate: reconnect endpoint rediscovery ----------------------------------
 
 (deftest reconnect-rediscovers-endpoint-from-lease-sidecar ()

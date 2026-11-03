@@ -2447,9 +2447,19 @@ ARGS its message) unless TEST."
   ;; and CSRF-adjacent hole, and the Zig gateway refuses it too.
   (unless (string-equal "application/json" (request-media-type env))
     (nlk::protocol-refuse :unsupported_media_type "request body must be application/json"))
-  (let ((text (make-string length)))
-    (unless (= length (read-sequence text (getf env :raw-body)))
+  ;; JSON is UTF-8 (RFC 8259). The server's raw body is a bivalent stream
+  ;; whose characters are Latin-1, so a body read as text would turn `café'
+  ;; into `cafÃ©': it is read as the octets CONTENT-LENGTH counts and decoded
+  ;; here, a malformed sequence a replacement character. A body that is
+  ;; characters already (a string stream) is read as it is.
+  (let* ((body (getf env :raw-body))
+         (text (if (eq 'character (stream-element-type body))
+                   (make-string length)
+                   (make-array length :element-type '(unsigned-byte 8)))))
+    (unless (= length (read-sequence text body))
       (nlk::protocol-refuse :truncated_request "HTTP request body ended early"))
+    (unless (stringp text)
+      (setf text (sb-ext:octets-to-string text :external-format '(:utf-8 :replacement #\ufffd))))
     (let ((value (handler-case (nlk:decode-json text)
                    (error (condition)
                      (nlk::protocol-refuse :invalid_json "invalid JSON: ~a" condition)))))
