@@ -595,42 +595,32 @@ read back."
   ;; the two strict parsers that must tell JSON null from JSON false read
   ;; GETHASH's own two values directly, as JSON-VALUE's docstring records.
   (flet ((binding (spec)
-           (cond
-             ;; A wire read always has a key, so (VAR :STRING) is an ordinary binding.
-             ((and (consp spec) (>= (length spec) 3) (member (second spec) +json-types+))
-              (destructuring-bind (var type &rest tail) spec
-                (unless (and var (symbolp var) (not (keywordp var)))
+           (destructuring-bind (var &optional (type nil typed) &rest tail) (alexandria:ensure-list spec)
+             (let* ((wire (member type +json-types+))
+                    (mark (position :default tail))
+                    (path (subseq tail 0 mark)))
+               (cond
+                 ((not (and var (symbolp var) (not (keywordp var))))
                   (error "WITH-JSON: ~s is not a variable name in ~s" var spec))
-                (let* ((mark (position :default tail))
-                       (path (if mark (subseq tail 0 mark) tail))
-                       (default (when mark
-                                  (unless (= (length tail) (+ mark 2))
-                                    (error "WITH-JSON: :DEFAULT takes exactly one form in ~s"
-                                           spec))
-                                  (nth (1+ mark) tail))))
-                  ;; Literal keys only. A dynamic key is a lookup, not a wire field,
-                  ;; and belongs in a direct JSON-VALUE call; keeping the macro literal
-                  ;; means every wire key a file reads is greppable as a string inside
-                  ;; a WITH-JSON form.
-                  (unless (and path (every #'stringp path))
-                    (error "WITH-JSON: ~s needs at least one string-literal key" spec))
-                  ;; :DEFAULT substitutes on a NIL read, and JSON false reads NIL, so
-                  ;; a defaulted :BOOLEAN could never answer false. Refuse it rather
-                  ;; than expand into a form that cannot mean what it says.
-                  (when (and mark (eq type :boolean))
-                    (error "WITH-JSON: :DEFAULT is meaningless on :BOOLEAN in ~s" spec))
-                  (let ((read `(json-value ,source ,type ,@path)))
-                    (list var (if mark `(or ,read ,default) read))))))
-             ;; A wire type with no key can only be a mistake: (VAR :INTEGER) reads
-             ;; nothing, and binding the bare keyword is never what the author meant.
-             ((and (consp spec) (= (length spec) 2) (member (second spec) +json-types+))
-              (error "WITH-JSON: ~s names a wire type but no key" spec))
-             ((and (symbolp spec) spec (not (keywordp spec))) (list spec nil))
-             ((and (consp spec) (<= (length spec) 2)
-                   (symbolp (first spec)) (first spec) (not (keywordp (first spec))))
-              spec)
-             (t (error "WITH-JSON: ~s is neither a wire read (VAR TYPE KEY...) nor an ~
-ordinary binding (VAR FORM)" spec)))))
+                 ;; An ordinary binding: VAR, (VAR) or (VAR FORM).
+                 ((and (not wire) (null tail)) (list var (and typed type)))
+                 ((not wire)
+                  (error "WITH-JSON: ~s is neither a wire read (VAR TYPE KEY...) nor an ~
+ordinary binding (VAR FORM)" spec))
+                 ;; Literal keys only. A dynamic key is a lookup, not a wire field,
+                 ;; and belongs in a direct JSON-VALUE call; keeping the macro literal
+                 ;; means every wire key a file reads is greppable as a string inside
+                 ;; a WITH-JSON form. (VAR :INTEGER) reads nothing, so it is refused too.
+                 ((not (and path (every #'stringp path)))
+                  (error "WITH-JSON: ~s needs at least one string-literal key" spec))
+                 ((and mark (/= (length tail) (+ mark 2)))
+                  (error "WITH-JSON: :DEFAULT takes exactly one form in ~s" spec))
+                 ;; :DEFAULT substitutes on a NIL read, and JSON false reads NIL, so
+                 ;; a defaulted :BOOLEAN could never answer false.
+                 ((and mark (eq type :boolean))
+                  (error "WITH-JSON: :DEFAULT is meaningless on :BOOLEAN in ~s" spec))
+                 (t (let ((read `(json-value ,source ,type ,@path)))
+                      (list var (if mark `(or ,read ,(nth (1+ mark) tail)) read)))))))))
     `(let ((,source ,object))
        (declare (ignorable ,source))
        (let* ,(mapcar #'binding specs)
@@ -1430,30 +1420,29 @@ object, keys downcased; vectors are walked, hash tables and scalars pass."
   (loop while specs
         do (let ((head (pop specs)))
              (flet ((take (what)
-                      (when (null specs)
-                        (error "JSON-OBJECT: ~s is missing its ~a" head what))
-                      (pop specs)))
+                      (if specs
+                          (pop specs)
+                          (error "JSON-OBJECT: ~s is missing its ~a" head what)))
+                    (literal (key)
+                      (if (stringp key)
+                          key
+                          (error "JSON-OBJECT: ~s needs a literal string key, got ~s" head key))))
                (cond
                  ((and (consp head) (eq :getf (first head)))
                   (destructuring-bind (plist &rest keys) (rest head)
                     (let ((opt (and (eq :opt (first keys)) (pop keys))))
-                      (dolist (key (reverse keys))
-                        (let ((name (wire-symbol key)))
-                          (setf specs `(,@(and opt '(:opt)) ,key (getf ,plist ,name) ,@specs)))))))
+                      (setf specs (append (loop for key in keys
+                                                append `(,@(and opt '(:opt)) ,key
+                                                         (getf ,plist ,(wire-symbol key))))
+                                          specs)))))
                  ((stringp head)
-                  (push `(setf (gethash ,head ,object) ,(take "value form"))
-                        forms))
-                 ((member head '(:opt :when))
-                  (let* ((test (and (eq head :when) (take "test form")))
-                         (key (take "key")))
-                    (unless (stringp key)
-                      (error "JSON-OBJECT: ~s needs a literal string key, got ~s" head key))
-                    (push (if (eq head :when)
-                              `(when ,test
-                                 (setf (gethash ,key ,object) ,(take "value form")))
-                              (let ((value (gensym "VALUE")))
-                                `(when-let (,value ,(take "value form"))
-                                   (setf (gethash ,key ,object) ,value))))
+                  (push `(setf (gethash ,head ,object) ,(take "value form")) forms))
+                 ((eq head :when)
+                  (let* ((test (take "test form")) (key (literal (take "key"))))
+                    (push `(when ,test (setf (gethash ,key ,object) ,(take "value form"))) forms)))
+                 ((eq head :opt)
+                  (let ((key (literal (take "key"))) (value (gensym "VALUE")))
+                    (push `(when-let (,value ,(take "value form")) (setf (gethash ,key ,object) ,value))
                           forms)))
                  (t
                   (error "JSON-OBJECT: ~s is neither a literal string key nor ~
