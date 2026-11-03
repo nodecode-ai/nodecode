@@ -77,35 +77,23 @@ them and how many more, `all N' when they are every one of more than SHOWN."
 
 (defun setup-pick-rows (choices picked cursor &key (rows 20))
   "The checklist over CHOICES ((ID . LABEL) ...) as rows to draw, top down:
-(:ALL POINTED TICKED COUNT), (:HEAD SERVER), (:CHOICE POINTED TICKED NAME
-AFTER NESTED INDEX), (:MORE COUNT) -- the ids in PICKED ticked, the CURSOR
-row (0, the all row) pointed at, at most ROWS choices shown around it. A
-label's tail (`#general  Home') heads a group when two or more share it, a
-server's channels, them NESTED under it; a lone one rides AFTER its name."
+(:ALL POINTED TICKED COUNT), then at most ROWS choices around the CURSOR row
+(0, the all row) as (:CHOICE POINTED TICKED NAME AFTER INDEX), the ids in
+PICKED ticked and a label's tail (`#general  Home') AFTER its name, with
+(:MORE COUNT) for the choices above and below them."
   (let* ((count (length choices))
          (top (max 0 (min (- cursor (floor rows 2)) (- count rows))))
-         (end (min count (+ top rows)))
-         (tails (mapcar (lambda (choice)
-                          (let ((cut (search "  " (cdr choice))))
-                            (and cut (subseq (cdr choice) (+ cut 2)))))
-                        choices))
-         (out (list (list :all (zerop cursor)
-                          (and choices (every (lambda (choice) (member (car choice) picked :test #'equal)) choices))
-                          count))))
-    (when (plusp top) (push (list :more top) out))
-    (loop with group = nil
-          for index from top below end
-          for (id . label) = (nth index choices)
-          for tail = (nth index tails)
-          for heading = (and tail (< 1 (count tail tails :test #'equal)))
-          do (when (and heading (not (equal tail group)))
-               (setf group tail)
-               (push (list :head tail) out))
-             (push (list :choice (= cursor (1+ index)) (and (member id picked :test #'equal) t)
-                         (gateway-setup-choice-name label) (and (not heading) tail) heading index)
-                   out))
-    (when (< end count) (push (list :more (- count end)) out))
-    (nreverse out)))
+         (end (min count (+ top rows))))
+    (append (list (list :all (zerop cursor)
+                        (and choices (every (lambda (choice) (member (car choice) picked :test #'equal)) choices))
+                        count))
+            (when (plusp top) (list (list :more top)))
+            (loop for index from top below end
+                  for (id . label) = (nth index choices)
+                  for cut = (search "  " label)
+                  collect (list :choice (= cursor (1+ index)) (and (member id picked :test #'equal) t)
+                                (gateway-setup-choice-name label) (and cut (subseq label (+ cut 2))) index))
+            (when (< end count) (list (list :more (- count end)))))))
 
 (defun setup-pick-toggle (choices picked cursor)
   "PICKED with the CURSOR row of the checklist over CHOICES flipped: the all
@@ -140,12 +128,11 @@ channel cells on offer as ((ID . ROW) ...), AT the list's cursor); CALL,
 config route draws it and its PATH; the FIELDS still to ask, the FIELD
 asked, its CHOICES, the DEFAULTS an unset one takes, the ids PICKED and the
 CURSOR; INPUT typed or pasted; CHECK, the check's lines, and SUMMARY, its
-one line; WAIT, what the platform said to do first, and WAITED once it was
-done; ROUND, the pass over the fields; SAID, a line under the step, (TEXT
-. TONE)."
+one line; WAIT, what the platform said to do first; ROUND, the pass over
+the fields; SAID, a line under the step, (TEXT . TONE)."
   (channel nil) (cells '()) (at 0) (call nil) (done '()) (step :loading)
   (section nil) (path nil) (fields '()) (field nil) (choices '()) (defaults '()) (picked '())
-  (cursor 0) (typed "" :type string) (check '()) (summary nil) (wait nil) (waited nil)
+  (cursor 0) (typed "" :type string) (check '()) (summary nil) (wait nil)
   (round 0) (said nil))
 
 (nlk:access (setup channel-setup-sheet))
@@ -286,33 +273,19 @@ names the secret now, or NIL."
                     return name)))))
 
 (defun channel-setup-token (model setup &aux (text (string-trim '(#\Space #\Tab #\Return #\Newline) setup.typed)))
-  "Keep what was pasted as the section's secret -- a token in its 0600
-file, or $NAME, the environment variable that holds it -- then check it.
-Nothing pasted keeps the one set."
-  (destructuring-bind (noun env file set) (channel-setup-secret setup)
-    (flet ((then-check (model answer)
-             (declare (ignore answer))
-             (setf setup.typed "")
-             (channel-setup-read model setup #'channel-setup-check)))
-      (cond ((string= text "")
-             (if set
-                 (channel-setup-check model setup)
-                 (channel-setup-say setup (format nil "Paste the ~a first." noun) :system)))
-            ((char= #\$ (char text 0))
-             (let ((name (subseq text 1)))
-               (cond ((equal set file)
-                      (channel-setup-say setup (format nil "The ~a is kept in a file now: paste the ~a itself to replace it." noun noun) :system))
-                     ((not (and (plusp (length name)) (every (lambda (char) (or (alphanumericp char) (char= char #\_))) name)))
-                      (channel-setup-say setup (format nil "~s is not an environment variable's name." name)))
-                     (t (channel-setup-ask model setup
-                                           (lambda () (channel-setup-call setup :post "/api/gateway/config"
-                                                                          (json-object "path" (concatenate 'vector setup.path (vector env))
-                                                                                       "value" name)))
-                                           #'then-check "Keeping it…")))))
-            (t (channel-setup-ask model setup
-                                  (lambda () (channel-setup-call setup :post "/api/gateway/config"
-                                                                 (json-object "path" setup.path "secret" text)))
-                                  #'then-check "Keeping it…"))))))
+  "Keep what was pasted as the section's secret, then check it; nothing
+pasted keeps the one set."
+  (let ((secret (channel-setup-secret setup)))
+    (cond ((string/= text "")
+           (channel-setup-ask model setup
+                              (lambda () (channel-setup-call setup :post "/api/gateway/config"
+                                                             (json-object "path" setup.path "secret" text)))
+                              (lambda-ignoring (model answer)
+                                (setf setup.typed "")
+                                (channel-setup-read model setup #'channel-setup-check))
+                              "Keeping it…"))
+          ((fourth secret) (channel-setup-check model setup))
+          (t (channel-setup-say setup (format nil "Paste the ~a first." (first secret)) :system)))))
 
 (defun channel-setup-check (model setup)
   "Ask the section's check what the token sees, and show it: Enter goes on
@@ -386,7 +359,6 @@ default."
                 (channel-setup-offer model setup :again t))
                (t
                 (when (eq setup.step :wait)
-                  (setf setup.waited t)
                   (channel-setup-fold setup (or (json-value answer :string "found") "there now")))
                 (let ((defaults (coerce (or (json-array answer "default") #()) 'list)))
                   (setf setup.choices choices setup.defaults defaults setup.cursor 0
@@ -437,24 +409,13 @@ it named that the platform did not offer kept; nothing changed keeps it."
                              (format nil "~a: ~a" (channel-setup-field-label setup.field) text)))))
 
 (defun channel-setup-round-end (model setup)
-  "Past the last field: a complete section starts its channel (after a wait,
-with what the token sees now folded in first); one still needing something
-is asked again, at most three passes."
+  "Past the last field: a complete section starts its channel; one still
+needing something is asked again, at most three passes."
   (channel-setup-read
    model setup
    (lambda (model setup)
      (let ((needs (json-value setup.section :string "needs")))
-       (cond ((equal needs "complete")
-              (if (and setup.waited (json-value setup.section :boolean "check"))
-                  (channel-setup-ask
-                   model setup
-                   (lambda () (channel-setup-call setup :post "/api/gateway/config/probe" (json-object "path" setup.path)))
-                   (lambda (model answer)
-                     (channel-setup-fold setup (or (json-value answer :string "summary")
-                                                   (first-line (or (json-value answer :string "text") ""))))
-                     (channel-setup-launch model setup))
-                   "Checking it again…")
-                  (channel-setup-launch model setup)))
+       (cond ((equal needs "complete") (channel-setup-launch model setup))
              ((< setup.round 3)
               (channel-setup-fold setup (format nil "~a still needs ~a" (channel-setup-label setup) needs) nil)
               (channel-setup-fields model setup))
@@ -477,21 +438,6 @@ is asked again, at most three passes."
            (channel-setup-fold setup (format nil "~a did not connect: ~a~@[ - ~a~]" setup.channel (or state "no lane") detail) nil))
        (setf setup.step :done)))
    "Starting the channels…"))
-
-(defun channel-setup-invite (setup)
-  "The first link in what the platform said to do while waiting, or NIL."
-  (when-let (wait setup.wait)
-    (let ((start (search "https://" wait)))
-      (and start (subseq wait start (position-if (lambda (char) (member char '(#\Space #\Newline #\Tab))) wait :start start))))))
-
-(defun channel-setup-copy (model setup)
-  "Put the invite link on the clipboard, and say how that went."
-  (let ((link (channel-setup-invite setup))
-        (program model.program))
-    (cond ((null link))
-          ((null program) (sheet-flash setup "No terminal to copy to" :danger))
-          (t (nlt:write-clipboard program link)
-             (sheet-flash setup "Link sent to the clipboard" :success)))))
 
 (defun channel-setup-close (model setup)
   "Close the sheet: what was saved stays saved; a finished setup says how
@@ -532,7 +478,6 @@ it ended in the status line."
                   (channel-setup-fold setup (or setup.summary "token kept"))
                   (channel-setup-fields model setup))
                  ((eql key #\e) (setf setup.step :token setup.typed ""))))
-          (:wait (when (eql key #\c) (channel-setup-copy model setup)))
           (:pick
            (let ((count (length setup.choices)))
              (cond ((or (eq key :up) (eql key #\k)) (setf setup.cursor (max 0 (1- setup.cursor))))
@@ -561,7 +506,6 @@ it ended in the status line."
     (:channel '(("↑↓" "move") ("enter" "set it up") ("esc" "close")))
     (:token '(("enter" "check it") ("esc" "close")))
     (:check '(("enter" "go on") ("e" "another token") ("esc" "close")))
-    (:wait (if (channel-setup-invite setup) '(("c" "copy the link") ("esc" "close")) '(("esc" "close"))))
     (:pick '(("↑↓" "move") ("space" "pick") ("a" "all") ("enter" "save") ("esc" "keep it")))
     (:input '(("enter" "save") ("esc" "keep it")))
     (:done '(("enter" "close")))
@@ -600,10 +544,9 @@ row ticks it."
             do (ecase kind
                  (:all (destructuring-bind (pointed ticked count) data
                          (box pointed ticked 2 (format nil "all ~d" count) nil 0)))
-                 (:head (canvas-put canvas (+ px 2) row (first data) (sheet-ink :muted :ground ground) (+ px pw)))
                  (:more (canvas-put canvas (+ px 4) row (format nil "… ~d more" (first data)) (sheet-ink :muted :ground ground)))
-                 (:choice (destructuring-bind (pointed ticked name after nested index) data
-                            (box pointed ticked (if nested 4 2) name after (1+ index)))))
+                 (:choice (destructuring-bind (pointed ticked name after index) data
+                            (box pointed ticked 2 name after (1+ index)))))
                (incf row)))
     row))
 
@@ -647,7 +590,7 @@ row ticks it."
            (prog1 (paint-channel-setup-field canvas px row (min pw 72) setup.typed
                                              (if set
                                                  (format nil "set: Enter keeps it, or paste a new one")
-                                                 (format nil "paste it here, or $NAME; it is never shown"))
+                                                 (format nil "paste it here; it is never shown"))
                                              ground :masked t)
              (incf row)))))
       (:check
