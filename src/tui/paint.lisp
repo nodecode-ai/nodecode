@@ -218,8 +218,7 @@ attaching to it would paint it."
              ;; reads as the next line of the trail. Its mark sat in the label
              ;; lane and its words on the content rail, nine cells apart.
              (apply #'append
-                    (list (seg (make-string (max 0 (- (nth-value 2 (body-gutter :disclosure)) 1 (text-display-width mark)))
-                                            :initial-element #\Space))
+                    (list (seg (spaces (- (nth-value 2 (body-gutter :disclosure)) 1 (text-display-width mark))))
                           (seg mark mark-tone)
                           (seg " "))
                     (list (seg head head-tone))

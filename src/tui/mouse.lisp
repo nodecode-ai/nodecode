@@ -215,11 +215,20 @@ marks nothing."
                    ((> row bottom) (cons bottom right))
                    (t (cons row (max left (min right (cdr cell))))))))
       (when (<= top (car anchor) bottom)
-        (let ((from (clamp anchor)) (to (clamp cell)))
-          (if (or (< (car from) (car to))
-                  (and (= (car from) (car to)) (<= (cdr from) (cdr to))))
-              (cons from to)
-              (cons to from)))))))
+        (reading-order (clamp anchor) (clamp cell))))))
+
+(defun reading-order (a b)
+  "A and B, (ROW . COLUMN) cells or points, as (EARLIER . LATER)."
+  (if (or (< (car a) (car b)) (and (= (car a) (car b)) (<= (cdr a) (cdr b))))
+      (cons a b)
+      (cons b a)))
+
+(defun mark-runs (mark lo hi left right)
+  "=> ((ROW FIRST LAST) ...): MARK, ((R1 . C1) . (R2 . C2)), on rows LO..HI,
+each row cut to columns LEFT..RIGHT and at the mark's ends."
+  (destructuring-bind ((r1 . c1) . (r2 . c2)) mark
+    (loop for row from (max lo r1) to (min hi r2)
+          collect (list row (if (= row r1) (max left c1) left) (if (= row r2) (min right c2) right)))))
 
 (defun plain-frame-row (row &aux (len (length row)))
   "ROW's painted text with the escape sequences this shell writes removed:
@@ -309,28 +318,21 @@ SELECTION-ROWS-TEXT takes them: the mark's rows inside TRANSCRIPT-LANE, each
 cut to the lane's columns and at the mark's endpoints."
   (when plains
     (multiple-value-bind (top bottom left right) (transcript-lane model)
-      (destructuring-bind ((r1 . c1) . (r2 . c2)) selection
-        (loop for row from (max top r1) to (min bottom r2 (1- (length plains)))
-              for from = (if (= row r1) (max left c1) left)
-              collect (cons (cut-marked-row
-                             (without-message-clock model row (without-gutter-marks (aref plains row)))
-                             from (if (= row r2) (min right c2) right))
-                            (= from left)))))))
+      (loop for (row from to) in (mark-runs selection top (min bottom (1- (length plains))) left right)
+            collect (cons (cut-marked-row
+                           (without-message-clock model row (without-gutter-marks (aref plains row)))
+                           from to)
+                          (= from left))))))
 
 (defun span-mark-rows (model span &aux (plains (chat-model-line-plain model)))
   "SPAN's rows (MARK-SPAN) off the transcript's own lines, as
 SELECTION-ROWS-TEXT takes them: every line between its ends, shown or
 scrolled out of the window, cut at the ends' columns."
-  (destructuring-bind ((l1 . c1) . (l2 . c2)) span
-    (multiple-value-bind (top bottom left right) (transcript-lane model)
-      (declare (ignore top bottom))
-      (loop with end = (- right left)
-            for line from l1 to (min l2 (1- (length plains)))
-            for from = (if (= line l1) c1 0)
-            collect (cons (cut-marked-row
-                           (without-line-clock model line (without-gutter-marks (aref plains line)))
-                           from (if (= line l2) (min end c2) end))
-                          (zerop from))))))
+  (loop for (line from to) in (mark-runs span 0 (1- (length plains)) 0 (select-lane-end model))
+        collect (cons (cut-marked-row
+                       (without-line-clock model line (without-gutter-marks (aref plains line)))
+                       from to)
+                      (zerop from))))
 
 (defun frame-selection-text (model &aux (selection (chat-model-selection model)))
   "The marked transcript words of MODEL: the mark's rows cut at its
@@ -417,10 +419,7 @@ transcript's lines as they stand now, earlier end first, lane columns, the
 last inclusive; NIL for a mark no drag laid over the transcript."
   (when (and mark entry (eq mark (car entry)))
     (flet ((at (point) (cons (point-line model point) (third point))))
-      (let ((a (at (cadr entry))) (b (at (cddr entry))))
-        (if (or (< (car a) (car b)) (and (= (car a) (car b)) (<= (cdr a) (cdr b))))
-            (cons a b)
-            (cons b a))))))
+      (reading-order (at (cadr entry)) (at (cddr entry))))))
 
 (defun extend-mark (model anchor cell &aux (old (chat-model-selection model))
                                            (before (mark-span model)))
@@ -904,22 +903,17 @@ frame, each with its first and last column (inclusive), inside
 TRANSCRIPT-LANE -- for a drag's mark the shown rows whose lines it holds
 (MARK-SPAN), wherever the window has scrolled to."
   (multiple-value-bind (top bottom left right) (transcript-lane model)
-    (let ((span (mark-span model)))
-      (if span
-          (destructuring-bind ((l1 . c1) . (l2 . c2)) span
-            (let ((window (chat-model-band model))
-                  (top-pad (nth-value 3 (transcript-band-metrics model))))
-              (loop for row from top to bottom
-                    for line = (band-window-row-index window (- row top top-pad))
-                    when (and line (<= l1 line l2))
-                      collect (list row
-                                    (if (= line l1) (+ left c1) left)
-                                    (if (= line l2) (min right (+ left c2)) right)))))
-          (destructuring-bind ((r1 . c1) . (r2 . c2)) selection
-            (loop for row from (max top r1) to (min bottom r2)
-                  collect (list row
-                                (if (= row r1) (max left c1) left)
-                                (if (= row r2) (min right c2) right))))))))
+    (if-let (span (mark-span model))
+      (destructuring-bind ((l1 . c1) . (l2 . c2)) span
+        (loop with window = (chat-model-band model)
+              with top-pad = (nth-value 3 (transcript-band-metrics model))
+              for row from top to bottom
+              for line = (band-window-row-index window (- row top top-pad))
+              when (and line (<= l1 line l2))
+                collect (list row
+                              (if (= line l1) (+ left c1) left)
+                              (if (= line l2) (min right (+ left c2)) right))))
+      (mark-runs selection top bottom left right))))
 
 ;;; --- keyboard select mode ------------------------------------------------
 ;;; The transcript's words mark from the keyboard as well as under a drag

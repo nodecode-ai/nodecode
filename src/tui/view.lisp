@@ -314,19 +314,13 @@ with one blank canvas cell."
              ;; LIT whole cells in the shade, the part of one left as its
              ;; share of the shade over the ground, the rest ground.
              (multiple-value-bind (whole part) (floor lit)
-               (concatenate
-                'string lead
-                (if ground
-                    (concatenate
-                     'string
-                     (styled (make-string whole :initial-element glyph) (vstyle :fg shade))
-                     (if (plusp part)
-                         (styled (string glyph)
-                                 (vstyle :fg (blend-rgb shade ground (round (* 100 part)))))
-                         "")
-                     (styled (make-string (- width whole (if (plusp part) 1 0)) :initial-element glyph)
-                             (vstyle :fg ground)))
-                    (make-string width :initial-element #\Space))))))
+               (flet ((run (count rgb) (styled (make-string count :initial-element glyph) (vstyle :fg rgb))))
+                 (concatenate 'string lead
+                              (if ground
+                                  (concatenate 'string (run whole shade)
+                                               (when (plusp part) (run 1 (blend-rgb shade ground (round (* 100 part)))))
+                                               (run (- width whole (if (plusp part) 1 0)) ground))
+                                  (spaces width)))))))
       (multiple-value-bind (lines tail) (toast-text-lines toast text-width)
         (append
          (list (edge #\▄))
@@ -339,18 +333,15 @@ with one blank canvas cell."
                           'string lead
                           (render-row
                            nil
-                           (append (list (make-seg :text "  " :tone tone))
+                           (append (list (seg "  " tone))
                                    (fragment-segs
                                     (make-lline :text line :spans (notice-url-spans line)
                                                 :tone (if (toast-error-p toast) :toast-danger tone))
                                     0 (length line))
-                                   (and count (list (make-seg :text count :tone tone :dim t)))
-                                   (list (make-seg :text (make-string (max 0 (- width 3 used))
-                                                                      :initial-element #\Space)
-                                                   :tone tone)
-                                         (make-seg :text (if first "×" " ") :tone tone
-                                                   :dim (not hovered))
-                                         (make-seg :text "  " :tone tone)))
+                                   (and count (list (seg count tone :dim t)))
+                                   (list (seg (spaces (- width 3 used)) tone)
+                                         (seg (if first "×" " ") tone :dim (not hovered))
+                                         (seg "  " tone)))
                            ground width))))
          (and ground strip (list (concatenate 'string lead (blank-frame-row width ground))))
          (list (edge #\▀ lit)))))))
