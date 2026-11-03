@@ -255,14 +255,6 @@ size, hidden files and __pycache__ left out."
 
 ;;; --- the read ---------------------------------------------------------------
 
-(defun holds-p (part text &aux (first (char part 0)))
-  "Whether TEXT holds the string PART."
-  ;; From each place its first character is: CL:SEARCH walks every character
-  ;; through a generic accessor.
-  (loop for at = (position first text) then (position first text :start (1+ at))
-        while at
-          thereis (string= part text :start2 at :end2 (min (length text) (+ at (length part))))))
-
 (defun note-unmapped (home relative why) (push (format nil "~a — ~a" relative why) home.unmapped))
 
 (defun read-config-facts (home file relative)
@@ -463,7 +455,7 @@ by the memory they name and its tool sightings as calls."
       ;; A harness's own seed: nothing left once its comments and headings are
       ;; out. Each pattern runs where its mark is: run on every file.
       ((not (ppcre:scan "(?m)^[ \\t\\r]*[^# \\t\\r\\n]"
-                        (if (holds-p "<!--" text)
+                        (if (cl:search "<!--" text)
                             (ppcre:regex-replace-all "(?s)<!--.*?(?:-->|\\z)" text "")
                             text)))
        '())
