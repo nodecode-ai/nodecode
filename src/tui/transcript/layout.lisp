@@ -240,10 +240,29 @@ character ranges in its style-free text. TARGET is a URI or (:COMMAND . NAME).")
 
 ;;; LLINE-ROWS marks the rows a wrapped line goes on in, keyed on the plain row
 ;;; the way its links are, so the keyboard selection can take a logical line
-;;; -- its line motions and its whole-line mark -- where the band shows rows.
+;;; -- its line motions and its whole-line mark -- where the band shows rows,
+;;; and a copy can put the line back together.
 (nlk:define-side-table plain-row-continues (:weakness :key :synchronized t)
-  "Plain transcript row -> T when it goes on the logical line wrapped above
-it: every row LLINE-ROWS lays after a line's first (SELECT-LOGICAL-LINE).")
+  "Plain transcript row -> the blanks the wrap took out before it, when it
+goes on the logical line wrapped above it: every row LLINE-ROWS lays after a
+line's first (SELECT-LOGICAL-LINE), \"\" where the break left no blank
+(WRAP-JOINT). A copy joins the row to the one above it with them
+(SELECTION-ROWS-TEXT).")
+
+(defun wrap-joint (above below &optional above-opens)
+  "The blanks a wrap took out between ABOVE and BELOW, the shown text of two
+rows one logical line was broken into: what a copy, which trims each row's
+blanks away, puts back between them to rejoin the line. ABOVE's closing
+blanks and BELOW's opening ones; a row of nothing but blanks gives all of
+them to the joint before it and none to the one after it, unless it
+ABOVE-OPENS the line, whose blanks no joint before it counted."
+  (flet ((blank-p (text) (every (lambda (char) (char= char #\Space)) text)))
+    (concatenate 'string
+                 (cond ((not (blank-p above))
+                        (subseq above (1+ (position #\Space above :test-not #'char= :from-end t))))
+                       (above-opens above)
+                       (t ""))
+                 (subseq below 0 (or (position #\Space below :test-not #'char=) (length below))))))
 
 (defun seg-links (segs start)
   "The (START END TARGET) ranges of SEGS' linked segs, SEGS laid from column START."
@@ -349,6 +368,9 @@ glint crosses and the time it set off (GLINT-OVERLAY)."
                 for firstp = t then nil
                 for prefix = (if firstp gutter cont)
                 for words = (fragment-segs line s e)
+                for row from 0
+                for above = nil then shown
+                for shown = (segs-text words)
                 for segs = (if (and firstp aside)
                                ;; The aside ends where the words may: the gap
                                ;; before it is the rest of the first row.
@@ -373,7 +395,7 @@ glint crosses and the time it set off (GLINT-OVERLAY)."
                                (plain (link-plain-row (nlk:narrow-string
                                                        (uiop:strcat prefix (segs-text segs)))
                                                       (seg-links segs (length prefix)))))
-                          (unless firstp (setf (plain-row-continues plain) t))
+                          (unless firstp (setf (plain-row-continues plain) (wrap-joint above shown (= row 1))))
                           plain)
                   into plains
                 collect (loop for seg in paint
