@@ -533,17 +533,13 @@ CONFLICT-BASELINE-TREE — foreign drift is refused, so it is never advertised).
 (defun checkpoint-tree-paths (session-id captures parents tree)
   "The paths restoring TREE (or NIL) touches -- its staged diff minus the
 conflict set; NIL when a diff is unavailable."
-  ;; One batch stages the worktree and diffs TREE and the conflict baseline;
-  ;; the fallback stages the index itself (the ADD -A the batch would have
-  ;; run) and answers per tree.
+  ;; The diff store stages the index itself (ADD -A) and answers per tree.
   (let* ((live (and tree (with-session-snapshot-store (live session-id) live)))
          (baseline (and live (conflict-baseline-tree
                               captures parents (nth-value 1 (session-visible-turn-set session-id)))))
-         (batch (and live (staged-tree-diffs-batched live (list baseline tree))))
-         (staged (and live (not batch) (checkpoint-diff-store session-id))))
+         (staged (and live (checkpoint-diff-store session-id))))
     (flet ((tree-paths (tree)
-             (cond (batch (gethash tree batch :unavailable))
-                   ((null staged) :unavailable)
+             (cond ((null staged) :unavailable)
                    (t (with-handlers ((error () :unavailable))
                         (staged-changed-paths staged tree))))))
       (let* ((baseline-paths (and live (tree-paths baseline)))

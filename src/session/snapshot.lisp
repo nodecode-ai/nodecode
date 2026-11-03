@@ -602,68 +602,6 @@ lists in tree order; a path the tree does not hold adds nothing."
    (split-nul (run-snapshot-git store (list "diff-index" "--name-status" "--no-renames"
                                             "-z" tree-sha)))))
 
-(defun staged-tree-diffs-batched (store trees)
-  "Every tree in TREES diffed against STORE's worktree in ONE child process:
-`git add -A' then one `git diff-index' per tree inside a single sh."
-  ;; => an EQUAL hash of tree sha -> (:PATH :STATUS) plists (the
-  ;; STAGED-CHANGED-PATHS answer, through the same parser), or NIL when the
-  ;; batch cannot be built, run or framed — every caller keeps the per-tree path
-  ;; as its fallback.
-  ;;
-  ;; Why a shell at all: a git plumbing call from a serving image costs ~40
-  ;; ms, of which ~20 ms is forking the image itself and the rest the
-  ;; env/timeout/git exec chain — a no-op `rev-parse' costs as much as a real
-  ;; diff. The checkpoint listing needs one staging plus one diff per distinct
-  ;; undo-target tree, so its wall time is a spawn count, not git work.
-  ;; Batching makes that count 1 for any number of trees.
-  ;;
-  ;; Framing is a fresh random 160-bit token emitted between diffs, so no path
-  ;; can be mistaken for a separator, and each diff's exit status rides in
-  ;; after its token; a tree whose diff failed lands :UNAVAILABLE, the read
-  ;; side's own handler-case degradation. Only hex-validated shas reach the
-  ;; script text.
-  (let ((marker (format nil "cpdiff~40,'0x" (random (expt 2 160))))
-        (shas (remove-duplicates (remove nil trees) :test #'equal)))
-    (when (and shas (equal "git" *git-program*) (every #'tree-sha-p shas))
-      (let* ((script
-               (format nil "git add -A || exit 9~:{~%git diff-index --name-status --no-renames ~
-                            -z ~a; printf '~a\\000%s\\000' \"$?\"~}"
-                       (mapcar (lambda (sha) (list sha marker)) shas)))
-             (output
-               (with-handlers ((error () nil))
-                 ;; The batch stages as well: past the walk bound it answers
-                 ;; nothing, and the caller's own staging refuses the same way.
-                 (check-walk-bound store)
-                 (bind (((out _ status)
-                         (run-bounded (shell-argv script)
-                                      :seconds +snapshot-git-timeout-seconds+
-                                      :environment (snapshot-git-environment store)
-                                      :directory (snapshot-store-workspace store))))
-                   ;; A staging failure (exit 9), a killed batch or a
-                   ;; refusal-sized payload answers nothing: the caller
-                   ;; re-derives per tree.
-                   (and (integerp status) (zerop status)
-                        (<= (length out) +snapshot-max-output-bytes+)
-                        out)))))
-        (when output
-          (let ((table (make-hash-table :test #'equal))
-                (fields '())
-                (pending shas)
-                (expect-status nil))
-            (dolist (field (split-nul output))
-              (cond (expect-status
-                     (setf (gethash (pop pending) table)
-                           (if (equal field "0")
-                               (parse-name-status-z (nreverse fields))
-                               :unavailable)
-                           fields '()
-                           expect-status nil))
-                    ((equal field marker) (setf expect-status t))
-                    (t (push field fields))))
-            ;; Every listed tree must have been framed, or the answer is not
-            ;; trustworthy and the caller falls back.
-            (and (null pending) (null expect-status) table)))))))
-
 (defun changed-paths (store tree-sha)
   "Worktree-vs-TREE-SHA differences, freshly staged."
   (stage-workspace store)
