@@ -24,7 +24,9 @@
 ;;;;
 ;;;;   providers      union; the first world to name a provider wins it, and
 ;;;;                  an endpoint never lands under a built-in's name
-;;;;   default model  the newest world's pick whose provider can be reached
+;;;;   default model  the one the homes ran most, lately, on a key that comes
+;;;;                  over (tally.lisp); else the newest world's pick whose
+;;;;                  provider can be reached
 ;;;;   MCP servers    deduped by name and command
 ;;;;   instructions   deduped by content hash
 ;;;;   skills         first by world; a later collision is a conflict
@@ -321,6 +323,107 @@ one kept as :SERVING."
                         (fact-with fact nil :serving (mapcar #'car serving))))))
             (homed-model-facts plan))))
 
+(defun tallied-model-facts (plan landed &aux (keyed (plan-facts plan :provider))
+                                             (signed (mapcar #'fact-world (plan-facts plan :oauth)))
+                                             (picks (make-hash-table :test #'equal)))
+  "The plan's :TALLY facts that ran on a key this import lands or this
+organism holds, as :MODEL facts on the id that key is under, the tally as
+:TALLY, one per provider and model, the most used first."
+  ;; A row ran on the key its own world keeps for the provider it names: the
+  ;; world's provider fact of that id, or of the name an endpoint was moved
+  ;; off (CLAIMED). A row that names none -- Claude Code's ledger -- ran on
+  ;; the one key its world keeps that serves the model, unless the world
+  ;; keeps a sign-in too, which is what such a client runs on. A Claude Max
+  ;; plan's tokens stay with Claude Code: they never pick a model to bill to
+  ;; a key, Claude Code's own refused one or a plugin's.
+  (dolist (fact (plan-facts plan :tally))
+    (destructuring-bind (&key provider model score tokens days last effort &allow-other-keys) fact.value
+      (let* ((ids (unless (and (null provider) (member fact.world signed :test #'equal))
+                    (remove-duplicates
+                     (loop for any in keyed
+                           when (and (equal (fact-world any) fact.world)
+                                     (if provider
+                                         (or (equal (fact-id any) provider)
+                                             (equal (getf (fact-value any) :claimed) provider))
+                                         (catalog-model-id (fact-id any) model)))
+                             collect (fact-id any))
+                     :test #'equal)))
+             (id (and ids (null (rest ids)) (first ids))))
+        (when (and id (or (member id landed :test #'equal) (auth-key-present-p id)))
+          (let* ((name (or (catalog-model-id id model) model))
+                 (held (gethash (cons id name) picks)))
+            (if held
+                ;; the same model on the same key, run from two worlds
+                (destructuring-bind (&key ((:score s)) ((:tokens n)) ((:days d)) ((:last l)) ((:effort e)) worlds)
+                    (getf held :tally)
+                  (setf (getf held :tally)
+                        (list :score (+ s score) :tokens (+ n tokens) :days (+ d days) :last (max l last)
+                              :effort (or e effort) :worlds (append worlds (list fact.world)))))
+                (setf (gethash (cons id name) picks)
+                      (list :model name :provider id :source fact.source :world fact.world
+                            :tally (list :score score :tokens tokens :days days :last last
+                                         :effort effort :worlds (list fact.world))))))))))
+  (mapcar (lambda (pick)
+            (destructuring-bind (&key model provider source world tally) pick
+              (make-fact :kind :model :id model :world world :source source
+                         :value (list :model model :provider provider :tally tally))))
+          (sort (loop for pick being the hash-values of picks collect pick)
+                #'> :key (lambda (pick) (getf (getf pick :tally) :score)))))
+
+(defun model-key (name)
+  "NAME as models compare across providers: no provider prefix, no `[1m]'
+or `@default' tail, dots as dashes, lowercase."
+  (let* ((name (subseq name (1+ (or (position #\/ name :from-end t) -1))))
+         (name (subseq name 0 (or (position-if (lambda (ch) (member ch '(#\[ #\@))) name) (length name)))))
+    (substitute #\- #\. (string-downcase name))))
+
+(defun served-model-id (plan id name &aux (key (model-key name)))
+  "The id provider ID serves the model NAME by, from its catalog or the list
+its home gave (`anthropic/claude-opus-5.5' for claude-opus-5-5 on
+openrouter), or NIL."
+  (or (catalog-model-id id name)
+      (nlk:when-let (models (nlk:json-value (nle::models-catalog-table) :object id "models"))
+        (loop for model being the hash-keys of models
+              when (equal key (model-key model)) return model))
+      (loop for fact in (plan-facts plan :provider)
+            thereis (and (equal id fact.id)
+                         (find key (getf fact.value :models) :key #'model-key :test #'equal)))))
+
+(defun passed-over-model (plan landed pick &aux (scores (make-hash-table :test #'equal)))
+  "When the homes ran another model than PICK, the default model's :MODEL
+fact, more than it, on a credential that stays behind: its reason, naming
+the providers this import lands that serve it. Else NIL."
+  ;; The default is deepseek, and the closing block says where Opus can run
+  ;; here and that it bills per token.
+  (dolist (fact (plan-facts plan :tally))
+    (destructuring-bind (&key model score tokens days &allow-other-keys) fact.value
+      (let ((held (alexandria:ensure-gethash (model-key model) scores
+                    (list :model model :score 0 :tokens 0 :days 0 :worlds '()))))
+        (loop for (key n) on (list :score score :tokens tokens :days days) by #'cddr
+              do (incf (getf held key) n))
+        (pushnew fact.world (getf held :worlds) :test #'equal))))
+  (let ((top (first (sort (loop for held being the hash-values of scores collect held)
+                          #'> :key (lambda (held) (getf held :score)))))
+        (picked (gethash (model-key (getf (fact-value pick) :model)) scores)))
+    (when (and top (not (eq top picked))
+               (> (getf top :score) (if picked (getf picked :score) 0)))
+      (destructuring-bind (&key model tokens days worlds &allow-other-keys) top
+        (let ((routes (loop for id in (reverse landed)
+                            for served = (served-model-id plan id model)
+                            when served collect (format nil "~a as ~a" id served)))
+              (signed (some (lambda (world) (find world (plan-facts plan :oauth) :key #'fact-world :test #'equal))
+                            worlds)))
+          (format nil "~a is what ~{~a~^ and ~} ran most lately (~a tokens over ~d day~:p), on ~:[a key that did not come over~;a sign-in that stays there~]; ~:[no key here serves it: /models connects one~;~:*~{~a~^, ~} serve~:[s~;~] it, billed per token: /models picks it~]"
+                  model (mapcar #'world-label worlds) (token-count tokens) days signed
+                  (subseq routes 0 (min 3 (length routes))) (rest routes)))))))
+
+(defun token-count (tokens)
+  "TOKENS as a report says it: 110M, 5.1B."
+  (cond ((>= tokens 1000000000) (format nil "~,1fB" (/ tokens 1d9)))
+        ((>= tokens 1000000) (format nil "~dM" (round tokens 1000000)))
+        ((>= tokens 1000) (format nil "~dk" (round tokens 1000)))
+        (t (format nil "~d" tokens))))
+
 (defun world-label (world)
   "What a report calls the world named WORLD: its label, or the name itself."
   (nlk:if-let (row (nlk:find-agent-world world)) (nlk:agent-world-label row) world))
@@ -328,9 +431,11 @@ one kept as :SERVING."
 (defun plan-default-model (plan landed)
   (let* ((facts (sort (placed-model-facts plan landed)
                       #'< :key (lambda (fact) (or (getf fact.value :depth) 99))))
-         ;; The shallowest pick of the newest home whose provider the plan
-         ;; can actually reach.
-         (fact (or (find-if (lambda (fact &aux (provider (getf fact.value :provider)))
+         ;; The model the homes ran most, lately, on a key that lands here;
+         ;; else the shallowest pick of the newest home whose provider the
+         ;; plan can actually reach.
+         (fact (or (first (tallied-model-facts plan landed))
+                   (find-if (lambda (fact &aux (provider (getf fact.value :provider)))
                               (and provider (member provider landed :test #'equal)))
                             facts)
                    (find-if (lambda (fact &aux (provider (getf fact.value :provider)))
@@ -341,7 +446,7 @@ one kept as :SERVING."
                               (nth-value 1 (nlk:json-value (nle::models-catalog-table)
                                                            :any (getf value :provider) "models" (getf value :model))))
                             facts))))
-    (destructuring-bind (&key provider model written &allow-other-keys) (and fact fact.value)
+    (destructuring-bind (&key provider model written tally &allow-other-keys) (and fact fact.value)
       (cond
         ((null fact)
          (nlk:when-let (any (first (placed-model-facts plan landed)))
@@ -357,34 +462,45 @@ one kept as :SERVING."
                    :reason (format nil "a default model is already set (--overwrite moves it to ~a/~a)"
                                    provider model)))
         (t
-         (add-item plan "providers" "imported" :fact fact :destination "general.default_model"
-                   ;; A bare pick placed on its provider says so, and what it was read as.
-                   :reason (cond ((null written) (format nil "~a on ~a" model provider))
-                                 ((string= written model)
-                                  (format nil "~a on ~a, the one imported provider that serves it"
-                                          model provider))
-                                 (t (format nil "~a on ~a, for ~a's ~a"
-                                            model provider (world-label fact.world) written)))
-                   ;; SELECT-DEFAULT-MODEL, not the bare write: it makes the
-                   ;; pick this image's selection as well as the config's, so
-                   ;; the frame after a silent import is a conversation on the
-                   ;; model the operator was already using rather than a shell
-                   ;; that has to be restarted to see it. It also resolves the
-                   ;; provider's lane first, so a pick this organism cannot
-                   ;; serve is this item's error and not a failure at the
-                   ;; first turn.
-                   :action (lambda ()
-                             (nlk:bind (((_ _ outcome detail) (nle::select-default-model
-                                                               :provider provider :model model)))
-                               (unless (eq outcome :written) (fail "~a" detail))
-                               ;; Every attached shell renders CACHED model
-                               ;; facts — the frame path never dials — so a
-                               ;; selection that landed anywhere but a shell's
-                               ;; own slash op stays invisible in its footer
-                               ;; until the next reconnect. This is the frame
-                               ;; that says the default moved.
-                               (ignore-errors
-                                (nle::broadcast-model-changed))))))))))
+         (let ((effort (and tally (ignore-errors (nle::admitted-effort (getf tally :effort) provider model))))
+               (passed (and tally (passed-over-model plan landed fact))))
+           (add-item plan "providers" "imported" :fact fact :destination "general.default_model"
+                     ;; A bare pick placed on its provider says so, and what it was read as.
+                     :reason (cond (tally
+                                    (destructuring-bind (&key tokens days last worlds &allow-other-keys) tally
+                                      (format nil "~a on ~a~@[ at ~a effort~], the model ~{~a~^ and ~} ran most lately: ~a tokens over ~d day~:p of the last ~d, last on ~a"
+                                              model provider effort (mapcar #'world-label worlds) (token-count tokens)
+                                              days +tally-days+ (subseq (nlk:iso-time last) 0 10))))
+                                   ((null written) (format nil "~a on ~a" model provider))
+                                   ((string= written model)
+                                    (format nil "~a on ~a, the one imported provider that serves it"
+                                            model provider))
+                                   (t (format nil "~a on ~a, for ~a's ~a"
+                                              model provider (world-label fact.world) written)))
+                     ;; SELECT-DEFAULT-MODEL, not the bare write: it makes the
+                     ;; pick this image's selection as well as the config's, so
+                     ;; the frame after a silent import is a conversation on the
+                     ;; model the operator was already using rather than a shell
+                     ;; that has to be restarted to see it. It also resolves the
+                     ;; provider's lane first, so a pick this organism cannot
+                     ;; serve is this item's error and not a failure at the
+                     ;; first turn.
+                     :action (lambda ()
+                               (nlk:bind (((_ _ outcome detail) (nle::select-default-model
+                                                                 :provider provider :model model)))
+                                 (unless (eq outcome :written) (fail "~a" detail))
+                                 ;; the effort it ran at, through /think's writer
+                                 (when effort (nle::select-default-effort effort))
+                                 ;; Every attached shell renders CACHED model
+                                 ;; facts — the frame path never dials — so a
+                                 ;; selection that landed anywhere but a shell's
+                                 ;; own slash op stays invisible in its footer
+                                 ;; until the next reconnect. This is the frame
+                                 ;; that says the default moved.
+                                 (ignore-errors
+                                  (nle::broadcast-model-changed)))))
+           (when passed
+             (add-item plan "providers" "skipped" :destination "general.default_model" :reason passed))))))))
 
 ;;; --- instructions --------------------------------------------------------------
 
@@ -1192,7 +1308,8 @@ TAKEOVER, the default, stops a foreign gateway so its bots answer from here."
                            :without (kind-list without))))
     (read-homes homes :sessions (kind-wanted-p plan "sessions")
                       :text (some (lambda (kind) (kind-wanted-p plan kind))
-                                  '("instructions" "memory" "skills" "usage")))
+                                  '("instructions" "memory" "skills" "usage"))
+                      :tally (kind-wanted-p plan "providers"))
     ;; Only a plan that brings bots over asks after a foreign gateway: the ask
     ;; is a systemctl run.
     (when (kind-wanted-p plan "channels")

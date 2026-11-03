@@ -735,6 +735,87 @@
 
 ;;; --- the model a home ran ---------------------------------------------------
 
+(deftest import-tally-scores-a-day-of-work-halved-every-fortnight ()
+  ;; A model scores its share of each day's tokens, halved for every 14 days
+  ;; back: four fifths of today and all of yesterday, against a fifth of
+  ;; today and all of a day a fortnight back. A session of no tokens and a
+  ;; day past the window count nothing, and the effort is the one most of a
+  ;; model's tokens ran at.
+  (let* ((now 1792000000) (day 86400) (nik::*tally-now* now)
+         (scores (nik::tally-scores
+                  (list (list now "p" "a" 400 "high") (list now "p" "b" 100 "low")
+                        (list (- now (* 14 day)) "p" "b" 50 "xhigh")
+                        (list (- now day) "p" "a" 10 "xhigh")
+                        (list now "p" "c" 0 nil)
+                        (list (- now (* 91 day)) "p" "d" 1000 nil)))))
+    (is (equal '("a" "b") (mapcar (lambda (entry) (getf entry :model)) scores)))
+    (is (< (abs (- (+ 0.8d0 (expt 0.5d0 1/14)) (getf (first scores) :score))) 1d-9))
+    (is (< (abs (- 0.7d0 (getf (second scores) :score))) 1d-9))
+    (is (equal '(2 150 "low") (list (getf (second scores) :days) (getf (second scores) :tokens)
+                                    (getf (second scores) :effort))))
+    (is (equal "high" (getf (first scores) :effort)))))
+
+(deftest import-sets-the-model-a-home-ran-on-a-key-that-comes-over (with-import-runtime (home box))
+  ;; A Codex config named relay-small while its threads ran relay-large, and
+  ;; Claude Code ran claude-opus-5-5 harder than both on a Max plan, a
+  ;; sign-in that stays behind. The default is what ran, on a
+  ;; key that came over, at the effort it ran at -- relay-large -- until
+  ;; Claude Code keeps a key of its own; the model it passed over is said,
+  ;; with the key here that serves it.
+  (let* ((now (- (get-universal-time) nlk:+unix-epoch+))
+         (nik::*tally-now* now)
+         (last (subseq (nlk:iso-time (- now 86400)) 0 10)))
+    (import-write box ".codex/config.toml"
+                  (format nil "model = \"relay-small\"~%model_provider = \"relay\"~%~%[model_providers.relay]~%base_url = \"https://relay.example.test/v1\"~%key = \"~a\"~%"
+                          +fixture-key-2+))
+    (import-write box ".codex/auth.json" (format nil "{\"OPENROUTER_API_KEY\": \"~a\"}" +fixture-key+))
+    (let ((db (sqlite:connect (namestring (merge-pathnames ".codex/state_5.sqlite" box)))))
+      (nlk:with-cleanup ((sqlite:disconnect db))
+        (sqlite:execute-non-query
+         db "create table threads (id text primary key, model_provider text not null, model text, tokens_used integer not null default 0, updated_at integer not null, reasoning_effort text)")
+        (loop for (id model tokens days effort) in '(("t1" "relay-large" 9000 1 "xhigh") ("t2" "relay-large" 7000 3 "high")
+                                                     ("t3" "relay-small" 500 2 "low") ("t4" "relay-small" 0 0 nil))
+              do (sqlite:execute-non-query db "insert into threads values (?, 'relay', ?, ?, ?, ?)"
+                                           id model tokens (- now (* days 86400)) effort))))
+    (import-write box ".claude.json" "{}")
+    (import-write box ".claude/stats-cache.json"
+                  (format nil "{\"dailyModelTokens\": [~{{\"date\": \"~a\", \"tokensByModel\": {\"claude-opus-5-5\": 900000000}}~^, ~}]}"
+                          (loop for days below 3 collect (subseq (nlk:iso-time (- now (* days 86400))) 0 10))))
+    (import-write box ".claude/settings.json" "{\"model\": \"opus\"}")
+    (flet ((plan () (nik:make-plan :settings (list :home home) :only "providers"))
+           (reasons (plan)
+             (mapcar #'nik:item-reason
+                     (remove "general.default_model" (import-items plan "providers")
+                             :key #'nik:item-destination :test-not #'equal))))
+      (let ((plan (plan)))
+        (is (equal (list (format nil "relay-large on relay at xhigh effort, the model Codex ran most lately: 16k tokens over 2 days of the last 90, last on ~a" last)
+                         "claude-opus-5-5 is what Claude Code ran most lately (2.7B tokens over 3 days), on a key that did not come over; openrouter as anthropic/claude-opus-5-5 serves it, billed per token: /models picks it")
+                   (reasons plan)))
+        (nik:apply-plan plan)
+        (is-shape (import-config)
+          ((:text "general" "default_model" "provider") "relay")
+          ((:text "general" "default_model" "model") "relay-large")
+          ((:text "general" "default_model" "effort") "xhigh"))
+        ;; this organism fresh again, so the next plans set the default
+        (write-temp-file nle::*shared-config-path* "{}")
+        (setf nle::*shared-config-memo* nil)
+        (uiop:delete-file-if-exists nle::*auth-file-path*))
+      ;; A plugin's template is no key at all.
+      (import-write box ".claude/plugins/kit/.env.example" "ANTHROPIC_API_KEY=sk-ant-FAKE-not-a-key-example")
+      (is (search "relay-large on relay" (first (reasons (plan)))))
+      (import-write box ".claude/settings.json"
+                    (format nil "{\"model\": \"opus\", \"env\": {\"ANTHROPIC_API_KEY\": \"~a\"}}" +fixture-key+))
+      (let ((said (reasons (plan))))
+        (is (search "claude-opus-5-5 on anthropic, the model Claude Code ran most lately: 2.7B tokens over 3 days" (first said)))
+        (is (null (rest said)) "nothing was passed over"))
+      ;; Signed in as well, the ledger is the sign-in's: it stays behind.
+      (import-write box ".claude/.credentials.json"
+                    (format nil "{\"claudeAiOauth\": {\"accessToken\": \"~a\", \"refreshToken\": \"~a\", \"expiresAt\": 1}}"
+                            +fixture-token+ +fixture-refresh+))
+      (let ((said (reasons (plan))))
+        (is (search "relay-large on relay" (first said)))
+        (is (search "on a sign-in that stays there" (second said)))))))
+
 (deftest import-finds-a-key-its-endpoint-by-the-domain-its-name-says (with-import-runtime (home box))
   ;; Without this, a backup key would land as a provider with nowhere to
   ;; send a request. A backup is left alone; a live key the home names no
