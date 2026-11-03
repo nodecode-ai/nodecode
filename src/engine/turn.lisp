@@ -2396,14 +2396,9 @@ voided length-cut fact and AGENT-LOOP's round close APPLY on top of their own
 identity keywords; a count the lane never learned stays NIL, which the fact
 drops rather than record as a zero the provider did not say."
   (when usage
-    (list :input-tokens usage.input-tokens
-          :output-tokens usage.output-tokens
-          :cached-input-tokens usage.cached-input-tokens
-          :total-tokens usage.total-tokens
-          :reasoning-tokens usage.reasoning-tokens
-          :cache-write-tokens usage.cache-write-tokens
-          :cache-write-5m-tokens usage.cache-write-5m-tokens
-          :cache-write-1h-tokens usage.cache-write-1h-tokens)))
+    (loop for slot in '(input-tokens output-tokens cached-input-tokens total-tokens reasoning-tokens
+                        cache-write-tokens cache-write-5m-tokens cache-write-1h-tokens)
+          nconc (list (intern (symbol-name slot) :keyword) (slot-value usage slot)))))
 
 (defun record-round-usage (turn &rest usage &key provider model &allow-other-keys)
   "Record one round's turn.usage fact on TURN from USAGE, RECORD-TURN-USAGE's
@@ -2416,42 +2411,6 @@ the counts (MODEL-PRICE, ROUND-COST), COST-KNOWN whether there was one."
   (let ((cost (apply #'round-cost (model-price model provider) usage)))
     (apply #'nlk:record-turn-usage turn
            (if cost (list* :cost-known t :cost-usd cost usage) usage))))
-
-(defun cut-round-usage-estimate (context config cadence response-model
-                                 response-effort text thinking calls)
-  "What a round the cancel cut can still say about itself, for the usage
-fact RUN records in its place: the identity the round ran under, and —
-only once the stream proved the server processed the request (a part
-arrived) — the counts the server never got to report. The prompt is the
-calibrated context estimate, the same corrected number the output cap is
-sized from; the output is everything that streamed, chars/4, with the
-thinking share counted again as reasoning — the provider convention
-(reasoning_tokens is a subset of output_tokens), so the divider reads the
-same whichever way the turn ended.
-=> the RECORD-TURN-USAGE argument list itself (:provider :model
-:reasoning-effort :response-model :input-tokens :output-tokens
-:reasoning-tokens), which both cut sites APPLY rather than re-spell;
-counts NIL when unproven — never a zero the provider did not say."
-  (let* ((provider-id config.provider)
-         (model-id config.model)
-         (served (plusp cadence.part-count))
-         (thinking-chars (length thinking))
-         (output-chars (+ (length text) thinking-chars
-                          (loop for (nil . buf) in calls
-                                sum (length (or (getf buf :arguments) ""))))))
-    (list :provider provider-id
-          :model model-id
-          :reasoning-effort (or response-effort
-                                config.reasoning-effort)
-          :response-model response-model
-          :input-tokens (and served
-                             (round (* (compiled-context-estimated-tokens context)
-                                       (context-estimate-ratio provider-id
-                                                               model-id))))
-          :output-tokens (and served (plusp output-chars)
-                              (ceiling output-chars 4))
-          :reasoning-tokens (and served (plusp thinking-chars)
-                                 (ceiling thinking-chars 4)))))
 
 (defparameter *continuation-reasoning-prompt*
   "Your previous reply was cut off mid-stream after ~d characters of ~
@@ -2746,11 +2705,7 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                     :reasoning thinking :text text :detail detail
                     :stream-duration-ms (stream-cadence-duration-ms cadence)
                     :disposition disposition)
-                   (when-let (cut (and estimate-p
-                                       (cut-round-usage-estimate
-                                        context config cadence
-                                        response-model response-effort
-                                        text thinking partial-calls)))
+                   (when-let (cut (and estimate-p (cut-usage-estimate text thinking)))
                      (apply #'record-round-usage *current-durable-turn*
                             :voided t :estimated t cut))
                    (notify-turn-facts-committed))
@@ -2771,6 +2726,37 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                ;; the round's estimate, scaled by what this model's counts taught
                (round (* (compiled-context-estimated-tokens context)
                          (context-estimate-ratio config.provider config.model))))
+             (round-identity ()
+               ;; Who answered this round, as its usage fact names it.
+               (list :provider config.provider
+                     :model config.model
+                     :reasoning-effort (or response-effort
+                                           config.reasoning-effort)
+                     :response-model response-model))
+             (cut-usage-estimate (text thinking &aux (served (plusp cadence.part-count))
+                                                     (thinking-chars (length thinking)))
+               "What a round the cancel cut can still say about itself, for the usage
+fact RUN records in its place: the identity the round ran under, and —
+only once the stream proved the server processed the request (a part
+arrived) — the counts the server never got to report. The prompt is the
+calibrated context estimate, the same corrected number the output cap is
+sized from; the output is everything that streamed (TEXT, THINKING and the
+partial tool calls), chars/4, with the thinking share counted again as
+reasoning — the provider convention (reasoning_tokens is a subset of
+output_tokens), so the divider reads the same whichever way the turn ended.
+=> the RECORD-TURN-USAGE argument list itself, which both cut sites APPLY
+rather than re-spell; counts NIL when unproven — never a zero the provider
+did not say."
+               (let ((output-chars (+ (length text) thinking-chars
+                                      (loop for (nil . buf) in partial-calls
+                                            sum (length (or (getf buf :arguments) ""))))))
+                 (list* :input-tokens (and served
+                                           (scaled-estimate))
+                        :output-tokens (and served (plusp output-chars)
+                                            (ceiling output-chars 4))
+                        :reasoning-tokens (and served (plusp thinking-chars)
+                                               (ceiling thinking-chars 4))
+                        (round-identity))))
              (record-fallback (to-provider to-model reason &rest more
                                &aux (move (list :from-provider config.provider :from-model config.model
                                                 :to-provider to-provider :to-model to-model :reason reason)))
@@ -3091,8 +3077,7 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                                        (setf (nlk:turn-cancelled-condition-partial-tool-calls c)
                                              (mapcar #'cdr (sort (copy-list partial-calls) #'< :key #'car))))
                                      (setf (nlk:turn-cancelled-condition-partial-usage c)
-                                           (cut-round-usage-estimate context config cadence response-model
-                                                                     response-effort text thinking partial-calls)))))
+                                           (cut-usage-estimate text thinking)))))
                     ;; One fold per lane: a round with no observer IS the
                     ;; blocking call. OBSERVER is NIL when nothing wants parts.
                     (setf cadence.sent-ms (elapsed-ms 0)
@@ -3165,10 +3150,8 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
                   (setf length-cut-recovered-p t
                         cut-recovered t)
                   (when *current-durable-turn*
-                    (apply #'record-round-usage *current-durable-turn*
-                           :model model-id :provider provider-id :response-model response-model
-                           :reasoning-effort (or response-effort config.reasoning-effort)
-                           :finish-reason finish-reason :voided t (provider-usage-fact-args usage))
+                    (apply #'record-round-usage *current-durable-turn* :finish-reason finish-reason :voided t
+                           (append (round-identity) (provider-usage-fact-args usage)))
                     (notify-turn-facts-committed))
                   ;; The cut message is sealed into the transcript like any
                   ;; other voided attempt (the provider's own usage already
