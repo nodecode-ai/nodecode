@@ -3840,6 +3840,38 @@ request."
     (with-gateway-http (port :post "/api/gateway/slash" :body "{\"line\":\"/help\"}")
       (is (null (nlk:json-value body :any "dialog")) "a line alone carries no panel"))))
 
+(deftest gateway-slash-route-hands-the-draft-only-to-a-command-that-reads-it (with-temp-gateway (port))
+  ;; #199: a cell's command that declares :READS (:DRAFT) gets the input
+  ;; box's text the shell sent with the line, as RUN's :DRAFT; the catalog
+  ;; says which commands read it, so a shell sends the draft to those alone,
+  ;; and a command that declared nothing is called as it always was.
+  (nlk:with-cleanup ((nle:unregister-commands "t-draft"))
+    (nle:register-command "t-draft" "t-stash"
+                          (lambda (args session-id &key draft)
+                            (declare (ignore session-id))
+                            (format nil "~a:~s" args draft))
+                          :session nil :reads '(:draft))
+    (nle:register-command "t-draft" "t-plain"
+                          (lambda (args session-id) (declare (ignore session-id)) args)
+                          :session nil)
+    (with-gateway-http (port :get "/api/gateway/slash")
+      (flet ((reads (name) (gethash "reads" (wire-row name (gethash "commands" body) "name"))))
+        (is (equalp #("draft") (reads "t-stash")) "the catalog names the read")
+        (is (null (reads "t-plain")) "and no read for a command that declared none")))
+    (with-gateway-http (port :post "/api/gateway/slash"
+                             :body "{\"line\":\"/t-stash save\",\"draft\":\"half a thought\"}")
+      (is (equal "save:\"half a thought\"" (gethash "text" body)) "RUN reads the draft the line carried"))
+    (with-gateway-http (port :post "/api/gateway/slash" :body "{\"line\":\"/t-stash save\",\"draft\":\"\"}")
+      (is (equal "save:\"\"" (gethash "text" body)) "an empty box is an empty draft"))
+    (with-gateway-http (port :post "/api/gateway/slash" :body "{\"line\":\"/t-stash save\"}")
+      (is (equal "save:NIL" (gethash "text" body)) "a caller with no box sends none: NIL"))
+    (with-gateway-http (port :post "/api/gateway/slash" :body "{\"line\":\"/t-plain hi\",\"draft\":\"x\"}")
+      (is (equal "hi" (gethash "text" body)) "a command that reads nothing is called as before"))
+    (is (equal "pop:\"d\"" (nle:slash "/t-stash pop" :draft "d")) "SLASH takes the draft too")
+    (is (equal "pop:NIL" (nle:slash "/t-stash pop")) "and none by default")
+    ;; A read no shell sends is refused at registration.
+    (signals-error error (nle:register-command "t-draft" "t-bad" (constantly nil) :reads '(:selection)))))
+
 ;;; --- gate: reconnect endpoint rediscovery ----------------------------------
 
 (deftest reconnect-rediscovers-endpoint-from-lease-sidecar ()

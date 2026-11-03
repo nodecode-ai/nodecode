@@ -16,7 +16,7 @@
 (defun slash-catalog ()
   "Every command a headless caller can run, in /help order: the builtins
 with a headless arm, then each cell's registered command, as plists (:name
-:description :usage :autocomplete :session :aliases :trigger) — USAGE the
+:description :usage :autocomplete :session :aliases :trigger :reads) — USAGE the
 display form when the command takes arguments, \"\" when the bare name is the
 whole usage, :AUTOCOMPLETE true for a command whose argument tail a caller can
 complete while it is typed (SLASH-COMPLETIONS answers it), :SESSION NIL for
@@ -35,7 +35,8 @@ shell's composer opens it on."
                       :autocomplete (and entry.completer t)
                       :session entry.session
                       :aliases entry.aliases
-                      :trigger entry.trigger)))
+                      :trigger entry.trigger
+                      :reads entry.reads)))
 
 (defun models-argument-choices (text session-id)
   "The model catalog as completion choices for the tail TEXT typed so far:

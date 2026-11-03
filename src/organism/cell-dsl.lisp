@@ -155,7 +155,7 @@ all of it comes back off."
   ;;   (:tool NAME SCHEMA FUNCTION)   REGISTER-TOOL; stop
   ;;       unregisters it.
   ;;   (:command COMMAND RUN &key description argument-hint label catches session
-  ;;             trigger complete)
+  ;;             trigger complete reads)
   ;;       REGISTER-COMMAND under the cell's key, LABEL and CATCHES naming
   ;;       the failure line the way it does (the command and ERROR by
   ;;       default), SESSION NIL for a command that acts on no session,
@@ -217,10 +217,10 @@ all of it comes back off."
             (:command
              (destructuring-bind (spelling run &rest keys
                                   &key description argument-hint label catches session
-                                  trigger complete)
+                                  trigger complete reads)
                  arguments
                (declare (ignore description argument-hint label catches session trigger
-                                complete))
+                                complete reads))
                (contribute '() `(register-command ,key ,spelling ,run ,@keys)
                            `(unregister-commands ,key))))
             (:help

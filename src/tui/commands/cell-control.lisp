@@ -20,14 +20,26 @@ SET-GATEWAY-COMMANDS takes."
                       :description (or (json-value command :string "description") "")
                       :usage (or (json-value command :string "usage") "")
                       :session (json-value command :boolean "session")
-                      :trigger (json-value command :text "trigger"))))
+                      :trigger (json-value command :text "trigger")
+                      ;; What the command asked to be sent with its line;
+                      ;; a read this shell does not know is not sent.
+                      :reads (loop for read across (json-array command "reads")
+                                   when (equal read "draft") collect :draft))))
 
 (defun gateway-slash-answer (model line)
   "The answer MODEL's gateway gives the slash LINE (POST /api/gateway/slash),
-run in MODEL's session."
-  (gateway-model-http-call
-   model :post "/api/gateway/slash"
-   (json-object "line" line :opt "session_id" (json-value model.session-id :text))))
+run in MODEL's session, with the input box's text for a command that reads
+it (SLASH-COMMAND-READS)."
+  ;; Only a command that declared the read gets the draft: what the operator
+  ;; is writing is theirs, and the rest of the catalog never sees it. A
+  ;; line typed into the composer reset it on the way in, so the draft a
+  ;; command reads is the one a chord, a trigger or a row's line left there.
+  (let ((entry (find-gateway-command (parse-slash-input line))))
+    (gateway-model-http-call
+     model :post "/api/gateway/slash"
+     (json-object "line" line :opt "session_id" (json-value model.session-id :text)
+                  :opt "draft" (and entry (member :draft entry.reads)
+                                    (editor-value model.editor))))))
 
 (defun run-gateway-command (model entry args &key trigger)
   "Run ENTRY, a cell's command MODEL's gateway serves, with its verbatim
