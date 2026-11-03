@@ -663,10 +663,12 @@ else the update, applied in `auto' mode, staged and said in `ask' mode."
             ;; Only forward: a channel naming an older build -- or one behind a
             ;; build no channel published, a checkout's own -- is said, never
             ;; taken.
+            ;; A bare `nodecode update' refuses a step back the same way, so
+            ;; the note names the release: that takes it, and holds there.
             ((member (setf way (release-direction (effective-label) latest)) '(:backward :local))
              (update-note :info "~a is out; this build, ~a, is ~:[newer~;one no channel published~], ~
-                                 so it stays: `nodecode update' takes ~a"
-                          latest (effective-label) (eq way :local) latest))
+                                 so it stays: ~:[`nodecode update ~a' goes back to it and holds there~;`nodecode update' takes ~a~]"
+                          latest (effective-label) (eq way :local) (eq way :local) latest))
             (t (handler-case (upgrade-organism :version latest :apply (string= mode "auto") :idle t)
                  (nlk:upgrade-refusal (condition) (update-note :warning "~a" condition))))))))
 

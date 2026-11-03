@@ -80,7 +80,7 @@ Windows: the default poll is 30 minutes.
 The poller only moves forward. A channel that names an older build, or a build no channel published (a source build's own), is said and left:
 
 ```output
-LABEL is out; this build, OWN, is newer, so it stays: `nodecode update' takes LABEL
+LABEL is out; this build, OWN, is newer, so it stays: `nodecode update LABEL' goes back to it and holds there
 ```
 
 Naming a release holds this home there. `nodecode update VERSION` writes `~/.nodecode/release-pin`. While the hold stands, the poller leaves the channel alone, and its look still says what came out:

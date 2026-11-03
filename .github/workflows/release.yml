@@ -26,13 +26,30 @@ name: Release
 # tar.zst packed, and every credential the publish uses tried -- no archive is
 # shipped, no pointer moves, no release is listed.
 #
+# Every night (and by hand with mode nightly) it is a nightly: main's newest
+# commit a CI run went green on, built and proved the same way and published
+# to the nightly channel alone -- the nightly pointers move, and nothing else:
+# no tag, no GitHub release, the installers and the stable pointers as they
+# were. Nothing installs or follows nightly unless told to: an install reads
+# the stable pointer unless NODECODE_CHANNEL says otherwise, and a home stable
+# unless its config's `update.channel' does. A night whose newest green commit
+# the nightly pointers already name builds nothing (release-check.sh).
+#
 # The publish job's credentials are the `release' environment's secrets,
 # which that environment hands only to a v* tag or to main: a pull request's
 # code runs the build jobs at most, and those hold no secret.
 on:
   push:
     tags: ['v*']
+  schedule:
+    - cron: "47 4 * * *"
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "rehearse: build and check, move nothing. nightly: publish main's newest green commit to the nightly channel"
+        type: choice
+        options: [rehearse, nightly]
+        default: rehearse
 
 permissions:
   contents: read
@@ -47,24 +64,36 @@ jobs:
     name: Version
     runs-on: [self-hosted, nc-linux]
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
     outputs:
+      commit: ${{ steps.check.outputs.commit }}
       label: ${{ steps.check.outputs.label }}
       version: ${{ steps.check.outputs.version }}
+      mode: ${{ steps.check.outputs.mode }}
+      skip: ${{ steps.check.outputs.skip }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: The tag names main's commit and its version
+      - name: Which commit the run builds, and whether it may be released
         id: check
         run: tools/release/release-check.sh
+        env:
+          NODECODE_RELEASE_MODE: ${{ github.event_name == 'push' && 'publish' || github.event_name == 'schedule' && 'nightly' || inputs.mode }}
+          GH_TOKEN: ${{ github.token }}
 
   linux:
     name: Linux
     needs: check
+    if: needs.check.outputs.skip != 'true'
     runs-on: [self-hosted, nc-linux]
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.commit }}
       # Relative: pack.sh writes OUT under the checkout.
       - name: Pack the Linux tarball (pack.sh)
         run: just tarball HEAD release-out
@@ -88,6 +117,16 @@ jobs:
       # the home's cell links back into its release. The bot answers after each.
       - name: Keep a Discord bot answering through the upgrade (upgrade-discord-proof.py)
         run: python3 tools/qa/upgrade-discord-proof.py release-out/nodecode-${{ needs.check.outputs.label }}-x86_64-linux.tar.gz
+      # A nightly is taken by the homes on the nightly before it as well as by
+      # the ones that switch from stable. The read carries a cache-buster: the
+      # zone holds the plain pointer for hours. No nightly yet: stable's proof
+      # above is the one.
+      - name: Upgrade a running gateway of the last nightly onto it (upgrade-proof.py)
+        if: needs.check.outputs.mode == 'nightly'
+        run: |
+          previous="$(curl -fsS -m 20 "https://nodecode.ai/dl/nightly-x86_64-linux?cb=$(date +%s)" | tr -d '[:space:]')" || previous=''
+          if [ -z "$previous" ]; then echo 'upgrade-proof: no nightly is published yet; the proof from stable stands'; exit 0; fi
+          python3 tools/qa/upgrade-proof.py --from "$previous" release-out/nodecode-${{ needs.check.outputs.label }}-x86_64-linux.tar.gz
       - uses: actions/upload-artifact@v4
         with:
           name: release-x86_64-linux
@@ -98,10 +137,13 @@ jobs:
   macos:
     name: macOS
     needs: check
+    if: needs.check.outputs.skip != 'true'
     runs-on: [self-hosted, nc-mac-driver]
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.commit }}
       - name: Pack the Mac tarball on the Mac (pack-macos.sh)
         run: tools/release/pack-macos.sh HEAD "$RUNNER_TEMP/release"
         env:
@@ -116,10 +158,13 @@ jobs:
   windows:
     name: Windows
     needs: check
+    if: needs.check.outputs.skip != 'true'
     runs-on: [self-hosted, nc-windows]
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.commit }}
       - name: Build, smoke and zip the Windows release (release-windows.ps1)
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\ci\ci-windows.ps1 -Root "$env:RUNNER_TEMP\nodecode-release"
@@ -133,22 +178,28 @@ jobs:
   proofs:
     name: Proofs
     needs: check
+    if: needs.check.outputs.skip != 'true'
     runs-on: [self-hosted, nc-linux]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.commit }}
       - name: Check every Lean proof under proofs/ (ci-proofs.sh)
         run: tools/ci/ci-proofs.sh
 
   publish:
     name: Publish
     needs: [check, linux, macos, windows, proofs]
+    if: needs.check.outputs.skip != 'true'
     runs-on: [self-hosted, nc-linux]
     environment: release
     timeout-minutes: 30
     permissions:
       contents: write
     steps:
+      # The scripts are this run's own, the workflow's commit; what they
+      # publish is the commit the check named (a nightly's may be older).
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -157,8 +208,8 @@ jobs:
           pattern: release-*
           merge-multiple: true
           path: ${{ runner.temp }}/dist
-      - name: ${{ github.event_name == 'push' && format('Publish {0} as v{1}', needs.check.outputs.label, needs.check.outputs.version) || 'Check the archives and every credential; move nothing' }}
-        run: tools/release/release-publish.sh "${{ github.event_name == 'push' && 'publish' || 'rehearse' }}" "$RUNNER_TEMP/dist"
+      - name: ${{ needs.check.outputs.mode == 'publish' && format('Publish {0} as v{1}', needs.check.outputs.label, needs.check.outputs.version) || needs.check.outputs.mode == 'nightly' && format('Publish {0} to the nightly channel', needs.check.outputs.label) || 'Check the archives and every credential; move nothing' }}
+        run: tools/release/release-publish.sh "${{ needs.check.outputs.mode }}" "$RUNNER_TEMP/dist" "${{ needs.check.outputs.commit }}"
         env:
           GH_TOKEN: ${{ github.token }}
           PUBLISH_ENV: ${{ secrets.PUBLISH_ENV }}

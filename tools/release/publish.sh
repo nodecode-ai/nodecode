@@ -20,7 +20,6 @@ REV="${1:-HEAD}"
 OUT="${2:-dist}"
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-tools="$(dirname "$here")"
 repo="$(cd "$here/../.." && pwd)"
 . "$here/layout.sh"
 cd "$repo"
@@ -36,6 +35,17 @@ if [ "$(uname -s)" != Linux ] || [ "$(uname -m)" != x86_64 ]; then
   exit 1
 fi
 
+# The channel whose pointers this publish moves. stable is what every install
+# and every home follows unless its config says otherwise: a version on
+# GitHub's releases page, the installers mirrored. nightly is main's newest
+# green build, for the homes whose `update.channel' names it: no tag, no
+# GitHub release, and the installers stay the stable release's.
+channel="${NODECODE_PUBLISH_CHANNEL:-stable}"
+case "$channel" in
+  stable|nightly) ;;
+  *) echo "publish: the channel is stable or nightly, not '$channel'" >&2; exit 2 ;;
+esac
+
 # Every platform rides every release. Leaving the Mac out is said, never
 # assumed: NODECODE_PUBLISH_SKIP_MACOS publishes without its arm, and its
 # pointer keeps naming the label it named (a Mac that is asleep or away is a
@@ -43,7 +53,7 @@ fi
 platforms="x86_64-linux arm64-darwin x86_64-windows"
 if [ -n "${NODECODE_PUBLISH_SKIP_MACOS:-}" ]; then
   platforms="x86_64-linux x86_64-windows"
-  echo "publish: NODECODE_PUBLISH_SKIP_MACOS is set: no macOS arm, and stable-arm64-darwin keeps the label it names" >&2
+  echo "publish: NODECODE_PUBLISH_SKIP_MACOS is set: no macOS arm, and $channel-arm64-darwin keeps the label it names" >&2
 fi
 has_platform() { case " $platforms " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 suffix_of() { case "$1" in *-windows) echo .zip ;; *) echo .tar.gz ;; esac; }
@@ -65,48 +75,56 @@ env_file="$(publish_setting NODECODE_PUBLISH_ENV_FILE)" || exit 1
 base_url="${NODECODE_PUBLISH_BASE_URL:-https://nodecode.ai}"
 base_url="${base_url%/}"
 
-# Every release is a version on GitHub's releases page: the base that
+# Every stable release is a version on GitHub's releases page: the base that
 # src/nodecode.asd declares at the commit, tagged v<base> at that commit, with
 # its notes and archives (the block at the end). A version is released once, so
 # a version already tagged at another commit stops the publish here, before any
 # arm packs: bump :version in src/nodecode.asd first.
-github_repo="$(publish_setting NODECODE_PUBLISH_GITHUB_REPO)" || exit 1
 asd="$(layout_asd_at "$commit")"
 version="$(git show "$commit:$asd" | sed -n 's/^ *:version "\([0-9][0-9A-Za-z.-]*\)".*/\1/p' | head -n 1)"
 [ -n "$version" ] || { echo "publish: $asd at $label declares no :version" >&2; exit 1; }
 tag="v$version"
-gh api "repos/$github_repo" --jq .full_name > /dev/null || {
-  echo "publish: GitHub does not answer for $github_repo (gh auth status), so $tag could not be listed. Nothing moves." >&2
-  exit 1
-}
-# A miss is a nonzero exit, and gh prints GitHub's error body on stdout with
-# it, so only an answer that succeeded names a commit.
-tagged="$(gh api "repos/$github_repo/commits/$tag" --jq .sha 2> /dev/null)" || tagged=""
-if [ -n "$tagged" ] && [ "$tagged" != "$commit" ]; then
-  echo "publish: $tag is already released at ${tagged:0:9}; bump :version in $asd for $label. Nothing moves." >&2
-  exit 1
+if [ "$channel" = stable ]; then
+  github_repo="$(publish_setting NODECODE_PUBLISH_GITHUB_REPO)" || exit 1
+  gh api "repos/$github_repo" --jq .full_name > /dev/null || {
+    echo "publish: GitHub does not answer for $github_repo (gh auth status), so $tag could not be listed. Nothing moves." >&2
+    exit 1
+  }
+  # A miss is a nonzero exit, and gh prints GitHub's error body on stdout with
+  # it, so only an answer that succeeded names a commit.
+  tagged="$(gh api "repos/$github_repo/commits/$tag" --jq .sha 2> /dev/null)" || tagged=""
+  if [ -n "$tagged" ] && [ "$tagged" != "$commit" ]; then
+    echo "publish: $tag is already released at ${tagged:0:9}; bump :version in $asd for $label. Nothing moves." >&2
+    exit 1
+  fi
+  echo "publish: $label is nodecode $version, tagged $tag"
+else
+  echo "publish: $label is nodecode $version, for the $channel channel: no tag, no GitHub release, the installers stay"
 fi
-echo "publish: $label is nodecode $version, tagged $tag"
-authority_installer="${NODECODE_PUBLISH_INSTALLER_PATH:-$(layout_system "$repo")/tools/install/install.sh}"
-# The Windows arm is served beside the shell one and reads the same pointer,
-# so it follows the same authority/mirror discipline.
-authority_ps1="${NODECODE_PUBLISH_PS1_PATH:-$(layout_system "$repo")/tools/install/install.ps1}"
 # The site builds its image from this branch of the repository the local
 # clone tracks; the installers are mirrored there, never into the clone.
 # NODECODE_PUBLISH_SITE_REMOTE names that repository directly, for a publisher
 # with no clone of the site (the Release workflow); else the clone's origin.
-site_remote="$(publish_setting NODECODE_PUBLISH_SITE_REMOTE 2> /dev/null)" || site_remote=''
-if [ -z "$site_remote" ]; then
-  marketplace="$(publish_setting NODECODE_PUBLISH_MARKETPLACE_DIR)" || exit 1
-  site_remote="$(git -C "$marketplace" remote get-url origin 2>/dev/null)" || {
-    echo "publish: $marketplace has no origin to push the installers to" >&2
-    exit 1
-  }
+# Only a stable publish mirrors them: an install reads the stable pointer by
+# default, so the installers it runs are the stable release's.
+if [ "$channel" = stable ]; then
+  authority_installer="${NODECODE_PUBLISH_INSTALLER_PATH:-$(layout_system "$repo")/tools/install/install.sh}"
+  # The Windows arm is served beside the shell one and reads the same pointer,
+  # so it follows the same authority/mirror discipline.
+  authority_ps1="${NODECODE_PUBLISH_PS1_PATH:-$(layout_system "$repo")/tools/install/install.ps1}"
+  site_remote="$(publish_setting NODECODE_PUBLISH_SITE_REMOTE 2> /dev/null)" || site_remote=''
+  if [ -z "$site_remote" ]; then
+    marketplace="$(publish_setting NODECODE_PUBLISH_MARKETPLACE_DIR)" || exit 1
+    site_remote="$(git -C "$marketplace" remote get-url origin 2>/dev/null)" || {
+      echo "publish: $marketplace has no origin to push the installers to" >&2
+      exit 1
+    }
+  fi
+  site_branch="${NODECODE_PUBLISH_SITE_BRANCH:-main}"
+  web_container="$(publish_setting NODECODE_PUBLISH_WEB_CONTAINER)" || exit 1
+  [ -f "$authority_installer" ] || { echo "publish: missing authority installer $authority_installer" >&2; exit 1; }
+  [ -f "$authority_ps1" ] || { echo "publish: missing authority installer $authority_ps1" >&2; exit 1; }
 fi
-site_branch="${NODECODE_PUBLISH_SITE_BRANCH:-main}"
-web_container="$(publish_setting NODECODE_PUBLISH_WEB_CONTAINER)" || exit 1
-[ -f "$authority_installer" ] || { echo "publish: missing authority installer $authority_installer" >&2; exit 1; }
-[ -f "$authority_ps1" ] || { echo "publish: missing authority installer $authority_ps1" >&2; exit 1; }
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT INT TERM
@@ -193,7 +211,21 @@ fetch() {
 # did not, so a box finds the release it ran before either way. One list for
 # every platform, written here: this host has the history, a sandbox tree
 # is one commit deep.
+#
+# The list reaches back at least to the stable release before this commit,
+# however far that is: RELEASE-DIRECTION reads a move between channels off
+# these lists, so a home switched from nightly back to stable knows stable is
+# a step back -- and refuses it unasked -- only when stable's label is on the
+# nightly's list.
 changes="$OUT/changes-$label"
+depth=200
+previous="$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$commit^" 2>/dev/null)" || previous=''
+previous_label=''
+if [ -n "$previous" ] && previous_commit="$(git rev-parse -q --verify "$previous^{commit}")"; then
+  previous_label="${previous_commit:0:9}"
+  since="$(git rev-list --count "$previous_commit..$commit")"
+  [ "$since" -lt "$depth" ] || depth=$((since + 1))
+fi
 # What ships has two spellings (layout.sh): under src/ until the move put the
 # system at the root -- the commit that added the root nodecode.asd -- and at
 # the root since. Each stretch of history is read with its own, so the commits
@@ -202,22 +234,34 @@ declare -A ships=()
 move="$(git log --no-renames --diff-filter=A --format=%H -n 1 "$commit" -- nodecode.asd)"
 ships_since() { # REV RANGE
   local specs; mapfile -t specs < <(layout_ships_at "$1")
-  git log --format=%H -n 200 "$2" -- "${specs[@]}"
+  git log --format=%H -n "$depth" "$2" -- "${specs[@]}"
 }
-while read -r hash; do ships[$hash]=1; done < <(
-  if [ -n "$move" ]; then
-    ships_since "$commit" "$move^..$commit"
-    ships_since "$move^" "$move^"
-  else
-    ships_since "$commit" "$commit"
-  fi)
-git log --format='%H %s' -n 200 "$commit" | while read -r hash subject; do
-  if [ -n "${ships[$hash]:-}" ]; then
-    printf '%s %s\n' "${hash:0:9}" "${subject%% -- *}"
-  else
-    printf '%s\n' "${hash:0:9}"
-  fi
-done > "$changes"
+write_changes() {
+  local hash subject
+  ships=()
+  while read -r hash; do ships[$hash]=1; done < <(
+    if [ -n "$move" ]; then
+      ships_since "$commit" "$move^..$commit"
+      ships_since "$move^" "$move^"
+    else
+      ships_since "$commit" "$commit"
+    fi)
+  git log --format='%H %s' -n "$depth" "$commit" | while read -r hash subject; do
+    if [ -n "${ships[$hash]:-}" ]; then
+      printf '%s %s\n' "${hash:0:9}" "${subject%% -- *}"
+    else
+      printf '%s\n' "${hash:0:9}"
+    fi
+  done > "$changes"
+}
+write_changes
+# The log walks by commit date, so a merged branch's older commits can sit
+# between this one and the stable release; the list grows until it holds it.
+while [ -n "$previous_label" ] && ! cut -d' ' -f1 "$changes" | grep -qxF "$previous_label"; do
+  [ "$depth" -lt 20000 ] || { echo "publish: changes-$label never reaches $previous ($previous_label)" >&2; exit 1; }
+  depth=$((depth * 2))
+  write_changes
+done
 chmod 0644 "$changes"
 
 uploads=("$changes")
@@ -244,22 +288,42 @@ done
 # A published name keeps its bytes. The zone caches /dl/nodecode-* at the edge
 # for 30 days (Cloudflare cache rule), so a second body under a name
 # the host already holds would reach some readers and not others, and fail
-# every install that checks it against the other .sha256. The same bytes again
-# pass; a different body is refused before anything moves. The `have' check
-# above only sees this machine's OUT.
-refuse_republish() {
-  local published name remote
-  published="$(ssh -o BatchMode=yes "$host" "cd '$remote_dir' && sha256sum -- $(for f in "$@"; do printf "'%s' " "$(basename "$f")"; done) 2>/dev/null; true")"
+# every install that checks it against the other .sha256. The `have' check
+# above only sees this machine's OUT, so a name the host already holds is
+# published with the host's bytes: they replace OUT's before anything ships.
+# That is how a stable release of a commit the nightly channel already carries
+# goes out -- the nightly's archives, built from the same commit by the same
+# jobs, and run on the nightly homes since. A host body its own sidecar there
+# does not name is refused, and nothing moves.
+keep_published() {
+  local names='' published name remote remote_sidecar
+  for f in "$@"; do names="$names '$(basename "$f")'"; done
+  # One read of the host: each name's body hash, and the hash its sidecar
+  # there names.
+  published="$(ssh -o BatchMode=yes "$host" "cd '$remote_dir' && for n in $names; do
+      [ -f \"\$n\" ] && printf 'body %s %s\n' \"\$(sha256sum < \"\$n\" | cut -d' ' -f1)\" \"\$n\";
+      [ -f \"\$n.sha256\" ] && printf 'sidecar %s %s\n' \"\$(cut -d' ' -f1 < \"\$n.sha256\")\" \"\$n\";
+    done; true")"
   for f in "$@"; do
     name="$(basename "$f")"
-    remote="$(awk -v n="$name" '$2 == n { print $1 }' <<<"$published")"
-    if [ -n "$remote" ] && [ "$remote" != "$(sha_of "$f")" ]; then
-      echo "publish: $name is already on $host with other bytes ($remote); the edge caches /dl/nodecode-* for 30 days, so a published name keeps its bytes. Nothing moves." >&2
+    remote="$(awk -v n="$name" '$1 == "body" && $3 == n { print $2 }' <<<"$published")"
+    [ -n "$remote" ] && [ "$remote" != "$(sha_of "$f")" ] || continue
+    remote_sidecar="$(awk -v n="$name" '$1 == "sidecar" && $3 == n { print $2 }' <<<"$published")"
+    if [ "$remote_sidecar" != "$remote" ]; then
+      echo "publish: $name is already on $host with other bytes ($remote), which its sidecar there (${remote_sidecar:-none}) does not name. Nothing moves." >&2
       return 1
     fi
+    scp -q "$host:$remote_dir/$name" "$host:$remote_dir/$name.sha256" "$(dirname "$f")/"
+    [ "$(sha_of "$f")" = "$remote" ] && (cd "$(dirname "$f")" && sha256sum -c --quiet "$name.sha256") || {
+      echo "publish: $name could not be taken from $host as published there. Nothing moves." >&2
+      return 1
+    }
+    echo "publish: $name is already published ($remote): this release ships those bytes"
   done
 }
-refuse_republish "${uploads[@]:1}"
+archives=()
+for f in "${uploads[@]:1}"; do case "$f" in *.sha256) ;; *) archives+=("$f") ;; esac; done
+keep_published "${archives[@]}"
 scp -q "${uploads[@]}" "$host:$remote_dir/"
 restart_web
 
@@ -318,18 +382,21 @@ echo "publish: changes-$label edge sha256 $(sha_of "$probe/changes-$label")"
 # fails the publish while every pointer still names the release before. The
 # mirror is pushed to the branch the site's image is built from: a copy only
 # in the running container is reverted by the next image (mirror-installers.sh).
-"$(dirname "${BASH_SOURCE[0]}")/mirror-installers.sh" "$site_remote" "$site_branch" \
-  "$authority_installer" "$authority_ps1" "release: public installer follows authority ($label)" || {
-  echo "publish: the installers could not be pushed to the site's $site_branch; nothing moves." >&2
-  exit 1
-}
+# A nightly leaves both as the stable release put them.
+if [ "$channel" = stable ]; then
+  "$(dirname "${BASH_SOURCE[0]}")/mirror-installers.sh" "$site_remote" "$site_branch" \
+    "$authority_installer" "$authority_ps1" "release: public installer follows authority ($label)" || {
+    echo "publish: the installers could not be pushed to the site's $site_branch; nothing moves." >&2
+    exit 1
+  }
 
-scp -q "$authority_installer" "$host:/tmp/nodecode-install-${label}.sh"
-scp -q "$authority_ps1" "$host:/tmp/nodecode-install-${label}.ps1"
-ssh -o BatchMode=yes "$host" \
-  "docker cp /tmp/nodecode-install-${label}.sh '$web_container:/app/public/install.sh' &&
-   docker cp /tmp/nodecode-install-${label}.ps1 '$web_container:/app/public/install.ps1' &&
-   rm -f /tmp/nodecode-install-${label}.sh /tmp/nodecode-install-${label}.ps1"
+  scp -q "$authority_installer" "$host:/tmp/nodecode-install-${label}.sh"
+  scp -q "$authority_ps1" "$host:/tmp/nodecode-install-${label}.ps1"
+  ssh -o BatchMode=yes "$host" \
+    "docker cp /tmp/nodecode-install-${label}.sh '$web_container:/app/public/install.sh' &&
+     docker cp /tmp/nodecode-install-${label}.ps1 '$web_container:/app/public/install.ps1' &&
+     rm -f /tmp/nodecode-install-${label}.sh /tmp/nodecode-install-${label}.ps1"
+fi
 
 # The pointers move LAST, once every body they name is served. The release
 # feed hands a box the new label within seconds of a pointer landing, and a
@@ -346,8 +413,8 @@ ssh -o BatchMode=yes "$host" \
 #
 # The channel pointer: one line naming the label, at <channel>-<arch>-<os>
 # beside the archives. A running organism polls it (`update' in the config;
-# update.lisp) and stages what it names. Stable unless told otherwise.
-channel="${NODECODE_PUBLISH_CHANNEL:-stable}"
+# update.lisp) and stages what it names: stable unless its config names
+# another channel ($channel, from the top).
 pointers="$work/pointers"
 mkdir -p "$pointers"
 for platform in $platforms; do
@@ -418,6 +485,11 @@ verify_installer() {
   grep -iE '^HTTP/|cf-cache-status|content-length|age:' "$probe/$served-headers" || true
   echo "publish: $served is live at $base_url/$served, reading the $channel pointer"
 }
+
+if [ "$channel" != stable ]; then
+  echo "publish: $label is the $channel channel's build; stable, the installers and the releases page are as they were"
+  exit 0
+fi
 
 verify_installer install.sh "$authority_installer"
 verify_installer install.ps1 "$authority_ps1"
