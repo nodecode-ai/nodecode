@@ -310,7 +310,7 @@ renderer, the program loop.")
    #:mark-index-refresh #:pin-index-section
    ;; --- made cells: a folder of kept code beside the layer (made-cells.lisp) ---
    #:kept-folder-kind #:new-cell #:enter-cell #:leave-cell #:current-cell
-   #:cell-directory #:add-cell-component #:move-to-cell
+   #:cell-directory #:add-cell-component #:move-to-cell #:cell-reach
    ;; --- provisional definitions: the stack as evidence (provisional.lisp) ---
    ;; A redefinition of a name the caller is standing on is held until it
    ;; has run once; the boot snapshot is what a revert puts back.

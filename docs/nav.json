@@ -36,6 +36,12 @@
         "cells",
         "cell-api"
       ]
+    },
+    {
+      "name": "Reference",
+      "pages": [
+        "context-reference"
+      ]
     }
   ]
 }
