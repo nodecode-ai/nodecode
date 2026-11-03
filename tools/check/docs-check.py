@@ -23,11 +23,14 @@
 #   media    a picture a page shows (![](...), src=, poster=) is a file under
 #            docs/images/: /docs/PATH or images/PATH names docs/images/PATH.
 #   sources  every source path a page names (src/...lisp|asd|json,
-#            cells/...lisp|asd, nodecode.asd) is a file of this commit, or of
+#            tools/...sh|py, cells/...lisp|asd, nodecode.asd) is a file of this commit, or of
 #            the shipped cell it falls in, as tools/build/pull-cells.sh lays
 #            it down from cells/bundle.json. A code move that leaves a page
 #            naming the old path fails here, in its own pull request.
 #   dates    dates.json, when present, dates only pages, as YYYY-MM-DD.
+#   release  changelog.mdx has a `## X.Y.Z` section for the version
+#            nodecode.asd builds, so the commit a release is tagged at
+#            carries what changed in it, and the page cannot fall behind.
 #
 # Each problem is one line, FILE:LINE: what is wrong; the last line counts
 # what was read. Exit 0 when nothing is wrong, 1 when something is, 2 when the
@@ -233,7 +236,7 @@ for path, _, prose, ids in read.values():
 # Rooted at the repository, as the site's own check reads them: a src/ or
 # cells/ after another segment (lisp/src/..., ~/.nodecode/cells/...) is some
 # other tree's.
-SOURCE = re.compile(r"(?<![\w./~-])(?:src/[\w./-]+?\.(?:lisp|asd|json)|cells/[\w./-]+?\.(?:lisp|asd)|nodecode(?:-perf)?\.asd)\b")
+SOURCE = re.compile(r"(?<![\w./~-])(?:src/[\w./-]+?\.(?:lisp|asd|json)|tools/[\w./-]+?\.(?:sh|py)|cells/[\w./-]+?\.(?:lisp|asd)|nodecode(?:-perf)?\.asd)\b")
 try:
     tracked = set(subprocess.run(["git", "-C", ROOT, "ls-files", "-z"], check=True, capture_output=True).stdout.decode().split("\0"))
 except (OSError, subprocess.CalledProcessError) as error:
@@ -273,6 +276,18 @@ if os.path.exists(dates_path):
             problem(dates_path, 1, f"dates {json.dumps(slug)}, and there is no docs/{slug}.mdx")
         elif not (isinstance(date, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", date)):
             problem(dates_path, 1, f"dates {slug} as {json.dumps(date)}, not YYYY-MM-DD")
+
+# --- release ------------------------------------------------------------------
+
+asd_path = os.path.join(ROOT, "nodecode.asd")
+changelog = "changelog"
+if os.path.exists(asd_path) and changelog in read:
+    version = re.search(r'^\s*:version\s+"([^"]+)"', open(asd_path, encoding="utf-8").read(), re.M)
+    path, lines, _, _ = read[changelog]
+    if not version:
+        problem(asd_path, 1, "has no :version string")
+    elif not any(line.strip() == "## " + version.group(1) for line in lines):
+        problem(path, 1, f"has no '## {version.group(1)}' section, and nodecode.asd builds {version.group(1)}: say what changed in it")
 
 for line in problems:
     print(line)
