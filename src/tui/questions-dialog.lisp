@@ -46,10 +46,9 @@ choice selected."
                                                              "answer" choice))
                           nil)
                         :kind :question
-                        :context "the turn waits"
                         :subtitle (or (first lines) "")
                         :selection (length (rest lines))
-                        :hint "enter answer  esc hide (the turn waits)  ↑↓ choose")
+                        :hint "enter answer  esc hide  ↑↓ choose")
     (setf (gethash (chat-model-dialog model) *question-dialogs*) id)))
 
 (defun show-session-questions (model payload &aux (dialog (chat-model-dialog model)))

@@ -230,15 +230,14 @@ of that name wins over both: a repository never stands in for one of yours."
 
 (defun trust-question (folders)
   "=> (values TITLE DETAIL): the ask for FOLDERS, (DIRECTORY . ITEMS) each."
-  (values (if (rest folders)
-              (format nil "~d folders here carry skills that need your OK" (length folders))
-              (format nil "~a carries skills that need your OK"
-                      (home-abbreviated (uiop:native-namestring (car (first folders))))))
-          (format nil "~{~a~%~}AGENTS.md is read either way. No answer counts as Not now: ~
-                       this session goes on without them."
-                  (loop for (directory . items) in folders
-                        collect (format nil "~a: ~a" (home-abbreviated (uiop:native-namestring directory))
-                                        (resource-summary items))))))
+  (flet ((name (directory) (home-abbreviated (uiop:native-namestring directory))))
+    (if (rest folders)
+        (values (format nil "Trust ~d folders?" (length folders))
+                (format nil "~{~a~^~%~}"
+                        (loop for (directory . items) in folders
+                              collect (format nil "~a: ~a" (name directory) (resource-summary items)))))
+        (destructuring-bind ((directory . items)) folders
+          (values (format nil "Trust ~a?" (name directory)) (resource-summary items))))))
 
 (defun record-trust-answer (session-id directories answer)
   "Act on ANSWER, one of +TRUST-CHOICES+ or NIL, for DIRECTORIES.
