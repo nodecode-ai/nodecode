@@ -1,6 +1,6 @@
 ---
 title: Environment variables
-summary: "Every environment variable the nodecode binary and the installers read, by purpose."
+summary: "Every environment variable the nodecode binary and the installers read, and the one it sets for shell commands, by purpose."
 ---
 
 A variable applies to the one process that reads it. For lasting settings use [Config](/config).
@@ -22,6 +22,17 @@ The binary picks the home in this order.
 4. `~/.nodecode/`.
 
 The binary sets `NODECODE_HOME` for every child process it starts.
+
+{/* source: src/engine/exec.lisp */}
+## Set for shell commands
+
+Nodecode sets this for every command a session's `sh` runs. You do not set it.
+
+| Variable | Meaning |
+| --- | --- |
+| `NODECODE_SESSION_ID` | The id of the session running the command, exactly as Nodecode prints it, such as `s-K3F9Q2ZA`. A fork's commands get the fork's own id. |
+
+A command run outside a session's turn, or by the gateway's own session `s-GATEWAY`, gets no `NODECODE_SESSION_ID`, not even one Nodecode itself inherited.
 
 {/* source: src/engine/provider.lisp */}
 ## Model
