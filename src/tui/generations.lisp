@@ -80,14 +80,10 @@ its own; NOW says which day is today."
           for first-at = (or (iso-universal (json-value entry :string "first_at")) at)
           do (multiple-value-bind (key words) (local-date at)
                (unless (find key days :key #'history-day-key :test #'equal)
-                 (setf days (append days (list (make-history-day
-                                                :key key
-                                                :label (cond ((equal key today) "Today")
-                                                             ((equal key yesterday) "Yesterday")
-                                                             (t words))
-                                                :long (cond ((equal key today) (format nil "Today, ~a" words))
-                                                            ((equal key yesterday) (format nil "Yesterday, ~a" words))
-                                                            (t words)))))))
+                 (let ((near (cond ((equal key today) "Today") ((equal key yesterday) "Yesterday"))))
+                   (setf days (append days (list (make-history-day
+                                                  :key key :label (or near words)
+                                                  :long (if near (format nil "~a, ~a" near words) words)))))))
                (push (make-history-change
                       :kind (json-value entry :string "kind")
                       :from (json-value entry :integer "from") :to (json-value entry :integer "to")
@@ -133,8 +129,7 @@ STACKED, one view at a time."
 (defun history-current (history)
   "The place of the change the folder stands at among HISTORY's changes, or
 NIL while it stands at none."
-  (let ((now history.now))
-    (and now (position-if (lambda (change) (<= change.from now change.to)) history.changes))))
+  (and history.now (history-holding history history.now)))
 
 (defun history-wall (history)
   "The place of the newest change from which no older one can come back,
@@ -237,6 +232,23 @@ WORDS BACK), BACK when it goes back."
       (format nil "~{~a~^, ~} have uncommitted edits" (mapcar #'car edits))
       (format nil "~a has ~d uncommitted edit~:p" (car (first edits)) (cdr (first edits)))))
 
+(defun edits-them (edits)
+  "How EDITS are named again: `them', or `it' for one edit."
+  (if (or (rest edits) (/= 1 (cdr (first edits)))) "them" "it"))
+
+(defun edits-lose-words (edits)
+  "That going back would lose EDITS, in words."
+  (format nil "~a, and going back would lose ~a." (edits-words edits) (edits-them edits)))
+
+(defun refusal-sentence (refusal)
+  "REFUSAL said as a sentence: capitalized, with its full stop."
+  (format nil "~@(~a~)~a." (subseq refusal 0 1) (subseq refusal 1)))
+
+(defun ask-stamp (history change number)
+  "When generation NUMBER of CHANGE was, as a question names it."
+  (format nil "~a, ~a" (history-day-long (aref history.days change.day))
+          (if (eql number change.to) change.clock (format nil "generation ~d" number))))
+
 (defun change-span (change)
   "When CHANGE was made and the generations it spans, and how long ago."
   (format nil "~:[~a–~;~*~]~a · generation~:[s ~d–~; ~*~]~d · ~a ago"
@@ -299,9 +311,7 @@ change it was on, else the one the folder stands at."
             history.now (json-value answer :integer "now")
             history.version (json-value answer :string "version")
             history.follows (eq t (json-value answer :any "nodecode_follows"))
-            history.edits (loop for entry across (json-array answer "edits")
-                                collect (cons (json-value entry :string "name")
-                                              (or (json-value entry :integer "count") 0)))
+            history.edits (answer-edits answer)
             history.failed nil)
       (let ((index (or (and was (position was changes :key #'history-change-to))
                        (history-current history)
@@ -354,13 +364,15 @@ about NUMBER itself; say so when no change holds it."
            (history-ask model history index number))
     (setf history.said (list (no-generation-words history number) :danger))))
 
+(defun answer-edits (answer)
+  "The uncommitted edits the list or plan route's ANSWER names, ((NAME . COUNT) ...)."
+  (loop for entry across (json-array answer "edits")
+        collect (cons (json-value entry :string "name") (or (json-value entry :integer "count") 0))))
+
 (defun ask-edits (history)
   "The edits that hold the restore asked about, ((NAME . COUNT) ...): the
 plan's once it answered, else the list's."
-  (if-let (plan (getf history.ask :plan))
-    (loop for entry across (json-array plan "edits")
-          collect (cons (json-value entry :string "name") (or (json-value entry :integer "count") 0)))
-    history.edits))
+  (if-let (plan (getf history.ask :plan)) (answer-edits plan) history.edits))
 
 (defun ask-refusal (history)
   "Why the restore asked about can never work: the plan's once it answered,
@@ -441,14 +453,16 @@ stands on the change the last find did."
     (when (and (zerop (length query)) was)
       (history-select history was))))
 
-(defun history-step-filter (history delta)
-  "The filter DELTA along +HISTORY-FILTERS+, round, the list kept on the
-change it was on when the filter shows it."
-  (let ((was (history-focus history))
-        (at (position history.filter +history-filters+ :key #'first)))
-    (setf history.filter (first (nth (mod (+ at delta) (length +history-filters+)) +history-filters+))
-          history.top 0 history.at 0)
+(defun history-set-filter (history filter)
+  "Show FILTER's changes, the list kept on the change it was on when FILTER shows it."
+  (let ((was (history-focus history)))
+    (setf history.filter filter history.top 0 history.at 0)
     (when was (history-select history was))))
+
+(defun history-step-filter (history delta)
+  "The filter DELTA along +HISTORY-FILTERS+, round."
+  (let ((at (position history.filter +history-filters+ :key #'first)))
+    (history-set-filter history (first (nth (mod (+ at delta) (length +history-filters+)) +history-filters+)))))
 
 (defun history-move (history delta)
   "Move AT DELTA changes along the list as it shows, stopping at its ends;
@@ -483,6 +497,11 @@ edits that hold it kept first; d discards them, then goes."
           ((eq key :enter) (history-go model history (and edits :keep)))
           ((and edits (characterp key) (char-equal key #\d)) (history-go model history :discard)))))
 
+(defun history-ask-focus (model history &optional (focus (history-focus history)))
+  "Enter on the chosen change: ask about going to it, unless the folder stands there."
+  (when (and focus (not (eql focus (history-current history))))
+    (history-ask model history focus)))
+
 (defun history-pane-key (model history key)
   (let* ((visible (history-visible history))
          (focus (history-focus history visible)))
@@ -495,8 +514,7 @@ edits that hold it kept first; d discards them, then goes."
       (:end (setf history.at (max 0 (1- (length visible)))))
       ((:left :escape)
        (setf history.day (history-chosen-day history focus) history.focus :rail history.said nil))
-      (:enter (when (and focus (not (eql focus (history-current history))))
-                (history-ask model history focus))))))
+      (:enter (history-ask-focus model history focus)))))
 
 (defun history-rail-key (model history key)
   (case key
@@ -514,13 +532,11 @@ edits that hold it kept first; d discards them, then goes."
     (:escape (dismiss-dialog model nil))))
 
 (defun history-query-key (model history key)
-  (let ((focus (history-focus history)))
-    (case key
-      (:escape (history-search history ""))
-      (:up (history-move history -1))
-      (:down (history-move history 1))
-      (:enter (when (and focus (not (eql focus (history-current history))))
-                (history-ask model history focus))))))
+  (case key
+    (:escape (history-search history ""))
+    (:up (history-move history -1))
+    (:down (history-move history 1))
+    (:enter (history-ask-focus model history))))
 
 (defun generations-key (model history key &key ctrl alt shift)
   "Every key the shell's chords leave the open sheet."
@@ -587,8 +603,7 @@ of (TEXT TONE [BOLD]) runs, and the keys that answer it."
            (refusal (ask-refusal history))
            (edits (ask-edits history))
            (forward (and current (< index current)))
-           (stamp (format nil "~a, ~a" (history-day-long (aref history.days change.day))
-                          (if (eql to change.to) change.clock (format nil "generation ~d" to))))
+           (stamp (ask-stamp history change to))
            (cost (cost-words history index current))
            (moves (cond (plan (loop for line across (json-array plan "lines")
                                     collect (list line :muted)))
@@ -601,14 +616,12 @@ of (TEXT TONE [BOLD]) runs, and the keys that answer it."
       (cond
         (refusal
          (values (append (list (list (list (format nil "Can't go back to ~a" stamp) :foreground t)))
-                         (funcall wrap (format nil "~@(~a~)~a." (subseq refusal 0 1) (subseq refusal 1)) :danger)
+                         (funcall wrap (refusal-sentence refusal) :danger)
                          (list (list (list "Pick a change above the red line." :muted))))
                  '(("esc" "back"))))
         (edits
          (values (append (list head)
-                         (funcall wrap (format nil "~a, and going back would lose ~:[it~;them~]."
-                                               (edits-words edits) (or (rest edits) (/= 1 (cdr (first edits)))))
-                                  :sheet-restart)
+                         (funcall wrap (edits-lose-words edits) :sheet-restart)
                          (list (list (list "Enter keeps them first, as a change you can come back to." :muted)))
                          (funcall wrap cost :muted)
                          moved
@@ -797,10 +810,7 @@ day's head at the top."
                                               (sheet-ink :muted :ground ground)))
              (sheet-hit history r at (+ at width)
                         (let ((key key))
-                          (lambda-ignoring (model history)
-                            (let ((was (history-focus history)))
-                              (setf history.filter key history.top 0 history.at 0)
-                              (when was (history-select history was))))))
+                          (lambda-ignoring (model history) (history-set-filter history key))))
              (incf at (1+ width)))))
 
 (defun paint-history-notes (history canvas r px pw ground tight)
@@ -841,6 +851,29 @@ said, the banner of edits. => the row the list starts on."
         (history.busy "Reading the generations…")
         ((zerop (length history.changes)) "No generation sealed yet")
         (t "No change of this kind")))
+
+(defun paint-history-pane (history canvas visible focus current r rows px pw pane wide)
+  "The list of VISIBLE changes down ROWS rows from R, or what it says while it shows nothing."
+  (multiple-value-bind (lines focus-line) (history-lines history visible focus pw wide)
+    (if lines
+        (paint-history-list history canvas lines focus-line r rows px pw focus current wide)
+        (when-let (text (history-empty-text history))
+          (canvas-put canvas px r (clip-text-to-width text pw) (sheet-ink :muted :ground pane))))))
+
+(defun paint-history-foot (history canvas card keys visible focus current hint-row bottom-row px pw pane)
+  "Above the key row at HINT-ROW the question's CARD, else the line under the
+list on BOTTOM-ROW (none when NIL); then the keys that act, KEYS while a
+question stands."
+  (cond (card (paint-ask canvas (- hint-row 1 (length card)) px pw card))
+        (bottom-row (paint-segs canvas bottom-row px pw (history-bottom history focus current) pane)))
+  (paint-keys history canvas hint-row px (+ px pw) (if history.ask keys (history-keys history visible))
+              history.flash pane))
+
+(defun history-card (history pw room)
+  "The question asked in place, PW wide, cut to ROOM lines. => (values LINES KEYS), NIL while none stands."
+  (when history.ask
+    (multiple-value-bind (card keys) (ask-card history pw)
+      (values (subseq card 0 (min (length card) (max 0 room))) keys))))
 
 (defun paint-history-days (history canvas top rows width rail pane focus current)
   "The days down ROWS rows from TOP in the rail, WIDTH wide, scrolled to keep
@@ -909,20 +942,10 @@ cell, or NIL."
         (paint-history-chips history canvas r px pw pane)
         (incf r 2))
       (setf r (paint-history-notes history canvas r px pw pane tight))
-      (multiple-value-bind (card keys) (and history.ask (ask-card history pw))
-        (let* ((room (max 0 (- hint-row r 4)))
-               (card (and card (subseq card 0 (min (length card) room))))
-               (list-end (if card (- hint-row (length card) 3) (- hint-row 4))))
-          (multiple-value-bind (lines focus-line) (history-lines history visible focus pw t)
-            (if lines
-                (paint-history-list history canvas lines focus-line r (1+ (- list-end r)) px pw focus current t)
-                (when-let (text (history-empty-text history))
-                  (canvas-put canvas px r (clip-text-to-width text pw) (sheet-ink :muted :ground pane)))))
-          (if card
-              (paint-ask canvas (- hint-row 1 (length card)) px pw card)
-              (paint-segs canvas (- hint-row 2) px pw (history-bottom history focus current) pane))
-          (paint-keys history canvas hint-row px (+ px pw) (if history.ask keys (history-keys history visible))
-                      history.flash pane)))
+      (multiple-value-bind (card keys) (history-card history pw (- hint-row r 4))
+        (let ((list-end (if card (- hint-row (length card) 3) (- hint-row 4))))
+          (paint-history-pane history canvas visible focus current r (1+ (- list-end r)) px pw pane t)
+          (paint-history-foot history canvas card keys visible focus current hint-row (- hint-row 2) px pw pane)))
       cursor)))
 
 (defun paint-history-stacked (history canvas edges)
@@ -964,11 +987,9 @@ at a time. => the caret's cell, or NIL."
         (incf r 2))
       (when (>= inner 14)
         (setf r (paint-history-notes history canvas r px pw pane nil)))
-      (multiple-value-bind (card keys) (and history.ask (ask-card history pw))
+      (multiple-value-bind (card keys) (history-card history pw (- hint-row r 4))
         (let* ((gap (if (>= inner 16) 1 0))
                (bottom-row (- hint-row 1 gap))
-               (room (max 0 (- hint-row r 4)))
-               (card (and card (subseq card 0 (min (length card) room))))
                (list-end (if card (- hint-row (length card) 3) (- bottom-row 1 gap)))
                (rows (1+ (- list-end r))))
           (if days-view
@@ -992,15 +1013,9 @@ at a time. => the caret's cell, or NIL."
                                         (if (and (= d history.day) (eq history.focus :rail))
                                             (history-open-day history d)
                                             (setf history.day d history.focus :rail history.said nil)))))))
-              (multiple-value-bind (lines focus-line) (history-lines history visible focus pw nil)
-                (if lines
-                    (paint-history-list history canvas lines focus-line r rows px pw focus current nil)
-                    (when-let (text (history-empty-text history))
-                      (canvas-put canvas px r (clip-text-to-width text pw) (sheet-ink :muted :ground pane))))))
-          (cond (card (paint-ask canvas (- hint-row 1 (length card)) px pw card))
-                ((>= inner 12) (paint-segs canvas bottom-row px pw (history-bottom history focus current) pane)))
-          (paint-keys history canvas hint-row px (+ px pw) (if history.ask keys (history-keys history visible))
-                      history.flash pane)))
+              (paint-history-pane history canvas visible focus current r rows px pw pane nil))
+          (paint-history-foot history canvas card keys visible focus current hint-row
+                              (and (>= inner 12) bottom-row) px pw pane)))
       cursor)))
 
 (defparameter +generations-sheet-size+ '(112 32)
@@ -1055,8 +1070,7 @@ where the folder stands, the edits that hold a restore (HISTORY-INSTALL)."
 (defun history-edits-words (edits)
   "The uncommitted EDITS that hold every restore, ((NAME . COUNT) ...), as the
 list says them once over its rows; NIL for none."
-  (and edits (format nil "~a: going back keeps or discards ~:[it~;them~] first"
-                     (edits-words edits) (or (rest edits) (/= 1 (cdr (first edits)))))))
+  (and edits (format nil "~a: going back keeps or discards ~a first" (edits-words edits) (edits-them edits))))
 
 (defun history-row (history index current)
   "The change at INDEX as a dialog's row, CURRENT the place of the one the
@@ -1110,12 +1124,10 @@ there already."
          (current (history-current history))
          (forward (and current (< index current)))
          (go (if forward "go forward" "go back"))
-         (stamp (format nil "~a, ~a" (history-day-long (aref history.days change.day))
-                        (if (eql number change.to) change.clock (format nil "generation ~d" number))))
+         (stamp (ask-stamp history change number))
          (context (format nil "generation ~d · ~a" number change.title))
          (refusal (json-value plan :string "refusal"))
-         (edits (loop for entry across (json-array plan "edits")
-                      collect (cons (json-value entry :string "name") (or (json-value entry :integer "count") 0))))
+         (edits (answer-edits plan))
          ;; a room is public: the checkout a restore leaves is named, never where it sits
          (moves (loop for line across (json-array plan "lines")
                       collect (list :label (ppcre:regex-replace "the checkout at \\S+ has" line "the checkout has")))))
@@ -1131,7 +1143,7 @@ there already."
       (cond
         (refusal
          (answer (list-dialog :title (format nil "Can't go back to ~a" stamp) :context context
-                              :summary (format nil "~@(~a~)~a." (subseq refusal 0 1) (subseq refusal 1))
+                              :summary (refusal-sentence refusal)
                               :tone :danger :hint "esc back"
                               :empty-label "Pick a change above the red line.")
                  "Pick a change above the red line."))
@@ -1147,9 +1159,7 @@ there already."
                               :hint (format nil "enter ~a  esc stay" go)
                               :rows (append
                                      (when edits
-                                       (list (list :label (format nil "~a, and going back would lose ~:[it~;them~]."
-                                                                  (edits-words edits)
-                                                                  (or (rest edits) (/= 1 (cdr (first edits))))))))
+                                       (list (list :label (edits-lose-words edits))))
                                      moves
                                      (if edits
                                          (list (runs "Keep the edits first, as a change you can come back to" "keep")
