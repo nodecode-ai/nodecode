@@ -185,7 +185,10 @@ the list on both shells)."
                               (format nil "~d model~:p" count)
                               (format nil "~d model~:p  ~a (~(~a~))" count
                                       (or (key-check-state id) "connected")
-                                      (if (eq state :api-key) "auth.json" state)))))))
+                                      (case state
+                                        (:api-key "auth.json")
+                                        (:secret-file "secrets/")
+                                        (t state))))))))
       ;; Configured and local providers need a row even without a models.dev entry.
       ;; Their models and listing failures still come from the one model catalog.
       (dolist (id (union connected listable :test #'string-equal))

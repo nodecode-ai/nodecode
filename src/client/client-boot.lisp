@@ -57,12 +57,14 @@ or NIL."
   "The organism this shell started, while it may run: (:PIPE STREAM :WAITER
 THREAD), the pipe on its stdin and the thread that reaps it.")
 
-(defun front-organism (store-path)
+(defun front-organism (store-path &key (wrap #'sandbox-wrap-command))
   "Start STORE-PATH's organism as a headless serve in a process of its own,
 fronted by this shell, and return once it serves -- its gateway published,
 which this shell's reconnector attaches to -- or once another process holds
 the store, an election it lost. One that exits before either is a boot that
-died: ORGANISM-EXITED, with the last line it wrote to its log."
+died: ORGANISM-EXITED, with the last line it wrote to its log. WRAP turns
+the serve argv into the one spawned: the jail's (SANDBOX-WRAP-COMMAND), which
+is the argv itself outside a sandboxed shell."
   (let* ((command (or (serve-command store-path)
                       (error "this image names no nodecode binary to run the organism with")))
          ;; A home never used has no folder yet, and the log is the first
@@ -72,11 +74,16 @@ died: ORGANISM-EXITED, with the last line it wrote to its log."
          (word (format nil "~a=" +front-variable+))
          (exited (list nil)))
     (bind (((pid _ _ process pipe)
-            (spawn-program (session-argv command)
-                           :environment (cons (format nil "~a~d" word (sb-posix:getpid))
-                                              (remove-if (lambda (entry) (uiop:string-prefix-p word entry))
-                                                         (sb-ext:posix-environ)))
-                           :output log :error-output :output :input :stream)))
+            ;; A jailed serve's stdout is the listener the jail is reached by
+            ;; (CALL-WITH-SANDBOX-STDOUT), and its stderr the log.
+            (call-with-sandbox-stdout
+             (lambda (listener)
+               (spawn-program (session-argv (funcall wrap command))
+                              :environment (cons (format nil "~a~d" word (sb-posix:getpid))
+                                                 (remove-if (lambda (entry) (uiop:string-prefix-p word entry))
+                                                            (sb-ext:posix-environ)))
+                              :output (or listener log) :error-output (if listener log :output)
+                              :input :stream)))))
       (nlk:note-boot-phase "organism-spawned" pid)
       (setf *front* (list :pipe pipe
                           :waiter (spawn "organism-front"
