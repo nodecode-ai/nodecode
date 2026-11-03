@@ -55,7 +55,7 @@ In a chat room or eval, a shell-only command answers `/name needs an interactive
 | `/gc [reset]` | Shows garbage collection and stall stats. `reset` restarts the window. | Yes |
 | `/exit`, `/quit` | Exits the shell. | No |
 | `/index [reload \| TEXT]` | Knowledge: the meter and the picker. `reload` re-pins; a text finds hot and cold. `$` at the start of a word opens it. | Yes |
-| `/import [WORLD] [--source PATH] [--only KINDS] [--dry-run] [--overwrite] [--keep-running] [--yes]` | Brings another coding agent's home into this one: a preview first, `--yes` applies. `/import --sources` lists the repositories held, `/import --remove LABEL` takes one back. | Yes |
+| `/import [WORLD] [--source PATH] [--only KINDS] [--dry-run] [--overwrite] [--link] [--keep-running] [--yes]` | Brings another coding agent's home into this one: a preview first, `--yes` applies. `--link` links its skills, read where they are, instead of copying them. `/import --sources` lists the repositories held, `/import --remove LABEL` takes one back. | Yes |
 
 The gateway registers `/index` itself as it serves. It is no cell's.
 
