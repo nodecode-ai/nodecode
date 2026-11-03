@@ -702,18 +702,24 @@ under a query, else the chosen setting of the open section; NIL on the rail."
       (list :provider provider :model model-id :ladder ladder :effort (getf facts :effort)
             :default-provider (getf facts :default-provider) :default-model (getf facts :default-model)))))
 
+(defun settings-fetch (model)
+  "Off the loop: (CONFIG TARGET), every section and the target Models reads."
+  (list (gateway-model-http-call model :get "/api/gateway/config" nil)
+        (ignore-errors (multiple-value-list (target-snapshot model)))))
+
+(defun settings-take (settings answer)
+  "Keep a SETTINGS-FETCH ANSWER as what the sheet stands on."
+  (setf settings.answer (first answer)
+        settings.target (target-plist (second answer))))
+
 (defun settings-read (model settings)
   "Read every section, and the target Models reads, off the loop; then what
 the release changed."
   (sheet-call model settings
-                 (lambda ()
-                   (list (gateway-model-http-call model :get "/api/gateway/config" nil)
-                         (ignore-errors (multiple-value-list (target-snapshot model)))))
+                 (lambda () (settings-fetch model))
                  (lambda (model answer)
                    (let ((failure (off-loop-failure answer)))
-                     (unless failure
-                       (setf settings.answer (first answer)
-                             settings.target (target-plist (second answer))))
+                     (unless failure (settings-take settings answer))
                      ;; A config that does not read still answers its sections.
                      (setf settings.failed (or failure (json-value settings.answer :text "error")))
                      (settings-rebuild model settings)
@@ -807,6 +813,11 @@ make it again."
                              ;; A false is spelled so on the wire.
                              (json-object "path" path "value" (if (null value) :false value)))))))))
 
+(defun settings-pick (model settings setting value)
+  "Land VALUE, one of SETTING's options: a choice left unset has its member
+taken out; a switch's Off is a false like any other value."
+  (settings-commit model settings setting value :remove (and (null value) (eq setting.kind :choice))))
+
 (defun setting-path (setting)
   "The member keys of SETTING's field from the config's root."
   (concatenate 'vector (json-array (settings-section-json setting.part) "path")
@@ -823,9 +834,7 @@ the model's own, a theme picked, the Developer view."
 (defun settings-reset (model settings setting)
   "Give SETTING its default back."
   (when (settings-resettable-p setting)
-    (if setting.field
-        (settings-commit model settings setting nil :remove t)
-        (settings-commit model settings setting nil))))
+    (settings-commit model settings setting nil :remove t)))
 
 (defun settings-defaults (sections)
   "What Reset to defaults gives back, as (PART . SETTING) in the sheet's
@@ -891,15 +900,12 @@ still written -- and every section read anew."
                     (let ((refused (loop for row in rows
                                          for why = (reset-off-loop model row)
                                          when why collect (format nil "~a: ~a" (reset-label row) why))))
-                      (list (gateway-model-http-call model :get "/api/gateway/config" nil)
-                            (ignore-errors (multiple-value-list (target-snapshot model)))
-                            refused)))
+                      (append (settings-fetch model) (list refused))))
                   (lambda (model answer)
                     (let ((failure (off-loop-failure answer)))
                       (unless failure
-                        (setf settings.answer (first answer)
-                              settings.target (target-plist (second answer))
-                              kept (append kept (third answer))))
+                        (settings-take settings answer)
+                        (setf kept (append kept (third answer))))
                       (settings-rebuild model settings)
                       (cond (failure (settings-say settings asking failure :danger))
                             (kept (settings-say settings asking
@@ -930,12 +936,7 @@ nothing past an end otherwise."
                       (wrap (mod (+ at direction) count))
                       (t (max 0 (min (1- count) (+ at direction)))))))
        (unless (eql at to)
-         (let ((value (car (nth to setting.options))))
-           ;; A choice left unset has its member taken out; a switch's
-           ;; Off is a false like any other value.
-           (if (and (null value) setting.field (eq setting.kind :choice))
-               (settings-commit model settings setting nil :remove t)
-               (settings-commit model settings setting value))))))
+         (settings-pick model settings setting (car (nth to setting.options))))))
     (:number
      (let* ((value setting.value)
             (floor (or setting.min 0))
@@ -957,29 +958,23 @@ a secret, which is never shown."
 (defun settings-edit-submit (model settings &aux (setting (car settings.edit))
                                                  (text (nlk:trimmed (cdr settings.edit))))
   "Enter in a field: write what it holds, or say why not and keep it open."
-  (case setting.kind
-    (:number
-     (if-let (number (ignore-errors (parse-integer text)))
-       (progn (setf settings.edit nil) (settings-commit model settings setting number))
-       (settings-say settings setting "Enter a whole number; nothing was saved." :danger)))
-    (:list
-     (setf settings.edit nil)
-     (settings-commit model settings setting
-                      (coerce (split-words (substitute #\Space #\, text)) 'vector)))
-    (:secret
-     (setf settings.edit nil)
-     (when (plusp (length text)) (settings-commit model settings setting text)))
-    (:paste
-     (setf settings.edit nil)
-     (when (plusp (length text))
-       (settings-write model settings setting
-                       (json-object "path" (json-array (settings-section-json setting.part) "path")
-                                    "secret" text))))
-    (t
-     (setf settings.edit nil)
-     (if (plusp (length text))
-         (settings-commit model settings setting text)
-         (settings-commit model settings setting nil :remove t)))))
+  (let ((number (ignore-errors (parse-integer text))))
+    (if (and (eq setting.kind :number) (null number))
+        (settings-say settings setting "Enter a whole number; nothing was saved." :danger)
+        (progn
+          (setf settings.edit nil)
+          (case setting.kind
+            (:number (settings-commit model settings setting number))
+            (:list (settings-commit model settings setting
+                                    (coerce (split-words (substitute #\Space #\, text)) 'vector)))
+            (:secret (when (plusp (length text)) (settings-commit model settings setting text)))
+            (:paste
+             (when (plusp (length text))
+               (settings-write model settings setting
+                               (json-object "path" (json-array (settings-section-json setting.part) "path")
+                                            "secret" text))))
+            (t (settings-commit model settings setting (and (plusp (length text)) text)
+                                :remove (zerop (length text)))))))))
 
 (defun settings-ask-ids (model settings setting)
   "Ask the platform which ids SETTING may name (SETTINGS-PROBE), and mark
@@ -1267,9 +1262,7 @@ keeps the choice where it is."
   (lambda (model settings)
     (funcall (focus-setting-action index) model settings)
     (unless (equal value setting.value)
-      (if (and (null value) setting.field (eq setting.kind :choice))
-          (settings-commit model settings setting nil :remove t)
-          (settings-commit model settings setting value)))))
+      (settings-pick model settings setting value))))
 
 (defun paint-chips (settings canvas row x width setting focused ground index)
   "SETTING's options side by side from X on ROW, the one it holds filled --
@@ -1340,12 +1333,11 @@ caret's cell while its field is open, else NIL."
                                :ground ground))
             (hint (and focused
                        (case setting.kind
-                         (:number nil)
+                         ((:number :note) nil)
                          (:action (if (stringp setting.act)
                                       (format nil "enter opens /~a" setting.act)
                                       "enter picks a model"))
                          (:check "enter asks now")
-                         (:note nil)
                          (:ids "enter chooses")
                          (:reset "enter reviews")
                          ((:secret :paste) "enter pastes")
@@ -1381,14 +1373,8 @@ cut."
                          collect (list :doc (clip-text-to-width
                                              (format nil "~a  ~a" (reset-label row) (setting-text (cdr row)))
                                              width)))))
-          (t
-           (let ((lines (wrapped-lines setting.doc width)))
-             (when (> (length lines) doc-lines)
-               (setf lines (subseq lines 0 doc-lines))
-               (setf (car (last lines))
-                     (concatenate 'string (take-display-prefix (car (last lines)) (1- width)) "…")))
-             (loop for line in lines
-                   unless (zerop (length line)) collect (list :doc line)))))))
+          (t (loop for line in (cap-lines (wrapped-lines setting.doc width) doc-lines width)
+                   unless (zerop (length line)) collect (list :doc line))))))
 
 (defun setting-lines (settings entries style width label-width control-width doc-lines)
   "The lines ENTRIES paint in STYLE -- :INLINE, a name column and the
@@ -1432,9 +1418,8 @@ the whole of it once it is chosen. => (values LINES FOCUS-LINE)."
                                    (<= (+ (text-display-width setting.label) 4 need) (- width 2)))))
                    (push (list :row setting focused index beside) lines)
                    (when focused
-                     (cond ((and settings.edit (eq (car settings.edit) setting))
-                            (push (list :control setting t index) lines))
-                           ((not beside) (push (list :control setting t index) lines)))
+                     (when (or (not beside) (and settings.edit (eq (car settings.edit) setting)))
+                       (push (list :control setting t index) lines))
                      (dolist (line (focus-extras settings setting (- width 2) doc-lines))
                        (push (append line (list 2 t)) lines)))))))))))
     (values (nreverse lines) focus-line)))
