@@ -1783,6 +1783,62 @@ too: INSTRUCTIONS-FILES passes it over."
       (ignore-errors (notice said :level :warning :key key)))
     (rules-section "operator-rules" file text)))
 
+;;; With `policy.self' on, the agent's own policy rides too, read from the
+;;; commit its store's `adopted' names (policy.lisp), never from disk: its
+;;; rules as `agent-rules', behind the operator's and labelled its own, so
+;;; the model never reads them with the operator's authority; its identity as
+;;; `soul', in every session the terminal's included, in place of the row the
+;;; channel kit writes from the file. Read once per turn with the rest of the
+;;; standing block, so an adopted edit binds from the next turn.
+
+(defparameter *agent-rules-lead*
+  "Your own rules: you wrote them, and they bind as adopted at ~a in your policy store ~a (an edit there binds once a commit on `adopted' carries it). The operator's rules outrank them."
+  "The line ahead of the agent's own AGENTS.md in the `agent-rules' section,
+a format string over the adopted commit and the store. Mutable material.")
+
+(defun policy-sections (session-id)
+  "With POLICY-SELF-P, the agent's own policy as sections, (NAME . TEXT)
+each, read at SESSION-ID's pin or else `adopted': `agent-rules' from its
+AGENTS.md and `soul' from its SOUL.md, each none when blank or over its
+budget. Off, or with a store git cannot read, none -- the second under a
+standing notice. The operator's fixed rules stay the home's AGENTS.md, outside
+the store, riding as `operator-rules' (OPERATOR-RULES-SECTION)."
+  (when (policy-self-p)
+    (handler-case
+        (progn
+          (policy-ensure)
+          (let* ((ref (policy-read-ref session-id))
+                 (sha (policy-ref-sha ref))
+                 (rules (policy-text "AGENTS.md" :ref ref))
+                 (soul (let ((text (policy-text "SOUL.md" :ref ref)))
+                         (and text (nlk:trimmed text))))
+                 (said nil))
+            (flet ((refuse (name size limit)
+                     (push (format nil "policy: ~a is not read: ~a, past ~a" name
+                                   (nlk:size-text size) (nlk:size-text limit))
+                           said)
+                     nil))
+              (prog1 (remove nil
+                             (list (and rules (plusp (length (nlk:trimmed rules)))
+                                        (if (> (nlk:utf-8-size rules) +instructions-byte-limit+)
+                                            (refuse "AGENTS.md" (nlk:utf-8-size rules) +instructions-byte-limit+)
+                                            (cons "agent-rules"
+                                                  (format nil "~?~%~%~a" *agent-rules-lead*
+                                                          (list (subseq sha 0 7)
+                                                                (namestring (policy-directory)))
+                                                          (string-right-trim '(#\Newline #\Return) rules)))))
+                                   (and soul (plusp (length soul))
+                                        (if (> (length soul) nlk::+max-harness-bytes+)
+                                            (refuse "SOUL.md" (length soul) nlk::+max-harness-bytes+)
+                                            (cons "soul" soul)))))
+                (let ((line (and said (format nil "~{~a~^; ~}" (reverse said)))))
+                  (unless (equal line (second (assoc "policy" (nlk:standing-notices) :test #'string=)))
+                    (ignore-errors (notice line :level :warning :key "policy"))))))))
+      (error (condition)
+        (ignore-errors (notice (format nil "policy: the store does not read: ~a" condition)
+                               :level :warning :key "policy"))
+        nil))))
+
 ;;; The session's directory itself rides as the `folder' section. Nothing
 ;;; else in the prompt names it, while the `image' section names the home,
 ;;; so without it a model asked where it is would answer with the home.
@@ -1874,17 +1930,26 @@ a durable row of its own, and rides behind every other (INDEX-LAST)."
          (files (and cwd (instructions-files cwd)))
          ;; the home's own AGENTS.md, for a session in any folder: ahead of
          ;; the project's files, and replacing a durable row of its name
-         (rules (operator-rules-section)))
-    (dolist (projected (list rules
-                             (and cwd (cons "folder" (format nil "~?~:[~; sh is Git's sh.exe: POSIX sh, not cmd or PowerShell.~]"
-                                                              *folder-section*
-                                                              (list cwd (string-right-trim "/" (namestring (nlk:home))))
-                                                              (uiop:os-windows-p))))
-                             (instructions-section files)
-                             ;; a line a topic of the manual: what the image and its
-                             ;; running cells can do, the texts left to (help)
-                             (cons "help" (format nil *help-section*
-                                                  (string-right-trim '(#\Newline) (help-topic-lines)))))
+         (rules (operator-rules-section))
+         ;; the agent's own policy, adopted, when it owns it: its identity
+         ;; replaces the row the channel kit wrote from SOUL.md on disk
+         (own (policy-self-p))
+         (policy (and own (policy-sections session-id))))
+    (when own
+      (setf sections (remove "soul" sections :key #'car :test #'string=)))
+    (dolist (projected (list* rules
+                              (append
+                               policy
+                               (list
+                                (and cwd (cons "folder" (format nil "~?~:[~; sh is Git's sh.exe: POSIX sh, not cmd or PowerShell.~]"
+                                                                 *folder-section*
+                                                                 (list cwd (string-right-trim "/" (namestring (nlk:home))))
+                                                                 (uiop:os-windows-p))))
+                                (instructions-section files)
+                                ;; a line a topic of the manual: what the image and its
+                                ;; running cells can do, the texts left to (help)
+                                (cons "help" (format nil *help-section*
+                                                     (string-right-trim '(#\Newline) (help-topic-lines)))))))
                        (index-last sections))
       (when projected
         (setf sections

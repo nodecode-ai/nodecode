@@ -254,6 +254,8 @@ of stacking."
      ;; carries -- is the record RUN binds and the loop folds, the line the
      ;; history fold renders, and the budget exec's waits read.
      (:file "engine/meter")
+     ;; the agent's own policy store, ahead of the context that reads it
+     (:file "engine/policy")
      ;; context precedes turn: the context engine
      ;; (log->events->units->boundary->compiled context) is a pure layer
      ;; between provider's frozen structs and the loop's ambient-state freeze.
@@ -578,6 +580,8 @@ of stacking."
      ;; context-test follows turn-test: it drives the same store fixtures and
      ;; seed helpers.
      (:file "engine/context-test")
+     ;; policy-test follows context-test: the same turn fixtures, the policy sections they carry
+     (:file "engine/policy-test")
      ;; tool-call-id-test follows turn-test: it drives turn-test's canned SSE helpers.
      (:file "engine/tool-call-id-test")
      ;; wire-pairing-test pins proofs/WirePairing.lean's traces on the fold.
