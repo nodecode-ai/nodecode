@@ -85,10 +85,8 @@ carrying a .git -- or NIL."
 
 (defun git-output (root &rest args)
   "What git ARGS print in the repository at ROOT, trimmed; NIL when git fails or cannot run."
-  (ignore-errors
-   (bind ((directory (string-right-trim "/\\" (sb-ext:native-namestring root)))
-          ((out _ status) (run-bounded (list* *git-program* "-C" directory args) :seconds 30)))
-     (and (eql status 0) (trimmed out)))))
+  (multiple-value-bind (out code) (apply #'git-in-layer root args)
+    (and (eql code 0) (trimmed out))))
 
 (defun git-dirty-p (root)
   "Whether the repository at ROOT carries uncommitted changes, tracked or
@@ -260,11 +258,10 @@ that moved since its row was read keeps none: its bytes are another folder's."
   ;; generation it restores, whatever its own hash
   (list (getf row :name) (getf row :origin) (or (getf row :tree) (getf row :revision)) (getf row :dirty)))
 
-(defun self-identity (&optional (rows (self-rows)))
-  "What a manifest is compared by: the binary's version, then every row's
+(defun self-identity (&optional (rows (self-rows)) (version *binary-version*))
+  "What a manifest is compared by: the binary's VERSION, then every row's
 (NAME ORIGIN REVISION DIRTY), by name."
-  (cons *binary-version*
-        (sort (mapcar #'row-identity rows) #'string< :key #'first)))
+  (cons version (sort (mapcar #'row-identity rows) #'string< :key #'first)))
 
 (defun short-revision (revision)
   "A commit's first seven characters, a digest's first twelve, anything
@@ -337,8 +334,7 @@ manifest sealed before seals recorded them."
                               "path" "bytes")))
 
 (defun manifest-identity (manifest)
-  (cons (json-value manifest :string "binary" "version")
-        (sort (mapcar #'row-identity (manifest-rows manifest)) #'string< :key #'first)))
+  (self-identity (manifest-rows manifest) (json-value manifest :string "binary" "version")))
 
 (defun sealed-generation (&optional (identity (self-identity)) (manifests (manifests)))
   "The manifest carrying IDENTITY -- the generation the folder stands at --
