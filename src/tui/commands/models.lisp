@@ -514,15 +514,10 @@ so the tab opens on it."
                                        (tried (or (json-value entry :integer "tried") 0))
                                        (universal (and at (iso-universal at))))
   "What history says of ENTRY, one backup of the route's chain, in words short
-enough for a picker's detail column: when it last answered, as how long ago,
-and how many chain moves it rescued."
-  (format nil "~:[never answered~;answered ~:*~a~]~:[~; · rescued ~d/~d~]"
-          (and universal
-               (let ((minutes (floor (max 0 (- (get-universal-time) universal)) 60)))
-                 (cond ((< minutes 1) "just now")
-                       ((< minutes 60) (format nil "~dm ago" minutes))
-                       ((< minutes (* 48 60)) (format nil "~dh ago" (floor minutes 60)))
-                       (t (format nil "~dd ago" (floor minutes (* 24 60)))))))
+enough for a row's detail: how long ago it last answered, in the kernel's
+coarse duration words, and how many chain moves it rescued."
+  (format nil "~:[never answered~;answered ~:*~a ago~]~:[~; · rescued ~d/~d~]"
+          (and universal (nlk:duration-text (max 0 (- (get-universal-time) universal)) :coarse t))
           (plusp tried) (or (json-value entry :integer "rescued") 0) tried))
 
 (defun models-backup-rows (state)
