@@ -103,12 +103,16 @@ the build's own stamp."
 
 (defun effective-version (&aux (label (effective-label)))
   "The version this image reports for itself -- the connect ack, the identity
-route, the skew notice: the build's own until a hot upgrade moves the
-definitions past it, then the build's number with the new label."
+route, the skew notice, the user-agent header: the build's own until a hot
+upgrade moves the definitions past it, then the new label with the number
+that release carries (the build's when it is not laid out here)."
+  ;; The number comes from the release, not the build: a hot upgrade across
+  ;; a version bump would otherwise say 0.1.8+<a 0.1.9 nightly>.
   (if (equal label (version-label *user-agent-version*))
       *user-agent-version*
       (format nil "~a+~a"
-              (subseq *user-agent-version* 0 (position #\+ *user-agent-version*))
+              (or (release-number label)
+                  (subseq *user-agent-version* 0 (position #\+ *user-agent-version*)))
               label)))
 
 (defun release-version-directory (version)
@@ -134,17 +138,22 @@ executable and its source tree -- for an update to take as it lies, else NIL."
          (probe-file (merge-pathnames "src/src/" directory))
          directory)))
 
-(defun release-name (label)
-  "LABEL as a person reads it: `0.1.4 (d99362e73)' when the release laid out
-here carries its number -- its nodecode.asd's :version -- else LABEL."
-  (let ((number (ignore-errors
+(defun release-number (label)
+  "The number the release laid out here for LABEL carries -- its
+nodecode.asd's :version -- or NIL when none is laid out."
+  (let ((groups (ignore-errors
                  (nth-value 1 (ppcre:scan-to-strings
                                ":version\\s+\"([^\"]+)\""
                                (uiop:read-file-string
                                 (merge-pathnames "src/nodecode.asd" (release-version-directory label))))))))
-    (if (and number (plusp (length number)))
-        (format nil "~a (~a)" (aref number 0) label)
-        label)))
+    (and groups (plusp (length (aref groups 0))) (aref groups 0))))
+
+(defun release-name (label)
+  "LABEL as a person reads it: `0.1.4 (d99362e73)' when the release laid out
+here carries its number, else LABEL."
+  (if-let (number (release-number label))
+    (format nil "~a (~a)" number label)
+    label))
 
 (defun path-names-directory-p (directory &optional (path (uiop:getenv "PATH")))
   "Whether the PATH this process started with names DIRECTORY."
