@@ -1053,8 +1053,6 @@ under way."
                               (read-defsystem-form
                                (merge-pathnames (format nil "~a.asd" name) source) name)))
                  (let* ((plist (cddr form))
-                        (properties (let ((properties (getf plist :properties)))
-                                      (and (listp properties) (every #'consp properties) properties)))
                         (layer (eq (getf plist :class) 'layer))
                         (components (getf plist :components))
                         (odd (and layer
@@ -1063,11 +1061,16 @@ under way."
                    (make-declared-system
                     name
                     :layer layer
-                    :knowledge (and layer (eq t (cdr (assoc :knowledge properties))))
+                    :knowledge (let ((properties (getf plist :properties)))
+                                 (and layer (listp properties) (every #'consp properties)
+                                      (eq t (cdr (assoc :knowledge properties)))))
                     :description (let ((text (getf plist :description)))
                                    (if (stringp text) text ""))
-                    :serves (let ((serves (cdr (assoc :serves properties))))
-                              (and (listp serves) (every #'listp serves) (serves-entries serves)))
+                    :serves (let ((properties (getf plist :properties)))
+                              (and (listp properties) (every #'consp properties)
+                                   (let ((serves (cdr (assoc :serves properties))))
+                                     (and (listp serves) (every #'listp serves)
+                                          (serves-entries serves)))))
                     :depends-on (loop for dependency in (let ((names (getf plist :depends-on)))
                                                           (and (listp names) names))
                                       when (or (stringp dependency) (symbolp dependency))
@@ -1773,8 +1776,28 @@ the serve log, /cells, and the operator's terminal at boot."
       (when (car failure)
         (push (format nil "~a/~a (~a)" cell.name (car failure) (failure-line (cdr failure)))
               skipped))
-      (format stream "~&cell ~a: FAILED ~@[~a: ~]~a~%"
-              cell.name (car failure) (cdr failure))))
+      (format stream "~&cell ~a: FAILED ~@[~a: ~]~a~@[ — ~a~]~%"
+              cell.name (car failure) (cdr failure)
+              ;; a folder from before the rename names `nodecode-lisp': relink shipped, rewrite owned
+              (let ((text (princ-to-string (cdr failure))))
+                (when (search "nodecode-lisp" text)
+                  (let* ((shipped (ignore-errors (find-offer cell.name)))
+                         (link (and *cells-directory*
+                                    (ignore-errors
+                                      (namestring (merge-pathnames cell.name *cells-directory*)))))
+                         (path (ignore-errors (and cell.path (namestring cell.path)))))
+                    (cond ((and shipped (offer-directory shipped) link)
+                           (format nil "this folder predates the rename; relink it at the shipped one: ~
+                                        ln -sfn ~a ~a"
+                                   (namestring (offer-directory shipped)) link))
+                          (path
+                           (format nil "this folder predates the rename; rewrite its names where it ~
+                                        stands and it keeps every definition: ~
+                                        sed -i 's/nodecode-lisp\\./nodecode./g; ~
+                                        s/\"nodecode-lisp\"/\"nodecode\"/g' ~a*.lisp ~a*.asd"
+                                   path path))
+                          (t "this folder predates the rename: its .asd names the system ~
+                  `nodecode-lisp', which this image does not provide"))))))))
   (flet ((note (key control rows)
            (note-standing key (and rows (format nil control (length rows) rows)) :warning)))
     (note "layer" "this build did not load ~d layer file~:p: ~{~a~^, ~}" (reverse skipped))
@@ -1906,7 +1929,9 @@ an entry of one of the hub's two indexes at a pinned commit."
   ;; it serves (SERVES-ENTRIES), which a consumer may offer it by before it is
   ;; installed: the /models picker, its providers. INDEX is which of the
   ;; hub's indexes listed it, "hub" for Nodecode's own and "community" for
-  ;; the one people submit to; NIL for a shipped folder.
+  ;; the one people submit to; NIL for a shipped folder. ARCHIVE and SHA256
+  ;; are the https URL of a .tar.gz of a PATH entry's folder at its commit
+  ;; and that file's sha256, when its index carries them (HUB-ARCHIVE-CHECKOUT).
   (name "" :type string)
   (directory nil)
   (git nil)
@@ -1917,7 +1942,9 @@ an entry of one of the hub's two indexes at a pinned commit."
   (missing '() :type list)
   (description "" :type string)
   (serves '() :type list)
-  (index nil))
+  (index nil)
+  (archive nil)
+  (sha256 nil))
 
 (access (entry offer) (provider offer))
 
@@ -2140,7 +2167,8 @@ runs, as OFFER records by name, each marked as listed by INDEX."
   ;; name: a name that could not be a folder, a URL that is not https://, a
   ;; commit that is not a full id — a branch or a short id is a moving target,
   ;; and the pin is what a review read — a path that climbs out of its
-  ;; repository or into a dot folder. An index that lies is refused whole,
+  ;; repository or into a dot folder, and an archive that is not https:// or
+  ;; comes without its sha256. An index that lies is refused whole,
   ;; never read around.
   (let ((index (decode-json source :whole t))
         (shipped-systems (loop for entry in shipped append entry.systems)))
@@ -2152,6 +2180,8 @@ runs, as OFFER records by name, each marked as listed by INDEX."
            for git = (json-value item :text "git")
            for commit = (json-value item :text "commit")
            for path = (json-value item :text "path")
+           for archive = (json-value item :text "archive")
+           for sha256 = (json-value item :text "sha256")
            for platforms = (json-value item :array "platforms")
            for depends-on = (loop for system across (json-array item "depends_on")
                                   when (stringp system) collect (string-downcase system))
@@ -2174,10 +2204,15 @@ runs, as OFFER records by name, each marked as listed by INDEX."
                 (error "hub entry ~a: commit is a full 40-hex id, not ~s" name commit))
               (unless (or (null path) (ppcre:scan "^[A-Za-z0-9_][A-Za-z0-9._-]*(/[A-Za-z0-9_][A-Za-z0-9._-]*)*\\z" path))
                 (error "hub entry ~a: path is a folder inside the repository, a/b, not ~s" name path))
+              (unless (or (and (null archive) (null sha256))
+                          (and archive (uiop:string-prefix-p "https://" archive)
+                               sha256 (ppcre:scan "^[0-9a-f]{64}\\z" sha256)))
+                (error "hub entry ~a: archive is an https:// URL beside its 64-hex sha256" name))
            ;; a name the release ships is the shipped folder's: the hub adds, never replaces
            when (and (or (null platforms) (find +hub-platform+ platforms :test #'equal))
                      (not (find name shipped :key #'offer-name :test #'string=)))
              collect (make-offer :name name :git git :commit commit :path path :index listed-by
+                                 :archive archive :sha256 sha256
                                  :systems (list name)
                                  :depends-on depends-on
                                  :serves serves
@@ -2329,6 +2364,39 @@ directory; signals when git cannot."
      "waiting for another cell's fetch to finish")
     directory))
 
+;;; A PATH entry's index may name an archive of its folder at its commit, on
+;;; nodecode.ai's /dl beside the index, which Cloudflare keeps at the edge:
+;;; one cell, 8-70 KB, from the nearest edge instead of the repository from
+;;; GitHub. The index pins the archive's sha256 as it pins the commit, so the
+;;; folder unpacked is the pin's as surely as a checkout's.
+
+(defun hub-archive-checkout (entry staging)
+  "Write hub ENTRY's folder, its path at its commit, into STAGING out of the
+archive its index names, when the bytes are the sha256 the index carries:
+=> T, or NIL, with STAGING gone, when there is none or it cannot be had,
+and the caller fetches the repository."
+  (when (and entry.archive entry.sha256)
+    (or (ignore-errors
+         (multiple-value-bind (body status)
+             (with-named-wait (20 "downloading ~a from ~a" entry.name entry.archive)
+               (http :get entry.archive :binary t :max-bytes (* 16 1024 1024) :timeout 20))
+           (when (and (eql status 200) (typep body '(vector (unsigned-byte 8)))
+                      (string= (sha256-text body) (format nil "sha256:~a" entry.sha256)))
+             (ensure-directories-exist staging)
+             (with-open-file (out (merge-pathnames ".archive.tar.gz" staging) :direction :output
+                                  :element-type '(unsigned-byte 8) :if-exists :supersede)
+               (write-sequence body out))
+             ;; a name relative to the working directory: Git for Windows' tar
+             ;; reads the colon of a drive as a host to fetch the archive from
+             (multiple-value-bind (out err status)
+                 (run-bounded (list "tar" "-xzf" ".archive.tar.gz") :seconds 60 :directory staging)
+               (declare (ignore out))
+               (unless (eql status 0)
+                 (error "~a: tar failed: ~a" entry.name err)))
+             (delete-file (merge-pathnames ".archive.tar.gz" staging))
+             t)))
+        (progn (when (probe-file staging) (remove-tree staging)) nil))))
+
 (defun hub-repository-checkout (entry staging home)
   "Write hub ENTRY's folder, its path at its commit, into STAGING out of the
 copy HOME keeps of its repository (HUB-REPOSITORY): => T, or NIL when that
@@ -2350,7 +2418,8 @@ copy cannot give it, and the caller clones."
   "Clone the hub ENTRY at its commit and move it to TARGET, marked the
 installer's. => TARGET."
   ;; The clone is proven before it moves: HEAD is the pinned commit (a folder
-  ;; checked out of the kept copy is the pin's by its objects' hashes), the
+  ;; checked out of the kept copy is the pin's by its objects' hashes, one
+  ;; unpacked from its index's archive by the archive's sha256), the
   ;; primary system is the entry's name and, for an entry an index listed,
   ;; its description, depends_on and serves are the index's, no symbolic link reaches
   ;; out of it, and every system it declares it needs is here. It is made in
@@ -2374,10 +2443,12 @@ installer's. => TARGET."
       (with-cleanup ((ignore-errors (when (probe-file staging) (remove-tree staging)))
                      (ignore-errors (uiop:delete-empty-directory
                                      (uiop:pathname-parent-directory-pathname staging))))
-        ;; A folder of a repository checks out of the copy this home keeps of
-        ;; it (HUB-REPOSITORY-CHECKOUT); a whole repository, which keeps its
-        ;; .git, and a folder that copy cannot give, clone.
-        (unless (and entry.path (hub-repository-checkout entry staging home))
+        ;; A folder of a repository unpacks out of the archive its index names
+        ;; (HUB-ARCHIVE-CHECKOUT), else checks out of the copy this home keeps
+        ;; of it (HUB-REPOSITORY-CHECKOUT); a whole repository, which keeps its
+        ;; .git, and a folder neither can give, clone.
+        (unless (and entry.path (or (hub-archive-checkout entry staging)
+                                    (hub-repository-checkout entry staging home)))
           (when (probe-file staging) (remove-tree staging))
           (with-named-wait (*hub-git-seconds* "cloning ~a from ~a" entry.name entry.git)
             (git "clone" "--quiet" "--no-checkout" "--" entry.git native))
