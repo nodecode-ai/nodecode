@@ -96,13 +96,22 @@ variable, a LOOP FOR / WITH -- so a binding written (S ...) is not a call."
             do (multiple-value-setq (calls bound) (reach-calls (car part) bound calls)))))
   (values calls bound))
 
+(defun reach-label (entry)
+  "The label of ENTRY, a (FILE . FORM): the definition's own, as a forget and
+FOLD-CELL's :DROP name it -- *SEEN*, update before (gateway-chat-model t) --
+else its file's name. One file holds every definition once a made cell is
+two files, so a file names nothing."
+  (let ((key (definition-key (rest entry))))
+    (if key (definition-key-label key) (first entry))))
+
 (defun cell-reach (name)
   "Which of the made cell NAME's kept definitions the cell reaches -- NAME a
-cell's name, or a folder holding a made cell's .asd. Answers a plist:
-:DEAD the files of the definitions no root reaches, in load order; :BROKEN
-(FILE NAME) for each reached form calling a function nothing in the folder
-or the image defines; :MISSING the components with no file; :ROOTS and
-:KEPT the files reached. Roots: DEFINE-CELL, DEFINE-HOOK, HOOK,
+cell's name, or a folder holding a made cell's .asd. Answers a plist of
+definition labels, the ones a forget and (fold-cell NAME :drop ...) take:
+:DEAD the definitions no root reaches, in load order; :BROKEN (LABEL NAME)
+for each reached definition calling a function nothing in the folder or the
+image defines; :MISSING the components with no file; :ROOTS and :KEPT the
+definitions reached. Roots: DEFINE-CELL, DEFINE-HOOK, HOOK,
 DEFINE-PERIPHERAL, a DEFMETHOD on a generic the cell does not define, and
 the package's exports. Reads only."
   (let* ((directory (if (or (pathnamep name) (find #\/ name))
@@ -146,12 +155,12 @@ the package's exports. Reads only."
                            (unless (or (gethash call defined) (member call bound)
                                        (not (member (symbol-package call) scratch))
                                        (and real (or (fboundp real) (special-operator-p real))))
-                             (push (list (first entry) (string-downcase (symbol-name call))) broken))))))))
-               (flet ((files (entries) (remove-duplicates (mapcar #'first entries) :test #'string= :from-end t)))
-                 (list :dead (files (remove-if (lambda (entry) (gethash entry reached)) forms))
+                             (push (list (reach-label entry) (string-downcase (symbol-name call))) broken))))))))
+               (flet ((labels-of (entries) (remove-duplicates (mapcar #'reach-label entries) :test #'string= :from-end t)))
+                 (list :dead (labels-of (remove-if (lambda (entry) (gethash entry reached)) forms))
                        :broken (remove-duplicates (nreverse broken) :test #'equal)
                        :missing missing
-                       :roots (files (reverse roots))
-                       :kept (files (remove-if-not (lambda (entry) (gethash entry reached)) forms))))))
+                       :roots (labels-of (reverse roots))
+                       :kept (labels-of (remove-if-not (lambda (entry) (gethash entry reached)) forms))))))
         (dolist (package (cons cell (mapcar #'car mirrors)))
           (delete-package package))))))
