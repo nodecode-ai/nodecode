@@ -297,7 +297,7 @@ a body of another session kept against one of them is kept whole instead."
   ;; written back whole, and the rows under it follow it to their new root,
   ;; which the cap drops them by. Their CHAIN still counts the rows gone: an
   ;; overcount, which only starts a later chain over sooner.
-  (let* ((in (format nil "(~{?~*~^, ~})" ids))
+  (let* ((in (in-list ids))
          (orphans (loop for (id) in (apply #'sql-rows handle
                                            (format nil "select id from request_bodies
                                                          where session_id not in ~a and base in

@@ -347,14 +347,9 @@ order."
                    collect (cons session-id at))
              #'string< :key #'car)))
 
-;;; A live projection of the active set watches these on the stream instead of
-;;; re-reading the store per frame (activity.lisp).
-(defparameter +turn-lifecycle-kinds+
-  (list +kind-turn-started+ +kind-turn-completed+ +kind-turn-failed+
-        +kind-turn-cancelled+)
-  "The kinds whose arrival can change which sessions have a turn in flight:
-one start and the three terminals (SUSPENDED is not here — a resumed turn
-was already running).")
+;;; A live projection of the active set watches +TURN-LIFECYCLE-KINDS+
+;;; (events.lisp) on the stream instead of re-reading the store per frame
+;;; (activity.lisp).
 
 ;;; --- turn tree ----------------------------------------------------------
 ;;; Turns form an append-only tree: each TURN.STARTED (schema-version 2)
@@ -785,8 +780,7 @@ open."
   ;; closed by another path.
   (check-type turn-id turn-id)
   (events :turn-id turn-id
-          :kind (list +kind-turn-completed+ +kind-turn-failed+ +kind-turn-cancelled+)
-          :as :value :columns '("kind")))
+          :kind +terminal-turn-kinds+ :as :value :columns '("kind")))
 
 (defun turn-terminal-p (turn-id)
   (and (turn-terminal-kind turn-id) t))

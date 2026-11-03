@@ -460,15 +460,24 @@ with :PAYLOAD already decoded."
      session_id text)"
   "The open turns: each one's start, by its position in the log.")
 
+(defparameter +terminal-turn-kinds+
+  (list +kind-turn-completed+ +kind-turn-failed+ +kind-turn-cancelled+)
+  "The facts that end a turn: a start without one of them is an open turn.")
+
+(defparameter +turn-lifecycle-kinds+ (cons +kind-turn-started+ +terminal-turn-kinds+)
+  "The facts that begin and end a turn: the kinds whose arrival can change
+which sessions have a turn in flight (SUSPENDED is not here -- a resumed turn
+was already running), and the newest of which is the session's newest turn
+and where it stands, in the directory's TURN_ID and TURN_KIND.")
+
 (defparameter +open-turns-fill+
   (format nil "insert into open_turns (log_position, turn_id, session_id)
       select log_position, turn_id, session_id from events
        where kind = '~a'
          and not exists (select 1 from events as terminal
                           where terminal.turn_id = events.turn_id
-                            and terminal.kind in ('~a', '~a', '~a'))"
-          +kind-turn-started+
-          +kind-turn-completed+ +kind-turn-failed+ +kind-turn-cancelled+)
+                            and terminal.kind in (~{'~a'~^, ~}))"
+          +kind-turn-started+ +terminal-turn-kinds+)
   "The open turns as the log says them: every start without a terminal fact.")
 
 (defparameter *open-turns-schema*
@@ -482,11 +491,11 @@ with :PAYLOAD already decoded."
       end"
            +kind-turn-started+)
    (format nil "create trigger if not exists a_terminal_fact_closes_its_turn
-      after insert on events when new.kind in ('~a', '~a', '~a')
+      after insert on events when new.kind in (~{'~a'~^, ~})
       begin
         delete from open_turns where turn_id = new.turn_id;
       end"
-           +kind-turn-completed+ +kind-turn-failed+ +kind-turn-cancelled+))
+           +terminal-turn-kinds+))
   "The open turns' table and the two triggers that keep it.")
 
 ;;; --- the session directory ----------------------------------------------
@@ -532,10 +541,15 @@ or holds no word, so the next prompt names the session."
                                   '') end"
             payload text text)))
 
-(defparameter +directory-turn-kinds+
-  (list +kind-turn-started+ +kind-turn-completed+ +kind-turn-failed+ +kind-turn-cancelled+)
-  "The facts that begin and end a turn: the newest of them is the session's
-newest turn and where it stands, in the directory's TURN_ID and TURN_KIND.")
+(defun directory-newest-sql (alias expression &key kind oldest)
+  "SQL for EXPRESSION over the newest events row ALIAS -- the first, when
+OLDEST -- of the directory row's session, of KIND (a kind or a list of them)
+when given: how the directory's fill reads most of its fields."
+  (format nil "(select ~a from events ~a where ~a.session_id = events.session_id~@[ and ~a~] ~
+               order by ~a.log_position~:[ desc~;~] limit 1)"
+          expression alias alias
+          (and kind (format nil "~a.kind in (~{'~a'~^, ~})" alias (alexandria:ensure-list kind)))
+          alias oldest))
 
 (defparameter *session-directory-schema*
   (list
@@ -607,7 +621,7 @@ newest turn and where it stands, in the directory's TURN_ID and TURN_KIND.")
            (directory-prompt-sql "new.payload") +kind-input-committed+
            +kind-assistant-completed+
            (directory-text-sql "new.invocation_json" "$.source.kind") +kind-turn-started+
-           +directory-turn-kinds+ +kind-session-waits+
+           +turn-lifecycle-kinds+ +kind-session-waits+
            (directory-retract-to-root-sql "new"))
    ;; The fill: every field as the trigger would have left it. The empty
    ;; directory is asked once, before the walk, so an open whose directory
@@ -615,15 +629,8 @@ newest turn and where it stands, in the directory's TURN_ID and TURN_KIND.")
    (format nil "insert or ignore into session_directory
         (session_id, created_at, cwd, parent, anchor_turn_id, title, prompt,
          updated_at, message_count, source, turn_id, turn_kind, waits, waits_turn)
-      select session_id, occurred_at,
-             coalesce((select json_extract(v.payload, '$.cwd') from events v
-                        where v.session_id = events.session_id and v.kind = '~a'
-                        order by v.log_position desc limit 1),
-                      json_extract(payload, '$.cwd'), ''),
-             json_extract(payload, '$.parent'), json_extract(payload, '$.anchor-turn-id'),
-             (select ~a from events t
-               where t.session_id = events.session_id and t.kind = '~a'
-               order by t.log_position desc limit 1),
+      select session_id, occurred_at, coalesce(~a, json_extract(payload, '$.cwd'), ''),
+             json_extract(payload, '$.parent'), json_extract(payload, '$.anchor-turn-id'), ~a,
              (select ~a from events i
                where i.session_id = events.session_id and i.kind = '~a'
                  and ~a is not null
@@ -631,36 +638,27 @@ newest turn and where it stands, in the directory's TURN_ID and TURN_KIND.")
                                                  where r.session_id = events.session_id
                                                    and ~a), 0)
                order by i.log_position limit 1),
-             (select u.occurred_at from events u
-               where u.session_id = events.session_id
-               order by u.log_position desc limit 1),
+             ~a,
              (select count(*) from events m
                where m.session_id = events.session_id and m.kind in ('~a', '~a')),
-             (select ~a from events s
-               where s.session_id = events.session_id and s.kind = '~a'
-               order by s.log_position limit 1),
-             (select n.turn_id from events n
-               where n.session_id = events.session_id and n.kind in (~{'~a'~^, ~})
-               order by n.log_position desc limit 1),
-             (select n.kind from events n
-               where n.session_id = events.session_id and n.kind in (~:*~{'~a'~^, ~})
-               order by n.log_position desc limit 1),
-             (select coalesce(json_extract(w.payload, '$.question'), '') from events w
-               where w.session_id = events.session_id and w.kind = '~a'
-               order by w.log_position desc limit 1),
-             (select w.turn_id from events w
-               where w.session_id = events.session_id and w.kind = '~:*~a'
-               order by w.log_position desc limit 1)
+             ~a, ~a, ~a, ~a, ~a
         from events
        where kind = '~a' and aggregate_type = 'session'
          and not exists (select 1 from session_directory)"
-           +kind-session-moved+
-           (directory-text-sql "t.payload" "$.title") +kind-session-title+
+           (directory-newest-sql "v" "json_extract(v.payload, '$.cwd')" :kind +kind-session-moved+)
+           (directory-newest-sql "t" (directory-text-sql "t.payload" "$.title")
+                                 :kind +kind-session-title+)
            (directory-prompt-sql "i.payload") +kind-input-committed+
            (directory-prompt-sql "i.payload") (directory-retract-to-root-sql "r")
+           (directory-newest-sql "u" "u.occurred_at")
            +kind-input-committed+ +kind-assistant-completed+
-           (directory-text-sql "s.invocation_json" "$.source.kind") +kind-turn-started+
-           +directory-turn-kinds+ +kind-session-waits+
+           (directory-newest-sql "s" (directory-text-sql "s.invocation_json" "$.source.kind")
+                                 :kind +kind-turn-started+ :oldest t)
+           (directory-newest-sql "n" "n.turn_id" :kind +turn-lifecycle-kinds+)
+           (directory-newest-sql "n" "n.kind" :kind +turn-lifecycle-kinds+)
+           (directory-newest-sql "w" "coalesce(json_extract(w.payload, '$.question'), '')"
+                                 :kind +kind-session-waits+)
+           (directory-newest-sql "w" "w.turn_id" :kind +kind-session-waits+)
            +kind-session-created+))
   "The directory's table, the trigger that keeps it, and its fill from the log.")
 
@@ -1153,6 +1151,14 @@ the aggregate's next."
     (error "event payload is not a JSON object"))
   value)
 
+(defun in-list (values)
+  "The SQL list of one placeholder per one of VALUES."
+  (format nil "(~{?~*~^, ~})" values))
+
+(defun sql-in (column values &aux (values (remove-duplicates values :test #'equal)))
+  "The EVENTS :WHERE that holds COLUMN, a column or SQL expression, to one of VALUES."
+  (cons (format nil "~a in ~a" column (in-list values)) values))
+
 (defun events (&key kind session-id turn-id command-id event-id log-position
                     aggregate-type aggregate-id after before where index
                     (order :oldest) limit (as :instances) columns
@@ -1217,7 +1223,7 @@ the aggregate's next."
               do (clause (concatenate 'string column " = ?") value))
       (cond ((null kind))
             ((listp kind)
-             (apply #'clause (format nil "kind in (~{?~*~^, ~})" kind) kind))
+             (apply #'clause (sql-in "kind" kind)))
             (t (clause "kind = ?" kind)))
       (when after (clause "log_position > ?" after))
       (when before (clause "log_position < ?" before))

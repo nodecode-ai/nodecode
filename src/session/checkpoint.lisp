@@ -288,22 +288,20 @@ the operator committed into it after the one that began it."
   ;; the facts are the rows' own columns. Turn ids are unique across the
   ;; store, so a fork's inherited turns answer from their own session.
   (when turn-ids
-    (let ((ids (remove-duplicates turn-ids :test #'equal)))
-      (loop for (turn-id ended-at ending inputs)
-              in (events :kind (list +kind-turn-completed+ +kind-turn-failed+
-                                     +kind-turn-cancelled+ +kind-input-committed+)
-                         :where (list* (format nil "turn_id in (~{~*?~^, ~})" ids) ids)
-                         :as :rows :group-by '(1)
-                         :columns (list "turn_id"
-                                        (format nil "max(case when kind <> '~a' then occurred_at end)"
-                                                +kind-input-committed+)
-                                        (format nil "max(case when kind <> '~a' then kind end)"
-                                                +kind-input-committed+)
-                                        (format nil "sum(kind = '~a')" +kind-input-committed+)))
-            do (setf (gethash turn-id endings)
-                     (list :ended-at ended-at
-                           :ending (and ending (subseq ending (1+ (position #\. ending))))
-                           :steers (max 0 (1- (or inputs 0))))))))
+    (loop for (turn-id ended-at ending inputs)
+            in (events :kind (cons +kind-input-committed+ +terminal-turn-kinds+)
+                       :where (sql-in "turn_id" turn-ids)
+                       :as :rows :group-by '(1)
+                       :columns (list "turn_id"
+                                      (format nil "max(case when kind <> '~a' then occurred_at end)"
+                                              +kind-input-committed+)
+                                      (format nil "max(case when kind <> '~a' then kind end)"
+                                              +kind-input-committed+)
+                                      (format nil "sum(kind = '~a')" +kind-input-committed+)))
+          do (setf (gethash turn-id endings)
+                   (list :ended-at ended-at
+                         :ending (and ending (subseq ending (1+ (position #\. ending))))
+                         :steers (max 0 (1- (or inputs 0)))))))
   endings)
 
 (defun session-turn-answers (turn-ids &aux (answers (make-hash-table :test #'equal)))
@@ -314,15 +312,13 @@ the operator committed into it after the one that began it."
   ;; The listing asks it of a reflection's recaps alone: what a recap said
   ;; is the recap, where an ask's row reads the ask.
   (when turn-ids
-    (let ((ids (remove-duplicates turn-ids :test #'equal)))
-      (loop for (turn-id text)
-              in (events :kind +kind-assistant-completed+
-                         :where (list* (format nil "turn_id in (~{~*?~^, ~})" ids) ids)
-                         :as :rows :group-by '(1)
-                         :columns '("turn_id" "json_extract(payload, '$.message.content')"
-                                    "max(log_position)"))
-            when (stringp text)
-              do (setf (gethash turn-id answers) text))))
+    (loop for (turn-id text)
+            in (events :kind +kind-assistant-completed+ :where (sql-in "turn_id" turn-ids)
+                       :as :rows :group-by '(1)
+                       :columns '("turn_id" "json_extract(payload, '$.message.content')"
+                                  "max(log_position)"))
+          when (stringp text)
+            do (setf (gethash turn-id answers) text)))
   answers)
 
 (defun session-tool-calls (session-id call-ids)
@@ -342,8 +338,7 @@ named one, and the instant it started."
              session-id +kind-tool-call-started+
              ;; The call ids are already-read log values and bind as
              ;; parameters; the placeholder list is the only text built.
-             :where (list* (format nil "json_extract(payload, '\$.call-id') in (~{~*?~^, ~})" wanted)
-                           wanted))
+             :where (sql-in "json_extract(payload, '$.call-id')" wanted))
             for call-id = (json-value table :string "call-id")
             when call-id
               do (setf (gethash call-id calls)
