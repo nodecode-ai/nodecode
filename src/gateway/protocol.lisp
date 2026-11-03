@@ -74,7 +74,6 @@ FRAME-TOO-LARGE naming both sizes."
 
 (defun encode-inner-event (type payload &key metadata)
   "Build a reducer-compatible inner event envelope as a JSON object."
-  (required-string nil "event.type" type)
   ;; PAYLOAD may be a JSON-VERBATIM: a logged fact's payload as the log keeps
   ;; it, an object by the hash it was written under (events.lisp STORED-FACT).
   (make-json-object "type" type
@@ -166,8 +165,6 @@ as JSON text, or with OCTETS as its UTF-8 octets."
   ;; SEND-REPLAY-UNDER-LOCK). TITLE is the session's name as the replay finds
   ;; it, which no frame folds (session.title is config evidence); absent when
   ;; the session has none yet.
-  (required-string nil "session_id" session-id)
-  (required-integer nil "sequence" sequence)
   (funcall
    (if octets #'encode-json-octets #'encode-json-object)
    (json-object
@@ -375,7 +372,6 @@ alternating key/value PAIRS."
                              "protocol_max" +gateway-protocol-version+ pairs)))
 
 (defun encode-gateway-connect-challenge (nonce)
-  (required-string nil "challenge nonce" nonce)
   (encode-handshake-frame "gateway_connect_challenge" "challenge_nonce" nonce))
 
 (defun encode-gateway-connect (challenge client-id client-version client-mode
@@ -528,8 +524,7 @@ so the payload need not carry the token again."
     (encode-json-object (make-json-object "type" "client_command" "command" table))))
 
 (defun encode-projection-event (session-id sequence kind payload &key cursor durable-p)
-  (required-string nil "session_id" session-id)
-  (required-integer nil "sequence" sequence)
+  ;; The producer's refusal: a kind the far end would not admit never leaves.
   (projection-kind kind)
   (encode-json-object
    (json-object "sequence" sequence
@@ -558,6 +553,7 @@ so the payload need not carry the token again."
        (maphash (lambda (key value)
                   (unless (member key '("type" "command_id" "correlation_id") :test #'string=)
                     (setf (gethash key request) value))) command)))
+    (unless (json-value request :integer "pid") (remhash "pid" request))
     (make-gateway-command :kind kind :command-id (first ids) :correlation-id (second ids)
                           :request request)))
 
