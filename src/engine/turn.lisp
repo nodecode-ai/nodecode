@@ -1478,6 +1478,100 @@ under every snippet."
       (walk form nil)
       moving)))
 
+;;; --- a cut-off read runs again ---------------------------------------------
+;;; A restart that cuts a snippet off mid-run closes its call as interrupted
+;;; (RECOVER-INTERRUPTED-TURNS), and the model, resumed, decides what to do
+;;; about a call that may have half-acted. A snippet that only reads cannot
+;;; have half-acted: its turn runs it again before the provider is asked
+;;; (CLAIM-TURN-REPLAYS), as Pi Durable reruns a tool that declares a rerun
+;;; safe. Here the form is what declares it: every operator it calls is
+;;; COMMON-LISP's own and none of the ones that act, or one of the image's
+;;; readers. Nothing is inferred from a run: the cut-off run never finished.
+
+(defparameter *replay-operators* '(help index recall-log recall-entry list-evals $)
+  "Operators beyond COMMON-LISP a snippet may call and still run again when
+the restart that cut it off resumes its turn (REPLAY-SAFE-SNIPPET-P): each
+only reads. Mutable material: a reader of the layer's own joins it with
+PUSHNEW.")
+
+(defparameter *replay-refused-operators*
+  '(open with-open-file delete-file rename-file ensure-directories-exist
+    compile-file compile funcall apply multiple-value-call progv require
+    make-package delete-package rename-package import export unexport unintern
+    shadow shadowing-import use-package unuse-package set-macro-character
+    set-dispatch-macro-character)
+  "COMMON-LISP operators a replayed snippet may not call, beyond what a
+watched one may not (*WATCH-REFUSED-SYMBOLS*): each reaches the file system,
+changes a package or the reader, or calls what the form does not name.")
+
+(defun replay-safe-form-p (form)
+  "Whether FORM, a toplevel form of a snippet a restart cut off, only reads:
+every operator it calls is one of *REPLAY-OPERATORS*, or COMMON-LISP's and
+none that defines, assigns or acts (*WATCH-REFUSED-SYMBOLS*,
+*REPLAY-REFUSED-OPERATORS*). Quoted data is data, and the names a binding
+form binds are no calls; anything the walk does not know is refused."
+  (let ((budget 4096)
+        (common (find-package '#:common-lisp)))
+    (labels ((operator-p (symbol)
+               (or (member symbol *replay-operators*)
+                   (and (eq (symbol-package symbol) common)
+                        (not (member symbol *watch-refused-symbols*))
+                        (not (member symbol *replay-refused-operators*))
+                        (not (eql 0 (search "DEF" (symbol-name symbol)))))))
+             (forms (list) (every #'walk list))
+             (walk (x)
+               (when (minusp (decf budget))
+                 (return-from replay-safe-form-p nil))
+               (or (atom x) (and (ignore-errors (list-length x)) (call x))))
+             (bindings (list)
+               (and (listp list)
+                    (every (lambda (binding)
+                             (or (symbolp binding)
+                                 (and (consp binding) (symbolp (car binding))
+                                      (ignore-errors (list-length binding))
+                                      (forms (cdr binding)))))
+                           list)))
+             (lambda-body (tail)
+               (and (consp tail) (bindings (car tail)) (forms (cdr tail))))
+             (clauses (list &optional keyed)
+               ;; COND's clauses are forms; CASE's and HANDLER-CASE's open on
+               ;; keys or a type and a variable list, which are no calls.
+               (every (lambda (clause)
+                        (and (consp clause) (ignore-errors (list-length clause))
+                             (if keyed
+                                 (forms (if (eq keyed :handler) (cddr clause) (cdr clause)))
+                                 (forms clause))))
+                      list))
+             (call (x &aux (head (car x)))
+               (case head
+                 (quote t)
+                 (function (let ((name (second x)))
+                             (if (symbolp name)
+                                 (operator-p name)
+                                 (and (consp name) (eq 'lambda (car name)) (lambda-body (cdr name))))))
+                 ((let let*) (and (bindings (second x)) (forms (cddr x))))
+                 (lambda (lambda-body (cdr x)))
+                 ((dolist dotimes) (and (consp (second x)) (forms (cdr (second x))) (forms (cddr x))))
+                 ((multiple-value-bind destructuring-bind)
+                  (and (listp (second x)) (forms (cddr x))))
+                 (cond (clauses (cdr x)))
+                 ((case ecase ccase typecase etypecase ctypecase)
+                  (and (walk (second x)) (clauses (cddr x) t)))
+                 (handler-case (and (walk (second x)) (clauses (cddr x) :handler)))
+                 (t (cond ((and (consp head) (eq 'lambda (car head)))
+                           (and (lambda-body (cdr head)) (forms (cdr x))))
+                          ((and (symbolp head) (operator-p head)) (forms (cdr x))))))))
+      (walk form))))
+
+(defun replay-safe-snippet-p (arguments)
+  "Whether an eval call's ARGUMENTS, its JSON as the model sent it, carry a
+snippet whose every toplevel form only reads (REPLAY-SAFE-FORM-P), read as
+the eval tool reads it (SNIPPET-FORMS): one a restart cut off may run again."
+  (let* ((decoded (ignore-errors (nlk:decode-json arguments)))
+         (text (and (hash-table-p decoded) (gethash "form" decoded)))
+         (forms (and (stringp text) (snippet-forms text))))
+    (and forms (every #'replay-safe-form-p forms) t)))
+
 (defun watch-value-text (value)
   "VALUE as a watched snippet keeps it, printed. The second value is true when
 it printed whole inside *WATCH-SIZE* and readably: a value worth watching."
@@ -4017,6 +4111,55 @@ for the idle wake."
     (claim-exit-wakes (exec-registry-instance) (session-id session)
                       (nlk:durable-turn-turn-id *current-durable-turn*))))
 
+(defvar *replays-claimed* (make-hash-table :test #'equal :synchronized t)
+  "Turn id -> T once this boot's resumed turn looked for its cut-off reads
+(CLAIM-TURN-REPLAYS): one look per turn per boot.")
+
+(defun turn-replay-arguments (turn-id &aux (events (nlk:events :turn-id turn-id))
+                                           (calls (make-hash-table :test #'equal))
+                                           (after 0))
+  "The arguments of TURN-ID's cut-off reads, in the order the model made the
+calls: each eval call the restart closed (+RESTART-TOOL-RESULT+) after the
+turn's newest assistant message, whose snippet only reads
+(REPLAY-SAFE-SNIPPET-P)."
+  ;; After the newest assistant message: a replay round is an assistant
+  ;; message of its own, so the reads it answered are behind it, and a
+  ;; restart that cuts the replay itself off leaves its calls the newest.
+  (dolist (event events)
+    (typecase event
+      (nlk::assistant-message (setf after (nlk:event-log-position event)))
+      (nlk:tool-call-event (setf (gethash (nlk:tool-call-event-call-id event) calls) event))))
+  (loop for event in events
+        for call = (and (typep event 'nlk:tool-result-event)
+                        (> (nlk:event-log-position event) after)
+                        (equal nlk::+restart-tool-result+ (nlk:tool-result-event-result event))
+                        (gethash (nlk:tool-result-event-call-id event) calls))
+        when (and call (equal "eval" (nlk:tool-call-event-tool-name call))
+                  (replay-safe-snippet-p (nlk:tool-call-event-arguments call)))
+          collect (nlk:tool-call-event-arguments call)))
+
+(defun claim-turn-replays (&aux (turn *current-durable-turn*)
+                                (turn-id (and turn (nlk:durable-turn-turn-id turn))))
+  "The cut-off reads the running turn runs again before its provider is
+asked (TURN-REPLAY-ARGUMENTS), claimed once: only a turn this boot resumed
+(*RESUMED-TURNS*) has any, and only at its first boundary. => their
+arguments, or NIL."
+  (when (and turn-id (not (turn-closing-p))
+             (gethash turn-id *resumed-turns*)
+             (not (shiftf (gethash turn-id *replays-claimed*) t)))
+    (turn-replay-arguments turn-id)))
+
+(defun replay-message (arguments)
+  "A resumed turn's round decided for the model: one eval call per cut-off
+read, each carrying the ARGUMENTS the model wrote, as a provider's assistant
+message would carry them (EXIT-WAKE-MESSAGE's shape)."
+  (make-json-object
+   "role" "assistant"
+   "content" :null
+   "tool_calls" (coerce (loop for each in arguments
+                              collect (chat-tool-call-object (nlk:make-durable-id "call") "eval" each))
+                        'vector)))
+
 (defun read-turn-exits (session ids &rest loop-arguments)
   "Go on with SESSION's turn from a round of the harness's own: one
 (eval-status ID) call per claimed exit of IDS (EXIT-WAKE-MESSAGE), recorded
@@ -4047,7 +4190,13 @@ and where a terminal answer would end the turn."
    (unless prefill
      (when-let (ids (claim-turn-exits session))
        (return-from agent-loop
-         (read-turn-exits session ids :round round :context context :handoff-p handoff-p))))
+         (read-turn-exits session ids :round round :context context :handoff-p handoff-p)))
+     ;; A read the restart cut off runs again first, in a round of the
+     ;; harness's own, so the resumed provider is asked with its value in hand.
+     (when-let (replays (claim-turn-replays))
+       (return-from agent-loop
+         (agent-loop session :prefill (replay-message replays)
+                             :round round :context context :handoff-p handoff-p))))
    (sync-context-workspace session)
    ;; The :ROUND point (hook.lisp): a fact a hook records here -- a reminder,
    ;; NLK:RECORD-TURN-CONTEXT-PROMPT's :TEXT -- is in this round's request.
