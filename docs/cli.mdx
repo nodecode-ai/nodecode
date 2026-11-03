@@ -25,7 +25,7 @@ summary: "Every nodecode command and option, the rules for combining them, and t
 <Command line="nodecode rollback N" tty="No" show="help">Restores this home's organism to generation N.</Command>
 <Command line="nodecode web" tty="No" show="web">Prints the web page link and opens it in a browser.</Command>
 <Command line="nodecode resume SESSION-ID" tty="Yes" show="resume-pipe">Opens the shell on that session.</Command>
-<Command line="nodecode rpc [SESSION-ID]" tty="No" show="help">Drives this home's organism from a program: JSON lines in and out. See [RPC](/rpc).</Command>
+<Command line="nodecode rpc [SESSION-ID]" tty="No" show="help">Drives this home's organism from a program: JSON lines in and out. See [RPC](rpc.mdx).</Command>
 <Command line="nodecode help [COMMAND]" tty="No" show="help-resume">Prints general help, or one command's help.</Command>
 </Commands>
 
@@ -88,7 +88,7 @@ First match wins:
 3. The profile named in `~/.nodecode/active-profile`
 4. `~/.nodecode/`
 
-Nodecode exports the chosen home to child processes as `NODECODE_HOME`. See [Profiles](/profiles).
+Nodecode exports the chosen home to child processes as `NODECODE_HOME`. See [Profiles](profiles.mdx).
 
 <Mistakes>
 <Mistake>
@@ -207,7 +207,7 @@ A shipped cell installs with no question. A hub cell prints its <Term screen="hu
 <Mistake>
 <What>Answering `y` without opening the repository</What>
 <Why>Hub code runs inside Nodecode with full access to your files and keys.</Why>
-<Instead>Open the repository at the commit it prints. Answer after. See [Cells](/cells).</Instead>
+<Instead>Open the repository at the commit it prints. Answer after. See [Cells](cells.mdx).</Instead>
 </Mistake>
 </Mistakes>
 
@@ -227,7 +227,7 @@ A shipped cell installs with no question. A hub cell prints its <Term screen="hu
 | `update` | `NAME` |
 | `help` | `[VERB]` |
 
-What each verb does: [Profiles](/profiles).
+What each verb does: [Profiles](profiles.mdx).
 
 <Mistakes>
 <Mistake>
@@ -252,7 +252,7 @@ What each verb does: [Profiles](/profiles).
 | `run` | Runs the gateway in the foreground. The unit runs this. |
 | `help [VERB]` | Prints help. |
 
-Detail: [Gateway](/gateway) and [Operations](/operations).
+Detail: [Gateway](gateway.mdx) and [Operations](operations.mdx).
 
 <Mistakes>
 <Mistake>
@@ -275,7 +275,7 @@ nodecode update [VERSION] [--check]
 | `nodecode update VERSION` | Moves to that release and holds this home there, until a bare `nodecode update` lifts it. |
 | `nodecode update --check` | Stages and classifies the release. Applies nothing. |
 
-Detail: [Updates](/updates).
+Detail: [Updates](updates.mdx).
 
 <Mistakes>
 <Mistake>
@@ -317,7 +317,7 @@ Prints `http://127.0.0.1:PORT/web/#t=TOKEN`. Opens it when a display exists.
 nodecode resume SESSION-ID [--store PATH]
 ```
 
-The shell prints the resume line when it exits. See [Sessions](/sessions).
+The shell prints the resume line when it exits. See [Sessions](sessions.mdx).
 
 <Mistakes>
 <Mistake>

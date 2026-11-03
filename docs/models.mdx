@@ -19,7 +19,7 @@ A provider is an endpoint, a key and the wire dialect it speaks. Providers live 
 }
 ```
 
-Every provider key is listed in [Config](/config). `/models` connects a provider from the models.dev catalog and saves its key in `auth.json`. Ctrl+E on a connected provider replaces its key.
+Every provider key is listed in [Config](config.mdx). `/models` connects a provider from the models.dev catalog and saves its key in `auth.json`. Ctrl+E on a connected provider replaces its key.
 
 A provider whose `base_url` is a machine of your own, on localhost, your LAN or your tailnet, is listed under Local in `/models`. Its models come from `GET <base_url>/models`.
 
@@ -109,7 +109,7 @@ A sign-in never changes your default model. Pick one with `/models nodecode fore
 | --- | --- |
 | Keys | Start with `sk-nc-`. A key made at https://nodecode.ai/account/keys works the same. Any other key answers 401 `invalid_api_key`: run `nodecode login` again. |
 | Routes | `POST /v1/chat/completions`, `POST /v1/images/generations`, `GET /v1/models`, `GET /v1/models/ID`, `GET /v1/usage`. There is no `/v1/messages` or `/v1/responses`. |
-| Who pays | The plan's month first, then the topped-up balance. With neither, a call answers 402. See [Pricing](/pricing). |
+| Who pays | The plan's month first, then the topped-up balance. With neither, a call answers 402. See [Pricing](pricing.mdx). |
 | What is left | `GET /v1/usage`: the plan's requests left, its reset and seats, the credit. The shell's footer and `/usage` show it. |
 
 {/* source: src/engine/provider.lisp */}
@@ -223,7 +223,7 @@ The two retry budgets multiply. A stream that keeps sending content has no time 
 | Status 503 | Starts at 5 seconds, capped at 60 seconds. |
 | Refused connection | Spends the request budget at once. |
 
-A context overflow is handled apart: 413, or 400 with an overflow message. Nodecode evicts old history and retries, up to 8 times. See [Context](/context).
+A context overflow is handled apart: 413, or 400 with an overflow message. Nodecode evicts old history and retries, up to 8 times. See [Context](context.mdx).
 
 {/* source: src/engine/provider.lisp, src/engine/turn.lisp */}
 ## Failover
@@ -283,4 +283,4 @@ The tab writes `failover.chain` and `failover.on`. The next turn reads them.
 {/* source: src/engine/provider.lisp */}
 ## Environment
 
-`NODECODE_PROVIDER`, `NODECODE_MODEL`, `NODECODE_API_KEY`, `NODECODE_ENDPOINT` and `NODECODE_REASONING_EFFORT` override the config for one process. See [Environment variables](/environment).
+`NODECODE_PROVIDER`, `NODECODE_MODEL`, `NODECODE_API_KEY`, `NODECODE_ENDPOINT` and `NODECODE_REASONING_EFFORT` override the config for one process. See [Environment variables](environment.mdx).

@@ -11,8 +11,8 @@ A cell is a folder of code under `~/.nodecode/cells/` that carries an `.asd` fil
 - A folder that is present is on. Every Nodecode process loads it at boot.
 - Remove the folder to remove the cell.
 - No config key names cells. A config key `addons` is ignored with a warning.
-- A cell runs inside Nodecode with full authority over the host. See [Security](/security).
-- A profile has its own `cells/` folder. See [Profiles](/profiles).
+- A cell runs inside Nodecode with full authority over the host. See [Security](security.mdx).
+- A profile has its own `cells/` folder. See [Profiles](profiles.mdx).
 
 | Kind | What it is |
 | --- | --- |
@@ -45,7 +45,7 @@ Say what the cell should do. The agent asks what it cannot work out, builds the 
 | Built from what the agent already kept | The definitions move out of the layer into the cell. They load from the cell at the next start. |
 | A key or a setting | It goes in the cell's config section, set in `/settings`. Never in a file of the cell. |
 
-The cell is a git repository of its own: push it anywhere to share it, and [Install from git](#install-from-git) takes it in elsewhere. How the agent writes it: [Cell API](/cell-api#ask-for-one).
+The cell is a git repository of its own: push it anywhere to share it, and [Install from git](#install-from-git) takes it in elsewhere. How the agent writes it: [Cell API](cell-api.mdx#ask-for-one).
 
 {/* source: src/organism/cells.lisp */}
 ## Find one
@@ -58,7 +58,7 @@ Every cell you can add is listed under <CellsTab /> in the bar.
 | `/cells` in the shell | The cells installed here, their state, and every standing notice. |
 | `(help :TOPIC)` through `eval` | A running cell's manual. |
 
-How a cell is written: [Cell API](/cell-api).
+How a cell is written: [Cell API](cell-api.mdx).
 
 {/* source: src/gateway/control.lisp */}
 ## Turn one on
@@ -87,7 +87,7 @@ A shipped cell is installed as a symlink to the build's own folder. Windows gets
 {/* source: cells/channels/kit/setup.lisp */}
 ## Set one up
 
-Some cells need a config section before they start. A channel is one: `nodecode gateway setup discord` walks it. See [Channels](/channels).
+Some cells need a config section before they start. A channel is one: `nodecode gateway setup discord` walks it. See [Channels](channels.mdx).
 
 {/* source: src/gateway/control.lisp */}
 ## Turn one off

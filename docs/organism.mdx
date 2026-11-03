@@ -12,7 +12,7 @@ A home has one store, and one process owns it: a `nodecode serve` that the first
 
 <Pair name="second">
 <Verdict>The store is taken, so it says ready and exits 0. Nothing new is running.</Verdict>
-<Verdict>A home of its own: its own store, port, layer and organism. See [Profiles](/profiles).</Verdict>
+<Verdict>A home of its own: its own store, port, layer and organism. See [Profiles](profiles.mdx).</Verdict>
 </Pair>
 
 {/* source: src/client/client-boot.lisp */}
@@ -25,7 +25,7 @@ With the background gateway off, the organism is a child of the shell that start
 <Verdict>Only that shell closes. The organism, and everything in it, goes on.</Verdict>
 </Pair>
 
-The background gateway is on by default for `~/.nodecode/` and a named profile. The organism a shell runs then passes to the gateway when that shell closes, and comes up again at every login. Turn it off in `/settings` or with `nodecode gateway off`. Off, the organism runs only while a shell is open. See [The gateway](/gateway).
+The background gateway is on by default for `~/.nodecode/` and a named profile. The organism a shell runs then passes to the gateway when that shell closes, and comes up again at every login. Turn it off in `/settings` or with `nodecode gateway off`. Off, the organism runs only while a shell is open. See [The gateway](gateway.mdx).
 
 {/* source: src/store/store.lisp */}
 ## A launch looks stuck
@@ -44,7 +44,7 @@ The organism keeps definitions. A top-level `defun` or `defparameter` is written
 
 <Pair name="remember">
 <Verdict>Set in this process only. After a restart, `boundp` says `NIL`, while a `defun` from the same hour is still there.</Verdict>
-<Verdict>A file in your layer, `~/.nodecode/cells/ada/` here, and a git commit. It loads at every start, in every shell. See [Eval and the layer](/eval).</Verdict>
+<Verdict>A file in your layer, `~/.nodecode/cells/ada/` here, and a git commit. It loads at every start, in every shell. See [Eval and the layer](eval.mdx).</Verdict>
 </Pair>
 
 {/* source: src/organism/evolve.lisp */}
@@ -64,6 +64,6 @@ The organism has one tool, `eval`. A shell command, a file edit and a new defini
 
 <TurnFigure />
 
-Every fact is an event in `~/.nodecode/history.db`: a prompt, an answer, a tool call, its result. The transcript in every shell and the model's context are both read from it. History the model no longer sees stays in the log. See [Context and recall](/context).
+Every fact is an event in `~/.nodecode/history.db`: a prompt, an answer, a tool call, its result. The transcript in every shell and the model's context are both read from it. History the model no longer sees stays in the log. See [Context and recall](context.mdx).
 
-The gateway answers on `127.0.0.1`, on the port this store used last. There is no port option. Shells find it in `history.db.owner`. See [Files](/files).
+The gateway answers on `127.0.0.1`, on the port this store used last. There is no port option. Shells find it in `history.db.owner`. See [Files](files.mdx).

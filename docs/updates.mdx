@@ -50,7 +50,7 @@ Set these under `update` in `~/.nodecode/config.jsonc`. The same keys are in `/s
 | `ask` | Stages the release. Posts a notice. `nodecode update` applies it. |
 | `off` | Never looks. No release note is reported. |
 
-An installed build runs from the installer's layout, beside a `current` link. `NODECODE_BASE_URL` overrides the built-in host. See [Config](/config).
+An installed build runs from the installer's layout, beside a `current` link. `NODECODE_BASE_URL` overrides the built-in host. See [Config](config.mdx).
 
 {/* source: src/organism/update.lisp */}
 ## Channels
@@ -178,4 +178,4 @@ curl -fsSL https://nodecode.ai/install.sh | NODECODE_VERSION=OLD-LABEL sh
 - Updates of a source build. `update.mode` is `off` there. Run `just release` to rebuild.
 - Updates of cells from the hub. `nodecode update` moves the core and the shipped cells only.
 
-Run the installer again to upgrade from outside. It restarts a running background gateway on the new build. See [Install](/install).
+Run the installer again to upgrade from outside. It restarts a running background gateway on the new build. See [Install](install.mdx).
