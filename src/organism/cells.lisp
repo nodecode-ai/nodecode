@@ -1556,21 +1556,13 @@ when it loaded, the reason it was skipped, as the boot line prints it, or
               ;; <cache>/<stamp>/<folder>/<name>-<twelve hex of the text's sha256>.fasl:
               ;; the text is the key, the stamp directory this build's alone
               (let* ((fasl (layer-fasl-path path))
-                     ;; (LIST) when the fasl and the list beside it both read, else NIL
+                     ;; (LIST) when the fasl and the list beside it both read, else NIL;
+                     ;; the list is written whole before its fasl is published
                      (read-back (and (probe-file fasl)
                                      (ignore-errors
-                                      (list (uiop:safe-read-file-form (missing-names-path fasl))))))
-                     (names (first read-back)))
-                ;; The list reads back whole or the file compiles again: a torn or
-                ;; foreign list must not decide what loads.
-                (if (and read-back
-                         (listp names)
-                         (every (lambda (entry)
-                                  (and (listp entry) (= 4 (length entry))
-                                       (member (first entry) '(:function :variable :binding))
-                                       (stringp (second entry)) (stringp (third entry))))
-                                names))
-                    (values fasl names)
+                                      (list (uiop:safe-read-file-form (missing-names-path fasl)))))))
+                (if (and read-back (listp (first read-back)))
+                    (values fasl (first read-back))
                     (progn (ensure-directories-exist fasl)
                            (compile-layer-file path fasl))))
             (error () nil))
