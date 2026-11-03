@@ -490,13 +490,22 @@ drives."
 
 ;;; --- a picked session attached ------------------------------------------------
 
-(defun attach-picked-session (model session-id)
-  "Enter on a /sessions row, SESSION-ID its value: attach to that session, or
-say MODEL already is."
+(defun attach-picked-session (model value &aux (session-id (if (consp value) (car value) value)))
+  "Enter on a /sessions row, VALUE its session id or a hit's
+(SESSION-ID . POSITION): attach to that session, or say MODEL already is."
+  ;; POSITION, which a conversation-search row carries, is the durable log
+  ;; position of the block the search grabbed: the attached session rests on
+  ;; that block rather than on the tail, which is the whole point of searching
+  ;; your own conversation. The pin is armed before the replay's rows land and
+  ;; applied again there (the replay replaces the preview's page with the
+  ;; whole session, so the line index that holds now is not the one that holds
+  ;; in a moment). The acknowledgement is composer status; => NIL.
   (if (equal session-id model.session-id)
       (progn (sessions-preview-clear model)
              (show-status model "Already attached to this session"))
       (switch-gateway-session model session-id))
+  (when (consp value)
+    (pin-transcript-position model session-id (cdr value)))
   nil)
 
 ;;; --- the pending-exec view -------------------------------------------------
@@ -682,26 +691,38 @@ session alone again — and repaint the live transcript."
     (when model.ws (send-subscribe model.ws (subscription-entries model))))
   (when model.transcript-preview (setf model.transcript-preview nil) (render-state model)))
 
-(defun sessions-preview-install (model session-id entry &key (follow t))
-  "Seat ENTRY — a (SESSION-ID . STATE) page — under the dialog and repaint,
-the window on its newest rows. FOLLOW has the lane follow the session live
-from here."
+(defun sessions-preview-install (model session-id entry position &key (follow t))
+  "Seat ENTRY — a (SESSION-ID . STATE) page — under the dialog and repaint:
+the window rests on POSITION's block when the row named one, else on the
+newest rows as a preview always did. FOLLOW has the lane follow the session
+live from here."
   ;; The newest rows are laid out by the paint that shows them
   ;; (RENDER-STATE-AT-PAINT), so a held arrow that crosses three rows between
   ;; two frames lays out one.
   (setf model.transcript-preview entry)
-  (pin-transcript-bottom model)
-  (render-state-at-paint model)
+  (cond (position (pin-transcript-position model session-id position))
+        (t (pin-transcript-bottom model)
+           (render-state-at-paint model)))
   (when follow (preview-follow model session-id))
   model)
 
-(defun sessions-preview-arm (model session-id &key memo (follow t))
-  "Fold the durable history of SESSION-ID into MODEL's preview lane and
+(defun sessions-preview-arm (model value &key memo (follow t) (position (and (consp value) (cdr value)))
+                             &aux (session-id (if (consp value) (car value) value)))
+  "Fold the durable history of VALUE's session into MODEL's preview lane and
 repaint; FOLLOW has the lane follow it live at once."
+  ;; VALUE is a row's value: a session id, or a conversation-search hit's
+  ;; (SESSION-ID . POSITION), whose POSITION is the default below.
   ;; The attached session previews nothing — the transcript underneath already
-  ;; is it — and a view already under the dialog never refetches. MEMO, when the
+  ;; is it — and a view already under the dialog never refetches. POSITION, on a
+  ;; conversation-search row, is the durable log position of the block the row
+  ;; matched: the page ENDS 64 events past that block (READ-SESSION-PAGE) and
+  ;; the window rests on it
+  ;; (PIN-TRANSCRIPT-POSITION) rather than on the newest rows — reading from the
+  ;; block is what makes an old hit previewable at all, since the newest page
+  ;; would not hold it and the context under it is what the operator lands in.
+  ;; MEMO, when the
   ;; dialog passes one, is its read-ahead (SESSIONS-PREVIEW-READ-AHEAD), keyed
-  ;; on (session . nil): a row it already folded installs in this pass, a
+  ;; on (session . position): a row it already folded installs in this pass, a
   ;; row whose read is out installs when the page lands. A first visit reads
   ;; its page off the loop thread (READ-SESSION-PAGE, seated by
   ;; INSTALL-SESSION-PAGE): the read is a gateway round trip — a history page,
@@ -709,16 +730,19 @@ repaint; FOLLOW has the lane follow it live at once."
   ;; thread would answer no key until it lands. A failed read leaves the lane
   ;; empty so the next highlight retries (the Zig cleared-target re-selection);
   ;; no failure is kept as a page.
-  (let ((key (cons session-id nil)))
+  (let ((key (cons session-id position)))
     (cond
       ((or (null session-id)
            (equal session-id model.session-id))
        (sessions-preview-clear model))
       ((and (equal session-id (car model.transcript-preview))
-            (null (gethash model *transcript-pins*)))
+            (if position
+                (equal key (gethash model *transcript-pins*))
+                (null (gethash model *transcript-pins*))))
        (when follow (preview-follow model session-id)))
       ((and memo (consp (gethash key memo)))
-       (sessions-preview-install model session-id (gethash key memo) :follow follow))
+       (sessions-preview-install model session-id (gethash key memo) position
+                                 :follow follow))
       ;; The dialog's reads are the read-ahead's, which starts this row's
       ;; first: a held arrow outrunning them crossed rows faster than pages
       ;; land, and a read a row queued the gateway past a second. A landing
@@ -756,7 +780,9 @@ given, holds :READING for KEY meanwhile, and the landing reads further ahead."
   ;; so its landing owes no frame.
   (when memo (setf (gethash key memo) :reading))
   (off-loop model
-            (lambda () (read-session-page model (car key) nil))
+            ;; A hit's page ends 64 events past its block: the events
+            ;; strictly below its position + 65.
+            (lambda () (read-session-page model (car key) (and (cdr key) (+ (cdr key) 65))))
             (lambda (model page)
               (prog1 (if (install-session-page model key memo page :follow follow) t :quiet)
                 (when (and memo (eq dialog model.dialog))
@@ -810,7 +836,8 @@ position the page behind it ends under, NIL when this one starts the session."
   "The (SESSION-ID . POSITION) a row whose value is VALUE previews, or NIL: a
 directory row's value is its session id, a conversation-search hit's is
 (SESSION-ID . LOG-POSITION)."
-  (and (stringp value) (cons value nil)))
+  (cond ((consp value) (cons (car value) (cdr value)))
+        ((stringp value) (cons value nil))))
 
 (defun preview-highlight-key (model &aux (dialog model.dialog))
   "The (SESSION-ID . POSITION) the open dialog's highlighted row previews, or NIL."
@@ -857,10 +884,11 @@ into its state, oldest first, in a vector that grows with the live follow;
 session's start; :READING T while that page is out; :CHECKED how many events
 the last look at the fold's length saw.")
 
-(defun preview-page-entry (session-id page &key title)
+(defun preview-page-entry (session-id page &key title position)
   "The preview entry for SESSION-ID's PAGE, a READ-SESSION-PAGE answer: its
 fold, with the events behind it and where the page behind them ends kept.
-TITLE is the name the directory lists the session under."
+TITLE is the name the directory lists the session under, POSITION the log
+position of the hit the page was read around, NIL for the newest page."
   ;; The header shows the session, not the page (SESSION-DISPLAY-TITLE,
   ;; HEADER-STATUS-PARTS): a fold that does not hold the session's whole
   ;; history -- a page with one behind it, or one around a hit -- carries the
@@ -869,11 +897,11 @@ TITLE is the name the directory lists the session under."
   (let* ((events (frames-events (car page)))
          (state (fold-events events))
          (entry (cons session-id state))
-         (partial (cdr page)))
+         (partial (or (cdr page) position)))
     (setf (preview-paging entry)
           (list :events (make-array (length events) :adjustable t :fill-pointer t
                                                     :initial-contents events)
-                :before (cdr page)
+                :before (cdr page) :newest (null position)
                 :reading nil :checked nil :header nil))
     (when partial (setf (gethash "usage_pending" state) t))
     (cond (title (setf (gethash "session_title" state) title))
@@ -943,7 +971,7 @@ repaint when ENTRY is still the preview. => T when that moved the screen."
                (getf paging :before) (cdr page))
          ;; The newest page's history read to its start is the whole session:
          ;; its fold is exact, and its first prompt its name.
-         (when (null (cdr page))
+         (when (and (getf paging :newest) (null (cdr page)))
            (remhash "usage_pending" (cdr entry))
            (when (equal "" (gethash "session_title" (cdr entry)))
              (remhash "session_title" (cdr entry))))
@@ -1059,10 +1087,11 @@ under the dialog when the highlight still rests on the row KEY was read for.
        (sessions-preview-clear model)
        t))
     (t
-     (let ((entry (preview-page-entry (car key) page :title (directory-title model (car key)))))
+     (let ((entry (preview-page-entry (car key) page :title (directory-title model (car key))
+                                                     :position (cdr key))))
        (when memo (setf (gethash key memo) entry))
        (when (equal key (preview-highlight-key model))
-         (sessions-preview-install model (car key) entry :follow follow)
+         (sessions-preview-install model (car key) entry (cdr key) :follow follow)
          t)))))
 
 (defun read-session-directory (model &aux (entries (coerce (gateway-model-http-call
