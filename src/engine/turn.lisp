@@ -2623,6 +2623,9 @@ request went out (body sha256, message count, frozen context estimate) and
 what the live stream looked like (part counts, ttft, duration) — the
 turn_engine.zig recordProviderRequestEvent evidence, minus usage, which the
 separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
+  ;; A provider lane writes its per-call files (a CLI provider's prompt and
+  ;; settings) to the scratch folder: a full /tmp must not fail the round.
+  (ensure-writable-temporary-directory)
   (let* (;; The attempt.zig reducer state: the attempt index is the durable
          ;; identity and counts every try; the stream attempt only advances on
          ;; stream-scope retries; the request counter is per stream attempt.

@@ -1103,9 +1103,30 @@ the head of the response body)."
   ;; surface showing the detail would print as if they were the error.
   (record-turn-terminal turn +kind-turn-failed+
                         (nconc (list :condition-type (princ-to-string (type-of condition))
-                                     :detail (let ((sb-int:*print-condition-references* nil))
-                                               (princ-to-string condition)))
+                                     :detail (condition-detail condition))
                                (copy-list evidence))))
+
+(defun condition-detail (condition)
+  "CONDITION's message as a person reads it: every line, without the `See
+also:' block SBCL's printer appends, and a stream error on a file naming the
+file rather than printing the stream object."
+  (let ((sb-int:*print-condition-references* nil))
+    (or (file-stream-error-detail condition)
+        (princ-to-string condition))))
+
+(defun file-stream-error-detail (condition)
+  "The message of CONDITION, a stream error on a file, with the stream shown
+as the file's path: SBCL says `Couldn't write to #<SB-SYS:FD-STREAM for
+\"file /tmp/x\" {1004A8C3}>: Disk quota exceeded'. NIL for any other condition."
+  (let* ((stream (and (typep condition 'stream-error)
+                      (typep condition 'simple-condition)
+                      (stream-error-stream condition)))
+         (file (and (typep stream 'file-stream)
+                    (ignore-errors (uiop:native-namestring (pathname stream))))))
+    (when file
+      (ignore-errors
+       (apply #'format nil (simple-condition-format-control condition)
+              (subst file stream (simple-condition-format-arguments condition)))))))
 
 (defun cancel-turn (turn reason)
   (record-turn-terminal turn +kind-turn-cancelled+

@@ -106,6 +106,7 @@ renderer, the program loop.")
    #:dispatch #:spawn #:parallel-map #:define-side-table
    ;; --- startup-resolved paths (paths.lisp) ---
    #:home-path #:expand-home #:home-abbreviated
+   #:ensure-writable-temporary-directory
    ;; worlds: the other coding agents' homes, and the stat-only probe
    #:*agent-worlds* #:find-agent-world #:agent-world-names #:agent-home-path
    #:detect-agent-worlds #:cache-path
