@@ -156,22 +156,21 @@ the window or of no tokens counts nothing."
           for day = (floor at 86400)
           for entry = (alexandria:ensure-gethash (cons provider model) models
                         (list :provider provider :model model :score 0 :tokens 0 :days '() :last 0
-                              :efforts '()))
+                              :effort (make-hash-table :test #'equal)))
           do (incf (getf entry :score)
                    (* (/ tokens (gethash day days))
                       (expt 0.5d0 (/ (max 0 (- now at)) 86400 +tally-half-life+))))
              (incf (getf entry :tokens) tokens)
              (pushnew day (getf entry :days))
              (setf (getf entry :last) (max (getf entry :last) at))
+             ;; the tokens of each rung of effort it ran at
              (when effort
-               ;; (EFFORT . TOKENS) per rung it ran at
-               (nlk:if-let (rung (assoc effort (getf entry :efforts) :test #'string=))
-                 (incf (cdr rung) tokens)
-                 (push (cons effort tokens) (getf entry :efforts))))))
+               (incf (gethash effort (getf entry :effort) 0) tokens))))
   (sort (loop for entry being the hash-values of models
               do (setf (getf entry :days) (length (getf entry :days))
-                       (getf entry :efforts) (car (first (sort (getf entry :efforts) #'> :key #'cdr))))
-              collect (list* :effort (getf entry :efforts) (alexandria:remove-from-plist entry :efforts)))
+                       (getf entry :effort) (car (first (sort (alexandria:hash-table-alist (getf entry :effort))
+                                                              #'> :key #'cdr))))
+              collect entry)
         #'> :key (lambda (entry) (getf entry :score))))
 
 ;;; --- a home's tally ----------------------------------------------------------------
