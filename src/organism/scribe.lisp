@@ -1105,6 +1105,9 @@ out of every one."
   ;; it chooses (FORK-RECORD, fork.lisp).
   (when (fork-record form session-id)
     (return-from record-definitions nil))
+  ;; Nor in a made cell: its code is its files (CELL-SESSION-RECORD, made-cells.lisp)
+  (when (cell-session-record form session-id)
+    (return-from record-definitions nil))
   (when *pristine*
     (format t "~&[pristine: nothing is kept; (rollback N) restores a sealed generation, ~
                or relaunch without --pristine]~%")

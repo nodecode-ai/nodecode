@@ -309,7 +309,7 @@ renderer, the program loop.")
    #:knowledge-help-text #:note-knowledge-use #:knowledge-ledger-lines #:knowledge-stats #:import-session
    #:mark-index-refresh #:pin-index-section
    ;; --- made cells: a folder of kept code beside the layer (made-cells.lisp) ---
-   #:kept-folder-kind #:new-cell #:enter-cell #:leave-cell #:current-cell
+   #:kept-folder-kind #:new-cell #:fold-cell #:enter-cell #:leave-cell #:current-cell
    #:cell-directory #:add-cell-component #:move-to-cell
    ;; --- provisional definitions: the stack as evidence (provisional.lisp) ---
    ;; A redefinition of a name the caller is standing on is held until it
