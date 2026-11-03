@@ -134,12 +134,10 @@ NIL while it stands at none."
 (defun history-wall (history)
   "The place of the newest change from which no older one can come back,
 or NIL when the oldest can."
-  (let ((changes history.changes))
-    (loop with wall = nil
-          for index from (1- (length changes)) downto 0
-          while (history-change-refusal (aref changes index))
-          do (setf wall index)
-          finally (return wall))))
+  (let* ((changes history.changes)
+         (live (position-if-not #'history-change-refusal changes :from-end t)))
+    (cond ((null live) (and (plusp (length changes)) 0))
+          ((< live (1- (length changes))) (1+ live)))))
 
 (defun history-match-p (history change query)
   "Whether QUERY finds CHANGE: a number, or #N, the generations it spans;
@@ -861,9 +859,7 @@ said, the banner of edits. => the row the list starts on."
           (canvas-put canvas px r (clip-text-to-width text pw) (sheet-ink :muted :ground pane))))))
 
 (defun paint-history-foot (history canvas card keys visible focus current hint-row bottom-row px pw pane)
-  "Above the key row at HINT-ROW the question's CARD, else the line under the
-list on BOTTOM-ROW (none when NIL); then the keys that act, KEYS while a
-question stands."
+  "The question's CARD over the key row, else the line under the list on BOTTOM-ROW (none when NIL); then the keys."
   (cond (card (paint-ask canvas (- hint-row 1 (length card)) px pw card))
         (bottom-row (paint-segs canvas bottom-row px pw (history-bottom history focus current) pane)))
   (paint-keys history canvas hint-row px (+ px pw) (if history.ask keys (history-keys history visible))

@@ -267,10 +267,8 @@ NIL when nothing was asked."
                                                       :opt "vars" (and vars (alexandria:alist-hash-table
                                                                              vars :test #'equal)))
                                          :read-timeout (+ *provider-models-fetch-timeout-seconds* 15))))
-    (list (cdr (assoc (json-value answer :string "verdict")
-                      '(("works" . :works) ("refused" . :refused)
-                        ("unreachable" . :unreachable) ("unchecked" . :unchecked))
-                      :test #'equal))
+    (list (find (json-value answer :string "verdict") '(:works :refused :unreachable :unchecked)
+                :test #'string-equal)
           (json-value answer :string "words"))))
 
 (defun connect-credential-sink (&optional saved)
