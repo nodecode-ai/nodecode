@@ -1232,224 +1232,6 @@ this build's alone."
                                     (subseq (sha256-text (uiop:read-file-string path)) 7 19))
                             *layer-cache-directory*))))
 
-;;; --- compiling a layer ahead, in a child ------------------------------------
-;;; A layer file compiles in ~8 ms and a layer has hundreds, all of them at
-;;; once when the stamp is new — a rebuild, an empty cache: 2.0 s of the
-;;; launch (258 files), serial, because SBCL's compiler
-;;; holds one lock per image. The files are independent as compilation
-;;; units — each is one defining form, and what one file's compile takes
-;;; from another it takes by name — so the missing fasls are dealt among
-;;; forks of one fresh process of this organism: a `trial' child booted on a
-;;; scratch home that links this home's folders but its layers, whose
-;;; workers compile into the same cache while the launch loads behind them,
-;;; in order, as it always has. One boot, not one per worker: eight booted
-;;; children each loaded the peripherals (0.2 s of CPU) beside the launch,
-;;; nine processes on six cores, so a boot took 0.46 s before its ~0.2 s of
-;;; compiling; eight forks of one booted child, each compiling the heaviest
-;;; file, were done in 226 ms. LAUNCH.LISP forks
-;;; nothing because the launcher is threaded; a fresh `trial' child is not,
-;;; and when it is, SB-POSIX:FORK refuses and the child compiles alone. The
-;;; child starts before the launch's first folder loads, not at the layer's
-;;; turn: its boot (0.30-0.45 s) loads the peripherals the launch loads
-;;; first (~0.27 s), and the two ran one after the other (245 files).
-;;; A stamp with no directory for the layer has every file missing, as many
-;;; as its .asd declares, so the child launches before the launch probes
-;;; and digests the texts, its stdin left open for the form written after:
-;;; its `main' came 27-36 ms after the launch's `load-direct', not 51
-;;; (245 files). A directory the stamp has is scanned first, and a child
-;;; launched only for enough missing fasls.
-;;; Each worker walks the load order and compiles
-;;; the files it claims — a claim is one MKDIR of <claims>/<index>, which one
-;;; process wins — so a worker done with a light file takes the next: static
-;;; shares, worker K of N taking files K, K+N ..., left two heavy files (161
-;;; and 117 ms) in one worker, done at 0.80 s where the other seven were done
-;;; by 0.60 s, and the launch loaded nothing until the child exited, 0.45 s
-;;; after the first fasls (the same layer). The launch
-;;; waits for each file just before it loads it (AWAIT-LAYER-FASL), and a
-;;; file no worker has claimed yet it claims and compiles itself, the one it
-;;; needs next. A fasl that exists has its `.missing' list, renamed into
-;;; place first. A worker killed mid-file leaves a claim with neither fasl
-;;; nor `failed': the launch waits for that file until the child exits, then
-;;; compiles it. A child killed while its orphaned forks compile can leave a
-;;; file compiling in a fork and in the launch at once: each publishes a
-;;; whole file through a temporary name and one rename, the same text under
-;;; the same name. The child first raises its
-;;; nursery to 64 MB: the organism's 16 MB cap cost the compile 115 ms of
-;;; 1063 ms in collections, and eight forks at 256 MB each would hold too
-;;; much transient memory. The child loads the peripherals at the moment the
-;;; launch does, so on an empty ASDF cache an operator's own peripheral — in
-;;; a checkout just rebuilt, every shipped one — compiles in two processes
-;;; at once, not nine: ASDF writes through a temporary name and renames, so
-;;; each publishes a whole fasl; only the work is repeated. What a worker
-;;; cannot know is a macro, a setf expander or a symbol macro an EARLIER
-;;; layer file defines: it compiles the use as a call and notes the name as
-;;; unresolved, and LOAD-LAYER-FILE, meeting such a name that IS a macro by
-;;; the time the file loads, compiles the file again here
-;;; (COMPILED-PAST-A-MACRO-P). Nor a variable an earlier file proclaims
-;;; special: a LET of *A* there compiles as a lexical binding, with no free
-;;; reference to note, so the compile notes SBCL's style-warning about it as
-;;; a :BINDING and the file compiles again here if *A* is special by the time
-;;; it loads. A child or a worker that dies, overruns or cannot be spawned
-;;; leaves its files to the serial path.
-
-(defparameter +layer-compile-workers+ 8
-  "Processes a layer's missing fasls are split among: the child and its forks.")
-
-(defparameter +layer-compile-ahead-minimum+ 24
-  "Fewer missing fasls than this compile serially: a child's boot (~0.4 s)
-outweighs what it would save.")
-
-(defun compile-layer-shares (pairs workers claims)
-  "COMPILE-LAYER-FILE each of PAIRS, (SOURCE . FASL) namestrings, here and in
-WORKERS-1 forks, each worker walking PAIRS in order and taking the ones it
-claims under the directory CLAIMS; returns once all exit."
-  ;; Pair I is claimed by making CLAIMS/I: one MKDIR, which one process wins
-  ;; and every other loses to EEXIST. A compile that published no fasl makes
-  ;; CLAIMS/I/failed, so the launch waiting for the fasl stops. A refused fork
-  ;; — SB-POSIX:FORK signals while another thread runs — leaves nothing
-  ;; behind: this process walks every pair too. A fork leaves by EXIT :ABORT
-  ;; T: it unwinds into nothing and flushes nothing it shares with this process.
-  ;; The compile's nursery is the compile's: the process's own comes back
-  ;; after, or a gateway that compiled its layer at boot kept a 64 MB nursery
-  ;; for its whole life -- and a shell that did came back to the organism's.
-  (flet ((walk ()
-           (loop for (source . fasl) in pairs
-                 for index from 0
-                 for claim = (format nil "~a~d" claims index)
-                 when (ignore-errors (sb-posix:mkdir claim #o700) t)
-                   do (unless (ignore-errors (compile-layer-file (pathname source) (pathname fasl)))
-                        (ignore-errors (sb-posix:mkdir (format nil "~a/failed" claim) #o700))))))
-    (with-nursery ((* 64 1024 1024))
-      (let ((forks (loop repeat (1- workers)
-                         for pid = (or #-win32 (ignore-errors (sb-posix:fork)))
-                         when (eql pid 0)
-                           do (unwind-protect (walk) (sb-ext:exit :code 0 :abort t))
-                         collect pid)))
-        (walk)
-        #-win32 (dolist (pid (remove nil forks)) (ignore-errors (sb-posix:waitpid pid 0)))))))
-
-(defstruct (layer-child (:copier nil) (:predicate nil)
-                        (:constructor make-layer-child (pid process input)))
-  "The `trial' child a layer compiles in: PID and PROCESS as SPAWN-PROGRAM
-answered them, INPUT the stdin its form is written down, and STATUS its exit
-status once seen."
-  pid process input (status nil))
-
-(access (child layer-child))
-
-(defun layer-child-exited (child)
-  "CHILD's exit status once it has exited, NIL while it runs."
-  ;; The first sight of the exit reaps the child (CHILD-EXIT), so it is kept.
-  (or child.status
-      (setf child.status (child-exit child.pid child.process))))
-
-(defun start-layer-compile (scan files folders)
-  "Start compiling the files among the paths SCAN answers that have no fasl yet
-in a child of this organism — booted on a scratch home linking FOLDERS (the
-layer's siblings), forking its workers — when there are enough of them to be
-worth it, and return at once; FILES, the layer's count when its cache directory
-for this stamp is absent, launches the child before SCAN runs. => the handle
-AWAIT-LAYER-FASL and FINISH-LAYER-COMPILE wait on, NIL when nothing started,
-and the paths. Signals only what SCAN signals."
-  (let ((command (ignore-errors (organism-command "trial"))))
-    (flet ((launch (count)
-             ;; its stdin stays open for the form, written once the paths are scanned
-             (when (and command #+win32 nil (>= count +layer-compile-ahead-minimum+))
-               (let* ((home (uiop:ensure-directory-pathname
-                             (merge-pathnames (format nil "nodecode-layer-home-~d-~d"
-                                                      (sb-posix:getpid) (get-internal-real-time))
-                                              (uiop:temporary-directory))))
-                      (cells (merge-pathnames "cells/" home)))
-                 (ensure-directories-exist cells)
-                 (ensure-directories-exist (merge-pathnames "claims/" home))
-                 (dolist (folder folders)
-                   (ignore-errors
-                    (make-symlink (truename folder) (merge-pathnames (folder-name folder) cells))))
-                 ;; (CHILDREN HOME STARTED PENDING), one child; nothing reads its output
-                 (list (list (ignore-errors
-                              (bind (((pid _ _ process input)
-                                      (spawn-program (list* "/usr/bin/env"
-                                                            (format nil "NODECODE_HOME=~a" (namestring home))
-                                                            command)
-                                                     :input :stream :output nil :error-output nil)))
-                                (make-layer-child pid process input))))
-                       home (get-internal-real-time) '())))))
-      (let ((handle (and files (ignore-errors (launch files)))))
-        ;; its stdin closes on every path: a `trial' child that reads no form exits 70
-        (with-cleanup ((ignore-errors (close (layer-child-input (first (first handle))))))
-          (let ((paths (funcall scan)))
-            (ignore-errors
-             (let ((pending (remove-if (lambda (path) (probe-file (layer-fasl-path path))) paths)))
-               (setf handle (or handle (launch (length pending))))
-               (when handle
-                 (setf (fourth handle) pending)
-                 ;; one per directory, not one per file: a folder's files share it
-                 (mapc #'ensure-directories-exist
-                       (remove-duplicates (mapcar #'layer-fasl-path pending)
-                                          :key #'pathname-directory :test #'equal))
-                 (let ((in (layer-child-input (first (first handle)))))
-                   ;; printed as the child reads it, in EVOLVED: kernel names carry their
-                   ;; package; the form reads under *READ-EVAL* NIL in the child: strings only
-                   (write-line
-                    (with-standard-io-syntax
-                      (let ((*package* (find-package '#:nodecode.evolved)))
-                        (prin1-to-string
-                         `(let ((*package* (find-package ,(package-name *package*))))
-                            (compile-layer-shares
-                             ',(mapcar (lambda (path)
-                                         (cons (namestring path)
-                                               (namestring (layer-fasl-path path))))
-                                       pending)
-                             ,(min +layer-compile-workers+ (length pending))
-                             ,(namestring (merge-pathnames "claims/" (second handle))))
-                            1))))
-                    in)
-                   (finish-output in)))))
-            (values handle paths)))))))
-
-(defun await-layer-fasl (handle path)
-  "Return once HANDLE's workers are done with PATH: its fasl exists, its
-compile failed, the child exited, or 120 s passed since the child started — at
-once for a PATH not among HANDLE's files, and for one no worker has claimed
-yet, which it claims for this process to compile. Never signals."
-  (ignore-errors
-   (destructuring-bind (&optional children home started pending) handle
-     (let ((index (position path pending :test #'equal)))
-       (when (and (first children) index)
-         (let ((fasl (layer-fasl-path path))
-               (claim (format nil "~aclaims/~d" (namestring home) index)))
-           (unless (or (probe-file fasl) (ignore-errors (sb-posix:mkdir claim #o700) t))
-             (wait-until (lambda () (or (probe-file fasl)
-                                        (probe-file (format nil "~a/failed" claim))
-                                        (layer-child-exited (first children))))
-                         (+ started (* 120 internal-time-units-per-second)) 0.002))))))))
-
-(defun finish-layer-compile (handle)
-  "Wait for HANDLE's children, each until 120 s after they started, delete
-their scratch home and note their files in *LAYER-COMPILED*. Once per HANDLE:
-a second call does nothing, and so does NIL. Never signals."
-  (ignore-errors
-   (destructuring-bind (&optional children home started pending) handle
-     (when children
-       (setf (first handle) nil)
-       (with-cleanup ((ignore-errors (remove-tree home)))
-         (dolist (child children)
-           (when child
-             (wait-until (lambda () (layer-child-exited child))
-                         (+ started (* 120 internal-time-units-per-second)))
-             (unless child.status
-               ;; killed at the deadline, the child orphans its forks: each finishes its share,
-               ;; exits -- the child alone, not its group
-               #-win32 (ignore-errors (sb-posix:kill child.pid sb-posix:sigkill))
-               (setf child.status (wait-for-child child.pid child.process)))
-             (ignore-errors (close (layer-child-input child) :abort t))
-             (when child.process (ignore-errors (sb-ext:process-close child.process))))))
-       ;; a child sweeps nothing: what its fasls supersede is the load's to delete
-       (when *layer-compiled*
-         (dolist (path pending)
-           (setf (gethash (pathname-name path) *layer-compiled*)
-                 (pathname-name (layer-fasl-path path)))))))))
-
 (defun compiled-past-a-macro-p (entry)
   "Whether the name a compile could not resolve — ENTRY, (KIND PACKAGE NAME
 SETF-P) — is a macro, a setf expander or a symbol macro now, or the variable a
@@ -1575,8 +1357,8 @@ when it loaded, the reason it was skipped, as the boot line prints it, or
                            (compile-layer-file path fasl))))
             (error () nil))
         ;; a name the compile took for a function or a variable that is a macro
-        ;; now: compiled in a child ahead of the layer file defining it
-        ;; (START-LAYER-COMPILE), or turned into one since — again, here, in order
+        ;; now: compiled before the layer file defining it, or turned into one
+        ;; since — again, here, in order
         (when (and fasl (some #'compiled-past-a-macro-p missing))
           (multiple-value-setq (fasl missing)
             (handler-case (compile-layer-file path fasl)
@@ -1699,9 +1481,9 @@ STARTED its internal real time, else NIL. Read from other threads: a shell
 whose own boot has not served names the file it is waiting on.")
 
 (defun load-layer-system (cell folder entry)
-  "Load the layer system ENTRY -- (DECLARED SCRATCH PATHS FASL-PATHS HANDLE), as
-LOAD-CELL-FOLDERS started it -- of FOLDER into CELL, one file at a time."
-  (bind (((_ scratch paths fasl-paths handle) (values-list entry))
+  "Load the layer system ENTRY -- (DECLARED SCRATCH PATHS FASL-PATHS), as
+LOAD-CELL-FOLDERS read it -- of FOLDER into CELL, one file at a time."
+  (bind (((_ scratch paths fasl-paths) (values-list entry))
          (*layer-cache-directory* (or scratch *layer-cache-directory*))
          (provides (make-hash-table :test 'equal))
          (*layer-fasl-paths* fasl-paths)
@@ -1735,18 +1517,13 @@ LOAD-CELL-FOLDERS started it -- of FOLDER into CELL, one file at a time."
                (setf cell.timings (append cell.timings (list (cons (file-namestring path)
                                                                    (elapsed-ms started)))))
                t)))
-      (with-cleanup (;; the child, with nothing left to claim, exits; its files join the sweep
-                     (finish-layer-compile handle)
-                     (if scratch
+      (with-cleanup ((if scratch
                          (ignore-errors (remove-tree scratch))
                          ;; what this load's compiles superseded, in one listing
                          (when (plusp (hash-table-count *layer-compiled*))
                            (sweep-layer-cache *layer-compiled* folder.name))))
         (loop for (path . later) on paths
-              ;; the fasl a new stamp lacks, from the children
-              ;; started ahead: the wait is not the file's cost
-              do (await-layer-fasl handle path)
-                 (settle path later)
+              do (settle path later)
                  ;; a load may be what a waiting file waited for
                  (loop for ready = (find-if (lambda (names) (every #'missing-name-defined-p names))
                                             waiting :key #'cdr)
@@ -1790,7 +1567,7 @@ left (BEFORE for the first) against OWNERS. => the records, in load order."
          (loaded '())
          (ordered '())
          (records '())
-         ;; (DECLARED SCRATCH PATHS FASL-PATHS HANDLE) per layer system
+         ;; (DECLARED SCRATCH PATHS FASL-PATHS) per layer system
          (ahead '()))
     (loop while pending
           do (let ((ready (or (find-if (lambda (entry) (subsetp (cdr entry) loaded :test #'string=))
@@ -1799,10 +1576,9 @@ left (BEFORE for the first) against OWNERS. => the records, in load order."
                (setf pending (remove ready pending))
                (push (cell-folder-name (car ready)) loaded)
                (push (car ready) ordered)))
-    ;; A layer's missing fasls start compiling in children here, while the
-    ;; folders before it load; its texts are read and digested once. It
-    ;; compiles into a cache it can write, else into a throwaway one deleted
-    ;; after, without children.
+    ;; A layer's files are listed here, its texts read and digested once as
+    ;; it loads. It compiles into a cache it can write, else into a
+    ;; throwaway one deleted after.
     (dolist (folder ordered)
       (dolist (declared folder.systems)
         (when declared.layer
@@ -1814,80 +1590,63 @@ left (BEFORE for the first) against OWNERS. => the records, in load order."
                              (merge-pathnames (format nil "nodecode-layer-~d-~d"
                                                       (sb-posix:getpid) (get-internal-real-time))
                                               (uiop:temporary-directory)))))
-                 (*layer-fasl-paths* (make-hash-table :test 'equal))
-                 (scan (lambda ()
-                         (remove-if-not
-                          #'probe-file
-                          (mapcar (lambda (file)
-                                    (merge-pathnames (format nil "~a.lisp" file) (cell-folder-source folder)))
-                                  declared.files)))))
-            (multiple-value-bind (handle paths)
-                (if (or scratch declared.problem)
-                    (values nil (funcall scan))
-                    (start-layer-compile
-                     scan
-                     ;; no directory for the layer under this stamp: none of its fasls exists
-                     (unless (probe-file (merge-pathnames (format nil "~a/~a/" *image-stamp* folder.name)
-                                                          *layer-cache-directory*))
-                       (length declared.files))
-                     (mapcar #'cell-folder-source
-                             (remove-if (lambda (other)
-                                          (some #'declared-system-layer
-                                                (cell-folder-systems other)))
-                                        folders))))
-              (push (list declared scratch paths *layer-fasl-paths* handle) ahead))))))
+                 (paths (remove-if-not
+                         #'probe-file
+                         (mapcar (lambda (file)
+                                   (merge-pathnames (format nil "~a.lisp" file) (cell-folder-source folder)))
+                                 declared.files))))
+            (push (list declared scratch paths (make-hash-table :test 'equal)) ahead)))))
     ;; one record per folder; one failing as a unit is a (NIL . TEXT) failure and keeps BEFORE
-    (with-cleanup ((dolist (entry ahead) (finish-layer-compile (fifth entry))))
-      (dolist (folder (nreverse ordered) (nreverse records))
-        (let ((cell (make-cell :name folder.name
-                               :path folder.directory
-                               :systems (mapcar #'declared-system-name folder.systems))))
-          ;; Diagnostics a failing load prints — SBCL's "while evaluating the form
-          ;; at line N" context, a compile-time error's body — belong on the record
-          ;; beside the condition, not scattered across a boot terminal the TUI is
-          ;; about to clear.
-          (when (call-recording-failure
-                 cell nil
-                 (lambda (&aux (bundle (merge-pathnames "vendor/bundle.lisp" (cell-folder-source folder))))
-                   ;; ql:bundle-systems' contract: load bundle.lisp and every
-                   ;; vendored system becomes findable. Peripherals carry their
-                   ;; dependencies this way, so the operator's box needs no
-                   ;; quicklisp.
-                   (when (probe-file bundle)
-                     (muffled-load (lambda () (load bundle))))
-                   (dolist (declared folder.systems)
-                     (let ((name declared.name))
-                       (when declared.layer
-                         (setf cell.kind :layer))
-                       ;; a layer file by file, never an ASDF op; the rest through ASDF, cleared first
-                       (cond
-                         (declared.problem (error "~a.asd: ~a" name declared.problem))
-                         ((declared-system-layer declared)
-                          (load-layer-system cell folder (assoc declared ahead)))
-                         (t
-                          (ignore-errors (asdf:clear-system name))
-                          (call-with-compile-lock
-                           (lambda () (muffled-load (lambda () (asdf:load-system name)))))))
-                       (when-let (start (exported-start-cell name))
-                         (setf cell.start start)
-                         (when (eq cell.kind :library) (setf cell.kind :peripheral)))))))
-            (let ((after (definition-snapshot)))
-              ;; fill CELL's lists and advance OWNERS: the next folder is judged against this one
-              ;; a changed method count adds methods; a changed definition nobody here owns
-              ;; overrides a shipped one, and one another folder owns collides with it
-              (bind (((new changed) (snapshot-delta before after))
-                     (redefined (remove :methods changed :key #'car)))
-                (setf cell.defined new
-                      cell.methods-added (remove-if-not (lambda (key) (eq (car key) :methods))
-                                                         changed)
-                      cell.overrides (remove-if (lambda (key) (gethash key owners)) redefined)
-                      cell.collisions (loop for key in redefined
-                                             for owner = (gethash key owners)
-                                             when owner collect (cons key owner)))
-                (dolist (key (append new redefined))
-                  (setf (gethash key owners) cell.name)))
-              (setf before after)))
-          (push cell records))))))
+    (dolist (folder (nreverse ordered) (nreverse records))
+      (let ((cell (make-cell :name folder.name
+                             :path folder.directory
+                             :systems (mapcar #'declared-system-name folder.systems))))
+        ;; Diagnostics a failing load prints — SBCL's "while evaluating the form
+        ;; at line N" context, a compile-time error's body — belong on the record
+        ;; beside the condition, not scattered across a boot terminal the TUI is
+        ;; about to clear.
+        (when (call-recording-failure
+               cell nil
+               (lambda (&aux (bundle (merge-pathnames "vendor/bundle.lisp" (cell-folder-source folder))))
+                 ;; ql:bundle-systems' contract: load bundle.lisp and every
+                 ;; vendored system becomes findable. Peripherals carry their
+                 ;; dependencies this way, so the operator's box needs no
+                 ;; quicklisp.
+                 (when (probe-file bundle)
+                   (muffled-load (lambda () (load bundle))))
+                 (dolist (declared folder.systems)
+                   (let ((name declared.name))
+                     (when declared.layer
+                       (setf cell.kind :layer))
+                     ;; a layer file by file, never an ASDF op; the rest through ASDF, cleared first
+                     (cond
+                       (declared.problem (error "~a.asd: ~a" name declared.problem))
+                       ((declared-system-layer declared)
+                        (load-layer-system cell folder (assoc declared ahead)))
+                       (t
+                        (ignore-errors (asdf:clear-system name))
+                        (call-with-compile-lock
+                         (lambda () (muffled-load (lambda () (asdf:load-system name)))))))
+                     (when-let (start (exported-start-cell name))
+                       (setf cell.start start)
+                       (when (eq cell.kind :library) (setf cell.kind :peripheral)))))))
+          (let ((after (definition-snapshot)))
+            ;; fill CELL's lists and advance OWNERS: the next folder is judged against this one
+            ;; a changed method count adds methods; a changed definition nobody here owns
+            ;; overrides a shipped one, and one another folder owns collides with it
+            (bind (((new changed) (snapshot-delta before after))
+                   (redefined (remove :methods changed :key #'car)))
+              (setf cell.defined new
+                    cell.methods-added (remove-if-not (lambda (key) (eq (car key) :methods))
+                                                       changed)
+                    cell.overrides (remove-if (lambda (key) (gethash key owners)) redefined)
+                    cell.collisions (loop for key in redefined
+                                           for owner = (gethash key owners)
+                                           when owner collect (cons key owner)))
+              (dolist (key (append new redefined))
+                (setf (gethash key owners) cell.name)))
+            (setf before after)))
+        (push cell records)))))
 
 (defun folder-records (folders owners before)
   "The records of FOLDERS: those LOAD-CELL-FOLDERS loads, from BEFORE against OWNERS, then
