@@ -632,6 +632,7 @@ of stacking."
      (:file "gateway/gateway-test")
      ;; Uses gateway-test's silent peers.
      (:file "gateway/questions-test")
+     (:file "gateway/follow-test")
      (:file "gateway/gateway-return-test")
      (:file "gateway/still-starting-test")
      (:file "gateway/think-off-test")

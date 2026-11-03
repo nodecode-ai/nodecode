@@ -1727,6 +1727,17 @@ no prompt queued."
 (defvar *sync-command-handlers* (make-hash-table :test #'eq)
   "Command-kind keyword -> handler function.")
 
+(defun session-followed-p (sid followed)
+  "Whether SID is among FOLLOWED, a peer's subscriptions, or hangs under one
+of them: a person watching a session may steer and stop the helpers its
+turns started -- forks, team seats -- each running in a session of its own."
+  (and sid
+       (loop repeat 64                  ; the lineage's own depth guard
+             for id = sid then (first (nlk::session-fork-edge id))
+             while id
+               thereis (member id followed :test #'string=))
+       t))
+
 (defmacro define-sync-command (kind (&rest payload-specs) &body body)
   "Define the handler for one session-scoped WebSocket client command."
   ;; KIND is the command-kind keyword. The result frame's wire name always
@@ -1752,6 +1763,9 @@ no prompt queued."
   ;;   (:subscribed MESSAGE [EXTRA...])  not_subscribed unless SID is among the
   ;;                                     peer's accepted subscriptions; EXTRA
   ;;                                     forms ride as RESULT's trailing args
+  ;;   (:followed MESSAGE [EXTRA...])    the same, but SID may also hang under
+  ;;                                     a session the peer follows
+  ;;                                     (SESSION-FOLLOWED-P)
   ;;
   ;; A body of one (:admit ACTION SUBMIT-ARG...) clause is the turn-admission
   ;; shell: PROMPT and IMAGES submitted on SID under a websocket invocation
@@ -1762,7 +1776,7 @@ no prompt queued."
   ;; The shared entry contract — decode, scope check, protocol-error mapping —
   ;; stays in DISPATCH-COMMAND; a declaration here owns only its own command.
   (let* ((clauses (loop while (and (consp (first body))
-                                   (member (first (first body)) '(:require :subscribed)))
+                                   (member (first (first body)) '(:require :subscribed :followed)))
                         collect (pop body)))
          (target (when (and (consp (first body)) (eq (first (first body)) :target))
                    (rest (pop body)))))
@@ -1821,6 +1835,9 @@ no prompt queued."
                                                  (result "rejected" "invalid_request" ,@rest)))
                                      (:subscribed
                                       `((not (member sid (car subscription-list) :test #'string=))
+                                        (result "rejected" "not_subscribed" ,head ,@rest)))
+                                     (:followed
+                                      `((not (session-followed-p sid (car subscription-list)))
                                         (result "rejected" "not_subscribed" ,head ,@rest)))))
                    (t ,@body))))))))
 
@@ -1974,7 +1991,7 @@ the session's selection back."
                                   (expected :string "expected_turn_id"))
   (:require (and sid expected prompt)
             "session_id, expected_turn_id, and non-empty prompt are required")
-  (:subscribed "subscribe to the session before steering a turn")
+  (:followed "subscribe to the session, or one it hangs under, before steering a turn")
   (:admit "turn.steer" :steer expected))
 
 (define-sync-command :withdraw-prompt ((prompt-id :string "prompt_id"))
@@ -2009,7 +2026,7 @@ the session's selection back."
                                    ;; only; absent is the plain cancel.
                                    (retract :boolean "retract"))
   (:require (and sid turn-id) "session_id and turn_id are required")
-  (:subscribed "subscribe to the session before cancelling a turn" turn-id)
+  (:followed "subscribe to the session, or one it hangs under, before cancelling a turn" turn-id)
   ;; A surface's stop is the operator's own: the calls it cuts say so.
   (cond ((nlk:request-cancel-turn sid turn-id :operator retract)
          ;; Background-shell waits may be parked for minutes; the cancelled

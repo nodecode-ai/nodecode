@@ -66,6 +66,27 @@ each row's text whole; and the ids in their order."
       (is (member "streaming" (rows-texts frames) :test #'equal) "the streamed text, whole")
       (is (null (frames-of-type frames "item_delta")) "and never the deltas themselves"))))
 
+(deftest a-rows-client-is-sent-how-a-calls-forks-stand (with-temp-gateway (port))
+  ;; The forks of a running call work in sessions of their own; the gateway
+  ;; says how they stand (session_fork_progress), and a rows client has it on
+  ;; the call's row, whose forks a page lists, steers and stops.
+  (seed-completed-turn "rows-f" "split it" "done"
+                       :tools '(("call-fork" "eval" "{\"form\": \"(fork \\\"a\\\")\"}" "working")))
+  (let* ((frames (frames-while (ws port)
+                   (send-command ws (rows-subscribe "rows-f"))
+                   (sleep 0.5)
+                   (nle::publish-event "rows-f" "session_fork_progress"
+                                       (nlk:json-object "session_id" "rows-f" "tool_call_id" "call-fork"
+                                                        "forks" (vector (nlk:json-object "n" 1 "label" "a" "session_id" "fork-x-1"
+                                                                                         "turn_id" "turn-x" "status" "running"
+                                                                                         "calls" 2))))
+                   (sleep 0.3)))
+         (tool (find "tool_call" (alexandria:hash-table-values (rows-client frames))
+                     :key (lambda (row) (gethash "kind" row)) :test #'equal))
+         (fork (aref (nlk:json-value tool :array "metadata" "forks") 0)))
+    (is-shape fork ("session_id" "fork-x-1") ("turn_id" "turn-x") ("status" "running") ("calls" 2))
+    (is (null (frames-of-type frames "session_fork_progress")) "and never the frame itself")))
+
 (deftest a-rows-client-that-subscribes-mid-round-reads-the-answer-from-its-first-word
     (with-temp-gateway (port))
   ;; Without this, a rows client that subscribes mid-sentence would open

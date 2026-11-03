@@ -206,7 +206,10 @@ ERROR: FORK-ERROR with the reason.
  :session :status :answer :ran) -- STATUS :completed, :failed, :cancelled or
  :timeout, ANSWER the fork's last words, RAN the first line of each eval it
  ran. SECONDS bounds each fork's turn (fork.seconds, 900, unless given): past
- it the fork's tools are refused and it answers where it stands.
+ it the fork's tools are refused and it answers where it stands. The person
+ may steer a fork while it runs -- its ANSWER is then the steered turn's, and
+ :steered lists what they said -- or stop it: :cancelled, `stopped by the
+ operator'.
   :from -N (or a turn id)
  fork N turns back instead of here: the forks hold what this session knew
  when that turn ended, and nothing after it.

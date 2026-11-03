@@ -142,6 +142,70 @@ NEEDLE, or NIL."
         (is (await (:timeout 10) (nlk:events :session-id child :kind "turn.cancelled" :as :exists)) "and its fork's turn was cancelled")
         (is (zerop (hash-table-count nlk::*fork-waiting*)) "no fork is left waited on")))))
 
+(defun fork-test-active-turn (session)
+  "The id of SESSION's running turn, or NIL."
+  (first (nlk::active-turn-row session)))
+
+(defun fork-test-steer-thread (session current &rest tasks)
+  "A thread calling nlk:fork with TASKS as SESSION's eval inside CURRENT, its
+results its value."
+  (bt2:make-thread (lambda ()
+                     (let ((nlk:*scribe-session-id* session)
+                           (nle::*current-durable-turn* current))
+                       (apply #'nlk:fork tasks)))
+                   :name "fork-caller"))
+
+(defmacro with-working-forks ((&key (answer "steered: BANANA")) &body body)
+  "BODY with each fork's turn working round after round -- one eval a round --
+until a request carries BANANA, which it answers with ANSWER."
+  (let ((calls (gensym "CALLS")))
+    `(let ((,calls 0))
+       (with-provider-stub (context
+                            (if (fork-request-text context "BANANA")
+                                (wire-message "assistant" :content ,answer)
+                                (progn (sleep 0.2)
+                                       (wire-message "assistant"
+                                                     :tool-calls (vector (wire-tool-call (format nil "work-~d" (incf ,calls))
+                                                                                         "eval" "{\"form\":\";; work a little\\n(+ 1 2)\"}"))))))
+         ,@body))))
+
+(deftest fork-test-a-steered-fork-answers-through-its-steer ()
+  ;; A steer ends the fork's running turn at its next round boundary and runs
+  ;; as the next turn: the call waits on that one, and its answer is the fork's.
+  (with-fork-call ("sv" turn)
+    (with-working-forks ()
+      (let* ((child (format nil "fork-~a-1" (nlk:durable-turn-turn-id turn)))
+             (caller (fork-test-steer-thread nlk:*scribe-session-id* nle::*current-durable-turn* "a task the person steers")))
+        (is (await (:timeout 10) (nlk:active-turn-p child)) "the fork's turn runs")
+        (let ((first (fork-test-active-turn child)))
+          ;; the person's steer parks on the fork's running turn
+          (is (eq :steered (nlk:active-input-admission-disposition
+                            (nle:submit child "BANANA: say it now" :steer first :command-id "steer-1"))))
+          (let ((result (first (bt2:join-thread caller))))
+            (is (eq :completed (getf result :status)) "the fork completed")
+            (is (equal "steered: BANANA" (getf result :answer)) "its answer is the steered turn's, not the cut turn's silence")
+            (is (equal '("BANANA: say it now") (getf result :steered)) (format nil "and the call hears what the person steered it with: ~s" (getf result :steered)))
+            ;; what it ran before the steer still counts
+            (is (equal '(";; work a little") (remove-duplicates (getf result :ran) :test #'equal)))
+            (is (not (equal first (fork-test-active-turn child))) "the turn it ended on is the steer's")
+            (is (not (nlk:active-turn-p child)) "and nothing runs on in the fork")
+            (is (zerop (hash-table-count nlk::*fork-waiting*)) "no fork is left waited on")))))))
+
+(deftest fork-test-a-fork-the-person-stops-says-so ()
+  (with-fork-call ("so" turn)
+    (with-working-forks ()
+      (let* ((child (format nil "fork-~a-1" (nlk:durable-turn-turn-id turn)))
+             (caller (fork-test-steer-thread nlk:*scribe-session-id* nle::*current-durable-turn* "a task the person stops" "a task left alone")))
+        (is (await (:timeout 10) (nlk:active-turn-p child)) "the fork's turn runs")
+        (is (nlk:request-cancel-turn child (fork-test-active-turn child) :operator) "the person stops it")
+        (await (:timeout 10) (not (nlk:active-turn-p child)))
+        (nle:submit (format nil "fork-~a-2" (nlk:durable-turn-turn-id turn)) "BANANA, you can stop"
+                    :steer (fork-test-active-turn (format nil "fork-~a-2" (nlk:durable-turn-turn-id turn))) :command-id "steer-2")
+        (destructuring-bind (stopped left) (bt2:join-thread caller)
+          (is (eq :cancelled (getf stopped :status)) "the stopped fork reads cancelled")
+          (is-carrying (text (getf stopped :answer)) "stopped by the operator")
+          (is (eq :completed (getf left :status)) "its sibling ran on to its end"))))))
+
 (deftest fork-test-what-a-fork-ran-reads-as-its-notes ()
   (with-fork-call ("t" turn)
     (let* ((worked (seed-completed-turn "worker" "work" "done"
