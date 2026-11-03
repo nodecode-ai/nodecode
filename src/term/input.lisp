@@ -220,10 +220,7 @@ GROUPS being the parameter groups."
                              :f8 :f9 :f10 :f11 :f12 :f13 :f14 :f15 :f16 :f17 :f18 :f19 :f20)
                             (57399 :kp-0 :kp-1 :kp-2 :kp-3 :kp-4 :kp-5 :kp-6 :kp-7 :kp-8 :kp-9
                              :kp-decimal :kp-divide :kp-multiply :kp-subtract :kp-add
-                             :kp-enter :kp-equal)
-                            (57441 :left-shift :left-ctrl :left-alt :left-super :left-hyper
-                             :left-meta :right-shift :right-ctrl :right-alt :right-super
-                             :right-hyper :right-meta))
+                             :kp-enter :kp-equal))
                      thereis (and (<= start codepoint) (nth (- codepoint start) keys))
                      finally (return (if (<= 32 codepoint #x10FFFF)
                                          (code-char codepoint)
