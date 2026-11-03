@@ -448,6 +448,45 @@ none serves HOME, else the name of the unit nodecode wrote that does."
              (pathname-name serving)))
       own))
 
+(defun unit-serves-store-p (path home)
+  "Whether the systemd unit at PATH runs the process that owns HOME's store
+now. NIL where the service manager cannot say."
+  (and (eq *service-manager* :systemd)
+       (multiple-value-bind (verdict owner) (ignore-errors (store-death-verdict (home-store-path home)))
+         (and (eq verdict :live) owner
+              (multiple-value-bind (out err status)
+                  (ignore-errors (manager-run "show" (file-namestring path) "--property=MainPID"))
+                (declare (ignore err))
+                (let ((at (and (eql status 0) (stringp out) (search "MainPID=" out))))
+                  (and at (eql owner (parse-integer out :start (+ at 8) :junk-allowed t)))))))))
+
+(defun gateway-unit-duplicates ()
+  "Every home two or more gateway units nodecode wrote serve: a list (HOME
+KEPT . EXTRA) each, HOME its true name, KEPT the unit to keep -- the one
+whose process serves the store now, else the one this process names the
+home by (GATEWAY-OWN-LABEL), else the first -- and EXTRA the rest."
+  ;; Asks the service manager, once a unit, only when a home has two.
+  (let ((by-home (make-hash-table :test #'equal)))
+    (dolist (path (gateway-unit-files))
+      (when-let (home (unit-file-home path))
+        (setf (gethash home by-home) (append (gethash home by-home) (list path)))))
+    (sort (loop for home being the hash-keys of by-home using (hash-value paths)
+                when (rest paths)
+                  collect (let* ((name (file-namestring (unit-file-path (gateway-own-label (pathname home)))))
+                                 (kept (or (find-if (lambda (path) (unit-serves-store-p path home)) paths)
+                                           (find name paths :key #'file-namestring :test #'string=)
+                                           (first paths))))
+                            (list* home kept (remove kept paths))))
+          #'string< :key #'first)))
+
+(defun unit-removal-command (path &aux (label (pathname-name path)))
+  "The command that stops the gateway unit at PATH and takes it away."
+  (format nil "~a && rm ~a"
+          (if (eq *service-manager* :launchd)
+              (format nil "launchctl bootout ~a" (launchd-target label))
+              (format nil "systemctl --user disable --now ~a.service" label))
+          (uiop:escape-sh-token (uiop:native-namestring path))))
+
 (defun gateway-unit-text (&key (manager *service-manager*) (home *home*) (program (organism-binary))
                             (launcher (and (eq manager :launchd) (gateway-launcher-path)))
                             (path (uiop:getenv "PATH")) (user-home (uiop:getenv "HOME"))
