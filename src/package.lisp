@@ -298,7 +298,7 @@ renderer, the program loop.")
    #:record-definitions #:*scribe-session-id* #:definition-location
    #:definition-text #:definition-prose #:definition-key
    #:forget-shipped-definitions #:layer-directory #:toplevel-definitions
-   #:load-source #:source-loaded #:*unit-operators*
+   #:load-source #:reload-cell #:source-loaded #:*unit-operators*
    ;; the file write and the git a folder's repository is kept with (scribe.lisp)
    #:write-file-atomically #:git #:git-exclude-dot-directories #:git-commit-all
    ;; --- knowledge: the cells nothing loads, the one index, the use ledger
