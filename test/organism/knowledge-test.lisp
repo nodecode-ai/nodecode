@@ -271,6 +271,37 @@
     (is (search (format nil "~%Corrected live on /context: it printed zero for a lane with turns.~%Say `unknown' instead.") text)))
   (is (equal '("keep" "view") (ledger-kinds "kn-absent")) "a read is a view in the ledger"))
 
+(deftest knowledge-a-skill-a-cell-links-is-read-where-it-lives (with-knowledge-fixture ())
+  (let* ((root (uiop:pathname-parent-directory-pathname nlk::*cells-directory*))
+         (skill-file (write-temp-file (merge-pathnames "elsewhere/skills/kn-linked/SKILL.md" root)
+                                      (format nil "---~%name: kn-linked~%description: Review a diff before it becomes a PR.~%---~%~%1. Read the diff.~%2. Version one.~%")))
+         (cell (merge-pathnames "linked-skills/" nlk::*cells-directory*)))
+    (ensure-directories-exist cell)
+    (nlk::ensure-knowledge-system cell)
+    (write-temp-file (merge-pathnames "here/kn-held/SKILL.md" cell)
+                     (format nil "---~%name: kn-held~%description: A skill folder the cell holds itself.~%---~%Held.~%"))
+    (write-temp-file (merge-pathnames "here/kn-bare/SKILL.md" cell) "No frontmatter, so no skill.")
+    (is (nlk:knowledge-entry-named "kn-held" nil) "a skill folder a cell holds is a skill")
+    (is (null (nlk:knowledge-entry-named "kn-bare" nil)) "a SKILL.md declaring nothing is none")
+    #-win32
+    (progn
+      (nlk::make-symlink (merge-pathnames "elsewhere/skills/" root) (merge-pathnames "lib" cell))
+      (let ((entry (nlk:knowledge-entry-named "kn-linked" nil)))
+        (is (equal (truename skill-file) (nlk:knowledge-entry-path entry)) "read through the link, where it lives")
+        (is (equal "lib" (nlk:knowledge-entry-origin entry)) "its origin the link it came through")
+        (is (null (nlk::layer-files-for-name "KN-LINKED")) "and never a definition to patch"))
+      (flet ((said () (let ((nlk:*scribe-session-id* "s-reader")) (nle:help "kn-linked"))))
+        (is (search "Version one." (said)))
+        (write-temp-file skill-file (format nil "---~%name: kn-linked~%description: Review a diff before it becomes a PR.~%---~%~%1. Read the diff.~%2. Version two, edited where it lives.~%"))
+        (is (search "Version two, edited where it lives." (said)) "an edit there is the skill here at the next read"))
+      (is (search "kn-linked" (nlk:knowledge-search "Review a diff" nil +settings+)) "the index finds it")
+      (keep-definition-text "(define-skill kn-linked \"My own review.\"
+  ;; mine
+  )")
+      (is (equal "My own review." (nlk:knowledge-entry-description (nlk:knowledge-entry-named "kn-linked" nil))) "the organism's own takes the name")
+      (is (= 1 (count "kn-linked" (nlk::visible-entries nil) :key #'nlk:knowledge-entry-name :test #'string=)) "and the index lists it once")
+      (is (search "Version two" (uiop:read-file-string skill-file)) "the linked file is left as it is"))))
+
 (deftest knowledge-search-finds-by-name-description-and-text (with-knowledge-fixture ())
   (keep-definition-text +kn-memory+)
   (keep-definition-text "(define-skill kn-cold-one \"An old procedure.\"

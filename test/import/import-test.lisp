@@ -959,6 +959,28 @@
     (is (null (nik::held-platforms (list :home home))))))
 ;;; --- memories and skills: definitions -----------------------------------------------
 
+(deftest import-link-links-each-library-and-copies-no-skill (with-import-runtime (home box :hermes))
+  (let* ((plan (hermes-plan home :only "skills" :link t))
+         (item (first (import-items plan "skills")))
+         (cell (merge-pathnames "cells/linked-skills/" home)))
+    (is (equal "linked-skills/hermes-skills-productivity" (nik:item-destination item)) "one item per library, named by its path under the home")
+    #+win32
+    (is (equal '("skipped") (import-statuses plan "skills")) "no symbolic link on Windows: it says so")
+    #-win32
+    (progn
+      (is (equal '("imported") (import-statuses plan "skills")))
+      (is (equal "1 skill, read where it is" (nik:item-reason item)))
+      (nik:apply-plan plan)
+      (is (null (kept-text "notes")) "no skill is copied")
+      (is (eq :knowledge (nlk::kept-folder-kind cell)) "the cell is a knowledge cell")
+      (is (equal (truename (merge-pathnames ".hermes/skills/productivity/" box))
+                 (truename (merge-pathnames "hermes-skills-productivity/" cell))) "its link reaches the library")
+      (is-present (skill (nlk:knowledge-entry-named "notes" nil)) "the index reads the skill"
+        (is (equal (truename (merge-pathnames ".hermes/skills/productivity/notes/SKILL.md" box))
+                   (nlk:knowledge-entry-path skill)) "from the SKILL.md where it is")
+        (is (equal "Keeps notes." (nlk:knowledge-entry-description skill))))
+      (is (equal '("skipped") (import-statuses (hermes-plan home :only "skills" :link t) "skills")) "a second --link finds it linked already"))))
+
 (deftest import-nodecode-world-converts-both-carriers-and-seeds-the-ledger (with-import-runtime (home box))
   (make-nodecode-fixture box)
   (let ((plan (nik:make-plan :source "nodecode")))
