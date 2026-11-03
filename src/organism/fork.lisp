@@ -238,7 +238,7 @@ strings, then :SECONDS N, :FROM X, :CHECK C and :KEEP NAME; or a refusal."
 (defun fork-start (session anchor n words task seconds rival)
   "Fork SESSION at ANCHOR as its Nth fork and put WORDS to it; RIVAL, when the
 call races a name, is the name this fork writes its version under, claimed
-for it before it runs. => the fork: (:TASK :N :SESSION :RIVAL :TURN), or,
+for it before it runs. => the fork: (:TASK :N :SESSION :RIVAL :STEERS :TURN), or,
 when its turn could not start, :STATUS :FAILED and why."
   (let ((child (fork-name anchor n)))
     (create-session :id child :cwd (find-session-cwd session)
@@ -250,7 +250,9 @@ when its turn could not start, :STATUS :FAILED and why."
     (setf (gethash child *fork-waiting*) (list :seconds seconds :acts '()))
     (when rival (setf (gethash rival *fork-owners*) child))
     (handler-case
-        (list :task task :n n :session child :rival rival
+        ;; :STEERS is there from the start, so FORK-AWAIT's setf of it lands in
+        ;; this very list, which the call's registry and results read.
+        (list :task task :n n :session child :rival rival :steers '() :cut '()
               :turn (active-input-admission-turn-id
                      (nle:submit child words :command-id (format nil "fork:~a" child)
                                  :source "fork" :source-id session)))
@@ -302,16 +304,45 @@ answers them, FORKS each (:N :SESSION :RIVAL :ACTS), what it defined."
 
 (defun fork-await (fork deadline seconds)
   "Wait for FORK's turn to end, or for DEADLINE (internal real time) to pass.
-=> the turn's terminal kind, or :TIMEOUT once it has been asked to stop."
-  (let ((child (getf fork :session))
-        (turn (getf fork :turn)))
-    ;; the log says when it ends, read four times a second
-    (or (wait-until (lambda () (turn-terminal-kind turn)) deadline 0.25)
-        (progn
-          (request-cancel-turn child turn (format nil "the fork ran past its ~d seconds" seconds))
-          ;; its last words land with its ending
-          (wait-until (lambda () (turn-terminal-kind turn)) (deadline-after 10) 0.1)
-          :timeout))))
+A turn a steer cut short is followed to the turn the steer opens, which is
+then FORK's :TURN, its words pushed on FORK's :STEERS. => the terminal kind
+of the turn it ended on, or :TIMEOUT once it has been asked to stop."
+  (let ((child (getf fork :session)))
+    (loop
+      (let* ((turn (getf fork :turn))
+             ;; the log says when it ends, read four times a second
+             (kind (wait-until (lambda () (turn-terminal-kind turn)) deadline 0.25)))
+        (cond ((null kind)
+               (request-cancel-turn child turn (format nil "the fork ran past its ~d seconds" seconds))
+               ;; its last words land with its ending
+               (wait-until (lambda () (turn-terminal-kind turn)) (deadline-after 10) 0.1)
+               (return :timeout))
+              ((fork-steered-p turn)
+               ;; The person steered the fork (its own session's box, or the
+               ;; parent's Helpers band): the steer runs as the fork's next
+               ;; turn, so the call answers what that one says, never the
+               ;; cut turn's silence, and no turn runs on unwaited.
+               (let ((next (wait-until (lambda () (fork-next-turn child turn)) (deadline-after 10) 0.1)))
+                 (unless next (return kind))
+                 (setf (getf fork :cut) (append (getf fork :cut) (list turn))
+                       (getf fork :turn) next
+                       (getf fork :steers) (append (getf fork :steers) (list (fork-turn-words next))))))
+              (t (return kind)))))))
+
+(defun fork-steered-p (turn)
+  "Whether TURN completed because a parked steer cut it short."
+  (eq t (json-value (events :turn-id turn :kind +kind-turn-completed+ :as :payload)
+                    :boolean "steered")))
+
+(defun fork-next-turn (child turn)
+  "The turn CHILD started after TURN, or NIL while it has none."
+  (let ((newest (first (active-turn-row child nil nil))))
+    (and newest (not (equal newest turn)) newest)))
+
+(defun fork-turn-words (turn)
+  "What TURN was asked: its committed prompt's text."
+  (or (json-value (events :turn-id turn :kind +kind-input-committed+ :as :payload) :string "message")
+      ""))
 
 (defun fork-ran (child turn)
   "The first line of each eval CHILD's TURN ran -- its note -- in order, or the
@@ -325,11 +356,25 @@ name of any other tool it called."
                     (clip (trimmed (first (lines (trimmed form)))) 120)
                     (or (json-value payload :string "tool-name") "a tool"))))
 
+(defun fork-ran-all (fork)
+  "What FORK ran, as FORK-RAN reads each turn: the turns steers cut short,
+then the one it runs or ended on."
+  (loop for turn in (append (getf fork :cut) (list (getf fork :turn)))
+        append (fork-ran (getf fork :session) turn)))
+
 (defun fork-ending (child turn)
-  "What CHILD's TURN said as it failed or was cancelled, or NIL."
-  (json-value (events :session-id child :turn-id turn
-                              :kind '("turn.failed" "turn.cancelled") :as :payload)
-                  :string "detail"))
+  "What CHILD's TURN said as it failed or was cancelled -- a failure's detail,
+a stop's reason (`stopped by the operator' for the person's own) -- or NIL."
+  (let ((payload (events :session-id child :turn-id turn
+                         :kind '("turn.failed" "turn.cancelled") :as :payload)))
+    (or (json-value payload :string "detail")
+        (json-value payload :string "reason"))))
+
+(defun fork-answer (child turn)
+  "CHILD's TURN's answer, else how it ended, as a string of its own: forks that
+ended alike never print to the model as one shared object (#1=... #1#)."
+  (when-let (text (or (turn-answer child turn) (fork-ending child turn)))
+    (copy-seq text)))
 
 (defun fork-result (fork kind)
   "FORK as fork answers it, its turn having ended as KIND; one whose turn
@@ -337,10 +382,13 @@ never started, as it stands."
   (let ((child (getf fork :session))
         (turn (getf fork :turn))
         (status (getf fork :status)))
-    (list :task (getf fork :task) :session child
-          :status (or status (fork-turn-status kind))
-          :answer (if status (getf fork :answer) (or (turn-answer child turn) (fork-ending child turn)))
-          :ran (unless status (fork-ran child turn)))))
+    (append (list :task (getf fork :task) :session child
+                  :status (or status (fork-turn-status kind))
+                  :answer (if status (getf fork :answer) (fork-answer child turn))
+                  :ran (unless status (fork-ran-all fork)))
+            ;; what the person steered it with, in order, when they did
+            (when-let (steers (getf fork :steers))
+              (list :steered steers)))))
 
 (defun fork-turn-status (kind)
   "KIND, the kind of the event a fork's turn ended on, or :TIMEOUT, as the
@@ -419,13 +467,18 @@ ended -> its FORK-CALL.")
          (turn (getf fork :turn))
          (kind (cond ((getf fork :status) "turn.failed")
                      (turn (turn-terminal-kind turn))))
-         (ran (and turn (fork-ran child turn)))
+         (ran (and turn (fork-ran-all fork)))
          (ended (and kind (or (cdr (assoc n (fork-call-ended call)))
                               (let ((ms (round (* 1000 (- now (fork-call-started call)))
                                                internal-time-units-per-second)))
                                 (push (cons n ms) (fork-call-ended call))
                                 ms)))))
     (json-object "n" n
+                 ;; whose session it is and which turn runs there, so a
+                 ;; surface can open it, steer it or stop it
+                 "session_id" child
+                 :opt "turn_id" turn
+                 :opt "steered" (and (getf fork :steers) (length (getf fork :steers)))
                  "label" (clip (trimmed (or (first (lines (trimmed (or (getf fork :task) "")))) "")) 60 :ellipsis "…")
                  "status" (if kind (string-downcase (fork-turn-status kind)) "running")
                  "calls" (length ran)

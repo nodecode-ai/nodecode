@@ -31,6 +31,11 @@
             (is (equal "call-fork" (gethash "tool_call_id" payload)) "and drawn under the eval call that forked")
             (is (eq t (gethash "done" payload)) "its last frame says so")
             (is (equal '(1 2) (fork-progress-field forks "n")))
+            ;; each fork's session, so a surface can open, steer or stop it
+            (is (equal (list (format nil "fork-~a-1" (nlk:durable-turn-turn-id turn))
+                             (format nil "fork-~a-2" (nlk:durable-turn-turn-id turn)))
+                       (fork-progress-field forks "session_id")))
+            (is (every #'stringp (fork-progress-field forks "turn_id")) "and the turn that runs there")
             (is (equal '("the alpha task" "the beta task") (fork-progress-field forks "label")) "each fork named by its task's first line")
             (is (equal '("completed" "completed") (fork-progress-field forks "status")))
             (is (equal '("alpha done" "beta done") (fork-progress-field forks "answer")) "each answer's first line, its Markdown marks off")

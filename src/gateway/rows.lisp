@@ -306,10 +306,13 @@ would have, and ask for a flush once a replay has reached its end."
                  view.active-p (equal "active" (gethash "admission_state" payload))
                  view.verb nil)))
         ;; A parked steer has no fact of its own until promotion: the queue
-        ;; snapshot frame is what puts it in the band, live.
+        ;; snapshot frame is what puts it in the band, live. How a call's
+        ;; forks stand is live-only too, set on the call's row as its
+        ;; "forks", so a page can show, steer and stop them.
         ((member kind '("session_stream_event" "item_delta"
                         "session_background_process_updated"
-                        "session_input_queue_snapshot_updated")
+                        "session_input_queue_snapshot_updated"
+                        "session_fork_progress")
                  :test #'equal)
          (multiple-value-bind (state verdict) (apply-gateway-event view.state payload)
            (setf view.state state)
