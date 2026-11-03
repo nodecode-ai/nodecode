@@ -178,14 +178,13 @@ transport."
                      (gethash session-id *gateway-sessions*)))
       (bt2:with-lock-held ((gw-session-lock gws)) (setf gws.peers (remove peer gws.peers))))))
 
-(defun replay-job-frame (job frames index final-p &optional tail-p)
+(defun replay-job-frame (job frames index final-p)
   (nlk:encode-session-stream-resumed
    job.session-id job.sequence frames
    :cursor (and final-p job.cursor)
    :admission-state job.admission-state
    :title job.title
    :replay-chunk-index index :replay-chunk-final-p final-p
-   :replay-tail-p tail-p
    :resumed-after job.after
    :octets t))
 
@@ -199,13 +198,13 @@ transport."
 session's replay (SEND-REPLAY-CHUNK); a fresh one for each gateway's start
 (START-CELLS-BEHIND-THE-LISTENER), so no replay an earlier one sent counts.")
 
-(defun send-replay-chunk (state job frames index final-p &optional tail-p)
+(defun send-replay-chunk (state job frames index final-p)
   "Send FRAMES as one bounded chunk, bisecting oversized chunks."
   ;; Returns the next chunk index. A chunk of one fact goes whole even past
   ;; the bound: the fact was admitted under the same bound and outgrew it only
   ;; by its envelope, the socket itself reads to 64 MiB, and refusing it would
   ;; leave the session unreadable to every shell that ever attaches.
-  (let ((json (replay-job-frame job (coerce frames 'vector) index final-p tail-p)))
+  (let ((json (replay-job-frame job (coerce frames 'vector) index final-p)))
     (cond
       ((or (<= (length json) nlk:+max-sync-frame-bytes+)
            (<= (length frames) 1))
@@ -215,55 +214,18 @@ session's replay (SEND-REPLAY-CHUNK); a fresh one for each gateway's start
       (t
        (let* ((half (floor (length frames) 2))
               (next (send-replay-chunk state job (subseq frames 0 half)
-                                       index nil tail-p)))
-         (send-replay-chunk state job (subseq frames half) next final-p tail-p))))))
+                                       index nil)))
+         (send-replay-chunk state job (subseq frames half) next final-p))))))
 
-;;; --- the first pass -----------------------------------------------------------
-;;; A replay is the whole log, folded by the shell in order and painted at its
-;;; last chunk. Without a first pass, a long session's first paint would wait on
-;;; all of it. A long session's replay runs twice. The first pass carries its
-;;; newest turns, from the prompt of the turn that holds the *REPLAY-TAIL-FACTS*th
-;;; newest fact, behind the facts the shell sums across the whole session; the
-;;; shell paints it. The second is the whole log, which the shell folds out of
-;;; sight and puts in place at its last chunk. Both end at the job's cursor with
-;;; its admission state, so the first paint already says whether a turn runs.
 
-(defparameter *replay-tail-facts* 256
-  "Roughly how many newest facts a long session's first pass carries: it
-starts at the prompt of the turn holding the fact this far back.")
 
-(defparameter *replay-tail-minimum* 1024
-  "The facts of its own a session's log holds before its replay runs a
-first pass: a shorter log replays whole about as fast.")
 
-(defparameter +replay-seed-kinds+ (list nlk::+kind-turn-usage+)
-  "The kinds a first pass carries from before its turns: the facts the
-shell's fold sums across the whole session (tui/transcript/ingest.lisp INGEST-TURN-USAGE),
-which its header reads beside the title the session's first prompt names
-(SESSION-DISPLAY-TITLE), the one other fact it carries.")
-
-(defun replay-tail-start (session-id cursor)
-  "The log position a first pass of SESSION-ID's replay up to CURSOR
-starts at, or NIL when it runs none: a log of fewer than
-*REPLAY-TAIL-MINIMUM* facts, a turn that opens in the log's older half."
-  (let ((newest (nlk:events :session-id session-id :before (1+ cursor) :order :newest
-                            :limit *replay-tail-minimum* :columns '("log_position")
-                            :as :rows)))
-    (when (= (length newest) *replay-tail-minimum*)
-      (when-let (start (nlk:events :session-id session-id :kind nlk::+kind-input-committed+
-                                   :before (1+ (first (nth (1- *replay-tail-facts*) newest)))
-                                   :order :newest :columns '("log_position") :as :value))
-        (and (< (* 2 (nlk:events :session-id session-id :after (1- start) :before (1+ cursor)
-                                 :as :count))
-                (nlk:events :session-id session-id :before (1+ cursor) :as :count))
-             start)))))
-
-(defun send-replay-pass (state job visible-set &optional tail &aux (index 0))
+(defun send-replay-pass (state job visible-set &aux (index 0))
   "Send JOB's replay as one pass of chunks (WALK-REPLAY), the last one final."
   (walk-replay job.session-id job.cursor visible-set
                (lambda (frames final-p)
-                 (setf index (send-replay-chunk state job frames index final-p (and tail t))))
-               tail job.after))
+                 (setf index (send-replay-chunk state job frames index final-p)))
+               job.after))
 
 (defun session-frames (session-id &aux (cursor (session-cursor session-id)) (all '()))
   "Every frame a shell's replay of SESSION-ID folds, oldest first: the whole
@@ -277,39 +239,17 @@ pass WALK-REPLAY reads up to the log's newest fact."
                    (setf all (revappend frames all)))))
   (nreverse all))
 
-(defun walk-replay (session-id cursor visible-set send &optional tail resume)
+(defun walk-replay (session-id cursor visible-set send &optional resume)
   "Call SEND with (FRAMES FINAL-P) for SESSION-ID's replay up to CURSOR, the
 last call final: each fork ancestor up to its anchor, then the session's own
-facts; with TAIL, a REPLAY-TAIL-START position, the first pass — the first
-prompt the session's head carries and every fact of +REPLAY-SEED-KINDS+
-before TAIL, then the session's own from TAIL; with RESUME, a log position,
-the session's own facts past it alone."
-  (let ((after (cond (resume) (tail (1- tail)) (t 0)))
-        (opening t))
-    (labels ((visible (facts) (visible-event-frames session-id facts visible-set))
-             (opening-prompt (id before)
-               ;; The first the head carries: a retracted turn's is not the title.
-               (loop for past = 0 then (nlk::stored-fact-log-position (car (last facts)))
-                     for facts = (nlk:events :session-id id :kind nlk::+kind-input-committed+
-                                             :after past :before before :limit 16 :as :facts)
-                     while facts
-                     do (when-let (frames (visible facts))
-                          (return (list (first frames))))))
-             (older (id before)
-               ;; A segment whole, or, in a first pass, the facts it seeds:
-               ;; every one of them follows the opening prompt, as its turns do.
-               (if tail
-                   (append (and opening (opening-prompt id before))
-                           (visible (nlk:events :session-id id :kind +replay-seed-kinds+
-                                                :before before :as :facts)))
-                   (visible (nlk:events :session-id id :before before :as :facts)))))
+facts; with RESUME, a log position, the session's own facts past it alone."
+  (let ((after (or resume 0)))
+    (flet ((visible (facts) (visible-event-frames session-id facts visible-set)))
       (unless resume
         (dolist (segment (nlk:session-lineage session-id))
-          (when-let (frames (older (first segment) (1+ (third segment))))
-            (funcall send frames nil))
-          (setf opening nil)))
-      (when-let (frames (and tail (older session-id tail)))
-        (funcall send frames nil))
+          (when-let (frames (visible (nlk:events :session-id (first segment)
+                                                 :before (1+ (third segment)) :as :facts)))
+            (funcall send frames nil))))
       ;; A fork standing by has no fact of its own: its replay ends on its
       ;; lineage, so a shell opens on the turns it carries. A resume at the
       ;; log's end has nothing to carry.
@@ -427,18 +367,7 @@ diagnostic it was dropped with -- as the one frame left to send."
               (t
                (let* ((session-id (gw-replay-job-session-id item))
                       (visible-set (nth-value 0 (nlk:session-visible-turn-set session-id))))
-                 (when-let (tail (and (null (gw-replay-job-after item))
-                                      (replay-tail-start session-id (gw-replay-job-cursor item))))
-                   (send-replay-pass state item visible-set tail))
-                 (send-replay-pass state item visible-set)
-                 (when (plusp (gw-replay-job-cursor item))
-                   ;; Fold the history into the hydration cache behind the replay a shell
-                   ;; is reading: the first prompt sent there then folds only what landed
-                   ;; since, not the whole log in front of its request. A warm that fails
-                   ;; is only a cold first prompt, which folds and says why.
-                   (spawn "history-warm"
-                     (ignore-errors
-                      (history-turns-for-session (intern-session session-id))))))))))))))
+                 (send-replay-pass state item visible-set))))))))))
 
 (defun find-gw-peer-state (peer)
   "PEER's registry state, or NIL once its writer has ended: a peer the
