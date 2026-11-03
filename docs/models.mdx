@@ -204,10 +204,10 @@ Set these per provider, under `providers.<id>`.
 | --- | --- | --- |
 | `request_max_retries` | 4 | Failures before any stream bytes. Counted per stream attempt. |
 | `stream_max_retries` | 5 | Failures after the response started. |
-| `stream_idle_timeout_ms` | 120000 | Milliseconds with no byte before the attempt fails. |
+| `stream_idle_timeout_ms` | 120000 | Milliseconds with no byte before the attempt fails. Once the answer has started, three times this with no new text, reasoning or tool input fails it too. |
 | `stream_rerun_ceiling_seconds` | 120 | A stream cut after this much output is continued. `0`: always re-run. |
 
-The two retry budgets multiply. A stream that keeps sending bytes has no time limit.
+The two retry budgets multiply. A stream that keeps sending content has no time limit. Keep-alives and empty chunks alone don't keep it going.
 
 | HTTP status | Retried |
 | --- | --- |
