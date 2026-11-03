@@ -386,3 +386,75 @@ followed, nothing kept.")
 ;;; a scratch tree.
 (define-startup-parameter *cells-directory* (home "cells/")
   "The one folder, under the home.")
+
+;;; The scratch folder, kept writable. Every scratch file the organism and its
+;;; cells write (a provider's per-turn prompt file, a fetched page, a
+;;; snapshot) goes under UIOP:TEMPORARY-DIRECTORY: $TMPDIR, else /tmp/. That
+;;; folder is often a RAM disk with a per-user quota (systemd caps each user
+;;; at 80% of /tmp), and anything else the same user runs can fill it; then
+;;; every write there fails, and every turn with it, however healthy the rest
+;;; is. Before each provider call ENSURE-WRITABLE-TEMPORARY-DIRECTORY tries a
+;;; write there and, when the write fails, points UIOP:*TEMPORARY-DIRECTORY*
+;;; at <home>/tmp/ until the system's folder takes writes again. A folder
+;;; anyone else set UIOP:*TEMPORARY-DIRECTORY* to is theirs, left alone.
+
+(defparameter *temporary-probe-bytes* (* 256 1024)
+  "How much a probe of the scratch folder writes: room for a provider's
+per-turn files, so a folder with less than that left counts as full.")
+
+(defvar *temporary-fallback* nil
+  "The folder ENSURE-WRITABLE-TEMPORARY-DIRECTORY set UIOP:*TEMPORARY-DIRECTORY*
+to while the system's folder refuses writes; NIL while it takes them.")
+
+(defvar *temporary-checked-at* nil
+  "When the scratch folder was last probed, a universal time; NIL before the first probe.")
+
+(defun temporary-writable-p (directory)
+  "Whether DIRECTORY takes a write of *TEMPORARY-PROBE-BYTES* now. The probe
+file is removed either way."
+  (let ((probe (merge-pathnames (format nil ".nodecode-probe-~36r" (random (expt 36 10)))
+                                (uiop:ensure-directory-pathname directory))))
+    (unwind-protect
+         (handler-case
+             (progn
+               (ensure-directories-exist probe)
+               (with-open-file (out probe :direction :output :if-exists :supersede
+                                          :element-type '(unsigned-byte 8))
+                 (write-sequence (make-array *temporary-probe-bytes*
+                                             :element-type '(unsigned-byte 8) :initial-element 0)
+                                 out)
+                 (finish-output out))
+               t)
+           (error () nil))
+      (ignore-errors (delete-file probe)))))
+
+(defun ensure-writable-temporary-directory (&key (interval 30)
+                                                 (system (uiop:default-temporary-directory)))
+  "The scratch folder for now, with UIOP:*TEMPORARY-DIRECTORY* set to match:
+SYSTEM ($TMPDIR, else /tmp/) while it takes a write, else <home>/tmp/. Probes
+at most once per INTERVAL seconds and answers the last choice in between; a
+folder someone else set UIOP:*TEMPORARY-DIRECTORY* to is answered as is."
+  (let ((current uiop:*temporary-directory*)
+        (now (get-universal-time)))
+    (cond ((and current (not (eq current *temporary-fallback*))) current)
+          ((and *temporary-checked-at* (< (- now *temporary-checked-at*) interval))
+           (or current system))
+          ((progn (setf *temporary-checked-at* now)
+                  (temporary-writable-p system))
+           (when *temporary-fallback*
+             (format *error-output* "~&nodecode: ~a takes writes again; scratch files go there~%"
+                     (uiop:native-namestring system)))
+           (setf uiop:*temporary-directory* nil
+                 *temporary-fallback* nil)
+           system)
+          (t
+           (let ((own (home "tmp/")))
+             (ensure-directories-exist own)
+             #-win32 (ignore-errors (sb-posix:chmod (uiop:native-namestring own) #o700))
+             (unless *temporary-fallback*
+               (format *error-output* "~&nodecode: ~a takes no writes (full, or over its quota); ~
+scratch files go to ~a until it does~%"
+                       (uiop:native-namestring system) (uiop:native-namestring own)))
+             (setf uiop:*temporary-directory* own
+                   *temporary-fallback* own)
+             own)))))
