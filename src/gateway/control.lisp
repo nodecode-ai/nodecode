@@ -882,10 +882,7 @@ organism on PORT, PID, when one serves this home -- within SECONDS
 ;;; launch boots, a home taken away, an archive to hand on -- each the
 ;;; kernel's verb (organism/profile.lisp), refused as the verb refuses. A
 ;;; profile is another home and so another organism, with a gateway and a
-;;; page of its own: nothing here moves this page into one. A home's SOUL.md
-;;; is read and written here as the file it is; the channel kit reads it
-;;; (channels/kit/soul.lisp) as the voice of every channel conversation, and
-;;; nothing else in the organism does.
+;;; page of its own: nothing here moves this page into one.
 
 (defun profile-row (record &aux (name (nlk:profile-record-name record))
                                 (home (nlk:profile-record-home record))
@@ -924,27 +921,11 @@ roster; the folder named profiles are made in; and TEXT, what a verb said."
 (defparameter +profile-clones+ '(("settings" . :settings) ("all" . :all) ("blank" . :blank))
   "What NLK:PROFILE-CREATE starts a home with, by the word a request says it in.")
 
-(defun profile-soul (name)
-  "NAME's SOUL.md, the file under its home the channel kit reads; refused,
-naming the nearest, when there is no profile NAME."
-  (merge-pathnames "SOUL.md" (nlk:profile-record-home (nlk:require-profile name))))
-
-(defun save-profile-soul (name content &aux (path (profile-soul name)))
-  "NAME's SOUL.md made CONTENT, or taken out when CONTENT is blank: the
-channel kit reads a blank file and none alike. => what came of it."
-  (cond ((plusp (length (nlk:trimmed content)))
-         (nlk:write-file-atomically path content)
-         (format nil "~a's SOUL.md is saved; a channel's next message reads it" name))
-        ((probe-file path)
-         (delete-file path)
-         (format nil "~a's SOUL.md is taken out; its channels speak without one" name))
-        (t (format nil "~a has no SOUL.md" name))))
-
 (define-gateway-route handle-gateway-profiles-http (env)
   "GET /api/gateway/profiles — PROFILES-JSON. POST {name, clone, from,
-description, soul} makes a profile (NLK:PROFILE-CREATE): clone is settings
+description} makes a profile (NLK:PROFILE-CREATE): clone is settings
 (the default), all or blank; from the profile it clones, this gateway's own
-when left out; soul the SOUL.md it starts with, when not blank. DELETE
+when left out. DELETE
 ?name=NAME takes one away (NLK:PROFILE-DELETE), refused as
 NLK::DELETABLE-PROFILE refuses. Each answers the listing, with what came of
 it as text."
@@ -958,13 +939,11 @@ it as text."
                    (clone (or (cdr (assoc word +profile-clones+ :test #'string=))
                               (nlk::protocol-refuse :invalid_request
                                                     "clone is settings, all or blank, not ~s" word)))
-                   (from (json-value request :string "from"))
-                   (soul (json-value request :string "soul")))
+                   (from (json-value request :string "from")))
               (require-non-empty (list name) "name must be a non-empty string" :required t)
               (let ((home (nlk:profile-create name :clone clone :from from
                                                    :description (json-value request :string "description"))))
-                (format nil "~a~@[; ~a~]" (nlk::profile-created-text name home clone from)
-                        (and soul (plusp (length (nlk:trimmed soul))) (save-profile-soul name soul))))))
+                (nlk::profile-created-text name home clone from))))
      (:delete (let ((name (folder-query env "name")))
                 (require-non-empty (list name) "name=NAME says which profile" :required t)
                 (nlk:profile-delete name)
@@ -981,41 +960,3 @@ is. Answers the listing."
     (nlk:profile-use name)
     (profiles-json (format nil "~a boots by default from the next launch on; this gateway stays on ~a"
                            name (nlk:profile-label)))))
-
-(define-gateway-route handle-gateway-profile-soul-http (env)
-  "GET /api/gateway/profiles/soul?name=NAME — NAME's SOUL.md: {name, file,
-present, content}. POST {name, content} saves it (SAVE-PROFILE-SOUL), a
-blank content taking the file out, and answers the same with what came of
-it as text."
-  (:route nil "/api/gateway/profiles/soul")
-  (:on (nlk:profile-error 400 "refused"))
-  (let* ((post (eq (getf env :request-method) :post))
-         (request (and post (gateway-request-json env)))
-         (name (if post (json-value request :string "name") (folder-query env "name"))))
-    (require-non-empty (list name) "name must be a non-empty string" :required t)
-    (let* ((text (when post
-                   (save-profile-soul name (or (json-value request :string "content")
-                                               (nlk::protocol-refuse :invalid_request
-                                                                     "content must be a string")))))
-           (path (profile-soul name))
-           (present (probe-file path)))
-      (json-object "name" name "file" (namestring path) "present" (and present t)
-                   "content" (if present (nlk:read-text path) "") :opt "text" text))))
-
-(define-gateway-route handle-gateway-profile-export-http (env)
-  "GET /api/gateway/profiles/export?name=NAME — NAME's home as the archive
-NLK:PROFILE-EXPORT writes, without its store, secrets and credentials, sent
-to be saved."
-  ;; Made under the cache and read back whole: a home without its store is
-  ;; small, and nothing of it stays behind once it is sent.
-  (:route :get "/api/gateway/profiles/export" "profile export")
-  (:on (nlk:profile-error 400 "refused"))
-  (let ((name (folder-query env "name"))
-        (path (nlk:cache-path (format nil "nodecode/profile-export-~36r.tar.gz"
-                                      (random (expt 36 8) (make-random-state t))))))
-    (require-non-empty (list name) "name=NAME says which profile" :required t)
-    (with-cleanup ((ignore-errors (delete-file path)))
-      (nlk:profile-export name (namestring path))
-      (let ((octets (alexandria:read-file-into-byte-vector path)))
-        (download-answer octets "application/gzip" (format nil "nodecode-profile-~a.tar.gz" name)
-                         :content-length (length octets))))))
