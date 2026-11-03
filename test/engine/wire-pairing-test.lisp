@@ -190,8 +190,7 @@ after."
   (is (null (anthropic-pairing-fault
              (anthropic-request (turn-log '((:asst "a") (:call "a") (:result "a") (:asst :text) (:result "a"))
                                           '())
-                                0)))
-      "a result recorded after its call was answered sends no tool_result")
+                                0))) "a result recorded after its call was answered sends no tool_result")
   ;; 2,000 seeded logs of one to three turns over three ids and the blank one,
   ;; each request at every boundary.
   (let ((state (sb-ext:seed-random-state 20261103))
