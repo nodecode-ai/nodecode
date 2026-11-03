@@ -147,14 +147,15 @@ peripheral mark, so a DEFINE-CELL kept beside it is a cell that starts."
   ;; it as in EVOLVED; EVOLVED's internal names are written nle::name.
   (format nil ";;;; cell.lisp --- ~a: the package this cell's definitions read in.~%~
                ;;;;~%~
-               ;;;; Written by new-cell. Every other file here is one definition, kept~%~
-               ;;;; by a session working on the cell; a snippet doing that opens with~%~
-               ;;;; (in-package #:~(~a~)). A (define-cell ~(~a~) ...) kept beside this~%~
-               ;;;; declares its commands, tools and settings: (help :cells).~%~%~
+               ;;;; Written by new-cell. ~(~a~).lisp holds the rest: every definition a~%~
+               ;;;; session working on the cell keeps, replaced where it stands when~%~
+               ;;;; kept again; a snippet doing that opens with (in-package #:~(~a~)).~%~
+               ;;;; Its (define-cell ~(~a~) ...), last, declares the commands, tools~%~
+               ;;;; and settings: (help :cells).~%~%~
                (defpackage #:~(~a~)~%  (:use #:cl #:nodecode.kernel #:nodecode.evolved))~%~%~
                (in-package #:~(~a~))~%~%~
                (define-peripheral ~(~a~) :not-running t)~%"
-          name system name system system name))
+          name name system name system system name))
 ;;; --- off, and on again ------------------------------------------------------------
 ;;; A folder the installer put in the cells folder goes when /cells turns it
 ;;; off: another copy is a click away. The operator's own -- a cell made here

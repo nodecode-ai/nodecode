@@ -231,8 +231,88 @@ DEFINE-CELL of one name are two definitions."
          :type)
         (t operator)))
 
+;;; A made cell's code is one file beside its cell.lisp: NAME.lisp, every
+;;; definition its sessions keep, each replaced where it stands when it is
+;;; kept again and spliced out when it is forgotten, the DEFINE-CELL last so
+;;; what it names loads ahead of it. The layer keeps one file per definition;
+;;; a cell is a thing a person reads, so it reads like one written by hand.
+
+(defun made-cell-code-path (directory)
+  "NAME.lisp of DIRECTORY when it is a cell NEW-CELL made -- <identity>-NAME/
+holding the cell.lisp NEW-CELL wrote -- else NIL."
+  (let ((folder (folder-name directory))
+        (prefix (format nil "~a-" (layer-name))))
+    (when (and (> (length folder) (length prefix))
+               (string= prefix folder :end2 (length prefix))
+               (string/= "cell" (subseq folder (length prefix)))
+               (let ((cell (probe-file (merge-pathnames "cell.lisp" directory))))
+                 (and cell (search "Written by new-cell" (read-text cell)))))
+      (merge-pathnames (format nil "~a.lisp" (subseq folder (length prefix))) directory))))
+
+(defun made-cell-code-file-p (path directory)
+  "Whether PATH is DIRECTORY's made-cell code file (MADE-CELL-CODE-PATH)."
+  (let ((made (made-cell-code-path directory)))
+    (and made (equal (namestring made) (namestring path)))))
+
+(defun made-cell-code-head (path package)
+  "The opening of a made cell's fresh code file PATH, reading in PACKAGE."
+  (format nil ";;;; ~a.lisp --- the ~a cell's code: every definition but its package,~%~
+               ;;;; which cell.lisp holds. Kept by the sessions that make the cell: a~%~
+               ;;;; definition kept again is replaced where it stands, one forgotten is~%~
+               ;;;; taken out, and the define-cell stays last.~%~%(in-package #:~(~a~))~%"
+          (pathname-name path) (pathname-name path) package))
+
+(defun cut-span (text start end)
+  "TEXT without START..END and the blank lines it leaves."
+  (let ((end (or (position-if-not (lambda (c) (member c '(#\Newline #\Space #\Tab))) text :start end)
+                 (length text))))
+    (concatenate 'string (subseq text 0 start) (subseq text end))))
+
+(defun splice-cell-definition (text key piece package)
+  "TEXT, a made cell's code file, with KEY's definition PIECE in it: in place
+of KEY's older text, else ahead of the DEFINE-CELL when there is one and KEY
+is not it, else at the end. PIECE reads in PACKAGE; one reading in another
+package than the file's goes between IN-PACKAGE forms of its own."
+  (let* ((hits (toplevel-definitions text))
+         (home (let ((first (find-if (lambda (hit) (fourth hit)) hits)))
+                 (and first (package-designator-name (fourth first)))))
+         (own (or (null home) (string-equal home package)))
+         (piece (if own
+                    piece
+                    (format nil "(in-package ~a)~%~%~a~%~%(in-package #:~(~a~))" package piece home)))
+         (old (find key hits :key #'first :test #'equal)))
+    (if (and old own)
+        (concatenate 'string (subseq text 0 (second old)) piece (subseq text (third old)))
+        (let* ((text (if old (cut-span text (second old) (third old)) text))
+               (hits (if old (toplevel-definitions text) hits))
+               (cell (and (string/= "DEFINE-CELL" (getf key :operator))
+                          (find "DEFINE-CELL" hits :key (lambda (hit) (getf (first hit) :operator))
+                                                   :test #'string=))))
+          (if cell
+              (concatenate 'string (subseq text 0 (second cell)) piece (string #\Newline) (string #\Newline)
+                           (subseq text (second cell)))
+              (format nil "~a~%~a~%" (string-right-trim '(#\Newline) text) piece))))))
+
+(defun package-designator-name (designator)
+  "The name of DESIGNATOR, a package or a package's name."
+  (if (packagep designator) (package-name designator) (string designator)))
+
+(defun unsplice-cell-definitions (path keys)
+  "Take KEYS out of the made cell's code file PATH. => whether a definition
+is left in it."
+  (let ((text (read-text path)))
+    (dolist (hit (sort (remove-if-not (lambda (hit) (member (first hit) keys :test #'equal))
+                                      (toplevel-definitions text))
+                       #'> :key #'second))
+      (setf text (cut-span text (second hit) (third hit))))
+    (write-file-atomically path (lambda (out)
+                                  (write-sequence (sb-ext:string-to-octets text :external-format :utf-8) out)))
+    (and (toplevel-definitions text) t)))
+
 (defun definition-path (key directory)
-  "The file in DIRECTORY a definition of KEY is kept in: DEFINITION-FILE-NAME's,
+  "The file in DIRECTORY a definition of KEY is kept in: a made cell's code
+file (MADE-CELL-CODE-PATH) unless a file of its own already holds KEY or KEY
+overrides a shipped definition; else DEFINITION-FILE-NAME's,
 unless that file holds another kind of definition of the same name, which
 keeps it -- a cell's DEFUN TOKYO-TIME and its DEFINE-CELL TOKYO-TIME -- and
 then the name with KEY's operator joined on, tokyo-time-define-cell.lisp."
@@ -244,8 +324,15 @@ then the name with KEY's operator joined on, tokyo-time-define-cell.lisp."
     (if (null operator)
         plain
         (let ((own (merge-pathnames (format nil "~a-~(~a~).lisp" (definition-file-name key) operator)
-                                    directory)))
-          (cond ((probe-file own) own)
+                                    directory))
+              (made (made-cell-code-path directory)))
+          (flet ((holds (path)
+                   (and (not (equal (namestring path) (namestring made)))
+                        (probe-file path)
+                        (member key (mapcar #'first (file-definitions path)) :test #'equal))))
+          (cond ((and made (not (holds own)) (not (holds plain)) (not (shipped-definition key)))
+                 made)
+                ((probe-file own) own)
                 ((and (probe-file plain)
                       (let ((there (mapcar #'first (file-definitions plain))))
                         (and there
@@ -254,7 +341,7 @@ then the name with KEY's operator joined on, tokyo-time-define-cell.lisp."
                                               (definition-namespace operator)))
                                      there))))
                  own)
-                (t plain))))))
+                (t plain)))))))
 
 ;;; --- the scanner ----------------------------------------------------------
 
@@ -613,6 +700,9 @@ looked at: a knowledge cell's one file per name."
             when matched
               do (cond ((= (length matched) (length keys))
                         (push (cons path keys) files))
+                       ;; a made cell's code file gives up the matched alone
+                       ((made-cell-code-file-p path directory)
+                        (push (cons path matched) files))
                        ;; A unit's file is named for one of its definitions and
                        ;; holds its siblings beside it: forgetting that name
                        ;; takes the file, and the siblings keep their own.
@@ -1159,7 +1249,10 @@ out of every one."
                    (forget-file (kept path keys)
                      (call-with-kept-lock kept.knowledge kept.directory
                                           (lambda ()
-                                            (delete-file path)
+                                            ;; a made cell's code file keeps what else it holds
+                                            (unless (and (made-cell-code-file-p path kept.directory)
+                                                         (unsplice-cell-definitions path keys))
+                                              (delete-file path))
                                             (unless kept.knowledge
                                               (let ((name (folder-name kept.directory)))
                                                 (write-layer-system (layer-system-file name) name)))))
@@ -1216,7 +1309,17 @@ out of every one."
                                                                                                    :start (second own) :end (third own))
                                                                      out)
                                                      (write-byte 10 out))))
-                                     (write-file-atomically path content)
+                                     (if (made-cell-code-file-p path directory)
+                                         (let ((spliced (splice-cell-definition
+                                                         (if (probe-file path)
+                                                             (read-text path)
+                                                             (made-cell-code-head path (folder-name directory)))
+                                                         key (subseq text (second own) (third own)) package)))
+                                           (write-file-atomically
+                                            path (lambda (out)
+                                                   (write-sequence (sb-ext:string-to-octets spliced :external-format :utf-8)
+                                                                   out))))
+                                         (write-file-atomically path content))
                                      (if knowledge
                                          ;; once a call: it lists nothing, so only its absence matters
                                          (unless kept.written (ensure-knowledge-system directory))
@@ -1248,7 +1351,7 @@ out of every one."
                                                                      (string= (getf found :name) (getf key :name)))))
                                                           (mapcar #'first (file-definitions file))))
                                         (let ((away (folder other (eq (kept-folder-kind other) :knowledge))))
-                                          (forget-file away file '())
+                                          (forget-file away file (list key))
                                           (push (cons key (if (string= (folder-name directory) (layer-name))
                                                               "layer"
                                                               (folder-label directory)))
