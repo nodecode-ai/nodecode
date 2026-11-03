@@ -149,6 +149,34 @@
     (is (search "shell's flag" (refusal-text nle::launch-usage-error
                                  (nle::parse-launch-arguments '("--sandbox" "rpc")))) "so is rpc")))
 
+(deftest sandbox-srt-on-path-reaches-the-argv-as-a-string ()
+  ;; npm installs srt as a link to its dist/cli.js; the PATH lookup answers
+  ;; the link's truename, a pathname, which the spawn refused as an argv word.
+  (let* ((dir (uiop:ensure-directory-pathname
+               (merge-pathnames (format nil "nodecode-srt-~36r/" (random (expt 36 8)))
+                                (uiop:temporary-directory))))
+         (target (merge-pathnames "cli.js" dir))
+         (saved-path (uiop:getenv "PATH"))
+         (saved-srt (uiop:getenv "NODECODE_SRT")))
+    (unwind-protect
+         (progn
+           (ensure-directories-exist dir)
+           (with-open-file (s target :direction :output) (write-line "#!/bin/sh" s))
+           (sb-posix:chmod (uiop:native-namestring target) #o755)
+           (sb-posix:symlink (uiop:native-namestring target)
+                             (uiop:native-namestring (merge-pathnames "srt" dir)))
+           (nlk::set-environment-variable "NODECODE_SRT" "")
+           (nlk::set-environment-variable "PATH" (string-right-trim "/" (uiop:native-namestring dir)))
+           (let ((srt (nle::srt-program)))
+             (is (stringp srt)
+                 "srt found on PATH is a namestring")
+             (is (every #'stringp (nle::sandbox-wrap '("nodecode" "serve") :srt srt :settings #p"/h/sandbox/srt.json"
+                                                                             :port 1 :run #p"/h/sandbox/run/"))
+                 "the jailed argv is words only")))
+      (nlk::set-environment-variable "PATH" (or saved-path ""))
+      (nlk::set-environment-variable "NODECODE_SRT" (or saved-srt ""))
+      (uiop:delete-directory-tree dir :validate t :if-does-not-exist :ignore))))
+
 (deftest sandbox-gateway-port-from-the-environment ()
   (let ((saved (uiop:getenv "NODECODE_GATEWAY_PORT")))
     (unwind-protect

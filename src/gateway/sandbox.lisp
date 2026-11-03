@@ -220,10 +220,14 @@ directory whose provider has a host to inject it toward."
           collect (cons path host)))
 
 (defun srt-program ()
-  "The srt executable: $NODECODE_SRT, else `srt' on PATH; NIL when neither."
+  "The srt executable, as the namestring the jail's argv carries:
+$NODECODE_SRT, else `srt' on PATH; NIL when neither."
+  ;; The PATH lookup answers a truename -- npm's link resolved to dist/cli.js
+  ;; -- and a pathname in an argv is refused by the spawn.
   (let ((named (nlk:trimmed (or (uiop:getenv "NODECODE_SRT") ""))))
     (cond ((plusp (length named)) (and (probe-file named) named))
-          (t (nlk::executable-on-path "srt")))))
+          (t (when-let (found (nlk::executable-on-path "srt"))
+               (uiop:native-namestring found))))))
 
 (defun sandbox-ensure-launcher-files (home)
   "Make HOME's sandbox.jsonc and config.jsonc, empty, when either is absent:
