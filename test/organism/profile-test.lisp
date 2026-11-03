@@ -369,7 +369,7 @@ RUN-CHECKED, newest first: nothing runs and nothing is moved."
   (nlk:profile-install (namestring remote))
   (is (equal '("# nodecode: what a profile keeps for itself"
                "/history.db*" "/.locks/" "/composer-history" "/usage.jsonl" "/theme-selection"
-               "/keybinds.json" "/operator-token" "/generations/" "/release-pin" "/distribution.json"
+               "/keybinds.json" "/trust.json" "/operator-token" "/generations/" "/release-pin" "/distribution.json"
                "/gateway-off/" "/hermes/" "/mcp/" "/secrets" "/auth.json"
                "/link" "/backups" "/cells" "")
              (uiop:split-string

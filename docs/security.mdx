@@ -16,6 +16,7 @@ Nodecode has no sandbox. Read the limits before you connect a channel or run una
 | Operator token | Every `/api/gateway/` route needs `Authorization: Bearer TOKEN`. `/healthz` needs none. |
 | Cell routes | A route a cell serves on the gateway's port needs the same token, unless the cell marks it public: a browser page, a webhook, a sign-in callback. A public route is responsible for its own checks. |
 | File modes | Secrets are readable by you alone. See the table below. |
+| Trusted folders | A project folder's skills reach the model only after you OK the folder. See [Instruction files](/instructions). |
 | Kernel lock | The kernel, the locked core, refuses redefinition of its names. |
 | Secret redaction | `config-get` shows a secret as `[set]`. `config-set` refuses to write `[set]` back. |
 | Channel allowlists | A Discord, Slack or Telegram bot refuses to start without an allowlist. |

@@ -91,6 +91,7 @@
     ("usage.jsonl"        nil     nil    nil     :state     "the use ledger the index ranks by")
     ("theme-selection"    nil     nil    nil     :state     "the theme in use")
     ("keybinds.json"      nil     nil    nil     :state     "the chords as bound")
+    ("trust.json"         nil     nil    nil     :state     "the folders trusted or refused")
     ("operator-token"     nil     nil    nil     :state     "this home's gateway token")
     ("generations/"       nil     nil    nil     :state     "the sealed generations, a manifest each, and a restore's markers")
     ("release-pin"        nil     nil    nil     :state     "the release `nodecode update VERSION' holds this home at")
