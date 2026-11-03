@@ -2730,8 +2730,7 @@ their records on (CELLS)."
         ;; one of them is attributed to it, exactly as at boot.
         (dolist (cell *cells*)
           (dolist (key (append cell.defined cell.overrides)) (setf (gethash key owners) cell.name)))
-        ;; The load's nursery is the load's, as a compile's is
-        ;; (COMPILE-LAYER-SHARES): the import folder's switch-on consed 25 MB,
+        ;; The load's nursery is the load's: the import folder's switch-on consed 25 MB,
         ;; and under the organism's 2 MB that was 86 ms of its 189 in
         ;; collections.
         (with-nursery ((* 64 1024 1024))
