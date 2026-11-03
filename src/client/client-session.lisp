@@ -1122,169 +1122,13 @@ id, takes the highlight once its row is listed (Left's session just left)."
                  (install-session-directory model value :seat seat)))
   nil)
 
-;;; --- the /sessions conversation search --------------------------------------
-;;; The picker's box is a title filter until the operator types in it; from
-;;; there it is a grep over every session's conversation, answered by the
-;;; gateway (POST /api/gateway/sessions/search). The box keeps one truth —
-;;; what the operator typed — and the search hangs three facts off it: what is
-;;; staged, what is in flight, and which query the rows on screen answer. Both
-;;; live in a table keyed by the dialog rather than in slots, because a
-;;; running image cannot grow a structure, and the dialog's own slots belong
-;;; to the picker.
-;;;
-;;; A hit row's value is (SESSION-ID . LOG-POSITION) — the pair Enter needs to
-;;; land on the block — while the directory's rows keep their plain session
-;;; id. The two shapes are told apart where they are read, never guessed at.
-
-;;; The dialog ranks nothing (the gateway answers newest first), so this is
-;;; also how many hits a box shows, and a page that hit the bound says so with
-;;; a `+'.
-(defparameter *session-search-limit* 60
-  "Rows one conversation search asks the gateway for.")
-
-;;; The read is a store scan behind an HTTP round trip, and it runs on a
-;;; thread of its own either way.
-(defparameter *session-search-rest* 0.15
-  "Seconds a typed query rests before the search fires: typing `docker' is one
-search, not six.")
-
-;;; :FOLD is the listing's fold (the rows an empty box shows), :STAGED the
-;;; query the box holds now, :STAGED-AT when that query last changed, :FIRED
-;;; the query a read is out for, :ROWS-QUERY the query the rows on screen
-;;; answer (`' for the directory). The dialog takes its state with it: the
-;;; keys are weak.
+;;; --- the /sessions dialog state -------------------------------------------
+;;; :FOLD is the listing's fold (the rows an empty box shows). The state lives
+;;; in a table keyed by the dialog rather than in slots, because a running
+;;; image cannot grow a structure, and the dialog's own slots belong to the
+;;; picker. The dialog takes its state with it: the keys are weak.
 (defvar *session-search* (make-hash-table :test #'eq :weakness :key)
   "Weak memo: the open /sessions dialog -> its search state, a plist.")
-
-(defun read-session-search (model query)
-  "POST the gateway's conversation search for QUERY => its rows."
-  (gethash "rows" (gateway-model-http-call
-                   model :post "/api/gateway/sessions/search"
-                   (json-object "query" query "limit" *session-search-limit*))))
-
-(defun session-search-picker-rows (json-rows fold &aux (now-ms (iso-8601-ms (nlk::iso-now))))
-  "The conversation-search rows: one per matching block, the session's title
-leading, the matched line next, the speaker and the block's age last."
-  ;; A snippet is ONE line (NLK:ONE-LINE) — the row is a row whatever the
-  ;; message held. Each row's value is (SESSION-ID . LOG-POSITION), the pair
-  ;; the attach and the viewport pin read.
-  (loop for row across (if (vectorp json-rows) json-rows #())
-        for session-id = (json-value row :string "session_id")
-        for seq = (json-value row :integer "seq")
-        for at = (json-value row :text "occurred_at")
-        for snippet = (nlk:one-line (json-value row :text "snippet"))
-        for role = (json-value row :string "role")
-        when (and session-id seq)
-          collect (session-picker-prefix
-                   (make-picker-row
-                   :key (or (json-value row :text "title") session-id)
-                   :label (or snippet "")
-                   ;; How a hit names its speaker: `you' for the operator, `agent'
-                   ;; for the answer, the tool's own name for tool traffic.
-                   :detail (format nil "~a~@[ · ~a~]"
-                                   (dispatch role equal ("user" "you") ("assistant" "agent")
-                                     (t (or (json-value row :text "tool") "log")))
-                                   (and at (relative-age-label at now-ms)))
-                   :value (cons session-id seq))
-                   (when-let (entry (and fold (gethash session-id (sessions-fold-by-id fold))))
-                     (json-value entry :text "updated_at"))
-                   now-ms :field :key)))
-
-(defun session-name-picker-rows (fold query hits &aux (now-ms (iso-8601-ms (nlk::iso-now))))
-  "The sessions in FOLD's listing whose name holds every word of QUERY and
-that no row of HITS already finds, as rows leading the search's: a name the
-operator gave is found by its words, which no conversation holds."
-  (let ((words (split-words (string-downcase query)))
-        (found (mapcar (lambda (row) (car (picker-row-value row))) hits)))
-    (loop for entry in (and fold words fold.entries)
-          for id = (gethash "id" entry)
-          for title = (json-value entry :text "title")
-          when (and title (not (member id found :test #'equal))
-                    (every (lambda (word) (search word (string-downcase title))) words))
-            collect (session-picker-prefix
-                     (make-picker-row
-                     :label title
-                     :detail "name"
-                     :value id) (json-value entry :text "updated_at") now-ms))))
-
-(defun sessions-search-tick (model dialog)
-  "The /sessions dialog's frame-clock tick, and the search box's own clock:
-stage what the box holds, and once that has rested *SESSION-SEARCH-REST* ask
-the gateway."
-  ;; An emptied box needs no round trip — the session directory comes back at
-  ;; once, the rows the dialog opened with, the fold's own. One read is out
-  ;; per query: a keystroke landing while a read is in flight stages behind
-  ;; it, and the answer to a query the box has moved off is dropped where it
-  ;; lands. A live shell reads on a thread of its own — the read is a store
-  ;; scan behind an HTTP round trip, and on the loop thread every frame would
-  ;; wait for it. With no live program (tests drive this tick directly, and
-  ;; must not spawn threads) the read and the install run inline. => T when
-  ;; the rows moved (the directory came back under an emptied box); a fired
-  ;; read answers by its own message.
-  (when-let (state (gethash dialog *session-search*))
-    (let ((query (string-trim " " dialog.search)))
-      (unless (equal query (getf state :staged))
-        (setf (getf state :staged) query
-              (getf state :staged-at) (get-internal-real-time)))
-      (cond
-        ((or (member (getf state :staged) (list (getf state :rows-query) (getf state :fired)) :test #'equal)
-             (< (since-ms (getf state :staged-at)) (* 1000 *session-search-rest*)))
-         nil)
-        ((zerop (length query))
-         (let ((fold (getf state :fold)))
-           (setf (getf state :rows-query) ""
-                 dialog.rows (sessions-fold-rows
-                                              fold (session-activity-table model))
-                 dialog.context
-                 (sessions-dialog-context fold (session-activity-table model)))
-           (picker-seat-top dialog))
-         (picker-rows-filtered-for dialog nil)
-         (picker-notify-highlight model dialog :instant t)
-         (render-state model)
-         t)
-        (t
-         (setf (getf state :fired) query)
-         (off-loop model
-                   (lambda () (read-session-search model query))
-                   (lambda (model value) (install-session-search model query value)))
-         nil)))))
-
-(defun install-session-search (model query value)
-  "Install one conversation-search answer on the /sessions dialog QUERY was
-read for."
-  ;; An answer to a query the box has moved off is dropped: the box is the one
-  ;; truth about what the operator is looking for. A failed read leaves the
-  ;; rows where they were and says so beside the title.
-  (let* ((dialog model.dialog)
-         (state (and (picker-dialog-p dialog)
-                     (eq :sessions dialog.kind)
-                     (gethash dialog *session-search*))))
-    (when (and state (equal query (getf state :fired)))
-      (setf (getf state :fired) nil))
-    (when (and state
-               (equal query (string-trim " " dialog.search)))
-      (if-let (failure (off-loop-failure value))
-          (setf dialog.context
-                (format nil " search failed: ~a" failure))
-          (let* ((hits (session-search-picker-rows value (getf state :fold)))
-                 (rows (append (session-name-picker-rows (getf state :fold) query hits) hits)))
-            (setf dialog.rows rows
-                  dialog.selection 0
-                  dialog.view-offset 0
-                  dialog.context
-                  ;; `~:p' adds the `s' to the noun before it, so the noun
-                  ;; has to be the singular that takes one (match, not matchs).
-                  (format nil " ~d ~:[matches~;match~]~:[~;+~]"
-                          (length rows) (= (length rows) 1)
-                          (= (length hits) *session-search-limit*))
-                  (getf state :rows-query) query)
-            ;; The rows are the gateway's: the dialog shows them verbatim
-            ;; (*PICKER-FILTERED-ROWS*) instead of re-filtering them.
-            (picker-rows-filtered-for dialog query)
-            ;; The first hit previews like any selection landing: the
-            ;; transcript underneath rests on the block before Enter does.
-            (picker-notify-highlight model dialog :instant t)))
-      (render-state model))))
 
 ;;; Said on either tab: this folder's list is the one a picker opens on, and an
 ;;; empty store is the only way the other one is empty too.
@@ -1331,18 +1175,15 @@ SEAT, a session id, takes the highlight when its row is listed."
    :on-highlight (lambda (model row)
                    (sessions-preview-arm model (picker-row-value row) :memo memo :follow nil))
    :on-cancel #'sessions-preview-clear
-   :on-rename #'sessions-rename-start
-   ;; The dialog's clock, three readers: the box's own (the conversation search
-   ;; fires once the query has rested), the running-session spinner, whose
+   ;; The dialog's clock, two readers: the running-session spinner, whose
    ;; paint lands each time it moves to its next frame, and the live follow of
    ;; the row the highlight rests on.
-   :on-tick (lambda (model dialog &aux (moved (sessions-search-tick model dialog))
-                                       (drawn (refresh-sessions-dialog model :tick t)))
+   :on-tick (lambda (model dialog &aux (drawn (refresh-sessions-dialog model :tick t)))
               (sessions-preview-follow-at-rest model dialog)
               (sessions-preview-older model dialog)
               (sessions-preview-header model dialog)
-              (or moved drawn))
-   :search-placeholder "Search names and conversations"
+              drawn)
+   :search-placeholder "Search sessions"
    :no-match-label "No matching sessions"
    :footer-hints :sessions)
   ;; The context row names the directory's shape — the rows it holds and the
@@ -1368,84 +1209,10 @@ SEAT, a session id, takes the highlight when its row is listed."
   ;; conses onto a local binding nothing else holds, so a key added later
   ;; would never be seen again (the throttle below reads its own).
   (setf (gethash model.dialog *session-search*)
-        (list :fold fold :staged "" :staged-at 0 :fired nil
-              :rows-query "" :activity-frame nil))
+        (list :fold fold :activity-frame nil))
   model)
 
-;;; --- F2: a session renamed where it is listed ---------------------------------
-;;; The field opens over the list on the highlighted row, directory row or
-;;; search hit alike, holding its name; Enter posts it to the title route off
-;;; the loop, and the name that route answers -- the one now in effect -- is
-;;; written into the listing the dialog holds, which is also this shell's
-;;; cached directory, so every row naming the session reads it at once.
-
-(defun sessions-rename-start (model dialog)
-  "F2 on /sessions: the highlighted session's name in the dialog's field."
-  (declare (ignore model))
-  (let* ((value (picker-highlighted-value dialog))
-         ;; A directory row's value is its id, a search hit's (ID . SEQ).
-         (id (if (consp value) (car value) value))
-         (fold (getf (gethash dialog *session-search*) :fold))
-         (entry (and fold (stringp id) (gethash id fold.by-id))))
-    (when (stringp id)
-      (setf dialog.input-label "Name"
-            ;; A hit's KEY is its session's name; a directory row's is its folder.
-            dialog.input (or (and entry (json-value entry :string "title"))
-                             (and (consp value)
-                                  (picker-row-key (selected-of (picker-visible-rows dialog)
-                                                               dialog.selection)))
-                             "")
-            dialog.input-context "empty gives back the name its first prompt makes"
-            ;; The sessions keys mean nothing to a field: its own take the footer.
-            dialog.footer-hints nil
-            dialog.hint "enter rename  esc keep the name  ctrl+u clear"
-            dialog.on-input (lambda (model text) (sessions-rename-finish model dialog id text))))
-    t))
-
-(defun sessions-rename-finish (model dialog id text)
-  "Enter (TEXT) or Esc (NIL) on the /sessions name field: back to the list,
-and TEXT posted as ID's name off the loop."
-  (setf dialog.input-label nil
-        dialog.on-input nil
-        dialog.hint nil
-        dialog.footer-hints :sessions)
-  (when text
-    (off-loop model
-              (lambda ()
-                (json-value (session-control-call model :post "title" :session-id id
-                                                  :body (json-object "title" text))
-                            :string "title"))
-              (lambda (model name) (install-session-name model dialog id name)))))
-
-(defun install-session-name (model dialog id name)
-  "Land the name the title route answered for ID in the /sessions DIALOG:
-its listing's entry, its directory rows and the search hits on the session."
-  (if-let (failure (off-loop-failure name))
-      (show-status model (format nil "Rename failed: ~a" failure) :error-p t)
-      (let* ((state (gethash dialog *session-search*))
-             (fold (getf state :fold))
-             (entry (and fold (gethash id fold.by-id)))
-             (updated (and entry (json-value entry :text "updated_at")))
-             (now-ms (iso-8601-ms (nlk::iso-now))))
-        (when entry
-          (setf (gethash "title" entry) name))
-        (if (plusp (length (getf state :rows-query)))
-            ;; The search's rows: a hit's KEY is its session's name, and a
-            ;; name row is its name.
-            (dolist (row dialog.rows)
-              (let ((value (picker-row-value row)))
-                (cond ((and (consp value) (equal id (car value)))
-                       (setf (picker-row-key row) name)
-                       (session-picker-prefix row updated now-ms :field :key))
-                      ((equal id value)
-                       (setf (picker-row-key row) "" (picker-row-label row) name)
-                       (session-picker-prefix row updated now-ms)))))
-            (when fold
-              (let ((seat (picker-highlighted-value dialog)))
-                (setf dialog.rows (sessions-fold-rows fold (session-activity-table model)))
-                (picker-reseat-selection dialog seat))))))
-  (render-state model))
-
+;;; --- the session directory a shell caches ---------------------------------
 ;;; Every read of the directory lands here first (READ-SESSION-DIRECTORY), so
 ;;; the picker a keystroke opens has rows to draw at once — the fresh read is
 ;;; what catches it up, and the dialog is what it catches up in. The keys are
