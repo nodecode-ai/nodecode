@@ -394,36 +394,6 @@ refusals."
     (alexandria:ensure-gethash (snapshot-store-index-path store) *capture-locks*
                                (bt2:make-lock :name "workspace-capture"))))
 
-;;; The written-tree cache: one index content is one tree, and `git add -A'
-;;; rewrites the index only when the workspace changed — so a capture whose
-;;; index is byte for byte the one WRITE-TREE last answered for holds that
-;;; same tree, already written and already reachable, and the second git call
-;;; of the pair is pure spawn. Most tool calls read; this is the common case,
-;;; not the lucky one.
-;;;
-;;; Keyed by what the index holds, never by how it looks to stat: git
-;;; publishes an index by renaming index.lock over it, the inode the rename
-;;; frees is the one the next lock file is allocated, and an edit that leaves
-;;; the entry count alone leaves the size alone — three stat fields that can
-;;; all agree across a real change, inside one second. An index past
-;;; +SNAPSHOT-INDEX-DIGEST-CAP+ is not read at all: the digest would cost more
-;;; than the call it saves, and that workspace pays both calls as before.
-
-(defparameter +snapshot-index-digest-cap+ (* 1024 1024)
-  "How large an index may be and still be digested — a megabyte is some
-twelve thousand staged paths, and reading it costs a fraction of the git
-call the digest stands in for.")
-
-(define-side-table index-trees (:test #'equal :synchronized t :key snapshot-store-index-path)
-  "index path -> (DIGEST . TREE-SHA): the tree WRITE-TREE answered for that
-index file with exactly that content. Strings only. Live-only.")
-
-(defun index-digest (store)
-  "The digest of STORE's index file as it now stands, or NIL when it is
-absent, unreadable, or larger than +SNAPSHOT-INDEX-DIGEST-CAP+."
-  (when-let (octets (file-octets (snapshot-store-index-path store) +snapshot-index-digest-cap+))
-    (sha256-text octets)))
-
 (defun staging-pathspec (store)
   "The pathspec a walk of STORE stages under: the whole tree, less the home's
 snapshot storage when that sits inside it; NIL when nothing is left out."
@@ -478,29 +448,16 @@ snapshot storage when that sits inside it; NIL when nothing is left out."
 (defun capture-workspace-tree (store)
   "Stage the whole workspace and return its tree sha."
   ;; An unchanged workspace
-  ;; yields the previous sha, so no-op captures allocate nothing — and an index
-  ;; the staging left untouched answers from the written-tree cache, without the
-  ;; second git call. One unreadable path does not void the tree: ADD
-  ;; --IGNORE-ERRORS stages what it can, and a file the process may not read was
-  ;; never going to be restored by it either. One walk of an index at a time
-  ;; (CAPTURE-LOCK): a deferred capture still reading the tree and a completion
-  ;; capture arriving behind it wait, never collide on index.lock. A walk past
-  ;; its bound signals SNAPSHOT-WALK-TOO-LARGE before anything is staged.
+  ;; yields the previous sha, so no-op captures allocate nothing. One unreadable
+  ;; path does not void the tree: ADD --IGNORE-ERRORS stages what it can, and a
+  ;; file the process may not read was never going to be restored by it either.
+  ;; One walk of an index at a time (CAPTURE-LOCK): a deferred capture still
+  ;; reading the tree and a completion capture arriving behind it wait, never
+  ;; collide on index.lock. A walk past its bound signals
+  ;; SNAPSHOT-WALK-TOO-LARGE before anything is staged.
   (bt2:with-lock-held ((capture-lock store))
     (stage-workspace store)
-    (let* ((digest (index-digest store))
-           (entry (and digest (index-trees store)))
-           (tree (or (and (equal (car entry) digest) (cdr entry))
-                     (let ((tree (validate-tree-sha (git-line store (list "write-tree")))))
-                       ;; Read the digest again: WRITE-TREE records the tree it
-                       ;; wrote in the index as its cache tree, so the content
-                       ;; that answers for this tree is the one the index
-                       ;; carries after the call, never the one it carried
-                       ;; going in.
-                       (when-let (settled (and digest (index-digest store)))
-                         (setf (index-trees store) (cons settled tree)))
-                       tree))))
-      tree)))
+    (validate-tree-sha (git-line store (list "write-tree")))))
 
 ;;; The anchor tip cache: the ref only ever moves through ANCHOR-TREE in
 ;;; this process, so its (commit . tree) tip is worth remembering per
