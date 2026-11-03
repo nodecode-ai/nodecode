@@ -258,16 +258,15 @@ attaching to it would paint it."
     ;; resting shape and the tool's silence; the two would drift.
     (multiple-value-bind (state in-flight started activity own) (bar-lane model)
       (if (not in-flight)
-          (let ((resting (and (hash-table-p state)
-                              (gethash "turn_resting_status" state))))
-            (when resting
-              (let* (;; The interrupted shape is the resting divider's own: the
-                     ;; elapse, the outcome word and the wall clock (in its
-                     ;; parentheses) the turn died at, with no meter to repeat
-                     ;; what the header's right lane carries.
-                     (head (turn-rest-text (or (getf resting :outcome) "failed")
-                                           (getf resting :elapsed-ms) (getf resting :ended-at-ms))))
-                (bar-row (bar-segs *status-mark-interrupted* :danger head :muted)))))
+          (when-let (resting (and (hash-table-p state)
+                                  (gethash "turn_resting_status" state)))
+            (let* (;; The interrupted shape is the resting divider's own: the
+                   ;; elapse, the outcome word and the wall clock (in its
+                   ;; parentheses) the turn died at, with no meter to repeat
+                   ;; what the header's right lane carries.
+                   (head (turn-rest-text (or (getf resting :outcome) "failed")
+                                         (getf resting :elapsed-ms) (getf resting :ended-at-ms))))
+              (bar-row (bar-segs *status-mark-interrupted* :danger head :muted))))
           (let ((elapsed-ms (if started (since-ms started) 0)))
             (multiple-value-bind (mark verb quiet)
                 (mark-and-verb elapsed-ms activity

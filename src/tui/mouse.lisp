@@ -426,24 +426,22 @@ last inclusive; NIL for a mark no drag laid over the transcript."
   "Lay the mark a drag from ANCHOR to CELL makes (LANE-MARK) with its
 transcript points, the anchor's taken where the drag left it, so a scroll
 since cannot move that end. => whether the marked words moved."
-  (let ((mark (lane-mark model anchor cell)))
-    (when mark
-      (let ((from (let ((entry (anchor-point model)))
-                    (if (and entry (eq anchor (car entry)))
-                        (cdr entry)
-                        (cdr (setf (anchor-point model)
-                                   (cons anchor (frame-cell-point model anchor))))))))
-        ;; The points run anchor to pointer, not first to last: LANE-MARK's
-        ;; order is the screen's, and the anchor may have scrolled off it.
-        (setf (chat-model-selection model) mark)
-        (let ((to (frame-cell-point model cell)))
-          (if (and from to)
-              (setf (mark-points model) (cons mark (cons from to)))
-              (forget-mark-points model)))
-        (let ((after (mark-span model)))
-          (if after
-              (not (equal before after))
-              (not (equal old mark))))))))
+  (when-let (mark (lane-mark model anchor cell))
+    (let ((from (let ((entry (anchor-point model)))
+                  (if (and entry (eq anchor (car entry)))
+                      (cdr entry)
+                      (cdr (setf (anchor-point model)
+                                 (cons anchor (frame-cell-point model anchor))))))))
+      ;; The points run anchor to pointer, not first to last: LANE-MARK's
+      ;; order is the screen's, and the anchor may have scrolled off it.
+      (setf (chat-model-selection model) mark)
+      (let ((to (frame-cell-point model cell)))
+        (if (and from to)
+            (setf (mark-points model) (cons mark (cons from to)))
+            (forget-mark-points model)))
+      (if-let (after (mark-span model))
+          (not (equal before after))
+          (not (equal old mark))))))
 
 (defparameter *drag-scroll-period-ms* 50
   "How often a drag held past the transcript band's edge scrolls it, in ms.")

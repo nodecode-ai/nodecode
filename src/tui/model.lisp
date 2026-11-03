@@ -645,13 +645,12 @@ news hides under what is typed while a failure or an answer stays in sight
   "Text rows the composer box currently shows: its text's, and the composer
 status's under it or in its place (COMPOSER-STATUS-LINES), to the growth cap."
   (if (shell-footer-p height)
-      (let ((text (max 1 (editor-height (chat-model-editor model))))
-            (cap (composer-max-rows height)))
-        (multiple-value-bind (lines under)
-            (composer-status-lines model (composer-text-width (chat-model-term-width model)))
-          (cond ((null lines) text)
-                (under (+ text (min (length lines) (max 1 (- cap text)))))
-                (t (max 1 (min cap (length lines)))))))
+      (bind ((text (max 1 (editor-height (chat-model-editor model))))
+             (cap (composer-max-rows height))
+             ((lines under) (composer-status-lines model (composer-text-width (chat-model-term-width model)))))
+        (cond ((null lines) text)
+              (under (+ text (min (length lines) (max 1 (- cap text)))))
+              (t (max 1 (min cap (length lines))))))
       1))
 
 (nlk:define-side-table status-blocks (:weakness :key)
