@@ -1055,22 +1055,20 @@ under way."
                  (let* ((plist (cddr form))
                         (layer (eq (getf plist :class) 'layer))
                         (components (getf plist :components))
+                        ;; an alist, or as good as none
+                        (properties (let ((properties (getf plist :properties)))
+                                      (and (listp properties) (every #'consp properties) properties)))
+                        (serves (cdr (assoc :serves properties)))
                         (odd (and layer
                                   (listp components)
                                   (find-if-not #'file-component-p components))))
                    (make-declared-system
                     name
                     :layer layer
-                    :knowledge (let ((properties (getf plist :properties)))
-                                 (and layer (listp properties) (every #'consp properties)
-                                      (eq t (cdr (assoc :knowledge properties)))))
+                    :knowledge (and layer (eq t (cdr (assoc :knowledge properties))))
                     :description (let ((text (getf plist :description)))
                                    (if (stringp text) text ""))
-                    :serves (let ((properties (getf plist :properties)))
-                              (and (listp properties) (every #'consp properties)
-                                   (let ((serves (cdr (assoc :serves properties))))
-                                     (and (listp serves) (every #'listp serves)
-                                          (serves-entries serves)))))
+                    :serves (and (listp serves) (every #'listp serves) (serves-entries serves))
                     :depends-on (loop for dependency in (let ((names (getf plist :depends-on)))
                                                           (and (listp names) names))
                                       when (or (stringp dependency) (symbolp dependency))
