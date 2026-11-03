@@ -519,15 +519,10 @@ so the payload need not carry the token again."
          ;; carrier on both sides of the codec, never a second wire shape.
          (remhash "images" request))
        (setf (gethash "request" table) request))
-      (:set-session-subscriptions
-       (setf (gethash "subscriptions" table) (gethash "subscriptions" request))
-       ;; The shell's pid rides the subscription (client/client.lisp
-       ;; SEND-SUBSCRIBE): the gateway names each attached shell's
-       ;; process in the image section, and skips the shell in its own
-       ;; process when a source load is sent out (SOURCE-LOADED).
-       (when-let (pid (json-value request :integer "pid")) (setf (gethash "pid" table) pid))
-       ;; A surface that draws questions and sends their answers says so.
-       (when (json-value request :boolean "answers") (setf (gethash "answers" table) t)))
+      ;; Every other kind rides as its request has it, a subscription too: its
+      ;; "pid" names the shell's process (client/client.lisp SEND-SUBSCRIBE),
+      ;; its "answers" says it draws questions, and the gateway reads each
+      ;; typed (gateway.lisp, the :set-session-subscriptions command).
       (otherwise
        (maphash (lambda (key value) (setf (gethash key table) value)) request)))
     (encode-json-object (make-json-object "type" "client_command" "command" table))))
@@ -552,18 +547,13 @@ so the payload need not carry the token again."
          (ids (unless (eq kind :set-session-subscriptions)
                 (mapcar (lambda (field) (required-string command field)) '("command_id" "correlation_id"))))
          (request (make-hash-table :test #'equal)))
+    (when (and (eq kind :set-session-subscriptions) (not (vectorp (gethash "subscriptions" command))))
+      (protocol-refuse :invalid-command "subscriptions must be an array"))
     (case kind
       ((:start-turn :steer-turn)
        (setf request
              (normalize-gateway-request
               kind (protocol-object (gethash "request" command) "request"))))
-      (:set-session-subscriptions
-       (let ((subscriptions (gethash "subscriptions" command)))
-         (unless (vectorp subscriptions)
-           (protocol-refuse :invalid-command "subscriptions must be an array"))
-         (setf (gethash "subscriptions" request) subscriptions)
-         (when-let (pid (json-value command :integer "pid")) (setf (gethash "pid" request) pid))
-         (when (json-value command :boolean "answers") (setf (gethash "answers" request) t))))
       (otherwise
        (maphash (lambda (key value)
                   (unless (member key '("type" "command_id" "correlation_id") :test #'string=)
