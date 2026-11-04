@@ -19,7 +19,7 @@ The jail holds the agent: every `eval`, every shell command it runs, every cell,
 | Local sockets | None of the host's: no Docker socket, no display, no desktop bus, no tmux server. |
 | `config.jsonc`, `sandbox.jsonc` | Read-only. The agent can't widen its own jail. |
 
-Started in your home folder or `/`, Nodecode asks for a project folder: a jail around the whole home would hold nothing back.
+Started in your home folder or above it, a shell holds no folder: a jail around the whole home would hold nothing back. It writes only its own `~/.nodecode` and the folders you allowed, so `cd` into a project first. `nodecode serve` and the background gateway hold no folder of their own either: their home and the folders you allowed.
 
 | Command | What it does |
 | --- | --- |
@@ -28,12 +28,12 @@ Started in your home folder or `/`, Nodecode asks for a project folder: a jail a
 | `nodecode sandbox allow HOST` | Adds a host to the proxy's list. |
 | `nodecode sandbox revoke PATH` | Takes a folder back out. |
 | `nodecode sandbox off` | Turns the jail off for this home, after asking. `nodecode sandbox on` turns it back on. |
-| `nodecode --no-sandbox` | Runs once without it, after asking. |
+| `nodecode --no-sandbox` | Asks the same as `sandbox off` and keeps the answer. With no terminal to ask on, it refuses. |
 
 | System | Jail |
 | --- | --- |
 | Linux | bubblewrap (`bwrap`), which Fedora and Ubuntu desktops ship. Without it Nodecode doesn't start, and says how to install it or turn the jail off. |
-| macOS | The system sandbox, `sandbox-exec`. |
+| macOS | The system sandbox, `sandbox-exec`, with a profile Nodecode writes. The keychain, `sudo` and other setuid programs are refused too. |
 | Windows | None yet. Nodecode runs with your account's full access and says so at every launch. |
 
 A home the jail ran is marked. A launch without the jail refuses until you have read `nodecode sandbox review`, which lists what the jailed agent wrote that would run outside it: the layer and the cells.

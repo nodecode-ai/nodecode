@@ -199,7 +199,7 @@ No. You ask in plain words, the model writes the Lisp, and your project can be i
 
 On Linux and macOS, Nodecode runs the agent in a jail by default. There is nothing to set up.
 
-- **Files:** the agent reads and writes the project folder you started it in and its own `~/.nodecode`. The rest of your home isn't there: not `~/.ssh`, `~/.aws`, your browser profiles or other agents' homes. The system is read-only. Started in your home folder itself, Nodecode asks for a project folder instead.
+- **Files:** the agent reads and writes the project folder you started it in and its own `~/.nodecode`. The rest of your home isn't there: not `~/.ssh`, `~/.aws`, your browser profiles or other agents' homes. The system is read-only. Started in your home folder itself, it holds no folder: `cd` into a project first.
 - **Network:** only through Nodecode's own proxy, to your model providers, nodecode.ai, models.dev, GitHub and the chat services you connected. Everything else is refused. `nodecode sandbox allow HOST` adds a host.
 - **Keys:** your API keys and sign-ins never enter the jail. The proxy adds each one to the requests bound for its own provider, so a prompt injection has no key to read. Setup's Import leaves other agents' keys and bot tokens behind unless you pick Import with keys.
 - **The background gateway** runs in the same jail.
