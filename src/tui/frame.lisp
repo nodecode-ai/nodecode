@@ -895,7 +895,7 @@ before its verb: Enter runs its line with the text, Esc puts it away."
                ;; A typed line, or the placeholder in its own tone, at the text
                ;; inset: the message column in the box, two in the single-line mode.
                (make-seg :text (concatenate 'string
-                                            (make-string (if (shell-footer-p height) (composer-text-inset) 2)
+                                            (make-string (composer-text-indent height)
                                                          :initial-element #\Space)
                                             line)
                          :tone run-tone)))
@@ -1250,9 +1250,11 @@ footer, and the final blank; short windows end with two blank rows."
                                   ;; blank + header + blank, the band, the gap blank, and
                                   ;; the box's top pad row on tall windows.
                                   (row (+ 3 (length band) 1 (if tall 1 0) y))
-                                  ;; Tall windows inset the side gutter (2) plus the box's own
-                                  ;; text inset; the short single-line mode only its inset (2).
-                                  (col (+ (if tall (+ 2 (composer-text-inset)) 2) x)))
+                                  ;; The side gutter, then the text's own inset in the box
+                                  ;; (the single-line mode has no gutter).
+                                  (col (+ (composer-left-margin height)
+                                          (composer-text-indent height)
+                                          x)))
                              (when (< row height)
                                (cons (min col (1- width)) row)))))))
              (setf toast-floor (+ (length head) (length band)))
