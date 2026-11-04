@@ -84,15 +84,25 @@ of PATHS by FILTER; nothing when PATHS is empty."
     (format out "(~a ~{~a~^ ~}~{~%  (~a ~a)~})~%" action operations
             (loop for path in paths append (list filter (seatbelt-string path))))))
 
+(defun seatbelt-inside-p (entry area)
+  "Whether the path ENTRY is AREA or lies under it (both as SEATBELT-PATH
+names them)."
+  (or (string= entry area)
+      (and (> (length entry) (length area))
+           (string= area entry :end2 (length area))
+           (char= #\/ (char entry (length area))))))
+
 (defun sandbox-seatbelt-profile (&key home folder binary policy port proxy-port
-                                      run cache temporary
+                                      run cache temporary (user-home (user-homedir-pathname))
                                       (path #'seatbelt-path) (exists #'probe-file))
   "The SBPL profile, as a string, that jails HOME's organism working in
 FOLDER on macOS: BINARY is the executable it runs (its tree read, never
 written); POLICY the operator's additions (SANDBOX-POLICY); PORT the
 loopback port its gateway binds and is reached on; PROXY-PORT the egress
 proxy's, or NIL for a jail with no way out at all; RUN, CACHE and TEMPORARY
-the directories under HOME's sandbox/ that are the jail's own. PATH turns a
+the directories under HOME's sandbox/ that are the jail's own; USER-HOME
+the account's home, whose Library/ is refused again even when the folder is
+the home itself, unless the folder lies inside it. PATH turns a
 name into the one Seatbelt matches (SEATBELT-PATH); EXISTS decides which
 entries of +SANDBOX-HOME-READ+ are named."
   (let* ((home-dir (uiop:ensure-directory-pathname home))
@@ -110,8 +120,13 @@ entries of +SANDBOX-HOME-READ+ are named."
                                      (funcall expand (getf policy :allow-write)))))
          (write-back (funcall paths (append (list folder home)
                                             (funcall expand (getf policy :allow-write)))))
+         ;; ~/Library holds the keychains, mail, cookies and every app's
+         ;; tokens: a folder at or above the home must not read it back.
+         (library (funcall path (merge-pathnames "Library/" (uiop:ensure-directory-pathname user-home))))
          (refused (funcall paths
-                           (append (funcall expand +sandbox-default-deny-read+)
+                           (append (unless (some (lambda (entry) (seatbelt-inside-p entry library)) read-back)
+                                     (list library))
+                                   (funcall expand +sandbox-default-deny-read+)
                                    (mapcar (lambda (relative) (sandbox-home-path home relative))
                                            '("auth.json" "operator-token" "backups/" "link/" "secrets/"))
                                    (funcall expand (getf policy :deny-read)))))
@@ -184,6 +199,7 @@ process it starts."
 (defun sandbox-seatbelt-requirements ()
   "Why Seatbelt cannot jail an organism here, as one sentence, or NIL."
   (unless (probe-file +seatbelt-program+)
+    ;; Every macOS has it; a missing one is a damaged install, said by name.
     (format nil "--sandbox needs ~a, which every macOS install has: this one is missing it"
             +seatbelt-program+)))
 

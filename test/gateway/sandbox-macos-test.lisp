@@ -5,9 +5,9 @@
 
 (in-package #:nodecode.test)
 
-(defun seatbelt-test-profile (&key policy (proxy-port 47001))
+(defun seatbelt-test-profile (&key policy (proxy-port 47001) (folder "/Users/u/proj/"))
   "The profile for a fixed home, folder and binary, paths taken as written."
-  (nle::sandbox-seatbelt-profile :home "/Users/u/.nodecode/" :folder "/Users/u/proj/"
+  (nle::sandbox-seatbelt-profile :home "/Users/u/.nodecode/" :folder folder :user-home "/Users/u/"
                                  :binary "/opt/nc/nodecode" :policy policy
                                  :port 47002 :proxy-port proxy-port
                                  :run "/Users/u/.nodecode/sandbox/run/"
@@ -52,6 +52,14 @@
     (is (search "(subpath \"/opt/nc/nodecode\")" (subseq profile kept own)) "nor the binary that runs the jail")
     (is (search "(literal \"/Users/u\")" profile) "the folder's parents can be stat'ed, so its path resolves")
     (is (not (search "(subpath \"/Users/u\")" (subseq profile folder))) "but the account's home itself is never read back")))
+
+(deftest sandbox-seatbelt-profile-keeps-library-out-of-a-home-folder ()
+  (let* ((profile (seatbelt-test-profile :folder "/Users/u/"))
+         (refused (search "(deny file-read* file-write*" profile)))
+    (is (and refused (search "(subpath \"/Users/u/Library\")" (subseq profile refused))) "a folder that is the account's home does not read back its Library: keychains, mail, cookies, app tokens"))
+  (let ((profile (seatbelt-test-profile :folder "/Users/u/Library/Mobile Documents/proj/")))
+    (is (not (search "(subpath \"/Users/u/Library\")" profile)) "a folder inside ~/Library (iCloud Drive) is not refused with it")
+    (is (search "(subpath \"/Users/u/Library/Mobile Documents/proj\")" profile) "it is read back on its own")))
 
 (deftest sandbox-seatbelt-profile-opens-only-two-ports ()
   (let ((profile (seatbelt-test-profile)))

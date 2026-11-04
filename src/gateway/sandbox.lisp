@@ -414,12 +414,16 @@ inside) and never writes; NIL when it cannot be named."
         #+linux
         ((null (srt-program))
          "--sandbox needs srt, Anthropic's sandbox runtime: npm install -g @anthropic-ai/sandbox-runtime (or set NODECODE_SRT to it)")
+        #+linux
         ((null (nlk::executable-on-path "bwrap"))
          "--sandbox needs bubblewrap: install bwrap")
+        #+linux
         ((null (nlk::executable-on-path "socat"))
          "--sandbox needs socat")
+        #+linux
         ((not (socat-accepts-a-descriptor-p))
          "--sandbox needs socat 1.7.4 or later: the jail takes its one way in as a listening socket (socat's ACCEPT-FD)")
+        #+linux
         ((> (length (uiop:native-namestring (sandbox-srt-temporary-directory (nlk:home))))
             +sandbox-socket-path-room+)
          (format nil "this home's path is too long for srt's sockets under it (~a): use -p NAME for a home with a shorter one"
@@ -428,6 +432,9 @@ inside) and never writes; NIL when it cannot be named."
          "the background gateway serves this home unsandboxed: `nodecode gateway off' first, or use -p NAME for another home")
         ((ignore-errors (nlk::store-lease-held-p store-path))
          "an organism already runs this home unsandboxed: quit its shells or `nodecode gateway off', or use -p NAME for another home")
+        ;; srt can only mask a key it finds in a file of its own; under
+        ;; Seatbelt the home's key stores are refused whole.
+        #+linux
         ((sandbox-unsplit-keys)
          (format nil "auth.json still holds the API key~p of ~{~a~^, ~}: `nodecode secrets split' moves each into a file of its own, which the jail sees only as a stand-in"
                  (length (sandbox-unsplit-keys)) (sandbox-unsplit-keys)))))
