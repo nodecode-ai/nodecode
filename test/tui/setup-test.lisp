@@ -952,9 +952,9 @@ what the walk sends off the loop, newest first, and only a first job runs."
             (when asked
               ;; naming the agent it found
               (is (search "Found Hermes Agent on this machine" (nle::picker-dialog-subtitle asked)))
-              (is (equal '(:import :skip) (mapcar #'nle::picker-row-value (nle::picker-dialog-rows asked))))))
+              (is (equal '(:import :import-keys :skip) (mapcar #'nle::picker-row-value (nle::picker-dialog-rows asked))))))
           (is (null calls) "nothing is read before the answer")
-          (dolist (keys '((:escape) (:down :enter)))
+          (dolist (keys '((:escape) (:down :down :enter)))
             (ignore-errors (delete-file marker))
             (apply #'walk keys)
             (is (null calls) "Skip and Esc read nothing")
@@ -987,11 +987,11 @@ what the walk sends off the loop, newest first, and only a first job runs."
                  (kind ()
                    (and (nle::picker-dialog-p model.dialog) (nle::picker-dialog-kind model.dialog))))
             (is (null (walk)) "the question reads nothing")
-            (is (equal '(:import :choose :skip) (mapcar #'nle::picker-row-value (nle::picker-dialog-rows model.dialog))))
+            (is (equal '(:import :import-keys :choose :skip) (mapcar #'nle::picker-row-value (nle::picker-dialog-rows model.dialog))))
             (is (search "Import from all 2" (nle::picker-row-label (first (nle::picker-dialog-rows model.dialog)))))
-            (is (null (walk :down :enter :escape)) "Esc on the checklist reads nothing")
+            (is (null (walk :down :down :enter :escape)) "Esc on the checklist reads nothing")
             (is (eq :setup-import-offer (kind)) "and goes back to the question")
-            (walk :down :enter)
+            (walk :down :down :enter)
             (is (eq :setup-import-choose (kind)) "Choose which opens the checklist")
             (let* ((first-world (nle::picker-row-value (first (nle::picker-dialog-rows model.dialog))))
                    (other (if (equal first-world "hermes") "codex" "hermes")))
@@ -1000,8 +1000,42 @@ what the walk sends off the loop, newest first, and only a first job runs."
               (nle::picker-dialog-key model :enter)
               (is (equal (list (list "apply" (list other)) (list "apply" (list other))) (reverse calls)) "Enter brings the ticked one over")
               (is (equal (list first-world) (nle::declined-import-worlds)) "and the unticked one is declined"))
-            (is (null (walk :down :enter #\Space :down #\Space :enter)) "none ticked reads nothing")
+            (is (null (walk :down :down :enter #\Space :down #\Space :enter)) "none ticked reads nothing")
             (is (null (set-exclusive-or '("hermes" "codex") (nle::declined-import-worlds) :test #'equal)) "and is a Skip")))))))
+
+(deftest setup-import-keeps-keys-behind-unless-asked (let ((calls '())))
+  ;; Import brings another agent's home over without its API keys and bot
+  ;; tokens; Import with keys, or the checklist's keys row ticked, brings them
+  ;; too. A key left behind by choice is no kind still to bring, so the
+  ;; marker does not offer the import again for it.
+  (with-hermes-box (marker "keys")
+    (write-temp-file (merge-pathnames ".codex/config.toml" nlk::*agent-home*) "model = \"m\"")
+    (with-stubbed-fdefinitions
+        ((nle::setup-import-call (model method request takeover &key progress)
+           (push (list method (getf request :credentials)) calls)
+           (import-answer 1 0 0 "applied" t "worlds" (coerce (getf request :import) 'vector)
+                          "items" (vector) "report" "the report")))
+      (let ((nle::*import-worlds* (mapcar #'nlk:find-agent-world '("hermes" "codex"))))
+        (with-frame-model (model 100 30 :session-id "setup-import-keys")
+          (flet ((walk (&rest keys)
+                   (setf calls '() model.dialog nil)
+                   (ignore-errors (delete-file marker))
+                   (run-setup model)
+                   (dolist (key keys) (nle::picker-dialog-key model key))
+                   (reverse calls)))
+            (walk)
+            (is (search "keys stay behind" (nle::picker-row-detail (first (nle::picker-dialog-rows model.dialog)))) "the first row says the keys stay")
+            (is (equal '(("apply" nil) ("apply" nil)) (walk :enter)) "Import leaves them")
+            (is (equal '(("apply" t) ("apply" t)) (walk :down :enter)) "Import with keys brings them")
+            (is (equal '(("apply" nil) ("apply" nil)) (walk :down :down :enter :enter)) "the checklist's keys row starts unticked")
+            (is (equal '(("apply" t) ("apply" t)) (walk :down :down :enter :down :down #\Space :enter)) "and ticked brings them"))))
+      (ignore-errors (delete-file marker))
+      (nle::note-import-done
+       (nlk:json-object "summary" (nlk:json-object "imported" 1) "worlds" (vector "hermes")
+                        "items" (vector (nlk:json-object "kind" "providers" "status" "skipped" "kept_back" t)
+                                        (nlk:json-object "kind" "channels" "status" "skipped" "kept_back" t)
+                                        (nlk:json-object "kind" "channels" "status" "error"))))
+      (is (equal '("channels") (nle::read-import-marker)) "a key kept back is not outstanding; a bot that failed still is"))))
 
 (deftest setup-import-checks-the-imported-target-before-it-claims-it ()
   ;; A key that worked in another harness is not a key that works now. When
