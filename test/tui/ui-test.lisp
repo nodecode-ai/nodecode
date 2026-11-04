@@ -3430,11 +3430,10 @@ nothing opens: the target, or NIL."
           (is (= 1 (length lines)) "Ctrl+R stays the history picker's")
           (is model.dialog "which opened")
           (setf model.dialog nil)
+          ;; help names the action that took the key, and lists the line on its chord
           (is (find "/t-clash (the key is taken by Browse every past prompt)"
-                    (nle::help-dialog-rows model) :key #'nle::picker-row-detail :test #'equal)
-              "help names the action that took the key")
-          (is (find "/t-stash save" (nle::help-dialog-rows model) :key #'nle::picker-row-detail :test #'equal)
-              "and lists the line on its chord")
+                    (nle::help-dialog-rows model) :key #'nle::picker-row-detail :test #'equal))
+          (is (find "/t-stash save" (nle::help-dialog-rows model) :key #'nle::picker-row-detail :test #'equal))
           (press model #\o :mod nlt:+mod-ctrl+)
           (is (equal "/t-freed" (first lines)) "a chord an override moved off is free for a line")
           (is (eq :standard model.tool-detail) "and no longer switches the viewport"))))))
@@ -3453,15 +3452,15 @@ nothing opens: the target, or NIL."
       (is (null (nle::keybind-line-label model.keymap "/exit")) "a typing key labels no line")
       (nle::editor-reset model.editor)
       (type-string model "/cle")
+      ;; the dropdown names /clear's chord
       (is (equal "F6" (nle::composer-suggestion-hotkey
                        model (find "/clear" (nle::composer-suggestions-for model)
-                                   :key #'nle::composer-suggestion-text :test #'string=)))
-          "the dropdown names /clear's chord")
+                                   :key #'nle::composer-suggestion-text :test #'string=))))
       (nle::editor-reset model.editor)
       (nle::open-help-dialog model)
+      ;; help says why x runs nothing
       (is (find "/exit (the key types itself)" (nle::picker-dialog-rows model.dialog)
-                :key #'nle::picker-row-detail :test #'equal)
-          "help says why x runs nothing"))))
+                :key #'nle::picker-row-detail :test #'equal)))))
 
 (deftest a-run-effect-runs-its-line-and-stops-a-loop ()
   ;; #199: (:run LINE) is the line a chord or a row would run, so an answer

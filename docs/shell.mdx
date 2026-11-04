@@ -193,6 +193,7 @@ Example: `{"toggle_viewport": "ctrl+t", "help": "none"}`.
 | Key names | `enter`, `tab`, `esc`, `backspace`, `delete`, `up`, `down`, `left`, `right`, `space`, `pgup`, `pgdn`, `home`, `end`, `f1` to `f12`, or one character. |
 | Override | One chord replaces every default chord of that action. |
 | `"none"` | Unbinds the action. |
+| Slash line | A key that starts with `/` binds the chord to that line: `{"/status": "f5", "/think high": "alt+t"}`. The chord runs it as if typed, and the draft stays in the box. A chord an action holds stays the action's, and a bare character stays typing. Help lists each line and says when its key is taken. |
 | Malformed chord | The defaults stay. |
 | Unreadable file | Ignored. |
 
