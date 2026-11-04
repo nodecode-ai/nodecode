@@ -908,10 +908,19 @@ attach earns its replay."
         (nle::stop-gw-peer link2)))))
 
 (deftest gateway-client-rejects-local-store-path ()
-  (is (signals-error error
-        (nle:start-client-organism
-         :store-path "/tmp/should-not-open/history.db"
-         :port 1))))
+  ;; The refusal has to come before the client reaches for a gateway: with
+  ;; the real RUN-CHAT-GATEWAY the shell's own start signals (a test image has
+  ;; no controlling terminal), and would pass this test while the store path
+  ;; went through unchecked.
+  (let ((calls 0))
+    (with-stubbed-fdefinition (nle:run-chat-gateway (&rest args)
+                                (incf calls)
+                                "s-ended")
+      (is (signals-error error
+            (nle:start-client-organism
+             :store-path "/tmp/should-not-open/history.db"
+             :port 1)))
+      (is (zerop calls) "no gateway is started for a client given a store path"))))
 
 (deftest the-resume-line-names-the-session-the-shell-ended-on ()
   ;; A /sessions pick, a /fork or Left moves a shell off the id it launched
