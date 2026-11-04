@@ -298,7 +298,7 @@ renderer, the program loop.")
    #:record-definitions #:*scribe-session-id* #:definition-location
    #:definition-text #:definition-prose #:definition-key
    #:forget-shipped-definitions #:layer-directory #:toplevel-definitions
-   #:load-source #:source-loaded #:*unit-operators*
+   #:load-source #:reload-cell #:source-loaded #:*unit-operators*
    ;; the file write and the git a folder's repository is kept with (scribe.lisp)
    #:write-file-atomically #:git #:git-exclude-dot-directories #:git-commit-all
    ;; --- knowledge: the cells nothing loads, the one index, the use ledger
@@ -309,8 +309,8 @@ renderer, the program loop.")
    #:knowledge-help-text #:note-knowledge-use #:knowledge-ledger-lines #:knowledge-stats #:import-session
    #:mark-index-refresh #:pin-index-section
    ;; --- made cells: a folder of kept code beside the layer (made-cells.lisp) ---
-   #:kept-folder-kind #:new-cell #:enter-cell #:leave-cell #:current-cell
-   #:cell-directory #:add-cell-component #:move-to-cell
+   #:kept-folder-kind #:new-cell #:fold-cell #:enter-cell #:leave-cell #:current-cell
+   #:cell-directory #:add-cell-component #:move-to-cell #:cell-drift
    ;; --- provisional definitions: the stack as evidence (provisional.lisp) ---
    ;; A redefinition of a name the caller is standing on is held until it
    ;; has run once; the boot snapshot is what a revert puts back.

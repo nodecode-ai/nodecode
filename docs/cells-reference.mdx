@@ -17,7 +17,7 @@ A cell is a folder of code under `~/.nodecode/cells/` that carries an `.asd` fil
 | Kind | What it is |
 | --- | --- |
 | Layer | The definitions the agent wrote and kept, one file each, in a git repository. You do not write it. |
-| Made | A cell the agent made when you asked for one: `<you>-NAME/`, its code one file per definition, in a git repository of its own. See [Ask for one](#ask-for-one). |
+| Made | A cell the agent made when you asked for one: `<you>-NAME/`, `cell.lisp` and its code in `NAME.lisp`, in a git repository of its own. See [Ask for one](#ask-for-one). |
 | Peripheral | Any other cell. It exports `start-cell`, which the gateway calls with the parsed config. |
 | Library | A folder with no `start-cell`. It loads. Nothing starts. |
 | Knowledge | The memories and skills the agent kept, one file each, in a git repository: `<name>-memory/` and any `:cell "topic"` folder. Listed, never loaded. |
@@ -40,12 +40,29 @@ Say what the cell should do. The agent asks what it cannot work out, builds the 
 | --- | --- |
 | The ask says what it does and how you reach it | The agent builds it without a question. |
 | A thin ask: "make me a cell" | The agent asks first: what it does, how you reach it (a `/command`, a tool it calls, something that runs on its own) and what it needs, such as an API key. |
-| Built | `~/.nodecode/cells/<you>-NAME/`, loaded at once. `/cells` lists it under Your own as `<you>-NAME`. |
+| Built | `~/.nodecode/cells/<you>-NAME/`: `cell.lisp` declares it, `NAME.lisp` holds its code. Loaded at once. `/cells` lists it under Your own as `<you>-NAME`. |
+| Kept in a repository of yours | Say where: "keep it in ~/code/todo". The folder lives there, empty to start, and `~/.nodecode/cells/<you>-NAME` links to it. |
 | A command or a tool | It works at once, in every attached shell. |
-| Built from what the agent already kept | The definitions move out of the layer into the cell. They load from the cell at the next start. |
+| Built from what the agent already kept | The definitions move out of the layer into the cell, one file each. They load from the cell at the next start. |
 | A key or a setting | It goes in the cell's config section, set in `/settings`. Never in a file of the cell. |
 
 The cell is a git repository of its own: push it anywhere to share it, and [Install from git](#install-from-git) takes it in elsewhere. How the agent writes it: [Cell API](cell-api.mdx#ask-for-one).
+
+{/* source: src/organism/made-cells.lisp */}
+## Change a made cell
+
+The cell's files are its code. The running Nodecode follows them.
+
+| Change | Result |
+| --- | --- |
+| The agent writes or edits `NAME.lisp` | What changed is live at once. Each write is one commit in the cell's repository. |
+| A definition cut from the file | It leaves the running Nodecode too. A struct or class leaves at the next start. |
+| The agent runs code it does not write into the file | It runs now and is not kept. Before it answers, `(cell-drift "NAME")` lists it: the agent writes it into the file, or it is gone at the next start. |
+| You edit a file yourself, or `git pull` in the linked repository | `(reload-cell "<you>-NAME")` makes the running Nodecode agree with the files, cuts included. |
+| One definition in the file breaks | At start only that definition is skipped. The rest of the file loads. `/cells` names the file and the definition. |
+| A cell kept one file per definition | `(fold-cell "NAME")` folds it into `cell.lisp` and `NAME.lisp`, in one commit. |
+
+The first `reload-cell` after a restart loads each file whole and takes nothing out.
 
 {/* source: src/organism/cells.lisp */}
 ## Find one

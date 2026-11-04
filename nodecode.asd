@@ -209,6 +209,10 @@ of stacking."
      (:file "organism/made-cells")
      ;; cell-move follows made-cells: what the layer kept, moved into one after the fact
      (:file "organism/cell-move")
+     ;; cell-fold follows cell-move: a made cell's files folded into two
+     (:file "organism/cell-fold")
+     ;; cell-drift follows cell-move: what a made cell runs live that no file keeps
+     (:file "organism/cell-drift")
      ;; upgrade: what a staged tree changes in this image, classified: reads
      ;; the scribe's definitions and the loader's residue rule, evaluates nothing.
      (:file "organism/upgrade")
@@ -560,6 +564,7 @@ of stacking."
      (:file "organism/made-cells-test")
      ;; cell-move-test follows made-cells-test: its fixture and helpers
      (:file "organism/cell-move-test")
+     (:file "organism/cell-drift-test")
      ;; recall-test follows scribe-test: it drives the store fixtures plus
      ;; support's seeded turns and binds the scribe ambient recall defaults
      ;; to.

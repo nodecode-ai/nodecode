@@ -98,6 +98,8 @@ The layer is the set of definitions the agent wrote and kept.
 
 A defining form that evaluates successfully as a top-level form is kept. No confirmation is asked.
 
+In a session working in a made cell, an eval keeps nothing: the cell's file is the record, and the agent writes what it keeps into `NAME.lisp`. See [Change a made cell](cells-reference.mdx#change-a-made-cell).
+
 | Kind | Kept operators |
 | --- | --- |
 | Functions | `defun`, `defmacro`, `defgeneric`, `defmethod`, `defsetf` |
@@ -125,6 +127,7 @@ Not kept:
 | `setf` | Write a `defparameter`. |
 | A defining form built as a string and evaluated inside another form | Evaluate the defining form itself. |
 | A definition of a kernel name | See the kernel lock below. |
+| A definition a made cell's file already holds, evaluated from another session | Edit it in that file. |
 
 Knowledge is kept the same way. `(define-memory name "one sentence" :type :feedback ...)` keeps a fact. `(define-skill name "one sentence" ...)` keeps a procedure in prose. Each is one file in `~/.nodecode/cells/<name>-memory/`, or in the folder `:cell "topic"` names, with one commit per write. These files never load. The `index` section lists them, `(index "text")` finds them, and `(help 'name)` reads one. Memory types: `:feedback`, `:user`, `:project`, `:reference`, `:lesson`. A `define-skill` with a lambda list is a `defun` and goes to the layer.
 
@@ -193,6 +196,8 @@ At boot a layer file is skipped in two cases:
 
 The shipped definition stands. The boot line and `(cells)` name the file and the reason. Other files still load.
 
+A file of several definitions is judged one definition at a time: only the one that fails is skipped, named beside its file. The rest of the file loads.
+
 The gateway then submits the skipped files to a session named `layer`. The agent redefines or forgets each one. Each skipped file is handed once. This turn spends tokens.
 
 {/* source: src/engine/exec.lisp */}
@@ -204,6 +209,8 @@ The gateway then submits the skipped files to a session named `layer`. The agent
 | --- | --- |
 | `live here: ...` | Already running in this process. |
 | `not live until a relaunch: ...` | Needs a relaunch: a struct, a class, a package, a constant. |
+
+In a made cell's folder the file is the record: each write is also a commit, and a definition cut from the file leaves the image. Shipped source and overrides lose a definition only through `forget`. See [Change a made cell](cells-reference.mdx#change-a-made-cell).
 
 {/* source: src/organism/scribe.lisp */}
 ## Inspect and undo

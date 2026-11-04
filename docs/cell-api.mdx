@@ -12,13 +12,17 @@ The shortest way to a cell is to ask the agent for it: [Cells reference](cells-r
 
 | Verb | What it does |
 | --- | --- |
-| `(new-cell "NAME" :description "...")` | Writes `cells/<you>-NAME/`: the `.asd`, a README and `cell.lisp` with the package, in a git repository of its own. Loads it, and makes it this session's current cell. |
-| `(current-cell)` | The cell this session keeps its definitions in, or NIL. |
-| `(enter-cell "NAME")` | Takes a made cell up again after a restart. |
-| `(leave-cell)` | Sends what the session keeps back to the layer. |
-| `(move-to-cell "NAME" 'fn '*var* ...)` | Moves definitions the layer already keeps into the cell. They load from it at the next start. |
+| `(new-cell "NAME" :description "...")` | Writes `cells/<you>-NAME/`: the `.asd`, a README, `cell.lisp` with the package and `NAME.lisp` for the code, in a git repository of its own. Loads it, and makes it this session's current cell. |
+| `(new-cell "NAME" :source "DIR")` | The same, with the folder in DIR, absent or empty: a repository of yours. `cells/<you>-NAME` links to it. |
+| `(current-cell)` | The cell this session works in, or NIL. |
+| `(enter-cell "NAME")` | Takes a made cell up again after a restart, or from another conversation. |
+| `(leave-cell)` | Ends the session's work on the cell. What it keeps goes to the layer again. |
+| `(move-to-cell "NAME" 'fn '*var* ...)` | Moves definitions the layer already keeps into the cell, one file each. They load from it at the next start. |
+| `(fold-cell "NAME" :drop '(...))` | Folds a cell kept one file per definition into `cell.lisp` and `NAME.lisp`, in load order, in one commit that names what it left out. `:drop` names definitions to leave out. |
+| `(cell-drift "NAME")` | Reads only. `:live-only`: what runs for the cell that no file keeps, gone at the next start. `:not-live`: what a file defines that is not loaded. `:clean t` when both are empty. |
+| `(reload-cell "<you>-NAME")` | Makes the image agree with the folder's files after an edit made outside the session: what changed is evaluated, what was cut leaves. The cell restarts when its `define-cell` changed. |
 
-While a cell is current, every definition the session keeps is written there, one file each, never to the layer. A snippet working on it opens with `(in-package #:<you>-NAME)`. That package uses the kernel and the evolved package's exports, so `define-cell`, `notice` and `on-stop` read bare. One `define-cell` kept beside the code declares what the cell adds:
+While a cell is current, its files are its code. A `write-file` or `edit` of `NAME.lisp` makes what changed live and commits it, and a definition cut from the file leaves the image. An `eval` there defines live and keeps nothing: its receipt names the file to write. Memories and skills are kept as before. `NAME.lisp` reads in `(in-package #:<you>-NAME)`. That package uses the kernel and the evolved package's exports, so `define-cell`, `notice` and `on-stop` read bare. One `define-cell` in the file declares what the cell adds, here in `tokyo-time.lisp`:
 
 ```lisp
 (in-package #:thomas-tokyo-time)
@@ -33,15 +37,14 @@ While a cell is current, every definition the session keeps is written there, on
 (define-cell tokyo-time
   (:section ("tokyo-time"))
   (:command "tokyo-time" 'tokyo-time :description "The time in Tokyo"))
-
-(restart-cells "thomas-tokyo-time")
 ```
 
 | Case | Result |
 | --- | --- |
-| `restart-cells` on the folder | The `define-cell` starts. `/tokyo-time` answers in every attached shell. |
-| The `define-cell` evaluated again | It replaces the kept one. Run `restart-cells` on the folder again. |
-| A `defun` and a `define-cell` of one name | Two files: `tokyo-time.lisp` and `tokyo-time-define-cell.lisp`. |
+| `(restart-cells "thomas-tokyo-time")` | The `define-cell` starts. `/tokyo-time` answers in every attached shell. |
+| The `define-cell` edited in the file | Run `restart-cells` on the folder again. |
+| A `defun` only evaluated | It runs now and is gone at the next start. `cell-drift` lists it under `:live-only`. |
+| One definition in the file fails to load | Only it is skipped. `(cells)` names the file and the definition. |
 | Nodecode restarts | The cell loads from its folder and starts. The session's hold on it ends: `enter-cell` takes it up again. |
 
 The clauses are the same as a hand-written cell's: [define-cell](#define-cell).
