@@ -530,10 +530,13 @@ owns this image's gateway — straight into its in-process dispatch."
 
 (defun gateway-link-close (ws)
   "Hang up WS: close the socket, or detach the in-process peer and forget
-its subscriptions. NIL is quiet."
+its subscriptions and rows views. NIL is quiet."
+  ;; The in-process peer has no socket whose :close would close its rows
+  ;; views, so they close here, as that handler closes a socket's.
   (cond
     ((null ws) nil)
-    ((gw-loopback-client-p ws) (stop-gw-peer ws) (remove-peer (car ws.subscriptions) ws))
+    ((gw-loopback-client-p ws)
+     (stop-gw-peer ws) (remove-peer (car ws.subscriptions) ws) (close-rows-views ws))
     (t (ignore-errors (wsd:close-connection ws)))))
 
 (defun enqueue-peer-frame (peer item &key session-id cursor cursor-present-p encoder &aux accepted)
