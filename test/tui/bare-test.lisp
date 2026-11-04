@@ -145,12 +145,16 @@
 
 (deftest gateway-typed-alone-offers-every-verb-a-shell-runs ()
   (with-frame-model (model 100 30 :session-id "bare-gateway")
-    (let ((lines (mapcar (lambda (row) (getf (getf row :run) :enter))
-                         (getf (nle::bare-dialog "gateway" "bare-gateway" model) :rows))))
+    (flet ((lines (inside)
+             (with-stubbed-fdefinition (nlk:inside-own-gateway-p (&key home)
+                                         (declare (ignore home))
+                                         inside)
+               (mapcar (lambda (row) (getf (getf row :run) :enter))
+                       (getf (nle::bare-dialog "gateway" "bare-gateway" model) :rows)))))
       (is (equal '("/gateway status" "/gateway on" "/gateway restart" "/gateway off" "/gateway logs"
-                   "/gateway setup discord" "/gateway setup telegram" "/gateway setup slack"
-                   "/gateway restart --force" "/gateway off --force")
-                 lines)))
+                   "/gateway setup discord" "/gateway setup telegram" "/gateway setup slack")
+                 (lines nil)))
+      (is (equal '("/gateway restart --force" "/gateway off --force") (last (lines t) 2)) "inside it"))
     (is (null (nle::bare-dialog "gateway" "bare-gateway" nil)) "a room runs no gateway verb")))
 
 ;;; --- claim 8: an ask stands over a draft, and gives it back ----------------------------

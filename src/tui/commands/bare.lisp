@@ -203,7 +203,8 @@ when there was one."
 (define-bare-dialog "gateway" (session-id model)
   ;; The verbs of GATEWAY-TEXT a shell can run, and the channel walk; `run'
   ;; is the command line's own. A forced stop or restart is for a shell that
-  ;; runs inside the gateway it would end, which the plain one refuses.
+  ;; runs inside the gateway it would end, which the plain one refuses: only
+  ;; such a shell is offered them.
   (when model
     (list-dialog
      :title "Gateway"
@@ -220,11 +221,12 @@ when there was one."
                   (run-row "Its recent log" "/gateway logs" :detail "the last 60 lines"))
             (loop for (id label) in '(("discord" "Discord") ("telegram" "Telegram") ("slack" "Slack"))
                   collect (run-row (format nil "Set up ~a" label) (format nil "/gateway setup ~a" id)
-                                   :detail "the bot's token, its server, then its rooms and people"))
-            (list (run-row "Restart it from inside it" "/gateway restart --force"
-                           :detail "when this shell runs inside the gateway the restart ends")
-                  (run-row "Turn it off from inside it" "/gateway off --force"
-                           :detail "when this shell runs inside the gateway the stop ends"))))))
+                                   :detail "the bot's token, then the rooms and people it answers"))
+            (when (nlk:inside-own-gateway-p)
+              (list (run-row "Restart it anyway" "/gateway restart --force"
+                             :detail "this shell runs inside the gateway, so the restart ends it part way")
+                    (run-row "Turn it off anyway" "/gateway off --force"
+                             :detail "this shell runs inside the gateway, so the stop ends it part way")))))))
 
 (define-bare-dialog "think" (session-id model)
   ;; A shell opens its own picker over the target it reads (SLASH-THINK-OP);

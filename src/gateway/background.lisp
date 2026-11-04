@@ -807,6 +807,11 @@ ends the gateway ends it too."
         (or (string= own group) (uiop:string-prefix-p (concatenate 'string group "/") own))
         (and state.main-pid (member state.main-pid (process-lineage)) t))))
 
+(defun inside-own-gateway-p (&key (home *home*))
+  "Whether this process runs inside HOME's gateway (INSIDE-GATEWAY-P), where a
+plain stop or restart refuses: what /gateway's forced rows are for."
+  (inside-gateway-p (gateway-state :home home)))
+
 (defun refuse-from-inside (state home verb)
   "Refuse VERB (\"stop\" or \"restart\") of HOME's gateway, STATE, when this
 process runs inside it (INSIDE-GATEWAY-P)."

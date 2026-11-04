@@ -137,7 +137,7 @@ renderer, the program loop.")
    #:gateway-log-path #:gateway-unit-text #:gateway-on #:gateway-off #:temporary-home-p
    #:gateway-off-p #:gateway-restart #:gateway-start #:gateway-start-argv
    #:gateway-installed-p #:gateway-by-default-p #:gateway-process-p #:gateway-log-argv
-   #:gateway-log-text #:gateway-report #:gateway-text
+   #:gateway-log-text #:gateway-report #:gateway-text #:inside-own-gateway-p
    ;; --- the operating system beneath the organism (os.lisp) ---
    #:platform #:architecture #:disable-huge-pages #:cap-malloc-arenas #:resident-bytes
    #:skip-openssl-exit-cleanup #:resolve-names-directly
