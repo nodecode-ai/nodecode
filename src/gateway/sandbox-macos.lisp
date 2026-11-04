@@ -70,6 +70,14 @@ rule can name a file the jail is about to create."
       (let ((real (real name)))
         (if (string= real "") "/" real)))))
 
+(defun seatbelt-regex-quote (text)
+  "TEXT with every character a regex gives a meaning escaped, for an SBPL
+#\"...\" literal."
+  (with-output-to-string (out)
+    (loop for char across text
+          do (when (find char ".[]()*+?{}|^$\\\"") (write-char #\\ out))
+             (write-char char out))))
+
 (defun seatbelt-ancestors (path)
   "Every directory above PATH, \"/\" excluded: what a jail must be able to
 stat -- never list or read -- for a path under them to resolve."
@@ -92,7 +100,7 @@ names them)."
            (string= area entry :end2 (length area))
            (char= #\/ (char entry (length area))))))
 
-(defun sandbox-seatbelt-profile (&key home folder binary policy port proxy-port
+(defun sandbox-seatbelt-profile (&key home folder binary policy port proxy-port store
                                       run cache temporary (user-home (user-homedir-pathname))
                                       (path #'seatbelt-path) (exists #'probe-file))
   "The SBPL profile, as a string, that jails HOME's organism working in
@@ -100,7 +108,9 @@ FOLDER on macOS: BINARY is the executable it runs (its tree read, never
 written); POLICY the operator's additions (SANDBOX-POLICY); PORT the
 loopback port its gateway binds and is reached on; PROXY-PORT the egress
 proxy's, or NIL for a jail with no way out at all; RUN, CACHE and TEMPORARY
-the directories under HOME's sandbox/ that are the jail's own; USER-HOME
+the directories under HOME's sandbox/ that are the jail's own; STORE the
+store the launcher named, which with its sidecars (-wal, -shm, .lock,
+.owner) the jail reads and writes wherever it lies; USER-HOME
 the account's home, whose Library/ is refused again even when the folder is
 the home itself, unless the folder lies inside it. PATH turns a
 name into the one Seatbelt matches (SEATBELT-PATH); EXISTS decides which
@@ -112,6 +122,7 @@ entries of +SANDBOX-HOME-READ+ are named."
                   (remove-duplicates (mapcar path (remove nil items)) :test #'string= :from-end t)))
          (expand (lambda (items) (mapcar #'sandbox-expand items)))
          (own (funcall paths (list run cache temporary)))
+         (store (and store (funcall path store)))
          (read-back (funcall paths
                              (append (list folder home binary-dir)
                                      (remove-if-not (lambda (entry) (ignore-errors (funcall exists entry)))
@@ -149,7 +160,8 @@ entries of +SANDBOX-HOME-READ+ are named."
       (seatbelt-rule out "deny" '("file-read*") (funcall paths +seatbelt-denied-roots+))
       (format out ";; the folder, the home and what the operator grants, read back; their parents only stat'ed~%")
       (seatbelt-rule out "allow" '("file-read-metadata")
-                     (remove-duplicates (loop for entry in read-back append (seatbelt-ancestors entry))
+                     (remove-duplicates (loop for entry in (append read-back (and store (list store)))
+                                              append (seatbelt-ancestors entry))
                                         :test #'string= :from-end t)
                      :filter "literal")
       (seatbelt-rule out "allow" '("file-read*") read-back)
@@ -160,6 +172,10 @@ entries of +SANDBOX-HOME-READ+ are named."
       (seatbelt-rule out "deny" '("file-write*") write-denied)
       (format out ";; the jail's own temporary directory, cache and runtime directory~%")
       (seatbelt-rule out "allow" '("file-read*" "file-write*") own)
+      (when store
+        (format out ";; the store the launcher named, and its sidecars, wherever it lies~%")
+        (format out "(allow file-read* file-write* (regex #\"^~a([-.][^/]*)?$\"))~%"
+                (seatbelt-regex-quote store)))
       (format out "~%;; network: the gateway's own loopback port, and the launcher's proxy~%")
       (when port
         (format out "(allow network-bind network-inbound (local ip \"localhost:~d\"))~%" port)
@@ -178,13 +194,14 @@ proxy."
                     collect (format nil "~(~a~)=~a" name url))
               (list "NO_PROXY=localhost,127.0.0.1" "no_proxy=localhost,127.0.0.1")))))
 
-(defun sandbox-seatbelt-wrap (argv &key profile port run cache temporary proxy-port)
+(defun sandbox-seatbelt-wrap (argv &key profile port run cache temporary proxy-port directory)
   "ARGV, the serve's own, as the command line that runs it under Seatbelt:
 env sets the gateway port it binds, the runtime directory, cache and
 temporary directory that are the jail's own, the proxy, and takes the
 shell's pristine marker away (the shell stands on the binary alone; the
 organism loads its folder); sandbox-exec applies PROFILE to it and to every
-process it starts."
+process it starts. DIRECTORY, when given, is where it runs: a jail with no
+work folder starts in its home, never in a directory it cannot read."
   (flet ((directory-word (name directory)
            (format nil "~a=~a" name (string-right-trim "/" (uiop:native-namestring directory)))))
     (append (list* "env" "-u" "NODECODE_PRISTINE" "NODECODE_SANDBOXED=1"
@@ -193,7 +210,11 @@ process it starts."
                            (and cache (list (directory-word "XDG_CACHE_HOME" cache)))
                            (and temporary (list (directory-word "TMPDIR" temporary)))
                            (seatbelt-proxy-variables proxy-port)
-                           (list +seatbelt-program+ "-f" (uiop:native-namestring profile))))
+                           (list +seatbelt-program+ "-f" (uiop:native-namestring profile))
+                           ;; `sh -c SCRIPT DIR ARGV...' binds DIR to $0, the argv to "$@"
+                           (and directory
+                                (list "/bin/sh" "-c" "cd \"$0\" && exec \"$@\""
+                                      (string-right-trim "/" (uiop:native-namestring directory))))))
             argv)))
 
 (defun sandbox-seatbelt-requirements ()
@@ -203,19 +224,23 @@ process it starts."
     (format nil "--sandbox needs ~a, which every macOS install has: this one is missing it"
             +seatbelt-program+)))
 
-(defun sandbox-seatbelt-preflight (&key serve)
+(defun sandbox-seatbelt-preflight (&key serve store)
   "SANDBOX-LAUNCH-PREFLIGHT's macOS half, once SANDBOX-REQUIREMENTS let it
 run: write HOME's Seatbelt profile under <home>/sandbox/ around the launch's
-work folder (none for a SERVE, SANDBOX-WORK-FOLDER), pick the loopback port
-the jailed gateway binds, set *SANDBOX-PLAN* for FRONT-ORGANISM and answer
-NIL."
+work folder (none for a SERVE, SANDBOX-WORK-FOLDER) and the STORE it
+serves, pick the loopback port the jailed gateway binds, set *SANDBOX-PLAN*
+for FRONT-ORGANISM and answer NIL."
   (let* ((home (nlk:home))
          (sandbox-dir (merge-pathnames "sandbox/" (uiop:ensure-directory-pathname home)))
          (run (merge-pathnames "run/" sandbox-dir))
          (cache (merge-pathnames "cache/" sandbox-dir))
          (temporary (sandbox-jail-temporary-directory home))
          (profile (merge-pathnames +seatbelt-profile-name+ sandbox-dir))
-         (port (local-port 0)))
+         (port (local-port 0))
+         (folder (sandbox-work-folder (uiop:getcwd) :serve serve)))
+    ;; The store's directory is made here: the jail may write the store and
+    ;; its sidecars, never make a directory for them.
+    (when store (ensure-directories-exist store))
     ;; The launcher's files exist before the profile that write-denies them,
     ;; and the mark goes down before anything runs in the jail.
     (sandbox-ensure-launcher-files home)
@@ -229,12 +254,14 @@ NIL."
       (ignore-errors (sb-posix:chmod (uiop:native-namestring directory) #o700)))
     (nlk::write-file-atomically
      profile
-     (sandbox-seatbelt-profile :home home :folder (sandbox-work-folder (uiop:getcwd) :serve serve)
+     (sandbox-seatbelt-profile :home home :folder folder :store store
                                :binary (ignore-errors (truename (nlk::origin-pathname)))
                                :policy (sandbox-policy home)
                                :port port :run run :cache cache :temporary temporary)
      :mode #o600 :directory-mode #o700)
     (setf *sandbox-plan* (list :seatbelt profile :port port :run run :cache cache
-                               :temporary temporary)
+                               :temporary temporary
+                               ;; no folder of its own: it starts in its home
+                               :directory (unless folder home))
           *sandboxed-shell* t)
     nil))

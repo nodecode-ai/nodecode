@@ -771,7 +771,7 @@ whose jail holds no folder of the launch's (SANDBOX-WORK-FOLDER)."
               reason
               (format nil "nodecode runs its organism in a jail on this machine by default, and the jail cannot start here: ~a. Install what it needs, or run `nodecode sandbox off' to run this home without the jail, with your user's full access"
                       (string-right-trim "." reason))))
-        #+darwin (sandbox-seatbelt-preflight :serve serve)
+        #+darwin (sandbox-seatbelt-preflight :serve serve :store store)
         #-darwin
         (let* ((home (nlk:home))
                (srt (srt-program))
@@ -865,7 +865,8 @@ the plan's listener as its stdout (CALL-WITH-SANDBOX-STDOUT)."
            (sandbox-seatbelt-wrap command :profile (getf plan :seatbelt) :port (getf plan :port)
                                           :run (getf plan :run) :cache (getf plan :cache)
                                           :temporary (getf plan :temporary)
-                                          :proxy-port (getf plan :proxy-port)))
+                                          :proxy-port (getf plan :proxy-port)
+                                          :directory (getf plan :directory)))
           (t (sandbox-wrap command :srt (getf plan :srt) :settings (getf plan :settings)
                                    :port (getf plan :port) :run (getf plan :run) :cache (getf plan :cache)
                                    :srt-temporary (getf plan :srt-temporary)

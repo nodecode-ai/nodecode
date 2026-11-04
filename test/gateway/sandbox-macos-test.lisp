@@ -111,6 +111,20 @@
                  "/opt/nc/nodecode" "serve" "--store" "/h/a b/store.db")
                (subseq argv (position "/usr/bin/sandbox-exec" argv :test #'string=))) "sandbox-exec applies the profile to the serve argv, word for word")))
 
+(deftest sandbox-seatbelt-profile-gives-the-jail-its-store-wherever-it-lies ()
+  (let ((profile (nle::sandbox-seatbelt-profile :home "/Users/u/.nodecode/" :folder nil :user-home "/Users/u/"
+                                                :store "/Users/Shared/run/smoke/history.db" :port 47002
+                                                :path (lambda (path) (string-right-trim "/" (uiop:native-namestring path)))
+                                                :exists (constantly nil))))
+    (is (search "(allow file-read* file-write* (regex #\"^/Users/Shared/run/smoke/history\\.db([-.][^/]*)?$\"))" profile) "the store and its -wal, -shm, .lock and .owner sidecars, and nothing else of its directory")
+    (is (search "(literal \"/Users/Shared/run/smoke\")" profile) "its directory can be stat'ed, so the path resolves")
+    (is (not (search "(subpath \"/Users/Shared/run/smoke\")" profile)) "but is never read or written whole")))
+
+(deftest sandbox-seatbelt-wrap-runs-a-folderless-jail-in-its-home ()
+  (let ((argv (nle::sandbox-seatbelt-wrap '("/opt/nc/nodecode" "serve") :profile "/h/sandbox/seatbelt.sb" :port 47002
+                                          :directory "/h/")))
+    (is (equal '("/usr/bin/sandbox-exec" "-f" "/h/sandbox/seatbelt.sb" "/bin/sh" "-c" "cd \"$0\" && exec \"$@\"" "/h" "/opt/nc/nodecode" "serve") (subseq argv (position "/usr/bin/sandbox-exec" argv :test #'string=))) "it starts in its home, never in a directory the jail cannot read, then execs the serve argv whole")))
+
 (deftest sandbox-seatbelt-plan-wraps-and-hands-in-no-listener ()
   (let ((nle::*sandbox-plan* (list :seatbelt "/h/.nodecode/sandbox/seatbelt.sb" :port 47002
                                    :run "/h/.nodecode/sandbox/run/" :cache "/h/.nodecode/sandbox/cache/"
