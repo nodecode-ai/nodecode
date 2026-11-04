@@ -88,8 +88,10 @@ where it cannot be done from here."
       (nlk::protocol-refuse :refused "~a" text))
     (flet ((act ()
              (cond ((member mode '(:serve :shell)) (serve-next verb))
-                   ((eq verb :restart) (nlk:gateway-restart))
-                   (t (nlk:gateway-off)))))
+                   ;; the gateway's own page asks: the process asking is the
+                   ;; one going away, on purpose, its answer already out
+                   ((eq verb :restart) (nlk:gateway-restart :force t))
+                   (t (nlk:gateway-off :force t)))))
       ;; The process that answers is the one going away: the answer leaves
       ;; first, and the page waits for the gateway to come back. Held for
       ;; idle, the first poll is that wait, and one hold serves every ask.

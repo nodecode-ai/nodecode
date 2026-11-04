@@ -589,7 +589,8 @@ read in one pass by GATEWAY-STATE."
   ;; and OWNER-PORT name the store's live owner: the gateway itself, or the
   ;; shell it waits on. LINGER: T when systemd keeps this account's units
   ;; running with no session open, NIL when it does not, :UNKNOWN. OFF: the
-  ;; operator turned it off, and no cell turns it back on.
+  ;; operator turned it off, and no cell turns it back on. CGROUP: the
+  ;; running unit's control group under systemd, every process its stop ends.
   (unit "" :type string)
   (file nil)
   (supported nil)
@@ -603,7 +604,8 @@ read in one pass by GATEWAY-STATE."
   (owner-pid nil)
   (owner-port nil)
   (linger :unknown)
-  (off nil))
+  (off nil)
+  (cgroup nil))
 
 (access (state gateway-state))
 
@@ -670,7 +672,7 @@ GATEWAY-STATE."
         (if (eq *service-manager* :launchd)
             (manager-run "print" (launchd-target unit))
             (manager-run "show" unit
-                         "--property=LoadState,ActiveState,SubState,UnitFileState,Result,MainPID"))
+                         "--property=LoadState,ActiveState,SubState,UnitFileState,Result,MainPID,ControlGroup"))
       (flet ((field (name)
                (loop for line in (lines (and (eql status 0) out))
                      for equals = (position #\= line)
@@ -694,13 +696,15 @@ GATEWAY-STATE."
                               terminal you keep open runs the organism headless"
                          (subseq argv 0 (min 4 (length argv)))))))
         (unless state.reason
-          (multiple-value-bind (enabled active sub result pid)
+          (multiple-value-bind (enabled active sub result pid cgroup)
               (if (eq *service-manager* :systemd)
                   (values (equal (field "UnitFileState") "enabled") (field "ActiveState")
                           (field "SubState")
                           (and (not (member (field "Result") '("" "success") :test #'equal))
                                (field "Result"))
-                          (field "MainPID"))
+                          (field "MainPID")
+                          (let ((group (field "ControlGroup")))
+                            (and group (plusp (length group)) group)))
                   ;; launchd's answer in systemd's words; an agent launchd holds starts at login
                   (let ((word (field "state"))
                         (exit (field "last exit code")))
@@ -721,6 +725,7 @@ GATEWAY-STATE."
                     state.sub sub
                     state.result result
                     state.main-pid (and pid (plusp pid) pid)
+                    state.cgroup cgroup
                     state.linger (linger-state)))))))
     state))
 
@@ -753,6 +758,68 @@ its command line says."
                #-(or linux darwin) nil
                :test #'equal)
        t))
+
+(defun process-cgroup (&optional (pid "self"))
+  "The control group PID sits in, spelled as systemd spells a unit's
+ControlGroup, or NIL where there is none to read."
+  ;; cgroup v2 writes one line, `0::/PATH'; under v1 the systemd hierarchy's
+  ;; line, `N:name=systemd:/PATH', names the same group.
+  #+linux
+  (loop for line in (lines (ignore-errors (uiop:read-file-string (format nil "/proc/~a/cgroup" pid))))
+        for first = (position #\: line)
+        for second = (and first (position #\: line :start (1+ first)))
+        when (and second (or (uiop:string-prefix-p "0::" line) (search ":name=systemd:" line)))
+          return (subseq line (1+ second)))
+  #-linux (progn pid nil))
+
+(defun process-lineage (&optional (pid (sb-posix:getpid)))
+  "PID and every process it descends from, nearest first, off one process
+table from ps; PID alone where ps cannot say."
+  #-win32
+  (multiple-value-bind (out err status)
+      (ignore-errors (run-bounded (list "ps" "-axo" "pid=,ppid=") :seconds 10))
+    (declare (ignore err))
+    (let ((parents (make-hash-table)))
+      ;; two integers a line, the pid and its parent
+      (when (eql status 0)
+        (loop for (id parent) on (mapcar (lambda (word) (ignore-errors (parse-integer word)))
+                                         (split-words out))
+              by #'cddr
+              when (and id parent) do (setf (gethash id parents) parent)))
+      (loop for each = pid then (gethash each parents)
+            repeat 256
+            while each
+            collect each
+            until (<= each 1))))
+  #+win32 (list pid))
+
+(defun inside-gateway-p (state)
+  "Whether this process runs inside STATE's gateway, so that the stop which
+ends the gateway ends it too."
+  ;; Under systemd, a process in the unit's control group: an agent's tool
+  ;; shell, what that shell started, a tmux server it left detached. KillMode
+  ;; is mixed, so the stop kills whatever the group still holds once the
+  ;; gateway exits. Elsewhere, the gateway's own process or one descended
+  ;; from it.
+  (let ((group state.cgroup)
+        (own (process-cgroup)))
+    (if (and group own)
+        (or (string= own group) (uiop:string-prefix-p (concatenate 'string group "/") own))
+        (and state.main-pid (member state.main-pid (process-lineage)) t))))
+
+(defun refuse-from-inside (state home verb)
+  "Refuse VERB (\"stop\" or \"restart\") of HOME's gateway, STATE, when this
+process runs inside it (INSIDE-GATEWAY-P)."
+  ;; 2026-11-03: a scratch script an agent ran from its gateway's tool shell
+  ;; inherited that gateway's home, and its cleanup's `gateway off' stopped the
+  ;; gateway it ran inside. The stop killed it part way, and the bot stayed
+  ;; down for hours. A restart from inside would end the asking turn the same
+  ;; way, and point the unit at whatever build asked.
+  (when (inside-gateway-p state)
+    (gateway-fail "this process runs inside ~a, the gateway it would ~a (home ~a), and the ~a ~
+                   would end this process part way: nothing was done. A script meant for ~
+                   another home sets NODECODE_HOME for it first; --force ~as this gateway anyway"
+                  state.unit verb (uiop:native-namestring home) verb verb)))
 
 ;;; --- on, off, restart ------------------------------------------------------------
 
@@ -816,22 +883,35 @@ running after a logout."
            (unit-run "loginctl" "enable-linger" user)))
        (gateway-state :home home)))))
 
-(defun gateway-off (&key (home *home*) (mark t) &aux (unit (gateway-unit-name home))
-                                                     (file (gateway-unit-path home)))
+(defun gateway-off (&key (home *home*) (mark t) force &aux (unit (gateway-unit-name home))
+                                                           (file (gateway-unit-path home))
+                                                           (ours (eq :ours (unit-file-owner file))))
   "Stop HOME's gateway and take it out of every login: its unit disabled,
 its file removed, then its process stopped — the file first, because a
 shell attached to this gateway reads the file to tell a stop from a
 restart, and must find it gone by the time the gateway lets the store go
-and the shell takes the organism over."
+and the shell takes the organism over. Refused from inside that gateway
+unless FORCE (REFUSE-FROM-INSIDE)."
   ;; Under MARK — the operator's off —
   ;; the home keeps a note of it, and no cell turns the gateway back on
   ;; (GATEWAY-ON :AUTO); PROFILE-DELETE passes NIL, the home about to go. A unit
-  ;; nodecode did not write is left alone. => the GATEWAY-STATE after.
-  (when (eq :ours (unit-file-owner file))
+  ;; nodecode did not write is left alone. The note is written before the
+  ;; stop: a stop asked from inside the gateway (its own page's off, a forced
+  ;; off from its shell) ends the asking process with it, and what came after
+  ;; never ran; the reload and reset after it only tidy systemd's view, and
+  ;; the next `gateway on' reloads anyway. => the GATEWAY-STATE after.
+  (when (and ours (not force))
+    (refuse-from-inside (gateway-state :home home) home "stop"))
+  (when mark
+    (with-output-file (out (gateway-off-path home))
+      (format out "turned off at ~a~%" (iso-now))))
+  (when ours
     (ecase *service-manager*
       (:systemd
        (manager-run "disable" unit)
        (delete-file file)
+       ;; the stop runs on the unit as loaded, KillMode=mixed included: a
+       ;; reload first would forget it, and stop every process at once
        (manager-or-fail "stop" unit)
        (manager-run "daemon-reload")
        (manager-run "reset-failed" unit))
@@ -840,19 +920,19 @@ and the shell takes the organism over."
        (multiple-value-bind (out err status argv) (manager-run "bootout" (launchd-target unit))
          (unless (or (eql status 0) (not (agent-loaded-p unit)))
            (gateway-fail "~{~a~^ ~} failed~@[: ~a~]" argv (answer-line err out)))))))
-  (when mark
-    (with-output-file (out (gateway-off-path home))
-      (format out "turned off at ~a~%" (iso-now))))
   (gateway-state :home home))
 
-(defun gateway-restart (&key (home *home*) (program (organism-binary)))
+(defun gateway-restart (&key (home *home*) (program (organism-binary)) force)
   "Restart HOME's gateway on what its unit would run now: the unit
 rewritten first when that changed — an update moved the binary, the PATH
 moved — so it comes back on this build, with the config as it is now."
-  ;; Refused while the gateway is off. => the GATEWAY-STATE after.
+  ;; Refused while the gateway is off, and from inside it unless FORCE
+  ;; (REFUSE-FROM-INSIDE). => the GATEWAY-STATE after.
   (let ((state (require-supported (gateway-state :home home))))
     (unless (eq state.installed :ours)
       (gateway-fail "the gateway is off; `gateway on' starts it"))
+    (unless force
+      (refuse-from-inside state home "restart"))
     (let ((text (and program (gateway-unit-text :home home :program program))))
       ;; launchd reads the file once: a changed agent is booted out and bootstrapped again
       (ecase *service-manager*
@@ -998,9 +1078,10 @@ organism keeps standing (a bot's state among them)."
               :detail "Opens the shell straight on a sheet that sets one channel up step by step (/gateway setup in a shell already open), over the organism serving this home. It switches the channel's cell on, keeps the pasted bot token in a 0600 file in this home's secrets folder (or names the environment variable that holds it) and checks it against the platform, waits while the bot is in no server yet, has the rooms and people it answers picked from a checklist of what the token sees, and starts the channel. CHANNEL skips the choice: `setup discord'. Open it again to change one; /settings > Channels and the web page's Control > Channels edit the same section.")
    (make-verb "on" "run it in the background from now on, and at every login"
               :detail "Writes the unit the operating system runs — a systemd user unit on Linux, a LaunchAgent on macOS; nodecode-gateway, nodecode-gateway-NAME for a profile — enables and starts it, and on Linux asks logind to keep it running after you log out. While a shell runs the organism the gateway waits, and takes over when that shell closes; every shell opened after attaches to it. A bot or a cron job turns it on by itself, once, unless you turned it off.")
-   (make-verb "off" "stop it, and stop starting it at login"
-              :detail "Disables and stops the unit and removes it; nothing turns it back on by itself after that. A shell attached to it takes the organism over, and bots and cron jobs run while a shell is open.")
-   (make-verb "restart" "restart it on this build, with the config as it is now")
+   (make-verb "off" "stop it, and stop starting it at login" :arguments "[--force]"
+              :detail "Disables and stops the unit and removes it; nothing turns it back on by itself after that. A shell attached to it takes the organism over, and bots and cron jobs run while a shell is open. Run from inside the gateway it would stop (an agent's tool shell, a script that shell started) it refuses, since the stop would end it part way; --force stops it anyway.")
+   (make-verb "restart" "restart it on this build, with the config as it is now" :arguments "[--force]"
+              :detail "Rewrites the unit first when the binary or PATH it runs has changed, then restarts it. Run from inside that gateway it refuses, since the restart would end it part way; --force restarts it anyway.")
    (make-verb "logs" "its recent log" :arguments "[--follow]"
               :detail "The last 60 lines of its journal on Linux, of its log file on macOS; --follow, on the command line, keeps printing.")
    (make-verb "run" "the gateway in the foreground: what the unit runs"
@@ -1029,17 +1110,22 @@ its help prints, what a mistyped verb is matched against.")
                              :live (and live (gateway-serving-p state)
                                         (ignore-errors (funcall live state)))
                              :command command)))
-      (unless (member verb '("logs" "run" "setup") :test #'string=)
-        (nothing-more))
-      (dispatch verb string=
-        ("status" (report (gateway-state)))
-        ("on" (format nil "the gateway is on~%~a" (report (gateway-on))))
-        ("off" (format nil "the gateway is off~%~a" (report (gateway-off))))
-        ("restart" (format nil "the gateway restarted~%~a" (report (gateway-restart))))
-        ("logs" (when (member "--follow" words :test #'string=)
-                  (usage-fail verb "--follow is the command line's: `nodecode gateway logs --follow'."))
-                (nothing-more)
-                (gateway-log-text))
-        ("run" (usage-fail verb "run is the command line's own: `nodecode gateway run' serves in the foreground."))
-        ("setup" (usage-fail verb "setup runs in the shell: `nodecode gateway setup discord' opens it there, and /gateway setup in a shell already open; the web page's Control > Channels sets up the same section."))
-        (t (error "the gateway verb ~a has no branch in GATEWAY-TEXT" verb))))))
+      (let ((force (and (member verb '("off" "restart") :test #'string=)
+                        (find "--force" words :test #'string=)
+                        t)))
+        (when force
+          (setf words (remove "--force" words :test #'string=)))
+        (unless (member verb '("logs" "run" "setup") :test #'string=)
+          (nothing-more))
+        (dispatch verb string=
+          ("status" (report (gateway-state)))
+          ("on" (format nil "the gateway is on~%~a" (report (gateway-on))))
+          ("off" (format nil "the gateway is off~%~a" (report (gateway-off :force force))))
+          ("restart" (format nil "the gateway restarted~%~a" (report (gateway-restart :force force))))
+          ("logs" (when (member "--follow" words :test #'string=)
+                    (usage-fail verb "--follow is the command line's: `nodecode gateway logs --follow'."))
+                  (nothing-more)
+                  (gateway-log-text))
+          ("run" (usage-fail verb "run is the command line's own: `nodecode gateway run' serves in the foreground."))
+          ("setup" (usage-fail verb "setup runs in the shell: `nodecode gateway setup discord' opens it there, and /gateway setup in a shell already open; the web page's Control > Channels sets up the same section."))
+          (t (error "the gateway verb ~a has no branch in GATEWAY-TEXT" verb)))))))
