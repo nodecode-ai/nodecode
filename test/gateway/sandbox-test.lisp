@@ -168,11 +168,9 @@
            (nlk::set-environment-variable "NODECODE_SRT" "")
            (nlk::set-environment-variable "PATH" (string-right-trim "/" (uiop:native-namestring dir)))
            (let ((srt (nle::srt-program)))
-             (is (stringp srt)
-                 "srt found on PATH is a namestring")
+             (is (stringp srt) "srt found on PATH is a namestring")
              (is (every #'stringp (nle::sandbox-wrap '("nodecode" "serve") :srt srt :settings #p"/h/sandbox/srt.json"
-                                                                             :port 1 :run #p"/h/sandbox/run/"))
-                 "the jailed argv is words only")))
+                                                                             :port 1 :run #p"/h/sandbox/run/")) "the jailed argv is words only")))
       (nlk::set-environment-variable "PATH" (or saved-path ""))
       (nlk::set-environment-variable "NODECODE_SRT" (or saved-srt ""))
       (uiop:delete-directory-tree dir :validate t :if-does-not-exist :ignore))))
@@ -209,10 +207,8 @@
          (progn
            (nlk::set-environment-variable "HOME" "/nonexistent-home-for-test/")
            (let ((deny (nlk:json-value (sandbox-test-settings) :array "filesystem" "denyRead")))
-             (is (find "/nonexistent-home-for-test/" deny :test #'string=)
-                 "the home $HOME names is read-denied")
-             (is (find own deny :test #'string=)
-                 "the account's own home is read-denied too")))
+             (is (find "/nonexistent-home-for-test/" deny :test #'string=) "the home $HOME names is read-denied")
+             (is (find own deny :test #'string=) "the account's own home is read-denied too")))
       (nlk::set-environment-variable "HOME" (or saved "")))))
 
 (deftest sandbox-hides-the-homes-own-secrets ()
