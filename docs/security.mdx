@@ -3,7 +3,7 @@ title: Safety and trust
 summary: "What the jail stops, what it doesn't, and what protects the rest."
 ---
 
-On Linux and macOS, Nodecode runs the agent in a jail by default. Read what it stops and what it doesn't before you connect a channel or run unattended.
+**Implementation draft:** this page describes pending default-jail work on Linux and macOS. Do not publish it until the combined jail and proxy implementation is merged and checked; current releases do not provide all the guarantees below. Read the limits before connecting a channel or running unattended.
 
 {/* source: src/gateway/sandbox.lisp */}
 ## The jail
@@ -13,8 +13,8 @@ The jail holds the agent: every `eval`, every shell command it runs, every cell,
 | What | Inside the jail |
 | --- | --- |
 | Files | The project folder you started in, read and write. Its own `~/.nodecode`, read and write, except the files below. The system, read-only. |
-| Your home | Not there: `~/.ssh`, `~/.aws`, `~/.gnupg`, browser profiles, other agents' homes. Neither is the host's `/tmp`. |
-| Keys and sign-ins | Not there: `auth.json` and `secrets/` are left out. Nodecode's proxy adds a key or sign-in token to each request bound for its own provider. |
+| Your home | Not granted as the project folder. Explicit folder grants and configuration/store exceptions can expose additional paths. The host's temporary directory is not the jail's temporary directory. |
+| Provider credentials | The dedicated files `auth.json` and `secrets/` are left out; the outside proxy adds provider authentication. Other readable files, including project files and saved snapshots, may still contain secrets. |
 | Network | Only through the proxy, to the hosts it allows: your providers, nodecode.ai, models.dev, GitHub, and the chat services you configured. Any other host is refused. |
 | Local sockets | None of the host's: no Docker socket, no display, no desktop bus, no tmux server. |
 | `config.jsonc`, `sandbox.jsonc` | Read-only. The agent can't widen its own jail. |
@@ -32,17 +32,17 @@ Started in your home folder or above it, a shell holds no folder: a jail around 
 
 | System | Jail |
 | --- | --- |
-| Linux | bubblewrap (`bwrap`), which Fedora and Ubuntu desktops ship. Without it Nodecode doesn't start, and says how to install it or turn the jail off. |
+| Linux | bubblewrap (`bwrap`) must be installed. Without it Nodecode refuses a jailed launch and says how to install it or turn the jail off. |
 | macOS | The system sandbox, `sandbox-exec`, with a profile Nodecode writes. The keychain, `sudo` and other setuid programs are refused too. |
-| Windows | None yet. Nodecode runs with your account's full access and says so at every launch. |
+| Windows | None yet. Nodecode runs with your account's full access; `nodecode sandbox status` reports that. |
 
-A home the jail ran is marked. A launch without the jail refuses until you have read `nodecode sandbox review`, which lists what the jailed agent wrote that would run outside it: the layer and the cells.
+A home the jail ran is marked to guard against an accidental unjailed launch. Explicitly disabling the jail can lift that mark. Before doing so, use `nodecode sandbox review` to inspect cell changes. This is not a mandatory review or an audit of every file the agent changed.
 
 ## What the jail doesn't stop
 
 | Fact | Consequence |
 | --- | --- |
-| The project folder is the agent's to change. | Keep it in git. `/undo` restores what a turn changed there. |
+| The project folder is the agent's to change. | Keep it in git. Undo does not reverse every action: file restoration depends on captured changes, and external effects such as sent messages are not undone. |
 | Allowed hosts are reachable. | The agent can send what it reads in the folder to them, GitHub included. |
 | Channel messages give the agent work. | Anyone on a bot's allowlist can make it run commands inside the jail. A bot's token is in the jail, so a prompt injection could post as that bot. |
 | Cells are code. | A cell runs inside the jail with the agent's access. A hub cell is someone else's code: read it first. |
@@ -57,7 +57,7 @@ A home the jail ran is marked. A launch without the jail refuses until you have 
 | Loopback gateway | The gateway, the local server shells attach to, listens on `127.0.0.1`. |
 | Host check | A request whose `Host` is not `127.0.0.1` or `localhost` gets 403. |
 | Origin check | A socket opened by a page of another origin gets 403. |
-| Operator token | Every `/api/gateway/` route needs `Authorization: Bearer TOKEN`. `/healthz` needs none. A jailed gateway gets a token made for that launch. |
+| Operator token | Every `/api/gateway/` route needs `Authorization: Bearer TOKEN`. `/healthz` needs none. A jailed gateway uses the home's operator token so other shells can attach. |
 | Cell routes | A route a cell serves on the gateway's port needs the same token, unless the cell marks it public: a browser page, a webhook, a sign-in callback. A public route is responsible for its own checks. |
 | File modes | Secrets are readable by you alone. See the table below. |
 | Kernel lock | The kernel, the locked core, refuses redefinition of its names. The model can lower it with `lower-floor`; the store records who asked and why. It is not a security boundary: the jail is. |
@@ -84,13 +84,17 @@ A home the jail ran is marked. A launch without the jail refuses until you have 
 {/* source: src/organism/update.lisp */}
 ## Updates
 
-Nodecode checks nodecode.ai for a new release. A release is a tarball fetched over HTTPS and checked against its sha256 before it is staged. Releases are not signed yet.
+Nodecode checks nodecode.ai for a new release. Release archives are checked against a SHA256 file downloaded from the same release server. This detects corruption, but releases are not cryptographically signed and a compromised server could replace both files.
+
+Automatic staging also runs the downloaded binary to check that it starts. Setting `update.mode` to `ask` delays applying the update, not that startup check; set it to `off` to disable automatic update staging.
+
+A first install through `curl | sh` or PowerShell's `irm ... | iex` also trusts the installer script served by the download site. The archive checksum does not independently authenticate that script or the release publisher.
 
 | `update.mode` | What happens |
 | --- | --- |
 | `auto` | The release is applied in the running process. What can't change live lands at the next launch. |
-| `ask` | The release is staged, and waits for `nodecode update`. |
-| `off` | Nodecode never looks. |
+| `ask` | The release is downloaded and startup-tested; applying it waits for `nodecode update`. |
+| `off` | Automatic checks and staging are disabled. An explicit update command still acts. |
 
 `nodecode update VERSION` goes back to a release and holds there.
 
@@ -103,6 +107,6 @@ Nodecode checks nodecode.ai for a new release. A release is a tarball fetched ov
 4. Name channel tokens with `*_env` or `*_file`.
 5. Keep the `nodecode web` link and the `operator-token` file private.
 6. Install cells only from sources you trust. Read the code first.
-7. Set `update.mode` to `ask` if you want to read each release before it applies.
-8. Turn the background gateway off when you don't need it: `/settings` > System > Gateway, or `nodecode gateway off`. It comes back at every login, and runs in the jail.
+7. Set `update.mode` to `off` if downloaded update code must not run automatically. `ask` delays applying an update but still runs its staging startup check.
+8. When enabled, the background gateway starts at login and runs in the jail. Turn login startup off when you do not need it: `/settings` > System > Gateway, or `nodecode gateway off`.
 9. On Windows, until the jail ships there, run Nodecode in a VM or under a separate account before you leave it working alone.
