@@ -151,6 +151,18 @@
   (is (search "takes 1" (refusal-text error (nle::account-ask-mode :ask (constantly "3")))))
   (is (null (nle::account-mode-word "bogus"))))
 
+(deftest account-login-bare-opens-the-choice-from-the-shell (with-temp-store ())
+  ;; #230: a bare /login typed at the prompt, and the /models sign-in row that runs it the same
+  ;; way, handed the setup walk's CONTEXT keyword, NIL outside the walk, to the picker's string
+  ;; slot: the event loop caught a TYPE-ERROR and no picker opened.
+  (let ((model (make-frame-model 100 30)))
+    (nle::execute-slash-command model "login" "")
+    (is-present (dialog (nle::chat-model-dialog model)) "bare /login opens a picker"
+      (is (equal "Sign in to nodecode.ai" (nle::picker-dialog-title dialog)))
+      (is (equal "" (nle::picker-dialog-context dialog)) "no walk, no context label")
+      (is (equal '("Subscription" "API credits")
+                 (mapcar #'nle::picker-row-label (nle::picker-dialog-rows dialog)))))))
+
 (deftest account-login-terminal-verdicts-save-nothing ()
   (dolist (state '("refused" "expired" "gone" "unknown"))
     (with-temp-file (nle::*auth-file-path*)
