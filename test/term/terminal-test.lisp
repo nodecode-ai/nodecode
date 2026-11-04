@@ -60,6 +60,86 @@ event type at 0, bKeyDown at 4, wRepeatCount at 8, uChar at 14."
     (is (equal (string (code-char #x1F600))
                (nlt::console-records-text (console-record :unit #xDE00) 1 pending)))))
 
+;;; Windows Terminal and conhost send Shift+Enter as the bare CR Enter is, and
+;;; ignore the kitty flags; under win32-input-mode (DEC 9001) each key event
+;;; arrives as ESC [ Vk;Sc;Uc;Kd;Cs;Rc _ instead. The reports below are the
+;;; ones Windows Terminal 1.24 sent for real keys, and the bytes each must come
+;;; back as are what conhost's own legacy encoding sent for the same key.
+
+(defun win32-report (vk scan unit state &key (down 1) (repeat 1))
+  (format nil "~C[~D;~D;~D;~D;~D;~D_" #\Escape vk scan unit down state repeat))
+
+(defun win32-press (vk scan unit state)
+  "A key's press and release, the two reports a keystroke sends."
+  (concatenate 'string (win32-report vk scan unit state)
+               (win32-report vk scan unit state :down 0)))
+
+(deftest win32-input-reports-come-back-as-the-legacy-keys ()
+  (is-table (vk scan unit state expected) (equal expected (nlt::win32-input-text (win32-press vk scan unit state)))
+    (13 28 13 16 (csi "13;2u") "Shift+Enter is the kitty Shift+Enter")
+    (13 28 13 0 (string #\Return) "Enter is CR")
+    (13 28 13 256 (string #\Return) "keypad Enter is CR")
+    (13 28 10 8 (string #\Newline) "Ctrl+Enter is LF")
+    (13 28 13 2 (format nil "~C~C" #\Escape #\Return) "Alt+Enter is ESC CR")
+    (65 30 97 0 "a" "a")
+    (65 30 65 16 "A" "Shift+a")
+    (67 46 3 8 (string (code-char 3)) "Ctrl+C")
+    (88 45 120 2 (format nil "~Cx" #\Escape) "Alt+x")
+    (81 16 64 9 "@" "AltGr+Q composes, no ESC")
+    (16 42 0 16 "" "a bare modifier sends nothing")
+    (32 57 32 8 "" "Ctrl+Space sends nothing")
+    (27 1 27 0 (string #\Escape) "Escape")
+    (8 14 8 0 (string (code-char 127)) "Backspace is DEL")
+    (8 14 127 8 (string (code-char 8)) "Ctrl+Backspace is BS")
+    (9 15 9 0 (string #\Tab) "Tab")
+    (9 15 9 16 (csi "Z") "Shift+Tab is CSI Z")
+    (38 72 0 256 (csi "A") "Up")
+    (38 72 0 264 (csi "1;5A") "Ctrl+Up")
+    (36 71 0 256 (csi "H") "Home")
+    (112 59 0 0 (format nil "~COP" #\Escape) "F1 is SS3 P")
+    (113 60 0 16 (csi "1;2Q") "Shift+F2")
+    (116 63 0 0 (csi "15~") "F5")
+    (46 83 0 256 (csi "3~") "Delete")
+    (33 73 0 264 (csi "5;5~") "Ctrl+PageUp")))
+
+(deftest win32-input-keeps-what-is-not-a-report ()
+  ;; A paste, a mouse report and everything a terminal without 9001 sends
+  ;; arrive as text; a paste's line breaks come as reports among it.
+  (let ((legacy (format nil "hi~A~C~A~A~C[" (csi "<0;10;5M") #\Return (csi "1;5A")
+                        (csi "200~") #\Escape)))
+    (is (equal legacy (nlt::win32-input-text legacy)) "untouched, Alt+[ at the end too"))
+  (let ((pasted (format nil "~Aa~Ab~A" (csi "200~") (win32-press 13 28 13 0) (csi "201~"))))
+    (is (equal (format nil "~Aa~Cb~A" (csi "200~") #\Return (csi "201~")) (nlt::win32-input-text pasted)) "a paste's CR report is a CR"))
+  (is (equal "aaa" (nlt::win32-input-text (win32-report 65 30 97 0 :repeat 3))) "a repeat count repeats"))
+
+(deftest win32-input-holds-a-report-cut-in-two ()
+  (let ((shift-enter (win32-report 13 28 13 16)))
+    (multiple-value-bind (text tail) (nlt::win32-input-text (subseq shift-enter 0 9))
+      (is (equal "" text) "nothing of a cut report is sent")
+      (is (equal (subseq shift-enter 0 9) tail) "it waits as the tail")
+      (is (equal (csi "13;2u") (nlt::win32-input-text (concatenate 'string tail (subseq shift-enter 9)))) "and the rest completes it")))
+  (multiple-value-bind (text tail surrogate)
+      (nlt::win32-input-text (win32-press 0 0 #xD83D 0))
+    (is (equal "" text) "a high half alone waits")
+    (is (equal "" tail))
+    (is (equal (string (code-char #x1F600)) (nlt::win32-input-text (win32-press 0 0 #xDE00 0) surrogate)) "for its low half")))
+
+(deftest win32-shift-enter-decodes-apart-from-enter ()
+  (is (key-is (key-from-string (nlt::win32-input-text (win32-press 13 28 13 16))) :enter :mod nlt:+mod-shift+) "Shift+Enter reaches the keymap as shift+enter")
+  (let ((enter (key-from-string (nlt::win32-input-text (win32-press 13 28 13 0)))))
+    (is (key-is enter :enter))
+    (is (zerop (logand nlt:+mod-shift+ (nlt:key-event-mod enter))) "Enter carries no Shift")))
+
+(deftest kitty-keyboard-asks-windows-for-win32-input ()
+  ;; The kitty flags are what tell Shift+Enter apart on Unix terminals;
+  ;; on Windows the same switch turns on win32-input-mode, and its undo off.
+  (let ((push (written #'nlt:push-kitty-keyboard))
+        (pop (written #'nlt:pop-kitty-keyboard)))
+    (is (search (csi ">1u") push))
+    (is (search (csi "<u") pop))
+    (is (eq #+win32 t #-win32 nil (and (search (csi "?9001h") push) t)))
+    (is (eq #+win32 t #-win32 nil (and (search (csi "?9001l") pop) t)))))
+
 ;;; Quit used to hand back a blank terminal: the library's launch prelude
 ;;; erased the primary buffer (ESC[2J ESC[H) before the first frame entered
 ;;; the alt screen, so ESC[?1049l on exit restored the wipe.
