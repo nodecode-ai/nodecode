@@ -1283,3 +1283,15 @@
     (is (<= 3 (count-if (lambda (text) (and (stringp text) (search ": working" text))) writes)) "pinged while it read")
     (is (search "\"type\":\"result\"" (car (last writes))) "the result closes it")
     (is (search "\"summary\":\"read\"" (car (last writes))))))
+
+(deftest import-method-preserves-credential-option ()
+  ;; Only option plumbing: no home is scanned, no plan applied, no key read.
+  (dolist (pair '((:absent t) (:false nil) (:null nil) (t t)))
+    (let ((params (nlk:json-object "source" "fixture"))
+          (seen :not-called))
+      (unless (eq :absent (first pair))
+        (setf (gethash "credentials" params) (first pair)))
+      (with-stubbed-fdefinition (nik::run-import (&rest options)
+                                 (setf seen (getf options :credentials :missing)))
+        (nik::run-method "plan" params))
+      (is (eql (second pair) seen) "absent keeps the CLI default; explicit JSON values retain their meaning"))))

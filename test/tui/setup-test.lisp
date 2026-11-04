@@ -2091,3 +2091,22 @@ what the walk sends off the loop, newest first, and only a first job runs."
   (let ((entry (nle::find-builtin-slash-command "import")))
     (is (eq 'nle::headless-import (nle::slash-command-headless entry)))
     (is (= 1 (count "import" (nle::slash-catalog) :key (lambda (row) (getf row :name)) :test #'equal)) "one /import in the catalog")))
+
+(deftest setup-import-call-preserves-credential-option ()
+  ;; The HTTP seam is a string stream, not a socket or an import authority.
+  (with-frame-model (model 100 30 :session-id "import-option-wire")
+    (dolist (pair '(((:import "fixture") t)
+                    ((:import "fixture" :credentials nil) :false)
+                    ((:import "fixture" :credentials t) t)))
+      (let ((seen :not-called)
+            (input (make-string-input-stream
+                    (format nil "data: ~a~%~%"
+                            (nlk:encode-json-object
+                             (nlk:json-object "type" "result" "result"
+                                              (nlk:json-object "items" #())))))))
+        (with-stubbed-fdefinition (nle::gateway-model-http-call (model method path body &key raw stream)
+                                   (setf seen (gethash "credentials" body :missing))
+                                   input)
+          (nle::setup-import-call model "plan" (first pair) nil))
+        (is (eq (second pair) seen) "the UI sends the chosen JSON boolean, including explicit false")
+        (is (not (open-stream-p input)) "the mock response closes normally")))))
