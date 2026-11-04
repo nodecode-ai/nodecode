@@ -460,7 +460,6 @@ an apply response, whose terminal result is the same plan JSON as a preview."
                  "only" (or (getf request :only) :null)
                  "without" (or (getf request :without) :null)
                  "overwrite" (if (getf request :overwrite) t :false)
-                 "link" (if (getf request :link) t :false)
                  "keep_running" (if takeover :false t)
                  "stream" (if stream t :false))
                 :stream stream)))
