@@ -12,7 +12,7 @@ A program spawns `nodecode rpc` and keeps its stdin open. rpc speaks the gateway
 nodecode rpc [SESSION-ID [--cursor N]] [--store PATH | --ephemeral]
 ```
 
-It finds the organism serving your home, or starts one. It presents the operator token and subscribes to a session: the one you name, or a fresh one. Your program never handles a port, a token or a handshake. The first line out is <Field run="hello" spot="replay">the session's replay</Field>. Then come <Field run="hello" spot="durable">its facts as they land</Field>, <Field run="hello" spot="status">the command's result</Field> and <Field run="hello" spot="end">the turn's end</Field>.
+It finds the organism serving your home, or starts one. One started while the organism before it is still stopping waits for that one to let go, then starts the next. When nothing serves within 30 seconds, it exits 1 with `no organism serves PATH`. It presents the operator token and subscribes to a session: the one you name, or a fresh one. Your program never handles a port, a token or a handshake. The first line out is <Field run="hello" spot="replay">the session's replay</Field>. Then come <Field run="hello" spot="durable">its facts as they land</Field>, <Field run="hello" spot="status">the command's result</Field> and <Field run="hello" spot="end">the turn's end</Field>.
 
 <Wire run="hello" lit="replay" />
 
