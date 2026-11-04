@@ -697,8 +697,8 @@ tailnet address.")
                                 (nle::headless-models "aux default" nil)))
       (is (null nle::*auxiliary-model*)))
     (with-model-listings (:config +listed-providers-config+ :cache (listed-providers-cache))
-      (is (search "zeta: 3 models — /models list zeta"
-                  (nle::headless-models "list" nil)))
+      (is (search "zeta: 3 models" (nle::headless-models "list" nil)))
+      (is (null (search "/models list" (nle::headless-models "list" nil))) "no line to type")
       (is (search "  z-1" (nle::headless-models "list zeta" nil))))))
 
 (deftest models-verb-answers-the-picker-catalog ()

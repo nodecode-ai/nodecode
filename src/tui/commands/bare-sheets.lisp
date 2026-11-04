@@ -141,9 +141,8 @@ definitions, whether it started, what failed."
   (unless model
     (let ((cells (nlk:cells)))
       (list-dialog :title "Cells"
-                   :summary (render-cells-summary cells)
+                   :summary (if cells (render-cells-summary cells) (render-cells nil))
                    :searchable t :search-placeholder "Search cells"
-                   :empty-label (render-cells nil)
                    :rows (append
                           (loop for cell in cells
                                 collect (list :label (nlk:cell-name cell) :detail (cell-report-detail cell)))
