@@ -212,16 +212,18 @@ a held one until the composer's text moves off the draft it was said over."
                :entry entry)))
           (slash-suggestions text)))
 
-(defun submit-slash (model text)
-  "Execute the slash command TEXT names."
+(defun submit-slash (model text &key (dropdown t))
+  "Execute the slash command TEXT names; DROPDOWN NIL runs the line as it
+stands, whatever the composer's dropdown highlights."
   ;; The dropdown selection wins while open — Enter on a bare prefix runs the
   ;; highlighted command — and a literal name (typically with arguments)
   ;; parses directly. A known command resets the composer; an unknown name
   ;; keeps the text for editing and explains itself in the composer status.
   ;; Returns (values handled cmd).
   (multiple-value-bind (name args) (parse-slash-input text)
-    (let ((entry (or (let ((row (selected-of (slash-active-suggestions model)
-                                             (chat-model-slash-selection model))))
+    (let ((entry (or (let ((row (and dropdown
+                                     (selected-of (slash-active-suggestions model)
+                                                  (chat-model-slash-selection model)))))
                        (and row (composer-suggestion-entry row)))
                      (find-slash-command name))))
       (setf (chat-model-slash-selection model) 0)
@@ -300,9 +302,11 @@ start, or NIL."
   "The live dropdown's rows, from whichever lane matches: the slash catalog
 owns `/` inputs outright (Zig composerSuggestionsForComposerText order) and
 the token lanes take everything else."
-  ;; NIL is also every caller's reading of `no dropdown is open`.
-  (or (slash-active-suggestions model)
-      (token-suggestions-for model)))
+  ;; NIL is also every caller's reading of `no dropdown is open`. Under an
+  ;; ask the text is the ask's, never a command or a token to complete.
+  (unless (chat-model-composer-ask model)
+    (or (slash-active-suggestions model)
+        (token-suggestions-for model))))
 
 (defun selected-composer-suggestion (model)
   "The highlighted row of whichever lane is live, else NIL."

@@ -1203,6 +1203,9 @@ MODEL's transport."
   ;;
   ;; The catalog's DISPATCH slot says how the shell calls the command's op
   ;; (slash.lisp SLASH-COMMAND); a NIL slot is a command spelled out below.
+  ;; Typed alone, a builtin that files a dialog opens it (bare.lisp).
+  (when-let (dialog (and entry (bare-args-p args) (bare-dialog entry.name model.session-id model)))
+    (return-from execute-slash-command (open-bare-dialog model dialog)))
   (case (and entry entry.dispatch)
     (:plain (values (funcall op model) nil))
     (:args (values (funcall op model args) nil))

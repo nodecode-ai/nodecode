@@ -3192,6 +3192,11 @@ a surface that draws one wears (a room's card its edge), NIL for none."
   ;; over this one, whose Esc comes back here, and otherwise its text is the
   ;; notice and this dialog is read again on the same row (the shell's
   ;; ANSWER-GESTURE) -- a list whose rows open their record and move it.
+  ;; A row's :ASK, (:label LABEL :line LINE :placeholder TEXT :verb WORD),
+  ;; asks for one line of text instead: the shell's composer takes it under
+  ;; LABEL, a room's card asks for it, and LINE then runs with the text after
+  ;; it (ASK-LINE) -- what a command once took typed after its name, which
+  ;; no surface asks anyone to spell (tui/commands/bare.lisp).
   ;;
   ;; TABS are the dialog's tab strip as plists (:label the tab's own text,
   ;; :count the rows behind it, :value the row KEY it selects — NIL for the
@@ -3259,6 +3264,9 @@ a surface that draws one wears (a room's card its edge), NIL for none."
                     (:getf row :opt "suffix" "value" "verb")
                     :opt "run" (when-let (run (getf row :run))
                                  (json-object (:getf run :opt "enter" "space")))
+                    :opt "ask" (when-let (ask (getf row :ask))
+                                 (json-object (:getf ask "label" "line")
+                                              (:getf ask :opt "placeholder" "verb")))
                     "mark" (or (getf row :mark) "")
                     :opt "mark_tone" (tone (getf row :mark-tone))
                     :opt "options" (when-let (options (getf row :options))
@@ -3280,10 +3288,13 @@ a surface that draws one wears (a room's card its edge), NIL for none."
 key OWNER, replacing any command of that name; SESSION NIL says it acts on no
 session, so a client with none open runs it as it is, TRIGGER, a
 one-character string, is what the shell's composer opens it on when it is
-typed at a word's start (the index's `$'), and COMPLETE completes the
-argument while it is typed (SLASH-COMPLETIONS): it takes the tail typed so
-far and the session id, as RUN takes its argument, and answers (:name
-:value) plists. => COMMAND's entry."
+typed at a word's start (the index's `$'). A command is its name: RUN
+called with no argument answers what it offers as a LIST-DIALOG, whose rows
+run its lines or ask for text (tui/commands/bare.lisp). => COMMAND's entry."
+  ;; ARGUMENT-HINT and COMPLETE, the words a cell written before that
+  ;; offered typed after the name, are taken and shown nowhere, so such a
+  ;; cell still loads.
+  (declare (ignore argument-hint complete))
   ;; RUN is a function designator, so a command whose whole implementation is
   ;; one defun passes the symbol and a reload of that file reaches the command
   ;; without a re-install. RUN takes the command's argument string and the
@@ -3296,11 +3307,7 @@ far and the session id, as RUN takes its argument, and answers (:name
     (error "a registered command needs a non-empty name"))
   (let ((entry (make-slash-command
                 command (or description "")
-                :usage (if (json-value argument-hint :text)
-                           (format nil "/~a ~a" command argument-hint)
-                           "")
                 :dispatch nil :owner owner :session session :trigger trigger
-                :completer complete
                 :headless (lambda (args session-id)
                             (multiple-value-bind (text dialog)
                                 (handler-case (funcall run args session-id)

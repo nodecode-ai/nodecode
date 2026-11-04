@@ -353,7 +353,8 @@ composer status once it lands off the loop: a slash whose work takes seconds."
 operator feels — or, for `reset', a fresh attribution window."
   (declare (ignore session-id))
   (cond
-    ((zerop (length arg))
+    ;; `show', what its dialog's first row runs (bare.lisp)
+    ((or (zerop (length arg)) (string-equal arg "show"))
      (render-collection-report (nlk:collection-stats)
                                (nlk:gc-attribution-stats)))
     ((string-equal arg "reset")
