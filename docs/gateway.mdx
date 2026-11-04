@@ -20,8 +20,10 @@ nodecode gateway logs --follow
 | --- | --- |
 | none, `status` | Prints the state: off, serving, waiting, starting, stopped, restarting, failed or unavailable. |
 | `on` | Writes the unit. Enables it. Starts it. On Linux, asks logind to keep it running after logout. |
-| `off` | Disables the unit, removes its file and stops the process. Writes `gateway-off`. |
-| `restart` | Restarts on the current build with the current config. Refused while the gateway is off. |
+| `off` | Disables the unit, removes its file and stops the process. Writes `gateway-off`. Refused from inside the gateway, see below. |
+| `off --force` | The same, from inside the gateway too. |
+| `restart` | Restarts on the current build with the current config. Refused while the gateway is off, and from inside it. |
+| `restart --force` | The same, from inside the gateway too. |
 | `logs` | Prints the last 60 log lines. |
 | `logs --follow`, `logs -f` | Keeps printing new lines. Command line only. |
 | `run` | Runs the gateway in the foreground. This is what the unit runs. Command line only. |
@@ -121,6 +123,13 @@ Nothing turns the gateway on by itself in these cases:
 - `~/.nodecode/gateway-off` exists.
 - The organism runs with `--ephemeral`.
 - The platform is Windows.
+
+{/* source: src/gateway/background.lisp */}
+## From inside the gateway
+
+A process the gateway started inherits its `NODECODE_HOME`: an agent's tool shell, a script that shell runs, a tmux session it leaves behind. On Linux that is every process in the unit's control group. There `nodecode gateway off` and `nodecode gateway restart` are refused, because stopping the gateway would end the process part way.
+
+The refusal names the unit and its home, and nothing is changed. A script meant for another home sets `NODECODE_HOME` first. `--force` stops or restarts the gateway anyway. The gateway's own web page and the installer always force.
 
 {/* source: src/gateway/background.lisp */}
 ## gateway-off

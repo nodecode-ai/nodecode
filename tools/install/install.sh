@@ -504,14 +504,17 @@ if have systemctl && [ -d "$units" ]; then
       unit_data_home="$(sed -n 's/^Environment="XDG_DATA_HOME=\(.*\)"$/\1/p' "$unit" | head -n 1)"
       unit_path="$(sed -n 's/^Environment="PATH=\(.*\)"$/\1/p' "$unit" | head -n 1)"
       unit_path="${unit_path:-$PATH}"
+      # --force: the installer means this restart from wherever it runs, an
+      # agent updating its own gateway from that gateway's shell included. A
+      # build from before the flag refuses the word (exit 2): asked plainly.
       restart_gateway() {
         NODECODE_HOME="$unit_home" HOME="$unit_user_home" \
           XDG_CONFIG_HOME="$unit_config_home" \
           XDG_CACHE_HOME="$unit_cache_home" XDG_DATA_HOME="$unit_data_home" \
           PATH="$unit_path" \
-          "$HOME_DIR/current/nodecode" gateway restart >/dev/null 2>&1
+          "$HOME_DIR/current/nodecode" gateway restart "$@" >/dev/null 2>&1
       }
-      if restart_gateway; then
+      if restart_gateway --force || { [ $? -eq 2 ] && restart_gateway; }; then
         say "refreshed and restarted $unit_name on $VERSION"
       else
         die "could not refresh active gateway $unit_name with the watchdog unit; run '$HOME_DIR/current/nodecode gateway restart'"
@@ -537,8 +540,11 @@ if [ "$platform" = darwin ] && have launchctl && [ -d "$agents" ]; then
       unit_user_home="${unit_user_home:-$HOME}"
       unit_path="$(sed -n 's/.*<key>PATH<\/key><string>\(.*\)<\/string>.*/\1/p' "$agent" | head -n 1)"
       unit_path="${unit_path:-$PATH}"
-      if NODECODE_HOME="$unit_home" HOME="$unit_user_home" PATH="$unit_path" \
-           "$HOME_DIR/current/nodecode" gateway restart >/dev/null 2>&1; then
+      restart_agent() {
+        NODECODE_HOME="$unit_home" HOME="$unit_user_home" PATH="$unit_path" \
+          "$HOME_DIR/current/nodecode" gateway restart "$@" >/dev/null 2>&1
+      }
+      if restart_agent --force || { [ $? -eq 2 ] && restart_agent; }; then
         say "restarted $label on $VERSION"
       else
         say "WARNING: could not restart $label — 'nodecode gateway restart' moves it to $VERSION"
