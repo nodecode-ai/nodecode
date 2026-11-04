@@ -8,7 +8,7 @@ One `nle:define-cell` form declares a cell: its config section, what it adds, an
 {/* source: src/organism/made-cells.lisp */}
 ## Ask for one
 
-The shortest way to a cell is to ask the agent for it: [Cells reference](/cells-reference#ask-for-one). It writes the cell with these verbs, through `eval`; you can call them yourself.
+The shortest way to a cell is to ask the agent for it: [Cells reference](cells-reference.mdx#ask-for-one). It writes the cell with these verbs, through `eval`; you can call them yourself.
 
 | Verb | What it does |
 | --- | --- |
@@ -416,7 +416,7 @@ When the declaration does not fit, write `START-CELL` by hand from the same piec
 
 <Screen name="cell-lock" />
 
-A cell reads its home through `(nlk:home "...")`, never a literal `~/.nodecode/`. It then follows a [profile](/profiles).
+A cell reads its home through `(nlk:home "...")`, never a literal `~/.nodecode/`. It then follows a [profile](profiles.mdx).
 
 Dependencies the image lacks go in `vendor/`, from `ql:bundle-systems`. `vendor/bundle.lisp` loads before the folder's systems.
 
@@ -445,4 +445,4 @@ Dependencies the image lacks go in `vendor/`, from `ql:bundle-systems`. `vendor/
 | List it on the hub | Submit it at [nodecode.ai/cells/submit](https://nodecode.ai/cells/submit). Nodecode's own cells arrive as pull requests to `nodecode-ai/cells`, where `.github/test-cell.sh FOLDER` runs one cell's tests. |
 | Undo a change | `nodecode rollback N` puts every folder back to generation N. A folder's git HEAD is its revision. A folder with no repository is never restored, and the rollback refuses by name. |
 
-When one goes wrong, find the line in [Troubleshooting](/troubleshooting#cell-failures).
+When one goes wrong, find the line in [Troubleshooting](troubleshooting.mdx#cell-failures).

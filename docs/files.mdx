@@ -54,13 +54,13 @@ Files you or the agent write on purpose. A profile carries them. A plain export 
 
 | Entry | Holds |
 | --- | --- |
-| `config.jsonc` | The settings. See [Config](/config). |
-| `AGENTS.md` | Your rules for every session. See [Instruction files](/instructions). |
+| `config.jsonc` | The settings. See [Config](config.mdx). |
+| `AGENTS.md` | Your rules for every session. See [Instruction files](instructions.mdx). |
 | `SOUL.md` | The persona channel bots speak in. |
 | `themes.json` | Your own themes. |
 | `auth.json` | Provider keys, at `api_keys.<id>.key`. `/models` writes it when you connect a provider, and `nodecode login` writes your nodecode.ai account's key. |
 | `secrets/` | Secrets pasted into `/settings`, one 0600 file each. |
-| `cells/` | Cell folders. See [Cells reference](/cells-reference). |
+| `cells/` | Cell folders. See [Cells reference](cells-reference.mdx). |
 | `cells/<you>/` | The layer: the definitions the agent kept, one file each. A git repository. |
 | `cells/<you>-memory/` | The knowledge cell: memories and skills, kept as definitions. Read by the index, never loaded. |
 | `profile.jsonc` | The profile's manifest: what this profile is. |
@@ -123,11 +123,11 @@ Files Nodecode makes for itself. A new profile starts without them, and an expor
 | `history.db.lock` | Held by the process that owns the store, for as long as it runs. |
 | `history.db.owner` | That process's pid and gateway port, as JSON. |
 | `history.db.stdio.log` | The organism's boot log and stray output. |
-| `operator-token` | The gateway token. See [Safety and trust](/security). |
+| `operator-token` | The gateway token. See [Safety and trust](security.mdx). |
 | `usage.jsonl` | Each keep, view and call of a memory or skill. The index ranks by it. |
 | `generations/` | A manifest per sealed generation, a restore's markers, and in `objects/` and `trees/` the bytes of folders no commit puts back. |
 | `release-pin` | The release `nodecode update VERSION` holds this home at. A bare `nodecode update` lifts it. |
-| `keybinds.json` | Key overrides. See [The shell](/shell). |
+| `keybinds.json` | Key overrides. See [The shell](shell.mdx). |
 | `theme-selection` | The theme picked with `/themes`. |
 | `composer-history` | Prompts you typed. |
 | `composer-catalogs.sexp` | The lists `@` and `/` complete from, as last read. |
@@ -326,7 +326,7 @@ count-lines.lisp  you.asd
 {/* source: src/organism/profile.lisp */}
 ## Profiles
 
-A new profile copies the settings and <Step name="links">links what is yours</Step>: `auth.json`, `secrets/` and every knowledge cell. It gets a fresh store and a fresh layer. `--clone-all` copies the keys and clones the layer instead. See [Profiles](/profiles).
+A new profile copies the settings and <Step name="links">links what is yours</Step>: `auth.json`, `secrets/` and every knowledge cell. It gets a fresh store and a fresh layer. `--clone-all` copies the keys and clones the layer instead. See [Profiles](profiles.mdx).
 
 <Run typed light={{ "links": "-> /home/you/" }}>
 
@@ -412,8 +412,8 @@ After `/models` in the default home: still a link, one key.
 
 | Path | Holds |
 | --- | --- |
-| `<project>/.nodecode/workspace_snapshots` | Snapshots for undo, in each folder a session edits. Never in your home folder or `/`. See [Sessions and undo](/sessions). |
-| `~/.local/share/nodecode/` | The installed releases. On Windows, `%LOCALAPPDATA%\Programs\nodecode`. See [Install](/install). |
+| `<project>/.nodecode/workspace_snapshots` | Snapshots for undo, in each folder a session edits. Never in your home folder or `/`. See [Sessions and undo](sessions.mdx). |
+| `~/.local/share/nodecode/` | The installed releases. On Windows, `%LOCALAPPDATA%\Programs\nodecode`. See [Install](install.mdx). |
 | `~/.local/bin/<profile>` | The command `profile create` writes for a profile. |
 | `nodecode-gateway.service` | The background gateway, in `~/.config/systemd/user/`. A named profile's is `nodecode-gateway-NAME.service`. On macOS, a plist in `~/Library/LaunchAgents/` and its log in `~/Library/Logs/nodecode/`. |
 | `nodecode-ephemeral-<pid>.db` | The store of an `--ephemeral` run, in the temp folder. |
