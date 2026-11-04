@@ -63,7 +63,7 @@ On Windows, `sh` uses the `sh.exe` from Git for Windows.
 
 In the next cell, `*` is the last value of the previous cell. `/` is the list of its values.
 
-Linux only: a cell's last form is watched when it only reads. It finished quickly, its value prints whole in under 2,000 characters, and it reached nothing outside the image: no verb, no file, process or socket, no assignment, no definition. It runs again after each later cell. A change shows as `[watched FORM: OLD -> NEW]`. A cell that went on in the background is never watched.
+Linux only: a cell's last form is watched when it uses only known in-memory reads and simple control forms (for example, `(length *items*)` or `(gethash :count *state*)`). Calls to unexamined functions or macros, including helpers you define, run once rather than becoming automatic watches. It finished quickly, its value prints whole in under 2,000 characters, and it reached nothing outside the image: no verb, no file, process or socket, no assignment, no definition. It runs again after each later cell. A change shows as `[watched FORM: OLD -> NEW]`. A cell that went on in the background is never watched.
 
 {/* source: src/engine/exec.lisp */}
 ## Background evals

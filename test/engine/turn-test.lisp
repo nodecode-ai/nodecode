@@ -519,9 +519,10 @@ be watched."
   ;; The rule reads the form: something in it can move, and nothing in it
   ;; assigns, destroys, defines or reads the REPL's history.
   (is-table (expected source) (eq expected (watchable-source-p source))
-    (t "(length (masks))" "a reader the model wrote")
+    (nil "(length (masks))" "an unexamined reader stays one-shot")
     (t "*level*" "a variable")
-    (t "(reduce #'* (sizes))" "* named as a function is not the history")
+    (nil "(reduce #'* (sizes))" "callback-taking readers stay one-shot")
+    (t "(* *level* 2)" "* as an operator is not the history")
     (nil "(+ 1 2)" "nothing in it can change")
     (nil "(setf *level* 2)" "an assignment")
     (nil "(incf (gethash :k *seen*))" "an assignment through a place")
@@ -532,6 +533,63 @@ be watched."
     (nil "(eval-status 1006)" "takes the output since the last look")
     (nil "(eval-await 1006)" "parks on a background evaluation and takes its output")
     (t "(list-evals)" "listing the evaluations only reads")))
+
+(deftest a-watch-admits-only-known-memory-read-operators ()
+  ;; Classification only: no resource is created, opened or closed here.
+  ;; An absent read/write syscall does not establish that a call only read.
+  (dolist (source '("(make-instance 'watch-resource)"
+                    "(close *watch-stream*)"
+                    "(unknown-reader *watch-state*)"
+                    "(let ((x (unknown-reader))) (list x *watch-state*))"
+                    "(if *watch-state* 1 (unknown-reader))"
+                    "(funcall *watch-reader*)"
+                    "(reduce *watch-reader* *watch-state*)"
+                    "(mapcar #'unknown-reader *watch-state*)"
+                    "(symbol-macrolet ((x (unknown-reader))) (list x *watch-state*))"))
+    (is (null (watchable-source-p source)) (format nil "~a stays one-shot" source)))
+  (dolist (source '("(length *watch-state*)"
+                    "(let ((x *watch-state*)) (list (length x) (car x)))"
+                    "(if *watch-state* (length *watch-state*) 0)"
+                    "(cond (*watch-state* (length *watch-state*)) (t 0))"
+                    "(case *watch-state* (:a 1) (otherwise 0))"
+                    "(gethash :count *watch-state*)"))
+    (is (watchable-source-p source) (format nil "~a remains watchable" source))))
+
+(deftest a-watch-refuses-global-symbol-macros-without-expanding-them ()
+  ;; Only install expansion data; never evaluate its unknown call.
+  (let ((alias (gensym "WATCH-ALIAS-")))
+    (eval `(define-symbol-macro ,alias (unknown-reader)))
+    (is (null (nle::watchable-form-p alias)) "a variable-shaped expansion stays one-shot")
+    (is (null (nle::watchable-form-p `(list ,alias))) "a nested expansion stays one-shot")
+    (is (nle::watchable-form-p `(list ',alias nle::*watch-state*)) "quoted names remain data")
+    (is (nle::replay-safe-form-p alias) "default restart classification is unchanged")))
+
+(deftest an-unexamined-call-runs-once-not-after-later-snippets
+    (with-session-store ("watch-once"))
+  ;; An in-memory counter stands in for any effect with no read/write syscall.
+  (with-durable-turn (turn "watch-once" :current t)
+    (nle:eval-string "(defparameter *watch-counter* 0) (defparameter *watch-other* 0)")
+    (nle:eval-string "(defun watch-once () (incf *watch-counter*))")
+    (is-eval "(watch-once)" (:absent "[watching:"))
+    (nle:eval-string "(setf *watch-other* 1)")
+    (is (= 1 (symbol-value (find-symbol "*WATCH-COUNTER*" '#:nodecode.evolved))) "only the requested evaluation ran")))
+
+(deftest an-old-unapproved-watch-closes-without-running-its-cached-thunk
+    (with-session-store ("watch-retained"))
+  ;; A live repair must retire watches admitted by the previous classifier.
+  ;; Neither the cached thunk nor compilation may run before that decision.
+  (with-durable-turn (turn "watch-retained" :current t)
+    (let ((calls 0))
+      (dolist (thunk (list nil (lambda () (incf calls))))
+        (let* ((nle::*watches* (make-hash-table :test #'equal))
+               (watch (nle::make-watch :text "(old-unknown-reader)"
+                                       :form '(nle::old-unknown-reader)
+                                       :thunk thunk :value "0" :object 0)))
+          (setf (gethash "watch-retained" nle::*watches*) (list watch))
+          (let ((lines (nle::run-watches "watch-retained")))
+            (is (some (lambda (line) (search "not a known memory read" line)) lines) "the form is retired before compilation or invocation"))
+          (is (= 0 calls) "a stale cached thunk is never invoked")
+          (is (null (gethash "watch-retained" nle::*watches*)) "the old watch is removed"))))))
 
 (deftest a-read-snippet-is-watched-and-comes-back-only-when-it-changes
     (with-session-store ("watch"))
@@ -548,19 +606,17 @@ be watched."
        "an assignment is not watched: it runs the watched snippets, and the moved one comes back"))
     (is-eval "(setf *watch-other* 5)" (:absent "[watched"))))
 
-(deftest a-reader-defined-and-called-in-one-snippet-is-watched
+(deftest an-unexamined-reader-is-one-shot-but-its-data-can-be-watched
     (with-session-store ("watch-reader"))
-  ;; The model's reader is a definition and its call in one snippet. The
-  ;; call is the read, and the one watched; the definition makes the snippet
-  ;; act, so the snippets already watched run first.
+  ;; Definitions can hide effects; a quiet call is not a purity proof.
   (with-durable-turn (turn "watch-reader" :current t)
     (nle:eval-string "(defparameter *watch-seen* 1) (defparameter *watch-left* 5)")
     (is-eval "*watch-left*" ("[watching:"))
     (nle:eval-string "(setf *watch-left* 4)")
     (is-eval "(defun watch-facts () (list :seen *watch-seen*)) (watch-facts)"
-      ("[watching:" "the call that closes the snippet is watched")
-      (:absent "[watched (watch-facts)" "a form watched again is not run again"))
-    (is-eval "(setf *watch-seen* 2)" ("[watched (watch-facts): (:SEEN 1) -> (:SEEN 2)]"))))
+      (:absent "[watching:" "an unexamined function is not repeated"))
+    (is-eval "(list :seen *watch-seen*)" ("[watching:"))
+    (is-eval "(setf *watch-seen* 2)" ("[watched (list :seen *watch-seen*): (:SEEN 1) -> (:SEEN 2)]"))))
 
 (deftest a-long-watched-value-names-the-places-that-changed
     (with-session-store ("watch-long"))
@@ -579,19 +635,19 @@ be watched."
        "a change as long as the value shows the new value whole")
       (:absent "…" "never cut"))))
 
-(deftest a-watched-snippet-that-would-act-is-closed-before-it-does
+(deftest a-watched-snippet-still-refuses-a-verb-before-it-acts
     (with-session-store ("watch-act"))
-  ;; Watched snippets only read: one that would act on a run again is refused
-  ;; at its verb's stamp, before the verb runs, and closed.
+  ;; Keep the runtime guard too: even a trusted reader can change at runtime.
   (with-durable-turn (turn "watch-act" :current t)
-    (nle:eval-string "(defparameter *watch-armed* nil) (defparameter *watch-fired* 0)")
-    (nle:eval-string "(defun watch-fire () (if *watch-armed* (progn (sh \"true\") (incf *watch-fired*)) :idle))")
-    (is-eval "(watch-fire)" ("[watching:"))
-    (is-eval "(setf *watch-armed* t)"
-      ("[no longer watching (watch-fire): it reached outside the image]"))
-    (let ((fired (symbol-value (find-symbol "*WATCH-FIRED*" '#:nodecode.evolved))))
-      (is (eql 0 fired) "the verb refused before it ran"))
-    (is-eval "(setf *watch-armed* nil)" (:absent "watch-fire" "a closed snippet stays closed"))))
+    (let* ((fired 0)
+           (watch (nle::make-watch :form '(nle::list-evals)
+                                   :thunk (lambda ()
+                                            (nle::receipt "calls" (list :verb "cell:act"))
+                                            (incf fired)))))
+      (multiple-value-bind (value closed) (nle::rerun-watch watch)
+        (declare (ignore value))
+        (is (equal "it reached outside the image" closed) "the verb's stamp closes the watch"))
+      (is (= 0 fired) "the verb refused before it acted"))))
 
 (deftest a-snippet-that-reaches-outside-the-image-is-not-watched
     (with-session-store ("watch-io"))
@@ -604,26 +660,16 @@ be watched."
 
 (deftest a-cell-verb-that-acts-in-the-image-is-never-watched
     (with-session-store ("watch-stamp"))
-  ;; A cell verb that only hands the running answer its buttons, reaching
-  ;; nothing outside the image, would be read as a read without the rule
-  ;; below: watched, it would run again after every later snippet and put an
-  ;; earlier question's buttons on later answers. A cell verb's stamp says
-  ;; what it is: one naming no family, or one that changes something, acts;
-  ;; one naming a read's family stays a read.
+  ;; Receipt stamps still reject effects, but a read stamp alone does not
+  ;; establish that an arbitrary wrapper is safe to repeat in the future.
   (with-durable-turn (turn "watch-stamp" :current t)
-    (nle:eval-string "(defparameter *watch-handed* 0) (defparameter *watch-shown* 1) (defparameter *watch-armed* nil)")
+    (nle:eval-string "(defparameter *watch-handed* 0) (defparameter *watch-shown* 1)")
     (nle:eval-string "(defun watch-hand () (receipt \"calls\" (list :verb \"cell:hand\")) (incf *watch-handed*))")
     (nle:eval-string "(defun watch-show () (receipt \"calls\" (list :verb \"cell:show\" :family \"recall\")) *watch-shown*)")
-    (nle:eval-string "(defun watch-maybe () (if *watch-armed* (watch-hand) :idle))")
-    (is-eval "(watch-hand)" (:absent "[watching" "a verb that acts in the image is not watched"))
-    (is-eval "(watch-show)" ("[watching:" "a cell's read stays watched"))
-    (is-eval "(setf *watch-shown* 2)" ("[watched (watch-show): 1 -> 2]"))
-    (is-eval "(watch-maybe)" ("[watching:"))
-    (is-eval "(setf *watch-armed* t)"
-      ("[no longer watching (watch-maybe): it reached outside the image]"
-       "a run again that reaches the stamp is closed"))
-    (let ((handed (symbol-value (find-symbol "*WATCH-HANDED*" '#:nodecode.evolved))))
-      (is (eql 1 handed) "the verb ran once: no run again repeated it, and the closed one refused before it acted"))))
+    (is-eval "(watch-hand)" (:absent "[watching"))
+    (is-eval "(watch-show)" (:absent "[watching:" "an opaque reader stays one-shot"))
+    (is-eval "(setf *watch-shown* 2)" (:absent "[watched (watch-show)"))
+    (is (= 1 (symbol-value (find-symbol "*WATCH-HANDED*" '#:nodecode.evolved))) "the verb ran only when requested")))
 
 (deftest eval-tool-hints-where-a-misqualified-symbol-lives ()
   ;; "Symbol RECALL-LOG not found in the COMMON-LISP package" is true and
