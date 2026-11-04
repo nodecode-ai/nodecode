@@ -193,6 +193,8 @@ At boot a layer file is skipped in two cases:
 
 The shipped definition stands. The boot line and `(cells)` name the file and the reason. Other files still load.
 
+A file of several definitions is judged one definition at a time: only the one that fails is skipped, named beside its file. The rest of the file loads.
+
 The gateway then submits the skipped files to a session named `layer`. The agent redefines or forgets each one. Each skipped file is handed once. This turn spends tokens.
 
 {/* source: src/engine/exec.lisp */}
@@ -204,6 +206,8 @@ The gateway then submits the skipped files to a session named `layer`. The agent
 | --- | --- |
 | `live here: ...` | Already running in this process. |
 | `not live until a relaunch: ...` | Needs a relaunch: a struct, a class, a package, a constant. |
+
+In a made cell's folder the file is the record: each write is also a commit, and a definition cut from the file leaves the image. Shipped source and overrides lose a definition only through `forget`. See [Change a made cell](/cells#change-a-made-cell).
 
 {/* source: src/organism/scribe.lisp */}
 ## Inspect and undo
