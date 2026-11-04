@@ -407,8 +407,11 @@ inside) and never writes; NIL when it cannot be named."
 
 (defun sandbox-requirements (store-path)
   "Why `--sandbox' cannot run here, as one sentence, or NIL when it can."
-  (cond #-linux
-        (t "--sandbox runs on Linux for now; macOS and Windows jails are not yet wired")
+  (cond #-(or linux darwin)
+        (t "--sandbox runs on Linux and macOS for now; the Windows jail is not yet wired")
+        #+darwin
+        ((sandbox-seatbelt-requirements))
+        #+linux
         ((null (srt-program))
          "--sandbox needs srt, Anthropic's sandbox runtime: npm install -g @anthropic-ai/sandbox-runtime (or set NODECODE_SRT to it)")
         ((null (nlk::executable-on-path "bwrap"))
@@ -434,6 +437,7 @@ inside) and never writes; NIL when it cannot be named."
 when it cannot run (SANDBOX-REQUIREMENTS), else write the srt settings under
 <home>/sandbox/, pick the loopback port the jailed gateway binds, set
 *SANDBOX-PLAN* for FRONT-ORGANISM and answer NIL."
+  #+darwin (return-from sandbox-launch-preflight (sandbox-seatbelt-preflight store-path))
   (let ((store (merge-pathnames (or store-path nlk::*default-store-path*))))
     (or (sandbox-requirements store)
         (let* ((home (nlk:home))
@@ -517,15 +521,20 @@ must be the host-side listener on PORT (CALL-WITH-SANDBOX-STDOUT)."
 
 (defun sandbox-wrap-command (command)
   "COMMAND, a serve argv, as this shell spawns it: unchanged outside a
-sandboxed shell; inside one, jailed (SANDBOX-WRAP), to be spawned with
+sandboxed shell; inside one, jailed -- under Seatbelt on macOS
+(SANDBOX-SEATBELT-WRAP), else by srt (SANDBOX-WRAP), to be spawned with
 the plan's listener as its stdout (CALL-WITH-SANDBOX-STDOUT)."
   (let ((plan *sandbox-plan*))
-    (if (and plan command)
-        (sandbox-wrap command :srt (getf plan :srt) :settings (getf plan :settings)
-                              :port (getf plan :port) :run (getf plan :run) :cache (getf plan :cache)
-                              :srt-temporary (getf plan :srt-temporary)
-                              :jail-temporary (getf plan :jail-temporary))
-        command)))
+    (cond ((not (and plan command)) command)
+          ((getf plan :seatbelt)
+           (sandbox-seatbelt-wrap command :profile (getf plan :seatbelt) :port (getf plan :port)
+                                          :run (getf plan :run) :cache (getf plan :cache)
+                                          :temporary (getf plan :temporary)
+                                          :proxy-port (getf plan :proxy-port)))
+          (t (sandbox-wrap command :srt (getf plan :srt) :settings (getf plan :settings)
+                                   :port (getf plan :port) :run (getf plan :run) :cache (getf plan :cache)
+                                   :srt-temporary (getf plan :srt-temporary)
+                                   :jail-temporary (getf plan :jail-temporary))))))
 
 (defun sandbox-listener (port)
   "A socket listening on the host's loopback PORT: the jail's one way in,
@@ -547,7 +556,9 @@ outside a sandboxed shell, and answer what it answers. This shell's own
 copy of the listener closes once FUNCTION returns: the jail alone holds it,
 so the port refuses once the jail is gone."
   (let ((plan *sandbox-plan*))
-    (if (null plan)
+    ;; Under Seatbelt the jailed gateway binds the host's loopback port
+    ;; itself: there is no namespace to hand a listener into.
+    (if (or (null plan) (getf plan :seatbelt))
         (funcall function nil)
         (let ((listener (sandbox-listener (getf plan :port))))
           (unwind-protect (funcall function (sb-bsd-sockets:socket-file-descriptor listener))
