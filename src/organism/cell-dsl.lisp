@@ -158,7 +158,7 @@ all of it comes back off."
   ;;       REGISTER-COMMAND under the cell's key, LABEL and CATCHES naming
   ;;       the failure line the way it does (the command and ERROR by
   ;;       default), SESSION NIL for a command that acts on no session,
-  ;;       TRIGGER the character typed at a word's start that opens it;
+  ;;       TRIGGER the character typed as the draft's first that opens it;
   ;;       RUN called with no argument answers the command's dialog. An
   ;;       ARGUMENT-HINT or COMPLETE a cell written before still passes is
   ;;       taken and shown nowhere. Stop takes the cell's commands out of

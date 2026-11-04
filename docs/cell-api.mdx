@@ -179,7 +179,7 @@ A `:command` takes these keys:
 | `:description` | Its line in the slash menu. |
 | `:label`, `:catches` | A `:catches` condition answers `LABEL: it`. Defaults: the command's name, and `error`. |
 | `:session` | `nil` for a command that acts on no session. |
-| `:trigger` | One character that opens it at a word's start. |
+| `:trigger` | One character that opens it when typed as the draft's first character. |
 
 A command is its name: nobody types after it. Typed alone, RUN gets an empty ARGS, which `nle:bare-args-p` tells, and answers a `nle:list-dialog` of what it offers. A row is `(nle:run-row LABEL LINE)`, whose pick runs LINE, or `(nle:ask-row LABEL ASK LINE :placeholder TEXT :verb WORD)`, which asks for one line of text under ASK and then runs LINE with the text after it. The shell asks in its composer, a room in its own way. RUN reads those lines as it always read its ARGS. `:argument-hint` and `:complete` are still accepted, so an older cell loads, and nothing shows them.
 

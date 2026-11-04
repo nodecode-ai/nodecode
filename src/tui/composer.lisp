@@ -282,21 +282,16 @@ strict case-insensitive prefix, or full-length case-insensitive equality)."
             when (token-suggestion filter path :file)
               collect it))))
 
-(defun composer-trigger-command (model msg &aux (editor (chat-model-editor model))
-                                                (key (nlt:key-event-code msg)))
-  "The cell command whose TRIGGER the key MSG just typed at a word's
-start, or NIL."
+(defun composer-trigger-command (model msg &aux (key (nlt:key-event-code msg)))
+  "The cell command whose TRIGGER the key MSG just typed as the draft's
+first character, or NIL."
   ;; The core's `$' opens /index here, so a definition is named from the
-  ;; index's own list. Only at the end of a draft that is no slash command,
-  ;; and only where the character starts a word: `a$b' and `/x $' stay text.
-  (when (and (characterp key) (composer-cursor-at-end-p editor))
-    (let* ((text (editor-value editor))
-           (end (length text)))
-      (when (and (plusp end) (char= key (char text (1- end)))
-                 (not (slash-input-p text))
-                 (or (= end 1) (blank-char-p (char text (- end 2)))))
-        (find (string key) *gateway-commands*
-              :key #'slash-command-trigger :test #'equal)))))
+  ;; index's own list. Only as the whole draft so far: anywhere later in it
+  ;; -- `a$b', `costs $5', a second line's start -- the character is text.
+  (when (and (characterp key)
+             (string= (editor-value (chat-model-editor model)) (string key)))
+    (find (string key) *gateway-commands*
+          :key #'slash-command-trigger :test #'equal)))
 
 (defun composer-suggestions-for (model)
   "The live dropdown's rows, from whichever lane matches: the slash catalog
