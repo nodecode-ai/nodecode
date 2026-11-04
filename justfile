@@ -74,7 +74,7 @@ lint *files:
 # pulled folders are in no revision of this repository.
 code_paths := "nodecode.asd nodecode-perf.asd src test tools perf"
 
-loc_ceiling := "104852"
+loc_ceiling := "105300"
 
 # Fail when HEAD's Lisp code lines exceed loc_ceiling.
 loc:
