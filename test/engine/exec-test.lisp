@@ -792,6 +792,52 @@ completed. BODY runs with SID bound."
 (deftest sh-runs-in-the-named-directory ()
   (is (equal (format nil "/tmp~%") (nle:sh "pwd" :directory "/tmp"))))
 
+;; A shell child names the session that ran it -- a task claim, a log line --
+;; from NODECODE_SESSION_ID, the id exactly as Nodecode prints it.
+(deftests sh-tells-its-child-the-session-id (session expected why)
+  ;; Given a snippet of SESSION's turn,
+  (let ((nle::*current-durable-turn* (and session (detached-turn session "t-session-env"))))
+    ;; when its shell child prints NODECODE_SESSION_ID,
+    (destructuring-bind (scribe-id output)
+        (let ((*read-eval* nil))
+          (read-from-string
+           (nle:eval-string
+            "(list nlk:*scribe-session-id* (sh \"printenv NODECODE_SESSION_ID\"))")))
+      ;; then it reads the id the snippet's session is, exactly, or nothing.
+      (is (equal session scribe-id) "the snippet's session is the scribe's")
+      (if expected
+          (is (equal (format nil "~a~%" expected) output)
+              (format nil "~a; the child read ~s" why output))
+          (is (search "[exit 1]" output)
+              (format nil "~a; the child read ~s" why output)))))
+  (a-shell-session "s-K3F9Q2ZA" "s-K3F9Q2ZA" "a shell's session, its case kept")
+  (a-durable-session "session-MHI0Q2B-K3J9" "session-MHI0Q2B-K3J9" "a durable session")
+  (a-fork "fork-turn-MHI0Q2B-K3J9-1" "fork-turn-MHI0Q2B-K3J9-1" "the fork's own id")
+  (a-fork-whose-name-was-taken "fork-turn-MHI0Q2B-K3J9-1-2" "fork-turn-MHI0Q2B-K3J9-1-2"
+   "the numbered id, not the name it was taken from")
+  (the-gateway-pseudo-session "s-GATEWAY" nil "the gateway's boot session is no session to claim")
+  (outside-a-turn nil nil "no session, no id"))
+
+;; A Nodecode started from another Nodecode's shell inherits that one's id:
+;; its own sessions replace it, and where there is none to give it is gone.
+;; The environment is an argument, so no test sets this process's own.
+(deftests session-shell-environment-replaces-an-inherited-id (session expected why)
+  ;; Given an environment that inherited s-PARENT,
+  (let* ((inherited (list "PATH=/bin" "NODECODE_SESSION_ID=s-PARENT" "NODECODE_SESSION_IDX=kept"))
+         ;; when a shell child of SESSION is given its environment,
+         (environment (nle::session-shell-environment session inherited)))
+    ;; then it holds SESSION's id once, or none, and every other entry.
+    (is (equal expected (remove-if-not (lambda (entry) (uiop:string-prefix-p "NODECODE_SESSION_ID=" entry))
+                                       environment))
+        why)
+    ;; the other entries ride along, a longer name among them
+    (is (subsetp (list "PATH=/bin" "NODECODE_SESSION_IDX=kept") environment :test #'equal)))
+  (a-session "s-K3F9Q2ZA" '("NODECODE_SESSION_ID=s-K3F9Q2ZA") "its own id, not the parent's")
+  (a-fork "fork-turn-MHI0Q2B-K3J9-1" '("NODECODE_SESSION_ID=fork-turn-MHI0Q2B-K3J9-1")
+   "the fork's own id, not the parent's")
+  (the-gateway-pseudo-session "s-GATEWAY" '() "neither the gateway's id nor the parent's")
+  (outside-a-turn nil '() "no id at all"))
+
 (deftest sh-rides-the-eval-snippet ()
   (is (equal "\"hi\"" (nle:eval-string "(sh \"printf hi\")")))
   (is (search "[exit 1]" (nle:eval-string "(sh \"exit 1\")"))))

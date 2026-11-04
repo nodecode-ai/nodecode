@@ -72,7 +72,6 @@ is the argv itself outside a sandboxed shell."
          ;; thing put in it: without this, the spawn opening it fails.
          (log (ensure-directories-exist (stdio-log-path store-path)))
          (from (or (nlk:file-bytes log) 0))
-         (word (format nil "~a=" +front-variable+))
          (exited (list nil)))
     (bind (((pid _ _ process pipe)
             ;; A jailed serve's stdout is the listener the jail is reached by
@@ -80,9 +79,9 @@ is the argv itself outside a sandboxed shell."
             (call-with-sandbox-stdout
              (lambda (listener)
                (spawn-program (session-argv (funcall wrap command))
-                              :environment (cons (format nil "~a~d" word (sb-posix:getpid))
-                                                 (remove-if (lambda (entry) (uiop:string-prefix-p word entry))
-                                                            (sb-ext:posix-environ)))
+                              :environment (environment-with
+                                            (list (format nil "~a=~d" +front-variable+
+                                                          (sb-posix:getpid))))
                               :output (or listener log) :error-output (if listener log :output)
                               :input :stream)))))
       (nlk:note-boot-phase "organism-spawned" pid)

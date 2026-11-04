@@ -1991,6 +1991,40 @@ given, is called with each piece as it arrives."
            (incf taken got))
   (values (get-output-stream-string out) (>= taken limit)))
 
+;;; A shell child reads the id of the session that ran it from
+;;; NODECODE_SESSION_ID, to name that session back -- a task claim, a log
+;;; line, a script that keys its files off the session.
+(defparameter +session-id-variable+ "NODECODE_SESSION_ID"
+  "The variable a shell child reads its session's id from.")
+
+;;; Defined here, its first reader in load order; the gateway's boot
+;;; (client/client-session.lisp) names its session by it.
+(defparameter +gateway-session-id+ "s-GATEWAY"
+  "The session a gateway's boot names: one per home across every restart,
+so a unit that comes up at each login and after each crash leaves one
+session behind, not one a start.")
+
+(defun claimable-session-id (session-id)
+  "SESSION-ID when a child may name it as its own, else NIL: no session
+outside a turn, and none for the gateway's boot session +GATEWAY-SESSION-ID+,
+which every home has one of and no one works in."
+  (and (stringp session-id) (plusp (length session-id))
+       (string/= session-id +gateway-session-id+)
+       session-id))
+
+(defun session-shell-environment (&optional (session-id nlk:*scribe-session-id*)
+                                            (environment (nlk:process-environment)))
+  "ENVIRONMENT, this process's by default, for a shell child of SESSION-ID's
+snippet: NODECODE_SESSION_ID the id exactly, case kept, or no
+NODECODE_SESSION_ID at all where CLAIMABLE-SESSION-ID refuses it -- a
+Nodecode started from another Nodecode's shell inherits that one's id, and
+must not hand it on as its own."
+  (let ((id (claimable-session-id session-id)))
+    (nlk:environment-with (list (if id
+                                    (format nil "~a=~a" +session-id-variable+ id)
+                                    +session-id-variable+))
+                          environment)))
+
 (defun sh (command &key directory timeout)
   "Run COMMAND — a string through the shell's -c (*SHELL*: bash where the
 machine has it, else /bin/sh; Git for Windows' sh.exe on Windows), a list as argv with no shell — and answer its output: stdout and stderr merged as they arrived, with a
@@ -2051,6 +2085,7 @@ after N s] line."
                                              (shell-argv command)
                                              command))
                            :directory (or directory (ambient-session-directory :present t))
+                           :environment (session-shell-environment)
                            :error-output :output)))
       (when snippet (setf (exec-process-child-pid snippet) pid
                           (exec-process-stalled-ticks snippet) 0))

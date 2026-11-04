@@ -1643,11 +1643,9 @@ floor."
     (nlk:engage-floor :session-id sid)
     (values sid token)))
 
-;;; Spelled the way FRESH-SESSION-ID spells the rest.
-(defparameter +gateway-session-id+ "s-GATEWAY"
-  "The session a gateway's boot names: one per home across every restart,
-so a unit that comes up at each login and after each crash leaves one
-session behind, not one a start.")
+;;; +GATEWAY-SESSION-ID+, the session a gateway's boot names, is spelled the
+;;; way FRESH-SESSION-ID spells the rest; engine/exec.lisp defines it, since a
+;;; shell child of that session is given no id to claim.
 
 ;; PAUSE bounds how long a shell's close leaves the store unowned, beside the boot.
 (defun await-free-store (path &key (held-p #'nlk::store-lease-held-elsewhere-p) (pause 1) tick)
