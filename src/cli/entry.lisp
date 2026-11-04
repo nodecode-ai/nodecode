@@ -390,8 +390,10 @@ resolves, what `nodecode --help' prints, what a mistyped command is matched
 against.")
 
 (defvar *sandbox-asked* nil
-  "Whether `--sandbox' was on the command line (PARSE-LAUNCH-ARGUMENTS):
-the organism runs in an OS jail and the shell stays outside (sandbox.lisp).")
+  "Whether `--sandbox' was on the command line (PARSE-LAUNCH-ARGUMENTS), and
+once MAIN has decided (SANDBOX-DECISION), whether this launch runs its
+organism in the OS jail -- the default where the OS has one -- with the
+shell or launcher outside it (sandbox.lisp).")
 
 (defvar *sandbox-refused* nil
   "Whether `--no-sandbox' was on the command line (PARSE-LAUNCH-ARGUMENTS):
