@@ -62,7 +62,7 @@ Mention the bot in one of the channels you picked. It replies in a thread.
 {/* source: cells/channels/kit/status.lisp */}
 ## Who it answers
 
-The bot answers only the channels, users and roles you picked, and in a channel only when someone mentions it. If a stranger messages it directly, it replies with a pairing code, and `/channels pair CODE` lets that person in. See [Safety and trust](security.mdx).
+The bot answers only the channels, users and roles you picked, and in a channel only when someone mentions it. If a stranger messages it directly, it replies with a pairing code, and `/channels` lets that person in: its row asks for the code. See [Safety and trust](security.mdx).
 
 ## Change it later
 
@@ -73,7 +73,7 @@ The bot answers only the channels, users and roles you picked, and in a channel 
 | Web page | `nodecode web` > Control > Channels |
 | A session | Say `set up discord` |
 
-`/channels` shows the state of each channel. `/channels paired` lists the people you let in, and `/channels unpair USER-ID` removes one.
+`/channels` shows the state of each channel and the people you let in, each with a row that removes them.
 
 ## More channels
 

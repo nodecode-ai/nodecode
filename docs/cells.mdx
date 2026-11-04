@@ -1,26 +1,25 @@
 ---
 title: Cells
-summary: "Ask for a feature and the agent builds it in: a new command, loaded into the running Nodecode. Nothing restarts."
+summary: "Add a cell from the hub and the agent gains a skill: here, language servers that check every file it writes."
 ---
 
-Nodecode is built from cells. Discord, Telegram, cron, the guard: each is a folder you can see in `/cells` and switch off. Ask for a part it does not have, and the agent writes one and loads it into the running process.
+Nodecode is built from cells. Discord, Telegram, cron, the guard: each is a folder you can see in `/cells` and switch off. More are on the hub, and one line adds one.
 
 <Recording name="cells" />
 
-Asked for a `/owed` command that lists who owes money, it:
+`nodecode add nc://lsp` adds [nodecode-lsp](https://github.com/nodecode-ai/cells/tree/main/tools/nodecode-lsp), a port of [oh-my-pi](https://github.com/can1357/oh-my-pi)'s language-server module:
 
-1. Makes a cell of its own: the folder `mike-owed`, with its own git repository.
-2. Writes the command: a function that reads the ledger, with two small helpers.
-3. Loads the cell and runs the command once, before it says it works.
+1. Before installing, it shows the repository, the commit it is pinned at, and that the cell runs with full access to your files and keys.
+2. Pyright is on the PATH, so the cell starts it the first time the agent writes a Python file.
+3. Asked to make `Reader.feed` take `str`, the agent changes the signature and leaves the `bytes` buffer under it. The eval that wrote the file comes back with pyright's error at `app/sse.py:12:9`: Operator "+=" not supported for types "bytes" and "str".
+4. The agent writes both files as text, and the eval's tests pass. `/cells` lists lsp under From the hub, running.
 
-`/owed` answers at once, and `/cells` lists the new cell under Your own, running. The session never stopped.
-
-{/* source: src/organism/made-cells.lisp */}
+{/* source: src/gateway/control.lisp, src/organism/cells.lisp, src/tui/cells-sheet.lisp */}
 ## How
 
-- Say what it should do: "Make a cell with a `/tokyo-time` command that says the time in Tokyo." The agent asks only what it cannot work out, such as an API key.
-- `/cells` lists every cell. Space switches one off and keeps its folder.
-- A cell is a git repository. Push it anywhere to share it.
-- More cells, Nodecode's and the community's, are under <CellsTab />. `nodecode add nc://NAME` installs one.
+- `nodecode add nc://NAME` installs a cell from the hub. With Nodecode running it turns on there, with no restart; otherwise it loads at the next launch.
+- In `/cells`, the Hub tab lists the same cells. Space shows where one comes from; a second Space installs it.
+- Ask for a part that does not exist yet ("Make a cell that...") and the agent builds it as a cell of its own.
+- A cell is a git repository. Push it anywhere to share it. The rest are under <CellsTab />.
 
 Every rule and table: [Cells reference](cells-reference.mdx). How a cell is written: [Cell API](cell-api.mdx).

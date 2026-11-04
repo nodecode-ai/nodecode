@@ -85,7 +85,7 @@ discarding an entire session in one admission pass.")
     hook define-hook unhook held-definitions revert cells restart-cells new-cell move-to-cell fold-cell
     config-get config-set definition-text definition-location
     models select-model select-effort agents agent turn recall-log recall-entry
-    define-memory define-skill index help)
+    define-memory define-skill index system-prompt agents-md soul-md help)
   "The verbs (help) indexes, in the order it lists them. Mutable material:
 a verb the organism grows for itself is pushed here to be found.")
 
@@ -148,7 +148,7 @@ This session's own model. The footer names it; (models), (select-model ...) and 
 A model of your own. A provider whose base_url is a machine you run - localhost, a private or tailnet address, a .local or .ts.net name - is listed under Local in /models' Main tab: providers.<id> = {\"sdk\": \"openai-completions\", \"base_url\": \"http://HOST:PORT/v1\"}, its models from GET <base_url>/models.
 
 nodecode.ai's API: Nodecode's own models, at https://api.nodecode.ai/v1, OpenAI's wire, provider id nodecode. `nodecode login` or /login (the operator's to run; signs in at nodecode.ai in a browser) saves the key at auth.json api_keys.nodecode.key and writes providers.nodecode {\"sdk\": \"openai-completions\", \"base_url\": \"https://api.nodecode.ai/v1\"}; a key made at https://nodecode.ai/account/keys works the same. (getf (resolve-provider-credential \"nodecode\") :key) reads it: never print it or put it in a shell command or a file. Keys start with sk-nc-; any other key answers 401 invalid_api_key, and the fix is a new `nodecode login`. Routes: POST /v1/chat/completions, POST /v1/images/generations, GET /v1/models (what the key may call), GET /v1/models/ID, GET /v1/usage (the plan's requests left, its end and quota reset, seats, the credit; the operator's footer and /usage draw it); there is no /v1/messages or /v1/responses. A call is taken from the account's plan month first, then its topped-up balance (https://nodecode.ai/pricing); with neither it answers 402.
-- Cyber v1, foresight-cyber-v1: the security model, a chat model (DeepSeek V4.1 Flash 1017 with Foresight Labs finetunes), 1M context, 16K output. A breach, a CVE, a patch or a server or website to check starts at (help :security), the cyber-security cell's manual, whatever model runs the session. Ask Cyber v1 one security question with the complete call above, or make it this session's model: (select-model \"foresight-cyber-v1\" :provider \"nodecode\"), `/models nodecode foresight-cyber-v1` in a shell.
+- Cyber v1, foresight-cyber-v1: the security model, a chat model (DeepSeek V4.1 Flash 1017 with Foresight Labs finetunes), 1M context, 16K output. A breach, a CVE, a patch or a server or website to check starts at (help :security), the cyber-security cell's manual, whatever model runs the session. Ask Cyber v1 one security question with the complete call above, or make it this session's model: (select-model \"foresight-cyber-v1\" :provider \"nodecode\"), or in a shell /models' Main tab: nodecode, then Cyber v1.
 - Image v1, foresight-image-v1: the image model (Qwen-Image 2.1 Turbo with Foresight Labs finetunes). POST /v1/images/generations with {\"model\", \"prompt\", \"n\" 1-4, \"size\" \"WxH\" up to 2048x2048 or \"auto\", \"response_format\" \"b64_json\", \"seed\" optional} answers {\"data\": [{\"b64_json\": ...}], \"size\", \"usage\"}: the images come back in the body, never as URLs. nlk:http answers (values BODY STATUS HEADERS TRUNCATED); check STATUS is 200 before decoding BODY:
   (multiple-value-bind (body status)
       (nlk:http :post \"https://api.nodecode.ai/v1/images/generations\" :timeout 600
@@ -164,7 +164,7 @@ nodecode.ai's API: Nodecode's own models, at https://api.nodecode.ai/v1, OpenAI'
   (let ((*auxiliary-model* (list :provider \"nodecode\" :model \"foresight-decide-v1\")))
     (nlk:decode-json (complete \"\" (shasht:write-json REQUEST nil) :max-tokens 1024 :fallback-p nil)))
 
-The decider pin. general.decider_model is the decider /models' Decider tab picks: djev (DJev, model dgemma) on a machine of your own, http://127.0.0.1:8011 unless providers.djev.base_url moves it, called as POST <base>/v1/systemone with the same request shape. `/models decider djev` pins it, `/models decider none` takes it out. Decide v1 is the hosted decider; the pin does not offer it.")
+The decider pin. general.decider_model is the decider /models' Decider tab picks: djev (DJev, model dgemma) on a machine of your own, http://127.0.0.1:8011 unless providers.djev.base_url moves it, called as POST <base>/v1/systemone with the same request shape. /models' Decider tab pins it, and its None takes it out. Decide v1 is the hosted decider; the pin does not offer it.")
     (:docs "the user reference, https://nodecode.ai/docs - what to tell a person asking how to install, sign in, pick a model, connect a channel, change a setting, update or fix Nodecode; every page as markdown at /docs/SLUG.md, the map at /docs/llms.txt" . "The user reference, https://nodecode.ai/docs: how to install, run, set up and fix Nodecode, written for the people who use it, not for its internals.
 
 When someone asks how to do something with Nodecode - install it, sign in, pick a model, connect a channel, change a setting, update, roll back, recover from a failure - read the page that answers it and answer from it, linking https://nodecode.ai/docs/SLUG so they can read on. Every page is also markdown at https://nodecode.ai/docs/SLUG.md (the overview is index.md); https://nodecode.ai/docs/llms.txt is the map and https://nodecode.ai/docs/llms-full.txt all of it in one file. (nlk:http :get URL) answers (values BODY STATUS ...). The reference follows the published release: where a page and this image disagree, this image is the truth - answer from it and say the page is behind.
@@ -452,8 +452,10 @@ description or file holds text, this project's first."
 
 (defun index-slash (args session-id &aux (args (string-trim " " (or args ""))))
   "/index: bare, the meter and the picker -- hot first, a tab per cell,
-Enter inserting $name; `reload', this conversation pinned again at its
-next request; any other text, what (index text) finds."
+Enter inserting $name, and after them a row asking for words to search what
+is kept for, its files too, and one pinning the index again; `reload', the
+line that row runs, this conversation pinned again at its next request; any
+other text, the line the search runs, what (index text) finds."
   (cond ((string= args "")
          (let ((settings (index-settings)))
            (values (nlk:knowledge-meter session-id settings)
@@ -470,7 +472,14 @@ next request; any other text, what (index text) finds."
                       :search-placeholder "Type to filter what is kept…"
                       :empty-label "Nothing kept yet — (help :layer) says how to keep a memory or a skill"
                       :hint "esc close  up/down navigate  enter insert $name  tab cell  type search"
-                      :rows rows)))))
+                      ;; The two rows that act come last: the `$' a prompt
+                      ;; opens this on lands on a name to insert.
+                      :rows (append rows
+                                    (list (ask-row "Search what is kept" "Search" "/index"
+                                                   :detail "names, descriptions and the files' own text, hot and cold"
+                                                   :placeholder "Words to look for" :verb "search")
+                                          (run-row "Pin the index again" "/index reload"
+                                                   :detail "this conversation reads it fresh at its next request"))))))))
         ((string-equal args "reload")
          (nlk:mark-index-refresh session-id)
          "index: pinned again at this conversation's next request")
@@ -3933,13 +3942,51 @@ the reason rather than send it into the same refusal."
 ;;; ones are told at the turn, the pin's own among them, so a room's lanes
 ;;; pin one prefix and part only at their own asks.
 
+;;; --- the agent's own prompt, rules and soul --------------------------------
+;;; Three files make the agent who it is, and one verb names each: a handle,
+;;; like a symlink, never a copy. EDIT, WRITE-FILE and their receipts work on
+;;; the path it answers, and the next turn reads what they wrote. The rules and
+;;; the soul were files already, read fresh every request (OPERATOR-RULES-SECTION)
+;;; and every message (the channel kit's soul); the prompt becomes one here,
+;;; SYSTEM.md, read in place of the shipped *SYSTEM-PROMPT* while it is there.
+
+(defun system-prompt ()
+  "The path of the home's SYSTEM.md: the system message every request opens
+on while it is there and not blank, the shipped *SYSTEM-PROMPT* while it is
+not. (edit (system-prompt) old new) changes the prompt from the next turn;
+(write-file (system-prompt) *system-prompt*) starts the file from the
+shipped one; deleting the file goes back to it."
+  (sb-ext:native-namestring (nlk:home "SYSTEM.md")))
+
+(defun agents-md ()
+  "The path of the home's AGENTS.md, the rules every session reads as its
+`operator-rules', fresh each request: (edit (agents-md) old new)."
+  (sb-ext:native-namestring (nlk:home "AGENTS.md")))
+
+(defun soul-md ()
+  "The path of the home's SOUL.md, the persona a channel reads before every
+message unless its soul_file names another: (edit (soul-md) old new)."
+  (sb-ext:native-namestring (nlk:home "SOUL.md")))
+
+(defun standing-system-prompt ()
+  "The system message a request opens on: SYSTEM.md's text when the file is
+there and not blank (SYSTEM-PROMPT), else the shipped *SYSTEM-PROMPT*."
+  ;; Read at each turn's first round, as AGENTS.md is: an edit binds the next
+  ;; turn. A file that is there but cannot be read signals, loud, never a
+  ;; quiet fall back to the shipped prompt.
+  (let* ((file (probe-file (nlk:home "SYSTEM.md")))
+         (text (and file (nlk:read-text file))))
+    (if (and text (plusp (length (nlk:trimmed text))))
+        text
+        (copy-seq *system-prompt*))))
+
 (defun current-prompt (session-id bindings)
   "=> (values BASE SECTIONS TOOLS STANDING): the prompt SESSION-ID would be
 given if it began now — the system prompt, its standing and live sections,
 and the payload of the tool BINDINGS — and of SECTIONS the standing ones,
 the ones a pin holds."
   (let ((standing (kept-sections (read-harness-sections session-id))))
-    (values (copy-seq *system-prompt*)
+    (values (standing-system-prompt)
             (kept-sections (append standing (read-live-sections session-id)))
             (tools-payload bindings)
             standing)))
@@ -4090,7 +4137,7 @@ fold of the fact reproduces."
                                        turns floor
                                        :budget window
                                        :tools (or tools (tools-payload))
-                                       :system-prompt (or system-prompt *system-prompt*)
+                                       :system-prompt (or system-prompt (standing-system-prompt))
                                        :head head
                                        :calibration calibration
                                        :floors floors)))

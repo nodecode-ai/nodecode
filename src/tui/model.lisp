@@ -172,6 +172,10 @@ for the many bars and rows that paint one run of text in one tone."
    ;; What the shell says about what the operator just did or asked, in the
    ;; composer's placeholder: a COMPOSER-STATUS, or NIL (SHOW-STATUS).
    (composer-status :initform nil :accessor chat-model-composer-status)
+   ;; The ask the composer wears (tui/commands/bare.lisp ASK-IN-COMPOSER):
+   ;; a plist of :LABEL, :LINE, :PLACEHOLDER and :VERB, the text typed under
+   ;; it running LINE on Enter, or NIL for the plain composer.
+   (composer-ask :initform nil :accessor chat-model-composer-ask)
    ;; The toasts up on the frame, newest first (TOAST); what each notice
    ;; key last said, so a keyed notice toasts once for its words; the toast
    ;; under the pointer; and where the last frame placed them (PLACE-TOASTS).

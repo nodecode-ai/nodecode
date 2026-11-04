@@ -97,9 +97,9 @@ then sealed under BUILD."
     (is (handler-case (progn (nle::rename-saved-image "nope" "other") nil) (error () t)) "a missing snapshot is refused")
     (is (handler-case (progn (nle::rename-saved-image "demo" "../x") nil) (error () t)) "a bad name is refused"))
   (with-stubbed-fdefinition (nlk::processes-running (path) (declare (ignore path)) '(4242))
-    (is (search "running now" (handler-case (progn (nle::rename-saved-image "demo" "other") "")
-                                (error (condition) (princ-to-string condition))))
-        "the running snapshot keeps its name")
+    (let ((refusal (handler-case (progn (nle::rename-saved-image "demo" "other") "")
+                     (error (condition) (princ-to-string condition)))))
+      (is (search "running now" refusal) "the running snapshot keeps its name"))
     (is (probe-file (nle::saved-image-path "demo")))))
 
 (deftest a-booted-snapshot-answers-to-its-directorys-name ()

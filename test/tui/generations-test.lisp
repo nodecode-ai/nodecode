@@ -276,7 +276,7 @@ an edits call names, the number a rollback does."
       (is (equal "/api/gateway/generations/plan?to=7" (second (first calls))))
       (is (equal "Kept rt-time, sf-time +1" (nle::history-change-title (history-on model))) "on the change that holds 7")
       (is (sheet-row model "generation 7"))
-      (is (equal "generations takes a generation's number, or nothing: /generations [N]"
+      (is (equal "generations: no generation by that number; /generations alone lists them"
                  (nle::slash-generations-op model "x y")))))
   (with-frame-model (model 120 40 :session-id "history-n-missing")
     (with-history-gateway (calls)
@@ -367,7 +367,8 @@ an edits call names, the number a rollback does."
                     :key (lambda (row) (nlk:json-value row :string "label")) :test #'equal) "what the restore moves, a line a folder")
           (is (equal "Nothing of yours moves; nodecode stays as it is" (nlk:json-value dialog :string "summary")) "what going back undoes: the one change between moved nodecode alone, which a checkout keeps")
           (is (equal "warn" (nlk:json-value dialog :string "tone"))))
-        (is (search "/generations 8 keep" text) "the words name the line that goes"))
+        (is (search "Keep the edits first" text) "the words say what goes")
+        (is (not (search "/generations 8" text)) "and name no line to type"))
       (multiple-value-bind (text dialog) (nle::headless-generations "3" nil)
         (declare (ignore text))
         (is (uiop:string-prefix-p "Can't go back to " (nlk:json-value dialog :string "title")))
@@ -410,7 +411,7 @@ an edits call names, the number a rollback does."
       (nle::headless-generations "8 go" nil)
       (is (equal '((:rollback 8)) calls) "go touches no edits")
       (setf calls '())
-      (is (search "/generations [N [go|keep|discard]]" (nle::headless-generations "8 now" nil)) "anything else is the usage")
+      (is (search "no such change" (nle::headless-generations "8 now" nil)) "anything else is refused")
       (is (null calls) "and moves nothing"))
     (with-stubbed-fdefinitions ((nle::generations-answer () (history-answer))
                                 (nle::generation-plan-answer (to) (plan-answer to))

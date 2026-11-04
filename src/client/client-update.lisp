@@ -508,6 +508,9 @@ thread reads it and clears this place.")
      (render-state model))
     ((eq (nlt:key-event-code msg) :escape)
      (cond
+       ;; Esc puts away the ask the composer wears first: it is what the
+       ;; operator is in the middle of (tui/commands/bare.lisp).
+       ((put-ask-away model) (render-state model))
        ;; Esc on a running turn stops it (Ctrl+C on an empty composer
        ;; calls the same INTERRUPT-TURN).
        ((interrupt-turn model))
@@ -569,6 +572,10 @@ thread reads it and clears this place.")
          (release-held-prompt model)
          (show-status model "Held prompt dropped")
          (return-from update (values model nil)))
+       ;; Under an ask the text is its answer, whatever it starts with: Enter
+       ;; runs the ask's line with it (tui/commands/bare.lisp SUBMIT-ASK).
+       (when (chat-model-composer-ask model)
+         (return-from update (values model (nth-value 1 (submit-ask model text)))))
        (when (slash-input-p text)
          ;; Slash commands dispatch through the shared submit seam (ui.lisp);
          ;; EXECUTE-SLASH-COMMAND below routes the gateway-backed ones over

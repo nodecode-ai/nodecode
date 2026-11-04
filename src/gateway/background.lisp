@@ -807,6 +807,11 @@ ends the gateway ends it too."
         (or (string= own group) (uiop:string-prefix-p (concatenate 'string group "/") own))
         (and state.main-pid (member state.main-pid (process-lineage)) t))))
 
+(defun inside-own-gateway-p (&key (home *home*))
+  "Whether this process runs inside HOME's gateway (INSIDE-GATEWAY-P), where a
+plain stop or restart refuses: what /gateway's forced rows are for."
+  (inside-gateway-p (gateway-state :home home)))
+
 (defun refuse-from-inside (state home verb)
   "Refuse VERB (\"stop\" or \"restart\") of HOME's gateway, STATE, when this
 process runs inside it (INSIDE-GATEWAY-P)."
@@ -1001,6 +1006,19 @@ its file holds them under launchd."
 the pid the store's lock names are one."
   (and owner (eql owner state.main-pid)))
 
+(defun gateway-verb-hint (command verb)
+  "VERB as a hint in COMMAND's report names it: the words to type after a
+command line's COMMAND, or for a slash command, whose verbs are rows of the
+dialog it answers typed alone, what the row does and where it is."
+  (if (uiop:string-prefix-p "/" command)
+      (format nil "~a in ~a"
+              (cond ((string= verb "logs") "its log")
+                    ((string= verb "restart") "a restart")
+                    ((string= verb "on") "turning it on")
+                    (t verb))
+              command)
+      (format nil "`~a ~a'" command verb)))
+
 (defun gateway-summary (state &key live (command "gateway"))
   "The report's first line, after its label: where STATE's gateway stands,
 and the one thing to do about it when there is one."
@@ -1011,16 +1029,16 @@ and the one thing to do about it when there is one."
              (uiop:native-namestring state.file)))
     ((not (eq (gateway-state-installed state) :ours))
      (format nil "off~:[~; (you turned it off)~] — nothing keeps this organism running once ~
-                  its last shell closes; `~a on' runs it in the background, and at every login"
-             state.off command))
+                  its last shell closes; ~a runs it in the background, and at every login"
+             state.off (gateway-verb-hint command "on")))
     ((equal state.active "failed")
-     (format nil "on, but it failed~@[ (~a)~] — `~a logs' says why, `~a restart' tries again"
-             state.result command command))
+     (format nil "on, but it failed~@[ (~a)~] — ~a says why, ~a tries again"
+             state.result (gateway-verb-hint command "logs") (gateway-verb-hint command "restart")))
     ((equal (gateway-state-sub state) "auto-restart")
-     (format nil "on, restarting after it exited~@[ (~a)~] — `~a logs' says why"
-             state.result command))
+     (format nil "on, restarting after it exited~@[ (~a)~] — ~a says why"
+             state.result (gateway-verb-hint command "logs")))
     ((member state.active '("inactive" "deactivating") :test #'equal)
-     (format nil "on, but stopped — `~a restart' starts it" command))
+     (format nil "on, but stopped — ~a starts it" (gateway-verb-hint command "restart")))
     ((gateway-serving-p state)
      (let ((started (getf live :started-at)))
        (format nil "on — serving: pid ~d~@[, port ~d~]~@[, up ~a~]~@[, build ~a~]~@[ (binary ~a)~]"
@@ -1048,7 +1066,8 @@ organism keeps standing (a bot's state among them)."
     (when (eq state.installed :ours)
       (push (list "login"
                   (cond ((not (gateway-state-enabled state))
-                         (format nil "does not start at login — `~a on' makes it" command))
+                         (format nil "does not start at login — ~a makes it"
+                                 (gateway-verb-hint command "on")))
                         ((eq *service-manager* :launchd)
                          (format nil "starts when you log in, and stops when you log out — ~
                                       an agent lives in your login session"))
@@ -1061,8 +1080,9 @@ organism keeps standing (a bot's state among them)."
                         (t "starts at every login")))
             rows)
       (push (list (if (eq *service-manager* :launchd) "agent" "unit")
-                  (format nil "~a — `~a logs' reads its log"
-                          state.unit command))
+                  (if (uiop:string-prefix-p "/" command)
+                      (format nil "~a — its log is in ~a" state.unit command)
+                      (format nil "~a — `~a logs' reads its log" state.unit command)))
             rows))
     (loop for notice in (getf live :notices)
           for label = "standing" then ""
@@ -1075,7 +1095,7 @@ organism keeps standing (a bot's state among them)."
    (make-verb "status" "whether it runs, what it serves, whether it starts at login"
               :detail "What the command prints with no verb: serving, waiting for a shell to close, starting, stopped or failed; its pid, port, uptime and build; whether it starts at login and keeps running after a logout; and the lines the organism keeps standing, a bot's state among them.")
    (make-verb "setup" "connect a bot to it: Discord, Telegram, Slack" :arguments "[CHANNEL]"
-              :detail "Opens the shell straight on a sheet that sets one channel up step by step (/gateway setup in a shell already open), over the organism serving this home. It switches the channel's cell on, keeps the pasted bot token in a 0600 file in this home's secrets folder (or names the environment variable that holds it) and checks it against the platform, waits while the bot is in no server yet, has the rooms and people it answers picked from a checklist of what the token sees, and starts the channel. CHANNEL skips the choice: `setup discord'. Open it again to change one; /settings > Channels and the web page's Control > Channels edit the same section.")
+              :detail "Opens the shell straight on a sheet that sets one channel up step by step (in a shell already open, /gateway's Set up rows), over the organism serving this home. It switches the channel's cell on, keeps the pasted bot token in a 0600 file in this home's secrets folder (or names the environment variable that holds it) and checks it against the platform, waits while the bot is in no server yet, has the rooms and people it answers picked from a checklist of what the token sees, and starts the channel. CHANNEL skips the choice: `setup discord'. Open it again to change one; /settings > Channels and the web page's Control > Channels edit the same section.")
    (make-verb "on" "run it in the background from now on, and at every login"
               :detail "Writes the unit the operating system runs — a systemd user unit on Linux, a LaunchAgent on macOS; nodecode-gateway, nodecode-gateway-NAME for a profile — enables and starts it, and on Linux asks logind to keep it running after you log out. While a shell runs the organism the gateway waits, and takes over when that shell closes; every shell opened after attaches to it. A bot or a cron job turns it on by itself, once, unless you turned it off.")
    (make-verb "off" "stop it, and stop starting it at login" :arguments "[--force]"
@@ -1127,5 +1147,5 @@ its help prints, what a mistyped verb is matched against.")
                   (nothing-more)
                   (gateway-log-text))
           ("run" (usage-fail verb "run is the command line's own: `nodecode gateway run' serves in the foreground."))
-          ("setup" (usage-fail verb "setup runs in the shell: `nodecode gateway setup discord' opens it there, and /gateway setup in a shell already open; the web page's Control > Channels sets up the same section."))
+          ("setup" (usage-fail verb "setup runs in the shell: `nodecode gateway setup discord' opens it there, and in a shell already open, /gateway's Set up rows; the web page's Control > Channels sets up the same section."))
           (t (error "the gateway verb ~a has no branch in GATEWAY-TEXT" verb)))))))

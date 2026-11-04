@@ -9191,3 +9191,52 @@ thinking types DECLARED (a list, :UNDECLARED, or NIL for never asked)."
           (is (< (- (get-internal-real-time) start) (* 2 internal-time-units-per-second)) "never past its bound"))
         (setf nlk::*cells-starting* nil)
         (is (null (nle::await-cells-starting "nl-cell-lane")) "no start pass under way, no wait")))))
+
+;;; --- the agent's own prompt, rules and soul: handles onto the home's files ----
+
+(deftest the-own-file-handles-answer-the-home-files ()
+  ;; Peas: (agents-md), (soul-md) and (system-prompt) are each a symlink to
+  ;; the real file, a path EDIT and WRITE-FILE take, never a copy.
+  (loop for (verb name) in '((nle:system-prompt "SYSTEM.md") (nle:agents-md "AGENTS.md")
+                             (nle:soul-md "SOUL.md"))
+        do (is (equal (sb-ext:native-namestring (nlk:home name)) (funcall verb)) name)
+           (is (member verb nle::*help-verbs*) "(help) lists it")))
+
+(deftest system-prompt-file-is-the-system-message-while-it-stands ()
+  ;; SYSTEM.md, while it is there and not blank, is what every request opens
+  ;; on; an edit through the handle binds the next request; blank or gone is
+  ;; the shipped prompt again.
+  (let ((nle::*system-prompt* "shipped prompt")
+        (path (nle:system-prompt)))
+    (flet ((opens-on ()
+             (nle::message-content
+              (aref (gethash "messages"
+                             (nle::request-body (compiled-context (list (nle::message "user" "hi")))))
+                    0))))
+      (nlk:with-cleanup ((uiop:delete-file-if-exists path))
+        (uiop:delete-file-if-exists path)
+        (is (eql 0 (search "shipped prompt" (opens-on))) "no file: the shipped prompt")
+        (nle:write-file path "own prompt")
+        (is-present (text (opens-on)) "the file is the system message"
+          (is (eql 0 (search "own prompt" text)))
+          (is (null (search "shipped prompt" text))))
+        (nle:edit path "own" "edited")
+        (is (eql 0 (search "edited prompt" (opens-on))) "an edit through the handle binds the next request")
+        (write-temp-file path (format nil "  ~%"))
+        (is (eql 0 (search "shipped prompt" (opens-on))) "a blank file is none")
+        (delete-file path)
+        (is (eql 0 (search "shipped prompt" (opens-on))) "deleting it goes back")))))
+
+(deftest agents-md-handle-edits-the-rules-the-next-request-reads ()
+  (with-temp-workspace (dir "proj/.git/HEAD")
+    (with-temp-store ()
+      (nlk:create-session :id "own-rules" :cwd (namestring (merge-pathnames "proj/" dir)))
+      (flet ((rules () (cdr (assoc "operator-rules" (nle::read-harness-sections "own-rules")
+                                   :test #'string=))))
+        (nlk:with-cleanup ((uiop:delete-file-if-exists (nle:agents-md)))
+          (write-temp-file (nle:agents-md) (format nil "# Rules~%~%Use just.~%"))
+          (is (search "Use just." (rules)))
+          (nle:edit (nle:agents-md) "Use just." "Use make.")
+          (is-present (text (rules)) "the edit is what the next request reads"
+            (is (search "Use make." text))
+            (is (null (search "Use just." text)))))))))

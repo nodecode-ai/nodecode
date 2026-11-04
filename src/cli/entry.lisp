@@ -332,8 +332,8 @@ Zig launcher gives the same thing."
                   :detail "Connect a provider, pick a model and its reasoning effort. /setup does the same from inside the shell.")
    (nlk:make-verb "import" "read another coding agent's home into this one; a preview until --yes"
                   :label "import [WORLD]" :terminal t
-                  :arguments "[WORLD] [--source PATH] [--only KINDS] [--dry-run] [--overwrite] [--link] [--keep-running] [--yes]"
-                  :detail "Providers, standing instructions, memory, skills, MCP servers, channels, cron jobs, sessions and profiles, each through the cell that owns it, keys and tokens with them. WORLD names one harness to read; naming none reads every coding-agent home on this box and merges them, newest first, with an existing fact here always winning. --source reads a home at a path instead, or a repository's skills and MCP servers (OWNER/REPO, an https URL, #REF pinning a branch, tag or commit); --only names the kinds, comma-separated; --overwrite replaces what is already here; --link links each folder of skills into the linked-skills cell instead of copying them, so each SKILL.md is read where it is and an edit in the other harness shows here at once. A foreign gateway polling the same bots is stopped and disabled so they answer from here (the report names the command that gives them back); --keep-running leaves it running, and its bots land off and come on by themselves once it stops. The preview opens in the setup walk; --yes applies it without asking.")
+                  :arguments "[WORLD] [--source PATH] [--only KINDS] [--dry-run] [--overwrite] [--keep-running] [--yes]"
+                  :detail "Providers, standing instructions, memory, skills, MCP servers, channels, cron jobs, sessions and profiles, each through the cell that owns it, keys and tokens with them. WORLD names one harness to read; naming none reads every coding-agent home on this box and merges them, newest first, with an existing fact here always winning. --source reads a home at a path instead, or a repository's skills and MCP servers (OWNER/REPO, an https URL, #REF pinning a branch, tag or commit); --only names the kinds, comma-separated; --overwrite replaces what is already here. Skills are linked, each folder of them one link in the linked-skills cell, so each SKILL.md is read where it is and an edit in the other harness shows here at once. A foreign gateway polling the same bots is stopped and disabled so they answer from here (the report names the command that gives them back); --keep-running leaves it running, and its bots land off and come on by themselves once it stops. The preview opens in the setup walk; --yes applies it without asking.")
    (nlk:make-verb "add" "install a cell from the hub, or one this release ships, and turn it on"
                   :label "add nc://NAME"
                   :arguments "nc://NAME [--yes] [--wait SECONDS]"
@@ -373,7 +373,9 @@ Zig launcher gives the same thing."
    (nlk:make-verb "web" "open this home's organism in a browser tab"
                   :arguments "[--print]"
                   :detail "Prints the page's link and opens it where there is a display. The operator token rides after the link's #, which a browser never sends to a server: keep the link to yourself. Needs the organism running (nodecode, or nodecode gateway on) and the web cell: turn web on in /cells. --print prints the link alone and opens nothing: the line a program reads, the desktop app among them.")
-   (nlk:make-verb "resume" "open the shell on that session" :arguments "SESSION-ID" :terminal t)
+   (nlk:make-verb "resume" "open the shell on that session, or pick one"
+                  :label "resume [SESSION-ID]" :arguments "[SESSION-ID]" :terminal t
+                  :detail "With no SESSION-ID the shell opens on the session picker (/sessions): its This folder tab lists the sessions begun in this folder, All every one, and Enter opens the highlighted one. A SESSION-ID this home holds no session under opens the picker too, and says so. -c (--continue) opens the newest session begun in this folder without asking. The shell prints the resume line when it exits.")
    (nlk:make-verb "rpc" "drive this home's organism from a program: JSON lines in and out"
                   :label "rpc [SESSION-ID]"
                   :arguments "[SESSION-ID [--cursor N]] [--store PATH | --ephemeral]"
@@ -409,6 +411,9 @@ loads.")
    (nlk:make-verb "--profile" "run profile NAME: its own home and its own organism"
                   :aliases '("-p") :arguments "NAME" :label "-p, --profile NAME"
                   :detail "Read anywhere on the line. $NODECODE_HOME names a home the same way; with neither, the profile `nodecode profile use' chose boots, else ~/.nodecode/.")
+   (nlk:make-verb "--continue" "open the shell on the newest session begun in this folder"
+                  :aliases '("-c") :label "-c, --continue"
+                  :detail "The newest session a shell, the web page or a program began in this folder and spoke in -- never a fork, a helper or a room's lane under one, nor a cron fire. With none yet, the shell opens on a fresh session and says so. `nodecode resume' picks among them instead; -- PROMPT sends a prompt in the session it opens.")
    (nlk:make-verb "--store" "run on the store at PATH" :arguments "PATH")
    (nlk:make-verb "--ephemeral" "run on a throwaway store of this process's own"
                   :detail "The store only: config, the layer and the knowledge cells are still this profile's. HOME=$(mktemp -d) nodecode is a throwaway organism.")
@@ -469,7 +474,7 @@ read one line alike."
              (or (pop args) (launch-usage-error refusal))))
       (loop while (and args (member (first args)
                                     '("--source" "--only" "--dry-run"
-                                      "--overwrite" "--link" "--keep-running" "--yes")
+                                      "--overwrite" "--keep-running" "--yes")
                                     :test #'string=))
             do (let ((key (intern (string-upcase (subseq (pop args) 2)) :keyword)))
                  (setf (getf request key)
@@ -575,8 +580,23 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
                  ((string= name "warm") (setf child (list :warm)))
                  ((string= name "warm-dump")
                   (setf child (list :warm-dump (value-for "warm-dump needs a PATH"))))
-                 ((string= name "resume")
-                  (setf session-id (value-for "resume needs a SESSION-ID")))
+                 ;; SESSION-ID is the id the line names, :PICK for a bare
+                 ;; `resume' (the shell opens on the picker) and :CONTINUE for
+                 ;; -c (the newest session begun in this folder): the shell
+                 ;; resolves the two once its organism answers
+                 ;; (RESOLVE-LAUNCH-SESSION). A command word after `resume' is
+                 ;; never a session id.
+                 ((member name '("resume" "--continue") :test #'string=)
+                  (when session-id
+                    (launch-usage-error "a launch opens one session: nodecode resume [SESSION-ID], or nodecode -c"))
+                  (setf session-id
+                        (cond ((string= name "--continue") :continue)
+                              ((let ((word (first args)))
+                                 (and word (not (uiop:string-prefix-p "-" word))
+                                      (not (char= (char word 0) #\@))
+                                      (not (launch-name word *launch-verbs*))))
+                               (pop args))
+                              (t :pick))))
                  ;; (:rpc SESSION-ID CURSOR): the session a program's commands go
                  ;; to when they name none, NIL for a fresh one, and the log
                  ;; position it resumes past. A command word after it is never
@@ -672,7 +692,9 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
                                   (t "a first prompt"))))
       (when (and target session-id)
         (launch-usage-error "resume keeps the model ~a began on: /models in the shell picks another"
-                            session-id)))
+                            (if (stringp session-id) session-id "the session")))
+      (when (and (eq session-id :pick) (or prompt prompt-file files))
+        (launch-usage-error "a bare resume opens the picker, and a first prompt needs its session: nodecode resume SESSION-ID -- PROMPT, or nodecode -c -- PROMPT")))
     ;; Read now, before anything boots: a prompt that cannot be had stops
     ;; the launch here, with nothing started.
     (when prompt-file

@@ -1396,4 +1396,4 @@ names, in this image, as text."
   (declare (ignore session-id))
   (if-let (range (usage-range-word args))
     (string-right-trim '(#\Newline) (usage-report-text (usage-json range)))
-    "Usage: /usage [today | 7d | 30d | all]"))
+    "usage: no range by that name; /usage alone offers today, 7 days, 30 days and all"))

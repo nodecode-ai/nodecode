@@ -140,6 +140,7 @@ Files Nodecode makes for itself. A new profile starts without them, and an expor
 | `mcp/` | MCP servers' error logs, `mcp/<name>.stderr.log`. |
 | `link/state.json` | This machine's name at its relay, and the browsers let in. |
 | `backups/` | `/backup`'s archives, each with a `.json` note. |
+| `snapshots/` | `/snapshot`'s snapshots, a folder each: the program with this organism's memory, and a `manifest.json`. A snapshot holds your keys. No export, clone or backup carries it. |
 | `context/` | Each session's working context copy. |
 | `changes-seen` | The release whose Latest changes `/settings` last showed. |
 | `team/`, `boards/`, `chrome-extension/`, `chrome-screenshots/` | Written by the team, board and chrome cells. |
@@ -546,6 +547,7 @@ drwx------  /home/you/.nodecode/backups
 | `history.db.owner`, `history.db.lock` | 0600 |
 | `link/state.json` | 0600, in a 0700 folder. |
 | `backups/` | 0700. Each archive and note: 0600. |
+| `snapshots/` | 0700, and each snapshot's folder and program. Each manifest: 0600. |
 | An `export --whole` archive | 0600 |
 | `config.jsonc` | No mode is forced. A write keeps the file's mode. |
 
