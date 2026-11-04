@@ -2366,6 +2366,46 @@ had time to send anything more: a row sent twice arrives after the match."
           (is (row-carrying "turn.input_committed" live))
           (is (row-carrying "turn.started" live)))))))
 
+(deftest submit-tools-limits-the-turn-it-starts (with-session-store ("gw-tools"))
+  ;; #199 need 4: a cell's side question runs with a tool limit. :TOOLS '()
+  ;; starts a turn that can call nothing: the model is told so, a call it
+  ;; makes anyway is refused before the tool runs, and the next turn without
+  ;; a limit has every tool again. A name no tool has is refused at once.
+  (with-saved-globals (nle::*tools*)
+    (let ((ran 0) (round 0) (told '()))
+      (nle:register-tool "probe" (list :description "d" :parameters (make-hash-table :test #'equal))
+                         (lambda (arguments) (declare (ignore arguments)) (incf ran) "probed"))
+      (flet ((wire-text (context)
+               (format nil "~{~a~}" (map 'list #'nlk:encode-json-object (nle::request-messages context))))
+             (results ()
+               (format nil "~{~a~}" (mapcar #'nlk:encode-json-object
+                                           (nlk:events :session-id "gw-tools" :kind nlk::+kind-tool-result+
+                                                       :as :payloads))))
+             (side (prompt &rest keys)
+               ;; => what the turn's provider calls were sent, one text
+               (setf round 0 told '())
+               (apply #'nle:submit "gw-tools" prompt keys)
+               (await (:tries 100) (not (nlk:active-turn-p "gw-tools")))
+               (format nil "~{~a~}" told)))
+        (with-provider-stub (context (push (wire-text context) told)
+                                     (if (= 1 (incf round))
+                                         (tool-call-round (format nil "call-~a" (length told)) "probe")
+                                         (wire-message "assistant" :content "answered")))
+          ;; the model is told it can call no tool
+          (is (search "No longer available: " (side "a side question" :tools '())))
+          (is (= 0 ran) "the call the model made anyway never ran")
+          (is (search "this turn may call no tool" (results)) "it was refused in words the model can act on")
+          ;; the limit is the input's own fact
+          (is (equalp #() (nle::json-value (nlk:events :session-id "gw-tools" :kind nlk::+kind-input-committed+
+                                                  :order :oldest :as :payload)
+                                      :any "metadata" "tools")))
+          (is (search "Available again: " (side "back to work")) "a turn with no limit is told the tools are back")
+          (is (= 1 ran) "and calls one")
+          (side "only the probe" :tools '("probe"))
+          (is (= 2 ran) "a named tool stays callable")
+          ;; a name no registered tool has is refused
+          (is (signals-error error (nle:submit "gw-tools" "typo" :tools '("prbe")))))))))
+
 (deftest submit-builds-the-provenance-its-source-names (with-session-store ("gw-sourced"))
   ;; An in-process submitter with no record of its own -- cron, a team, a
   ;; frame -- names its source kind and id, and SUBMIT builds the record.

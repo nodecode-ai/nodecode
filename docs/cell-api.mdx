@@ -215,6 +215,28 @@ Everything is filed under one key: the package's name, downcased. That is the fo
 <Pair name="cell-arity" />
 </Mistakes>
 
+{/* source: src/gateway/gateway.lisp, src/engine/turn.lisp */}
+### A turn with fewer tools
+
+`(nle:submit SESSION-ID PROMPT :tools NAMES)` starts a turn that can call only the registered tools NAMES lists. `:tools '()` calls none: a side question answered from a fork's copy of the context while the main turn runs on.
+
+| Case | What happens |
+| --- | --- |
+| A tool the list leaves out | The model is told it is no longer available, and a call to it is refused before the tool runs. |
+| The next turn with no list | Every tool is back, and the model is told. |
+| A queued prompt, or a turn resumed after a restart | It keeps its list. |
+| A name no registered tool has | `submit` signals an error. |
+
+Nodecode's own tool, `eval`, can do anything. A read-only side turn names no tools, or only tools a cell registers that read.
+
+```lisp
+(defun btw (question session-id)
+  (let ((fork (format nil "~a-btw" session-id)))
+    (nlk:standby-session :id fork :parent session-id
+                         :anchor-turn-id (nlk:session-head-turn-id session-id))
+    (nle:submit fork question :tools '())))
+```
+
 {/* source: src/lib/contract.lisp */}
 ## Tool arguments
 

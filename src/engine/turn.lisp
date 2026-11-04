@@ -548,11 +548,12 @@ from the thread it ran on."
     (setf *tools* (remove name *tools* :key #'first :test #'string=))
     name))
 
-(defun tool-call-preflight (name raw-arguments entry)
+(defun tool-call-preflight (name raw-arguments entry &optional (bindings *tools*))
   "Decode and validate one provider tool call before any tool-side work.
 Returns (VALUES ARGUMENTS ERROR-TEXT). ERROR-TEXT is a structured refusal
 with a repair instruction; a NIL ENTRY or malformed JSON never reaches a
-workspace scan, hook, or tool function.
+workspace scan, hook, or tool function. BINDINGS are the tools the turn
+may call, the ones an unknown name's refusal lists.
 
 ARGUMENTS is the decoded table either way. A tool that declared a contract is
 validated by decoding through it and the record is dropped here: the table is
@@ -583,11 +584,11 @@ declaration owned it."
       (let ((verb (and (stringp name) (find-symbol (string-upcase name) '#:nodecode.evolved))))
         (refuse "unknown_tool" #() #()
                 (if (and verb (or (member verb *help-verbs*) (fboundp verb))
-                         (find-tool "eval"))
+                         (find "eval" bindings :key #'first :test #'equal))
                     (format nil "~a is a function inside eval, not a tool: call eval with {\"form\": \"(~(~a~) ...)\"}"
                             name name)
-                    (format nil "choose a registered tool; available tools: ~{~a~^, ~}"
-                            (mapcar #'first *tools*))))))
+                    (format nil "~:[choose a registered tool; available tools: ~{~a~^, ~}~;this turn may call no tool: answer in words~]"
+                            (null bindings) (mapcar #'first bindings))))))
     (let ((arguments
             (with-handlers ((error () :invalid-json))
               (cond ((hash-table-p raw-arguments) raw-arguments)
@@ -658,9 +659,28 @@ member it declares" refusal))))
                                        "parameters" (tool-parameters schema))))
             'vector)))
 
-(defun snapshot-tool-bindings ()
+(defun turn-tool-limit (turn)
+  "The names of the tools TURN may call when the input that started it named
+them (SUBMIT's :TOOLS), else T: every registered tool."
+  ;; Read from the input's own durable fact, so a queued prompt promoted
+  ;; later and a turn the boot resume pass picks up keep the limit they were
+  ;; admitted with.
+  (let ((names (and turn (nlk:store-open-p)
+                    (json-value (nlk:events :session-id (nlk:durable-turn-session-id turn)
+                                            :turn-id (nlk:durable-turn-turn-id turn)
+                                            :kind nlk::+kind-input-committed+
+                                            :order :oldest :as :payload)
+                                :any "metadata" "tools"))))
+    (if (vectorp names) (coerce names 'list) t)))
+
+(defun snapshot-tool-bindings (&optional (limit (turn-tool-limit *current-durable-turn*)))
+  "The tools a turn binds: every registered one, or the ones LIMIT names."
+  ;; A tool the limit leaves out is withdrawn the way a stopped cell's is
+  ;; (PROMPT-CHANGE): its schema stays in the pinned prefix, the model is told
+  ;; it is no longer available, and a call to it finds no binding.
   (loop for (name schema function) in *tools*
-        collect (list (copy-seq name) (copy-json-value schema) function)))
+        when (or (eq limit t) (member name limit :test #'string=))
+          collect (list (copy-seq name) (copy-json-value schema) function)))
 
 ;;; --- hooks ------------------------------------------------------------------
 ;;; The around-chain primitive — *HOOKS*, HOOK, UNHOOK, CALL-HOOKED — lives in
@@ -3584,7 +3604,8 @@ call may run."
          (raw-arguments (and (hash-table-p function-spec)
                              (gethash "arguments" function-spec))) (call-id (gethash "id" call))
          (entry (and (stringp name) (find name context.tool-bindings :key #'first :test #'string=)))
-         ((arguments refusal) (tool-call-preflight name raw-arguments entry)))
+         ((arguments refusal) (tool-call-preflight name raw-arguments entry
+                                                   context.tool-bindings)))
     (make-tool-run :call-id (if (stringp call-id) call-id "")
                    :name (if (stringp name) name "unknown")
                    :raw-arguments (if (stringp raw-arguments) raw-arguments "")
@@ -3969,7 +3990,10 @@ is, or the prompt is the current one."
            :base base
            :sections (map 'vector (lambda (section) (vector (car section) (cdr section)))
                           standing)
-           :tools (or tools #())
+           ;; Every registered tool, though this turn's limit binds fewer
+           ;; (SUBMIT :TOOLS): the pin outlives the turn, and a session whose
+           ;; first turn could call none would never be offered one again.
+           :tools (or (if (eq (turn-tool-limit turn) t) tools (tools-payload)) #())
            :floor floor)
           ;; What the fact reads back as is what every later request
           ;; sends, so this one sends it too.

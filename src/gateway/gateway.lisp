@@ -1283,7 +1283,8 @@ worker ran or not, then promote SESSION-ID's next queued prompt."
 of its own, :INLINE inside the SUBMIT that admits it (a gate that covers
 naming), NIL never (the test posture).")
 
-(defun submit (session-id prompt &key steer images command-id invocation source source-id)
+(defun submit (session-id prompt &key steer images command-id invocation source source-id
+                                     (tools t))
   "Put PROMPT into SESSION-ID: the one in-process ingress, which the
 WebSocket start_turn/steer_turn commands are shells over."
   ;; Returns the
@@ -1300,6 +1301,10 @@ WebSocket start_turn/steer_turn commands are shells over."
   ;; record, defaulting to the kernel's in-process one. An in-process submitter
   ;; with no record of its own names its SOURCE kind (`cron', `team') and
   ;; SOURCE-ID instead, and the record is built here, turn.start or turn.steer.
+  ;; TOOLS limits the turn this prompt starts to the registered tools it names
+  ;; -- '() for none, the side question a cell answers from a fork's copy of
+  ;; the context -- and T, the default, leaves every tool bound. The limit
+  ;; is the input's own fact, so a queued or resumed turn keeps it.
   ;;
   ;; Signals rather than returning a status: NLK:UNKNOWN-SESSION, the kernel's
   ;; NLK:TURN-LIFECYCLE-ERROR family for a steer that found no matching active
@@ -1318,6 +1323,12 @@ WebSocket start_turn/steer_turn commands are shells over."
   ;; fact. The refusal is the submitter's answer.
   (when (> (length prompt) *max-input-characters*)
     (error 'input-too-large :length (length prompt) :limit *max-input-characters*))
+  ;; A name no registered tool has is a caller's slip, said now rather than
+  ;; found as a turn that can call less than its caller meant.
+  (unless (eq tools t)
+    (check-type tools list)
+    (when-let (unknown (remove-if (lambda (name) (and (stringp name) (find-tool name))) tools))
+      (error "submit :tools names no registered tool: ~{~s~^, ~}" unknown)))
   (let* ((command-id (or command-id (nlk::make-durable-id "command")))
          ;; Captured BEFORE the admission facts commit: reading the cursor
          ;; afterwards would page past the input/turn-start facts and they
@@ -1329,8 +1340,10 @@ WebSocket start_turn/steer_turn commands are shells over."
          (unnamed (and *session-naming* (string= "" (nlk::session-title session-id))))
          ;; The pictures the operator's message shows, read once here, at
          ;; the one ingress: the admission records them with the input.
-         (metadata (when-let (facts (prompt-images images))
-                     (json-object "images" facts)))
+         (metadata (let ((facts (prompt-images images)))
+                     (when (or facts (listp tools))
+                       (json-object :when facts "images" facts
+                                    :when (listp tools) "tools" (coerce tools 'vector)))))
          (admission (nlk:admit-active-turn-input
                      session-id command-id prompt
                      :disposition (if steer :steer :follow-up)
