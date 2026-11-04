@@ -182,6 +182,22 @@
         ;; Check everything shows) — and a cell's own facts, which reach it
         ;; by hooking HEALTH-FACTS. A shell asks its gateway, off its loop:
         ;; reading a large store back takes seconds.
+        ;; Snapshots (organism/heap-image.lisp): the organism kept as it
+        ;; stands, values and all, beside the folder's generations.
+        (make-slash-command "snapshot"
+                            "Take a snapshot: this organism frozen whole, values and all"
+                            :dispatch :args
+                            :op 'slash-snapshot-op :headless 'headless-snapshot
+                            :session nil
+                            :help-detail
+                            "A snapshot is this organism's heap as it stands -- every value a session built up, closures mid-count, definitions that were only ever evaluated -- kept under ~/.nodecode/snapshots/NAME/ on this machine alone: it holds what this machine holds, keys among them, so it is never shared; the folder is what you share. /snapshot waits for no turn to be in flight, stops the organism for a moment, keeps its heap under a dated name and runs on from that snapshot in place: the same process, the shells attached reconnecting as after a restart. /snapshots switches between them")
+        (make-slash-command "snapshots"
+                            "Your snapshots: switch between them, rename, delete"
+                            :dispatch :args
+                            :op 'slash-snapshots-op :headless 'headless-snapshots
+                            :session nil
+                            :help-detail
+                            "The snapshots this machine keeps, newest first, and Fresh from files -- the cells as their files say, what a plain launch runs. Enter switches the organism to a row in place, in about half a second; F2 renames a snapshot; Delete removes one after a confirm. A snapshot boots only on the build that took it, and a plain launch still loads the folder as it is now")
         (make-slash-command "doctor"
                             "What this organism is missing, and what to do about it"
                             :dispatch :args :headless 'headless-doctor

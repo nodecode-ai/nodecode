@@ -1650,7 +1650,7 @@ so a unit that comes up at each login and after each crash leaves one
 session behind, not one a start.")
 
 ;; PAUSE bounds how long a shell's close leaves the store unowned, beside the boot.
-(defun await-free-store (path &key (held-p #'nlk::store-lease-held-p) (pause 1) tick)
+(defun await-free-store (path &key (held-p #'nlk::store-lease-held-elsewhere-p) (pause 1) tick)
   "Return once no live process holds PATH's ownership lock — at once when
 none does."
   ;; The gateway's patience: a shell that owns the store keeps it until it
@@ -1677,7 +1677,16 @@ runs, and brings back on `current' from any exit.")
 ;;; the store go through the same cleanup a kill runs first.
 (defvar *serve-next* nil
   "What the headless owner does once it lets the store go: NIL while it
-serves; :STOP to exit, :RESTART to run its own command line again.")
+serves; :STOP to exit, :RESTART to run its own command line again, :IMAGE to
+save its heap as *SERVE-IMAGE* and go on from it (heap-image.lisp), :SWITCH
+to run *SERVE-SWITCH* in its place.")
+
+(defvar *serve-switch* nil
+  "What the headless owner runs in its own place when *SERVE-NEXT* is
+:SWITCH: a saved heap's name, or :FOLDER for the installed binary.")
+
+(defvar *serve-image* nil
+  "The name the headless owner saves its heap as when *SERVE-NEXT* is :IMAGE.")
 
 (defvar *serve-wake* (bt2:make-semaphore :name "serve-wake")
   "What the headless owner parks on between watchdog beats.")
@@ -1712,8 +1721,37 @@ a stop that has not let it go within *STOP-SECONDS* is cut short (CUT-SHORT)."
   ;; sidecar keeps the pid, so that shell waits for the lock instead.
   (when *serving*
     (ignore-errors (nlk::publish-store-endpoint nil)))
-  (setf *serve-next* what)
+  ;; A save or a switch execs another heap in this pid: the store closes
+  ;; with its lease kept, for the exec to hand on (*KEEP-STORE-LEASE*).
+  (setf nlk::*keep-store-lease* (and (member what '(:image :switch)) t)
+        *serve-next* what)
   (bt2:signal-semaphore *serve-wake*))
+
+(defun serve-image (name)
+  "Have the headless owner save its heap as image NAME once it lets the store
+go, and go on from that image in place (SERVE-NEXT :IMAGE)."
+  (setf *serve-image* name)
+  (serve-next :image))
+
+(defun kept-store-lease (path)
+  "The store's lease for the exec that follows: the one CLOSE-STORE kept
+(*KEEP-STORE-LEASE*), else taken back now; NIL when another process took it."
+  (setf nlk::*keep-store-lease* nil)
+  (or (nlk::held-lock (nlk::lock-path-for-store (merge-pathnames path)))
+      (ignore-errors (nlk::hold-store-lease path))))
+
+(defun serve-switch (target)
+  "Have the headless owner run TARGET -- a saved heap's name, or :FOLDER --
+in its own place once it lets the store go, the store's lease held across
+the exec (SERVE-NEXT :SWITCH)."
+  (setf *serve-switch* target)
+  (serve-next :switch))
+
+(defun run-current-again (&optional (argv sb-ext:*posix-argv*))
+  "Exec this organism's installed binary on ARGV, every descriptor above
+stderr closed first. Answers only the kernel's refusal."
+  (nlk::close-inherited-descriptors)
+  (nlk::exec-program (nlk:organism-binary) argv))
 
 (defun stop-on-sigterm ()
   "SIGTERM stops this headless owner as a quit does (SERVE-NEXT :STOP), and
@@ -1762,7 +1800,7 @@ quietly."
         ;; and so leaves one.
         (if wait
             (await-free-store path :tick #'nlk:systemd-watchdog)
-            (when (nlk::store-lease-held-p path)
+            (when (nlk::store-lease-held-elsewhere-p path)
               ;; Said, as the lock's refusal below is: a candidate that lost
               ;; to an owner on its way out left no line, and the shell that
               ;; started it looked hung (#226).
@@ -1827,11 +1865,44 @@ quietly."
         (case *serve-next*
           (:stop (return :stopped))
           (:restart
-           (dolist (name (nlk::directory-names #+linux "/proc/self/fd" #-linux "/dev/fd"))
-             (let ((fd (parse-integer name :junk-allowed t)))
-               (when (and fd (> fd 2)) (ignore-errors (sb-posix:close fd)))))
-           (return (format t "~&restart refused: ~a~%"
-                           (nlk::exec-program (nlk:organism-binary) sb-ext:*posix-argv*)))))))))
+           (return (format t "~&restart refused: ~a~%" (run-current-again))))
+          ;; The heap is saved by a fork and this process becomes it: the
+          ;; flags that brought it here are cleared first, or the image would
+          ;; boot into the same save. Back here, nothing was saved or the
+          ;; image would not run -- and this process stopped its threads for
+          ;; the fork, so the binary runs the folder again, as a restart does.
+          (:image
+           (let ((name (shiftf *serve-image* nil))
+                 ;; The store's lease, kept when the store closed, is held
+                 ;; through the save into the image, which adopts it
+                 ;; (OPEN-STORE): a shell that saw the lock free would take
+                 ;; the organism.
+                 (lease (kept-store-lease path)))
+             (setf *serve-next* nil *stopping* nil)
+             (multiple-value-bind (heap why)
+                 (become-saved-image name :lease lease)
+               (declare (ignore heap))
+               (format t "~&snapshot ~a not taken: ~a; running `current' again~%" name why)
+               (finish-output)
+               (return (format t "~&restart refused: ~a~%" (run-current-again))))))
+          ;; A switch saves nothing: the heap chosen -- or the installed
+          ;; binary, which loads the folder -- runs in this process's place,
+          ;; the store's lease kept when the store closed and handed across
+          ;; the exec, so no shell finds the store free between the two. Back here the
+          ;; kernel refused it, and `current' runs again as a restart does.
+          (:switch
+           (let ((target (shiftf *serve-switch* nil))
+                 (lease (kept-store-lease path)))
+             (setf *serve-next* nil *stopping* nil)
+             (format t "~&snapshot: running ~a in place~%" (if (eq target :folder) "fresh from files" target))
+             (finish-output)
+             (format t "~&snapshot: the switch was refused: ~a; running `current' again~%"
+                     (nlk::exec-into-image (if (eq target :folder)
+                                               (nlk:organism-binary)
+                                               (saved-image-path target))
+                                           :lease lease))
+             (finish-output)
+             (return (format t "~&restart refused: ~a~%" (run-current-again))))))))))
 
 (defun seat-launch (model session-id launch)
   "Seat LAUNCH, what the command line asked of SESSION-ID (RUN-CHAT-GATEWAY),

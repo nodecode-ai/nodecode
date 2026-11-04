@@ -362,6 +362,14 @@ Zig launcher gives the same thing."
    (nlk:make-verb "rollback" "restore this home's organism to generation N"
                   :label "rollback N" :arguments "N"
                   :detail "Every folder goes back to what generation N recorded: the layer takes one commit whose tree is N's (its history kept, so forward is the same verb), a hub cell is cloned at N's pin, the binary and its shipped folders stay on the release that runs -- updates keep coming, forward, over the restored folder -- folders N had are installed and ones it never had are taken out where the installer put them; a plain folder whose content differs refuses the whole restore by name. With the organism running it converges and exits once no turn is in flight, and the next launch runs N; with none running, the next launch does. (rollback N) inside the shell does the same.")
+   (nlk:make-verb "snapshot" "take a snapshot: this home's running organism frozen whole, values and all"
+                  :label "snapshot [NAME]"
+                  :arguments "[NAME]"
+                  :detail "A snapshot is the running organism's heap frozen as it stands -- its values, closures and definitions no file holds -- kept under ~/.nodecode/snapshots/NAME/ beside the folder, which loads, keeps and shares as before. It stops the organism for a moment, keeps its heap under NAME or a dated name, and runs straight on from that snapshot in place: the same process, the shells attached reconnecting. A snapshot holds whatever the organism held, its secrets among them, so it never leaves this machine: no profile export, clone or backup carries it.")
+   (nlk:make-verb "snapshots" "list this home's snapshots, and switch between them"
+                  :label "snapshots [VERB]"
+                  :arguments "[restore NAME | delete NAME | rename NAME NEW]"
+                  :detail "Bare, in a terminal, it opens the shell on the list of snapshots -- Enter switches the organism to one, or back to fresh from files; F2 renames one; Delete removes one -- and prints the list where there is no terminal. restore NAME has the next launch that owns the organism boot that snapshot in place of the folder, once (with one running, it exits once no turn is in flight for it); delete removes one; rename gives one a new name. A snapshot boots only on the build that took it: one from another build is refused, naming it.")
    (nlk:make-verb "web" "open this home's organism in a browser tab"
                   :arguments "[--print]"
                   :detail "Prints the page's link and opens it where there is a display. The operator token rides after the link's #, which a browser never sends to a server: keep the link to yourself. Needs the organism running (nodecode, or nodecode gateway on) and the web cell: turn web on in /cells. --print prints the link alone and opens nothing: the line a program reads, the desktop app among them.")
@@ -618,6 +626,14 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
                                     (and args (not (uiop:string-prefix-p "-" (first args))) (pop args))))
                   (when (and args (not (uiop:string-prefix-p "-" (first args))))
                     (launch-usage-error "gateway setup takes one CHANNEL: nodecode gateway setup discord")))
+                 ;; Bare `snapshots', and `snapshots restore' with no NAME, is
+                 ;; the shell opened on the snapshots' list: a row to pick,
+                 ;; never a name to remember. With no terminal it prints the
+                 ;; list instead (MAIN).
+                 ((and (string= name "snapshots")
+                       (or (null args) (equal args '("restore"))))
+                  (setf args nil
+                        setup (list :image-picker)))
                  ;; `gateway run' is the gateway itself: the headless owner
                  ;; that waits for the store instead of losing it.
                  ((and (string= name "gateway") (equal (first args) "run"))
@@ -627,7 +643,7 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
                  ;; and the launch parser has no business reading them — the
                  ;; verbs the operating system answers, which run before any
                  ;; folder loads, print, and exit.
-                 ((member name '("add" "profile" "secrets" "sandbox" "gateway" "update" "web" "generations" "rollback")
+                 ((member name '("add" "profile" "secrets" "sandbox" "gateway" "update" "web" "generations" "rollback" "snapshot" "snapshots")
                           :test #'string=)
                   (setf child (list (intern (string-upcase name) :keyword) args)
                         args nil))
@@ -702,12 +718,13 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
     (when (and setup serve)
       (launch-usage-error "~a is a shell's verb: a headless owner has no wizard"
                           (cond ((and (consp setup) (eq (first setup) :channel-setup)) "gateway setup")
+                                ((and (consp setup) (eq (first setup) :image-picker)) "snapshots")
                                 ((consp setup) "import")
                                 (t "setup"))))
     (when (and child (eq (first child) :rpc) (or serve session-id setup))
       (launch-usage-error "rpc is a command of its own: nodecode [-p NAME] rpc ~a"
                           (nlk:verb-arguments (nlk:find-verb "rpc" *launch-verbs*))))
-    (when (and child (member (first child) '(:login :machine-link :add :profile :secrets :sandbox :gateway :update :web :generations :rollback))
+    (when (and child (member (first child) '(:login :machine-link :add :profile :secrets :sandbox :gateway :update :web :generations :rollback :snapshot :snapshots))
                (or serve session-id store-path ephemeral setup))
       (launch-usage-error "~a is a command of its own: nodecode [-p NAME] ~:*~a ..."
                           (substitute #\Space #\- (string-downcase (first child)))))
@@ -1008,6 +1025,10 @@ condition's report, exit 1."
   ;; anything else is read. Errors print and exit nonzero instead of dropping
   ;; an operator into the SBCL debugger.
   (nlk:note-boot-phase "main")
+  ;; Before anything probes the store's lock: a heap's memory of the locks it
+  ;; held is another process's, and a lease an exec handed on is this one's
+  ;; (store.lisp, ADOPT-HANDED-LEASE).
+  (nlk::adopt-handed-lease)
   ;; The debugger-disabled runtime otherwise exits the whole process when
   ;; any background thread reaches its debugger, including layer workers.
   (install-worker-error-guard)
@@ -1080,6 +1101,9 @@ condition's report, exit 1."
       ;; A launch that opens the shell draws on the controlling terminal, and
       ;; a process with none (cron, ssh without -t, a shell tool) is refused
       ;; here, before the home, the store or the folder is touched.
+      ;; `nodecode snapshots' with no terminal to pick in is the list, printed.
+      (when (and (consp setup) (eq (first setup) :image-picker) (not (nlt:terminal-present-p)))
+        (setf child (list :snapshots '()) setup nil))
       (when-let (refusal (terminal-refusal child serve (uiop:command-line-arguments)))
         (write-line refusal *error-output*)
         (uiop:finish-outputs)
@@ -1160,6 +1184,8 @@ condition's report, exit 1."
           (:update (answer-and-quit (values (update-text (second child)) 0 :output)))
           (:generations (generations-main (second child)))
           (:rollback (rollback-main (second child)))
+          (:snapshot (image-main (cons "save" (second child))))
+          (:snapshots (image-main (second child)))
           (:web (answer-and-quit (web-text (second child))))
           ;; what it waits on is said on stderr while it waits (CALL-SAYING-WAITS)
           (:add (answer-and-quit (call-saying-waits (lambda () (add-text (second child))))
@@ -1201,6 +1227,10 @@ condition's report, exit 1."
                         ;; image's own -- from the folder's code, not the
                         ;; launcher's, which the successor's frame would paint
                         ;; over -- and the exec no longer waits for one.
+                        ;; A restore asked by `nodecode snapshots restore' outranks
+                        ;; the published image: the saved heap is the organism
+                        ;; the operator chose to boot (images.lisp).
+                        (follow-restore-pointer)
                         (nlk::hand-over-to-published-image)
                         (attach-or-own-organism :session-id session-id
                                                 :store-path store-path
@@ -1211,6 +1241,8 @@ condition's report, exit 1."
                                                             store-path))))
                        (t
                         ;; a serve leaves its receipt before the load: a self that dies before serving is found by the launch after
+                        ;; a serve that will own the organism boots the saved heap a restore asked for, before any folder loads (images.lisp)
+                        (when serve (follow-restore-pointer))
                         (nlk:boot-cells :spawn (null child) :receipt (and serve t))
                         ;; A child prints its own report on stdout; the boot line
                         ;; would be noise the parent has to skip.

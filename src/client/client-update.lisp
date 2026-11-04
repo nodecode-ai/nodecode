@@ -438,7 +438,11 @@ thread reads it and clears this place.")
      (return-from update (values model (read-command-catalog-cmd model))))
     ((typep msg 'gw-transport-error-msg)
      (let ((verdict (gw-transport-error-msg-verdict msg)))
-       (show-status model (format nil "Gateway error: ~a" (gw-transport-error-msg-text msg)) :error-p t)
+       ;; An outage this shell asked for -- a heap save -- is said as what it
+       ;; waits on, not as a fault (EXPECTED-OUTAGE-TEXT, /image).
+       (let ((expected (and (not (eq verdict :permanent)) (expected-outage-text))))
+         (show-status model (or expected (format nil "Gateway error: ~a" (gw-transport-error-msg-text msg)))
+                      :error-p (not expected)))
        (setf model.sync-lifecycle
              (case verdict ((:permanent) :failed) ((nil) :reconnecting) (t verdict)))
        (refresh-status-dialog model)

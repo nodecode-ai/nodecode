@@ -34,6 +34,7 @@ Nodecode has no sandbox. Read the limits before you connect a channel or run una
 | `~/.nodecode/` | 0700, set when the store opens |
 | `operator-token`, `auth.json`, files in `secrets/`, `link/state.json` | 0600 |
 | `backups/` | 0700. Each archive: 0600. |
+| `snapshots/` | 0700, and each snapshot's program: it holds your keys. Each manifest: 0600. |
 | `config.jsonc` | No mode is forced. A write keeps the mode the file has. |
 
 <Note head="Redaction is a courtesy">Redaction keeps secrets out of the transcript. Eval can still read `auth.json` and `secrets/` directly.</Note>

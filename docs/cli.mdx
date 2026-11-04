@@ -23,6 +23,8 @@ summary: "Every nodecode command and option, the rules for combining them, and t
 <Command line="nodecode update [VERSION] [--check]" tty="No" show="help-update">Moves to the latest release, or to VERSION.</Command>
 <Command line="nodecode generations" tty="No" show="help">Lists the sealed generations of this home's organism.</Command>
 <Command line="nodecode rollback N" tty="No" show="help">Restores this home's organism to generation N.</Command>
+<Command line="nodecode snapshot [NAME]" tty="No" show="help">Takes a snapshot of this home's running organism, its memory whole, and runs on from it.</Command>
+<Command line="nodecode snapshots [VERB]" tty="No" show="help">Opens the list of snapshots, or prints it with no terminal. `restore`, `rename` and `delete` act on one.</Command>
 <Command line="nodecode web" tty="No" show="web">Prints the web page link and opens it in a browser.</Command>
 <Command line="nodecode resume [SESSION-ID]" tty="Yes" show="resume-pipe">Opens the shell on that session. With no id, opens the session picker.</Command>
 <Command line="nodecode rpc [SESSION-ID]" tty="No" show="help">Drives this home's organism from a program: JSON lines in and out. See [RPC](rpc.mdx).</Command>
