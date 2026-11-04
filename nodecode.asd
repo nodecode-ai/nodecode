@@ -428,6 +428,7 @@ of stacking."
      (:file "gateway/settings")
      (:file "gateway/secrets")
      (:file "gateway/sandbox")
+     (:file "gateway/sandbox-linux")
      ;; sheet: the canvas, inks, pointer targets and key-row line every
      ;; dialog in the middle of the frame paints and calls with.
      (:file "tui/sheet")

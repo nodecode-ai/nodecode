@@ -421,7 +421,7 @@ loads.")
    (nlk:make-verb "--pristine" "run generation 0: the binary alone, no folder loaded"
                   :detail "Nothing of the cell folder loads, no published image is followed, and keeps are refused while it runs: the floor to stand on when the folder itself is the problem. (generations) lists what was sealed and (rollback N) restores one, the next launch running it. A launch whose last self died before serving stands here by itself.")
    (nlk:make-verb "--sandbox" "run the organism in an OS jail; the shell stays outside"
-                  :detail "Linux, with srt (npm install -g @anthropic-ai/sandbox-runtime), bubblewrap and socat. The organism's eval, sh and file verbs can write only this folder, the home and the caches, read nothing of ~/.ssh, cloud credentials or other agents' homes, and reach only the providers configured, nodecode.ai and GitHub; a key kept in secrets/ is a stand-in inside and the real one is put back only on its way to that provider. <home>/sandbox.jsonc adds allowed_domains, deny_read and allow_write. The shell runs the binary alone, outside, and loads nothing the organism writes; it refuses a home an unsandboxed organism or the background gateway already runs.")
+                  :detail "Linux, with bubblewrap (bwrap). The organism's eval, sh and file verbs can write only this folder, the home and the jail's own cache, see nothing of ~/.ssh, cloud credentials, other agents' homes or the host's /tmp, make no unix socket, and reach only the providers configured, nodecode.ai and GitHub, through a proxy outside the jail; the home's keys are not in the jail at all. <home>/sandbox.jsonc adds allowed_domains, deny_read and allow_write. The shell runs the binary alone, outside, and loads nothing the organism writes; it refuses a home an unsandboxed organism or the background gateway already runs.")
    (nlk:make-verb "--provider" "open the shell's fresh session on provider P"
                   :arguments "P" :label "--provider P"
                   :detail "--model PROVIDER/MODEL says the same; this says it outright, for a model id whose own prefix names a provider. Alone it runs the default model only when that is P's own; another provider's default is refused, naming P's models, so name one with --model.")
@@ -1209,6 +1209,9 @@ condition's report, exit 1."
                           :loads (or (null child) serve
                                      (member (first child) '(:rpc :trial :warm :warm-dump)))))
         (print-answer-and-quit refusal 1 :error))
+      ;; A jailed serve takes its ways in and out, and checks its seccomp
+      ;; filter, before anything of the folder loads.
+      #+linux (when (and serve (sandboxed-process-p)) (sandbox-jail-enter))
       ;; The launch-cache verbs run before any folder loads: the `warm`
       ;; supervisor loads nothing itself, and `warm-dump` must load the
       ;; folder directly — never through the cache it is building.

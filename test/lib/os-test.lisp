@@ -254,9 +254,8 @@ and TOOLCHAIN willing, the programs they start."
 
 #-win32
 (deftest a-descriptor-of-this-process-can-be-a-childs-stdout (with-temp-workspace (dir))
-  ;; A sandboxed shell hands its jailed serve a listening socket as stdout
-  ;; (the one descriptor besides stdin and stderr srt passes through): the
-  ;; child's stdout is the descriptor itself, its stderr the log alone.
+  ;; A descriptor of this process's as a child's stdout: the child's stdout
+  ;; is the descriptor itself, its stderr the log alone.
   (let ((log (merge-pathnames "child.log" dir))
         (file (merge-pathnames "stdout.txt" dir)))
     (let ((descriptor (sb-posix:open (uiop:native-namestring file)
@@ -1060,3 +1059,48 @@ corrupt, or owner thread exited without unlocking')."
       (sleep 0.2)
       (is (eq :ran (nlk:interrupt-thread-safely thread (lambda () (throw 'stopped :stopped)))))
       (is (eq :stopped (nlk::%join-bounded thread 5)) "and unwound it out of its wait"))))
+
+#-win32
+(deftest a-childs-descriptors-land-at-three-and-on (with-temp-workspace (dir))
+  ;; A jail is handed its ways in and out and its filter as 3, 4 and 5;
+  ;; every other descriptor of this image stays closed in the child.
+  (let ((first-file (merge-pathnames "three.txt" dir))
+        (second-file (merge-pathnames "four.txt" dir)))
+    (let ((three (sb-posix:open (uiop:native-namestring first-file) (logior sb-posix:o-wronly sb-posix:o-creat) #o600))
+          (four (sb-posix:open (uiop:native-namestring second-file) (logior sb-posix:o-wronly sb-posix:o-creat) #o600)))
+      (unwind-protect
+           (multiple-value-bind (pid output errors process)
+               (nlk:spawn-program (nlk:shell-argv "echo three >&3; echo four >&4; if : >&5; then echo five-open; fi 2>/dev/null")
+                                  :output :stream :error-output :output :descriptors (list three four))
+             (declare (ignore errors))
+             (let ((text (uiop:slurp-stream-string output)))
+               (is (eql 0 (nlk:wait-for-child pid process)))
+               (is (not (search "five-open" text)) "nothing past the ones handed in")))
+        (sb-posix:close three)
+        (sb-posix:close four)))
+    (is (equal (format nil "three~%") (uiop:read-file-string first-file)) "the first is the child's 3")
+    (is (equal (format nil "four~%") (uiop:read-file-string second-file)) "the second its 4")))
+
+#+linux
+(deftest a-descriptor-crosses-a-unix-socket ()
+  ;; How a jail hands its launcher the listener it made in its own network
+  ;; namespace: SCM_RIGHTS over a socketpair.
+  (multiple-value-bind (a b) (nlk::socket-pair)
+    (multiple-value-bind (read write) (sb-posix:pipe)
+      (let ((received nil))
+        (unwind-protect
+             (progn
+               (is (nlk::send-descriptor a write) "sent")
+               (setf received (nlk::receive-descriptor b))
+               (is (and (integerp received) (/= received write)) "received as a descriptor of its own")
+               (let ((octets (make-array 1 :element-type '(unsigned-byte 8) :initial-element 42)))
+                 (sb-sys:with-pinned-objects (octets)
+                   (sb-unix:unix-write received octets 0 1)
+                   (setf (aref octets 0) 0)
+                   (sb-unix:unix-read read (sb-sys:vector-sap octets) 1))
+                 (is (= 42 (aref octets 0)) "and it is the same pipe"))
+               (sb-posix:close a)
+               (setf a nil)
+               (is (null (nlk::receive-descriptor b)) "the other end closed without one: NIL"))
+          (dolist (descriptor (list a b read write received))
+            (when descriptor (ignore-errors (sb-posix:close descriptor)))))))))
