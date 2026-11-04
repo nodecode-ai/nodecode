@@ -16,13 +16,11 @@
 (defun slash-catalog ()
   "Every command a headless caller can run, in /help order: the builtins
 with a headless arm, then each cell's registered command, as plists (:name
-:description :usage :autocomplete :session :aliases :trigger) — USAGE the
-display form when the command takes arguments, \"\" when the bare name is the
-whole usage, :AUTOCOMPLETE true for a command whose argument tail a caller can
-complete while it is typed (SLASH-COMPLETIONS answers it), :SESSION NIL for
-one that acts on no session, which a client with none open runs as it is,
-:ALIASES the other names SLASH answers it by, and :TRIGGER the character a
-shell's composer opens it on."
+:description :session :aliases :trigger) -- :SESSION NIL for one that acts
+on no session, which a client with none open runs as it is, :ALIASES the
+other names SLASH answers it by, and :TRIGGER the character a shell's
+composer opens it on. A command is its name: nothing here says what to type
+after it, since typed alone it answers what it offers (bare.lisp)."
   ;; The menu a channel publishes to its platform is this list; a cell's
   ;; command that shadows a builtin name is left out, as SLASH never reaches
   ;; it.
@@ -31,74 +29,23 @@ shell's composer opens it on."
                                         :key #'slash-command-name))
         collect (list :name (slash-command-name entry)
                       :description (slash-command-description entry)
-                      :usage entry.usage
-                      :autocomplete (and entry.completer t)
                       :session entry.session
                       :aliases entry.aliases
                       :trigger entry.trigger)))
 
-(defun models-argument-choices (text session-id)
-  "The model catalog as completion choices for the tail TEXT typed so far:
-one (:name \"provider/model\" :value \"provider model\") per catalog row
-whose `provider/model' contains TEXT, case-insensitively — an empty TEXT
-matches every row — in catalog order, read from the caches as they stand
-(no refresh: a keystroke costs a read). After `aux ', the same rows pick the
-auxiliary model; before it, `aux' is a choice of its own."
-  ;; => list of (:name :value) plists, possibly empty.
-  (declare (ignore session-id))
-  (let* ((tail (string-left-trim '(#\Space #\Tab) (or text "")))
-         (aux (and (> (length tail) 3) (string-equal "aux " tail :end2 4)))
-         (needle (string-downcase (string-trim '(#\Space #\Tab) (if aux (subseq tail 4) tail)))))
-    (append
-     (when (and (not aux) (search needle "aux"))
-       (list (list :name "aux — the auxiliary model" :value "aux")))
-     (if-let (seat (and (not aux) (> (length tail) 7) (string-equal "decider " tail :end2 8)
-                        (string-downcase (string-trim '(#\Space #\Tab) (subseq tail 8)))))
-       ;; after `decider ', its ids and none
-       (loop for id in (append (mapcar #'first +deciders+) '("none"))
-             when (search seat id)
-               collect (list :name (format nil "decider ~a" id) :value (format nil "decider ~a" id)))
-       (when (and (not aux) (search needle "decider"))
-         (list (list :name "decider — the decider model" :value "decider"))))
-     (when (and (not aux) (search needle "backups"))
-       (list (list :name "backups — the backup models" :value "backups")))
-     (loop for row in (models-catalog-picker-rows)
-           for value = (picker-row-value row)
-           for label = (and value
-                            (format nil "~a/~a" (first value) (second value)))
-           when (and label (search needle (string-downcase label)))
-             collect (list :name label
-                           :value (format nil "~:[~;aux ~]~a ~a"
-                                          aux (first value) (second value)))))))
-
 (defun slash-completions (name text &key session-id)
-  "One command's argument completions for the tail TEXT typed so far, in
-SESSION-ID, the session the command would act on — the headless seam a
-channel's on-the-fly menu answers through, beside SLASH and SLASH-CATALOG:
-what SLASH-CATALOG marks :AUTOCOMPLETE, this answers, a builtin's or a
-cell's."
-  ;; => (:name :value) plists, or NIL for a command that offers none. The
-  ;; catalog's COMPLETER slot names the function; it takes the tail typed so far
-  ;; and the session id, as a headless arm takes its argument, and returns the
-  ;; plists.
-  (let* ((entry (or (find-builtin-slash-command name) (find-registered-command name)))
-         (completer (and entry entry.completer)))
-    ;; A COMPLETER that is a list of words offers the ones holding the tail.
-    (if (listp completer)
-        (loop with needle = (string-trim '(#\Space #\Tab) (or text ""))
-              for word in completer when (search needle word :test #'char-equal)
-              collect (list :name word :value word))
-        (funcall completer (or text "") session-id))))
+  "NIL: no command completes words typed after its name, since a command is
+its name and what it offers is a row of the dialog it answers typed alone.
+Kept so a channel cell written before, which asks it, still loads."
+  (declare (ignore name text session-id))
+  nil)
 
 (defun slash-help-text (args session-id)
-  "The catalog as text, one command per line."
+  "The catalog as text, one command per line: its name and what it does."
   (declare (ignore args session-id))
   (format nil "~{~a~^~%~}"
           (loop for entry in (slash-catalog)
-                collect (format nil "~a — ~a"
-                                (or (json-value (getf entry :usage) :text)
-                                    (format nil "/~a" (getf entry :name)))
-                                (getf entry :description)))))
+                collect (format nil "/~a — ~a" (getf entry :name) (getf entry :description)))))
 
 (defun require-headless-session (session-id name)
   (unless (stringp session-id)
@@ -178,15 +125,11 @@ together, pinning no session -- `default' taking it out."
                    ((equalp picks '("none")) (select-decider-model nil))
                    (t (select-decider-model (first picks) :model (second picks))))))
        (multiple-value-bind (id model) (decider-model)
-         (format nil "~a~@[~%shared config: ~a~]~:[~;~%/models decider <id> picks one (~{~a~^, ~}); /models decider none takes it out~]"
+         (format nil "~a~@[~%shared config: ~a~]"
                  (decider-model-summary id model)
-                 (when (eq outcome :failed) (format nil "NOT saved — ~a" detail))
-                 (null picks) (mapcar #'first +deciders+)))))
-    ((> (length picks) 2)
-     "usage: /models [provider] [model] | aux [provider] [model | default] | decider [id | none] | list [provider]")
-    ((and aux (null picks))
-     (format nil "~a~%/models aux <provider> <model> changes it; /models aux default gives its work back to each session's own model"
-             (auxiliary-target-summary)))
+                 (when (eq outcome :failed) (format nil "NOT saved — ~a" detail))))))
+    ((> (length picks) 2) (slash-unoffered "models"))
+    ((and aux (null picks)) (auxiliary-target-summary))
     (aux
      (bind (((_ _ outcome detail)
              (if (equalp picks '("default"))
@@ -199,9 +142,7 @@ together, pinning no session -- `default' taking it out."
     ((null tokens)
      (multiple-value-bind (pin-provider pin-model)
          (and (stringp session-id) (nlk:session-model-selection session-id))
-       (format nil "~a~@[~%session pin: ~a~]~%~
-                      /models <provider> <model> changes it, /models aux <provider> <model> the auxiliary model; ~
-                      /models list shows the catalog"
+       (format nil "~a~@[~%session pin: ~a~]"
                (model-selection-summary)
                (and (or pin-provider pin-model)
                     (format nil "~a/~a" (or pin-provider "-")
@@ -219,8 +160,7 @@ together, pinning no session -- `default' taking it out."
             (ladder (effort-ladder provider model)))
        (if (null ladder)
            (format nil "~a/~a offers no reasoning control" provider model)
-           (format nil "reasoning effort for ~a/~a: ~a~%ladder: ~{~a~^ ~}~%~
-                            /think <rung> sets it for this session and every new one from the next turn; /think default picks the model's own"
+           (format nil "reasoning effort for ~a/~a: ~a~%ladder: ~{~a~^ ~}"
                    provider model
                    (or (effective-effort effort provider model) "provider default")
                    ladder))))
@@ -237,9 +177,7 @@ together, pinning no session -- `default' taking it out."
     ((nlk:on-standby-p session-id)
      "nothing to name yet: a session is named once it has a prompt")
     ((zerop (length args))
-     (format nil "this session is named ~s~%~
-                  /rename NAME renames it; /rename default gives back the name its first prompt makes"
-             (nlk::session-title session-id)))
+     (format nil "this session is named ~s" (nlk::session-title session-id)))
     (t (format nil "renamed: ~a"
                (set-session-title session-id (if (string-equal args "default") "" args))))))
 
@@ -251,8 +189,9 @@ together, pinning no session -- `default' taking it out."
     (json-value (gateway-slash-answer model (format nil "/rename ~a" args)) :string "text")))
 
 (defun markdown-export-path (args name)
-  "Where /export ARGS writes the file the gateway named NAME: ARGS as a path
-from this shell's folder, NAME inside it when it is a folder, NAME in this
+  "Where an export to ARGS writes the file the gateway named NAME: ARGS as a
+path from this shell's folder -- the one /export's dialog asks for, or this
+folder, its first row -- NAME inside it when it is a folder, NAME in this
 shell's folder when ARGS is empty."
   (let* ((here (uiop:ensure-directory-pathname (workspace-directory)))
          (given (and (plusp (length args)) (merge-pathnames (nlk:expand-home args) here))))
@@ -262,8 +201,8 @@ shell's folder when ARGS is empty."
           (t given))))
 
 (defun slash-export-op (model args)
-  "/export [PATH]: this shell's session as Markdown, in a file where this
-shell runs."
+  "/export's line: this shell's session as Markdown, in a file where this
+shell runs, at ARGS (MARKDOWN-EXPORT-PATH)."
   ;; The gateway writes the text (SESSION-MARKDOWN) and this shell the file,
   ;; so a shell attached from another machine keeps the file on its own.
   (if (home-screen-p model)
@@ -298,7 +237,7 @@ shell runs."
            (plan (and valid-p (not busy)
                       (evict-session-context session-id :percent percent :through through))))
       (when plan (publish-turn-facts session-id cursor))
-      (cond ((not valid-p) *evict-usage-hint*)
+      (cond ((not valid-p) (slash-unoffered "evict"))
             (busy "a turn is in flight; cancel or await it first")
             ((null plan) (or (evict-decline-text session-id :through through) "nothing to evict"))
             (t (format nil "Evicted ~d turn~:p (~d% of history context) · ~d message~:p retained"
@@ -360,5 +299,5 @@ operator feels — or, for `reset', a fresh attribution window."
     ((string-equal arg "reset")
      (nlk:reset-gc-attribution)
      "gc attribution window reset")
-    (t "Usage: /gc [reset]")))
+    (t (slash-unoffered "gc"))))
 

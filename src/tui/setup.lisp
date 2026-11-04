@@ -121,7 +121,7 @@ whose rows take one back."
         (run-gateway-command model (find-builtin-slash-command "import") args)
         (multiple-value-bind (request rest) (import-request words)
           (when rest
-            (error "unknown word ~a: /import alone offers what it reads" (first rest)))
+            (error "unknown word ~a; /import alone shows what it does" (first rest)))
           (setf model.setup-requested request)
           (slash-setup-op model)
           nil))))

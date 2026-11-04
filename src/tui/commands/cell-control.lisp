@@ -18,7 +18,6 @@ SET-GATEWAY-COMMANDS takes."
                                        "commands")
         collect (list :name (json-value command :string "name")
                       :description (or (json-value command :string "description") "")
-                      :usage (or (json-value command :string "usage") "")
                       :session (json-value command :boolean "session")
                       :trigger (json-value command :text "trigger"))))
 

@@ -272,7 +272,7 @@ start on: POST /api/gateway/sessions/<id>/effort (SET-SESSION-EFFORT)."
            (value (unless (string-equal "default" (first tokens)) (first tokens))))
       (cond
         ((null ladder) "No reasoning control is available for this model.")
-        ((> (length tokens) 1) (slash-usage "think"))
+        ((> (length tokens) 1) (slash-unoffered "think"))
         (tokens
          (with-slash-notice ("reasoning control")
            (apply-effort model value)

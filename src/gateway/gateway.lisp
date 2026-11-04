@@ -2863,8 +2863,8 @@ the verb's own 400."
     (:get (make-json-object
            "commands" (map 'vector
                            (lambda (entry)
-                             (json-object (:getf entry "name" "description" "usage" "session")
-                                          (:getf entry :opt "autocomplete" "trigger")))
+                             (json-object (:getf entry "name" "description" "session")
+                                          (:getf entry :opt "trigger")))
                            (slash-catalog))))
     (:post (let* ((request (gateway-request-json env))
                   (line (gethash "line" request)))
@@ -2872,20 +2872,6 @@ the verb's own 400."
              (multiple-value-bind (text dialog)
                  (slash line :session-id (json-value request :string "session_id"))
                (json-object "text" text :opt "dialog" dialog))))))
-
-(define-gateway-route handle-gateway-slash-completions-http (env)
-  "POST /api/gateway/slash/completions {name, text, session_id?} — what
-NAME's argument completes to from the TEXT typed so far, in the session the
-command would act on (SLASH-COMPLETIONS): {choices: [{name, value}]}, empty
-for a command that offers none."
-  (:route :post "/api/gateway/slash/completions" "slash completions")
-  (let* ((request (gateway-request-json env))
-         (name (gethash "name" request)))
-    (require-non-empty (list name) "name must be a non-empty string" :required t)
-    (make-json-object
-     "choices" (map 'vector (lambda (choice) (json-object (:getf choice "name" "value")))
-                    (slash-completions name (json-value request :string "text")
-                                       :session-id (json-value request :string "session_id"))))))
 
 (define-gateway-route handle-gateway-model-http (env)
   (:route (:get :post) "/api/gateway/model" "model")
@@ -4957,8 +4943,8 @@ update poller and the folder's peripherals, TRIM as START-GATEWAY takes it.
   ;; The index's command, ahead of every cell's: the composer's `$' opens the
   ;; first command that names it (COMPOSER-TRIGGER-COMMAND).
   (register-command "index" "index" 'index-slash
-                    :description "Knowledge: the meter and the picker; reload re-pins; a text finds hot and cold"
-                    :argument-hint "[reload | TEXT]" :trigger "$")
+                    :description "What you keep: the meter, the picker, a search through it, a fresh pin"
+                    :trigger "$")
   ;; Another coding agent's home brought in (src/import/): the setup
   ;; walk's route, and the watch over any bot an earlier import held for a
   ;; foreign gateway still running. /import is a builtin (tui/slash.lisp).

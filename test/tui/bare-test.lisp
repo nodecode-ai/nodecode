@@ -3,9 +3,9 @@
 ;;;; SPDX-License-Identifier: MIT
 ;;;;
 ;;;; Claims:
-;;;;   1. No command shows words after its name: the catalog's usage is empty
-;;;;      for every builtin, and a cell's argument hint is taken and shown
-;;;;      nowhere.
+;;;;   1. No command shows words after its name: every label is the bare
+;;;;      name, the catalog a room reads carries no usage, and a cell's
+;;;;      argument hint and completer are taken and shown nowhere.
 ;;;;   2. A builtin typed alone opens its dialog, and Enter on a row runs the
 ;;;;      row's line in the shell.
 ;;;;   3. A row that asks hands the composer its label: the frame shows it,
@@ -21,16 +21,20 @@
 
 (deftest no-command-shows-words-after-its-name ()
   (dolist (entry nle::*slash-commands*)
-    (is (equal "" (nle::slash-command-usage entry)) (nle::slash-command-name entry))
     (is (equal (format nil "/~a" (nle::slash-command-name entry))
-               (nle::slash-command-label entry))))
+               (nle::slash-command-label entry))
+        (nle::slash-command-name entry)))
   (let ((nle::*registered-commands* '()))
     (let ((entry (nle::register-command "bare-test" "bare-probe" (lambda (args session-id)
                                                                    (declare (ignore session-id))
                                                                    args)
                                         :argument-hint "on | off" :complete 'ignore)))
-      (is (equal "" (nle::slash-command-usage entry)) "the hint is taken and shown nowhere")
-      (is (null (nle::slash-command-completer entry)) "nothing completes after the name"))))
+      (is (equal "/bare-probe" (nle::slash-command-label entry)) "the hint is taken and shown nowhere")
+      (is-present (row (find "bare-probe" (nle:slash-catalog) :key #'second :test #'equal)) "a room reads it"
+        (is (null (getf row :usage)) "with no usage")
+        (is (null (getf row :autocomplete)) "and nothing to complete"))
+      (is (null (nle:slash-completions "bare-probe" "o")) "nothing completes after the name")
+      (is (search "/bare-probe — " (nle::slash-help-text "" nil)) "help names it alone"))))
 
 ;;; --- claim 2: a builtin typed alone opens its dialog -------------------------
 
@@ -40,8 +44,7 @@
     (is-present (dialog (nle::chat-model-dialog model)) "the viewport dialog is open"
       (is (equal '("Standard" "Developer")
                  (mapcar #'nle::picker-row-label (nle::picker-dialog-rows dialog))))
-      (is (equal "●" (nle::picker-row-mark (first (nle::picker-dialog-rows dialog))))
-          "the viewport in use is marked"))
+      (is (equal "●" (nle::picker-row-mark (first (nle::picker-dialog-rows dialog)))) "the one in use is marked"))
     (dialog-keys model :down :enter)
     (is (null (nle::chat-model-dialog model)) "a pick closes it")
     (is (eq :developer (nle::chat-model-tool-detail model)) "the row's line ran here")))
@@ -106,3 +109,80 @@
                (mapcar (lambda (key) (nle::json-value (aref (nle::json-array json "rows") 0) :text "ask" key))
                        '("label" "line" "placeholder" "verb"))))
     (is (equal "/rename my name" (nle::ask-line "/rename" (format nil "my~%name"))))))
+
+;;; --- claim 5: /export saves here, or where it is told ------------------------------
+
+(deftest export-typed-alone-saves-here-or-asks-where ()
+  (with-frame-model (model 100 30 :session-id "bare-export")
+    (is (null (nle::bare-dialog "export" "bare-export" model)) "a session with no prompt has nothing to save")
+    (is (null (nle::bare-dialog "export" "bare-export" nil)) "a room has no export")
+    (with-stubbed-fdefinition (nle::home-screen-p (model) nil)
+      (is-present (rows (getf (nle::bare-dialog "export" "bare-export" model) :rows)) "the dialog opens"
+        (destructuring-bind (here elsewhere) rows
+          (is (uiop:string-prefix-p "/export /" (getf (getf here :run) :enter)) "this folder, whole, in the line")
+          (is (equal "/export" (getf (getf elsewhere :ask) :line)) "a path elsewhere is asked for"))))))
+
+;;; --- claim 6: /evict offers its shares and a turn -----------------------------------
+
+(deftest evict-typed-alone-offers-its-shares-and-a-turn (with-temp-store ())
+  (do-turns (make-test-session "bare-evict") 3)
+  (multiple-value-bind (text dialog) (nle:slash "/evict" :session-id "bare-evict")
+    (is (search "Half the history" text))
+    ;; Half leads, as typed alone it did before; a turn is picked from
+    ;; /context's history.
+    (is (equal '("/evict 50" "/evict 25" "/evict 75" "/evict 100" "/context history")
+               (map 'list (lambda (row) (nle::json-value row :text "run" "enter"))
+                    (nle::json-array dialog "rows")))))
+  (is (search "Evicted" (nle:slash "/evict 50" :session-id "bare-evict")) "a row's line still runs"))
+
+(deftest evict-typed-alone-in-a-shell-opens-the-same-dialog ()
+  (with-frame-model (model 100 30 :session-id "bare-evict-shell")
+    (type-string model "/compact" :enter)
+    (is-present (dialog (nle::chat-model-dialog model)) "its alias opens the same dialog"
+      (is (equal "Half the history" (nle::picker-row-label (first (nle::picker-dialog-rows dialog))))))))
+
+;;; --- claim 7: /gateway's verbs are its rows -------------------------------------------
+
+(deftest gateway-typed-alone-offers-every-verb-a-shell-runs ()
+  (with-frame-model (model 100 30 :session-id "bare-gateway")
+    (let ((lines (mapcar (lambda (row) (getf (getf row :run) :enter))
+                         (getf (nle::bare-dialog "gateway" "bare-gateway" model) :rows))))
+      (is (equal '("/gateway status" "/gateway on" "/gateway restart" "/gateway off" "/gateway logs"
+                   "/gateway setup discord" "/gateway setup telegram" "/gateway setup slack"
+                   "/gateway restart --force" "/gateway off --force")
+                 lines)))
+    (is (null (nle::bare-dialog "gateway" "bare-gateway" nil)) "a room runs no gateway verb")))
+
+;;; --- claim 8: an ask stands over a draft, and gives it back ----------------------------
+
+(deftest an-ask-gives-the-draft-it-stood-over-back ()
+  (with-frame-model (model 100 30 :session-id "bare-draft")
+    (flet ((ask ()
+             (let ((json (nle::dialog-json
+                          (nle::list-dialog :rows (list (nle::ask-row "Type one" "Viewport" "/details"))))))
+               (nle::ask-in-composer model (nle::json-value (aref (nle::json-array json "rows") 0)
+                                                            :object "ask")))))
+      (type-string model "half a prompt $")
+      (ask)
+      (is (equal "" (composer-value model)) "the ask takes the composer")
+      (type-string model "developer" :enter)
+      (is (eq :developer (nle::chat-model-tool-detail model)) "its line ran")
+      (is (equal "half a prompt $" (composer-value model)) "the draft is back")
+      (ask)
+      (type-string model "standard")
+      (press model :escape)
+      (is (eq :developer (nle::chat-model-tool-detail model)) "Esc ran nothing")
+      (is (equal "half a prompt $" (composer-value model)) "and gave the draft back"))))
+
+;;; --- claim 9: Tab writes the name alone --------------------------------------------------
+
+(deftest tab-writes-the-command-name-alone ()
+  (with-saved-globals (nle::*gateway-commands*)
+    (nle::set-gateway-commands (list (list :name "gen" :description "a probe")))
+    ;; A whole name leads the longer one it also starts.
+    (is (equal "/gen" (nle::slash-command-label (first (nle::slash-suggestions "/gen")))))
+    (with-frame-model (model 100 30 :session-id "bare-tab")
+      (type-string model "/mod" :tab)
+      (is (equal "/models" (composer-value model)) "no blank after the name invites words")
+      ;; The dropdown stays on it, for Enter.
+      (is (equal "/models" (nle::composer-suggestion-text (nle::selected-composer-suggestion model)))))))

@@ -73,8 +73,12 @@ choice persists across restarts."
                  (show-status model (format nil "Changed to ~a theme" args))))
       nil))
 
-(defun slash-usage (name)
-  (format nil "usage: ~a" (slash-command-usage (find-slash-command name))))
+(defun slash-unoffered (name)
+  "What the command NAME answers a line it offers no row for: the line was
+not one of its own, and typed alone it shows what it does."
+  ;; A line reaches a parser from a key binding, a script or an old habit;
+  ;; the answer names the command, never words to put after it.
+  (format nil "/~a offers no such choice; /~:*~a alone shows what it does" name))
 
 (defun auxiliary-model-summary (provider model effort)
   "One line naming the auxiliary model, or what stands in for it, in the
@@ -87,7 +91,7 @@ words /models' Auxiliary tab says it in."
   "One line naming the decider general.decider_model picks, or that none is."
   (if provider
       (format nil "decider model: ~a/~a" provider model)
-      "decider model: none — /models decider picks one"))
+      "decider model: none — /models' Decider tab picks one"))
 
 (defun auxiliary-target-summary ()
   "AUXILIARY-MODEL-SUMMARY of this image's auxiliary target as it stands."
@@ -1377,9 +1381,9 @@ MODEL's transport."
             ;; `backups' opens the Backup tab: the failover chain is set there.
             ((and (not seat) (member (first tokens) '("backup" "backups") :test #'equalp))
              (if (rest tokens)
-                 (values (slash-usage name) nil)
+                 (values (slash-unoffered name) nil)
                  (open-models-provider-picker model :tab "backup")))
-            ((> (length picks) 2) (values (slash-usage name) nil))
+            ((> (length picks) 2) (values (slash-unoffered name) nil))
             ((and (not seat) (equalp (first tokens) "list"))
              (values (model-catalog-list-text (second tokens)) nil))
             ((or (null picks) (and (not seat) (equalp picks '("refresh"))))
@@ -1390,7 +1394,7 @@ MODEL's transport."
             (t (values (slash-models-op model picks) nil)))))
        ((string= name "evict")
         (multiple-value-bind (percent through valid-p) (evict-args args)
-          (values (if valid-p (slash-evict-op model percent through) *evict-usage-hint*)
+          (values (if valid-p (slash-evict-op model percent through) (slash-unoffered name))
                   nil)))
        ((and (string= name "gateway") (equal "setup" (first (split-words (or args "")))))
         ;; A channel set up step by step, on a sheet over the shell.
@@ -1441,7 +1445,9 @@ MODEL's transport."
 executeEvictSlashCommand's and the turn form: bare /evict sends neither;
 `40` and `40%` both read a percent (the trailing sign is what a user types),
 0 and >100 are not valid; `through TURN' names the turn id eviction runs
-through. What is not valid renders the usage hint rather than a request."
+through. These are the lines /evict's dialog runs (bare.lisp) and /context's
+history list; what is not valid answers SLASH-UNOFFERED rather than a
+request."
   (let* ((trimmed (string-trim " " args))
          (through (and (uiop:string-prefix-p "through " trimmed)
                        (string-trim " " (subseq trimmed 8))))

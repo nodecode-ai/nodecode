@@ -55,7 +55,7 @@
           (is (= 3 (length calls)))
           (is (equal "poll-secret-fixture" (fourth (first calls))))
           (let ((text (get-output-stream-string out)))
-            (is-carrying text "DDAN-UY56" "https://nodecode.ai/account/machines" "Linked" "With /link on in nodecode, the Machines page shows its address"
+            (is-carrying text "DDAN-UY56" "https://nodecode.ai/account/machines" "Linked" "With /link turned on in nodecode, the Machines page shows its address"
               (:absent "machine-key-fixture") (:absent "poll-secret-fixture")))
           (is (equal "machine-key-fixture" (nlk:json-value (nle::read-auth-file nle::*auth-file-path*) :string "api_keys" "nodecode" "key")))
           (is (equal "00000000-0000-0000-0000-000000000001" (nlk:json-value (nle::read-auth-file nle::*auth-file-path*) :string "machine_link" "request")))

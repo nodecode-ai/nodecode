@@ -35,7 +35,7 @@ chord MODEL's keymap binds, or NIL when it is unbound."
           ((member arg '("developer" "standard") :test #'string=)
            (toggle-tool-detail model (if (equal arg "developer") :developer :standard))
            nil)
-          (t (slash-usage "details")))))
+          (t (slash-unoffered "details")))))
 
 (defun usage-meter-seg (state &aux (usage (and (hash-table-p state) (gethash "usage" state)))
                                    (text (and usage (usage-meter-text usage))))

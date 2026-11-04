@@ -221,7 +221,8 @@ that waits 1.5 s."
   (multiple-value-bind (text dialog) (nle:slash "/usage")
     (is (search "The last 7 days" text))
     (is (equal '("/usage today" "/usage 7d" "/usage 30d" "/usage all")
-               (map 'list (lambda (row) (nlk:json-value row :text "run" "enter")) (nlk:json-array dialog "rows"))))))
+               (map 'list (lambda (row) (nlk:json-value row :text "run" "enter")) (nlk:json-array dialog "rows")))))
+  (is (null (nle:slash-completions "usage" "7")) "nothing completes words after a name"))
 
 (deftest activity-says-what-the-agent-did-and-what-went-wrong (with-temp-gateway (port))
   (seed-timeline-session "spent")

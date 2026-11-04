@@ -239,7 +239,7 @@ Models (SETTINGS-PAGES)."
                               ;; A channel sets up step by step on a sheet of its own.
                               (let ((id (second path)))
                                 (list (make-setting :label "Set up" :kind :action :part part :text "Step by step"
-                                                    :doc (format nil "The token, a wait while the bot joins a server, then its channels and people from a checklist: /gateway setup ~a." id)
+                                                    :doc (format nil "The token, a wait while the bot joins a server, then its channels and people from a checklist: /gateway, then Set up ~@(~a~)." id)
                                                     :act (lambda (model) (open-channel-setup model id))))))
                             (when-let (row (paste-setting part)) (list row))
                             (loop for field in (settings-section-fields section)

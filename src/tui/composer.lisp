@@ -315,14 +315,14 @@ the token lanes take everything else."
 
 (defun accept-suggestion (model)
   "Complete the highlighted row (Zig acceptComposerInlineSuggestion)."
-  ;; A slash row rewrites the whole composer with the canonical name plus a
-  ;; trailing space, so the caret lands at the end and the whitespace closes
-  ;; the dropdown (whitespace ends name matching); a token row inserts its
-  ;; remainder plus a space at the cursor. => T when a completion landed.
+  ;; A slash row rewrites the whole composer with the canonical name alone:
+  ;; a command is its name, so nothing is invited after it, and the dropdown
+  ;; stays on the row, Enter running it. A token row inserts its remainder
+  ;; plus a space at the cursor. => T when a completion landed.
   (when-let (suggestion (selected-composer-suggestion model))
     (let ((editor (chat-model-editor model)) (slash (eq :slash suggestion.source)))
       (when slash (editor-reset editor))
-      (editor-insert editor (uiop:strcat (if slash suggestion.text suggestion.remainder) " ")))
+      (editor-insert editor (if slash suggestion.text (uiop:strcat suggestion.remainder " "))))
     (setf (chat-model-slash-selection model) 0)
     t))
 

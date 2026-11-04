@@ -154,7 +154,7 @@ link. Answers the name the machine was let in under."
            (account-print-usage output mode (json-value reply :string "api_key")
                                 (json-value reply :string "base_url") usage-request lead))
           (t
-           (format output "Linked~@[ as ~a~]. Account key saved to ~a.~%With /link on in nodecode, the Machines page shows its address.~%"
+           (format output "Linked~@[ as ~a~]. Account key saved to ~a.~%With /link turned on in nodecode, the Machines page shows its address.~%"
                    name saved)
            (account-next-step output lead))))
       (finish-output output)
@@ -695,7 +695,7 @@ choice is (SETUP-STAGE-SIGN-IN)."
     ((plusp (length word))
      (if-let (mode (account-mode-word word))
        (funcall pick model mode)
-       "Usage: /login [subscription | api]"))
+       (slash-unoffered "login")))
     (t (open-picker-dialog model "Sign in to nodecode.ai"
                            (list (make-picker-row :label "Subscription" :detail "your Founders plan's requests (Lite, Base or Pro)"
                                                   :value "subscription")

@@ -134,9 +134,9 @@
   (let* ((plan (hermes-plan home :only "mcp"))
          (github (import-item plan "mcp" "mcp.servers.github"))
          (docs (import-item plan "mcp" "mcp.servers.docs")))
-    (is (search "npx -y @modelcontextprotocol/server-github (fetched from npm); lands off: /mcp on github starts it"
+    (is (search "npx -y @modelcontextprotocol/server-github (fetched from npm); lands off: its row in /mcp, github, starts it"
                 (nik:item-reason github)))
-    (is (search "https://docs.example.test/mcp; lands off: /mcp on docs starts it" (nik:item-reason docs)))
+    (is (search "https://docs.example.test/mcp; lands off: its row in /mcp, docs, starts it" (nik:item-reason docs)))
     (nik:apply-plan plan)
     (dolist (name '("github" "docs"))
       (let ((entry (nlk:json-value (import-config) :object "mcp" "servers" name)))

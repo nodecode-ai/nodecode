@@ -84,17 +84,28 @@ NIL), the answer of a command whose panel opened."
   (open-answer-dialog model (json-object "dialog" (dialog-json dialog)) :here t)
   (values nil nil))
 
-(defun ask-in-composer (model ask)
+(defun ask-in-composer (model ask &aux (editor (chat-model-editor model)))
   "Hand MODEL's composer ASK, a row's ask as its JSON: the composer wears its
 label and the text typed there runs its line on Enter (SUBMIT-ASK); Esc puts
-it away."
+it away. A draft the composer held waits under the ask and comes back once
+it is done (PUT-DRAFT-BACK)."
+  ;; A dialog a trigger opened (the index's `$') stands over a prompt being
+  ;; written: its ask must not cost that prompt.
   (setf (chat-model-composer-ask model)
         (list :label (or (json-value ask :text "label") "Text")
               :line (json-value ask :text "line")
               :placeholder (json-value ask :text "placeholder")
-              :verb (or (json-value ask :text "verb") "run")))
-  (editor-reset (chat-model-editor model))
+              :verb (or (json-value ask :text "verb") "run")
+              :draft (editor-value editor)))
+  (editor-reset editor)
   (show-status model nil))
+
+(defun put-draft-back (model draft &aux (editor (chat-model-editor model)))
+  "Put DRAFT, what MODEL's composer held before an ask took it, back in a
+composer the ask's line left empty."
+  (when (and (plusp (length (or draft "")))
+             (zerop (length (editor-value editor))))
+    (editor-insert editor draft)))
 
 (defun submit-ask (model text &aux (ask (chat-model-composer-ask model)))
   "Run the ask MODEL's composer wears with TEXT, what was typed under its
@@ -105,12 +116,17 @@ label; an empty one says what it waits for. => (values handled cmd)."
              (values t nil))
       (progn (setf (chat-model-composer-ask model) nil)
              (editor-reset (chat-model-editor model))
-             (submit-slash model (ask-line (getf ask :line) text) :dropdown nil))))
+             (multiple-value-prog1 (submit-slash model (ask-line (getf ask :line) text) :dropdown nil)
+               (put-draft-back model (getf ask :draft))))))
 
 (defun put-ask-away (model)
-  "Take the ask MODEL's composer wears off it, the text typed under it kept
-as a plain draft. => true when there was one."
+  "Take the ask MODEL's composer wears off it: the draft it stood over comes
+back, or with none, the text typed under it stays as a plain draft. => true
+when there was one."
   (when-let (ask (shiftf (chat-model-composer-ask model) nil))
+    (when (plusp (length (or (getf ask :draft) "")))
+      (editor-reset (chat-model-editor model))
+      (put-draft-back model (getf ask :draft)))
     (show-status model (format nil "~a put away" (getf ask :label)))
     t))
 
@@ -154,3 +170,78 @@ as a plain draft. => true when there was one."
                                     :detail "collections, their cost and the stalls they caused")
                            (run-row "Restart the window" "/gc reset"
                                     :detail "count the stalls again from now"))))
+
+(define-bare-dialog "export" (session-id model)
+  ;; The file is written where the shell runs, so a room has no export; a
+  ;; session with no prompt has nothing to write, which the op says.
+  (when (and model (not (home-screen-p model)))
+    (let ((here (uiop:native-namestring (uiop:ensure-directory-pathname (workspace-directory)))))
+      (list-dialog :title "Export as Markdown"
+                   :summary "The prompts, the answers, the plans and a line per call, in a file named after the session"
+                   :rows (list (run-row "Save it in this folder" (format nil "/export ~a" here)
+                                        :detail here)
+                               (ask-row "Save it somewhere else" "Path" "/export"
+                                        :detail "a folder, or the file to write"
+                                        :placeholder "A folder or a file, from this shell's folder"
+                                        :verb "export"))))))
+
+(define-bare-dialog "evict" (session-id model)
+  ;; Half is what the command did typed alone before it had a dialog, so it
+  ;; leads: /compact, Enter, still compacts.
+  (list-dialog :title "Evict context"
+               :summary "Drop the oldest turns from what the model is sent; the transcript keeps them"
+               :rows (append
+                      (loop for (percent label) in '((50 "Half the history")
+                                                     (25 "A quarter of it")
+                                                     (75 "Three quarters of it")
+                                                     (100 "All of it that can go"))
+                            collect (run-row label (format nil "/evict ~d" percent)
+                                             :detail (format nil "~d% of the retained turns, oldest first" percent)))
+                      (list (run-row "Through a turn you pick" "/context history"
+                                     :detail "the retained turns, each with what evicting through it frees")))))
+
+(define-bare-dialog "gateway" (session-id model)
+  ;; The verbs of GATEWAY-TEXT a shell can run, and the channel walk; `run'
+  ;; is the command line's own. A forced stop or restart is for a shell that
+  ;; runs inside the gateway it would end, which the plain one refuses.
+  (when model
+    (list-dialog
+     :title "Gateway"
+     :summary "This organism kept running by the operating system: in the background, at every login"
+     :rows (append
+            (list (run-row "Where it stands" "/gateway status"
+                           :detail "serving or not, what it keeps running, whether it starts at login")
+                  (run-row "Turn it on" "/gateway on"
+                           :detail "run it in the background from now on, and at every login")
+                  (run-row "Restart it" "/gateway restart"
+                           :detail "on this build, with the config as it is now")
+                  (run-row "Turn it off" "/gateway off"
+                           :detail "stop it, and stop starting it at login; this shell takes the organism over")
+                  (run-row "Its recent log" "/gateway logs" :detail "the last 60 lines"))
+            (loop for (id label) in '(("discord" "Discord") ("telegram" "Telegram") ("slack" "Slack"))
+                  collect (run-row (format nil "Set up ~a" label) (format nil "/gateway setup ~a" id)
+                                   :detail "the bot's token, its server, then its rooms and people"))
+            (list (run-row "Restart it from inside it" "/gateway restart --force"
+                           :detail "when this shell runs inside the gateway the restart ends")
+                  (run-row "Turn it off from inside it" "/gateway off --force"
+                           :detail "when this shell runs inside the gateway the stop ends"))))))
+
+(define-bare-dialog "think" (session-id model)
+  ;; A shell opens its own picker over the target it reads (SLASH-THINK-OP);
+  ;; a room or the page gets the ladder of the session's model as rows. A
+  ;; model with no ladder leaves the command its own answer, which says so.
+  (unless model
+    (bind (((provider model-id _ _ _ effort) (gateway-target (and (stringp session-id) session-id)))
+           (ladder (effort-ladder provider model-id))
+           (now (and ladder (effective-effort effort provider model-id))))
+      (flet ((row (label line detail current)
+               (run-row label line :detail detail :mark (if current "●" "") :mark-tone :accent)))
+        (when ladder
+          (list-dialog :title "Reasoning effort"
+                       :summary (format nil "~a/~a, from the next turn, here and in every new session"
+                                        provider model-id)
+                       :rows (cons (row "Default" "/think default" "the model's own" (null now))
+                                   (loop for rung in ladder
+                                         collect (row rung (format nil "/think ~a" rung)
+                                                      (if (equal rung "off") "answer without reasoning" "")
+                                                      (equal rung now))))))))))

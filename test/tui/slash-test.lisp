@@ -191,8 +191,10 @@ character at a time; NIL once it closed."
     (is (= (1- (length nle::*slash-commands*))
            model.slash-selection))
     (dolist (key '(:down :down :tab)) (press model key))
-    (let ((completed (format nil "/~a " (nle::slash-command-name (second nle::*slash-commands*)))))
-      (is-shape model (composer-value completed) (nle::slash-active-suggestions null))
+    ;; Tab writes the name alone; the dropdown stays on it for Enter.
+    (let ((completed (format nil "/~a" (nle::slash-command-name (second nle::*slash-commands*)))))
+      (is-shape model (composer-value completed))
+      (is (equal completed (nle::composer-suggestion-text (nle::selected-composer-suggestion model))))
       (press model :down)
       (is (equal completed (composer-value model))))))
 
@@ -271,14 +273,14 @@ character at a time; NIL once it closed."
   (is-table (line expected) (equal expected (nle:slash line :session-id "slash-evict"))
     ("/evict 50" "Evicted 2 turns (66% of history context) · 2 messages retained")
     ("/evict 50" "nothing to evict — 2 of 3 turns already evicted; the newest turn is always kept")
-    ("/evict 0" nle::*evict-usage-hint* "zero percent renders the usage hint, not a request")
-    ("/evict 150" nle::*evict-usage-hint* "overflow percent renders the usage hint")
+    ("/evict 0" (nle::slash-unoffered "evict") "zero percent is no choice /evict offers, not a request")
+    ("/evict 150" (nle::slash-unoffered "evict") "nor is an overflow percent")
     ("/evict 40%" "nothing to evict — 2 of 3 turns already evicted; the newest turn is always kept"
      "a trailing percent sign parses — the fold already emptied"))
   (is-values (notice cmd)
       (nle::execute-slash-command (make-instance 'nle::chat-model :session-id "slash-evict")
                                   "evict" "bogus")
-    (cmd null "evict never returns a command") (notice nle::*evict-usage-hint*)))
+    (cmd null "evict never returns a command") (notice (nle::slash-unoffered "evict"))))
 
 ;;; --- claim 11: the Zig control-surface commands -----------------------------
 
@@ -289,7 +291,7 @@ character at a time; NIL once it closed."
       (think.description "Open provider-native reasoning controls")
       ((entry "effort") think "/effort aliases /think")
       (think.help-detail
-       "Bare opens reasoning controls; /think <rung> applies it from the next turn, here and in every new session; /think default picks the model's own"))
+       "The model's reasoning rungs: the one picked applies from the next turn, here and in every new session; Default picks the model's own"))
     (is-each (nle::slash-command-description)
       ((entry "models") "Show or change the main, auxiliary and decider models" "models owns provider wiring")))
   (is (null (nle::find-slash-command "run")) "/run left with the run projection")
@@ -540,7 +542,7 @@ NOW: two listings and the failed one."
         (is (null nle::*auxiliary-model*))
         (let ((nle::*shared-config-memo* nil))
           (is (null (nlk:json-value (nle::read-shared-config) :object "general" "auxiliary_model"))))
-        (is (search "usage:" (nle::execute-slash-command model "models" "aux a b c")))))))
+        (is (equal (nle::slash-unoffered "models") (nle::execute-slash-command model "models" "aux a b c")))))))
 
 (deftest a-dialog-pick-paints-the-notice-it-lands ()
   ;; A pick whose answer is a notice -- the auxiliary model's, landed from a
@@ -670,56 +672,19 @@ tailnet address.")
 
 ;;; --- claim 9c: the room's two seams into the auxiliary target -----------------
 
-(deftest slash-model-commands-complete-the-catalog-rows ()
-  ;; The completion menu — the kit's autocomplete path, the one way a room
-  ;; ask sees a command's argument at all — offers /models the catalog rows,
-  ;; `aux' and `decider' ahead of them while the tail could still be either,
-  ;; after `aux ' the same rows as auxiliary picks, and after `decider ' the
-  ;; deciders.
-  (with-model-listings (:config +keyed-models-config+ :catalog +claude-x-catalog+)
-    (flet ((names (text)
-             (mapcar (lambda (choice) (getf choice :name))
-                     (nle:slash-completions "models" text))))
-      (is (equal '("aux — the auxiliary model" "decider — the decider model" "backups — the backup models" "anthropic/claude-x" "zeta/z-model") (names "")))
-      (is (equal '("decider djev" "decider none") (names "decider ")) "after `decider ', the deciders and none")
-      (is (equal '("decider djev") (names "decider dj")))
-      (is (equal '("anthropic/claude-x") (names "claude")))
-      (is (equal '("anthropic/claude-x" "zeta/z-model") (names "aux ")))
-      (is (equal "aux" (getf (first (nle:slash-completions "models" "au")) :value)))
-      (is (equal "anthropic claude-x"
-                 (getf (first (nle:slash-completions "models" "claude")) :value)))
-      (is (equal "aux zeta z-model"
-                 (getf (first (nle:slash-completions "models" "aux z-m")) :value))))))
-
 (defun catalog-field (name field &optional (catalog (nle:slash-catalog)))
   "FIELD of the entry NAME in the headless CATALOG (NLE:SLASH-CATALOG's plists)."
   (getf (find name catalog :key (lambda (entry) (getf entry :name)) :test #'string=) field))
 
-(deftest slash-completions-reach-an-cell-command-with-its-session ()
-  ;; A cell's command completes as a builtin does, and its completer sees
-  ;; the session the command would act on, as its headless arm does.
-  (with-saved-globals (nle::*registered-commands*)
-    (nle:register-command "probe-pack" "probe" (constantly "ran")
-                          :argument-hint "word"
-                          :complete (lambda (text session-id)
-                                      (list (list :name (format nil "~a in ~a" text session-id)
-                                                  :value text))))
-    (nle:register-command "probe-pack" "plain" (constantly "ran"))
-    (is (eq t (catalog-field "probe" :autocomplete)) "the catalog marks it")
-    (is (null (catalog-field "plain" :autocomplete)) "a command with no completer is not marked")
-    (is (equal '((:name "wo in s-room" :value "wo"))
-               (nle:slash-completions "probe" "wo" :session-id "s-room")))
-    (is (null (nle:slash-completions "plain" "wo")))))
-
 (deftest slash-models-aux-headless-answers-the-auxiliary-model ()
   ;; The room's seam: NLE:SLASH runs HEADLESS-MODELS, so `/models aux'
-  ;; answers the auxiliary model with how to change it — never the session
-  ;; summary — a spelled pick lands as the target the answer then names, and
+  ;; answers the auxiliary model -- never the session summary, nor a line to
+  ;; spell -- a pick's line lands as the target the answer then names, and
   ;; `default' takes it out.
   (with-saved-globals ((nle::*auxiliary-model* '(:provider "zeta" :model "z-model" :effort "low")))
     (let ((answer (nle::headless-models "aux" nil)))
       (is (uiop:string-prefix-p "auxiliary model: zeta/z-model (low)" answer))
-      (is (search "/models aux <provider> <model> changes it" answer))
+      (is (null (search "/models aux <" answer)) "no line to spell")
       (is (null (search "provider: " answer)) "not the session summary"))
     (setf nle::*auxiliary-model* nil)
     (is (uiop:string-prefix-p "auxiliary model: same as main" (nle::headless-models "aux" nil)))
@@ -1396,17 +1361,16 @@ last row runs /rows drop NAME."
 
 (deftest slash-catalog-carries-cells (let ((entry (nle::find-slash-command "cells"))))
   (is-present entry "/cells is in the catalog"
-    (is (string= "/cells [new [NAME | WHAT IT DOES] | SEARCH]" (nle::slash-command-usage entry)))
-    (is (eq :args (nle::slash-command-dispatch entry)) "the shell hands it the typed tail")
-    (is (equal '("new") (nle::slash-command-completer entry)) "new completes"))
+    (is (string= "/cells" (nle::slash-command-label entry)) "it is its name")
+    (is (eq :args (nle::slash-command-dispatch entry)) "the shell hands it the line a row runs"))
   (is (null (nle::find-slash-command "persist")) "/persist is gone with the journal"))
 
 ;;; --- /generations: the sealed generations, and the way back to one ----------
 
 (deftest slash-catalog-carries-generations (let ((entry (nle::find-slash-command "generations"))))
   (is-present entry "/generations is in the catalog"
-    (is (string= "/generations [N]" (nle::slash-command-usage entry)))
-    (is (eq :args (nle::slash-command-dispatch entry)) "the shell hands it the typed tail")
+    (is (string= "/generations" (nle::slash-command-label entry)) "it is its name")
+    (is (eq :args (nle::slash-command-dispatch entry)) "the shell hands it the line a row runs")
     (is (eq 'nle::headless-generations (nle::slash-command-headless entry)))
     (is (null (nle::slash-command-session entry)) "it acts on no session")))
 
@@ -1462,12 +1426,13 @@ last row runs /rows drop NAME."
                      "evict" "context" "status" "usage"
                      "cells" "generations" "doctor" "backup" "profile" "import" "think" "gc" "probe")
                    (mapcar (lambda (entry) (getf entry :name)) catalog)))
-        (is (equal "/probe text" (catalog-field "probe" :usage catalog))))
+        (is (null (catalog-field "probe" :usage catalog)) "a cell's hint reaches no menu"))
       (is-carrying (help (say "/help"))
-        ("/models [provider] [model] | aux [provider] [model | default] | decider [id | none] | backups | list | refresh — Show or change the main, auxiliary and decider models"
-         "/help renders the catalog, usage first")
+        ("/models — Show or change the main, auxiliary and decider models"
+         "/help renders the catalog, each command by its name")
         (:absent "/model-aux" "the auxiliary model is /models' own")
-        ("/probe text — Echo the tail")
+        ("/probe — Echo the tail")
+        (:absent "[" "no command is shown with words to type after it")
         (:absent "/sessions" "a shell-only command is not offered")
         (:absent "/web" "the link carries the operator token: never offered to a room"))
       (is-table (answer line) (equal answer (say line))
@@ -1476,8 +1441,8 @@ last row runs /rows drop NAME."
         ("/web needs an interactive shell" "/web")
         ("unknown command /nope; /help lists them" "/nope"))
       (is (search "no cells" (nle:slash "/cells")))
-      (is (search "gc time" (nle:slash "/gc")) "/gc needs no session")
-      (is (equal "Usage: /gc [reset]" (nle:slash "/gc bogus")))
+      (is (search "gc time" (nle:slash "/gc show")) "/gc needs no session")
+      (is (equal (nle::slash-unoffered "gc") (nle:slash "/gc bogus")))
       (let ((second-turn (nlk:session-head-turn-id "slash-headless")))
         (is (equal "rewound to before: turn 2 input" (say "/undo")))
         (is (not (equal second-turn
@@ -1491,21 +1456,19 @@ last row runs /rows drop NAME."
           ("nothing to clear: the session is at its start" "/new"))
         (is (equal (format nil "redone: the head is back on ~a" second-turn) (say "/redo"))))
       (let ((report (say "/models")))
-        (is (search "provider: " report) "bare /models reports the target")
-        (is (search "/models <provider> <model> changes it" report)))
+        (is (plusp (length report)) "bare /models answers")
+        (is (not (search "/models <" report)) "no line to spell"))
       (dolist (line '("/models a b c" "/models aux a b c" "/models decider a b c"))
-        (is (equal "usage: /models [provider] [model] | aux [provider] [model | default] | decider [id | none] | list [provider]"
-                   (say line)) line))
+        (is (equal (nle::slash-unoffered "models") (say line)) line))
       (let ((aux (say "/models aux")))
         (is (uiop:string-prefix-p "auxiliary model: " aux))
-        (is (search "/models aux <provider> <model> changes it" aux)))
+        (is (not (search "/models aux <" aux)) "no line to spell"))
       (is (equal "unknown command /model-aux; /help lists them" (say "/model-aux")))
       (let ((think (say "/think")))
-        (is (or (search "ladder:" think)
+        (is (or (search "Reasoning effort" think)
                 (search "offers no reasoning control" think))))
       (is (signals-error error (say "/think bogus")))
-      (is (equal nle::*evict-usage-hint*
-                 (say "/evict 0")))
+      (is (equal (nle::slash-unoffered "evict") (say "/evict 0")))
       (is-table (in) (signals-error error in) ((nle:slash "/undo" :session-id nil))
         ((nle:slash "/undo" :session-id "s-none")) ((nle:slash "hello"))))))
 
@@ -1791,7 +1754,8 @@ from ARGUMENTS, the text bound as TEXT."
   (is-let* ((entry (nle::find-builtin-slash-command "profile")))
     (entry is "the command is in the catalog")
     (entry.dispatch eq :args "the shell hands it the model") (entry.op eq 'nle::profile-slash-op)
-    ((null (nle::bare-dialog "profile" "s-any" t)) is "a shell opens the roster, not a list")))
+    ((null (nle::bare-dialog "profile" "s-any" t)) is "a shell opens the roster, not a list"))
+  (is (equal "/profile" (nle::slash-command-label (nle::find-builtin-slash-command "profile"))) "it is its name"))
 
 (deftest the-profiles-picker-is-a-roster-you-can-walk ()
   (nlk:profile-create "coder" :clone :blank :description "for code")
