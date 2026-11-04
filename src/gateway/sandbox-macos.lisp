@@ -109,9 +109,10 @@ written); POLICY the operator's additions (SANDBOX-POLICY); PORT the
 loopback port its gateway binds and is reached on; PROXY-PORT the egress
 proxy's, or NIL for a jail with no way out at all; RUN, CACHE and TEMPORARY
 the directories under HOME's sandbox/ that are the jail's own; STORE the
-store the launcher named, which with its sidecars (-wal, -shm, .lock,
-.owner) and the write probe nodecode makes beside it the jail reads and
-writes wherever it lies, nothing else of its directory; USER-HOME
+store the launcher named: its directory is the jail's to read and write
+wherever it lies, unless that is the account's home or above it, where only
+the store's own files (its sidecars, the write probe and the temporary
+files nodecode makes beside it) are; USER-HOME
 the account's home, whose Library/ is refused again even when the folder is
 the home itself, unless the folder lies inside it. PATH turns a
 name into the one Seatbelt matches (SEATBELT-PATH); EXISTS decides which
@@ -124,14 +125,21 @@ entries of +SANDBOX-HOME-READ+ are named."
          (expand (lambda (items) (mapcar #'sandbox-expand items)))
          (own (funcall paths (list run cache temporary)))
          (store (and store (funcall path store)))
+         (store-dir (and store (subseq store 0 (max 1 (position #\/ store :from-end t)))))
+         (account (funcall path user-home))
+         ;; a store in a directory of its own gets the directory; one in the
+         ;; account's home or above gets its files only
+         (store-whole (and store-dir (not (seatbelt-inside-p account store-dir))))
          (read-back (funcall paths
                              (append (list folder home binary-dir)
                                      (remove-if-not (lambda (entry) (ignore-errors (funcall exists entry)))
                                                     (funcall expand +sandbox-home-read+))
                                      (funcall expand (getf policy :allow-read))
-                                     (funcall expand (getf policy :allow-write)))))
+                                     (funcall expand (getf policy :allow-write))
+                                     (and store-whole (list store-dir)))))
          (write-back (funcall paths (append (list folder home)
-                                            (funcall expand (getf policy :allow-write)))))
+                                            (funcall expand (getf policy :allow-write))
+                                            (and store-whole (list store-dir)))))
          ;; ~/Library holds the keychains, mail, cookies and every app's
          ;; tokens: a folder at or above the home must not read it back.
          (library (funcall path (merge-pathnames "Library/" (uiop:ensure-directory-pathname user-home))))
@@ -167,20 +175,17 @@ entries of +SANDBOX-HOME-READ+ are named."
                      :filter "literal")
       (seatbelt-rule out "allow" '("file-read*") read-back)
       (seatbelt-rule out "allow" '("file-write*") write-back)
+      (when (and store (not store-whole))
+        (format out ";; the store in the account's home: its own files, nothing else of the home~%")
+        (format out "(allow file-read* file-write* (regex #\"^~a/(~a([-.][^/]*)?|\\.nodecode-[^/]*)$\"))~%"
+                (if (string= store-dir "/") "" (seatbelt-regex-quote store-dir))
+                (seatbelt-regex-quote (subseq store (1+ (position #\/ store :from-end t))))))
       (format out ";; refused again wherever they sit: secrets, other agents' credentials, the policy's denials~%")
       (seatbelt-rule out "deny" '("file-read*" "file-write*") refused)
       (format out ";; what the launcher reads and what runs the jail, never written from inside it~%")
       (seatbelt-rule out "deny" '("file-write*") write-denied)
       (format out ";; the jail's own temporary directory, cache and runtime directory~%")
       (seatbelt-rule out "allow" '("file-read*" "file-write*") own)
-      (when store
-        ;; FOLDER-WRITE-ERRNO proves the directory writable with a probe file
-        ;; of its own before the store opens.
-        (let ((cut (position #\/ store :from-end t)))
-          (format out ";; the store the launcher named, its sidecars and nodecode's write probe beside it~%")
-          (format out "(allow file-read* file-write* (regex #\"^~a/(~a([-.][^/]*)?|\\.nodecode-write-probe-[0-9]+)$\"))~%"
-                  (seatbelt-regex-quote (subseq store 0 cut))
-                  (seatbelt-regex-quote (subseq store (1+ cut))))))
       (format out "~%;; network: the gateway's own loopback port, and the launcher's proxy~%")
       (when port
         (format out "(allow network-bind network-inbound (local ip \"localhost:~d\"))~%" port)
