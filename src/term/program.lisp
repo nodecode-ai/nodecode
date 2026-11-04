@@ -359,7 +359,9 @@ keyboard flags, the images, the window title, the alternate screen."
   (when vs
     (when vs.mouse-mode (disable-mouse stream))
     (when vs.keyboard-enhancements (pop-kitty-keyboard stream))
-    (when renderer.last-images (clear-kitty-images stream))
+    (when (find :kitty renderer.last-images
+                :key (lambda (p) (terminal-image-protocol (image-placement-image p))))
+      (clear-kitty-images stream))
     (when vs.title (reset-window-title stream))
     (when vs.alt-screen (exit-alt-screen stream))
     (force-output stream)))

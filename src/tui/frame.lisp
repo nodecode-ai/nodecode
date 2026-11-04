@@ -290,6 +290,24 @@ from the ones COLLECT-DURING-WAIT hid inside provider wait."
              (and (nlt:kitty-graphics-msg-ok-p msg) t))
        (render-state model))
 
+      ;; The terminal listed its attributes (DA1), which it answers after
+      ;; the kitty query: one that did not answer that draws a picture as
+      ;; sixel when it said so, else as half blocks (IMAGE-PROTOCOL).
+      ((nlt:device-attributes-msg-p msg)
+       (setf (chat-model-terminal-graphics model)
+             (if (and (member 4 (nlt:device-attributes-msg-attributes msg))
+                      (null (nlt:current-multiplexer)))
+                 :sixel
+                 :none))
+       (render-state model))
+
+      ;; The terminal said how big a cell is: a sixel is scaled to it.
+      ((nlt:cell-size-msg-p msg)
+       (let ((width (nlt:cell-size-msg-width msg)) (height (nlt:cell-size-msg-height msg)))
+         (when (and (plusp width) (plusp height))
+           (setf (chat-model-cell-pixels model) (cons width height))
+           (render-state model))))
+
       ;; The terminal answered the truecolor probe: its SGR honors 24-bit
       ;; color whatever the environment claimed. Upgrade and repaint — the
       ;; row caches key on the profile, so the quantized paint settles out.

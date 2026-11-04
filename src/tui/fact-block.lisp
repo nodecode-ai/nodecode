@@ -294,7 +294,7 @@ the detail level and its chord, the open card, the hover, the image mode."
          (*expanded-tool-call* (chat-model-expanded-tool-call ,model))
          (*hover-row* (chat-model-hover-row ,model))
          (*hover-target* (chat-model-hover-target ,model))
-         (*kitty-images-enabled* (chat-model-kitty-graphics ,model)))
+         (*image-protocol* (image-protocol ,model)))
      ,@body))
 
 (defun transcript-projection-start (model state width)

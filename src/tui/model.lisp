@@ -189,6 +189,15 @@ for the many bars and rows that paint one run of text in one tone."
    ;; fallback rendering), plus the transmitted-image cache — payload text
    ;; -> NLT:TERMINAL-IMAGE (or :FAILED), bounded like the Zig AssetCache.
    (kitty-graphics :initform nil :accessor chat-model-kitty-graphics)
+   ;; The terminal's DA1 answer: NIL until it came, then whether it listed
+   ;; sixel with no multiplexer between (:SIXEL) or not (:NONE). With the
+   ;; kitty answer before it, it picks a picture's protocol (IMAGE-PROTOCOL).
+   (terminal-graphics :initform nil :accessor chat-model-terminal-graphics)
+   ;; The cell's (WIDTH . HEIGHT) in pixels as the terminal said, or NIL.
+   (cell-pixels :initform nil :accessor chat-model-cell-pixels)
+   ;; Pictures this shell draws itself, sixel or half blocks, by the key
+   ;; the kitty cache uses: each one's decoded pixels and its renderings.
+   (raster-cache :initform (make-hash-table :test #'equal) :accessor chat-model-raster-cache)
    (kitty-image-cache :initform (make-hash-table :test #'equal)
                       :accessor chat-model-kitty-image-cache)
    ;; The open /term line-projection panel (exec.lisp TERMINAL-PANEL), or
@@ -999,5 +1008,7 @@ CATALOGS owns what an answered lane and a failed one each take)."
                 (nlt:terminal-io-cmd #'nlt:request-background))
           (when (color-profile-upgradable-p)
             (list (nlt:terminal-io-cmd #'nlt:request-truecolor)))
+          ;; Last: its DA1 answer comes after every one asked before it.
+          (list (nlt:terminal-io-cmd #'nlt:request-terminal-attributes))
           (list (read-command-catalog-cmd model))))
 
