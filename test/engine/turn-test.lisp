@@ -3876,6 +3876,35 @@ thinking signed sig-N against PREFIX (none when NIL)."
                                (first (on "claude-binding-test" ask one (bound-result 1)
                                           two (bound-result 2))))))))))
 
+(deftest anthropic-thinking-never-replays-to-another-provider ()
+  ;; Two providers can serve one model id and still sign against different
+  ;; prefixes: the claude-code cell's lane folds as this one does, but its CLI
+  ;; writes the request's system blocks and tool names, so a block signed
+  ;; there is refused here (400 `The system prompt differs from the one this
+  ;; block was created with') though the body Nodecode built is the same. A
+  ;; failover or a /models pick from one to the other sheds the other's
+  ;; thinking.
+  (let ((twin (nle::make-provider-lane :name "binding-twin"
+                                       :stream-symbol 'nle::call-anthropic-streaming
+                                       :family :anthropic :reasoning-carry :text
+                                       :default-endpoint "https://api.anthropic.com/v1/messages"
+                                       :path "/messages")))
+    (nlk:bind ((nle::*provider-lanes* (cons twin nle::*provider-lanes*)))
+      (flet ((on (provider &rest messages)
+               (nlk:bind ((nle::*provider* provider) (nle::*endpoint* nil))
+                 (multiple-value-list (nle::anthropic-request-body (compiled-context messages))))))
+        (with-adaptive-claude ()
+          (let* ((ask (nle::message "user" "count"))
+                 (one (bound-round 1 (third (on "binding-twin" ask))))
+                 (two (bound-round 2 (third (on "anthropic" ask one (bound-result 1))))))
+            (is (not (equal (third (on "binding-twin" ask)) (third (on "anthropic" ask)))))
+            ;; the other provider's round sheds the first one's thinking
+            (is (null (replayed-signatures (first (on "anthropic" ask one (bound-result 1))))))
+            ;; back on the first provider, its own thinking replays and the other's does not
+            (is (equal '("sig-1") (replayed-signatures
+                                   (first (on "binding-twin" ask one (bound-result 1)
+                                              two (bound-result 2))))))))))))
+
 (deftest anthropic-stamps-a-thinking-reply-with-the-prefix-it-is-bound-to ()
   (with-adaptive-claude ()
     (with-mock-sse-stream (:stream (make-anthropic-stream))
