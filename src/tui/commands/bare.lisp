@@ -120,13 +120,12 @@ label; an empty one says what it waits for. => (values handled cmd)."
                (put-draft-back model (getf ask :draft))))))
 
 (defun put-ask-away (model)
-  "Take the ask MODEL's composer wears off it: the draft it stood over comes
-back, or with none, the text typed under it stays as a plain draft. => true
-when there was one."
+  "Take the ask MODEL's composer wears off it: the text typed under it goes,
+since Enter would send it on as a prompt, and the draft it stood over comes
+back. => true when there was one."
   (when-let (ask (shiftf (chat-model-composer-ask model) nil))
-    (when (plusp (length (or (getf ask :draft) "")))
-      (editor-reset (chat-model-editor model))
-      (put-draft-back model (getf ask :draft)))
+    (editor-reset (chat-model-editor model))
+    (put-draft-back model (getf ask :draft))
     (show-status model (format nil "~a put away" (getf ask :label)))
     t))
 

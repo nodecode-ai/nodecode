@@ -84,14 +84,14 @@
       (is (null (nle::chat-model-composer-ask model)) "Enter spent the ask")
       (is (eq :developer (nle::chat-model-tool-detail model)) "the line ran with the text")
       (is (equal "" (composer-value model)))
-      ;; Esc puts the next one away, its text kept as a plain draft.
+      ;; Esc puts the next one away with its text: Enter would send it on as a prompt.
       (type-string model "/details" :enter)
       (dialog-keys model :enter)
       (type-string model "standard")
       (press model :escape)
       (is (null (nle::chat-model-composer-ask model)) "Esc put it away")
       (is (eq :developer (nle::chat-model-tool-detail model)) "nothing ran")
-      (is (equal "standard" (composer-value model))))))
+      (is (equal "" (composer-value model)) "its text went with it"))))
 
 ;;; --- claim 4: headless, the same dialog ---------------------------------------
 
