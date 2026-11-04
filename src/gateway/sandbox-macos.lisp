@@ -70,6 +70,14 @@ rule can name a file the jail is about to create."
       (let ((real (real name)))
         (if (string= real "") "/" real)))))
 
+(defun seatbelt-regex-quote (text)
+  "TEXT with every character a regex gives a meaning escaped, for an SBPL
+#\"...\" literal."
+  (with-output-to-string (out)
+    (loop for char across text
+          do (when (find char ".[]()*+?{}|^$\\\"") (write-char #\\ out))
+             (write-char char out))))
+
 (defun seatbelt-ancestors (path)
   "Every directory above PATH, \"/\" excluded: what a jail must be able to
 stat -- never list or read -- for a path under them to resolve."
@@ -92,7 +100,7 @@ names them)."
            (string= area entry :end2 (length area))
            (char= #\/ (char entry (length area))))))
 
-(defun sandbox-seatbelt-profile (&key home folder binary policy port proxy-port
+(defun sandbox-seatbelt-profile (&key home folder binary policy port proxy-port store
                                       run cache temporary (user-home (user-homedir-pathname))
                                       (path #'seatbelt-path) (exists #'probe-file))
   "The SBPL profile, as a string, that jails HOME's organism working in
@@ -100,7 +108,11 @@ FOLDER on macOS: BINARY is the executable it runs (its tree read, never
 written); POLICY the operator's additions (SANDBOX-POLICY); PORT the
 loopback port its gateway binds and is reached on; PROXY-PORT the egress
 proxy's, or NIL for a jail with no way out at all; RUN, CACHE and TEMPORARY
-the directories under HOME's sandbox/ that are the jail's own; USER-HOME
+the directories under HOME's sandbox/ that are the jail's own; STORE the
+store the launcher named: its directory is the jail's to read and write
+wherever it lies, unless that is the account's home or above it, where only
+the store's own files (its sidecars, the write probe and the temporary
+files nodecode makes beside it) are; USER-HOME
 the account's home, whose Library/ is refused again even when the folder is
 the home itself, unless the folder lies inside it. PATH turns a
 name into the one Seatbelt matches (SEATBELT-PATH); EXISTS decides which
@@ -112,14 +124,22 @@ entries of +SANDBOX-HOME-READ+ are named."
                   (remove-duplicates (mapcar path (remove nil items)) :test #'string= :from-end t)))
          (expand (lambda (items) (mapcar #'sandbox-expand items)))
          (own (funcall paths (list run cache temporary)))
+         (store (and store (funcall path store)))
+         (store-dir (and store (subseq store 0 (max 1 (position #\/ store :from-end t)))))
+         (account (funcall path user-home))
+         ;; a store in a directory of its own gets the directory; one in the
+         ;; account's home or above gets its files only
+         (store-whole (and store-dir (not (seatbelt-inside-p account store-dir))))
          (read-back (funcall paths
                              (append (list folder home binary-dir)
                                      (remove-if-not (lambda (entry) (ignore-errors (funcall exists entry)))
                                                     (funcall expand +sandbox-home-read+))
                                      (funcall expand (getf policy :allow-read))
-                                     (funcall expand (getf policy :allow-write)))))
+                                     (funcall expand (getf policy :allow-write))
+                                     (and store-whole (list store-dir)))))
          (write-back (funcall paths (append (list folder home)
-                                            (funcall expand (getf policy :allow-write)))))
+                                            (funcall expand (getf policy :allow-write))
+                                            (and store-whole (list store-dir)))))
          ;; ~/Library holds the keychains, mail, cookies and every app's
          ;; tokens: a folder at or above the home must not read it back.
          (library (funcall path (merge-pathnames "Library/" (uiop:ensure-directory-pathname user-home))))
@@ -149,11 +169,17 @@ entries of +SANDBOX-HOME-READ+ are named."
       (seatbelt-rule out "deny" '("file-read*") (funcall paths +seatbelt-denied-roots+))
       (format out ";; the folder, the home and what the operator grants, read back; their parents only stat'ed~%")
       (seatbelt-rule out "allow" '("file-read-metadata")
-                     (remove-duplicates (loop for entry in read-back append (seatbelt-ancestors entry))
+                     (remove-duplicates (loop for entry in (append read-back (and store (list store)))
+                                              append (seatbelt-ancestors entry))
                                         :test #'string= :from-end t)
                      :filter "literal")
       (seatbelt-rule out "allow" '("file-read*") read-back)
       (seatbelt-rule out "allow" '("file-write*") write-back)
+      (when (and store (not store-whole))
+        (format out ";; the store in the account's home: its own files, nothing else of the home~%")
+        (format out "(allow file-read* file-write* (regex #\"^~a/(~a([-.][^/]*)?|\\.nodecode-[^/]*)$\"))~%"
+                (if (string= store-dir "/") "" (seatbelt-regex-quote store-dir))
+                (seatbelt-regex-quote (subseq store (1+ (position #\/ store :from-end t))))))
       (format out ";; refused again wherever they sit: secrets, other agents' credentials, the policy's denials~%")
       (seatbelt-rule out "deny" '("file-read*" "file-write*") refused)
       (format out ";; what the launcher reads and what runs the jail, never written from inside it~%")
@@ -178,13 +204,14 @@ proxy."
                     collect (format nil "~(~a~)=~a" name url))
               (list "NO_PROXY=localhost,127.0.0.1" "no_proxy=localhost,127.0.0.1")))))
 
-(defun sandbox-seatbelt-wrap (argv &key profile port run cache temporary proxy-port)
+(defun sandbox-seatbelt-wrap (argv &key profile port run cache temporary proxy-port directory)
   "ARGV, the serve's own, as the command line that runs it under Seatbelt:
 env sets the gateway port it binds, the runtime directory, cache and
 temporary directory that are the jail's own, the proxy, and takes the
 shell's pristine marker away (the shell stands on the binary alone; the
 organism loads its folder); sandbox-exec applies PROFILE to it and to every
-process it starts."
+process it starts. DIRECTORY, when given, is where it runs: a jail with no
+work folder starts in its home, never in a directory it cannot read."
   (flet ((directory-word (name directory)
            (format nil "~a=~a" name (string-right-trim "/" (uiop:native-namestring directory)))))
     (append (list* "env" "-u" "NODECODE_PRISTINE" "NODECODE_SANDBOXED=1"
@@ -193,7 +220,11 @@ process it starts."
                            (and cache (list (directory-word "XDG_CACHE_HOME" cache)))
                            (and temporary (list (directory-word "TMPDIR" temporary)))
                            (seatbelt-proxy-variables proxy-port)
-                           (list +seatbelt-program+ "-f" (uiop:native-namestring profile))))
+                           (list +seatbelt-program+ "-f" (uiop:native-namestring profile))
+                           ;; `sh -c SCRIPT DIR ARGV...' binds DIR to $0, the argv to "$@"
+                           (and directory
+                                (list "/bin/sh" "-c" "cd \"$0\" && exec \"$@\""
+                                      (string-right-trim "/" (uiop:native-namestring directory))))))
             argv)))
 
 (defun sandbox-seatbelt-requirements ()
@@ -203,39 +234,42 @@ process it starts."
     (format nil "--sandbox needs ~a, which every macOS install has: this one is missing it"
             +seatbelt-program+)))
 
-(defun sandbox-seatbelt-preflight (store-path)
-  "SANDBOX-LAUNCH-PREFLIGHT on macOS: refuse with a sentence when the jail
-cannot run (SANDBOX-REQUIREMENTS), else write HOME's Seatbelt profile under
-<home>/sandbox/, pick the loopback port the jailed gateway binds, set
-*SANDBOX-PLAN* for FRONT-ORGANISM and answer NIL."
-  (let ((store (merge-pathnames (or store-path nlk::*default-store-path*))))
-    (or (sandbox-requirements store)
-        (let* ((home (nlk:home))
-               (sandbox-dir (merge-pathnames "sandbox/" (uiop:ensure-directory-pathname home)))
-               (run (merge-pathnames "run/" sandbox-dir))
-               (cache (merge-pathnames "cache/" sandbox-dir))
-               (temporary (sandbox-jail-temporary-directory home))
-               (profile (merge-pathnames +seatbelt-profile-name+ sandbox-dir))
-               (port (local-port 0)))
-          ;; The launcher's files exist before the profile that write-denies
-          ;; them, and the mark goes down before anything runs in the jail.
-          (sandbox-ensure-launcher-files home)
-          (sandbox-mark home)
-          ;; The jailed gateway and this shell share a token minted for this
-          ;; launch: the home's operator-token is read-denied in the jail.
-          (nlk::set-environment-variable "NODECODE_GATEWAY_OPERATOR_TOKEN"
-                                         (format nil "~(~{~2,'0x~}~)" (coerce (nlk:random-bytes 32) 'list)))
-          (dolist (directory (list run cache temporary))
-            (ensure-directories-exist directory)
-            (ignore-errors (sb-posix:chmod (uiop:native-namestring directory) #o700)))
-          (nlk::write-file-atomically
-           profile
-           (sandbox-seatbelt-profile :home home :folder (uiop:getcwd)
-                                     :binary (ignore-errors (truename (nlk::origin-pathname)))
-                                     :policy (sandbox-policy home)
-                                     :port port :run run :cache cache :temporary temporary)
-           :mode #o600 :directory-mode #o700)
-          (setf *sandbox-plan* (list :seatbelt profile :port port :run run :cache cache
-                                     :temporary temporary)
-                *sandboxed-shell* t)
-          nil))))
+(defun sandbox-seatbelt-preflight (&key store (folder (uiop:getcwd)))
+  "SANDBOX-LAUNCH-PREFLIGHT's macOS half, once SANDBOX-REQUIREMENTS let it
+run: write HOME's Seatbelt profile under <home>/sandbox/ around the launch's
+FOLDER and the STORE it serves, pick the loopback port the jailed gateway
+binds, set *SANDBOX-PLAN* for FRONT-ORGANISM and answer NIL."
+  (let* ((home (nlk:home))
+         (sandbox-dir (merge-pathnames "sandbox/" (uiop:ensure-directory-pathname home)))
+         (run (merge-pathnames "run/" sandbox-dir))
+         (cache (merge-pathnames "cache/" sandbox-dir))
+         (temporary (sandbox-jail-temporary-directory home))
+         (profile (merge-pathnames +seatbelt-profile-name+ sandbox-dir))
+         (port (local-port 0)))
+    ;; The store's directory is made here: the jail may write the store and
+    ;; its sidecars, never make a directory for them.
+    (when store (ensure-directories-exist store))
+    ;; The launcher's files exist before the profile that write-denies them,
+    ;; and the mark goes down before anything runs in the jail.
+    (sandbox-ensure-launcher-files home)
+    (sandbox-mark home)
+    ;; The jailed gateway and this shell share a token minted for this
+    ;; launch: the home's operator-token is read-denied in the jail.
+    (nlk::set-environment-variable "NODECODE_GATEWAY_OPERATOR_TOKEN"
+                                   (format nil "~(~{~2,'0x~}~)" (coerce (nlk:random-bytes 32) 'list)))
+    (dolist (directory (list run cache temporary))
+      (ensure-directories-exist directory)
+      (ignore-errors (sb-posix:chmod (uiop:native-namestring directory) #o700)))
+    (nlk::write-file-atomically
+     profile
+     (sandbox-seatbelt-profile :home home :folder folder :store store
+                               :binary (ignore-errors (truename (nlk::origin-pathname)))
+                               :policy (sandbox-policy home)
+                               :port port :run run :cache cache :temporary temporary)
+     :mode #o600 :directory-mode #o700)
+    (setf *sandbox-plan* (list :seatbelt profile :port port :run run :cache cache
+                               :temporary temporary
+                               ;; no folder of its own: it starts in its home
+                               :directory (unless folder home))
+          *sandboxed-shell* t)
+    nil))

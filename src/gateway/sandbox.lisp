@@ -444,7 +444,10 @@ inside) and never writes; NIL when it cannot be named."
 when it cannot run (SANDBOX-REQUIREMENTS), else write the srt settings under
 <home>/sandbox/, pick the loopback port the jailed gateway binds, set
 *SANDBOX-PLAN* for FRONT-ORGANISM and answer NIL."
-  #+darwin (return-from sandbox-launch-preflight (sandbox-seatbelt-preflight store-path))
+  #+darwin
+  (let ((store (merge-pathnames (or store-path nlk::*default-store-path*))))
+    (return-from sandbox-launch-preflight
+      (or (sandbox-requirements store) (sandbox-seatbelt-preflight :store store))))
   (let ((store (merge-pathnames (or store-path nlk::*default-store-path*))))
     (or (sandbox-requirements store)
         (let* ((home (nlk:home))
@@ -537,7 +540,8 @@ the plan's listener as its stdout (CALL-WITH-SANDBOX-STDOUT)."
            (sandbox-seatbelt-wrap command :profile (getf plan :seatbelt) :port (getf plan :port)
                                           :run (getf plan :run) :cache (getf plan :cache)
                                           :temporary (getf plan :temporary)
-                                          :proxy-port (getf plan :proxy-port)))
+                                          :proxy-port (getf plan :proxy-port)
+                                          :directory (getf plan :directory)))
           (t (sandbox-wrap command :srt (getf plan :srt) :settings (getf plan :settings)
                                    :port (getf plan :port) :run (getf plan :run) :cache (getf plan :cache)
                                    :srt-temporary (getf plan :srt-temporary)

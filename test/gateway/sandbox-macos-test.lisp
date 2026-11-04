@@ -111,6 +111,31 @@
                  "/opt/nc/nodecode" "serve" "--store" "/h/a b/store.db")
                (subseq argv (position "/usr/bin/sandbox-exec" argv :test #'string=))) "sandbox-exec applies the profile to the serve argv, word for word")))
 
+(defun seatbelt-test-store-profile (store)
+  "A folderless jail's profile around STORE, paths taken as written."
+  (nle::sandbox-seatbelt-profile :home "/Users/u/.nodecode/" :folder nil :user-home "/Users/u/"
+                                 :store store :port 47002
+                                 :path (lambda (path) (string-right-trim "/" (uiop:native-namestring path)))
+                                 :exists (constantly nil)))
+
+(deftest sandbox-seatbelt-profile-gives-the-jail-its-store-wherever-it-lies ()
+  (let* ((profile (seatbelt-test-store-profile "/Users/Shared/run/smoke/history.db"))
+         (refused (search "(deny file-read* file-write*" profile))
+         (written (search "(allow file-write*" profile)))
+    (is (and written refused (search "(subpath \"/Users/Shared/run/smoke\")" (subseq profile written refused))) "a store in a directory of its own: the directory is written, before the refusals, which still win inside it")
+    (is (search "(literal \"/Users/Shared/run\")" profile) "its parents can be stat'ed, so the path resolves"))
+  (let ((profile (seatbelt-test-store-profile "/Users/u/history.db")))
+    (is (not (search "(subpath \"/Users/u\")" profile)) "a store in the account's home never opens the home")
+    (is (search "(allow file-read* file-write* (regex #\"^/Users/u/(history\\.db([-.][^/]*)?|\\.nodecode-[^/]*)$\"))" profile) "only its own files: sidecars, the write probe, nodecode's temporary files"))
+  (let ((profile (seatbelt-test-store-profile "/Users/u/.nodecode/history.db")))
+    (is (not (search "(regex #\"^/Users" profile)) "the default store, in the home, needs no rule of its own")
+    (is (search "(subpath \"/Users/u/.nodecode/secrets\")" (subseq profile (search "(deny file-read* file-write*" profile))) "and the home's secrets stay refused")))
+
+(deftest sandbox-seatbelt-wrap-runs-a-folderless-jail-in-its-home ()
+  (let ((argv (nle::sandbox-seatbelt-wrap '("/opt/nc/nodecode" "serve") :profile "/h/sandbox/seatbelt.sb" :port 47002
+                                          :directory "/h/")))
+    (is (equal '("/usr/bin/sandbox-exec" "-f" "/h/sandbox/seatbelt.sb" "/bin/sh" "-c" "cd \"$0\" && exec \"$@\"" "/h" "/opt/nc/nodecode" "serve") (subseq argv (position "/usr/bin/sandbox-exec" argv :test #'string=))) "it starts in its home, never in a directory the jail cannot read, then execs the serve argv whole")))
+
 (deftest sandbox-seatbelt-plan-wraps-and-hands-in-no-listener ()
   (let ((nle::*sandbox-plan* (list :seatbelt "/h/.nodecode/sandbox/seatbelt.sb" :port 47002
                                    :run "/h/.nodecode/sandbox/run/" :cache "/h/.nodecode/sandbox/cache/"
