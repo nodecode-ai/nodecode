@@ -686,11 +686,11 @@ then the one the sign-in ended on (ACCOUNT-LOGIN-WATCH)."
               (render-state model)))
   "login: asking nodecode.ai…")
 
-(defun slash-login-op (model args &key (pick #'account-login-from-shell) context on-cancel
+(defun slash-login-op (model args &key (pick #'account-login-from-shell) (context "") on-cancel
                                   &aux (word (string-trim '(#\Space #\Tab) (or args ""))))
   "/login on a shell: bare, the choice between a subscription and API credits; named, that sign-in.
 PICK takes the choice as (MODEL MODE); CONTEXT and ON-CANCEL are the setup walk's, whose step the
-choice is (SETUP-STAGE-SIGN-IN)."
+choice is (SETUP-STAGE-SIGN-IN): the prompt and /models leave the picker's label empty."
   (cond
     ((plusp (length word))
      (if-let (mode (account-mode-word word))
