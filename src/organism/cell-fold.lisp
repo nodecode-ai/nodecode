@@ -49,7 +49,7 @@ override by (LAYER-FILE-OVERRIDE), or NIL."
           while (and line (plusp (length line)) (char= (char line 0) #\;))
           when (uiop:string-prefix-p +override-marker+ line) return line)))
 
-(defun file-package-name (text)
+(defun cell-file-package-name (text)
   "The package TEXT's first IN-PACKAGE names, as its name reads upcased:
 #:FOO, :foo and \"FOO\" alike; NODECODE.EVOLVED when it names none."
   (or (ppcre:register-groups-bind (name)
@@ -104,7 +104,7 @@ out. => a plist: :file, :kept and :dropped labels, :kept-files."
                         (destructuring-bind (key start end &optional home) hit
                           (if (dropped-p key)
                               (push (definition-key-label key) dropped)
-                              (push (list key (if (packagep home) (package-name home) (file-package-name text))
+                              (push (list key (if (packagep home) (package-name home) (cell-file-package-name text))
                                           (or (definition-leading-comment text start) header)
                                           (subseq text start end))
                                     entries))))))))))

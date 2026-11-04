@@ -704,3 +704,28 @@ holding DEFINITION alone, and drop the index."
     (is (search "[pristine: nothing is kept" (nle:eval-string "(defun pristine-probe (x) x)")))
     (is (null (layer-file-text "pristine-probe.lisp")) "nothing written")
     (is (= 1 (evolved-fn "PRISTINE-PROBE" 1)) "the definition is live, as Lisp has it")))
+
+(deftest each-function-name-has-one-definition-in-the-shipped-source ()
+  ;; Two files of one package defining one function name load as one
+  ;; definition, the later file's, and SBCL only warns. (organism-port PATH
+  ;; DEADLINE) in rpc.lisp took over the zero-argument one `add', `update',
+  ;; `web' and `rollback' call, and every one of them died with "invalid
+  ;; number of arguments: 0" while their tests, stubbing it, passed.
+  (let ((root (asdf:system-source-directory "nodecode"))
+        (seen (make-hash-table :test #'equal))
+        (twice '()))
+    (dolist (path (directory (merge-pathnames "src/**/*.lisp" root)))
+      (let ((text (uiop:read-file-string path)))
+        (dolist (hit (nlk::toplevel-definitions text))
+          (destructuring-bind (key start end &optional package) hit
+            (declare (ignore end))
+            (when (member (getf key :operator) '("DEFUN" "DEFMACRO" "DEFGENERIC") :test #'string=)
+              (let ((name (format nil "~a::~a" (if (packagep package) (package-name package) package)
+                                  (getf key :name)))
+                    (where (format nil "~a:~d" (enough-namestring path root)
+                                   (1+ (count #\Newline text :end start)))))
+                (when (gethash name seen)
+                  (push (format nil "~a at ~a and ~a" name (gethash name seen) where) twice))
+                (setf (gethash name seen) where)))))))
+    (is (plusp (hash-table-count seen)) "the source was read")
+    (is (null twice) (format nil "defined twice: ~{~a~^; ~}" twice))))
