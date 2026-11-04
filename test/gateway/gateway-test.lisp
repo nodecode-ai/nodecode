@@ -236,10 +236,12 @@ nothing else."
   "Run BODY with PEER a fresh silent peer — a list holding NAME, an identity
 the registry keys on — and STATE its registered peer state, dropped from the
 registry however BODY leaves."
+  ;; Left as a socket's close leaves it: the rows views a subscribe opened for
+  ;; PEER close with it, or the next test reads them in *ROWS-VIEWS*.
   `(let* ((,peer (list ,name))
           (,state (install-silent-peer ,peer)))
      (declare (ignorable ,state))
-     (nlk:with-cleanup ((nle::stop-gw-peer ,peer)) ,@body)))
+     (nlk:with-cleanup ((nle::stop-gw-peer ,peer) (nle::close-rows-views ,peer)) ,@body)))
 
 
 ;;; --- gate: G2a — empty session replay -----------------------------------
