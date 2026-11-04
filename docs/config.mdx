@@ -52,7 +52,7 @@ Edit the file, or use eval. See [Eval](eval.mdx).
 | Cell sections | When the cell starts. | `(restart-cells)` or `(restart-cells "NAME")` in eval. |
 | `providers`, `failover` | At the start of each turn, when the file changed. | The next turn. |
 | `fork.seconds` | At each `(fork ...)` call. | The next call. |
-| `general.default_model`, `general.auxiliary_model` | When the organism boots. An organism is a running Nodecode. | A restart, or `/models`: its Main and Auxiliary tabs, or `/models aux`. |
+| `general.default_model`, `general.auxiliary_model` | When the organism boots. An organism is a running Nodecode. | A restart, or `/models`: its Main and Auxiliary tabs. |
 | `workspace.captures` | When the gateway starts. The gateway is the local server shells attach to. | A restart. |
 | `general.theme` | When the shell starts. | `/themes`, or a new shell. |
 
@@ -103,7 +103,7 @@ One entry per provider id, under `providers.<id>`.
 | `failover.on` | Array of trigger ids: `rate_limit`, `outage`, `slow_start`, `broken_answer`, `refusal` | Every trigger. `[]` turns every one off. |
 | `failover.first_token_seconds` | Number, 0 or more. `0` never cuts. | 60: seconds an attempt with a backup behind it waits for its first token |
 
-`/models backups` writes `chain` and `on`. See [Models and providers](models.mdx#failover).
+`/models`' Backup tab writes `chain` and `on`. See [Models and providers](models.mdx#failover).
 
 {/* source: src/organism/fork.lisp */}
 ## fork

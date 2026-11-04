@@ -1178,7 +1178,7 @@ how many arguments follow, never their text; else its url (MASKED-WORD)."
                                   (probe-file command)
                                   (nlk::executable-on-path command)))))
                (values "skipped" (format nil "~a is not on this box's PATH" command)))
-              (t (values "imported" (format nil "~a; lands off: /mcp on ~a starts it~{; ~a~}"
+              (t (values "imported" (format nil "~a; lands off: its row in /mcp, ~a, starts it~{; ~a~}"
                                             (server-line object) name (getf fact.value :notes)))))
           (add-item plan "mcp" status :fact fact :reason reason
                     :destination (format nil "mcp.servers.~a" name)

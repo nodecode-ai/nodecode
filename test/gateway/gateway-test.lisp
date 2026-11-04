@@ -3795,7 +3795,8 @@ request."
       (is (= 200 status))
       (is (equal (mapcar (lambda (entry) (getf entry :name)) (nle:slash-catalog)) names) "SLASH-CATALOG, in its order")
       (is (plusp (length (gethash "description" (first commands)))) "each with what it does")
-      (is (eq t (gethash "autocomplete" models)) "/models completes its argument")))
+      (is (null (gethash "autocomplete" models)) "no command completes words after its name")
+      (is (null (gethash "usage" models)) "nor shows any")))
   (is-route (port :get "/api/gateway/slash" :token nil) 401 "the operator token is required")
   (with-gateway-http (port :post "/api/gateway/slash" :body "{\"line\":\"/help\"}")
     (is (equal (nle:slash "/help") (gethash "text" body)) "/help needs no session"))
@@ -3807,11 +3808,8 @@ request."
   (is-route (port :post "/api/gateway/slash" :body "{\"line\":\"/context\"}") 400
             "a session's command with none refuses" "invalid_request")
   (is-route (port :post "/api/gateway/slash" :body "{}") 400 "a line is required" "invalid_request")
-  (with-gateway-http (port :post "/api/gateway/slash/completions" :body "{\"name\":\"help\",\"text\":\"\"}")
-    (is (equalp #() (gethash "choices" body)) "a command that completes nothing offers nothing"))
   (with-gateway-http (port :post "/api/gateway/slash/completions" :body "{\"name\":\"models\",\"text\":\"\"}")
-    (is (= (length (nle:slash-completions "models" "")) (length (gethash "choices" body))) "/models offers the catalog"))
-  (is-route (port :post "/api/gateway/slash/completions" :body "{}") 400 "a name is required" "invalid_request"))
+    (is (= 404 status) "no route completes words after a name")))
 
 (deftest gateway-slash-route-names-sessionless-commands-and-carries-their-panel (with-temp-gateway (port))
   ;; The web page's opener runs a command that acts on no session as it is,
@@ -5472,24 +5470,29 @@ default target is PROVIDER/MODEL-ID, restored after."
   (dialog-keys model :up :up :up :up :up :enter)
   (is (null (session-effort "think-dlg"))))
 
-(deftest slash-think-accepts-an-argument (with-gateway-frame (model "think-arg" "openai-completions"
-                                                                   "think-arg"))
-  (let ((entry (nle::find-slash-command "think")))
-    (is (equal "/think [rung]" entry.usage))
-    (is (equal '("high" "xhigh")
-                (mapcar (lambda (choice) (getf choice :value))
-                        (nle:slash-completions "think" "h")))))
+(deftest slash-think-offers-its-rungs (with-gateway-frame (model "think-arg" "openai-completions"
+                                                                "think-arg"))
+  ;; A rung's line, what a row runs, lands it from the next turn.
   (multiple-value-bind (notice cmd)
       (nle::execute-slash-command model "think" "high")
-    (is (null cmd) "an argument pick starts no turn")
+    (is (null cmd) "a rung's line starts no turn")
     (is (search "applies from the next turn" notice)))
   (is (equal "high" (session-effort "think-arg")))
+  ;; Typed alone: the shell's own picker, and a room's rows, the rung in use
+  ;; marked.
   (nle::execute-slash-command model "think" "")
   (is (nle::picker-dialog-p model.dialog))
+  (multiple-value-bind (text dialog) (nle:slash "/think" :session-id "think-arg")
+    (is (search "Reasoning effort" text))
+    (is-present (rows (and dialog (coerce (nle::json-array dialog "rows") 'list))) "the rungs ride the answer"
+      (is (equal "/think default" (nle::json-value (first rows) :text "run" "enter")) "Default leads")
+      (flet ((line (row) (nle::json-value row :text "run" "enter")))
+        (is-present (high (find "/think high" rows :key #'line :test #'equal)) "each rung is a row"
+          (is (equal "●" (nle::json-value high :text "mark")) "the rung in use is marked")))))
   (multiple-value-bind (notice cmd)
       (nle::execute-slash-command model "think" "high low")
-    (is (null cmd) "malformed arguments start no turn")
-    (is (equal "usage: /think [rung]" notice))))
+    (is (null cmd) "a line it offers no row for starts no turn")
+    (is (equal (nle::slash-unoffered "think") notice))))
 
 (deftest cell-commands-join-the-slash-surface (with-temp-gateway (port))
   ;; A cell's command runs where the cell runs: a shell reads it off GET
@@ -5513,10 +5516,10 @@ default target is PROVIDER/MODEL-ID, restored after."
       (let ((model (gateway-frame-model port "ext-slash")))
         ;; init read the gateway's commands.
         (is-present (entry (nle::find-slash-command "greet")) "the registration is a live slash entry"
-          (is (equal "/greet [name]" (nle::slash-command-usage entry))))
+          (is (equal "/greet" (nle::slash-command-label entry)) "its hint is shown nowhere"))
         (is (null (nle::find-gateway-command "help")) "a builtin's name stays the builtin's")
         (is (= 1 (length (nle::slash-suggestions "/gr"))))
-        (is (find "/greet [name]" (nle::help-dialog-rows model)
+        (is (find "/greet" (nle::help-dialog-rows model)
                   :key #'nle::picker-row-label :test #'equal))
         (type-string model "/gr")
         (is (equal "eet" (nle::composer-ghost-remainder model)))

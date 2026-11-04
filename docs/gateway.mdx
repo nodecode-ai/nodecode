@@ -29,7 +29,7 @@ nodecode gateway logs --follow
 | `run` | Runs the gateway in the foreground. This is what the unit runs. Command line only. |
 | `help [VERB]` | Prints help. |
 
-`/gateway [on | off | restart | logs | help]` does the same from a shell. A shell is the terminal UI. `/settings` > System > Gateway > Run in the background turns it on or off: Off is `off`, and writes `gateway-off`. On is `on`.
+`/gateway` does the same from a shell, its verbs as rows: where it stands, on, a restart, off, its log, and setting up Discord, Telegram or Slack. A shell is the terminal UI. `/settings` > System > Gateway > Run in the background turns it on or off: Off is `off`, and writes `gateway-off`. On is `on`.
 
 For a profile, add `-p NAME`:
 
@@ -81,7 +81,7 @@ On macOS the launcher is copied once to `~/Library/Application Support/nodecode/
 | A shell owns the store, then the gateway starts | The gateway waits. It takes the organism over when that shell closes. |
 | The gateway serves, then a shell opens | The shell attaches. Its footer shows `Gateway`, colored by the connection. A click opens the web page on Sessions. |
 | The gateway restarts: for an update, or after a clean exit | Open shells wait up to 60 s for it to take the store again, then attach. Meanwhile they start no organism of their own. |
-| `/gateway off` from an attached shell | The gateway stops. That shell takes the organism over. |
+| Turned off in `/gateway`, from an attached shell | The gateway stops. That shell takes the organism over. |
 
 See [The organism](organism.mdx).
 

@@ -134,9 +134,9 @@
   (let* ((plan (hermes-plan home :only "mcp"))
          (github (import-item plan "mcp" "mcp.servers.github"))
          (docs (import-item plan "mcp" "mcp.servers.docs")))
-    (is (search "npx -y @modelcontextprotocol/server-github (fetched from npm); lands off: /mcp on github starts it"
+    (is (search "npx -y @modelcontextprotocol/server-github (fetched from npm); lands off: its row in /mcp, github, starts it"
                 (nik:item-reason github)))
-    (is (search "https://docs.example.test/mcp; lands off: /mcp on docs starts it" (nik:item-reason docs)))
+    (is (search "https://docs.example.test/mcp; lands off: its row in /mcp, docs, starts it" (nik:item-reason docs)))
     (nik:apply-plan plan)
     (dolist (name '("github" "docs"))
       (let ((entry (nlk:json-value (import-config) :object "mcp" "servers" name)))
@@ -559,8 +559,9 @@
           (nlk:home-abbreviated (namestring (merge-pathnames "import/" home)))))
 
 (deftest import-slash-previews-then-applies (with-import-runtime (home box :commandcode))
-  (let ((line (nik::run-slash "commandcode")))
-    (is-carrying line ("(dry run)" "a bare /import previews") "--yes applies")
+  (multiple-value-bind (line dialog) (nik::run-slash "commandcode")
+    (is-carrying line ("(dry run)" "a bare /import previews") (:absent "--yes"))
+    (is (equal "/import commandcode --yes" (getf (getf (first (getf dialog :rows)) :run) :enter)))
     (is (null (probe-file (merge-pathnames "auth.json" home))) "and writes nothing")
     ;; The notice is the summary and where the report is, never the report
     ;; cut at a toast's four rows, and the hint that stays says where too,

@@ -56,7 +56,7 @@ A window no source knows is never evicted ahead of time. A request rejected as t
 A stub stands where the turns were: `[history evicted: seq A–B · N turns · recall: (recall-log :match "text" :before B+1)]`. It carries the `;;` first line of every evicted cell and the agent's own notes.
 
 {/* source: src/tui/slash.lisp */}
-`/evict [percent | through TURN]` evicts by hand (alias `/compact`, default 50%). The newest turn always stays.
+`/evict` evicts by hand (alias `/compact`): half the retained history, a quarter, three quarters or all of it, or every turn through one picked from `/context`'s history. The newest turn always stays.
 
 {/* source: src/session/recall.lisp */}
 ## Recall

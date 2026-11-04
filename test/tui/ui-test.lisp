@@ -1310,7 +1310,7 @@ every output gate measures against."
     (is (null (nle::slash-details-op model "developer")))
     (is (equal "Switched to Developer viewport" (nle::status-said model)))
     (is (eq :developer model.tool-detail))
-    (is (search "usage: details" (nle::slash-details-op model "expanded")))
+    (is (equal (nle::slash-unoffered "details") (nle::slash-details-op model "expanded")))
     (is-shape model (.tool-detail eq :developer) (nle::toggle-tool-detail eq :standard))
     (is (member "details" (mapcar #'nle::slash-command-name nle::*slash-commands*) :test #'equal))))
 
@@ -5525,7 +5525,7 @@ and the DELIVERY its handler declares."
     (is (eq :standard nle::*tool-detail*) "the render-scope default matches fresh shells")
     (is (eq :standard model.tool-detail))
     (is (equal "viewport Standard" (nle::slash-details-op model "")))
-    (is (search "usage:" (nle::slash-details-op model "expanded")))
+    (is (equal (nle::slash-unoffered "details") (nle::slash-details-op model "expanded")))
     (is (eq :standard model.tool-detail) "invalid mode leaves the viewport unchanged")
     (is (eq :developer (nle::toggle-tool-detail model)))))
 
