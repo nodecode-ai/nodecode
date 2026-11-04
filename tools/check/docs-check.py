@@ -18,8 +18,12 @@
 #            repository's own notes and no page.
 #   front    every page opens with frontmatter that has a title and a summary:
 #            the page's masthead, its row in the rail and in llms.txt.
-#   links    a link to /SLUG lands on a page, and a #anchor on a heading or id
-#            of that page (ids as rehype-slug gives them, github-slugger's).
+#   links    a link to another page is SLUG.mdx, the page's file beside this
+#            one, so it lands on the page both on GitHub and on the site, which
+#            serves it as /docs/SLUG; it names a page nav.json lists, and a
+#            #anchor on a heading or id of that page (ids as rehype-slug gives
+#            them, github-slugger's). /SLUG is the site's address, and on GitHub
+#            it opens the repository root's SLUG, which is no file.
 #   media    a picture a page shows (![](...), src=, poster=) is a file under
 #            docs/images/: /docs/PATH or images/PATH names docs/images/PATH.
 #   sources  every source path a page names (src/...lisp|asd|json,
@@ -209,15 +213,16 @@ for path, _, prose, ids in read.values():
                 if anchor and anchor not in ids:
                     problem(path, number, f"links to #{anchor}, and this page has no heading or id {anchor}")
                 continue
-            if not page.startswith("/"):
-                problem(path, number, f"links to {target}: a page is linked as /SLUG, the way the site serves it")
+            if page.startswith("/"):
+                problem(path, number, f"links to {target}: write {page.strip('/').removeprefix('docs/') or 'SLUG'}.mdx, the page's file; /SLUG opens nothing on GitHub")
                 continue
-            name = page.strip("/")
-            name = name[:-3] if name.endswith(".md") else name
-            if name.startswith("docs/") or name == "docs":
-                problem(path, number, f"links to {target}: write /SLUG, the site adds /docs itself")
-            elif name not in slugs:
-                problem(path, number, f"links to {target}, and nav.json names no page {name}")
+            name = page[2:] if page.startswith("./") else page
+            if "/" in name or not name.endswith(".mdx"):
+                problem(path, number, f"links to {target}: a page is linked as SLUG.mdx, its file beside this one")
+                continue
+            name = name[:-4]
+            if name not in pages:
+                problem(path, number, f"links to {target}, and there is no docs/{name}.mdx")
             elif anchor and name in read and anchor not in read[name][3]:
                 problem(path, number, f"links to {target}, and {name} has no heading or id {anchor}")
         for match in MEDIA.finditer(line):

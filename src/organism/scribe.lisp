@@ -547,7 +547,9 @@ one name both answer — then of every knowledge cell, as the index read it."
                          collect (list path (second hit) (third hit)))))
    (when directory
      (loop for entry in (knowledge-entries)
+           ;; a linked SKILL.md is the other harness's file, never a definition to patch
            when (and (string= name (getf (knowledge-entry-key entry) :name))
+                     (string-equal "lisp" (pathname-type (knowledge-entry-path entry)))
                      (string/= (layer-name) (folder-name (knowledge-entry-folder entry))))
              collect (list (knowledge-entry-path entry) (knowledge-entry-start entry)
                            (knowledge-entry-end entry))))))

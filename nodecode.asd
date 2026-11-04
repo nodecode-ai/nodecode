@@ -395,6 +395,8 @@ of stacking."
      ;; Settings tab and the shell's /settings, a pasted secret kept in a
      ;; file of its own.
      (:file "gateway/settings")
+     (:file "gateway/secrets")
+     (:file "gateway/sandbox")
      ;; sheet: the canvas, inks, pointer targets and key-row line every
      ;; dialog in the middle of the frame paints and calls with.
      (:file "tui/sheet")
@@ -507,6 +509,7 @@ of stacking."
      (:file "lib/config-test")
      (:file "lib/os-test")
      (:file "lib/dial-test")
+     (:file "lib/proxy-test")
      (:file "lib/paths-test")
      (:file "lib/verbs-test")
      (:file "lib/textrules-test")
@@ -676,6 +679,8 @@ of stacking."
      ;; cells-test's hub fixtures and opens ui-test's frame-model wizard.
      (:file "gateway/provider-offers-test")
      (:file "gateway/settings-test")
+     (:file "gateway/secrets-test")
+     (:file "gateway/sandbox-test")
      ;; Quick TUI settings gates reuse the canonical route's isolated fixture.
      (:file "tui/settings-sheet-test")
      (:file "tui/channel-setup-test")

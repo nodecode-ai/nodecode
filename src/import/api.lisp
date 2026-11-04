@@ -28,7 +28,7 @@
 
 ;;; --- the verbs ----------------------------------------------------------------------------
 
-(defun run-import (&key source overwrite (takeover t) only without apply progress (answer #'identity))
+(defun run-import (&key source overwrite (takeover t) only without link apply progress (answer #'identity))
   "The plan for SOURCE, applied when APPLY — and then the watch started
 for any bot it held for a running foreign gateway. => what ANSWER makes of
 the plan, the plan itself unless told otherwise."
@@ -39,7 +39,7 @@ the plan, the plan itself unless told otherwise."
   ;; when the nursery comes back down.
   (nlk:with-nursery ((* 512 1024 1024))
     (let ((plan (make-plan :source source :overwrite overwrite :takeover takeover
-                           :only only :without without)))
+                           :only only :without without :link link)))
       (cond (apply
              (apply-plan plan :progress progress)
              (funcall *start-watch*))
@@ -63,15 +63,16 @@ line each: the world, where it sits, and when it was last used."
   ;; SOURCE names a world or a path; naming none reads every world on the box.
   (run-import :source source :only only :answer #'report-text))
 
-(defun import (&key source overwrite (takeover t) only)
+(defun import (&key source overwrite (takeover t) only link)
   "Import SOURCE, keys and tokens with it: OVERWRITE replaces what is
 already here, ONLY names the kinds (providers, instructions, memory,
-skills, mcp, channels, cron, sessions, profiles) comma-separated."
+skills, mcp, channels, cron, sessions, profiles) comma-separated, LINK
+links each library of skills, read where it is, instead of copying them."
   ;; A foreign gateway polling bots is stopped and disabled so they answer
   ;; from here; TAKEOVER nil leaves it running, and its bots land off and come
   ;; on by themselves once it stops. Answers the report.
   (run-import :source source :overwrite overwrite :takeover takeover
-              :only only :apply t :answer #'report-text))
+              :only only :link link :apply t :answer #'report-text))
 
 ;;; --- does the imported target answer ---------------------------------------------------
 ;;; A key an import carried over is a key that worked once, somewhere else.
@@ -149,7 +150,7 @@ every run of eight or more key characters that is a piece of one replaced."
 
 (defun run-slash (args &aux (words (nlk:split-words args))
                             (head (first words))
-                            (source nil) (overwrite nil) (takeover t) (only nil) (yes nil))
+                            (source nil) (overwrite nil) (takeover t) (only nil) (link nil) (yes nil))
   "The answer to one /import: the summary line and where the report file is,
 said as a notice too; `--sources' lists the repositories held, `--remove
 LABEL' takes one back."
@@ -169,14 +170,15 @@ LABEL' takes one back."
              ("--source" (setf source (or (pop words) (fail "--source needs a PATH or a repository"))))
              ("--only" (setf only (or (pop words) (fail "--only needs KINDS, comma-separated"))))
              ("--overwrite" (setf overwrite t))
+             ("--link" (setf link t))
              ("--keep-running" (setf takeover nil))
              ("--yes" (setf yes t))
              ("--dry-run" (setf yes nil))
              (t (fail "unknown word ~a; usage /import [WORLD|OWNER/REPO[#REF]] [--source PATH] [--only KINDS] ~
-                       [--overwrite] [--keep-running] [--yes], /import --sources, /import --remove LABEL"
+                       [--overwrite] [--link] [--keep-running] [--yes], /import --sources, /import --remove LABEL"
                       word))))
   (let* ((plan (run-import :source source :overwrite overwrite :takeover takeover
-                           :only only :apply yes))
+                           :only only :link link :apply yes))
          (report (and plan.report-path
                       (format nil "the report is in ~a"
                               (nlk:home-abbreviated (namestring plan.report-path))))))
@@ -198,7 +200,7 @@ LABEL' takes one back."
 
 (defun run-method (method params &key progress)
   "The wizard's methods over the params object {source, only, without,
-overwrite, keep_running}, source a world name, a path or a list of world
+overwrite, link, keep_running}, source a world name, a path or a list of world
 names: `plan' previews, `apply' writes, `scan' answers the same plan with
 nothing written — the pasteable report."
   ;; Nothing is posted: the wizard writes the answer's report into the
@@ -209,6 +211,7 @@ nothing written — the pasteable report."
               :only (nlk:json-value params :text "only")
               :without (nlk:json-value params :text "without")
               :overwrite (param-flag params "overwrite")
+              :link (param-flag params "link")
               :takeover (not (param-flag params "keep_running"))
               :apply (equal method "apply") :progress progress :answer #'plan-json))
 
@@ -256,7 +259,7 @@ reader (NLK:READ-EVENTS) skips and its socket counts as a line."
 
 (defun import-route (env &aux (request (nle::gateway-request-json env))
                                (method (nlk:json-value request :string "method")))
-  "/api/import: POST {method, source, only, without, overwrite, keep_running,
+  "/api/import: POST {method, source, only, without, overwrite, link, keep_running,
 stream} runs the setup walk's METHOD in the image that serves the store --
 `plan', `apply' and `scan' (RUN-METHOD), `verify' (one small request to the
 default target) -- and answers its value; with stream true, the long three

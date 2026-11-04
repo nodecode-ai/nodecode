@@ -66,9 +66,10 @@
                                                 *provider*
                                                 (or (shared-model-pin) *provider*))))
   "Whether any provider resolves a credential from anywhere: a config entry
-carrying credentials, an auth.json entry, or the default provider's
-environment -- the default the shared config pins, under a NODECODE_PROVIDER
-override, which a shell's *PROVIDER* does not hold: nothing seeds a shell's."
+carrying credentials, an auth.json entry, a key in a file of its own under
+secrets/, or the default provider's environment -- the default the shared
+config pins, under a NODECODE_PROVIDER override, which a shell's *PROVIDER*
+does not hold: nothing seeds a shell's."
   ;; A default provider no lane here serves answers T: a cell's -- Claude
   ;; Code's, whose lane runs in the organism and never in a shell -- or an
   ;; operator with a config to fix (the first frame's refusal names the key);
@@ -459,6 +460,7 @@ an apply response, whose terminal result is the same plan JSON as a preview."
                  "only" (or (getf request :only) :null)
                  "without" (or (getf request :without) :null)
                  "overwrite" (if (getf request :overwrite) t :false)
+                 "link" (if (getf request :link) t :false)
                  "keep_running" (if takeover :false t)
                  "stream" (if stream t :false))
                 :stream stream)))
