@@ -102,6 +102,7 @@
     ("auth.json"          t       t      nil     :settings  "the provider credentials")
     ("link"               nil     nil    nil     :state     "this machine's name at its relay, and the browsers let in")
     ("backups"            nil     nil    nil     :state     "the backups, each this home whole, keys and all")
+    ("images/"            nil     nil    nil     :state     "the saved heaps, each this organism frozen with the secrets it held")
     ("profiles"           nil     nil    nil     :default   "the named homes, under the default one")
     ("active-profile"     nil     nil    nil     :default   "the sticky file, under the default one"))
   "Every entry a home holds, one row each, and it is the only place a

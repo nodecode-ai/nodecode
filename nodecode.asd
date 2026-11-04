@@ -388,6 +388,9 @@ of stacking."
      ;; verb, the route, the poller and the watcher. After client: the
      ;; watcher and the verb call the gateway the way a shell does.
      (:file "organism/update")
+     ;; images after update: a saved heap names the build that saved it
+     ;; (EFFECTIVE-VERSION) and boots only on that build
+     (:file "organism/images")
      ;; setup follows client: the walk chains the shell's own dialogs
      ;; (provider/model/effort pickers) and the writers they already own.
      (:file "tui/setup")
@@ -542,6 +545,7 @@ of stacking."
      ;; through a shell fixture playing the trial child, and lends that
      ;; fixture to the keeper's gates below.
      (:file "organism/generation-test")
+     (:file "organism/images-test")
      (:file "organism/fork-test")
      (:file "organism/fork-progress-test")
      ;; launch-keeper-test follows warm-test: it drives the same warm fixtures

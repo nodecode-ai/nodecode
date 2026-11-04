@@ -362,6 +362,11 @@ Zig launcher gives the same thing."
    (nlk:make-verb "rollback" "restore this home's organism to generation N"
                   :label "rollback N" :arguments "N"
                   :detail "Every folder goes back to what generation N recorded: the layer takes one commit whose tree is N's (its history kept, so forward is the same verb), a hub cell is cloned at N's pin, the binary and its shipped folders stay on the release that runs -- updates keep coming, forward, over the restored folder -- folders N had are installed and ones it never had are taken out where the installer put them; a plain folder whose content differs refuses the whole restore by name. With the organism running it converges and exits once no turn is in flight, and the next launch runs N; with none running, the next launch does. (rollback N) inside the shell does the same.")
+   (nlk:make-verb "image" "save this home's running organism whole, and boot it again later"
+                  :aliases '("images")
+                  :label "image [VERB]"
+                  :arguments "[list | save NAME | restore NAME | delete NAME]"
+                  :detail "A saved image is the running organism's heap frozen as it stands -- its values, closures and definitions no file holds -- kept under ~/.nodecode/images/NAME/ beside the folder, which loads, keeps and shares as before. save freezes the organism that runs and boots it straight back from the saved heap; restore NAME has the next launch that owns the organism boot that heap in place of the folder, once (with one running, it exits once no turn is in flight for it); list shows them and which one the next launch boots; delete removes one. A heap boots only on the build that saved it: one from another build is refused, naming it. An image holds whatever the organism held, its secrets among them, so it never leaves this machine: no profile export, clone or backup carries it.")
    (nlk:make-verb "web" "open this home's organism in a browser tab"
                   :arguments "[--print]"
                   :detail "Prints the page's link and opens it where there is a display. The operator token rides after the link's #, which a browser never sends to a server: keep the link to yourself. Needs the organism running (nodecode, or nodecode gateway on) and the web cell: turn web on in /cells. --print prints the link alone and opens nothing: the line a program reads, the desktop app among them.")
@@ -607,7 +612,7 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
                  ;; and the launch parser has no business reading them — the
                  ;; verbs the operating system answers, which run before any
                  ;; folder loads, print, and exit.
-                 ((member name '("add" "profile" "secrets" "sandbox" "gateway" "update" "web" "generations" "rollback")
+                 ((member name '("add" "profile" "secrets" "sandbox" "gateway" "update" "web" "generations" "rollback" "image")
                           :test #'string=)
                   (setf child (list (intern (string-upcase name) :keyword) args)
                         args nil))
@@ -685,7 +690,7 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
     (when (and child (eq (first child) :rpc) (or serve session-id setup))
       (launch-usage-error "rpc is a command of its own: nodecode [-p NAME] rpc ~a"
                           (nlk:verb-arguments (nlk:find-verb "rpc" *launch-verbs*))))
-    (when (and child (member (first child) '(:login :machine-link :add :profile :secrets :sandbox :gateway :update :web :generations :rollback))
+    (when (and child (member (first child) '(:login :machine-link :add :profile :secrets :sandbox :gateway :update :web :generations :rollback :image))
                (or serve session-id store-path ephemeral setup))
       (launch-usage-error "~a is a command of its own: nodecode [-p NAME] ~:*~a ..."
                           (substitute #\Space #\- (string-downcase (first child)))))
@@ -1138,6 +1143,7 @@ condition's report, exit 1."
           (:update (answer-and-quit (values (update-text (second child)) 0 :output)))
           (:generations (generations-main (second child)))
           (:rollback (rollback-main (second child)))
+          (:image (image-main (second child)))
           (:web (answer-and-quit (web-text (second child))))
           ;; what it waits on is said on stderr while it waits (CALL-SAYING-WAITS)
           (:add (answer-and-quit (call-saying-waits (lambda () (add-text (second child))))
@@ -1179,6 +1185,10 @@ condition's report, exit 1."
                         ;; image's own -- from the folder's code, not the
                         ;; launcher's, which the successor's frame would paint
                         ;; over -- and the exec no longer waits for one.
+                        ;; A restore asked by `nodecode image restore' outranks
+                        ;; the published image: the saved heap is the organism
+                        ;; the operator chose to boot (images.lisp).
+                        (follow-restore-pointer)
                         (nlk::hand-over-to-published-image)
                         (attach-or-own-organism :session-id session-id
                                                 :store-path store-path
@@ -1189,6 +1199,8 @@ condition's report, exit 1."
                                                             store-path))))
                        (t
                         ;; a serve leaves its receipt before the load: a self that dies before serving is found by the launch after
+                        ;; a serve that will own the organism boots the saved heap a restore asked for, before any folder loads (images.lisp)
+                        (when serve (follow-restore-pointer))
                         (nlk:boot-cells :spawn (null child) :receipt (and serve t))
                         ;; A child prints its own report on stdout; the boot line
                         ;; would be noise the parent has to skip.
