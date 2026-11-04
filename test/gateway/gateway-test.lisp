@@ -3946,6 +3946,47 @@ request."
       (is (eq t nle::*fronted*)))
     (bt2:wait-on-semaphore nle::*serve-wake* :timeout 0)))
 
+(deftest a-shell-tells-its-organism-first-and-waits-after (with-temp-directory (dir "front-told"))
+  ;; TELL-FRONT says the reason the moment the shell knows it, before its
+  ;; own teardown; a STOP-FRONT after it only waits, the reason said once.
+  (let* ((marker (merge-pathnames "why.txt" dir))
+         (nle::*front* nil))
+    (multiple-value-bind (pid out err process pipe)
+        (nlk::spawn-program (list "sh" "-c" (format nil "cat > ~a" (namestring marker)))
+                            :output nil :error-output nil :input :stream)
+      (declare (ignore out err))
+      (setf nle::*front* (list :pipe pipe :waiter (nlk:spawn "front-test-waiter"
+                                                    (nlk::wait-for-child pid process)))))
+    (nle::tell-front "quit")
+    (is nle::*front* "still fronted, for the wait")
+    (nle::stop-front :why "quit")
+    (is (null nle::*front*))
+    (is (equal (format nil "quit~%") (uiop:read-file-string marker)) "said once")))
+
+(deftest a-fronted-candidate-that-lost-is-no-boot-death (with-temp-directory (dir "front-lost"))
+  ;; A candidate ends 0 when it loses the election. The owner it lost to may
+  ;; have let go by the time the shell looks: a handover for the shell to wait
+  ;; out (RPC-MAIN), never the boot's death (#226).
+  (let ((nle::*serve-program* (list "sh" "-c" "exit 0" "front-stub"))
+        (nle::*front* nil))
+    (nle::front-organism (merge-pathnames "history.db" dir))
+    (is (null nle::*front*) "nothing is fronted")))
+
+(deftest an-owner-told-to-go-advertises-nothing-from-then (with-temp-directory (dir "owner-goes" :close-store t))
+  ;; The endpoint goes the moment the owner is told, not once its owner
+  ;; thread reaches STOP-GATEWAY: a shell launching in between attached to it
+  ;; and was dropped as it went (#226). The pid stays, so a shell waits for
+  ;; the lock. :RESTART, since a stop's deadline would end this process.
+  (let ((store-path (merge-pathnames "history.db" dir)))
+    (nlk:open-store :path store-path)
+    (nlk::publish-store-endpoint 45998)
+    (with-saved-globals ((nle::*serving* t) (nle::*serve-next* nil))
+      (nle::serve-next :restart)
+      (multiple-value-bind (pid port) (nlk::read-store-holder store-path)
+        (is (null port) "the endpoint is retracted")
+        (is (eql (sb-posix:getpid) pid) "the holder still names the owner")))
+    (bt2:wait-on-semaphore nle::*serve-wake* :timeout 0)))
+
 (deftest resurrection-spawns-a-detached-candidate (with-temp-directory (dir "resurrect-spawn"))
   ;; SPAWN-RESURRECTION-CANDIDATE detaches the candidate through setsid and
   ;; hands it exactly the serve argv. The stub records what it received;
@@ -3970,7 +4011,10 @@ request."
   (with-temp-directory (dir "resurrect-election")
     (let ((path (merge-pathnames "history.db" dir)))
       (with-lock-holder ((nlk::lock-path-for-store path))
-        (is (eq :lost (nle:serve-organism-candidate :store-path path)))
+        (let ((said (with-output-to-string (*standard-output*)
+                      (is (eq :lost (nle:serve-organism-candidate :store-path path))))))
+          ;; Quietly is no error, never no word: silent, it read as a hang (#226).
+          (is (search "election lost: pid" said) "the store's log says why it did not serve"))
         (is (not (probe-file (nlk::lease-path-for-store path))))
         (is (not (probe-file path)))))))
 

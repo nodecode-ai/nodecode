@@ -1694,6 +1694,12 @@ a stop that has not let it go within *STOP-SECONDS* is cut short (CUT-SHORT)."
   (when (and (eq what :stop) *serving* (not *stopping*))
     (setf *stopping* t)
     (spawn "stop-deadline" (sleep *stop-seconds*) (cut-short)))
+  ;; An owner on its way out advertises nothing from the moment it is told,
+  ;; not from when its owner thread reaches STOP-GATEWAY: a shell launching
+  ;; in between attached to it and was dropped as it went (#226). The
+  ;; sidecar keeps the pid, so that shell waits for the lock instead.
+  (when *serving*
+    (ignore-errors (nlk::publish-store-endpoint nil)))
   (setf *serve-next* what)
   (bt2:signal-semaphore *serve-wake*))
 
@@ -1745,6 +1751,12 @@ quietly."
         (if wait
             (await-free-store path :tick #'nlk:systemd-watchdog)
             (when (nlk::store-lease-held-p path)
+              ;; Said, as the lock's refusal below is: a candidate that lost
+              ;; to an owner on its way out left no line, and the shell that
+              ;; started it looked hung (#226).
+              (format t "~&election lost: pid ~a holds ~a~%"
+                      (or (ignore-errors (nlk::read-store-holder path)) "?") (namestring path))
+              (finish-output)
               (nlk:take-self-receipt)
               (return :lost)))
         (with-handlers ((nlk::store-in-use (refusal)

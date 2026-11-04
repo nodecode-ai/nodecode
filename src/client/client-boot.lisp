@@ -60,9 +60,10 @@ THREAD), the pipe on its stdin and the thread that reaps it.")
 (defun front-organism (store-path &key (wrap #'sandbox-wrap-command))
   "Start STORE-PATH's organism as a headless serve in a process of its own,
 fronted by this shell, and return once it serves -- its gateway published,
-which this shell's reconnector attaches to -- or once another process holds
-the store, an election it lost. One that exits before either is a boot that
-died: ORGANISM-EXITED, with the last line it wrote to its log. WRAP turns
+which this shell's reconnector attaches to -- or once it lost the election:
+it ended 0, or another process holds the store. One that exits otherwise
+before serving is a boot that died: ORGANISM-EXITED, with the last line it
+wrote to its log. WRAP turns
 the serve argv into the one spawned: the jail's (SANDBOX-WRAP-COMMAND), which
 is the argv itself outside a sandboxed shell."
   (let* ((command (or (serve-command store-path)
@@ -93,7 +94,11 @@ is the argv itself outside a sandboxed shell."
       (when (car exited)
         (setf *front* nil)
         (ignore-errors (close pipe))
-        (unless (nlk::store-lease-held-p store-path)
+        ;; A candidate that ends 0 before serving lost the election
+        ;; (SERVE-ORGANISM-CANDIDATE's :LOST), even when the owner it lost to
+        ;; has let go since: that is a handover, which the caller waits out
+        ;; (RPC-MAIN). Only one that ends otherwise died at boot.
+        (unless (or (eql 0 (car exited)) (nlk::store-lease-held-p store-path))
           (error 'organism-exited :status (car exited) :line (log-line-after log from)))))))
 
 (defun stop-front (&key why (wait t))
@@ -103,11 +108,19 @@ to let the store go -- bounded, so a wedged organism is left to end on its own."
   ;; The wait is what lets the next launch find the store free instead of
   ;; attaching to an organism on its way out.
   (when-let (front (shiftf *front* nil))
-    (let ((pipe (getf front :pipe)))
-      (ignore-errors (when why (write-line why pipe)) (finish-output pipe))
-      (ignore-errors (close pipe)))
+    (tell-front why front)
     (when wait
       (nlk::%join-bounded (getf front :waiter) 10))))
+
+(defun tell-front (&optional why (front *front*))
+  "Tell the organism this shell fronts (FRONT) to go -- WHY, when given, the
+reason it keeps for the next boot's note -- and return at once: a STOP-FRONT
+after it still waits for the organism to let the store go."
+  ;; The pipe's end is the word (WATCH-FRONT); once ended, it is said.
+  (when-let (pipe (getf front :pipe))
+    (when (open-stream-p pipe)
+      (ignore-errors (when why (write-line why pipe)) (finish-output pipe))
+      (ignore-errors (close pipe)))))
 
 (defvar *organism-notes-shown* '()
   "The organism.note texts this shell has put in its transcript: the

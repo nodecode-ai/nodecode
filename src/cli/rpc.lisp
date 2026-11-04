@@ -51,17 +51,29 @@ refuse is a PROTOCOL-ERROR here, before it leaves."
       (nlk:check-sync-frame-size (nlk:encode-client-command command)))))
 
 (defparameter *rpc-attach-seconds* 30
-  "How long the shell waits for the gateway's handshake before it gives up.")
+  "How long the shell looks for an organism serving its store, and waits for
+that gateway's handshake, before it gives up.")
 
-(defun run-rpc (&key port token session-id cursor (input *standard-input*) (output *standard-output*))
+(define-error gateway-unreached (error) (port why)
+  (:report "cannot reach the gateway on port ~d: ~a" port why)
+  (:documentation "Nothing answered as a gateway on PORT before this shell
+attached -- WHY, the dial's own words: the organism that published PORT went
+between its sidecar's read and the dial, so another is looked for."))
+
+(defun run-rpc (&key port token session-id cursor (input *standard-input*) (output *standard-output*)
+                     on-end)
   "Attach to the gateway at PORT as SESSION-ID's shell, resumed past CURSOR
 when given, then carry INPUT's command lines to it (RPC-COMMAND-TEXT) and its
 sync frames to OUTPUT, one a line, until INPUT ends (:EOF) or the gateway lets
-go (why, a string)."
+go (why, a string), which ON-END, when given, is handed before the socket is
+let go. A gateway gone before the attach is GATEWAY-UNREACHED, signalled
+before anything reaches OUTPUT."
   ;; A line that is not a command answers on OUTPUT as the gateway answers a
   ;; frame it refuses, a sync_protocol_error, and the next line is read. The
   ;; handshake frames are this shell's own business and never reach OUTPUT.
-  (ensure-gateway-session session-id port token)
+  (handler-case (ensure-gateway-session session-id port token)
+    ((or usocket:socket-error stream-error) (condition)
+      (error 'gateway-unreached :port port :why condition)))
   (let ((ws (gateway-client port token))
         (lock (bt2:make-lock :name "rpc-output"))
         (attached nil)
@@ -97,14 +109,21 @@ go (why, a string)."
                       (error (condition) (end (princ-to-string condition)))))))
       (wsd:on :close ws
               (lambda (&key reason &allow-other-keys)
-                (end (format nil "the gateway closed the connection~@[: ~a~]"
-                             (and (plusp (length reason)) reason)))))
-      (with-cleanup ((ignore-errors (wsd:close-connection ws)))
+                (let ((why (format nil "the gateway closed the connection~@[: ~a~]"
+                                   (and (plusp (length reason)) reason))))
+                  ;; Closed before the ack is an owner that went as this
+                  ;; shell dialled it.
+                  (end (if attached why (make-condition 'gateway-unreached :port port :why why))))))
+      ;; Severed, not closed off its reader: from this thread a close waits
+      ;; out the parked reader's interruption, half a second on every exit.
+      (with-cleanup ((ignore-errors (nlk:sever-websocket ws)))
         (handler-case (wsd:start-connection ws)
-          (error (condition) (end (format nil "cannot reach the gateway on port ~d: ~a" port condition))))
+          (error (condition) (end (make-condition 'gateway-unreached :port port :why condition))))
         (bt2:wait-on-semaphore ready :timeout *rpc-attach-seconds*)
         (unless (or attached (car outcome))
           (end "the gateway never answered the handshake"))
+        (when (typep (car outcome) 'gateway-unreached)
+          (error (car outcome)))
         (when attached
           (spawn "rpc-input"
             (loop for line = (handler-case (read-line input nil nil)
@@ -125,7 +144,27 @@ go (why, a string)."
         (loop until (bt2:wait-on-semaphore done :timeout *sync-keepalive-seconds*)
               do (handler-case (wsd:send-ping ws)
                    (error (condition) (end (format nil "the gateway is gone: ~a" condition)))))
+        (when on-end (funcall on-end (car outcome)))
         (car outcome)))))
+
+(defun organism-port (path deadline &key (held-p #'nlk::store-lease-held-p)
+                                        (published #'live-published-endpoint)
+                                        (start #'front-organism))
+  "The port the organism serving the store at PATH publishes, once one does,
+or NIL past DEADLINE (DEADLINE-AFTER's): a live owner's at once; else, each
+time no process holds the store, one this shell starts (START)."
+  ;; A store held with nothing published is an owner on its way in, booting,
+  ;; or on its way out, stopping. Either is waited out, never taken for one
+  ;; that serves: the moment it lets go another is started, and a candidate
+  ;; that lost to a shell starting one beside it leaves that one's port to
+  ;; read. One look and one candidate lost every launch that came while an
+  ;; owner stopped (#226).
+  (wait-until (lambda ()
+                (or (funcall published path)
+                    (unless (ignore-errors (funcall held-p path))
+                      (funcall start path)
+                      (funcall published path))))
+              deadline 0.01))
 
 (defun rpc-main (session-id cursor store-path)
   "`nodecode rpc': attach to the organism serving STORE-PATH, or start one
@@ -138,17 +177,29 @@ stdin ends; signals the reason when the gateway lets go first."
   (let* ((path (merge-pathnames (or store-path nlk::*default-store-path*)))
          (output *standard-output*)
          (*standard-output* *error-output*))
-    (unless (live-published-endpoint path)
-      (front-organism path))
-    ;; An election FRONT-ORGANISM lost is another process's to publish.
-    (let* ((port (or (wait-until (lambda () (live-published-endpoint path))
-                                 (deadline-after *rpc-attach-seconds*) 0.01)
-                     (error "no organism serves ~a" (namestring path))))
-           (outcome nil))
+    (let ((deadline (deadline-after *rpc-attach-seconds*))
+          (session-id (or session-id (fresh-session-id)))
+          (outcome nil))
       (with-cleanup ((stop-front :why (and (eq outcome :eof) "quit")))
-        (setf outcome (run-rpc :port port :token (gateway-configured-operator-token)
-                               :session-id (or session-id (fresh-session-id))
-                               :cursor cursor :output output)))
+        (loop
+          (let ((port (or (organism-port path deadline)
+                          (error "no organism serves ~a" (namestring path)))))
+            (handler-case
+                (return (setf outcome (run-rpc :port port :token (gateway-configured-operator-token)
+                                               :session-id session-id :cursor cursor :output output
+                                               ;; Told the moment its program lets go, before
+                                               ;; this shell's own teardown: told after it,
+                                               ;; the organism advertised itself meanwhile and
+                                               ;; took the next program's shell only to drop it
+                                               ;; as it went (#226).
+                                               :on-end (lambda (why)
+                                                         (when (eq why :eof) (tell-front "quit"))))))
+              ;; Its owner went between the sidecar's read and the dial: a
+              ;; handover like any other, waited out until the deadline.
+              (gateway-unreached (condition)
+                (when (>= (get-internal-real-time) deadline)
+                  (error "no organism serves ~a: ~a" (namestring path) condition))
+                (sleep 0.05))))))
       (unless (eq outcome :eof)
         (error "~a" outcome))
       (uiop:finish-outputs)
