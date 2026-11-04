@@ -984,6 +984,13 @@ the kernel will not lock the file at all (POSIX: Windows answers at once)."
           (t (error "cannot lock ~a: Windows error ~d"
                     path (sb-win32::get-last-error))))))
 
+(defun held-lock (path &aux (native (uiop:native-namestring path)))
+  "The lock this process holds on the file at PATH (a LOCK-FILE answer), or
+NIL when it holds none."
+  (sb-ext:with-locked-hash-table (*held-locks*)
+    (loop for lock being the hash-keys of *held-locks* using (hash-value held)
+          when (equal held native) return lock)))
+
 (defun file-locked-p (path &aux (native (uiop:native-namestring path)))
   "Whether a live process holds the lock on the file at PATH: a probe,
 never a claim, so it cannot contend with the holder, and NIL when the file

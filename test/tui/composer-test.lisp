@@ -121,7 +121,7 @@ ABOVE, then expires into the placeholder with the band as it was."
 (deftest composer-horizontal-tab-accepts-the-suggestion ()
   (with-frame-model (model 80 24 :session-id "composer-ht" :typed "/th")
     (press-wire model 9)
-    (is-composer model "/themes " "a bare HT completes the ghost")
+    (is-composer model "/themes" "a bare HT completes the ghost, the name alone")
     (is (null model.turn-in-flight))))
 
 ;;; The decoder contract itself, at the byte level. Every keymap assertion
@@ -253,7 +253,7 @@ ABOVE, then expires into the placeholder with the band as it was."
     (press model :left)
     (is (null (nle::composer-ghost-remainder model)))
     (press model :right :tab)
-    (is-composer model "/themes " "the accept gesture completes the ghost")
+    (is-composer model "/themes" "the accept gesture completes the ghost, the name alone")
     (is (null (nle::composer-ghost-remainder model)))))
 
 (deftest composer-file-trigger-completes-workspace-paths ()
@@ -921,6 +921,6 @@ reader: ESC [ 200 ~, the text, ESC [ 201 ~."
     (is (equal "my draft" (composer-value model)))
     (is (equal "viewport Developer" (nle::slash-details-op model "")))
     (is (null model.composer-status) "querying does not announce a switch")
-    (is (search "usage: details" (nle::slash-details-op model "expanded")))
+    (is (equal (nle::slash-unoffered "details") (nle::slash-details-op model "expanded")))
     (is (eq :developer model.tool-detail))
     (is (null model.composer-status) "invalid input does not announce a switch")))

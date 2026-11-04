@@ -432,9 +432,13 @@ the unit folder: what another naming of the same home left there."
     (is (reports "waiting: pid 7 runs the organism now"
                  :installed :ours :enabled t :active "active" :main-pid 42 :owner-pid 7))
     (is (reports "on — starting (pid 42)" :installed :ours :enabled t :active "active" :main-pid 42))
-    (is (says (nlk:gateway-report (state :installed :ours :enabled t :active "failed" :result "exit-code")
-                                  :command "/gateway")
-              "on, but it failed (exit-code) — `/gateway logs' says why"))
+    ;; A slash command's verbs are its rows, never words to type; the command
+    ;; line's are its words.
+    (let ((failed (state :installed :ours :enabled t :active "failed" :result "exit-code")))
+      (is (says (nlk:gateway-report failed :command "/gateway")
+                "on, but it failed (exit-code) — its log in /gateway says why"))
+      (is (says (nlk:gateway-report failed :command "nodecode gateway")
+                "on, but it failed (exit-code) — `nodecode gateway logs' says why")))
     (is (reports "restarting after it exited"
                  :installed :ours :enabled t :active "activating" :sub "auto-restart"))
     (is (reports "does not start at login" :installed :ours :enabled nil :active "active"))

@@ -643,7 +643,7 @@ it is filled; install for a hub cell; for one /cells cannot turn off, why."
 (defparameter +new-cell-lines+
   '("Say what it should do. The agent asks what it still needs, builds it as a cell of its own and turns it on here, with no restart."
     "Enter leaves “Make a cell that ” in the composer: finish the sentence."
-    "Anywhere else: /cells new [NAME], or just ask for one.")
+    "Anywhere else, in a room or on the web page, just ask for one.")
   "What the pane says of the new row, a paragraph each.")
 
 (defun paint-new-cell-row (cells canvas r x width chosen ground)

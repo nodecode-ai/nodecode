@@ -97,7 +97,7 @@ nodecode.ai serves Nodecode's own models at `https://api.nodecode.ai/v1`, on Ope
 }
 ```
 
-A sign-in never changes your default model. Pick one with `/models nodecode foresight-cyber-v1`.
+A sign-in never changes your default model. Pick one in `/models`: nodecode, then Cyber v1.
 
 | Model | Id | What it is |
 | --- | --- | --- |
@@ -145,22 +145,14 @@ A model pick pins the session. The pin survives restarts.
 {/* source: src/tui/slash.lisp */}
 ## /models
 
-Bare `/models` opens the providers under four tabs: Main, Auxiliary, Decider and Backup. Tab moves between them. Decider is the model that answers judgments as probabilities. Backup is the [failover chain](#failover).
+`/models` opens the providers under four tabs: Main, Auxiliary, Decider and Backup. Tab moves between them. Decider is the model that answers judgments as probabilities. Backup is the [failover chain](#failover). In a chat room or on the web page, the same choices are rows.
 
-| Command | Does |
+| Tab | Does |
 | --- | --- |
-| `/models` | Opens the providers on the Main tab. Headless: prints the current target. |
-| `/models MODEL` | Picks a model on the current provider. |
-| `/models PROVIDER MODEL` | Picks a provider and a model. |
-| `/models list [PROVIDER]` | Prints the catalog, or one provider's models. |
-| `/models refresh` | Drops the cached listings, then opens the providers. |
-| `/models aux` | Opens the Auxiliary tab. Headless: prints the auxiliary target. |
-| `/models aux [PROVIDER] MODEL` | Writes `general.auxiliary_model`. Pins no session. |
-| `/models aux default` | Removes `general.auxiliary_model`. Its work goes back to each session's own model. |
-| `/models decider` | Opens the Decider tab. Headless: prints the decider. |
-| `/models decider ID` | Pins a decider in `general.decider_model`. The one decider is `djev`. |
-| `/models decider none` | Removes the pin. |
-| `/models backups` | Opens the Backup tab: the failover chain and its triggers. |
+| Main | Picks a provider, then a model: this session's, and the one new sessions start on. Then the model's reasoning ladder opens. |
+| Auxiliary | Picks the model that names sessions and writes recaps and summaries, in `general.auxiliary_model`. Pins no session. Same as main gives that work back to each session's own model. |
+| Decider | Pins a decider in `general.decider_model`. The one decider is `djev`. None removes the pin. |
+| Backup | The failover chain and its triggers. |
 
 The decider pin offers `djev`, a decider on a machine of your own. Decide v1, nodecode.ai's hosted classifier, is called by its id and is not offered there.
 
@@ -176,12 +168,12 @@ The picker lists each provider from `GET <base_url>/models`.
 
 The ladder, weakest first: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. A model offers the rungs it declares.
 
-| Command | Does |
+`/think`, or its alias `/effort`, offers the rungs of the model's ladder, the one in use marked, and Default first.
+
+| Row | Does |
 | --- | --- |
-| `/think` | Opens the reasoning controls. Headless: prints the effort and the ladder. |
-| `/think RUNG` | Sets the effort for this session and every new session. Applies from the next turn. |
-| `/think default` | Uses the model's own reasoning. |
-| `/effort` | Alias of `/think`. |
+| A rung | Sets the effort for this session and every new session. Applies from the next turn. |
+| Default | Uses the model's own reasoning. |
 
 | Source | Detail |
 | --- | --- |
@@ -269,7 +261,7 @@ When every model fails, the turn's error starts `every model failed` and lists e
 {/* source: src/tui/commands/models.lisp */}
 ## Backup tab
 
-`/models backups` opens it. Its rows, top to bottom:
+`/models`, then Tab to Backup. Its rows, top to bottom:
 
 | Row | Does |
 | --- | --- |

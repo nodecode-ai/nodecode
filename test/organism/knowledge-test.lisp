@@ -367,7 +367,12 @@
       (is (equal "Index" (getf dialog :title)))
       (is-present (row (first (getf dialog :rows))) "a row per definition"
         (is (equal "$kn-absent " (getf row :value)) "Enter inserts $name")
-        (is (equal "memory" (getf row :key)) "its cell is its tab")))
+        (is (equal "memory" (getf row :key)) "its cell is its tab"))
+      ;; The search and the re-pin are rows after the names, never words to
+      ;; type after the command; their lines are the ones run below.
+      (destructuring-bind (finder pin) (last (getf dialog :rows) 2)
+        (is (equal '(:label "Search" :line "/index") (subseq (getf finder :ask) 0 4)) "the search asks")
+        (is (equal "/index reload" (getf (getf pin :run) :enter)) "the re-pin is a row")))
     (is (search "pinned again" (nle::index-slash "reload" "s-ix")))
     (is (gethash "s-ix" nlk::*index-refresh*))
     (remhash "s-ix" nlk::*index-refresh*)

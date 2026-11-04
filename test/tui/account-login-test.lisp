@@ -55,7 +55,7 @@
           (is (= 3 (length calls)))
           (is (equal "poll-secret-fixture" (fourth (first calls))))
           (let ((text (get-output-stream-string out)))
-            (is-carrying text "DDAN-UY56" "https://nodecode.ai/account/machines" "Linked" "With /link on in nodecode, the Machines page shows its address"
+            (is-carrying text "DDAN-UY56" "https://nodecode.ai/account/machines" "Linked" "With /link turned on in nodecode, the Machines page shows its address"
               (:absent "machine-key-fixture") (:absent "poll-secret-fixture")))
           (is (equal "machine-key-fixture" (nlk:json-value (nle::read-auth-file nle::*auth-file-path*) :string "api_keys" "nodecode" "key")))
           (is (equal "00000000-0000-0000-0000-000000000001" (nlk:json-value (nle::read-auth-file nle::*auth-file-path*) :string "machine_link" "request")))
@@ -150,6 +150,18 @@
   (is (search "--subscription" (refusal-text error (nle::account-ask-mode :ask (constantly nil)))))
   (is (search "takes 1" (refusal-text error (nle::account-ask-mode :ask (constantly "3")))))
   (is (null (nle::account-mode-word "bogus"))))
+
+(deftest account-login-bare-opens-the-choice-from-the-shell (with-temp-store ())
+  ;; #230: a bare /login typed at the prompt, and the /models sign-in row that runs it the same
+  ;; way, handed the setup walk's CONTEXT keyword, NIL outside the walk, to the picker's string
+  ;; slot: the event loop caught a TYPE-ERROR and no picker opened.
+  (let ((model (make-frame-model 100 30)))
+    (nle::execute-slash-command model "login" "")
+    (is-present (dialog (nle::chat-model-dialog model)) "bare /login opens a picker"
+      (is (equal "Sign in to nodecode.ai" (nle::picker-dialog-title dialog)))
+      (is (equal "" (nle::picker-dialog-context dialog)) "no walk, no context label")
+      (is (equal '("Subscription" "API credits")
+                 (mapcar #'nle::picker-row-label (nle::picker-dialog-rows dialog)))))))
 
 (deftest account-login-terminal-verdicts-save-nothing ()
   (dolist (state '("refused" "expired" "gone" "unknown"))

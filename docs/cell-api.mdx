@@ -76,7 +76,7 @@ mv nodecode-template.asd nodecode-weather.asd
 | Part | Content |
 | --- | --- |
 | `nodecode-template.asd` | The system. Depends on `nodecode`. |
-| `cell.lisp` | One section, one `:tool` hook, `/template [NAME]`, one notice at start. |
+| `cell.lisp` | One section, one `:tool` hook, `/template`, one notice at start. |
 | `config.example.jsonc` | The section, commented. Nodecode does not read it. |
 
 <Mistakes>
@@ -124,13 +124,22 @@ The whole cell, as it ran for every screen on this page:
 
 (defun run-slash (args session-id)
   (declare (ignore session-id))
-  (today (if (plusp (length args)) args (or (first (setting :cities)) "Oslo"))))
+  ;; Typed alone, /weather offers the cities as rows, and one that asks for
+  ;; another; a row's line comes back here with the city after the name.
+  (if (nle:bare-args-p args)
+      (values "Which city?"
+              (nle:list-dialog
+               :title "Weather"
+               :rows (append (mapcar (lambda (city) (nle:run-row city (format nil "/weather ~a" city)))
+                                     (or (setting :cities) '("Oslo")))
+                             (list (nle:ask-row "Another city" "City" "/weather" :verb "look up")))))
+      (today args)))
 
 (defun refresh () nil)
 
 (nle:define-cell weather
   (:section ("weather")
-    (:guide "units is c or f; cities is what /weather answers for with no argument")
+    (:guide "units is c or f; cities is what /weather offers typed alone")
     ("units"   :choice :options '("c" "f") :default "c" :doc "degrees")
     ("cities"  :list :doc "what the primer names")
     ("timeout_seconds" :integer :default 10 :min 1 :doc "one lookup's ceiling"))
@@ -138,7 +147,7 @@ The whole cell, as it ran for every screen on this page:
   (:help :weather "weather: today's forecast for a city - (weather:today \"Oslo\")"
          "(nodecode-weather::today CITY) answers today's forecast.")
   (:command "weather" 'run-slash
-            :description "Today, where you are" :argument-hint "CITY")
+            :description "Today, where you are")
   (:start (lambda ()
             (let ((worker (nlk:worker-start "weather" #'refresh :wake 900)))
               (nle:on-stop (lambda () (nlk:worker-stop worker)))))))
@@ -168,11 +177,11 @@ A `:command` takes these keys:
 | Key | Does |
 | --- | --- |
 | `:description` | Its line in the slash menu. |
-| `:argument-hint` | Shown after `/NAME` while it is typed. |
 | `:label`, `:catches` | A `:catches` condition answers `LABEL: it`. Defaults: the command's name, and `error`. |
 | `:session` | `nil` for a command that acts on no session. |
 | `:trigger` | One character that opens it at a word's start. |
-| `:complete` | Takes `(text session-id)` and answers `(:name :value)` plists while the argument is typed. |
+
+A command is its name: nobody types after it. Typed alone, RUN gets an empty ARGS, which `nle:bare-args-p` tells, and answers a `nle:list-dialog` of what it offers. A row is `(nle:run-row LABEL LINE)`, whose pick runs LINE, or `(nle:ask-row LABEL ASK LINE :placeholder TEXT :verb WORD)`, which asks for one line of text under ASK and then runs LINE with the text after it. The shell asks in its composer, a room in its own way. RUN reads those lines as it always read its ARGS. `:argument-hint` and `:complete` are still accepted, so an older cell loads, and nothing shows them.
 
 <Screen name="cell-manual" />
 

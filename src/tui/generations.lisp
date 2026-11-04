@@ -876,7 +876,7 @@ question or the line under the list, and the keys. => the caret's cell, or NIL."
 read off the loop; /generations N asks, in place, before going to N."
   (let ((number (and tokens (null (rest tokens)) (ignore-errors (parse-integer (first tokens))))))
     (if (and tokens (null number))
-        "generations takes a generation's number, or nothing: /generations [N]"
+        "generations: no generation by that number; /generations alone lists them"
         (let ((history (make-generations-sheet :kind :generations :title "Generations"
                                                :paint #'generations-paint :key #'generations-key
                                                :paste #'generations-paste :click #'sheet-click
@@ -951,7 +951,7 @@ the newest +HISTORY-SAID+ changes a line each, and how to pick one."
          (said (min +history-said+ (length changes))))
     (if (zerop (length changes))
         "No generation sealed yet: the first is sealed once a launch's folder proves."
-        (format nil "Generations · ~a~@[~%~a~]~{~%~a~}~%~@[… ~d older; ~]/generations N asks before going back to N."
+        (format nil "Generations · ~a~@[~%~a~]~{~%~a~}~%~@[… ~d older; ~]a pick asks before going back to it."
                 (history-context history) (history-edits-words history.edits)
                 (loop for index below said
                       collect (destructuring-bind (&key label detail mark &allow-other-keys)
@@ -1012,10 +1012,8 @@ there already."
                                          (list (list :label "Sessions, memory and settings stay; nodecode restarts on it once nothing is running.")
                                                (runs (format nil "~@(~a~) to #~d" go number) "go")))))
                  (if edits
-                     (format nil "/generations ~d keep keeps the edits first, as a change you can come back to; ~
-                                  /generations ~d discard sets them aside in git stash; then it goes."
-                             number number)
-                     (format nil "/generations ~d go does it." number))))))))
+                     "Keep the edits first, as a change you can come back to, or discard them into git stash; then it goes."
+                     (format nil "~@(~a~) to #~d does it." go number))))))))
 
 (defun history-go-words (number how)
   "/generations NUMBER HOW without a shell: the uncommitted edits that hold
@@ -1050,5 +1048,5 @@ the restore, this organism exiting once no turn is in flight."
                      (no-generation-words history number))))
               ((and number (null (cddr tokens)) (member how '("go" "keep" "discard") :test #'string-equal))
                (history-go-words number how))
-              (t "generations takes nothing, a generation's number, or the number and go, keep or discard: /generations [N [go|keep|discard]]"))
+              (t "generations: no such change; /generations alone lists them"))
       (error (condition) (princ-to-string condition)))))

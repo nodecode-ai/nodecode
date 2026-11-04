@@ -85,7 +85,7 @@ discarding an entire session in one admission pass.")
     hook define-hook unhook held-definitions revert cells restart-cells new-cell move-to-cell fold-cell
     config-get config-set definition-text definition-location
     models select-model select-effort agents agent turn recall-log recall-entry
-    define-memory define-skill index help)
+    define-memory define-skill index system-prompt agents-md soul-md help)
   "The verbs (help) indexes, in the order it lists them. Mutable material:
 a verb the organism grows for itself is pushed here to be found.")
 
@@ -104,7 +104,7 @@ Images. (look path) shows you an image file - PNG, JPEG, GIF or WebP, told by it
 
 Notes. A snippet whose first line is a ;; comment makes that line its note: rounds leave your window as the session grows, and what survives them is that note, listed in the eviction stub with the seq of the result, which (recall-entry seq) reads whole - write there what you would need to resume from. The evicted window and recall: (help :context).
 
-Watching (on Linux, where the image sees what a snippet's thread did). A snippet whose last form only reads stays watched - that form: one that finished quickly, whose value prints whole in under 2,000 characters, that names something that can change and reached nothing outside the image - no verb, no file, process or socket, no assignment, no definition. After each later snippet the image runs it again, and you see it only when its value changes, as [watched FORM: OLD -> NEW] under that snippet's result; a long value names the places that changed instead, [i j] its index path, + what came and - what went in a list that grew or shrank, or, when the places would say more than the value, now and the value whole. A run again that tries to act is refused and closes it, and a session watches the eight that changed last. So read a count, a flag, or your own rule held against what just happened once, then act: a change comes to you.")
+Watching (on Linux, where the image sees what a snippet's thread did). A snippet whose last form uses only known in-memory reads and simple control forms stays watched; calls to unexamined functions or macros, including helpers you define, run once. The watched form is one that finished quickly, whose value prints whole in under 2,000 characters, that names something that can change and reached nothing outside the image - no verb, no file, process or socket, no assignment, no definition. After each later snippet the image runs it again, and you see it only when its value changes, as [watched FORM: OLD -> NEW] under that snippet's result; a long value names the places that changed instead, [i j] its index path, + what came and - what went in a list that grew or shrank, or, when the places would say more than the value, now and the value whole. A run again that tries to act is refused and closes it, and a session watches the eight that changed last. So read a count or a flag once with a basic expression such as (length *items*), then act: a change comes to you.")
     (:layer "defining is keeping: the layer, patch, hooks over overrides, forgetting, held definitions, the two packages" . "Defining is keeping. Every defining form you eval as a toplevel form - defun, defparameter, defmethod, defclass, define-hook, define-* - is written to your layer, cells/<your-name>/ under your home (~/.nodecode/ unless a profile is active; the folder section names it), one file per definition, committed to git with this session's id, and loads over the shipped source at the next boot; (edit path old new) on that file changes the definition in this image at once. The exception is a made cell: while this session works in one, an eval keeps nothing - it runs now, a try gone at the next start - because the cell's files are its record, and a name a made cell's file holds is never copied into the layer from any session: (help :cells). A definition you build as a string and eval inside another form is not seen: eval the defining form itself. (patch name old new) changes one subform of a kept definition - name, old and new written unquoted, as they stand in it - and keeps the result, so a fix costs its two subforms, never the block over. Prefer wrapping a shipped function over redefining it: (define-hook name \"key\" (next &rest args) ...) runs the body around every call of name and survives upstream changes to its body; (hook 'name \"key\" fn) is the same advice live-only, unkept. A redefinition does not survive them: a layer file that would not run against the image is SKIPPED at boot - an override whose shipped text an upgrade moved, or a definition naming a function or variable that neither the image nor your later definitions define - and the boot line and (cells) say why; the shipped definition stands until you eval the definition again over the new source, or forget it. A function only an optional cell provides is called as (funcall 'pkg::name ...), which is never judged missing. Something durable that is not a definition is written as a defparameter, not a setf. Forgetting is the same act in reverse: (fmakunbound 'name), (makunbound '*name*), (unhook 'name \"key\"), (remove-method ...) or (unintern 'name) evaluated as a toplevel form takes the name out of the image and its file out of the layer, committed as forgot name. Every state of you that proved is a numbered generation: (generations) lists them, and (rollback n) puts every folder back to what n recorded - the layer by one commit forward, its history kept; a folder a checkout holds stays where it stands, and uncommitted edits in the layer must be kept or discarded first - then this organism exits once no turn is in flight and the next launch runs n. Under --pristine, or after a self that died before serving, you run generation 0, the binary alone, and nothing is kept until a rollback or a relaunch.
 
 What you keep and do not run is a definition too. (define-memory name \"one declarative sentence\" :type :feedback ;; why, and how to apply it ...) keeps a fact: :type :feedback for a preference or a correction the operator stated in so many words, :user for who they are, :project with :project \"ROOT\" for a fact about the repository at ROOT (shown only to sessions under it), :reference, :lesson; the why rides as ;; lines inside the form, the closing paren on a line of its own. (define-skill name \"one sentence\" ;; when to use ;; the steps, one per line ...) keeps a procedure in prose; a define-skill with a lambda list, (define-skill name (args) \"one sentence\" body...), is a procedure this image runs, a defun kept in the layer. A memory or a prose skill is one file in your knowledge cell, cells/<your-name>-memory/ (:cell \"topic\" files it in a cell of that one subject), committed like the layer and never loaded: the index section at the head of the conversation lists the definitions you keep by use, (help 'name) reads one, (index \"text\") finds the rest, (edit path old new) on its file changes it, and (unintern 'name) as a toplevel form forgets it. A name of the image's own - a function, a variable - is refused: a memory takes a name of its own.
@@ -148,7 +148,7 @@ This session's own model. The footer names it; (models), (select-model ...) and 
 A model of your own. A provider whose base_url is a machine you run - localhost, a private or tailnet address, a .local or .ts.net name - is listed under Local in /models' Main tab: providers.<id> = {\"sdk\": \"openai-completions\", \"base_url\": \"http://HOST:PORT/v1\"}, its models from GET <base_url>/models.
 
 nodecode.ai's API: Nodecode's own models, at https://api.nodecode.ai/v1, OpenAI's wire, provider id nodecode. `nodecode login` or /login (the operator's to run; signs in at nodecode.ai in a browser) saves the key at auth.json api_keys.nodecode.key and writes providers.nodecode {\"sdk\": \"openai-completions\", \"base_url\": \"https://api.nodecode.ai/v1\"}; a key made at https://nodecode.ai/account/keys works the same. (getf (resolve-provider-credential \"nodecode\") :key) reads it: never print it or put it in a shell command or a file. Keys start with sk-nc-; any other key answers 401 invalid_api_key, and the fix is a new `nodecode login`. Routes: POST /v1/chat/completions, POST /v1/images/generations, GET /v1/models (what the key may call), GET /v1/models/ID, GET /v1/usage (the plan's requests left, its end and quota reset, seats, the credit; the operator's footer and /usage draw it); there is no /v1/messages or /v1/responses. A call is taken from the account's plan month first, then its topped-up balance (https://nodecode.ai/pricing); with neither it answers 402.
-- Cyber v1, foresight-cyber-v1: the security model, a chat model (DeepSeek V4.1 Flash 1017 with Foresight Labs finetunes), 1M context, 16K output. A breach, a CVE, a patch or a server or website to check starts at (help :security), the cyber-security cell's manual, whatever model runs the session. Ask Cyber v1 one security question with the complete call above, or make it this session's model: (select-model \"foresight-cyber-v1\" :provider \"nodecode\"), `/models nodecode foresight-cyber-v1` in a shell.
+- Cyber v1, foresight-cyber-v1: the security model, a chat model (DeepSeek V4.1 Flash 1017 with Foresight Labs finetunes), 1M context, 16K output. A breach, a CVE, a patch or a server or website to check starts at (help :security), the cyber-security cell's manual, whatever model runs the session. Ask Cyber v1 one security question with the complete call above, or make it this session's model: (select-model \"foresight-cyber-v1\" :provider \"nodecode\"), or in a shell /models' Main tab: nodecode, then Cyber v1.
 - Image v1, foresight-image-v1: the image model (Qwen-Image 2.1 Turbo with Foresight Labs finetunes). POST /v1/images/generations with {\"model\", \"prompt\", \"n\" 1-4, \"size\" \"WxH\" up to 2048x2048 or \"auto\", \"response_format\" \"b64_json\", \"seed\" optional} answers {\"data\": [{\"b64_json\": ...}], \"size\", \"usage\"}: the images come back in the body, never as URLs. nlk:http answers (values BODY STATUS HEADERS TRUNCATED); check STATUS is 200 before decoding BODY:
   (multiple-value-bind (body status)
       (nlk:http :post \"https://api.nodecode.ai/v1/images/generations\" :timeout 600
@@ -164,7 +164,7 @@ nodecode.ai's API: Nodecode's own models, at https://api.nodecode.ai/v1, OpenAI'
   (let ((*auxiliary-model* (list :provider \"nodecode\" :model \"foresight-decide-v1\")))
     (nlk:decode-json (complete \"\" (shasht:write-json REQUEST nil) :max-tokens 1024 :fallback-p nil)))
 
-The decider pin. general.decider_model is the decider /models' Decider tab picks: djev (DJev, model dgemma) on a machine of your own, http://127.0.0.1:8011 unless providers.djev.base_url moves it, called as POST <base>/v1/systemone with the same request shape. `/models decider djev` pins it, `/models decider none` takes it out. Decide v1 is the hosted decider; the pin does not offer it.")
+The decider pin. general.decider_model is the decider /models' Decider tab picks: djev (DJev, model dgemma) on a machine of your own, http://127.0.0.1:8011 unless providers.djev.base_url moves it, called as POST <base>/v1/systemone with the same request shape. /models' Decider tab pins it, and its None takes it out. Decide v1 is the hosted decider; the pin does not offer it.")
     (:docs "the user reference, https://nodecode.ai/docs - what to tell a person asking how to install, sign in, pick a model, connect a channel, change a setting, update or fix Nodecode; every page as markdown at /docs/SLUG.md, the map at /docs/llms.txt" . "The user reference, https://nodecode.ai/docs: how to install, run, set up and fix Nodecode, written for the people who use it, not for its internals.
 
 When someone asks how to do something with Nodecode - install it, sign in, pick a model, connect a channel, change a setting, update, roll back, recover from a failure - read the page that answers it and answer from it, linking https://nodecode.ai/docs/SLUG so they can read on. Every page is also markdown at https://nodecode.ai/docs/SLUG.md (the overview is index.md); https://nodecode.ai/docs/llms.txt is the map and https://nodecode.ai/docs/llms-full.txt all of it in one file. (nlk:http :get URL) answers (values BODY STATUS ...). The reference follows the published release: where a page and this image disagree, this image is the truth - answer from it and say the page is behind.
@@ -452,8 +452,10 @@ description or file holds text, this project's first."
 
 (defun index-slash (args session-id &aux (args (string-trim " " (or args ""))))
   "/index: bare, the meter and the picker -- hot first, a tab per cell,
-Enter inserting $name; `reload', this conversation pinned again at its
-next request; any other text, what (index text) finds."
+Enter inserting $name, and after them a row asking for words to search what
+is kept for, its files too, and one pinning the index again; `reload', the
+line that row runs, this conversation pinned again at its next request; any
+other text, the line the search runs, what (index text) finds."
   (cond ((string= args "")
          (let ((settings (index-settings)))
            (values (nlk:knowledge-meter session-id settings)
@@ -470,7 +472,14 @@ next request; any other text, what (index text) finds."
                       :search-placeholder "Type to filter what is kept…"
                       :empty-label "Nothing kept yet — (help :layer) says how to keep a memory or a skill"
                       :hint "esc close  up/down navigate  enter insert $name  tab cell  type search"
-                      :rows rows)))))
+                      ;; The two rows that act come last: the `$' a prompt
+                      ;; opens this on lands on a name to insert.
+                      :rows (append rows
+                                    (list (ask-row "Search what is kept" "Search" "/index"
+                                                   :detail "names, descriptions and the files' own text, hot and cold"
+                                                   :placeholder "Words to look for" :verb "search")
+                                          (run-row "Pin the index again" "/index reload"
+                                                   :detail "this conversation reads it fresh at its next request"))))))))
         ((string-equal args "reload")
          (nlk:mark-index-refresh session-id)
          "index: pinned again at this conversation's next request")
@@ -1381,14 +1390,19 @@ stub carries it once the round that carried the snippet has left the window."
 ;;; its eval call -- an evaluation the call handed to the background is read
 ;;; once, by its exit (SNIPPET-BACKGROUNDED-P) -- its value printed whole inside *WATCH-SIZE*, it names something
 ;;; that can change (a symbol beyond COMMON-LISP), and it reached nothing
-;;; outside the image: it names nothing that assigns, destroys or defines, no
-;;; verb stamped it (RECEIPT-CALL), it kept no definition and no hook, and its
-;;; thread made no read or write system call, which every act on a socket, a
-;;; file or a process takes (THREAD-IO-CALLS, Linux's count per thread; where
-;;; the platform keeps none, nothing is watched). A run again cannot act
-;;; either: a verb refuses inside it, and a run that reached outside anyway is
-;;; closed and says so. A snippet that reached outside -- an act, a definition,
-;;; a failure -- runs its session's watched snippets after itself.
+;;; outside the image: every operator is a known memory read or a simple
+;;; control form (*WATCH-READ-OPERATORS*), it names nothing that assigns,
+;;; destroys or defines, no verb stamped it (RECEIPT-CALL), it kept no
+;;; definition and no hook, and its
+;;; thread made no read or write system call (THREAD-IO-CALLS, Linux's count
+;;; per thread; where the platform keeps none, nothing is watched). That count
+;;; alone cannot detect resource creation or closing, nor in-memory mutation.
+;;; An unexamined call stays one-shot even if its first run made no IO. Before
+;;; each rerun the form is checked again, so a live repair retires old watches
+;;; before invoking their cached thunks. Verbs also refuse inside a rerun, and
+;;; a run that reached outside anyway is closed and says so. A snippet that
+;;; reached outside -- an act, a definition, a failure -- runs its session's
+;;; watched snippets after itself.
 ;;;
 ;;; Retention: the watched snippets are live-only, *WATCH-LIMIT* per session. What
 ;;; each showed rides the result fact of the snippet that showed it, under
@@ -1475,11 +1489,27 @@ counted by the next call."
                 (writes (field "syscw:")))
             (and reads writes (+ reads writes))))))))
 
+(defparameter *watch-read-operators*
+  '(quote let let* if progn prog1 prog2 and or when unless cond case ecase
+    multiple-value-bind values
+    + - * / 1+ 1- = /= < > <= >= min max abs mod rem floor ceiling round truncate
+    zerop plusp minusp evenp oddp not null eq eql equal equalp
+    atom consp listp numberp integerp stringp symbolp vectorp arrayp hash-table-p
+    list list* cons append copy-list copy-tree reverse length nth nthcdr
+    car cdr caar cadr cdar cddr first second third fourth rest last butlast
+    getf gethash hash-table-count aref svref elt subseq
+    boundp symbol-value symbol-name list-evals)
+  "The operators automatic watches may call. Unknown functions, macros and
+indirect calls stay one-shot: a quiet first run is not evidence of purity.
+Keep this list free of callback-taking readers and resource operations.")
+
 (defun watchable-form-p (form)
   "Whether FORM may be watched: it names something that can change -- a
 symbol beyond COMMON-LISP -- and nothing *WATCH-REFUSED-SYMBOLS* lists,
 nothing that defines, and none of the REPL's history variables, which move
-under every snippet."
+under every snippet. Every call must also be a known memory read."
+  (unless (replay-safe-form-p form *watch-read-operators*)
+    (return-from watchable-form-p nil))
   (let ((moving nil)
         (budget 4096)
         (homes (list (find-package '#:common-lisp) (find-package '#:keyword))))
@@ -1532,25 +1562,34 @@ PUSHNEW.")
 watched one may not (*WATCH-REFUSED-SYMBOLS*): each reaches the file system,
 changes a package or the reader, or calls what the form does not name.")
 
-(defun replay-safe-form-p (form)
+(defun replay-safe-form-p (form &optional (operators nil restricted))
   "Whether FORM, a toplevel form of a snippet a restart cut off, only reads:
 every operator it calls is one of *REPLAY-OPERATORS*, or COMMON-LISP's and
 none that defines, assigns or acts (*WATCH-REFUSED-SYMBOLS*,
 *REPLAY-REFUSED-OPERATORS*). Quoted data is data, and the names a binding
-form binds are no calls; anything the walk does not know is refused."
+form binds are no calls; anything the walk does not know is refused.
+With OPERATORS supplied, every call (including control forms) must instead
+name one of those operators and global symbol macros are refused; automatic
+watches use this stricter vocabulary."
   (let ((budget 4096)
         (common (find-package '#:common-lisp)))
     (labels ((operator-p (symbol)
-               (or (member symbol *replay-operators*)
-                   (and (eq (symbol-package symbol) common)
-                        (not (member symbol *watch-refused-symbols*))
-                        (not (member symbol *replay-refused-operators*))
-                        (not (eql 0 (search "DEF" (symbol-name symbol)))))))
+               (if restricted
+                   (member symbol operators)
+                   (or (member symbol *replay-operators*)
+                       (and (eq (symbol-package symbol) common)
+                            (not (member symbol *watch-refused-symbols*))
+                            (not (member symbol *replay-refused-operators*))
+                            (not (eql 0 (search "DEF" (symbol-name symbol))))))))
              (forms (list) (every #'walk list))
              (walk (x)
                (when (minusp (decf budget))
                  (return-from replay-safe-form-p nil))
-               (or (atom x) (and (ignore-errors (list-length x)) (call x))))
+               (if (atom x)
+                   ;; Inspect metadata, not MACROEXPAND: an expansion hook can act.
+                   (not (and restricted (symbolp x)
+                             (eq (sb-int:info :variable :kind x) :macro)))
+                   (and (ignore-errors (list-length x)) (call x))))
              (bindings (list)
                (and (listp list)
                     (every (lambda (binding)
@@ -1571,6 +1610,8 @@ form binds are no calls; anything the walk does not know is refused."
                                  (forms clause))))
                       list))
              (call (x &aux (head (car x)))
+               (when (and restricted (not (member head operators)))
+                 (return-from replay-safe-form-p nil))
                (case head
                  (quote t)
                  (function (let ((name (second x)))
@@ -1661,11 +1702,10 @@ whole, `now ...'."
   "TEXT, a snippet's result, followed by what its session's watched snippets say.
 ENTRY is the snippet's last form and its text as read, VALUE its value and
 STARTED when it began; ACTED is whether a form before it reached outside
-the image. A failed snippet passes no ENTRY. A last form that only read is
-watched from now on and says so -- the model's reader is most often a
-definition and its call, in one snippet -- and a snippet that reached outside,
-before that form or in it, first runs the watched snippets again, each that
-changed or closed adding its line."
+the image. A failed snippet passes no ENTRY. An eligible last form using
+known memory reads is watched from now on and says so. A snippet that reached
+outside, before that form or in it, first runs the watched snippets again,
+each that changed or closed adding its line."
   (let ((session (eval-session-id)))
     (if (null session)
         text
@@ -1747,7 +1787,10 @@ may not and is closed."
   "WATCH's value as it prints now, and a copy of what printed so, as
 (values TEXT NIL OBJECT) -- a failure prints as ERROR: and its type, a value
 like any other -- or (values NIL WHY) when the run reached outside the image
-or took five times *WATCH-SECONDS*, which closes it."
+or took five times *WATCH-SECONDS*, which closes it. Old watches whose forms
+are no longer eligible close before compilation or a cached thunk runs."
+  (unless (watchable-form-p (watch-form watch))
+    (return-from rerun-watch (values nil "its form is not a known memory read")))
   (let* ((*watch-running* t)
          (*snippet-touched* nil)
          (started (get-internal-real-time))
@@ -3933,13 +3976,51 @@ the reason rather than send it into the same refusal."
 ;;; ones are told at the turn, the pin's own among them, so a room's lanes
 ;;; pin one prefix and part only at their own asks.
 
+;;; --- the agent's own prompt, rules and soul --------------------------------
+;;; Three files make the agent who it is, and one verb names each: a handle,
+;;; like a symlink, never a copy. EDIT, WRITE-FILE and their receipts work on
+;;; the path it answers, and the next turn reads what they wrote. The rules and
+;;; the soul were files already, read fresh every request (OPERATOR-RULES-SECTION)
+;;; and every message (the channel kit's soul); the prompt becomes one here,
+;;; SYSTEM.md, read in place of the shipped *SYSTEM-PROMPT* while it is there.
+
+(defun system-prompt ()
+  "The path of the home's SYSTEM.md: the system message every request opens
+on while it is there and not blank, the shipped *SYSTEM-PROMPT* while it is
+not. (edit (system-prompt) old new) changes the prompt from the next turn;
+(write-file (system-prompt) *system-prompt*) starts the file from the
+shipped one; deleting the file goes back to it."
+  (sb-ext:native-namestring (nlk:home "SYSTEM.md")))
+
+(defun agents-md ()
+  "The path of the home's AGENTS.md, the rules every session reads as its
+`operator-rules', fresh each request: (edit (agents-md) old new)."
+  (sb-ext:native-namestring (nlk:home "AGENTS.md")))
+
+(defun soul-md ()
+  "The path of the home's SOUL.md, the persona a channel reads before every
+message unless its soul_file names another: (edit (soul-md) old new)."
+  (sb-ext:native-namestring (nlk:home "SOUL.md")))
+
+(defun standing-system-prompt ()
+  "The system message a request opens on: SYSTEM.md's text when the file is
+there and not blank (SYSTEM-PROMPT), else the shipped *SYSTEM-PROMPT*."
+  ;; Read at each turn's first round, as AGENTS.md is: an edit binds the next
+  ;; turn. A file that is there but cannot be read signals, loud, never a
+  ;; quiet fall back to the shipped prompt.
+  (let* ((file (probe-file (nlk:home "SYSTEM.md")))
+         (text (and file (nlk:read-text file))))
+    (if (and text (plusp (length (nlk:trimmed text))))
+        text
+        (copy-seq *system-prompt*))))
+
 (defun current-prompt (session-id bindings)
   "=> (values BASE SECTIONS TOOLS STANDING): the prompt SESSION-ID would be
 given if it began now — the system prompt, its standing and live sections,
 and the payload of the tool BINDINGS — and of SECTIONS the standing ones,
 the ones a pin holds."
   (let ((standing (kept-sections (read-harness-sections session-id))))
-    (values (copy-seq *system-prompt*)
+    (values (standing-system-prompt)
             (kept-sections (append standing (read-live-sections session-id)))
             (tools-payload bindings)
             standing)))
@@ -4090,7 +4171,7 @@ fold of the fact reproduces."
                                        turns floor
                                        :budget window
                                        :tools (or tools (tools-payload))
-                                       :system-prompt (or system-prompt *system-prompt*)
+                                       :system-prompt (or system-prompt (standing-system-prompt))
                                        :head head
                                        :calibration calibration
                                        :floors floors)))

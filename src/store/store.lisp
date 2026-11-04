@@ -570,6 +570,96 @@ ended the transaction (the ROLLBACK's own when NIL)."
   ;; A probe, not a claim: FILE-LOCKED-P never contends with the owner.
   (file-locked-p (lock-path-for-store path)))
 
+(defun store-lease-held-elsewhere-p (path)
+  "True when a live process other than this one holds PATH's ownership lock."
+  ;; This one holds it before its store opens only when a saved heap image
+  ;; it became was handed the lease across the exec (HOLD-STORE-LEASE).
+  (and (store-lease-held-p path) (not (store-lease-mine-p path))))
+
+(defun hold-store-lease (path &aux (full (merge-pathnames path)))
+  "Take PATH's ownership lock with no store open and advertise this process
+as its holder, for a store about to reopen in this pid: => the lock, NIL when
+another process holds it."
+  (let ((lock (lock-file (lock-path-for-store full))))
+    (when lock
+      (write-store-holder (lease-path-for-store full) :pid (sb-posix:getpid)))
+    lock))
+
+;;; A lease handed across an exec. An organism that becomes another heap --
+;;; a save, a switch -- keeps the store's lock through the exec, so no shell
+;;; and no second organism finds the store free between the two. The
+;;; successor learns which descriptor holds it from its environment, never
+;;; from its heap: a heap remembers the descriptors of the process that saved
+;;; it, which mean nothing in a later one -- a heap restored by the pointer
+;;; would read its lease as held and open its store unlocked.
+
+(defparameter +handed-lease-variable+ "NODECODE_STORE_LEASE"
+  "The environment variable naming the lease an exec hands on: \"FD PATH\".")
+
+(defun hand-lease-across-exec (lock)
+  "Leave LOCK, a store lease this process holds, open across the coming
+exec, and name it in the environment for the successor (ADOPT-HANDED-LEASE)."
+  #+win32 (declare (ignore lock))
+  #-win32
+  (let ((path (gethash lock *held-locks*)))
+    (when path
+      (sb-posix:fcntl lock sb-posix:f-setfd 0)
+      (sb-posix:setenv +handed-lease-variable+ (format nil "~d ~a" lock path) 1))))
+
+#+linux
+(defun proc-locks-holder-p (pid inode)
+  "Whether /proc/locks shows PID holding a granted record lock on INODE."
+  (with-open-file (in "/proc/locks" :if-does-not-exist nil)
+    (and in
+         (loop for line = (read-line in nil) while line
+               thereis (let ((words (remove "" (uiop:split-string line :separator " ")
+                                            :test #'string=)))
+                         ;; ID TYPE MODE RW PID MAJ:MIN:INODE START END; a
+                         ;; waiter's line carries "->" and holds nothing.
+                         (and (= (length words) 8)
+                              (equal (nth 4 words) (princ-to-string pid))
+                              (let ((id (nth 5 words)))
+                                (equal (subseq id (1+ (or (position #\: id :from-end t) -1)))
+                                       (princ-to-string inode)))))))))
+
+(defun lock-handed-to-this-process-p (fd path)
+  "Whether descriptor FD is open on the file at PATH and this process holds
+its record lock: what an exec handed on is the lease only when both hold."
+  #+win32 (declare (ignore fd path))
+  #+win32 nil
+  #-win32
+  (handler-case
+      (let ((open (sb-posix:fstat fd))
+            (named (sb-posix:stat path)))
+        (and (= (sb-posix:stat-ino open) (sb-posix:stat-ino named))
+             (= (sb-posix:stat-dev open) (sb-posix:stat-dev named))
+             #+linux (proc-locks-holder-p (sb-posix:getpid) (sb-posix:stat-ino open))
+             #-linux t))
+    (error () nil)))
+
+(defun adopt-handed-lease ()
+  "At a process's start: forget every lock its heap remembers -- a saved
+heap's or a warm image's are another process's -- and take back the lease an
+exec handed on (HAND-LEASE-ACROSS-EXEC) when its descriptor still holds it.
+=> that lock, or NIL."
+  (clrhash *held-locks*)
+  #-win32
+  (let* ((value (sb-posix:getenv +handed-lease-variable+))
+         (space (and value (position #\Space value)))
+         (fd (and space (parse-integer value :end space :junk-allowed t)))
+         (path (and space (subseq value (1+ space)))))
+    (cond ((and fd path (lock-handed-to-this-process-p fd path))
+           (note-held-lock fd path))
+          (value (sb-posix:unsetenv +handed-lease-variable+) nil))))
+
+(defun settle-handed-lease (lock)
+  "The store took LOCK as its lease: it closes at a later exec again, and no
+successor or child is told of it."
+  #+win32 (declare (ignore lock))
+  #-win32 (when lock (ignore-errors (sb-posix:fcntl lock sb-posix:f-setfd 1)))
+  #-win32 (when (sb-posix:getenv +handed-lease-variable+)
+            (sb-posix:unsetenv +handed-lease-variable+)))
+
 (defun store-lease-mine-p (path)
   "True when this process holds PATH's ownership lock."
   ;; *HELD-LOCKS* is the only way to ask: opening the lock file to probe it
@@ -600,10 +690,17 @@ ended the transaction (the ROLLBACK's own when NIL)."
           (pid (values :dirty-death pid port))
           (t (values :clean-shutdown nil nil)))))
 
+(defvar *keep-store-lease* nil
+  "T while the organism lets its store go to become another heap in this
+same pid (a save, a switch): the store closes and its lease stays held --
+still in *HELD-LOCKS*, the holder sidecar still naming this pid -- for the
+exec to hand on, so not even the moment between a release and a re-take
+leaves the store free.")
+
 (defun release-store-lease (store)
-  (when store.lease-path
+  (when (and store.lease-path (not *keep-store-lease*))
     (ignore-errors (delete-file store.lease-path)))
-  (when store.lock-fd
+  (when (and store.lock-fd (not *keep-store-lease*))
     (ignore-errors (unlock-file store.lock-fd)))
   (setf store.lease-path nil
         store.lock-fd nil))
@@ -637,7 +734,10 @@ store."
            ;; The store's directory exists, 0700, before the lease is taken.
            (lock-fd (progn (ensure-directories-exist directory)
                            (ignore-errors (sb-posix:chmod (namestring directory) #o700))
-                           (lock-file (lock-path-for-store full))))
+                           ;; A lease this process already holds -- handed
+                           ;; across a saved image's exec -- is the lease.
+                           (or (held-lock (lock-path-for-store full))
+                               (lock-file (lock-path-for-store full)))))
            (lease-path (lease-path-for-store full))
            (store (make-store :path full :lease-path lease-path :lock-fd lock-fd)))
       (unless lock-fd
@@ -648,6 +748,7 @@ store."
         (multiple-value-bind (pid port) (read-store-holder full)
           (error 'store-in-use :path full :owner-pid pid :owner-port port)))
       (write-store-holder lease-path :pid (sb-posix:getpid))
+      (settle-handed-lease lock-fd)
       (handler-case
           (progn
             (setf store.handle (sqlite:connect full))

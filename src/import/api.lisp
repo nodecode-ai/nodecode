@@ -28,7 +28,7 @@
 
 ;;; --- the verbs ----------------------------------------------------------------------------
 
-(defun run-import (&key source overwrite (takeover t) only without link apply progress (answer #'identity))
+(defun run-import (&key source overwrite (takeover t) only without apply progress (answer #'identity))
   "The plan for SOURCE, applied when APPLY — and then the watch started
 for any bot it held for a running foreign gateway. => what ANSWER makes of
 the plan, the plan itself unless told otherwise."
@@ -39,7 +39,7 @@ the plan, the plan itself unless told otherwise."
   ;; when the nursery comes back down.
   (nlk:with-nursery ((* 512 1024 1024))
     (let ((plan (make-plan :source source :overwrite overwrite :takeover takeover
-                           :only only :without without :link link)))
+                           :only only :without without)))
       (cond (apply
              (apply-plan plan :progress progress)
              (funcall *start-watch*))
@@ -63,16 +63,16 @@ line each: the world, where it sits, and when it was last used."
   ;; SOURCE names a world or a path; naming none reads every world on the box.
   (run-import :source source :only only :answer #'report-text))
 
-(defun import (&key source overwrite (takeover t) only link)
+(defun import (&key source overwrite (takeover t) only)
   "Import SOURCE, keys and tokens with it: OVERWRITE replaces what is
 already here, ONLY names the kinds (providers, instructions, memory,
-skills, mcp, channels, cron, sessions, profiles) comma-separated, LINK
-links each library of skills, read where it is, instead of copying them."
+skills, mcp, channels, cron, sessions, profiles) comma-separated. Skills are
+linked, each read where it is."
   ;; A foreign gateway polling bots is stopped and disabled so they answer
   ;; from here; TAKEOVER nil leaves it running, and its bots land off and come
   ;; on by themselves once it stops. Answers the report.
   (run-import :source source :overwrite overwrite :takeover takeover
-              :only only :link link :apply t :answer #'report-text))
+              :only only :apply t :answer #'report-text))
 
 ;;; --- does the imported target answer ---------------------------------------------------
 ;;; A key an import carried over is a key that worked once, somewhere else.
@@ -150,19 +150,24 @@ every run of eight or more key characters that is a piece of one replaced."
 
 (defun run-slash (args &aux (words (nlk:split-words args))
                             (head (first words))
-                            (source nil) (overwrite nil) (takeover t) (only nil) (link nil) (yes nil))
-  "The answer to one /import: the summary line and where the report file is,
-said as a notice too; `--sources' lists the repositories held, `--remove
-LABEL' takes one back."
-  (cond ((equal head "--sources") (return-from run-slash (sources)))
+                            (source nil) (overwrite nil) (takeover t) (only nil) (yes nil))
+  "The answer to one /import, (values TEXT DIALOG): the summary line and where
+the report file is, said as a notice too, and a preview's dialog, whose rows
+land it (PREVIEW-DIALOG); `--sources' lists the repositories held, its
+dialog's rows each taking one back, and `--remove LABEL' takes one back.
+`all', the line bare /import's first row runs, reads every world, as
+naming none does."
+  (cond ((equal head "--sources") (return-from run-slash (values (sources) (sources-dialog))))
         ((equal head "--remove")
          (return-from run-slash
-           (remove-source (or (second words) (fail "--remove needs a source's label; /import --sources lists them"))))))
+           (remove-source (or (second words) (fail "--remove needs a source's label"))))))
+  (when (equal head "all")
+    (pop words)
+    (setf head nil))
   (when (and head (not (uiop:string-prefix-p "--" head)))
     (pop words)
     (unless (or (nlk:find-agent-world head) (parse-source head))
-      (fail "~a is not a world this build knows (~{~a~^, ~}) nor a repository (OWNER/REPO, an https URL); ~
-             name a path with --source"
+      (fail "~a is not a world this build knows (~{~a~^, ~}) nor a repository (OWNER/REPO, an https URL)"
             head (nlk:agent-world-names)))
     (setf source head))
   (loop for word = (pop words) while word
@@ -170,15 +175,12 @@ LABEL' takes one back."
              ("--source" (setf source (or (pop words) (fail "--source needs a PATH or a repository"))))
              ("--only" (setf only (or (pop words) (fail "--only needs KINDS, comma-separated"))))
              ("--overwrite" (setf overwrite t))
-             ("--link" (setf link t))
              ("--keep-running" (setf takeover nil))
              ("--yes" (setf yes t))
              ("--dry-run" (setf yes nil))
-             (t (fail "unknown word ~a; usage /import [WORLD|OWNER/REPO[#REF]] [--source PATH] [--only KINDS] ~
-                       [--overwrite] [--link] [--keep-running] [--yes], /import --sources, /import --remove LABEL"
-                      word))))
+             (t (fail "unknown word ~a: /import alone offers what it reads" word))))
   (let* ((plan (run-import :source source :overwrite overwrite :takeover takeover
-                           :only only :link link :apply yes))
+                           :only only :apply yes))
          (report (and plan.report-path
                       (format nil "the report is in ~a"
                               (nlk:home-abbreviated (namestring plan.report-path))))))
@@ -192,15 +194,61 @@ LABEL' takes one back."
                 :level :info)
     (if yes
         (format nil "import ~a: ~a~@[ — ~a~]" (plan-source-line plan) (summary-line plan) report)
-        (format nil "import ~a (dry run): ~a — /import~@[ ~a~] --yes applies~@[; ~a~]"
-                (plan-source-line plan) (summary-line plan) source report))))
+        (values (format nil "import ~a (dry run): ~a~@[ — ~a~]"
+                        (plan-source-line plan) (summary-line plan) report)
+                (preview-dialog plan (nlk:trimmed (or args "")) :overwrite overwrite
+                                                                :takeover takeover :only only)))))
+
+(defun preview-dialog (plan line &key overwrite takeover only
+                                 &aux (head (if (plusp (length line)) (format nil "/import ~a" line) "/import all")))
+  "The dialog a preview of PLAN answers, LINE the words /import read for it:
+the rows that land it -- as planned, over what this home already has, the
+foreign gateway left running -- and, while it brings more than one kind,
+the rows that preview one kind alone."
+  (let ((kinds (loop for kind in +kinds+
+                     when (find-if (lambda (item) (and (equal item.kind kind) (equal item.status "imported")))
+                                   plan.items)
+                       collect kind))
+        (held (find-if (lambda (item) (member item.status '("skipped" "conflict") :test #'equal)) plan.items))
+        (unit (and takeover (plan-takeover-unit plan)
+                   (some (lambda (item) (getf item.detail :bot)) plan.items)
+                   (plan-takeover-unit plan))))
+    (nle:list-dialog
+     :title "Import" :context (plan-source-line plan) :summary (summary-line plan)
+     :rows (append
+            (list (nle:run-row "Bring it over" (format nil "~a --yes" head)
+                               :detail "everything the preview lists, keys and tokens with it"))
+            (when (and held (not overwrite))
+              (list (nle:run-row "Bring it over, replacing what is here" (format nil "~a --overwrite --yes" head)
+                                 :detail "what this home already has gives way to what the import brings")))
+            (when unit
+              (list (nle:run-row (format nil "Bring it over, leaving ~a running" unit)
+                                 (format nil "~a --keep-running --yes" head)
+                                 :detail "its bots answer from here once it stops")))
+            (when (and (rest kinds) (null only))
+              (loop for kind in kinds
+                    collect (nle:run-row (format nil "Only its ~a" kind) (format nil "~a --only ~a" head kind)
+                                         :detail "previewed alone first")))))))
+
+(defun sources-dialog ()
+  "The dialog `--sources' answers: a row each repository held, taking it
+back; NIL when none is."
+  (let ((rows (source-folders)))
+    (and rows
+         (nle:list-dialog
+          :title "Repositories held"
+          :summary "Each one's skills and the MCP servers it declares"
+          :rows (loop for (label) in rows
+                      collect (nle:run-row (format nil "Take back ~a" label)
+                                           (format nil "/import --remove ~a" label)
+                                           :detail "its skills and servers go, and its folder"))))))
 
 (defun param-flag (params key)
   (eq (nlk:json-value params :any key) t))
 
 (defun run-method (method params &key progress)
   "The wizard's methods over the params object {source, only, without,
-overwrite, link, keep_running}, source a world name, a path or a list of world
+overwrite, keep_running}, source a world name, a path or a list of world
 names: `plan' previews, `apply' writes, `scan' answers the same plan with
 nothing written — the pasteable report."
   ;; Nothing is posted: the wizard writes the answer's report into the
@@ -211,7 +259,6 @@ nothing written — the pasteable report."
               :only (nlk:json-value params :text "only")
               :without (nlk:json-value params :text "without")
               :overwrite (param-flag params "overwrite")
-              :link (param-flag params "link")
               :takeover (not (param-flag params "keep_running"))
               :apply (equal method "apply") :progress progress :answer #'plan-json))
 
@@ -259,7 +306,7 @@ reader (NLK:READ-EVENTS) skips and its socket counts as a line."
 
 (defun import-route (env &aux (request (nle::gateway-request-json env))
                                (method (nlk:json-value request :string "method")))
-  "/api/import: POST {method, source, only, without, overwrite, link, keep_running,
+  "/api/import: POST {method, source, only, without, overwrite, keep_running,
 stream} runs the setup walk's METHOD in the image that serves the store --
 `plan', `apply' and `scan' (RUN-METHOD), `verify' (one small request to the
 default target) -- and answers its value; with stream true, the long three

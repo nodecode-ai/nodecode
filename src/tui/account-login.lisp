@@ -154,7 +154,7 @@ link. Answers the name the machine was let in under."
            (account-print-usage output mode (json-value reply :string "api_key")
                                 (json-value reply :string "base_url") usage-request lead))
           (t
-           (format output "Linked~@[ as ~a~]. Account key saved to ~a.~%With /link on in nodecode, the Machines page shows its address.~%"
+           (format output "Linked~@[ as ~a~]. Account key saved to ~a.~%With /link turned on in nodecode, the Machines page shows its address.~%"
                    name saved)
            (account-next-step output lead))))
       (finish-output output)
@@ -686,16 +686,16 @@ then the one the sign-in ended on (ACCOUNT-LOGIN-WATCH)."
               (render-state model)))
   "login: asking nodecode.ai…")
 
-(defun slash-login-op (model args &key (pick #'account-login-from-shell) context on-cancel
+(defun slash-login-op (model args &key (pick #'account-login-from-shell) (context "") on-cancel
                                   &aux (word (string-trim '(#\Space #\Tab) (or args ""))))
   "/login on a shell: bare, the choice between a subscription and API credits; named, that sign-in.
 PICK takes the choice as (MODEL MODE); CONTEXT and ON-CANCEL are the setup walk's, whose step the
-choice is (SETUP-STAGE-SIGN-IN)."
+choice is (SETUP-STAGE-SIGN-IN): the prompt and /models leave the picker's label empty."
   (cond
     ((plusp (length word))
      (if-let (mode (account-mode-word word))
        (funcall pick model mode)
-       "Usage: /login [subscription | api]"))
+       (slash-unoffered "login")))
     (t (open-picker-dialog model "Sign in to nodecode.ai"
                            (list (make-picker-row :label "Subscription" :detail "your Founders plan's requests (Lite, Base or Pro)"
                                                   :value "subscription")

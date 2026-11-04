@@ -172,6 +172,10 @@ for the many bars and rows that paint one run of text in one tone."
    ;; What the shell says about what the operator just did or asked, in the
    ;; composer's placeholder: a COMPOSER-STATUS, or NIL (SHOW-STATUS).
    (composer-status :initform nil :accessor chat-model-composer-status)
+   ;; The ask the composer wears (tui/commands/bare.lisp ASK-IN-COMPOSER):
+   ;; a plist of :LABEL, :LINE, :PLACEHOLDER and :VERB, the text typed under
+   ;; it running LINE on Enter, or NIL for the plain composer.
+   (composer-ask :initform nil :accessor chat-model-composer-ask)
    ;; The toasts up on the frame, newest first (TOAST); what each notice
    ;; key last said, so a keyed notice toasts once for its words; the toast
    ;; under the pointer; and where the last frame placed them (PLACE-TOASTS).
@@ -217,6 +221,21 @@ gutter a sent prompt's words start on, so typed text stays put on Enter."
   ;; on the gutter rail. Without this, every sent prompt would jump right into
   ;; its band.
   (nth-value 2 (body-gutter :prose)))
+
+(defun composer-left-margin (height)
+  "Canvas columns left of the composer on a HEIGHT-row shell: the side
+gutter (a blank and the steering rail) beside the box on tall windows, none
+for the single-line composer short windows fall back to."
+  (if (shell-footer-p height) 2 0))
+
+(defun composer-text-indent (height)
+  "Columns from the composer's left edge to its typed text on a HEIGHT-row
+shell: the box's text inset on tall windows, two in the single-line mode."
+  ;; With COMPOSER-LEFT-MARGIN this is the one place the text's column is
+  ;; decided: the composer row, its parked caret and the dropdown under it
+  ;; all read it, so a completion target starts on the column its typed
+  ;; text does.
+  (if (shell-footer-p height) (composer-text-inset) 2))
 
 (defun composer-text-width (width)
   "Columns the composer's text wraps at — the one width authority for
