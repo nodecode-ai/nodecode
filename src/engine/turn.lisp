@@ -85,7 +85,7 @@ discarding an entire session in one admission pass.")
     hook define-hook unhook held-definitions revert cells restart-cells new-cell move-to-cell fold-cell
     config-get config-set definition-text definition-location
     models select-model select-effort agents agent turn recall-log recall-entry
-    define-memory define-skill index help)
+    define-memory define-skill index system-prompt agents-md soul-md help)
   "The verbs (help) indexes, in the order it lists them. Mutable material:
 a verb the organism grows for itself is pushed here to be found.")
 
@@ -3933,13 +3933,51 @@ the reason rather than send it into the same refusal."
 ;;; ones are told at the turn, the pin's own among them, so a room's lanes
 ;;; pin one prefix and part only at their own asks.
 
+;;; --- the agent's own prompt, rules and soul --------------------------------
+;;; Three files make the agent who it is, and one verb names each: a handle,
+;;; like a symlink, never a copy. EDIT, WRITE-FILE and their receipts work on
+;;; the path it answers, and the next turn reads what they wrote. The rules and
+;;; the soul were files already, read fresh every request (OPERATOR-RULES-SECTION)
+;;; and every message (the channel kit's soul); the prompt becomes one here,
+;;; SYSTEM.md, read in place of the shipped *SYSTEM-PROMPT* while it is there.
+
+(defun system-prompt ()
+  "The path of the home's SYSTEM.md: the system message every request opens
+on while it is there and not blank, the shipped *SYSTEM-PROMPT* while it is
+not. (edit (system-prompt) old new) changes the prompt from the next turn;
+(write-file (system-prompt) *system-prompt*) starts the file from the
+shipped one; deleting the file goes back to it."
+  (sb-ext:native-namestring (nlk:home "SYSTEM.md")))
+
+(defun agents-md ()
+  "The path of the home's AGENTS.md, the rules every session reads as its
+`operator-rules', fresh each request: (edit (agents-md) old new)."
+  (sb-ext:native-namestring (nlk:home "AGENTS.md")))
+
+(defun soul-md ()
+  "The path of the home's SOUL.md, the persona a channel reads before every
+message unless its soul_file names another: (edit (soul-md) old new)."
+  (sb-ext:native-namestring (nlk:home "SOUL.md")))
+
+(defun standing-system-prompt ()
+  "The system message a request opens on: SYSTEM.md's text when the file is
+there and not blank (SYSTEM-PROMPT), else the shipped *SYSTEM-PROMPT*."
+  ;; Read at each turn's first round, as AGENTS.md is: an edit binds the next
+  ;; turn. A file that is there but cannot be read signals, loud, never a
+  ;; quiet fall back to the shipped prompt.
+  (let* ((file (probe-file (nlk:home "SYSTEM.md")))
+         (text (and file (nlk:read-text file))))
+    (if (and text (plusp (length (nlk:trimmed text))))
+        text
+        (copy-seq *system-prompt*))))
+
 (defun current-prompt (session-id bindings)
   "=> (values BASE SECTIONS TOOLS STANDING): the prompt SESSION-ID would be
 given if it began now — the system prompt, its standing and live sections,
 and the payload of the tool BINDINGS — and of SECTIONS the standing ones,
 the ones a pin holds."
   (let ((standing (kept-sections (read-harness-sections session-id))))
-    (values (copy-seq *system-prompt*)
+    (values (standing-system-prompt)
             (kept-sections (append standing (read-live-sections session-id)))
             (tools-payload bindings)
             standing)))
@@ -4090,7 +4128,7 @@ fold of the fact reproduces."
                                        turns floor
                                        :budget window
                                        :tools (or tools (tools-payload))
-                                       :system-prompt (or system-prompt *system-prompt*)
+                                       :system-prompt (or system-prompt (standing-system-prompt))
                                        :head head
                                        :calibration calibration
                                        :floors floors)))
