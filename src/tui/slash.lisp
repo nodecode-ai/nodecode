@@ -191,8 +191,8 @@
         ;; Saved heap images (organism/heap-image.lisp): the organism kept as
         ;; it stands, values and all, beside the folder's generations.
         (make-slash-command "image"
-                            "Saved heaps: keep this organism as it stands, boot one again later"
-                            :usage "/image [save|restore|delete NAME]" :dispatch :args
+                            "Saved heaps: keep this organism as it stands, switch between them"
+                            :usage "/image" :dispatch :args
                             :op 'slash-image-op :headless 'headless-image
                             :session nil
                             :help-detail

@@ -76,7 +76,9 @@ plist, *SAVED-IMAGE*) of folder KEY and dump it as PATH. Never returns."
       (progn
         (setf *saved-image* saved-image
               *image-folder-key* key
-              *image-origin* (or *image-origin* sb-ext:*runtime-pathname*))
+              *image-origin* (or *image-origin* sb-ext:*runtime-pathname*)
+              ;; a stream on a descriptor the exec closes: the boot holds the origin again
+              *origin-hold* nil)
         (uiop:call-image-dump-hook)
         (setf uiop/image::*image-restored-p* nil)
         (sb-ext:save-lisp-and-die
@@ -98,6 +100,14 @@ it where an exec follows (BECOME-SAVED-IMAGE)."
   #+win32 (declare (ignore path saved-image key))
   #+win32 (values nil "Windows has no fork: a heap is saved on Linux and macOS")
   #-win32
+  ;; The dump copies this process's runtime from the file it runs from: a
+  ;; heap that file was, since deleted, could not be saved again -- said
+  ;; before anything is stopped.
+  (unless (probe-file sb-ext:*runtime-pathname*)
+    (return-from fork-and-dump
+      (values nil (format nil "~a, which this organism runs from, is gone: switch to the folder or another heap, then save"
+                          sb-ext:*runtime-pathname*))))
+  #-win32
   (let ((stuck (quiesce-for-image)))
     (when stuck
       (return-from fork-and-dump (values nil (format nil "~{~a~^, ~} would not stop" stuck))))
@@ -117,6 +127,17 @@ it where an exec follows (BECOME-SAVED-IMAGE)."
               ((not (image-complete-p path))
                (values nil "the dump left an incomplete image"))
               (t t))))))
+
+(defun processes-running (path &aux (target (ignore-errors (namestring (truename path)))))
+  "The pids of the live processes whose executable is the file at PATH --
+a saved heap one of them booted. Linux reads /proc; elsewhere NIL."
+  #-linux (declare (ignore target))
+  #+linux
+  (when target
+    (loop for name in (ignore-errors (directory-names "/proc"))
+          for pid = (parse-integer name :junk-allowed t)
+          when (and pid (equal target (ignore-errors (sb-posix:readlink (format nil "/proc/~d/exe" pid)))))
+            collect pid)))
 
 (defun close-inherited-descriptors (&optional keep)
   "Close every descriptor above stderr but KEEP: an exec keeps them, and the

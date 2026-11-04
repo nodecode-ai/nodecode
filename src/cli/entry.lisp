@@ -365,8 +365,8 @@ Zig launcher gives the same thing."
    (nlk:make-verb "image" "save this home's running organism whole, and boot it again later"
                   :aliases '("images")
                   :label "image [VERB]"
-                  :arguments "[list | save NAME | restore NAME | delete NAME]"
-                  :detail "A saved image is the running organism's heap frozen as it stands -- its values, closures and definitions no file holds -- kept under ~/.nodecode/images/NAME/ beside the folder, which loads, keeps and shares as before. save freezes the organism that runs and boots it straight back from the saved heap; restore NAME has the next launch that owns the organism boot that heap in place of the folder, once (with one running, it exits once no turn is in flight for it); list shows them and which one the next launch boots; delete removes one. A heap boots only on the build that saved it: one from another build is refused, naming it. An image holds whatever the organism held, its secrets among them, so it never leaves this machine: no profile export, clone or backup carries it.")
+                  :arguments "[list | save [NAME] | restore [NAME] | delete NAME]"
+                  :detail "A saved image is the running organism's heap frozen as it stands -- its values, closures and definitions no file holds -- kept under ~/.nodecode/images/NAME/ beside the folder, which loads, keeps and shares as before. Bare, in a terminal, it opens the shell on a picker of them -- save the organism now, switch to a heap or back to the folder, delete one -- and prints the list where there is no terminal. save freezes the organism that runs and boots it straight back from the saved heap, under NAME or a dated name; restore NAME has the next launch that owns the organism boot that heap in place of the folder, once (with one running, it exits once no turn is in flight for it); list shows them and which one the next launch boots; delete removes one. A heap boots only on the build that saved it: one from another build is refused, naming it. An image holds whatever the organism held, its secrets among them, so it never leaves this machine: no profile export, clone or backup carries it.")
    (nlk:make-verb "web" "open this home's organism in a browser tab"
                   :arguments "[--print]"
                   :detail "Prints the page's link and opens it where there is a display. The operator token rides after the link's #, which a browser never sends to a server: keep the link to yourself. Needs the organism running (nodecode, or nodecode gateway on) and the web cell: turn web on in /cells. --print prints the link alone and opens nothing: the line a program reads, the desktop app among them.")
@@ -603,6 +603,14 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
                                     (and args (not (uiop:string-prefix-p "-" (first args))) (pop args))))
                   (when (and args (not (uiop:string-prefix-p "-" (first args))))
                     (launch-usage-error "gateway setup takes one CHANNEL: nodecode gateway setup discord")))
+                 ;; Bare `image', and `image restore' with no NAME, is the
+                 ;; shell opened on the saved heaps' picker: a row to pick,
+                 ;; never a name to remember. With no terminal it prints the
+                 ;; list instead (MAIN).
+                 ((and (string= name "image")
+                       (or (null args) (equal args '("restore"))))
+                  (setf args nil
+                        setup (list :image-picker)))
                  ;; `gateway run' is the gateway itself: the headless owner
                  ;; that waits for the store instead of losing it.
                  ((and (string= name "gateway") (equal (first args) "run"))
@@ -685,6 +693,7 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
     (when (and setup serve)
       (launch-usage-error "~a is a shell's verb: a headless owner has no wizard"
                           (cond ((and (consp setup) (eq (first setup) :channel-setup)) "gateway setup")
+                                ((and (consp setup) (eq (first setup) :image-picker)) "image")
                                 ((consp setup) "import")
                                 (t "setup"))))
     (when (and child (eq (first child) :rpc) (or serve session-id setup))
@@ -1067,6 +1076,9 @@ condition's report, exit 1."
       ;; A launch that opens the shell draws on the controlling terminal, and
       ;; a process with none (cron, ssh without -t, a shell tool) is refused
       ;; here, before the home, the store or the folder is touched.
+      ;; `nodecode image' with no terminal to pick in is the list, printed.
+      (when (and (consp setup) (eq (first setup) :image-picker) (not (nlt:terminal-present-p)))
+        (setf child (list :image '()) setup nil))
       (when-let (refusal (terminal-refusal child serve (uiop:command-line-arguments)))
         (write-line refusal *error-output*)
         (uiop:finish-outputs)

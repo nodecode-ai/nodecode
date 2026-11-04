@@ -204,6 +204,11 @@ generation it stood at, and which one the next launch boots."
   (let ((directory (saved-image-directory name)))
     (unless (probe-file directory)
       (error "no image named ~a is saved here" name))
+    ;; The organism running from a heap copies its runtime from that file at
+    ;; its next save: the file stays while a process runs it.
+    (when-let (pids (nlk::processes-running (saved-image-path name)))
+      (error "image ~a is running now (pid~p ~{~d~^, ~}): switch to the folder or another heap, then delete it"
+             name (length pids) pids))
     (when (equal (restore-pointer) name)
       (ignore-errors (delete-file (restore-pointer-path))))
     (uiop:delete-directory-tree (truename directory) :validate t)
@@ -306,8 +311,13 @@ restore one at the next launch, delete one. Runs before any folder loads."
     (let ((verb (or (first words) "list"))
           (name (second words))
           (port (organism-port)))
-      (unless (if (equal verb "list") (<= (length words) 1) (= (length words) 2))
-        (error "image takes list, or save, restore or delete with one NAME: nodecode image [list | save NAME | restore NAME | delete NAME]"))
+      (unless (cond ((equal verb "list") (<= (length words) 1))
+                    ((equal verb "save") (<= (length words) 2))
+                    (t (= (length words) 2)))
+        (error "image takes list, save [NAME], or restore or delete with one NAME: nodecode image [list | save [NAME] | restore [NAME] | delete NAME]; bare, in a terminal, a picker"))
+      ;; A save named by nobody is named by its date (DATED-IMAGE-NAME).
+      (when (and (equal verb "save") (null name))
+        (setf name (funcall 'dated-image-name)))
       (values
        (cond ((equal verb "list") (saved-images-text))
              ((equal verb "save")
