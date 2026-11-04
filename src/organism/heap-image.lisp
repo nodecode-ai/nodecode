@@ -89,7 +89,7 @@ plist, *SAVED-IMAGE*) of folder KEY and dump it as PATH. Never returns."
          :executable t
          :save-runtime-options t))
     (serious-condition (condition)
-      (ignore-errors (format *error-output* "~&image: the dump failed: ~a~%" condition))
+      (ignore-errors (format *error-output* "~&snapshot: the dump failed: ~a~%" condition))
       (sb-ext:exit :code 1 :abort t))))
 
 (defun fork-and-dump (path saved-image key)
@@ -98,14 +98,14 @@ KEY, by a fork, this process going on. => T once PATH is written whole, or
 (values NIL TEXT) saying why not. Leaves this process with one thread: call
 it where an exec follows (BECOME-SAVED-IMAGE)."
   #+win32 (declare (ignore path saved-image key))
-  #+win32 (values nil "Windows has no fork: a heap is saved on Linux and macOS")
+  #+win32 (values nil "Windows has no fork: snapshots are taken on Linux and macOS")
   #-win32
   ;; The dump copies this process's runtime from the file it runs from: a
   ;; heap that file was, since deleted, could not be saved again -- said
   ;; before anything is stopped.
   (unless (probe-file sb-ext:*runtime-pathname*)
     (return-from fork-and-dump
-      (values nil (format nil "~a, which this organism runs from, is gone: switch to the folder or another heap, then save"
+      (values nil (format nil "~a, which this organism runs from, is gone: switch to fresh from files or another snapshot, then take one"
                           sb-ext:*runtime-pathname*))))
   #-win32
   (let ((stuck (quiesce-for-image)))
@@ -125,7 +125,7 @@ it where an exec follows (BECOME-SAVED-IMAGE)."
                                (format nil "the dump exited with ~d" (sb-posix:wexitstatus status))
                                (format nil "the dump died on signal ~d" (sb-posix:wtermsig status)))))
               ((not (image-complete-p path))
-               (values nil "the dump left an incomplete image"))
+               (values nil "the dump left an incomplete snapshot"))
               (t t))))))
 
 (defun processes-running (path &aux (target (ignore-errors (namestring (truename path)))))

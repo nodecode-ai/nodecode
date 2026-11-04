@@ -1858,7 +1858,7 @@ quietly."
              (multiple-value-bind (heap why)
                  (become-saved-image name :lease lease)
                (declare (ignore heap))
-               (format t "~&image ~a not saved: ~a; running `current' again~%" name why)
+               (format t "~&snapshot ~a not taken: ~a; running `current' again~%" name why)
                (finish-output)
                (return (format t "~&restart refused: ~a~%" (run-current-again))))))
           ;; A switch saves nothing: the heap chosen -- or the installed
@@ -1870,9 +1870,9 @@ quietly."
            (let ((target (shiftf *serve-switch* nil))
                  (lease (kept-store-lease path)))
              (setf *serve-next* nil *stopping* nil)
-             (format t "~&image: running ~a in place~%" (if (eq target :folder) "the folder" target))
+             (format t "~&snapshot: running ~a in place~%" (if (eq target :folder) "fresh from files" target))
              (finish-output)
-             (format t "~&image: the switch was refused: ~a; running `current' again~%"
+             (format t "~&snapshot: the switch was refused: ~a; running `current' again~%"
                      (nlk::exec-into-image (if (eq target :folder)
                                                (nlk:organism-binary)
                                                (saved-image-path target))

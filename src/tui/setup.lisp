@@ -106,7 +106,7 @@ setup walk."
   (cond ((and (consp requested) (eq (first requested) :channel-setup))
          (setf model.setup-requested nil)
          (open-channel-setup model (second requested)))
-        ;; `nodecode image' in a terminal: the shell, opened on the heaps' picker.
+        ;; `nodecode snapshots' in a terminal: the shell, opened on the snapshots' list.
         ((and (consp requested) (eq (first requested) :image-picker))
          (setf model.setup-requested nil)
          (open-image-picker model))

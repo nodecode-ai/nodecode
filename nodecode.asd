@@ -423,8 +423,8 @@ of stacking."
      ;; over the owner a shell's verb already calls; its cell listing is
      ;; what the page and the shell's /cells both read.
      (:file "gateway/control")
-     ;; /image: the organism's heap kept, over control's save route.
-     (:file "tui/commands/image")
+     ;; /snapshot and /snapshots: the organism's heap kept, over control's save route.
+     (:file "tui/commands/snapshot")
      ;; /cells: every cell on a sheet over the cells routes (control.lisp),
      ;; the chosen one laid open beside the list.
      (:file "tui/cells-sheet")

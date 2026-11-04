@@ -1,8 +1,8 @@
-;;;; image-save.lisp --- /image save: the running organism kept, and going on.
+;;;; image-save.lisp --- /snapshot: the running organism kept, and going on.
 ;;;;
 ;;;; SPDX-License-Identifier: MIT
 ;;;;
-;;;; SAVE-IMAGE is what `/image save NAME', `nodecode image save NAME' and
+;;;; SAVE-IMAGE is what `/snapshot', `nodecode snapshot [NAME]' and
 ;;;; (save-image NAME) ask of the organism that serves (images.lisp's route).
 ;;;; It waits for no turn to be in flight -- the turn that asks is usually
 ;;;; the one running, and its answer has to land first -- then has the
@@ -17,20 +17,20 @@
 or NIL.")
 
 (defun image-save-refusal (name)
-  "Why this organism cannot save its heap as image NAME, or NIL when it can."
+  "Why this organism cannot save its heap as snapshot NAME, or NIL when it can."
   ;; Every way an organism serves -- its unit's, a headless serve, a shell's --
   ;; parks its owner on SERVE-NEXT, and an exec in place keeps the pid a unit
   ;; watches, so all three save the same way.
   (or (image-name-refusal name)
-      #+win32 "Windows has no fork: a heap is saved on Linux and macOS"
+      #+win32 "Windows has no fork: snapshots are taken on Linux and macOS"
       (unless *serving*
         "only the organism that serves saves its heap; this process is not it")
       (unless (nlk:organism-binary)
-        "this image was not started from an installed binary, so it cannot come back from a save")))
+        "this organism was not started from an installed binary, so it cannot come back from a snapshot")))
 
 (defun save-image (name)
   "Save this organism's heap -- every value, closure and definition it holds
-now -- as image NAME under ~/.nodecode/images/, once no turn is in flight,
+now -- as snapshot NAME under ~/.nodecode/snapshots/, once no turn is in flight,
 and go on from that image in place: same pid, the attached shells dialing it
 again as after a restart. => words; signals the refusal where it cannot."
   (let ((refusal (image-save-refusal name)))
@@ -44,7 +44,7 @@ again as after a restart. => words; signals the refusal where it cannot."
               (loop while (ignore-errors (nlk:any-active-turn-p))
                     do (sleep 0.5))
               (serve-image name))))
-    (format nil "saving image ~a once no turn is in flight: the organism stops for a moment, ~
+    (format nil "taking snapshot ~a once no turn is in flight: the organism stops for a moment, ~
                  keeps its heap in ~a and goes on from it"
             name (home-abbreviated (namestring (saved-image-directory name))))))
 
@@ -67,10 +67,10 @@ kept for the image to adopt. Returns only when it could not: (values NIL TEXT)."
             (ignore-errors (delete-file dump))
             (return-from become-saved-image (values nil why))))
         (seal-saved-image name :folder-key key :generation generation :build build)
-        (format t "~&image: saved ~a in ~,1f s; running it in place~%"
+        (format t "~&snapshot: took ~a in ~,1f s; running it in place~%"
                 name (/ (- (get-internal-real-time) started) internal-time-units-per-second))
         (finish-output)
-        (values nil (format nil "the kernel refused the exec of image ~a: ~a"
+        (values nil (format nil "the kernel refused the exec of snapshot ~a: ~a"
                             name (nlk::exec-into-image (saved-image-path name) :lease lease))))
     (error (condition) (values nil (princ-to-string condition)))))
 
@@ -80,11 +80,11 @@ kept for the image to adopt. Returns only when it could not: (values NIL TEXT)."
   "Why this organism cannot run heap NAME -- NIL: the folder -- in its own
 place, or NIL when it can."
   (or (and name (saved-image-refusal name))
-      #+win32 "Windows has no exec: restore the image, then start nodecode again"
+      #+win32 "Windows has no exec: restore the snapshot, then start nodecode again"
       (unless *serving*
         "only the organism that serves switches; this process is not it")
       (unless (nlk:organism-binary)
-        "this image was not started from an installed binary, so it cannot switch")
+        "this organism was not started from an installed binary, so it cannot switch")
       (and (null name) (null (getf nlk::*saved-image* :name))
            "this organism already runs the folder")
       (and *image-wait* (bt2:thread-alive-p *image-wait*)
@@ -107,4 +107,4 @@ gives way to it. => words; signals the refusal where it cannot."
                 do (sleep 0.5))
           (serve-switch (or name :folder))))
   (format nil "switching to ~a once no turn is in flight: the same organism, its store held throughout"
-          (if name (format nil "image ~a" name) "the folder")))
+          (if name (format nil "snapshot ~a" name) "fresh from files")))

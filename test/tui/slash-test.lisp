@@ -1460,7 +1460,7 @@ last row runs /rows drop NAME."
       (let ((catalog (nle:slash-catalog)))
         (is (equal '("help" "clear" "rename" "undo" "redo" "models"
                      "evict" "context" "status" "usage"
-                     "cells" "generations" "image" "doctor" "backup" "profile" "import" "think" "gc" "probe")
+                     "cells" "generations" "snapshot" "snapshots" "doctor" "backup" "profile" "import" "think" "gc" "probe")
                    (mapcar (lambda (entry) (getf entry :name)) catalog)))
         (is (equal "/probe text" (catalog-field "probe" :usage catalog))))
       (is-carrying (help (say "/help"))

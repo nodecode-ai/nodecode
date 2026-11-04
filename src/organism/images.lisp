@@ -6,21 +6,21 @@
 ;;;; a manifest of it (generation.lisp), the warm image a cache built from it
 ;;;; (launch.lisp). A saved heap is the third kind beside them: the running
 ;;;; organism's own heap as it stands -- values, closures, a definition no
-;;;; file holds -- frozen by `/image save' and booted again later in its
+;;;; file holds -- frozen by `/snapshot' and booted again later in its
 ;;;; place. It adds to the folder and replaces nothing: the folder still
 ;;;; loads, keeps and shares exactly as before, and a launch with no restore
 ;;;; asked boots it as it always has.
 ;;;;
-;;;; IMAGES-DIRECTORY/NAME/ holds one heap: `nodecode', the executable, and
+;;;; IMAGES-DIRECTORY/NAME/ (~/.nodecode/snapshots/NAME/) holds one heap: `nodecode', the executable, and
 ;;;; manifest.json -- the build that saved it, the generation and folder key
 ;;;; it stood at, when, how big. A heap holds whatever the organism held,
 ;;;; the secrets it read among them, so it never leaves this machine: the
-;;;; directories are 0700, the manifest 0600, the home table marks images/
+;;;; directories are 0700, the manifest 0600, the home table marks snapshots/
 ;;;; as carried by nothing (profile.lisp +HOME-ENTRIES+: no clone, archive or
 ;;;; backup takes it), and nothing here sends one anywhere.
 ;;;;
-;;;; A restore is one-shot. `nodecode image restore NAME' leaves the
-;;;; pointer images/restore naming the heap, and the next launch that would
+;;;; A restore is one-shot. `nodecode snapshots restore NAME' leaves the
+;;;; pointer snapshots/restore naming the heap, and the next launch that would
 ;;;; own the organism -- a serve, the gateway's unit, a shell that finds none
 ;;;; running -- takes the pointer and execs the heap in its own place before
 ;;;; any folder loads (HAND-OVER-TO-SAVED-IMAGE), the way a warm image's
@@ -43,22 +43,22 @@
 ;;; --- where the heaps live ----------------------------------------------------
 
 (defun images-directory ()
-  "~/.nodecode/images/: one directory a saved heap, and the restore pointer.
+  "~/.nodecode/snapshots/: one directory a snapshot, and the restore pointer.
 Read off the home now, so a profile and a test's scratch home both apply."
-  (home "images/"))
+  (home "snapshots/"))
 
 (defun image-name-refusal (name)
   "Why NAME cannot name a saved heap, or NIL: 1 to 64 ASCII letters, digits,
 `.', `_' and `-', starting with a letter or digit -- a directory name on
 every platform, and never the pointer's."
-  (cond ((not (and (stringp name) (plusp (length name)))) "a saved image needs a NAME")
+  (cond ((not (and (stringp name) (plusp (length name)))) "a snapshot needs a NAME")
         ((> (length name) 64) (format nil "~s is longer than 64 characters" name))
         ((not (or (digit-char-p (char name 0)) (char<= #\a (char-downcase (char name 0)) #\z)))
          (format nil "~s: a NAME starts with a letter or a digit" name))
         ((notevery (lambda (c) (or (digit-char-p c) (char<= #\a (char-downcase c) #\z) (find c "._-")))
                    name)
          (format nil "~s: a NAME is letters, digits, `.', `_' and `-'" name))
-        ((string-equal name "restore") "`restore' names the pointer, not an image")))
+        ((string-equal name "restore") "`restore' names the pointer, not a snapshot")))
 
 (defun saved-image-directory (name)
   (merge-pathnames (format nil "~a/" name) (images-directory)))
@@ -160,15 +160,15 @@ or NIL when it can."
         (manifest (saved-image-manifest name)))
     (or (image-name-refusal name)
         (cond ((not (probe-file image))
-               (format nil "no image named ~a is saved here (nodecode image lists them)" name))
+               (format nil "no snapshot named ~a is kept here (nodecode snapshots lists them)" name))
               ((not (nlk::image-complete-p image))
-               (format nil "image ~a is incomplete: its save never finished" name))
+               (format nil "snapshot ~a is incomplete: taking it never finished" name))
               ((null manifest)
-               (format nil "image ~a has no manifest, so nothing says which build saved it" name))
+               (format nil "snapshot ~a has no manifest, so nothing says which build took it" name))
               ((not (equal (version-label (or (json-value manifest :string "build") ""))
                            (version-label build)))
                (let ((saved (json-value manifest :string "build")))
-                 (format nil "image ~a was saved by ~a and this home runs ~a: `nodecode update ~a' ~
+                 (format nil "snapshot ~a was taken by ~a and this home runs ~a: `nodecode update ~a' ~
                               holds the home at that build, then the restore boots"
                          name saved build (version-label saved))))))))
 
@@ -179,7 +179,7 @@ or NIL when it can."
 generation it stood at, and which one the next launch boots."
   (with-output-to-string (out)
     (if (null names)
-        (format out "no image saved in this home: /image save NAME in a shell, or nodecode image save NAME~%")
+        (format out "no snapshot in this home yet: /snapshot in a shell, or nodecode snapshot~%")
         (dolist (name names)
           (let ((manifest (saved-image-manifest name))
                 (refusal (saved-image-refusal name)))
@@ -190,10 +190,10 @@ generation it stood at, and which one the next launch boots."
                         (json-value manifest :string "build")
                         (json-value manifest :integer "generation")
                         (equal name pending)
-                        (and refusal (not (search "was saved by" refusal)) refusal))
+                        (and refusal (not (search "was taken by" refusal)) refusal))
                 (format out "~a  (~a)~%" name refusal)))))
     (when (and pending (not (member pending names :test #'equal)))
-      (format out "the restore pointer names ~a, which is not saved here: the next launch boots the folder~%"
+      (format out "the restore pointer names ~a, which is not kept here: the next launch runs fresh from files~%"
               pending))
     (format out "~a holds this organism's secrets: it stays on this machine~%"
             (home-abbreviated (namestring (images-directory))))))
@@ -203,16 +203,44 @@ generation it stood at, and which one the next launch boots."
   (when-let (refusal (image-name-refusal name)) (error "~a" refusal))
   (let ((directory (saved-image-directory name)))
     (unless (probe-file directory)
-      (error "no image named ~a is saved here" name))
+      (error "no snapshot named ~a is kept here" name))
     ;; The organism running from a heap copies its runtime from that file at
     ;; its next save: the file stays while a process runs it.
     (when-let (pids (nlk::processes-running (saved-image-path name)))
-      (error "image ~a is running now (pid~p ~{~d~^, ~}): switch to the folder or another heap, then delete it"
+      (error "snapshot ~a is running now (pid~p ~{~d~^, ~}): switch to fresh from files or another snapshot first"
              name (length pids) pids))
     (when (equal (restore-pointer) name)
       (ignore-errors (delete-file (restore-pointer-path))))
     (uiop:delete-directory-tree (truename directory) :validate t)
-    (format nil "image ~a deleted" name)))
+    (format nil "snapshot ~a deleted" name)))
+
+(defun rename-saved-image (name new)
+  "Keep heap NAME under NEW instead: its directory moved, its manifest and a
+restore pointer naming it following. => words. Signals the refusal: either
+name refused, NAME not kept, NEW already kept, or NAME running now -- the
+organism running from a heap copies its runtime from that file at its next
+save, and remembers it by the name it booted under."
+  (when-let (refusal (or (image-name-refusal name) (image-name-refusal new))) (error "~a" refusal))
+  (let ((directory (saved-image-directory name))
+        (target (saved-image-directory new)))
+    (unless (probe-file directory)
+      (error "no snapshot named ~a is kept here" name))
+    (when (equal name new)
+      (return-from rename-saved-image (format nil "snapshot ~a keeps its name" name)))
+    (when (probe-file target)
+      (error "a snapshot named ~a is already kept here" new))
+    (when-let (pids (nlk::processes-running (saved-image-path name)))
+      (error "snapshot ~a is running now (pid~p ~{~d~^, ~}): switch to fresh from files or another snapshot first"
+             name (length pids) pids))
+    (flet ((bare (path) (string-right-trim "/\\" (uiop:native-namestring path))))
+      (sb-posix:rename (bare directory) (bare target)))
+    (let ((manifest (saved-image-manifest new)))
+      (when manifest
+        (setf (gethash "name" manifest) new)
+        (write-file-atomically (saved-image-manifest-path new) (pretty-json manifest) :mode #o600)))
+    (when (equal (restore-pointer) name)
+      (write-file-atomically (restore-pointer-path) (format nil "~a~%" new) :mode #o600))
+    (format nil "snapshot ~a renamed ~a" name new)))
 
 ;;; --- a restore: the pointer, and the launch that takes it --------------------
 
@@ -222,7 +250,7 @@ organism, once NAME can boot on this build. => words. Signals the refusal."
   (when-let (refusal (saved-image-refusal name)) (error "~a" refusal))
   (ensure-private-directory (images-directory))
   (write-file-atomically (restore-pointer-path) (format nil "~a~%" name) :mode #o600)
-  (format nil "image ~a is the next launch's" name))
+  (format nil "snapshot ~a is the next launch's" name))
 
 (defun hand-over-to-saved-image (&optional (argv sb-ext:*posix-argv*))
   "The launch's restore, before any folder loads: when the restore pointer
@@ -236,14 +264,14 @@ else words saying why not, or NIL when no restore is asked."
   (when (probe-file (restore-pointer-path))
     (let ((name (restore-pointer)))
       (ignore-errors (delete-file (restore-pointer-path)))
-      (let ((refusal (if name (saved-image-refusal name) "the restore pointer names no image")))
+      (let ((refusal (if name (saved-image-refusal name) "the restore pointer names no snapshot")))
         (cond (refusal
-               (format *error-output* "~&image: not restored: ~a~%" refusal)
+               (format *error-output* "~&snapshot: not restored: ~a~%" refusal)
                refusal)
               (t
                (note-boot-phase "exec-saved-image" name)
-               (format *error-output* "~&image: booting ~a~%" name)
-               (format nil "image ~a: the kernel refused the exec: ~a"
+               (format *error-output* "~&snapshot: booting ~a~%" name)
+               (format nil "snapshot ~a: the kernel refused the exec: ~a"
                        name (nlk::exec-program (saved-image-path name) argv))))))))
 
 ;;; --- the organism's side: its routes -----------------------------------------
@@ -256,7 +284,7 @@ it. => words: the model's and the operator's (restore-image NAME)."
   (cond ((and restart *serving*) (switch-image name))
         (t (let ((text (request-image-restore name)))
              (when restart
-               (restart-when-idle (format nil "image ~a" name) :reason "a restore"))
+               (restart-when-idle (format nil "snapshot ~a" name) :reason "a restore"))
              (format nil "~a~:[: the next launch boots it~;; this organism exits once no turn is in flight, ~
                           and the next launch boots it~]" text restart)))))
 
@@ -305,31 +333,37 @@ own place once idle -- no name, or null: the folder (SWITCH-IMAGE)."
                                              :connect-timeout 3 :read-timeout 600)))
 
 (defun image-main (words)
-  "The `image' command: list the saved heaps, save the running organism's,
-restore one at the next launch, delete one. Runs before any folder loads."
+  "`nodecode snapshot [NAME]' (WORDS (\"save\" [NAME])) takes one of the running
+organism, under NAME or its date; `nodecode snapshots' (WORDS the verb's
+own: list, restore NAME, delete NAME, rename NAME NEW) lists them, has the
+next launch boot one, removes or renames one. Runs before any folder loads."
   (answer-and-quit
     (let ((verb (or (first words) "list"))
           (name (second words))
           (port (organism-port)))
       (unless (cond ((equal verb "list") (<= (length words) 1))
                     ((equal verb "save") (<= (length words) 2))
+                    ((equal verb "rename") (= (length words) 3))
                     (t (= (length words) 2)))
-        (error "image takes list, save [NAME], or restore or delete with one NAME: nodecode image [list | save [NAME] | restore [NAME] | delete NAME]; bare, in a terminal, a picker"))
-      ;; A save named by nobody is named by its date (DATED-IMAGE-NAME).
+        (error (if (equal verb "save")
+                   "snapshot takes one NAME at most: nodecode snapshot [NAME]"
+                   "snapshots takes restore NAME, delete NAME or rename NAME NEW: nodecode snapshots [restore NAME | delete NAME | rename NAME NEW]; bare, in a terminal, the list to pick from")))
+      ;; A snapshot named by nobody is named by its date (DATED-IMAGE-NAME).
       (when (and (equal verb "save") (null name))
         (setf name (funcall 'dated-image-name)))
       (values
        (cond ((equal verb "list") (saved-images-text))
              ((equal verb "save")
               (unless port
-                (error "no organism runs in this home to save: start one (nodecode), then save it"))
+                (error "no organism runs in this home to snapshot: start one (nodecode), then take it"))
               (image-request port "/api/gateway/images/save" name))
              ((equal verb "restore")
               (if port
                   (image-request port "/api/gateway/images/restore" name)
                   (restore-image name :restart nil)))
              ((equal verb "delete") (delete-saved-image name))
-             (t (error "image knows list, save, restore and delete, not ~s" verb)))
+             ((equal verb "rename") (rename-saved-image name (third words)))
+             (t (error "snapshots knows restore, delete and rename, not ~s" verb)))
        0 :output))))
 
 (defun follow-restore-pointer ()
