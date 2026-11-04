@@ -4531,6 +4531,44 @@ and the DELIVERY its handler declares."
         (let ((nle::*color-profile* :none))
           (is (null (nle::image-protocol (model-after (nlt:make-device-attributes-msg :attributes '(61))))) "no colour, no half blocks"))))))
 
+(deftest a-picture-under-the-pinned-prompt-draws-from-the-row-that-shows (with-temp-store ())
+  ;; Windows Terminal, a window too short for the whole answer: the prompt is
+  ;; pinned at the band's top and the tail follows it from the picture's
+  ;; fifth row. Kitty places whole images only, so it waits; a sixel is cut
+  ;; and drawn from the row that shows.
+  (with-temp-file (png :type "png")
+    (alexandria:write-byte-vector-into-file
+     (nle::pixels-png (nle::blank-pixels 640 400 3)) png :if-exists :supersede)
+    (with-durable-turn (turn (ensure-durable-session "pinned-picture") :input "show me the installs chart" :complete t)
+      (nlk:record-assistant-message
+       turn (nlk:json-object "role" "assistant"
+                             "content" (format nil "Linux leads.~%~%![installs](chart.png)~%~%Windows grew slowest."))
+       :metadata (nlk:json-object
+                  "images" (vector (nlk:json-object
+                                    "payload_kind" "file" "source" "answer"
+                                    "target" "chart.png" "path" png "copy_path" png "png_path" png
+                                    "media_type" "image/png" "width" 640 "height" 400 "bytes" 4096)))))
+    (let ((nle::*color-profile* :truecolor))
+      (flet ((model-after (msg)
+               (let ((model (make-frame-model 123 30 :session-id "pinned-picture")))
+                 (nle::render-state model)
+                 (nle:update model msg)
+                 model)))
+        (is (null (nle::image-placements (model-after (nlt:make-kitty-graphics-msg :ok-p t)))) "kitty: a band whose head is hidden anchors nothing")
+        (let* ((model (model-after (nlt:make-device-attributes-msg :attributes '(61 4))))
+               (placement (first (nle::image-placements model))))
+          (is placement "sixel: the rows that show are drawn")
+          (when placement
+            (let ((index (nle::band-window-row-index
+                          model.band
+                          (- (nlt:image-placement-y placement) 3 (nth-value 3 (nle::transcript-band-metrics model))))))
+              (is (zerop (length (string-trim " " (aref model.line-plain index)))) "anchored on a band row")
+              (is (not (eql (1- index) (nle::band-window-row-index
+                                        model.band
+                                        (- (nlt:image-placement-y placement) 4 (nth-value 3 (nle::transcript-band-metrics model)))))) "the first of its rows on screen"))
+            (is (< (nlt:terminal-image-height (nlt:image-placement-image placement)) 320) "the picture's lower part alone")
+            (is (= (* 20 (nlt:image-placement-rows placement)) (nlt:terminal-image-height (nlt:image-placement-image placement))) "as many rows as it covers")))))))
+
 (deftest a-sixel-is-cut-where-its-band-leaves-the-screen ()
   (let ((entry (nle::make-raster-entry (nle::blank-pixels 40 200 3))))
     (let ((image (nle::raster-image entry :sixel 10 0 3 100 '(10 . 20))))

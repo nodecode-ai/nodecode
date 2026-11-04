@@ -227,14 +227,19 @@ each anchors its image at the first row of its own reserved band
            (x (+ 2 (nth-value 2 (body-gutter :image-slot))))
            (counts (make-hash-table :test #'eql)))
       (loop for row from 0 below (min vp-height (length refs) (length plains))
+            for above = nil then index
             for index = (band-window-row-index window row)
             for ref = (and index (< index (min (length refs) (length plains))) (aref refs index))
-            ;; A sixel or half-block band whose head is above the viewport is
-            ;; met at the viewport's first row, and drawn from the row there.
+            ;; A sixel or half-block band whose head is off the screen -- above
+            ;; the viewport, or under the prompt pinned at its top -- is met at
+            ;; the first of its rows that shows, and drawn from there.
             for (fact skip) = (cond ((null (and ref (transcript-row-p ref) (row-image-bands ref))) nil)
-                                    ((and (zerop row) (not (eq protocol :kitty)))
-                                     (multiple-value-list (image-band-covering refs plains index width)))
-                                    (t (list (image-band-at refs plains index) 0)))
+                                    ((eq protocol :kitty) (list (image-band-at refs plains index) 0))
+                                    (t (multiple-value-bind (fact skip)
+                                           (image-band-covering refs plains index width)
+                                         (and fact
+                                              (or (zerop skip) (not (eql above (1- index))))
+                                              (list fact skip)))))
             for payload = (and fact (image-preview-payload fact ref))
             for band = (and payload (image-preview-rows fact width))
             for rows = (and band (if (eq protocol :kitty) band (min (- band skip) (- vp-height row))))
