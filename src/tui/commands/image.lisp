@@ -43,8 +43,7 @@ asked for none or has waited past the deadline."
      (list (make-picker-row
             :label "Save this organism now"
             :mark "+" :mark-tone :accent
-            :detail (format nil "keep its heap as it stands -- values, closures, unwritten definitions -- as ~a"
-                        (dated-image-name))
+            :detail (format nil "keep its heap as it stands, values and all, as ~a" (dated-image-name))
             :value +image-save-action+))
      (loop for name in (sort (saved-image-names) #'string>
                              :key (lambda (name)
@@ -58,7 +57,7 @@ asked for none or has waited past the deadline."
                     :mark-tone (if (equal name running) :accent :muted)
                     :detail (format nil "~{~a~^  ·  ~}"
                                     (remove nil
-                                            (list (and manifest (json-value manifest :string "saved_at"))
+                                            (list (and manifest (saved-minute-text (json-value manifest :string "saved_at")))
                                                   (and manifest (format nil "~d MB" (megabytes (or (json-value manifest :integer "bytes") 0))))
                                                   (and manifest (json-value manifest :string "build"))
                                                   (and (equal name running) "running now")
@@ -72,9 +71,18 @@ asked for none or has waited past the deadline."
             :mark (if (and running (eq running :folder)) "*" " ")
             :mark-tone (if (eq running :folder) :accent :muted)
             :detail (if (eq running :folder)
-                        "running now: the cells as their files say, no saved heap"
-                        "the cells as their files say, no saved heap -- what a plain launch runs")
+                        "the cells as their files say, no saved heap  ·  running now"
+                        "the cells as their files say, no saved heap: what a plain launch runs")
             :value +image-folder-action+)))))
+
+(defun saved-minute-text (iso)
+  "ISO, a manifest's saved_at, as the local date and minute it names."
+  (let ((time (ignore-errors (nlk::iso-universal iso))))
+    (if time
+        (multiple-value-bind (s mi h d mo y) (decode-universal-time time)
+          (declare (ignore s))
+          (format nil "~d-~2,'0d-~2,'0d ~2,'0d:~2,'0d" y mo d h mi))
+        (or iso ""))))
 
 (defun dated-image-name (&optional (time (get-universal-time)))
   "A name for a heap kept now: its date and minute, with -2, -3... when
