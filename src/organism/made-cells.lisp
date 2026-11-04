@@ -2,17 +2,22 @@
 ;;;; one: a folder of its own code beside the layer, written by talking.
 ;;;;
 ;;;; What the organism keeps is the layer's unless it says otherwise. A made
-;;;; cell is a second folder of the same kind -- a LAYER system, one
-;;;; definition per file, loaded from source at every boot (cells.lisp) --
-;;;; under a name of its own, <identity>-NAME, so what one conversation built
-;;;; can be read, kept in a repository of its own and shared on its own.
-;;;; NEW-CELL writes one, loads it and makes it the session's current cell:
-;;;; every definition the session keeps from then on is written there
-;;;; (DEFINITION-FOLDER), and a name kept there leaves the layer, so no name
-;;;; loads from two folders (RECORD-DEFINITIONS). A name a made cell holds
-;;;; stays in it from any session, so a later fix lands beside the code it
-;;;; fixes. The current cell is the session's until LEAVE-CELL; a restart
-;;;; forgets it, and ENTER-CELL takes it up again.
+;;;; cell is a folder of its own beside the layer, <identity>-NAME, loaded
+;;;; from source at every boot (cells.lisp), so what one conversation built
+;;;; can be read, kept in a repository of its own and shared on its own. Its
+;;;; files are its record. NEW-CELL writes cell.lisp (the package) and
+;;;; NAME.lisp (the code) with an .asd listing the two, loads it and makes it
+;;;; the session's current cell; with :SOURCE the folder lives in a
+;;;; repository of the user's and cells/ links to it (LINKED-CELL-FOLDER).
+;;;; The model writes the code with write-file and edit: LOAD-SOURCE makes
+;;;; what changed live, takes a cut definition out of the image and commits
+;;;; the folder (cells.lisp). An eval in that session is a try, live and
+;;;; never written (CELL-SESSION-RECORD), and a name a made cell's file holds
+;;;; is never copied into the layer from any session, so a later fix lands
+;;;; beside the code it fixes. A cell made before this keeps each definition
+;;;; in a file of its own until FOLD-CELL folds it into the two. The current
+;;;; cell is the session's until LEAVE-CELL; a restart forgets it, and
+;;;; ENTER-CELL takes it up again.
 
 (in-package #:nodecode.kernel)
 
