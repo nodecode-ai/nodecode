@@ -1072,6 +1072,8 @@ nodecode manually"
   ;;
   ;; STORE-PATH is rejected because the Gateway owns persistence and this
   ;; process must not acquire a competing SQLite lease.
+  (when store-path
+    (error "A gateway client cannot accept :store-path; the gateway owns persistence"))
   (when-let (ended (run-chat-gateway :session-id (or session-id (fresh-session-id)) :port port))
     (format t "~&To resume: (nle:start-client-organism :session-id ~s)~%" ended)))
 
