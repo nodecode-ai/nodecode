@@ -1179,7 +1179,7 @@ condition's report, exit 1."
                                                                      :refused *sandbox-refused*
                                                                      :sandboxed (sandboxed-process-p)))))
         (when *sandbox-asked*
-          (when-let (refusal (sandbox-launch-preflight store-path :explicit explicit))
+          (when-let (refusal (sandbox-launch-preflight store-path :explicit explicit :serve (and serve t)))
             (print-answer-and-quit refusal 1 :error))
           (setf nlk::*pristine* t
                 nlk::*pristine-reason* "a sandboxed launch stands on the binary alone; its organism loads the folder in the jail")))

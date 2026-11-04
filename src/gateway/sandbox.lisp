@@ -146,7 +146,7 @@ directory is read-denied and only the folder, HOME, the cache, the binary's
 and srt's trees and +SANDBOX-HOME-READ+ read back. EXISTS decides which
 entries are mounted (srt refuses a path that is not there)."
   (let* ((home-dir (uiop:native-namestring (uiop:ensure-directory-pathname home)))
-         (folder-dir (uiop:native-namestring (uiop:ensure-directory-pathname folder)))
+         (folder-dir (and folder (uiop:native-namestring (uiop:ensure-directory-pathname folder))))
          (binary-dir (and binary (uiop:native-namestring (uiop:pathname-directory-pathname binary))))
          (string-list (lambda (items) (coerce (remove-duplicates (remove nil items) :test #'string= :from-end t) 'vector)))
          (present (lambda (paths) (remove-if-not (lambda (path) (and path (ignore-errors (funcall exists path)))) paths)))
@@ -610,7 +610,10 @@ jailed and why, and what the jail lets it reach."
                   (:off "off -- this home's setting: its organism runs with your user's full access (`nodecode sandbox on' puts it back)")
                   (:no-jail "none -- this OS has no jail yet: the organism runs with your user's full access")))
         (when (or jailed (eq why :inside) (eq why :off))
-          (format out "writes: the folder it starts in, and this home~%")
+          (let ((here (sandbox-work-folder (uiop:getcwd))))
+            (format out "writes: this home, the folders you allowed, and the folder a shell starts in -- ~:[not this one: ~a is your home folder or above it, so a shell started here holds none (cd into a project, or `nodecode sandbox allow PATH --write')~;here, ~a~]~%"
+                    here (if here (uiop:native-namestring here) (uiop:native-namestring (uiop:getcwd))))
+            (format out "  serve and gateway run hold no folder of their own: this home and the folders you allowed~%"))
           (let ((grants (append (mapcar (lambda (path) (list path t)) (getf policy :allow-write))
                                 (mapcar (lambda (path) (list path nil)) (getf policy :allow-read)))))
             (when grants
@@ -724,13 +727,26 @@ starts itself."
          (format nil "auth.json still holds the API key~p of ~{~a~^, ~}: `nodecode secrets split' moves each into a file of its own, which the jail sees only as a stand-in"
                  (length (sandbox-unsplit-keys)) (sandbox-unsplit-keys)))))
 
-(defun sandbox-launch-preflight (store-path &key (explicit t))
+(defun sandbox-work-folder (directory &key serve)
+  "The folder a jail started in DIRECTORY reads and writes besides its home
+and the folders allowed, or NIL: none for a serve or a gateway (SERVE),
+whose sessions each keep a folder of their own, and none when DIRECTORY is
+the root, the user's home or a folder above it, which would put all of it
+-- ~/.ssh, the cloud keys, the other agents' homes -- in the jail."
+  (unless serve
+    (let ((name (uiop:native-namestring (uiop:ensure-directory-pathname directory))))
+      (unless (or (string= name "/")
+                  (some (lambda (home) (uiop:string-prefix-p name home)) (sandbox-user-homes)))
+        (uiop:ensure-directory-pathname directory)))))
+
+(defun sandbox-launch-preflight (store-path &key (explicit t) serve)
   "Prepare a sandboxed launch of STORE-PATH's home: refuse with a sentence
 when it cannot run (SANDBOX-REQUIREMENTS), else write the srt settings under
 <home>/sandbox/, pick the loopback port the jailed gateway binds, set
 *SANDBOX-PLAN* for FRONT-ORGANISM and answer NIL. EXPLICIT is a launch that
 asked for --sandbox; one jailed by default says, when the jail cannot run,
-how to run the home without it."
+how to run the home without it. SERVE is a serve's or a gateway's launch,
+whose jail holds no folder of the launch's (SANDBOX-WORK-FOLDER)."
   (let ((store (merge-pathnames (or store-path nlk::*default-store-path*))))
     (or (when-let (reason (sandbox-requirements store :explicit explicit))
           (if explicit
@@ -754,7 +770,7 @@ how to run the home without it."
                (port (local-port 0))
                (secret-files (sandbox-secret-files))
                (object (sandbox-settings
-                        :home home :folder (uiop:getcwd)
+                        :home home :folder (sandbox-work-folder (uiop:getcwd) :serve serve)
                         :binary (ignore-errors (truename (nlk::origin-pathname)))
                         :srt-dir (sandbox-srt-tree srt)
                         :policy (sandbox-policy home)
@@ -830,6 +846,10 @@ the plan's listener as its stdout (CALL-WITH-SANDBOX-STDOUT)."
                               :jail-temporary (getf plan :jail-temporary))
         command)))
 
+(defparameter +sandbox-stop-grace-seconds+ 10
+  "How long a jail has, once the signal that stops its launcher reached it,
+before what is left of it is ended.")
+
 (defun sandbox-serve-argv (store-path serve)
   "This launch's serve as the argv its jail runs: `gateway run' for the
 gateway (SERVE :WAIT), which waits for the store instead of losing it, else
@@ -850,20 +870,27 @@ gateway's unit reads as the gateway's own."
                   (error "this image names no nodecode binary to run the organism with"))))
     (call-with-sandbox-stdout
      (lambda (listener)
+       ;; The jail leads its own process group (SPAWN-PROGRAM): a signal that
+       ;; stops this launcher goes to the whole group, and what is still there
+       ;; after the grace is ended (KILL-TREE), so a jail never outlives the
+       ;; launcher that stands for it -- a unit's stop, a Ctrl-C, a hang-up.
        (bind (((pid _ _ process _)
-               (spawn-program (session-argv (sandbox-wrap-command argv))
+               (spawn-program (sandbox-wrap-command argv)
                               :output listener :error-output 2 :input :null)))
          #-win32
          (dolist (signal (list sb-posix:sigterm sb-posix:sigint sb-posix:sighup))
            (let ((signal signal))
              (sb-sys:enable-interrupt signal (lambda (&rest _)
                                                (declare (ignore _))
-                                               (ignore-errors (sb-posix:kill (- pid) signal))))))
+                                               (ignore-errors (sb-posix:kill (- pid) signal))
+                                               (spawn "jail-stop"
+                                                 (sleep +sandbox-stop-grace-seconds+)
+                                                 (kill-tree pid))))))
          (format *error-output* "nodecode: this home's organism runs in the jail; its launcher (pid ~d) stays outside it~%"
                  (sb-posix:getpid))
          (finish-output *error-output*)
          (unwind-protect (wait-for-child pid process)
-           #-win32 (ignore-errors (sb-posix:kill (- pid) sb-posix:sigterm))))))))
+           (kill-tree pid)))))))
 
 (defun sandbox-listener (port)
   "A socket listening on the host's loopback PORT: the jail's one way in,
