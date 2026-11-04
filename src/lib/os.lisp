@@ -232,10 +232,11 @@ file is gone. NIL where there is no /proc."
   ("mallopt" %mallopt int (param int) (value int))
   ("__nss_configure_lookup" %nss-configure-lookup int (database str) (service str)))
 
-(defun spawn-detached (command log &key stdout)
+(defun spawn-detached (command log &key stdout descriptors)
   "Launch COMMAND fully detached, output appended to LOG: the child survives
 this process's exit and owns no terminal. STDOUT, a descriptor of this
-process's, is the child's stdout instead, LOG then its stderr alone."
+process's, is the child's stdout instead, LOG then its stderr alone.
+DESCRIPTORS, descriptors of this process's, are the child's 3, 4 and on."
   ;; => COMMAND, or (values NIL
   ;; REASON). On POSIX the child is double-forked into a session of its own
   ;; (setsid -f, or macOS's wrapped shell), the wrapper started through
@@ -255,7 +256,8 @@ process's, is the child's stdout instead, LOG then its stderr alone."
              #-linux (append *session-wrapper*
                              (list "/bin/sh" "-c" "exec \"$0\" \"$@\" &")
                              command)
-             :output (or stdout log) :error-output (if stdout log :output))))
+             :output (or stdout log) :error-output (if stdout log :output)
+             :descriptors descriptors)))
       (wait-for-child pid process))
     #+win32
     (let* ((command-line
@@ -511,10 +513,12 @@ RUN-PROGRAM builds it."
 read as ? rather than signalled.")
 
 #-win32
-(defun %spawn-posix (argv directory environment output errors input)
+(defun %spawn-posix (argv directory environment output errors input &optional descriptors)
   "ARGV started through posix_spawn, its stdout as OUTPUT says -- :STREAM, a
 pipe; a native namestring, appended to that file -- and its stderr as ERRORS
 says: :STREAM, a pipe of its own; :OUTPUT, joined to stdout; a namestring.
+DESCRIPTORS land at 3, 4 and on in the child; none of them may be below
+3 plus their count (SPAWN-PROGRAM copies them up).
 => (values PID OUTPUT-STREAM ERROR-STREAM NIL INPUT-STREAM)."
   (let (out-read out-write err-read err-write in-read in-write pid)
     (with-cleanup ((unless pid
@@ -559,7 +563,10 @@ says: :STREAM, a pipe of its own; :OUTPUT, joined to stdout; a namestring.
                   (place 1 (or out-write output))
                   (place 2 (case errors (:output 1) (:stream err-write) (t errors))))
                 (when in-read (%spawn-adddup2 actions-sap in-read 0))
-                (%spawn-addclosefrom actions-sap 3)
+                (loop for descriptor in descriptors
+                      for target from 3
+                      do (%spawn-adddup2 actions-sap descriptor target))
+                (%spawn-addclosefrom actions-sap (+ 3 (length descriptors)))
                 (unless in-read
                   (%spawn-addopen actions-sap 0 "/dev/null" sb-posix:o-rdonly 0))
                 (with-c-string-vector (argv-sap argv)
@@ -597,7 +604,7 @@ says: :STREAM, a pipe of its own; :OUTPUT, joined to stdout; a namestring.
                   (child-stream in-write :output "child stdin")))))))
 
 (defun spawn-program (argv &key directory environment (output :stream) (error-output :stream)
-                                (input :null))
+                                (input :null) descriptors)
   "Start ARGV — the program first, searched on PATH — as a child of this
 process: DIRECTORY its working directory when given, ENVIRONMENT
 (\"NAME=value\" strings) its whole environment, this process's own when NIL."
@@ -629,9 +636,20 @@ process: DIRECTORY its working directory when given, ENVIRONMENT
                            (uiop:ensure-directory-pathname directory))))
           (output (target output))
           (errors (target error-output)))
+      ;; DESCRIPTORS, descriptors of this process's, are the child's 3, 4
+      ;; and on: each is copied above the range first, so placing one never
+      ;; overwrites another still to be placed.
+      (when (and descriptors (not (eq *spawn-primitive* :posix)))
+        (error "handing a child descriptors needs posix_spawn"))
       (if (eq *spawn-primitive* :posix)
-          #-win32 (%spawn-posix argv directory environment (or output "/dev/null")
-                                (or errors "/dev/null") input)
+          #-win32 (let ((copies '()))
+                    (unwind-protect
+                         (progn
+                           (dolist (descriptor descriptors)
+                             (push (sb-posix:fcntl descriptor sb-posix:f-dupfd 64) copies))
+                           (%spawn-posix argv directory environment (or output "/dev/null")
+                                         (or errors "/dev/null") input (reverse copies)))
+                      (mapc #'sb-posix:close copies)))
           #+win32 (error "no posix_spawn on this platform")
           (let ((process (apply #'sb-ext:run-program (first argv) (rest argv)
                                 :search t :wait nil
@@ -647,6 +665,77 @@ process: DIRECTORY its working directory when given, ENVIRONMENT
                     (and (eq errors :stream) (sb-ext:process-error process))
                     process
                     (and (eq input :stream) (sb-ext:process-input process))))))))
+
+;;; A descriptor sent to another process over a unix socket (SCM_RIGHTS):
+;;; how a jail hands its launcher a socket it made in its own network
+;;; namespace. struct msghdr and struct cmsghdr as LP64 Linux lays them out.
+
+#+linux
+(define-routines
+  ("sendmsg" %sendmsg sb-alien:long (socket int) (message sap) (flags int))
+  ("recvmsg" %recvmsg sb-alien:long (socket int) (message sap) (flags int))
+  ("socketpair" %socketpair int (domain int) (type int) (protocol int) (pair (* int))))
+
+#+linux
+(defun call-with-descriptor-message (function descriptor)
+  "Call FUNCTION with the address of a msghdr carrying one byte of data and
+room for one descriptor -- DESCRIPTOR in it when given -- and answer what it
+answers and the descriptor the message holds then, or NIL."
+  (let ((buffer (make-array 104 :element-type '(unsigned-byte 8) :initial-element 0)))
+    (sb-sys:with-pinned-objects (buffer)
+      (let ((sap (sb-sys:vector-sap buffer)))
+        ;; msghdr at 0: iov at 16, iovlen 24, control 32, controllen 40;
+        ;; the iovec at 56, the cmsghdr at 72, the data byte at 96
+        (setf (sb-sys:sap-ref-sap sap 16) (sb-sys:sap+ sap 56)
+              (sb-sys:sap-ref-64 sap 24) 1
+              (sb-sys:sap-ref-sap sap 32) (sb-sys:sap+ sap 72)
+              (sb-sys:sap-ref-64 sap 40) 24
+              (sb-sys:sap-ref-sap sap 56) (sb-sys:sap+ sap 96)
+              (sb-sys:sap-ref-64 sap 64) 1)
+        (when descriptor
+          (setf (sb-sys:sap-ref-64 sap 72) 20 ; CMSG_LEN (sizeof (int))
+                (sb-sys:sap-ref-32 sap 80) 1  ; SOL_SOCKET
+                (sb-sys:sap-ref-32 sap 84) 1  ; SCM_RIGHTS
+                (sb-sys:sap-ref-32 sap 88) descriptor
+                (aref buffer 96) 33))
+        (let ((answer (funcall function sap)))
+          (values answer
+                  (and (>= (sb-sys:sap-ref-64 sap 40) 20)
+                       (= 1 (sb-sys:sap-ref-32 sap 80) (sb-sys:sap-ref-32 sap 84))
+                       (sb-sys:sap-ref-32 sap 88))))))))
+
+#+linux
+(defun send-descriptor (socket descriptor)
+  "Send DESCRIPTOR over the unix SOCKET (a descriptor)."
+  (call-with-descriptor-message
+   (lambda (message)
+     (loop (let ((sent (%sendmsg socket message #x4000))) ; MSG_NOSIGNAL
+             (cond ((plusp sent) (return t))
+                   ((/= (sb-alien:get-errno) sb-posix:eintr)
+                    (error "sending a descriptor: ~a" (sb-int:strerror)))))))
+   descriptor))
+
+#+linux
+(defun receive-descriptor (socket)
+  "Wait for a descriptor sent over the unix SOCKET (a descriptor) and answer
+it, close-on-exec here; NIL when the other end closes without one."
+  (multiple-value-bind (received descriptor)
+      (call-with-descriptor-message
+       (lambda (message)
+         (loop (let ((got (%recvmsg socket message #x40000000))) ; MSG_CMSG_CLOEXEC
+                 (cond ((>= got 0) (return got))
+                       ((/= (sb-alien:get-errno) sb-posix:eintr)
+                        (error "receiving a descriptor: ~a" (sb-int:strerror)))))))
+       nil)
+    (and (plusp received) descriptor)))
+
+#+linux
+(defun socket-pair ()
+  "A connected pair of unix stream sockets, both close-on-exec: (values A B)."
+  (sb-alien:with-alien ((pair (array sb-alien:int 2)))
+    (unless (zerop (%socketpair 1 (logior 1 #o2000000) 0 (sb-alien:cast pair (* sb-alien:int))))
+      (error "socketpair: ~a" (sb-int:strerror)))
+    (values (sb-alien:deref pair 0) (sb-alien:deref pair 1))))
 
 #-win32
 (defun wait-status-code (status otherwise)

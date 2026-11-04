@@ -75,15 +75,16 @@ is the argv itself outside a sandboxed shell."
          (word (format nil "~a=" +front-variable+))
          (exited (list nil)))
     (bind (((pid _ _ process pipe)
-            ;; A jailed serve's stdout is the listener the jail is reached by
-            ;; (CALL-WITH-SANDBOX-STDOUT), and its stderr the log.
-            (call-with-sandbox-stdout
-             (lambda (listener)
+            ;; A jailed serve is handed its ways in and out and its filter
+            ;; (CALL-WITH-SANDBOX-DESCRIPTORS).
+            (call-with-sandbox-descriptors
+             (lambda (descriptors)
                (spawn-program (session-argv (funcall wrap command))
                               :environment (cons (format nil "~a~d" word (sb-posix:getpid))
                                                  (remove-if (lambda (entry) (uiop:string-prefix-p word entry))
                                                             (sb-ext:posix-environ)))
-                              :output (or listener log) :error-output (if listener log :output)
+                              :output log :error-output :output
+                              :descriptors descriptors
                               :input :stream)))))
       (nlk:note-boot-phase "organism-spawned" pid)
       (setf *front* (list :pipe pipe

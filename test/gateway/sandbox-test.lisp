@@ -1,93 +1,168 @@
-;;;; sandbox-test.lisp --- `nodecode --sandbox': the srt settings, the wrap,
-;;;; the flag and the port a jailed gateway is told.
+;;;; sandbox-test.lisp --- `nodecode --sandbox': the bwrap jail's argv, its
+;;;; seccomp filter, the descriptors handed in, the flag and the mark.
 ;;;;
 ;;;; SPDX-License-Identifier: MIT
 
 (in-package #:nodecode.test)
 
-(defun sandbox-test-settings (&key secret-files policy (exists (constantly t))) "The settings for a fixed home, folder and binary."
-  (nle::sandbox-settings :home "/h/.nodecode/" :folder "/w/proj/" :binary "/opt/nc/nodecode"
-                         :srt-dir "/opt/srt/" :policy policy :secret-files secret-files
-                         :provider-hosts '("openrouter.ai") :exists exists
-                         :run-directory "/run/user/1000"))
+(defun sandbox-test-argv (&key policy hidden (environment '("PATH=/usr/bin:/home/u/bin" "HOME=/home/u" "NODECODE_HOME=/h/.nodecode"))
+                               (folder "/w/proj/") (binary "/opt/nc/nodecode") (store "/h/.nodecode/history.db")
+                               (directories '()))
+  "The jail's argv for a fixed home, folder and binary, every path there."
+  (nle::sandbox-bwrap-argv '("/opt/nc/nodecode" "serve" "--store" "/h/a b/store.db")
+                           :home "/h/.nodecode/" :folder folder :binary binary :store store
+                           :policy policy :hidden hidden
+                           :run "/h/.nodecode/sandbox/run/" :cache "/h/.nodecode/sandbox/cache/"
+                           :temporary "/h/.nodecode/sandbox/tmp/" :port 41234 :egress-port 3128
+                           :environment environment :exists (constantly t)
+                           :link (lambda (name) (and (member name '("/bin" "/lib64") :test #'string=)
+                                                     (format nil "usr~a" name)))
+                           :directory-p (lambda (path) (member path directories :test #'string=))
+                           :homes '("/home/u/")))
 
-(deftest sandbox-settings-carry-every-key-srt-requires ()
-  (let ((settings (sandbox-test-settings)))
-    (dolist (path '(("network" "allowedDomains") ("network" "deniedDomains")
-                    ("filesystem" "denyRead") ("filesystem" "allowRead")
-                    ("filesystem" "allowWrite") ("filesystem" "denyWrite")))
-      (is (vectorp (apply #'nlk:json-value settings :array path)) (format nil "~{~a~^.~} is an array" path)))
-    (is (find "openrouter.ai" (nlk:json-value settings :array "network" "allowedDomains") :test #'string=) "a configured provider's host is reachable")
-    (is (find "github.com" (nlk:json-value settings :array "network" "allowedDomains") :test #'string=) "the cells repository is reachable")
-    (is (find "/w/proj/" (nlk:json-value settings :array "filesystem" "allowWrite") :test #'string=) "the folder is writable")
-    (is (find "/opt/nc/nodecode" (nlk:json-value settings :array "filesystem" "denyWrite") :test #'string=) "the binary that runs the jail is not")
-    (is (find "/h/.nodecode/secrets/" (nlk:json-value settings :array "filesystem" "denyWrite") :test #'string=) "nor the secrets")
-    (is (find "/run/user/1000" (nlk:json-value settings :array "filesystem" "denyRead") :test #'string=) "the runtime directory's sockets are out of reach")
-    (is (find "/tmp" (nlk:json-value settings :array "filesystem" "denyRead") :test #'string=) "so is the host's /tmp: the jail gets an empty one of its own")
-    (is (not (find "/tmp" (nlk:json-value settings :array "filesystem" "allowWrite") :test #'string=)) "and never the host's to write")
-    (is (find "/h/.nodecode/sandbox/srt/" (nlk:json-value settings :array "filesystem" "denyWrite") :test #'string=) "srt's sockets and stand-ins are not the jail's to write")
-    (is (null (nth-value 1 (nlk:json-value settings :any "network" "tlsTerminate"))) "no masked secret, no TLS termination")))
+(defun sandbox-test-mount (argv flag path)
+  "The index of the mount FLAG PATH in ARGV, or NIL."
+  (loop for (a b c) on argv for i from 0
+        when (and (string= a flag) (string= b path) (or (not (member flag '("--bind" "--ro-bind") :test #'string=)) (string= c path)))
+          return i))
 
-(deftest sandbox-settings-mount-only-what-exists ()
-  (let ((settings (sandbox-test-settings :exists (lambda (path) (search ".ssh" path)))))
-    (is (equalp (vector (nle::sandbox-expand "~/.ssh"))
-                (nlk:json-value settings :array "filesystem" "denyRead")) "a deny-read entry that is not on disk is left out")))
+(defun sandbox-test-setenv (argv name)
+  "The value ARGV's --setenv gives NAME, or NIL."
+  (loop for (a b c) on argv when (and (string= a "--setenv") (string= b name)) return c))
 
-(deftest sandbox-settings-mask-each-secret-toward-its-host ()
-  (let* ((settings (sandbox-test-settings
-                    :secret-files '(("/h/.nodecode/secrets/providers.openrouter.api_key" . "openrouter.ai"))))
-         (masks (nlk:json-value settings :array "credentials" "files")))
-    (is (= 1 (length masks)))
-    (is (equal "mask" (nlk:json-value (aref masks 0) :string "mode")))
-    (is (equal "^\\s*(\\S+)" (nlk:json-value (aref masks 0) :string "extract")) "only the key's span is masked, never the newline after it")
-    (is (equal "deny" (nlk:json-value (aref masks 0) :string "onExtractNoMatch")) "a file with no key in it is denied, not shown")
-    (is (equalp #("openrouter.ai") (nlk:json-value (aref masks 0) :array "injectHosts")) "the real key goes only to its provider")
-    (is (hash-table-p (nlk:json-value settings :any "network" "tlsTerminate")) "a mask needs TLS termination")))
+(deftest sandbox-jail-has-namespaces-of-its-own ()
+  (let ((argv (sandbox-test-argv)))
+    (is (equal "bwrap" (first argv)) "bwrap, run by nodecode itself")
+    (dolist (flag '("--unshare-user" "--unshare-pid" "--unshare-net" "--unshare-ipc" "--disable-userns" "--new-session"))
+      (is (member flag argv :test #'string=) (format nil "~a" flag)))
+    (is (member "--seccomp" argv :test #'string=) "under the filter")
+    (is (equal "5" (second (member "--seccomp" argv :test #'string=))) "read from descriptor 5")
+    (is (equal '("--" "/opt/nc/nodecode" "serve" "--store" "/h/a b/store.db") (last argv 5)) "the serve argv word for word, a store path with a space one word")
+    (is (not (find-if (lambda (word) (or (search "srt" word) (search "socat" word))) argv)) "no srt, no socat")))
 
-(deftest sandbox-settings-merge-the-operators-policy ()
-  (let ((settings (sandbox-test-settings
-                   :policy '(:allowed-domains ("pypi.org") :deny-read ("/srv/keys") :allow-write ("/data")))))
-    (is (find "pypi.org" (nlk:json-value settings :array "network" "allowedDomains") :test #'string=))
-    (is (find "/srv/keys" (nlk:json-value settings :array "filesystem" "denyRead") :test #'string=))
-    (is (find "/data" (nlk:json-value settings :array "filesystem" "allowWrite") :test #'string=))
-    (is (not (search "allowAllUnixSockets" (nlk:encode-json-object settings))) "seccomp's unix-socket block stays on: the jail makes no unix socket, so it reaches none of the host's")))
+(deftest sandbox-jail-mounts-the-work-and-nothing-of-the-home ()
+  (let ((argv (sandbox-test-argv)))
+    (is (sandbox-test-mount argv "--bind" "/w/proj") "the folder is written")
+    (is (sandbox-test-mount argv "--bind" "/h/.nodecode") "so is the home")
+    (is (sandbox-test-mount argv "--ro-bind" "/opt/nc") "the binary's tree is read only")
+    (is (sandbox-test-mount argv "--ro-bind" "/usr") "the system is read only")
+    (is (sandbox-test-mount argv "--symlink" "usr/bin") "a usr-merged /bin is a link")
+    (is (sandbox-test-mount argv "--tmpfs" "/tmp") "the jail's /tmp is its own")
+    (let ((mounted (remove-if (lambda (word) (uiop:string-prefix-p "PATH" word)) argv)))
+      (is (not (find-if (lambda (word) (uiop:string-prefix-p "/home/u" word)) mounted)) "nothing of the user's home is mounted"))
+    (is (not (find "/run" argv :test #'string=)) "nor /run, with the user's sockets")
+    (let ((root (position "--remount-ro" argv :test #'string=)))
+      (is (and root (equal "/" (nth (1+ root) argv))) "the root bwrap builds on is read-only")
+      (is (< (sandbox-test-mount argv "--bind" "/w/proj") root) "after the mounts"))
+    (is (equal "/w/proj" (second (member "--chdir" argv :test #'string=))) "it works in the folder")))
 
-(deftest sandbox-wrap-jails-the-serve-argv-whole ()
-  (let ((argv (nle::sandbox-wrap '("/opt/nc/nodecode" "serve" "--store" "/h/a b/store.db")
-                                 :srt "/opt/srt/srt" :settings "/h/.nodecode/sandbox/srt-settings.json"
-                                 :port 41234 :run "/h/.nodecode/sandbox/run/"
-                                 :srt-temporary "/h/.nodecode/sandbox/srt/"
-                                 :jail-temporary "/h/.nodecode/sandbox/tmp/")))
-    (is (equal '("env" "-u" "NODECODE_PRISTINE" "NODECODE_SANDBOXED=1" "NODECODE_GATEWAY_PORT=41234"
-                 "XDG_RUNTIME_DIR=/h/.nodecode/sandbox/run" "XDG_CACHE_HOME=/h/.nodecode/sandbox/cache"
-                 "TMPDIR=/h/.nodecode/sandbox/srt" "CLAUDE_CODE_TMPDIR=/h/.nodecode/sandbox/tmp"
-                 "/opt/srt/srt" "--settings" "/h/.nodecode/sandbox/srt-settings.json" "--" "sh" "-c")
-               (subseq argv 0 15)) "env (srt's temporary directory out of /tmp, the jail's own), srt, its settings and the -- that keeps the words apart")
-    (is (equal '("41234" "/opt/nc/nodecode" "serve" "--store" "/h/a b/store.db")
-               (subseq argv 16)) "the port as $0, then the serve argv word for word")
-    (let ((script (nth 15 argv)))
-      (is (search "exec 3>&1 1>&2" script) "the listener handed in on stdout moves to descriptor 3")
-      (is (search "Seccomp:" script) "a jail without the seccomp filter stops before anything loads")
-      (is (search "socat ACCEPT-FD:3,fork TCP4:127.0.0.1:\"$0\"" script) "a socat accepts on it toward the gateway's port")
-      (is (not (search "UNIX-LISTEN" script)) "and makes no unix socket of its own")
-      (is (search "exec 3>&- \"$@\"" script) "the serve runs with the listener closed"))))
+(deftest sandbox-jail-never-takes-a-home-as-its-folder ()
+  (let ((homes '("/home/u/")))
+    (is (null (nle::sandbox-work-folder "/home/u/" homes)) "the user's home is no work folder")
+    (is (null (nle::sandbox-work-folder "/home/" homes)) "nor a directory holding it")
+    (is (null (nle::sandbox-work-folder "/" homes)) "nor the root")
+    (is (equal "/home/u/proj" (nle::sandbox-work-folder "/home/u/proj/" homes)) "a project in it is"))
+  (let ((argv (sandbox-test-argv :folder "/home/u/")))
+    (is (not (sandbox-test-mount argv "--bind" "/home/u")) "launched in the home, the jail gets no folder")
+    (is (equal "/h/.nodecode" (second (member "--chdir" argv :test #'string=))) "and works in its own home")))
+
+(deftest sandbox-jail-hides-the-keys-and-guards-the-launchers-files ()
+  (let* ((argv (sandbox-test-argv :hidden '("/h/.nodecode/auth.json" "/h/.nodecode/secrets/"
+                                            "/h/.nodecode/secrets/providers.x.api_key" "/h/.nodecode/backups/")
+                                  :directories '("/h/.nodecode/secrets" "/h/.nodecode/backups")))
+         (home (sandbox-test-mount argv "--bind" "/h/.nodecode")))
+    (is (search '("--ro-bind" "/dev/null" "/h/.nodecode/auth.json") argv :test #'equal) "auth.json reads as nothing")
+    (is (search '("--tmpfs" "/h/.nodecode/secrets" "--remount-ro" "/h/.nodecode/secrets") argv :test #'equal) "secrets/ is an empty read-only directory")
+    (is (not (find "/h/.nodecode/secrets/providers.x.api_key" argv :test #'string=)) "a key inside it is left to that")
+    (is (search '("--tmpfs" "/h/.nodecode/backups") argv :test #'equal) "the backups (each the home whole) are hidden")
+    (dolist (file '("/h/.nodecode/config.jsonc" "/h/.nodecode/sandbox.jsonc" "/h/.nodecode/sandbox/jailed.json"))
+      (let ((at (sandbox-test-mount argv "--ro-bind" file)))
+        (is (and at (< home at)) (format nil "~a is read-only, over the written home" file))))
+    (is (< home (search '("--ro-bind" "/dev/null" "/h/.nodecode/auth.json") argv :test #'equal)) "the hiding goes over the home")))
+
+(deftest sandbox-jail-keeps-a-binary-in-its-folder-read-only ()
+  ;; ./nodecode --sandbox in a checkout: the folder is written, the binary in
+  ;; it is not, and the rest of the checkout stays the folder's.
+  (let ((argv (sandbox-test-argv :folder "/w/proj/" :binary "/w/proj/nodecode")))
+    (is (not (sandbox-test-mount argv "--ro-bind" "/w/proj")) "the folder is not made read-only")
+    (is (< (sandbox-test-mount argv "--bind" "/w/proj") (sandbox-test-mount argv "--ro-bind" "/w/proj/nodecode")) "the binary alone is, after it")))
+
+(deftest sandbox-jail-merges-the-operators-policy ()
+  (let ((argv (sandbox-test-argv :policy '(:allow-write ("/data") :allow-read ("/srv/docs") :deny-read ("/w/proj/.env")))))
+    (is (sandbox-test-mount argv "--bind" "/data") "allow_write is written")
+    (is (sandbox-test-mount argv "--ro-bind" "/srv/docs") "allow_read is read")
+    (is (search '("--ro-bind" "/dev/null" "/w/proj/.env") argv :test #'equal) "deny_read inside the folder is hidden")))
+
+(deftest sandbox-jail-gets-only-the-safe-environment ()
+  (let ((argv (sandbox-test-argv :environment '("PATH=/usr/bin:/home/u/bin:/opt/nc" "HOME=/home/u" "NODECODE_HOME=/h/.nodecode"
+                                                "NODECODE_API_KEY=sk-x" "OPENAI_API_KEY=sk-y" "SSH_AUTH_SOCK=/run/user/1/ssh"
+                                                "NODECODE_PRISTINE=1" "LC_ALL=C"))))
+    (dolist (name '("NODECODE_API_KEY" "OPENAI_API_KEY" "SSH_AUTH_SOCK" "NODECODE_PRISTINE"))
+      (is (search (list "--unsetenv" name) argv :test #'equal) (format nil "~a is unset" name)))
+    (dolist (name '("NODECODE_HOME" "HOME" "LC_ALL"))
+      (is (not (search (list "--unsetenv" name) argv :test #'equal)) (format nil "~a is kept" name)))
+    (is (equal "/usr/bin:/opt/nc:/usr/local/bin:/bin:/usr/local/sbin:/usr/sbin" (sandbox-test-setenv argv "PATH")) "PATH keeps what is mounted")
+    (is (equal "1" (sandbox-test-setenv argv "NODECODE_SANDBOXED")))
+    (is (equal "41234" (sandbox-test-setenv argv "NODECODE_GATEWAY_PORT")) "the gateway's port on the jail's loopback")
+    (is (equal "3" (sandbox-test-setenv argv "NODECODE_SANDBOX_INBOUND_FD")) "the way in")
+    (is (equal "4" (sandbox-test-setenv argv "NODECODE_SANDBOX_EGRESS_FD")) "the way out")
+    (is (equal "http://127.0.0.1:3128" (sandbox-test-setenv argv "HTTPS_PROXY")) "web traffic goes to the proxy")
+    (is (search "127.0.0.1" (sandbox-test-setenv argv "NO_PROXY")) "the jail's own loopback does not")
+    (is (equal "/h/.nodecode/sandbox/tmp" (sandbox-test-setenv argv "TMPDIR")))))
+
+(deftest sandbox-bpf-assembles-jumps-by-label ()
+  (let ((octets (nle::sandbox-bpf-assemble '((:ld 4) (:jeq 7 :yes nil) (:ret 0) :yes (:ret 1)))))
+    (is (= 32 (length octets)) "four instructions, 8 octets each")
+    (is (equalp #(#x20 0 0 0 4 0 0 0) (subseq octets 0 8)) "ld [4]")
+    (is (equalp #(#x15 0 1 0 7 0 0 0) (subseq octets 8 16)) "jeq 7, then over the next one")
+    (is (equalp #(6 0 0 0 1 0 0 0) (subseq octets 24 32)) "ret 1")))
+
+(deftest sandbox-seccomp-program-for-each-machine ()
+  (dolist (machine '(:x86-64 :arm64))
+    (let ((octets (nle::sandbox-seccomp-program machine)))
+      (is (zerop (mod (length octets) 8)) (format nil "~a: whole instructions" machine))
+      (is (< (length octets) (* 8 64)) "short")))
+  (is (equalp (nle::sandbox-seccomp-program) (nle::sandbox-seccomp-program (nle::sandbox-machine))) "this machine's by default"))
 
 #+linux
-(deftest sandbox-jail-script-stops-a-jail-without-seccomp ()
-  ;; Outside srt this process carries no seccomp filter, as a jail would not
-  ;; on an architecture srt has no helper for: the script stops there, before
-  ;; the serve runs. A runner that is itself under a filter skips the check.
-  (when (search (format nil "Seccomp:~c0" #\Tab) (uiop:read-file-string "/proc/self/status"))
-    (multiple-value-bind (output errors status)
-        (uiop:run-program (list "sh" "-c" nle::+sandbox-jail-script+ "41234" "sh" "-c" "echo the-serve-ran")
-                          :output :string :error-output :string :ignore-error-status t)
-      (is (eql 78 status) "the jail script exits 78")
-      (is (search "no seccomp filter" errors) "saying why, on the log")
-      (is (not (search "the-serve-ran" (concatenate 'string output errors))) "and the serve never runs"))))
+(deftest sandbox-seccomp-refuses-unix-sockets-under-bwrap ()
+  ;; The filter as the jail gets it, bwrap reading it from a descriptor this
+  ;; process hands its child: a unix socket is refused, a TCP one is not.
+  (when (and (nlk::executable-on-path "bwrap") (nlk::executable-on-path "python3")
+             (nle::sandbox-bwrap-works-p (uiop:native-namestring (nlk::executable-on-path "bwrap"))))
+    (let ((seccomp (nle::sandbox-seccomp-descriptor)))
+      (unwind-protect
+           (multiple-value-bind (pid output errors process)
+               (nlk:spawn-program (list "bwrap" "--ro-bind" "/" "/" "--unshare-net" "--seccomp" "3" "python3" "-c"
+                                        "import socket
+try:
+  socket.socket(socket.AF_UNIX); print('unix-made')
+except OSError as e: print('unix-refused', e.errno)
+socket.socket(socket.AF_INET); print('inet-made')")
+                                  :output :stream :error-output :output :descriptors (list seccomp))
+             (declare (ignore errors))
+             (let ((text (uiop:slurp-stream-string output)))
+               (is (eql 0 (nlk:wait-for-child pid process)) text)
+               (is (search "unix-refused 1" text) "socket(AF_UNIX) answers EPERM")
+               (is (search "inet-made" text) "socket(AF_INET) is made")))
+        (ignore-errors (sb-posix:close seccomp))))))
+
+#+linux
+(deftest sandbox-descriptors-only-in-a-sandboxed-shell ()
+  (let ((nle::*sandbox-plan* nil))
+    (is (eq :plain (nle::call-with-sandbox-descriptors (lambda (descriptors) (if descriptors :jail :plain)))) "outside a sandboxed shell there are none"))
+  (let* ((port (nle::local-port 0))
+         (nle::*sandbox-plan* (list :port port :hosts '()))
+         (seen nil))
+    (nle::call-with-sandbox-descriptors (lambda (descriptors)
+                                          (setf seen descriptors)
+                                          (is (sandbox-port-taken-p port) "while the function runs the listener holds the port")))
+    (is (and (= 3 (length seen)) (every #'integerp seen)) "the way in, the way out and the filter")
+    (is (eql port (nle::local-port port)) "and the shell's copy is closed once the function returns: the jail alone holds it")))
 
 (deftest sandbox-launch-makes-the-files-the-launcher-reads ()
-  ;; A home with no config.jsonc: srt would cover the absent path with a
-  ;; placeholder, and the jailed organism died reading its config through it.
+  ;; A home with no config.jsonc: the jail could create it, and the next
+  ;; launch would read the jail's providers; the launcher makes both first.
   (let ((home (sandbox-test-home)))
     (unwind-protect
          (progn
@@ -117,23 +192,6 @@
            (is (sandbox-port-taken-p port) "and listening: nothing else binds the port while it stands"))
       (sb-bsd-sockets:socket-close socket))))
 
-(deftest sandbox-stdout-is-the-listener-only-in-a-sandboxed-shell ()
-  (let ((nle::*sandbox-plan* nil))
-    (is (eq :plain (nle::call-with-sandbox-stdout (lambda (listener) (if listener :listener :plain)))) "outside a sandboxed shell there is none"))
-  (let* ((port (nle::local-port 0))
-         (nle::*sandbox-plan* (list :port port))
-         (seen nil))
-    (nle::call-with-sandbox-stdout (lambda (listener)
-                                     (setf seen listener)
-                                     (is (sandbox-port-taken-p port) "while the function runs the listener holds the port")))
-    (is (integerp seen) "a sandboxed shell's serve gets a descriptor")
-    (is (eql port (nle::local-port port)) "and the shell's copy is closed once the function returns: the jail alone holds it")))
-
-(deftest sandbox-requires-a-socat-that-takes-a-descriptor ()
-  ;; The jail's one way in is a listening socket on its stdout: the socat
-  ;; inside must accept on a descriptor it is handed.
-  (is (eq (and (nlk::executable-on-path "socat") t) (and (nle::socat-accepts-a-descriptor-p) t)) "the socat on this machine takes ACCEPT-FD, or there is none"))
-
 (deftest sandbox-wrap-command-is-the-argv-itself-outside-a-sandbox ()
   (let ((nle::*sandbox-plan* nil))
     (is (equal '("nodecode" "serve") (nle::sandbox-wrap-command '("nodecode" "serve"))))))
@@ -149,32 +207,6 @@
     (is (search "shell's flag" (refusal-text nle::launch-usage-error
                                  (nle::parse-launch-arguments '("--sandbox" "rpc")))) "so is rpc")))
 
-(deftest sandbox-srt-on-path-reaches-the-argv-as-a-string ()
-  ;; npm installs srt as a link to its dist/cli.js; the PATH lookup answers
-  ;; the link's truename, a pathname, which the spawn refused as an argv word.
-  (let* ((dir (uiop:ensure-directory-pathname
-               (merge-pathnames (format nil "nodecode-srt-~36r/" (random (expt 36 8)))
-                                (uiop:temporary-directory))))
-         (target (merge-pathnames "cli.js" dir))
-         (saved-path (uiop:getenv "PATH"))
-         (saved-srt (uiop:getenv "NODECODE_SRT")))
-    (unwind-protect
-         (progn
-           (ensure-directories-exist dir)
-           (with-open-file (s target :direction :output) (write-line "#!/bin/sh" s))
-           (sb-posix:chmod (uiop:native-namestring target) #o755)
-           (sb-posix:symlink (uiop:native-namestring target)
-                             (uiop:native-namestring (merge-pathnames "srt" dir)))
-           (nlk::set-environment-variable "NODECODE_SRT" "")
-           (nlk::set-environment-variable "PATH" (string-right-trim "/" (uiop:native-namestring dir)))
-           (let ((srt (nle::srt-program)))
-             (is (stringp srt) "srt found on PATH is a namestring")
-             (is (every #'stringp (nle::sandbox-wrap '("nodecode" "serve") :srt srt :settings #p"/h/sandbox/srt.json"
-                                                                             :port 1 :run #p"/h/sandbox/run/")) "the jailed argv is words only")))
-      (nlk::set-environment-variable "PATH" (or saved-path ""))
-      (nlk::set-environment-variable "NODECODE_SRT" (or saved-srt ""))
-      (uiop:delete-directory-tree dir :validate t :if-does-not-exist :ignore))))
-
 (deftest sandbox-gateway-port-from-the-environment ()
   (let ((saved (uiop:getenv "NODECODE_GATEWAY_PORT")))
     (unwind-protect
@@ -186,47 +218,6 @@
            (nlk::set-environment-variable "NODECODE_GATEWAY_PORT" "x")
            (is (null (nle::gateway-port-from-environment)) "nor is a word"))
       (nlk::set-environment-variable "NODECODE_GATEWAY_PORT" (or saved "")))))
-
-(deftest sandbox-settings-deny-the-home-and-read-back-only-the-work ()
-  (let* ((settings (sandbox-test-settings))
-         (deny (nlk:json-value settings :array "filesystem" "denyRead"))
-         (allow (nlk:json-value settings :array "filesystem" "allowRead")))
-    (is (find (uiop:native-namestring (user-homedir-pathname)) deny :test #'string=) "the user's home is read-denied whole")
-    (dolist (path '("/w/proj/" "/h/.nodecode/" "/opt/nc/" "/opt/srt/"))
-      (is (find path allow :test #'string=) (format nil "~a reads back" path)))
-    (is (not (find (nle::sandbox-expand "~/.ssh") allow :test #'string=)) "and nothing of the credentials does")))
-
-(deftest sandbox-settings-deny-the-accounts-own-home-under-another-home ()
-  ;; $HOME pointed elsewhere (a wrapper, sudo, a CI user) moved the whole-home
-  ;; deny there, and the account's real home -- ~/.ssh with it -- read open.
-  (let ((saved (uiop:getenv "HOME"))
-        (own (uiop:native-namestring
-              (uiop:ensure-directory-pathname
-               (sb-posix:passwd-dir (sb-posix:getpwuid (sb-posix:getuid)))))))
-    (unwind-protect
-         (progn
-           (nlk::set-environment-variable "HOME" "/nonexistent-home-for-test/")
-           (let ((deny (nlk:json-value (sandbox-test-settings) :array "filesystem" "denyRead")))
-             (is (find "/nonexistent-home-for-test/" deny :test #'string=) "the home $HOME names is read-denied")
-             (is (find own deny :test #'string=) "the account's own home is read-denied too")))
-      (nlk::set-environment-variable "HOME" (or saved "")))))
-
-(deftest sandbox-hides-the-homes-own-secrets ()
-  (let* ((settings (nle::sandbox-settings :home "/h/.nodecode/" :folder "/w/proj/" :binary "/opt/nc/nodecode"
-                                          :exists (constantly t) :run-directory nil :deny-home nil
-                                          :hidden (list "/h/.nodecode/auth.json" "/h/.nodecode/operator-token")))
-         (deny (nlk:json-value settings :array "filesystem" "denyRead")))
-    (is (find "/h/.nodecode/auth.json" deny :test #'string=) "auth.json is not read in the jail")
-    (is (find "/h/.nodecode/operator-token" deny :test #'string=) "nor the gateway's token")
-    (is (zerop (length (nlk:json-value settings :array "filesystem" "allowRead"))) "without the home deny nothing needs reading back")))
-
-(deftest sandbox-settings-deny-writing-what-the-launcher-reads ()
-  (let ((deny (nlk:json-value (sandbox-test-settings) :array "filesystem" "denyWrite"))
-        (allow (nlk:json-value (sandbox-test-settings) :array "filesystem" "allowWrite")))
-    (dolist (path '("/h/.nodecode/config.jsonc" "/h/.nodecode/sandbox.jsonc" "/h/.nodecode/sandbox/jailed.json" "/h/.nodecode/secrets/"
-                    "/h/.nodecode/sandbox/srt/"))
-      (is (find path deny :test #'string=) (format nil "~a is the launcher's, not the jail's" path)))
-    (is (notany (lambda (path) (search ".cache/nodecode" path)) allow) "the machine's shared cache is not the jail's to write")))
 
 (defun sandbox-test-home ()
   "A scratch home with one cells/ folder under git, one commit in it."
