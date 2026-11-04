@@ -506,10 +506,16 @@ sandbox.jsonc, every comment and other byte kept; :REMOVE takes it out."
     (format nil "Run this home without the jail? Its organism then reads and writes everything your user can, and reaches every site.~@[ The jail has run here since ~a: `nodecode sandbox review' shows what it wrote to cells/, which would then run outside it.~] `nodecode sandbox on' puts it back. [y/N] "
             (and mark (or (ignore-errors (json-value mark :text "since")) "an unknown time")))))
 
+(defvar *sandbox-terminal* :probe
+  "Whether a question can be put to a person: :PROBE asks whether stdin is a
+terminal; T or NIL says so outright (a test's answer).")
+
 (defun sandbox-terminal-p ()
   "Whether this process's stdin is a terminal a question can be put on."
-  #-win32 (= 1 (sb-unix:unix-isatty 0))
-  #+win32 (interactive-stream-p *standard-input*))
+  (if (eq *sandbox-terminal* :probe)
+      #-win32 (= 1 (sb-unix:unix-isatty 0))
+      #+win32 (interactive-stream-p *standard-input*)
+      *sandbox-terminal*))
 
 (defun sandbox-ask (question)
   "Put QUESTION to the person at this terminal: whether the answer is yes.
@@ -642,14 +648,15 @@ keep the grants; `review' prints what the jail wrote since the mark;
 inside it."
   (let ((home (nlk:home))
         (verb (first words)))
-    (flet ((outside-only ()
-             (when (sandboxed-process-p)
-               (values "this changes the jail, which is done from outside it, never from inside" 1 :error))))
+    (progn
       (cond ((or (null words) (equal words '("status")))
              (values (string-right-trim '(#\Newline) (sandbox-status-text home)) 0 :output))
             ((equal words '("review")) (values (sandbox-review-text home) 0 :output))
+            ((and (member verb '("on" "off" "allow" "revoke" "release") :test #'equal)
+                  (sandboxed-process-p))
+             (values "this changes the jail, which is done from outside it, never from inside" 1 :error))
             ((member verb '("on" "off" "allow" "revoke" "release") :test #'equal)
-             (or (outside-only)
+             (progn
                  (cond
                    ((equal words '("on"))
                     (if (eq (sandbox-setting home) :on)
