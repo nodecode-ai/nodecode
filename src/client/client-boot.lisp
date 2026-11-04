@@ -579,7 +579,7 @@ INSTANCE, TOKEN its operator token."
 
 (defun run-chat-gateway (&key session-id port
                               (store-path nlk::*default-store-path*)
-                              boot setup launch)
+                              boot setup launch resume)
   "Run the Gateway TUI with a reconnecting reader and UI-owned state. => the
 session the shell ended on, or NIL when it never attached."
   ;; LAUNCH, a plist (:PROVIDER :MODEL :EFFORT :PROMPT), is what the command
@@ -613,7 +613,8 @@ session the shell ended on, or NIL when it never attached."
          (model (make-instance 'gateway-chat-model :session-id sid :ws nil
                                                    :http-port port
                                                    :http-token token
-                                                   :setup-requested setup))
+                                                   :setup-requested setup
+                                                   :launch-resume resume))
          (program nil)
          (stop nil)
          ;; The organism this shell took over after its owner let the store
@@ -783,6 +784,13 @@ session the shell ended on, or NIL when it never attached."
                                            (setf model.http-port
                                                  (live-published-endpoint store-path)))))
                          (nlk:note-boot-phase "ensure-start")
+                         ;; RESUME, what the launch asked of its session
+                         ;; (`nodecode -c', `resume ID'), is settled here,
+                         ;; against the first organism that answers and before
+                         ;; the subscribe its replay paints: the shell never
+                         ;; shows a session it is about to leave.
+                         (when model.launch-resume
+                           (setf sid (resolve-launch-session model sid port token)))
                          (ensure-gateway-session
                           sid port token
                           :target (and (equal sid (getf model.launch-target :session-id))

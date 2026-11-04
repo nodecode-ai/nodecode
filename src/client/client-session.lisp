@@ -1114,11 +1114,16 @@ id, takes the highlight once its row is listed (Left's session just left)."
   ;; rather than as this op's answer. => NIL.
   (open-sessions-picker-now model :seat seat)
   ;; Closing or replacing this picker cancels its pending read's
-  ;; UI effect. An old completion never reopens or fills another.
+  ;; UI effect. An old completion never reopens or fills another. A shell
+  ;; whose organism has not answered yet has no gateway to read: its
+  ;; picker waits on the reading copy, unfailed, and the read every attach
+  ;; makes fills it (REFRESH-SESSION-DIRECTORY).
   (dialog-read model
                (lambda () (read-session-directory model))
                (lambda-ignoring (model dialog value)
-                 (install-session-directory model value :seat seat)))
+                 (if (and (off-loop-failure value) (null model.http-port))
+                     :quiet
+                     (install-session-directory model value :seat seat))))
   nil)
 
 ;;; --- the /sessions conversation search --------------------------------------
@@ -1467,10 +1472,17 @@ One read in flight per shell, preserving cached rows until the answer lands."
     (off-loop model
               (lambda () (read-session-directory model))
               (lambda (model value)
-                (when-let (failure (off-loop-failure value))
-                  (setf (getf (gethash model *session-directory*) :at) nil)
-                  (show-status model (format nil "Sessions failed: ~a" failure) :error-p t))
-                (if (off-loop-failure value) t :quiet)))))
+                (cond ((off-loop-failure value)
+                       (setf (getf (gethash model *session-directory*) :at) nil)
+                       (show-status model (format nil "Sessions failed: ~a" (off-loop-failure value))
+                                    :error-p t)
+                       t)
+                      ;; A picker opened before the organism answered waits
+                      ;; on this read (SLASH-SESSIONS-OP).
+                      ((sessions-picker-awaiting-p model)
+                       (install-session-directory model value)
+                       t)
+                      (t :quiet))))))
 
 (defun directory-title (model session-id)
   "SESSION-ID's name in MODEL's last directory read, or NIL."
@@ -1851,10 +1863,117 @@ SESSION-ID (SEND-LAUNCH-PROMPT), with IMAGES, its @FILE images as
   (show-status model "The prompt sends once the organism answers; edit it to keep it here"))
 
 (defmethod nlt:init :after ((model gateway-chat-model))
-  "Seat the launch's prompt in the composer INIT has just made (SEAT-LAUNCH)."
+  "Seat the launch's prompt in the composer INIT has just made (SEAT-LAUNCH),
+and open the session picker a bare `nodecode resume' asked for."
   (let ((launch model.launch-prompt))
     (when-let (prompt (getf launch :unseated))
-      (seat-launch-prompt model (getf launch :session-id) prompt (getf launch :images)))))
+      (seat-launch-prompt model (getf launch :session-id) prompt (getf launch :images))))
+  ;; The picker paints now, on the reading copy until the organism answers;
+  ;; a setup walk the first frame already opened goes first.
+  (when (eq model.launch-resume :pick)
+    (setf model.launch-resume nil)
+    (unless model.dialog
+      (slash-sessions-op model))))
+
+;;; --- the session a launch settles on ------------------------------------
+;;; `nodecode -c' and `nodecode resume ID' paint on an id like every launch
+;;; -- the first frame needs no gateway -- and settle which session the shell
+;;; stands on once the organism answers, before the subscribe that replays it.
+
+(defun folder-continue-session (entries &optional (here (workspace-directory)))
+  "The id of the newest session ENTRIES, the gateway's directory, hold that a
+shell, the web page or a program began in HERE and spoke in, or NIL: what
+`nodecode -c' opens."
+  ;; A fork, a helper and a room's lane hang under another session; a cron
+  ;; fire or a layer evaluation began on nobody's word here (SOURCE, the kind
+  ;; of request that began the session: `gateway' for a shell, the page and
+  ;; rpc, null for one imported or not yet run). The folder is spelled as
+  ;; SESSIONS-FOLD-DIRECTORY spells it.
+  (loop with best = nil
+        for entry in entries
+        for updated = (json-value entry :text "updated_at")
+        when (and (equal here (string-right-trim
+                               "/\\" (or (json-value entry :string "working_directory") "")))
+                  (null (json-value entry :string "parent_id"))
+                  (member (json-value entry :string "source") '(nil "gateway") :test #'equal)
+                  (json-value entry :string "id")
+                  (or (null best) (string> (or updated "") (or (cdr best) ""))))
+          do (setf best (cons (json-value entry :string "id") updated))
+        finally (return (car best))))
+
+(defun reseat-launch-session (model from to)
+  "Stand MODEL's shell on TO instead of FROM, the id it painted on, before
+anything subscribed FROM: the slot, and what the launch holds for FROM -- its
+target and its first prompt -- carried over."
+  (setf (slot-value model 'session-id) to)
+  (flet ((moved (launch)
+           (if (equal from (getf launch :session-id))
+               (list* :session-id to (alexandria:remove-from-plist launch :session-id))
+               launch)))
+    (setf model.launch-target (moved model.launch-target)
+          model.launch-prompt (moved model.launch-prompt)))
+  (note-shell-presence to))
+
+(defun call-on-shell-loop (model function &aux (program model.program)
+                                               (done (bt2:make-semaphore :name "shell-loop-call")))
+  "Call FUNCTION with MODEL on its shell's loop from another thread, and wait
+(10 s at most) until it has run there: how a thread changes what the loop
+reads without racing it. A model with no program, a test's, is called here."
+  ;; NLT:SEND drops a message while the program is not running yet, so the
+  ;; call waits for it as POST-SHELL-NOTICE does.
+  (if (null program)
+      (funcall function model)
+      (progn
+        (loop repeat 100 until program.running do (sleep 0.05))
+        (nlt:send program (make-instance 'off-loop-msg
+                                         :value nil
+                                         :continuation (lambda-ignoring (model value)
+                                                         (unwind-protect (funcall function model)
+                                                           (bt2:signal-semaphore done)))))
+        (bt2:wait-on-semaphore done :timeout 10))))
+
+(defun resolve-launch-session (model sid port token &aux (resume model.launch-resume))
+  "The session the shell stands on, settled once its organism answers at
+PORT, SID the id it painted on: what MODEL's launch asked for
+(LAUNCH-RESUME). => the id to ensure and subscribe."
+  ;; :CONTINUE takes the newest session begun in this folder; a folder with
+  ;; none keeps SID and says so. :NAMED keeps SID when the organism holds it,
+  ;; and one it holds no session under is no reason to make one under a
+  ;; mistyped word: the shell stands on a fresh id, and the picker opens on
+  ;; what there is. :PICK is the first frame's (the INIT method above). A
+  ;; read that fails signals, and the next lap asks again.
+  (unless (member resume '(:continue :named))
+    (return-from resolve-launch-session sid))
+  (let* ((found (if (eq resume :continue)
+                    (folder-continue-session
+                     (coerce (gateway-http-session-request port :get "/api/gateway/sessions" nil token)
+                             'list))
+                    (handler-case
+                        (progn (gateway-http-session-request
+                                port :get (format nil "/api/gateway/sessions/~a" sid) nil token)
+                               sid)
+                      (gateway-http-error (condition)
+                        (unless (and (eql 404 (gateway-http-error-status condition))
+                                     (equal "unknown_session" (gateway-http-error-code condition)))
+                          (error condition))
+                        nil))))
+         (target (or found (if (eq resume :named) (fresh-session-id) sid))))
+    (call-on-shell-loop
+     model
+     (lambda (model)
+       (setf model.launch-resume nil)
+       (unless (equal target sid)
+         (reseat-launch-session model sid target))
+       (cond (found)
+             ((eq resume :continue)
+              (show-status model "No session in this folder yet: this one is new. Ctrl+S lists every session"))
+             ;; The picker covers the composer's status: the header it
+             ;; opens with says why it opened, left of the tabs.
+             (t (slash-sessions-op model)
+                (when (picker-dialog-p model.dialog)
+                  (setf (picker-dialog-title model.dialog)
+                        (format nil "No session ~a in this home" sid)))))))
+    target))
 
 (defun attach-or-own-organism (&key session-id store-path setup prelude launch)
   "The binary's entry: paint the shell NOW, boot the organism BEHIND it."
@@ -1871,7 +1990,13 @@ SESSION-ID (SEND-LAUNCH-PROMPT), with IMAGES, its @FILE images as
     ;; with: a /sessions pick, a /fork or Left moves a shell off its first id.
     (let ((ended
             (run-chat-gateway
-             :session-id (or session-id (fresh-session-id)) :store-path path :setup setup
+             ;; SESSION-ID is the id `resume' named, or :PICK or :CONTINUE
+             ;; (PARSE-LAUNCH-ARGUMENTS): those two paint on a fresh id and
+             ;; settle once the organism answers, and so does a named one
+             ;; the organism turns out not to hold (RESOLVE-LAUNCH-SESSION).
+             :session-id (if (stringp session-id) session-id (fresh-session-id))
+             :resume (if (stringp session-id) :named session-id)
+             :store-path path :setup setup
              :launch launch
              ;; Start the organism when the store is free, else attach to the live owner.
              :boot

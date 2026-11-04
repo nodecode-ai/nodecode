@@ -24,7 +24,7 @@ summary: "Every nodecode command and option, the rules for combining them, and t
 <Command line="nodecode generations" tty="No" show="help">Lists the sealed generations of this home's organism.</Command>
 <Command line="nodecode rollback N" tty="No" show="help">Restores this home's organism to generation N.</Command>
 <Command line="nodecode web" tty="No" show="web">Prints the web page link and opens it in a browser.</Command>
-<Command line="nodecode resume SESSION-ID" tty="Yes" show="resume-pipe">Opens the shell on that session.</Command>
+<Command line="nodecode resume [SESSION-ID]" tty="Yes" show="resume-pipe">Opens the shell on that session. With no id, opens the session picker.</Command>
 <Command line="nodecode rpc [SESSION-ID]" tty="No" show="help">Drives this home's organism from a program: JSON lines in and out. See [RPC](rpc.mdx).</Command>
 <Command line="nodecode help [COMMAND]" tty="No" show="help-resume">Prints general help, or one command's help.</Command>
 </Commands>
@@ -52,6 +52,7 @@ Terms: the organism is a running Nodecode. The shell is the terminal UI. The hom
 | Option | Does |
 | --- | --- |
 | `-p NAME`, `--profile NAME` | Runs profile NAME. Read anywhere on the line. One per launch. |
+| `-c`, `--continue` | Opens the shell on the newest session begun in this folder. |
 | `--store PATH` | Runs on the store at PATH. |
 | `--ephemeral` | Runs on a throwaway store at `$TMPDIR/nodecode-ephemeral-<pid>.db`. |
 | `--pristine` | Runs generation 0: the binary alone, no folder loaded. Keeps are refused while it runs. |
@@ -316,8 +317,17 @@ Prints `http://127.0.0.1:PORT/web/#t=TOKEN`. Opens it when a display exists.
 ## resume
 
 ```sh
-nodecode resume SESSION-ID [--store PATH]
+nodecode resume [SESSION-ID] [--store PATH]
+nodecode -c [-- PROMPT]
 ```
+
+| Line | Opens |
+| --- | --- |
+| `nodecode resume SESSION-ID` | That session. |
+| `nodecode resume` | The session picker, on its This folder tab: the sessions begun in this folder. Tab shows every session. Enter opens one. |
+| `nodecode -c`, `nodecode --continue` | The newest session begun in this folder. A fork, a helper, a room's lane and a cron fire are skipped. With none, a fresh session, and the shell says so. |
+
+A SESSION-ID the home holds no session under opens the picker, its header naming the id. No session is made under it.
 
 The shell prints the resume line when it exits. See [Sessions](sessions.mdx).
 
@@ -342,7 +352,8 @@ The shell prints the resume line when it exits. See [Sessions](sessions.mdx).
 <Refusal typed="nodecode --store PATH add nc://web" said={"nodecode: add is a command of its own: nodecode [-p NAME] add ..."}>`nodecode add nc://web`</Refusal>
 <Refusal typed="nodecode -p work -p play" said={"nodecode: -p names a second profile, play; a launch runs one"}>One `-p` per launch.</Refusal>
 <Refusal typed="nodecode -p ghost" said={"nodecode: no profile \"ghost\". \"nodecode profile create ghost\" makes one."}>`nodecode profile create ghost`</Refusal>
-<Refusal typed="nodecode resume" said={"nodecode: resume needs a SESSION-ID"}>`nodecode resume SESSION-ID`</Refusal>
+<Refusal typed="nodecode resume s-1NXO4JMW -c" said={"nodecode: a launch opens one session: nodecode resume [SESSION-ID], or nodecode -c"}>One of the two.</Refusal>
+<Refusal typed="nodecode resume -- PROMPT" said={"nodecode: a bare resume opens the picker, and a first prompt needs its session: nodecode resume SESSION-ID -- PROMPT, or nodecode -c -- PROMPT"}>`nodecode -c -- PROMPT`</Refusal>
 <Refusal typed="nodecode servve" said={"nodecode: no command \"servve\". Did you mean \"serve\"?"}>The word it names.</Refusal>
 </Refusals>
 
