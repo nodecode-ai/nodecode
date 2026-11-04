@@ -130,9 +130,12 @@ store's lease or a page's connection would ride into the successor."
 closed but LEASE, the store's lock, which the image adopts. Answers only the
 kernel's refusal, as text."
   ;; An fcntl lock is the process's and outlives an exec while a descriptor
-  ;; on its file stays open: the lease's, close-on-exec cleared. The image's
-  ;; heap remembers it (*HELD-LOCKS*), so its election reads it as its own
-  ;; (STORE-LEASE-HELD-ELSEWHERE-P) and its store takes it as the lease.
-  #-win32 (when lease (ignore-errors (sb-posix:fcntl lease sb-posix:f-setfd 0)))
+  ;; on its file stays open: the lease's, close-on-exec cleared. The
+  ;; successor -- a heap, or the installed binary -- is told which descriptor
+  ;; it is (HAND-LEASE-ACROSS-EXEC, ADOPT-HANDED-LEASE), so its election reads
+  ;; it as its own (STORE-LEASE-HELD-ELSEWHERE-P) and its store takes it as
+  ;; the lease. Never from the heap's own memory of it: a heap booted later
+  ;; remembers a descriptor of a process that is gone.
+  #-win32 (when lease (ignore-errors (hand-lease-across-exec lease)))
   (close-inherited-descriptors lease)
   (exec-program (uiop:native-namestring image) argv))

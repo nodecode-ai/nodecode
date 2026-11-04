@@ -42,6 +42,49 @@
       (let ((reopened (nlk:open-store :path path)))
         (is (eql lock (nlk::store-lock-fd reopened)) "the store that opens adopts the held lock")))))
 
+(deftest a-heaps-memory-of-its-locks-is-no-lease-at-boot ()
+  ;; A saved heap remembers the descriptors of the process that saved it: a
+  ;; heap booted later by the restore pointer read that as its lease and
+  ;; opened its store unlocked, a second organism beside it.
+  (let ((nlk::*held-locks* (make-hash-table :test #'eql :synchronized t)))
+    (nlk::note-held-lock 987 "/nonexistent/history.db.lock")
+    (sb-posix:unsetenv nlk::+handed-lease-variable+)
+    (is (null (nlk::adopt-handed-lease)) "nothing handed, nothing adopted")
+    (is (zerop (hash-table-count nlk::*held-locks*)) "the remembered lock is forgotten")))
+
+(deftest a-lease-handed-across-an-exec-is-adopted-and-a-forged-one-is-not (with-temp-store (store))
+  (let* ((path (nlk::store-path store))
+         (variable nlk::+handed-lease-variable+))
+    (nlk:close-store)
+    (let ((lock (nlk::hold-store-lease path)))
+      (nlk::hand-lease-across-exec lock)
+      (is (zerop (sb-posix:fcntl lock sb-posix:f-getfd)) "it stays open across the exec")
+      (is (sb-posix:getenv variable) "and the successor is told which descriptor it is")
+      (let ((nlk::*held-locks* (make-hash-table :test #'eql :synchronized t)))
+        (is (eql lock (nlk::adopt-handed-lease)) "the successor takes it as its own")
+        (is (nlk::store-lease-mine-p path) "its election reads it as its own"))
+      (let ((other (sb-posix:open "/dev/null" sb-posix:o-rdonly)))
+        (unwind-protect
+             (let ((nlk::*held-locks* (make-hash-table :test #'eql :synchronized t)))
+               (sb-posix:setenv variable
+                                (format nil "~d ~a" other (uiop:native-namestring
+                                                           (nlk::lock-path-for-store path)))
+                                1)
+               (is (null (nlk::adopt-handed-lease)) "a descriptor on another file is no lease")
+               (is (null (sb-posix:getenv variable)) "and is named to no one after"))
+          (sb-posix:close other)))
+      (nlk::hand-lease-across-exec lock)
+      (let ((reopened (nlk:open-store :path path)))
+        (is (eql lock (nlk::store-lock-fd reopened)) "the store adopts it")
+        (is (= 1 (sb-posix:fcntl lock sb-posix:f-getfd)) "and closes it at a later exec again")
+        (is (null (sb-posix:getenv variable)) "no child or successor is told of it")))))
+
+(deftest a-switch-says-why-it-cannot-run ()
+  (let ((nodecode.evolved::*serving* nil))
+    (is (search "only the organism that serves" (nodecode.evolved::switch-refusal nil)))
+    (is (search "no image named nope" (nodecode.evolved::switch-refusal "nope"))
+        "a missing heap is named first")))
+
 (deftest a-saved-heap-says-the-folder-moved-and-never-hands-back ()
   (with-stubbed-fdefinitions ((nlk::folder-key () "key-now"))
     (with-saved-globals ((nlk::*cells-directory* (uiop:temporary-directory)))

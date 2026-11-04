@@ -244,14 +244,16 @@ else words saying why not, or NIL when no restore is asked."
 ;;; --- the organism's side: its routes -----------------------------------------
 
 (defun restore-image (name &key (restart (and *gateway-handler* t)))
-  "Leave the restore pointer to heap NAME and, under RESTART (the default
-while this organism serves), exit once no turn is in flight so the next
-launch boots it. => words: the model's and the operator's (restore-image NAME)."
-  (let ((text (request-image-restore name)))
-    (when restart
-      (restart-when-idle (format nil "image ~a" name) :reason "a restore"))
-    (format nil "~a~:[: the next launch boots it~;; this organism exits once no turn is in flight, ~
-                 and the next launch boots it~]" text restart)))
+  "Heap NAME for this home: while this organism serves (RESTART, the
+default), it switches to NAME in place once no turn is in flight
+(SWITCH-IMAGE); else the restore pointer is left and the next launch boots
+it. => words: the model's and the operator's (restore-image NAME)."
+  (cond ((and restart *serving*) (switch-image name))
+        (t (let ((text (request-image-restore name)))
+             (when restart
+               (restart-when-idle (format nil "image ~a" name) :reason "a restore"))
+             (format nil "~a~:[: the next launch boots it~;; this organism exits once no turn is in flight, ~
+                          and the next launch boots it~]" text restart)))))
 
 (define-gateway-route handle-gateway-images-http (env)
   "GET /api/gateway/images: the saved heaps in words (SAVED-IMAGES-TEXT)."
@@ -277,6 +279,17 @@ this organism exiting once idle for the next launch to boot it."
   (let ((name (json-value (gateway-request-json env) :string "name")))
     (require-request (null (image-name-refusal name)) (or (image-name-refusal name) "restore takes {\"name\": NAME}"))
     (json-object "text" (restore-image name))))
+
+(define-gateway-route handle-gateway-image-switch-http (env)
+  "POST /api/gateway/images/switch {name}: this organism runs heap NAME in its
+own place once idle -- no name, or null: the folder (SWITCH-IMAGE)."
+  (:route :post "/api/gateway/images/switch" "image-switch")
+  (let ((name (json-value (gateway-request-json env) :string "name")))
+    (require-request (or (null name) (null (image-name-refusal name)))
+                     (image-name-refusal name))
+    (let ((refusal (switch-refusal name)))
+      (require-request (null refusal) refusal))
+    (json-object "text" (switch-image name))))
 
 ;;; --- the command line ---------------------------------------------------------
 

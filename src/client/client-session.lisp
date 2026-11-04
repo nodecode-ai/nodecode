@@ -1666,7 +1666,12 @@ runs, and brings back on `current' from any exit.")
 (defvar *serve-next* nil
   "What the headless owner does once it lets the store go: NIL while it
 serves; :STOP to exit, :RESTART to run its own command line again, :IMAGE to
-save its heap as *SERVE-IMAGE* and go on from it (heap-image.lisp).")
+save its heap as *SERVE-IMAGE* and go on from it (heap-image.lisp), :SWITCH
+to run *SERVE-SWITCH* in its place.")
+
+(defvar *serve-switch* nil
+  "What the headless owner runs in its own place when *SERVE-NEXT* is
+:SWITCH: a saved heap's name, or :FOLDER for the installed binary.")
 
 (defvar *serve-image* nil
   "The name the headless owner saves its heap as when *SERVE-NEXT* is :IMAGE.")
@@ -1706,6 +1711,13 @@ a stop that has not let it go within *STOP-SECONDS* is cut short (CUT-SHORT)."
 go, and go on from that image in place (SERVE-NEXT :IMAGE)."
   (setf *serve-image* name)
   (serve-next :image))
+
+(defun serve-switch (target)
+  "Have the headless owner run TARGET -- a saved heap's name, or :FOLDER --
+in its own place once it lets the store go, the store's lease held across
+the exec (SERVE-NEXT :SWITCH)."
+  (setf *serve-switch* target)
+  (serve-next :switch))
 
 (defun run-current-again (&optional (argv sb-ext:*posix-argv*))
   "Exec this organism's installed binary on ARGV, every descriptor above
@@ -1837,7 +1849,25 @@ quietly."
                (declare (ignore heap))
                (format t "~&image ~a not saved: ~a; running `current' again~%" name why)
                (finish-output)
-               (return (format t "~&restart refused: ~a~%" (run-current-again)))))))))))
+               (return (format t "~&restart refused: ~a~%" (run-current-again))))))
+          ;; A switch saves nothing: the heap chosen -- or the installed
+          ;; binary, which loads the folder -- runs in this process's place,
+          ;; the store's lease taken back at once and handed across the exec,
+          ;; so no shell finds the store free between the two. Back here the
+          ;; kernel refused it, and `current' runs again as a restart does.
+          (:switch
+           (let ((target (shiftf *serve-switch* nil))
+                 (lease (ignore-errors (nlk::hold-store-lease path))))
+             (setf *serve-next* nil *stopping* nil)
+             (format t "~&image: running ~a in place~%" (if (eq target :folder) "the folder" target))
+             (finish-output)
+             (format t "~&image: the switch was refused: ~a; running `current' again~%"
+                     (nlk::exec-into-image (if (eq target :folder)
+                                               (nlk:organism-binary)
+                                               (saved-image-path target))
+                                           :lease lease))
+             (finish-output)
+             (return (format t "~&restart refused: ~a~%" (run-current-again))))))))))
 
 (defun seat-launch (model session-id launch)
   "Seat LAUNCH, what the command line asked of SESSION-ID (RUN-CHAT-GATEWAY),

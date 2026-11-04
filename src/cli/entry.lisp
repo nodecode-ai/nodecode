@@ -991,6 +991,10 @@ condition's report, exit 1."
   ;; anything else is read. Errors print and exit nonzero instead of dropping
   ;; an operator into the SBCL debugger.
   (nlk:note-boot-phase "main")
+  ;; Before anything probes the store's lock: a heap's memory of the locks it
+  ;; held is another process's, and a lease an exec handed on is this one's
+  ;; (store.lisp, ADOPT-HANDED-LEASE).
+  (nlk::adopt-handed-lease)
   ;; The debugger-disabled runtime otherwise exits the whole process when
   ;; any background thread reaches its debugger, including layer workers.
   (install-worker-error-guard)

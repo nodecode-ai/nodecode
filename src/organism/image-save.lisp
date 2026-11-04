@@ -73,3 +73,38 @@ kept for the image to adopt. Returns only when it could not: (values NIL TEXT)."
         (values nil (format nil "the kernel refused the exec of image ~a: ~a"
                             name (nlk::exec-into-image (saved-image-path name) :lease lease))))
     (error (condition) (values nil (princ-to-string condition)))))
+
+;;; --- a switch: another heap, or the folder, in this organism's place ----------
+
+(defun switch-refusal (name)
+  "Why this organism cannot run heap NAME -- NIL: the folder -- in its own
+place, or NIL when it can."
+  (or (and name (saved-image-refusal name))
+      #+win32 "Windows has no exec: restore the image, then start nodecode again"
+      (unless *serving*
+        "only the organism that serves switches; this process is not it")
+      (unless (nlk:organism-binary)
+        "this image was not started from an installed binary, so it cannot switch")
+      (and (null name) (null (getf nlk::*saved-image* :name))
+           "this organism already runs the folder")
+      (and *image-wait* (bt2:thread-alive-p *image-wait*)
+           "a save or a switch already waits for the turn in flight to end")))
+
+(defun switch-image (name)
+  "Run heap NAME -- NIL: the folder, as the installed binary loads it -- in
+this organism's place once no turn is in flight: same pid, no restart, the
+store's lease held across the exec, so no shell or second organism takes
+the store between (SERVE-SWITCH). A restore pointer left for the next launch
+gives way to it. => words; signals the refusal where it cannot."
+  (when-let (refusal (switch-refusal name)) (error "~a" refusal))
+  (ignore-errors (delete-file (restore-pointer-path)))
+  ;; Asked at once and every half second, after the answer has left: the
+  ;; process that answers is the one about to be replaced.
+  (setf *image-wait*
+        (spawn "image-switch-idle"
+          (sleep 0.3)
+          (loop while (ignore-errors (nlk:any-active-turn-p))
+                do (sleep 0.5))
+          (serve-switch (or name :folder))))
+  (format nil "switching to ~a once no turn is in flight: the same organism, its store held throughout"
+          (if name (format nil "image ~a" name) "the folder")))
