@@ -79,6 +79,19 @@
         (is (= 1 (sb-posix:fcntl lock sb-posix:f-getfd)) "and closes it at a later exec again")
         (is (null (sb-posix:getenv variable)) "no child or successor is told of it")))))
 
+(deftest a-store-closed-to-become-another-heap-keeps-its-lease (with-temp-store (store))
+  ;; Released and taken back, the lock was free for a moment a rival could
+  ;; take; kept, it never is.
+  (let ((path (nlk::store-path store))
+        (lock (nlk::store-lock-fd store)))
+    (let ((nlk::*keep-store-lease* t))
+      (nlk:close-store))
+    (is (eql lock (nlk::held-lock (nlk::lock-path-for-store path))) "the same lock is still held")
+    (is (nlk::store-lease-mine-p path) "and still this process's")
+    (is (eql (sb-posix:getpid) (nlk::read-store-holder path)) "the sidecar still names this process")
+    (let ((reopened (nlk:open-store :path path)))
+      (is (eql lock (nlk::store-lock-fd reopened)) "a store opened after adopts it"))))
+
 (deftest a-switch-says-why-it-cannot-run ()
   (let ((nodecode.evolved::*serving* nil))
     (is (search "only the organism that serves" (nodecode.evolved::switch-refusal nil)))

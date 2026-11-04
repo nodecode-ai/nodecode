@@ -1703,7 +1703,10 @@ a stop that has not let it go within *STOP-SECONDS* is cut short (CUT-SHORT)."
   (when (and (eq what :stop) *serving* (not *stopping*))
     (setf *stopping* t)
     (spawn "stop-deadline" (sleep *stop-seconds*) (cut-short)))
-  (setf *serve-next* what)
+  ;; A save or a switch execs another heap in this pid: the store closes
+  ;; with its lease kept, for the exec to hand on (*KEEP-STORE-LEASE*).
+  (setf nlk::*keep-store-lease* (and (member what '(:image :switch)) t)
+        *serve-next* what)
   (bt2:signal-semaphore *serve-wake*))
 
 (defun serve-image (name)
@@ -1711,6 +1714,13 @@ a stop that has not let it go within *STOP-SECONDS* is cut short (CUT-SHORT)."
 go, and go on from that image in place (SERVE-NEXT :IMAGE)."
   (setf *serve-image* name)
   (serve-next :image))
+
+(defun kept-store-lease (path)
+  "The store's lease for the exec that follows: the one CLOSE-STORE kept
+(*KEEP-STORE-LEASE*), else taken back now; NIL when another process took it."
+  (setf nlk::*keep-store-lease* nil)
+  (or (nlk::held-lock (nlk::lock-path-for-store (merge-pathnames path)))
+      (ignore-errors (nlk::hold-store-lease path))))
 
 (defun serve-switch (target)
   "Have the headless owner run TARGET -- a saved heap's name, or :FOLDER --
@@ -1839,10 +1849,11 @@ quietly."
           ;; the fork, so the binary runs the folder again, as a restart does.
           (:image
            (let ((name (shiftf *serve-image* nil))
-                 ;; The store's lease is taken back at once and held through
-                 ;; the save into the image, which adopts it (OPEN-STORE): a
-                 ;; shell that saw the lock free would take the organism.
-                 (lease (ignore-errors (nlk::hold-store-lease path))))
+                 ;; The store's lease, kept when the store closed, is held
+                 ;; through the save into the image, which adopts it
+                 ;; (OPEN-STORE): a shell that saw the lock free would take
+                 ;; the organism.
+                 (lease (kept-store-lease path)))
              (setf *serve-next* nil *stopping* nil)
              (multiple-value-bind (heap why)
                  (become-saved-image name :lease lease)
@@ -1852,12 +1863,12 @@ quietly."
                (return (format t "~&restart refused: ~a~%" (run-current-again))))))
           ;; A switch saves nothing: the heap chosen -- or the installed
           ;; binary, which loads the folder -- runs in this process's place,
-          ;; the store's lease taken back at once and handed across the exec,
-          ;; so no shell finds the store free between the two. Back here the
+          ;; the store's lease kept when the store closed and handed across
+          ;; the exec, so no shell finds the store free between the two. Back here the
           ;; kernel refused it, and `current' runs again as a restart does.
           (:switch
            (let ((target (shiftf *serve-switch* nil))
-                 (lease (ignore-errors (nlk::hold-store-lease path))))
+                 (lease (kept-store-lease path)))
              (setf *serve-next* nil *stopping* nil)
              (format t "~&image: running ~a in place~%" (if (eq target :folder) "the folder" target))
              (finish-output)

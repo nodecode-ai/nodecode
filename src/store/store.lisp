@@ -690,10 +690,17 @@ successor or child is told of it."
           (pid (values :dirty-death pid port))
           (t (values :clean-shutdown nil nil)))))
 
+(defvar *keep-store-lease* nil
+  "T while the organism lets its store go to become another heap in this
+same pid (a save, a switch): the store closes and its lease stays held --
+still in *HELD-LOCKS*, the holder sidecar still naming this pid -- for the
+exec to hand on, so not even the moment between a release and a re-take
+leaves the store free.")
+
 (defun release-store-lease (store)
-  (when store.lease-path
+  (when (and store.lease-path (not *keep-store-lease*))
     (ignore-errors (delete-file store.lease-path)))
-  (when store.lock-fd
+  (when (and store.lock-fd (not *keep-store-lease*))
     (ignore-errors (unlock-file store.lock-fd)))
   (setf store.lease-path nil
         store.lock-fd nil))
