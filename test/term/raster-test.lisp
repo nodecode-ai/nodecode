@@ -16,7 +16,9 @@
     (dotimes (y 7) (setf (aref indices (+ (* y 5) 4)) 1))
     (setf (aref indices 0) -1)
     (is (equal (esc-text "~EP0;1;0q\"1;1;5;7#0;2;100;0;0#1;2;0;0;100#0}~~~~~~$#1!4?~~-#0!4@$#1!4?@~E\\")
-               (nlt:sixel-data indices #((255 0 0) (0 0 255)) 5 7)))))
+               (nlt:sixel-data indices #((255 0 0) (0 0 255)) 5 7)))
+    (is (equal (esc-text "~EP0;1;0q\"1;1;5;1#0;2;100;0;0#1;2;0;0;100#0!4@$#1!4?@~E\\")
+               (nlt:sixel-data indices #((255 0 0) (0 0 255)) 5 1 :top 6)) "from a first row: the rows below it alone")))
 
 (deftest a-palette-keeps-few-colours-whole-and-caps-many ()
   (multiple-value-bind (indices palette)

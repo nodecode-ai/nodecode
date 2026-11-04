@@ -71,6 +71,23 @@ of the row that owns that lane row, as its last render noted them
     (incf start))
   (cdr (assoc (- index start) (row-image-bands ref))))
 
+(defun image-band-covering (refs plains index width &aux (ref (aref refs index)) (start index))
+  "The image fact whose inline band holds lane row INDEX at frame WIDTH, and
+as a second value how many of its rows stand above INDEX: (values NIL NIL)
+where no band holds it."
+  ;; IMAGE-BAND-AT's reading of the block, for a band scrolled partly above
+  ;; the viewport: a sixel or half-block picture is drawn from the row that
+  ;; shows.
+  (loop while (and (plusp start) (eq ref (aref refs (1- start))))
+        do (decf start))
+  (when (zerop (length (string-trim '(#\Space) (aref plains start))))
+    (incf start))
+  (loop with offset = (- index start)
+        for (opens . fact) in (and (transcript-row-p ref) (row-image-bands ref))
+        when (and (<= opens offset) (< offset (+ opens (image-preview-rows fact width))))
+          return (values fact (- offset opens))
+        finally (return (values nil nil))))
+
 (defun image-protocol (model)
   "How MODEL's terminal is given a picture: :KITTY once it answered the kitty
 graphics query OK; once it answered DA1 instead, :SIXEL when that listed
@@ -94,13 +111,14 @@ sixels on whatever its font, and answers with.")
   "A picture this shell draws itself: its decoded PIXELS, the SHAPE its
 COLORS (and a sixel's INDICES and PALETTE) were made for, and the
 TERMINAL-IMAGEs drawn from them, by the rows shown."
-  pixels shape colors indices palette (images '()))
+  pixels shape colors indices palette grid (images '()))
 
-(defun raster-image (entry protocol rows visible columns cell)
+(defun raster-image (entry protocol rows skip visible columns cell)
   "ENTRY's picture as a TERMINAL-IMAGE of PROTOCOL (:SIXEL or :BLOCKS) for a
-band of ROWS rows, VISIBLE of them on screen, COLUMNS wide, under CELL, the
-(WIDTH . HEIGHT) in pixels of a cell: the band's height, never wider than
-the columns, never larger than the picture."
+band of ROWS rows, the VISIBLE on screen below the SKIP scrolled above it,
+COLUMNS wide, under CELL, the (WIDTH . HEIGHT) in pixels of a cell: the
+band's height, never wider than the columns, never larger than the
+picture. NIL when none of the picture falls in the rows shown."
   (let* ((pixels (raster-entry-pixels entry))
          (w (pixels-width pixels))
          (h (pixels-height pixels))
@@ -119,40 +137,46 @@ the columns, never larger than the picture."
           (setf (raster-entry-shape entry) shape
                 (raster-entry-colors entry) colors
                 (raster-entry-images entry) '())
-          (when (eq protocol :sixel)
-            (multiple-value-bind (indices palette) (nlt:quantize-colors colors)
-              (setf (raster-entry-indices entry) indices
-                    (raster-entry-palette entry) palette)))))
-      ;; A sixel shows the rows that fit, cut off where the band leaves the
-      ;; screen; half blocks are cells, and the placement's rows cut them.
-      (let ((cut (if (eq protocol :sixel) (min th (* visible ch)) th)))
-        (or (cdr (assoc cut (raster-entry-images entry)))
-            (let ((image (if (eq protocol :sixel)
-                             (nlt:make-terminal-image
-                              :protocol :sixel :width tw :height cut
-                              :columns (ceiling tw cw) :rows (ceiling cut ch)
-                              :data (nlt:sixel-data (raster-entry-indices entry)
-                                                    (raster-entry-palette entry) tw cut))
-                             (let ((profile (effective-color-profile)))
+          (if (eq protocol :sixel)
+              (multiple-value-bind (indices palette) (nlt:quantize-colors colors)
+                (setf (raster-entry-indices entry) indices
+                      (raster-entry-palette entry) palette))
+              (let ((profile (effective-color-profile)))
+                (setf (raster-entry-grid entry)
+                      (nlt:half-block-grid colors tw th
+                                           (lambda (color foreground-p)
+                                             (color-sgr (nlt:unpack-rgb color) foreground-p profile))))))))
+      ;; The rows shown are cut out of the picture: a band scrolled partly
+      ;; above the viewport, or running past its foot, draws what shows.
+      (let* ((top (min th (* skip ch)))
+             (bottom (min th (* (+ skip visible) ch)))
+             (cut (cons top bottom)))
+        (when (< top bottom)
+          (or (cdr (assoc cut (raster-entry-images entry) :test #'equal))
+              (let ((image (if (eq protocol :sixel)
                                (nlt:make-terminal-image
-                                :protocol :blocks :width tw :height th
-                                :columns tw :rows (ceiling th 2)
-                                :data (nlt:half-block-grid
-                                       (raster-entry-colors entry) tw th
-                                       (lambda (color foreground-p)
-                                         (color-sgr (nlt:unpack-rgb color) foreground-p profile))))))))
-              ;; A band scrolling into view asks for one cut a row: the last
-              ;; few are kept, never every one it passed through.
-              (setf (raster-entry-images entry)
-                    (cons (cons cut image) (subseq (raster-entry-images entry)
-                                                   0 (min 7 (length (raster-entry-images entry))))))
-              image))))))
+                                :protocol :sixel :width tw :height (- bottom top)
+                                :columns (ceiling tw cw) :rows (ceiling (- bottom top) ch)
+                                :data (nlt:sixel-data (raster-entry-indices entry)
+                                                      (raster-entry-palette entry)
+                                                      tw (- bottom top) :top top))
+                               (let ((grid (raster-entry-grid entry)))
+                                 (nlt:make-terminal-image
+                                  :protocol :blocks :width tw :height (- bottom top)
+                                  :columns tw :rows (ceiling (- bottom top) 2)
+                                  :data (subseq grid (floor top 2) (min (length grid) (ceiling bottom 2))))))))
+                ;; A band scrolling into view asks for one cut a row: the last
+                ;; few are kept, never every one it passed through.
+                (setf (raster-entry-images entry)
+                      (cons (cons cut image) (subseq (raster-entry-images entry)
+                                                     0 (min 7 (length (raster-entry-images entry))))))
+                image)))))))
 
-(defun ensure-raster-image (model protocol key payload rows visible columns)
+(defun ensure-raster-image (model protocol key payload rows skip visible columns)
   "The NLT:TERMINAL-IMAGE drawing PAYLOAD under KEY as PROTOCOL, :SIXEL or
-:BLOCKS, for a band of ROWS rows, VISIBLE of them on screen, COLUMNS wide
-(RASTER-IMAGE): NIL when the payload is no PNG this reads, or the cache is
-full."
+:BLOCKS, for a band of ROWS rows, the VISIBLE on screen below the SKIP above
+it, COLUMNS wide (RASTER-IMAGE): NIL when the payload is no PNG this reads,
+or the cache is full."
   ;; KEY is the kitty cache's: the call the image belongs to, or the path.
   ;; The PNG is decoded once; a resize, a scroll or a new profile draws it
   ;; again from the pixels.
@@ -171,7 +195,7 @@ full."
        (when (raster-entry-p entry)
          ;; A picture that cannot be drawn is not tried again every frame.
          (handler-case
-             (raster-image entry protocol rows visible columns
+             (raster-image entry protocol rows skip visible columns
                            (if (eq protocol :sixel)
                                (or (chat-model-cell-pixels model) *sixel-cell-pixels*)
                                '(1 . 2)))
@@ -189,8 +213,8 @@ each anchors its image at the first row of its own reserved band
   ;; band that begins above the viewport anchors nothing: the kitty protocol
   ;; places a whole image at a cell, and showing part of one is a crop this
   ;; does not ask for. A sixel or half-block picture is cut where the band
-  ;; leaves the viewport instead: it is drawn into the cells, and cells past
-  ;; the band are the composer's. An image draws over the cells, a sheet's
+  ;; leaves the viewport instead, at its head or its foot: it is drawn into
+  ;; the cells, and cells past the band are another's. An image draws over the cells, a sheet's
   ;; window too, so none is placed while one is open.
   (when (and protocol (not (sheet-dialog-p (chat-model-dialog model))))
     (bind (((vp-height _ _ top-pad) (transcript-band-metrics model))
@@ -205,11 +229,15 @@ each anchors its image at the first row of its own reserved band
       (loop for row from 0 below (min vp-height (length refs) (length plains))
             for index = (band-window-row-index window row)
             for ref = (and index (< index (min (length refs) (length plains))) (aref refs index))
-            for fact = (and ref (transcript-row-p ref) (row-image-bands ref)
-                            (image-band-at refs plains index))
+            ;; A sixel or half-block band whose head is above the viewport is
+            ;; met at the viewport's first row, and drawn from the row there.
+            for (fact skip) = (cond ((null (and ref (transcript-row-p ref) (row-image-bands ref))) nil)
+                                    ((and (zerop row) (not (eq protocol :kitty)))
+                                     (multiple-value-list (image-band-covering refs plains index width)))
+                                    (t (list (image-band-at refs plains index) 0)))
             for payload = (and fact (image-preview-payload fact ref))
             for band = (and payload (image-preview-rows fact width))
-            for rows = (and band (if (eq protocol :kitty) band (min band (- vp-height row))))
+            for rows = (and band (if (eq protocol :kitty) band (min (- band skip) (- vp-height row))))
             ;; A card's own call owns the transmission: two
             ;; looks at one path are two images. An answer's
             ;; picture is a file named by its bytes.
@@ -217,7 +245,7 @@ each anchors its image at the first row of its own reserved band
                              (if (eq protocol :kitty)
                                  (ensure-kitty-image model (or ref.tool-call-id payload) payload)
                                  (ensure-raster-image model protocol (or ref.tool-call-id payload) payload
-                                                      band rows (max 8 (- width 4)))))
+                                                      band skip rows (max 8 (- width 4)))))
             for top = (+ 3 top-pad row)
             ;; An image draws over the cells, so one sharing a row with a
             ;; toast would cover it: it waits for the toast to go. A

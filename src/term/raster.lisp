@@ -147,11 +147,11 @@ pixels' mean."
       (format out "!~D~C" count char)
       (loop repeat count do (write-char char out))))
 
-(defun sixel-data (indices palette width height)
-  "The DCS string that draws INDICES, WIDTH x HEIGHT palette indices with -1
-for a clear pixel (QUANTIZE-COLORS), at the cursor: 1:1 pixels, the
-PALETTE in registers by percentage, and clear pixels left as the cells
-under them are."
+(defun sixel-data (indices palette width height &key (top 0))
+  "The DCS string that draws HEIGHT rows of INDICES, palette indices WIDTH a
+row with -1 for a clear pixel (QUANTIZE-COLORS), from row TOP, at the
+cursor: 1:1 pixels, the PALETTE in registers by percentage, and clear pixels
+left as the cells under them are."
   ;; P2 = 1 keeps the cells' own ground under a clear pixel; the raster
   ;; attributes say 1:1 and the size, so no terminal guesses an aspect. Each
   ;; band of six rows is one line per colour present in it, `$' between them
@@ -165,12 +165,12 @@ under them are."
       (loop for (r g b) across palette
             for register from 0
             do (format out "#~D;2;~D;~D;~D" register (round (* r 100) 255) (round (* g 100) 255) (round (* b 100) 255)))
-      (loop for top from 0 below height by 6
+      (loop for band from 0 below height by 6
             do (let ((used '()))
-                 (loop for y from top below (min height (+ top 6))
-                       for bit = (ash 1 (- y top))
+                 (loop for y from band below (min height (+ band 6))
+                       for bit = (ash 1 (- y band))
                        do (dotimes (x width)
-                            (let ((color (aref indices (+ (* y width) x))))
+                            (let ((color (aref indices (+ (* (+ top y) width) x))))
                               (unless (minusp color)
                                 (when (zerop (aref present color))
                                   (setf (aref present color) 1)
@@ -194,7 +194,7 @@ under them are."
                           (when more (write-char #\$ out))
                           (fill bits 0 :start start :end (+ start width))
                           (setf (aref present color) 0))
-                 (when (< (+ top 6) height) (write-char #\- out))))
+                 (when (< (+ band 6) height) (write-char #\- out))))
       (format out "~C\\" #\Escape))))
 
 ;;; --- half blocks ----------------------------------------------------------
