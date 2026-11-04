@@ -1,9 +1,9 @@
 ;;;; engine/policy-guard.lisp --- the fixed rules the agent's own policy cannot reach.
 ;;;;
 ;;;; With policy.self on (POLICY-SELF-P, engine/policy) the agent writes its own
-;;;; AGENTS.md, SOUL.md and system prompt in the policy store, and a change
-;;;; binds once the review adopts it. What it does not write are the fixed
-;;;; rules, the operator's:
+;;;; AGENTS.md, SOUL.md and system prompt in the policy store, and an edit
+;;;; binds from its next request. What it does not write are the fixed rules,
+;;;; the operator's:
 ;;;;
 ;;;;   - the charter: the home's AGENTS.md, riding as `operator-rules' ahead of
 ;;;;     the agent's own `agent-rules' and outranking them. On a box whose home
@@ -81,15 +81,17 @@ the policy store's history."
   (when (and (policy-tool-call-p) (policy-self-on-p))
     (cond ((policy-same-file-p path (charter-path))
            (format nil "~a is the operator's charter: the fixed rules you work under, ~
-                        which you do not edit. Your own rules are AGENTS.md in the ~
-                        policy store; propose a change there."
-                   (namestring (charter-path))))
+                        which you do not edit. Your own rules are AGENTS.md in ~a; ~
+                        edit that file instead."
+                   (namestring (charter-path)) (namestring (policy-directory))))
           ((and *shared-config-path* (policy-same-file-p path *shared-config-path*))
            (format nil "~a holds the fixed config members (~{~{~a~^.~}~^, ~}); write ~
                         any other member with config-set."
                    (namestring *shared-config-path*) *policy-fixed-config*))
           ((policy-under-p path (merge-pathnames ".git/" (policy-directory)))
-           "the policy store's history is the review's to write: a draft goes in the store's working tree and binds once the review adopts it."))))
+           (format nil "the policy store's history is written by its own commits: edit the ~
+                        files in ~a, and each edit is committed for you."
+                   (namestring (policy-directory)))))))
 
 (defun policy-config-key-match-p (pattern key)
   (or (string= pattern "*") (string-equal pattern key)))
@@ -146,14 +148,3 @@ call: `policy' always, and with policy.self on every member in
                                :test #'string=)))
              (format nil "~a stays in `cells' while self-policy is on: the guard cell ~
                           is one of the operator's fixed rules." *policy-guard-cell*))))))
-
-(defun charter-refusal (names)
-  "Why a policy proposal over NAMES (store file names) is refused, or NIL: a
-name that is not a plain file of the store -- a path, `..', a dot file such as
-.git -- could reach the charter, the config or the store's history, which no
-proposal changes."
-  (let ((bad (find-if-not #'policy-name-p names)))
-    (and bad
-         (format nil "~s is not a file of the policy store: a proposal changes the ~
-                      store's own files, never the charter (~a), the config or the ~
-                      store's history." bad (namestring (charter-path))))))

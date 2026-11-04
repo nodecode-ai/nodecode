@@ -27,7 +27,7 @@
     (with-policy-mode (t)
       (is (search "charter" (or (policy-refusal-text (lambda () (nle::write-file-text charter "loosened"))) "")) "the charter write is refused, the refusal naming it")
       (is (equal "operator rule" (uiop:read-file-string charter)) "nothing was written")
-      (is (null (policy-refusal-text (lambda () (nle::write-file-text (nlk:home "policy/AGENTS.md") "own rule")))) "the agent's own AGENTS.md in the store is its draft to write"))
+      (is (null (policy-refusal-text (lambda () (nle::write-file-text (nlk:home "policy/AGENTS.md") "own rule")))) "the agent's own AGENTS.md in the store is its own to write"))
     (with-policy-mode (nil)
       (is (null (policy-refusal-text (lambda () (nle::write-file-text charter "edited")))) "with the mode off a write is today's"))
     (with-policy-mode (t :tool-call nil)
@@ -88,8 +88,3 @@
     (with-policy-mode (nil)
       (is (null (policy-refusal-text (lambda () (nle:config-set '("channels" "discord" "owner") "3")))) "with the mode off the owner is today's to set")
       (is (search "\"3\"" (uiop:read-file-string path))))))
-
-(deftest charter-refusal-keeps-a-proposal-inside-the-store ()
-  (is (null (nle::charter-refusal '("AGENTS.md" "SOUL.md" "SYSTEM.md"))) "store files pass")
-  (dolist (name '("../AGENTS.md" "/home/x/AGENTS.md" ".git/HEAD" "sub\\x" ""))
-    (is (nle::charter-refusal (list "SOUL.md" name)) name)))

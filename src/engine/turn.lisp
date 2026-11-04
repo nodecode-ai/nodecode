@@ -67,6 +67,24 @@ moment carries: the disposition to adapt, the economy behind it and the
 commentary the transcript shows under a run. Mutable material: the
 organism is expected to rewrite it.")
 
+(defun policy-system-prompt ()
+  "The system message a request carries: with policy.self on, the agent's own
+SYSTEM.md from its policy store (engine/policy) when it wrote one, else
+*SYSTEM-PROMPT*. When this release ships another prompt than the one
+SYSTEM.md was written against (SYSTEM.shipped beside it), a standing notice
+says so: the agent's prompt is neither replaced nor left behind silently."
+  (let* ((own (and (policy-self-p) (ignore-errors (policy-text "SYSTEM.md"))))
+         (own (and own (plusp (length (nlk:trimmed own))) own))
+         (was (and own (ignore-errors (policy-text "SYSTEM.shipped"))))
+         (line (and was (string/= was *system-prompt*)
+                    (format nil "policy: this release ships a new system prompt, and your SYSTEM.md ~
+                                 in ~a was written against the one before (SYSTEM.shipped beside ~
+                                 it). Read the new one, *system-prompt*, and fold what changed into ~
+                                 yours." (namestring (policy-directory))))))
+    (unless (equal line (second (assoc "policy-prompt" (nlk:standing-notices) :test #'string=)))
+      (ignore-errors (notice line :level :warning :key "policy-prompt")))
+    (or own *system-prompt*)))
+
 (defparameter +max-pre-call-governor-steps+ 8
   "Maximum bounded history reductions before one provider request. A request
 that still exceeds a known window after this cap is sent so the provider can
@@ -3990,7 +4008,7 @@ given if it began now — the system prompt, its standing and live sections,
 and the payload of the tool BINDINGS — and of SECTIONS the standing ones,
 the ones a pin holds."
   (let ((standing (kept-sections (read-harness-sections session-id))))
-    (values (copy-seq (policy-system-prompt session-id))
+    (values (copy-seq (policy-system-prompt))
             (kept-sections (append standing (read-live-sections session-id)))
             (tools-payload bindings)
             standing)))
@@ -4141,7 +4159,7 @@ fold of the fact reproduces."
                                        turns floor
                                        :budget window
                                        :tools (or tools (tools-payload))
-                                       :system-prompt (or system-prompt (policy-system-prompt (session-id session)))
+                                       :system-prompt (or system-prompt (policy-system-prompt))
                                        :head head
                                        :calibration calibration
                                        :floors floors)))

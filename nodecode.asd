@@ -257,8 +257,8 @@ of stacking."
      ;; the agent's own policy store, ahead of the context that reads it
      (:file "engine/policy")
      ;; engine/policy-guard and engine/policy-record: the fixed rules a tool
-     ;; call cannot write while policy.self is on, and the record of what the
-     ;; review adopted and dropped, pushed to a protected branch.
+     ;; call cannot write while policy.self is on, and the store's history
+     ;; pushed to a protected branch.
      (:file "engine/policy-guard")
      (:file "engine/policy-record")
      ;; context precedes turn: the context engine
@@ -282,12 +282,6 @@ of stacking."
      ;; image-fit shrinks, named in *IMAGE-DECODERS* there for image/gif.
      (:file "engine/image/gif")
      (:file "engine/turn")
-     ;; policy-replay: what an edit to the agent's own policy would change in
-     ;; its real decisions, the evidence policy-review judges by.
-     (:file "engine/policy-replay")
-     ;; policy-review: an edit to the agent's own policy, draft to verdict;
-     ;; after turn, whose system prompt it reads under policy.self.
-     (:file "engine/policy-review")
      ;; shell precedes exec: the grammar of what (sh ...) runs — a command
      ;; string as its simple commands, each with words, redirects and the
      ;; substitution mark — is one pure authority, read by exec's read-only
@@ -585,8 +579,6 @@ of stacking."
      ;; gate reads the pool the same way.
      (:file "engine/provider-watchdog-test")
      (:file "engine/turn-test")
-     (:file "engine/policy-review-test")
-     (:file "engine/policy-replay-test")
      ;; meter-test follows turn-test: its budget turns drive the tool-call
      ;; seam through turn-test's wire helpers and probe schema.
      (:file "engine/meter-test")
