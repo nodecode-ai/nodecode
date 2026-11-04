@@ -116,7 +116,7 @@
                                                 :store "/Users/Shared/run/smoke/history.db" :port 47002
                                                 :path (lambda (path) (string-right-trim "/" (uiop:native-namestring path)))
                                                 :exists (constantly nil))))
-    (is (search "(allow file-read* file-write* (regex #\"^/Users/Shared/run/smoke/history\\.db([-.][^/]*)?$\"))" profile) "the store and its -wal, -shm, .lock and .owner sidecars, and nothing else of its directory")
+    (is (search "(allow file-read* file-write* (regex #\"^/Users/Shared/run/smoke/(history\\.db([-.][^/]*)?|\\.nodecode-write-probe-[0-9]+)$\"))" profile) "the store, its -wal, -shm, .lock and .owner sidecars and nodecode's write probe, and nothing else of its directory")
     (is (search "(literal \"/Users/Shared/run/smoke\")" profile) "its directory can be stat'ed, so the path resolves")
     (is (not (search "(subpath \"/Users/Shared/run/smoke\")" profile)) "but is never read or written whole")))
 

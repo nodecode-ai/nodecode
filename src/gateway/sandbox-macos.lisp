@@ -110,7 +110,8 @@ loopback port its gateway binds and is reached on; PROXY-PORT the egress
 proxy's, or NIL for a jail with no way out at all; RUN, CACHE and TEMPORARY
 the directories under HOME's sandbox/ that are the jail's own; STORE the
 store the launcher named, which with its sidecars (-wal, -shm, .lock,
-.owner) the jail reads and writes wherever it lies; USER-HOME
+.owner) and the write probe nodecode makes beside it the jail reads and
+writes wherever it lies, nothing else of its directory; USER-HOME
 the account's home, whose Library/ is refused again even when the folder is
 the home itself, unless the folder lies inside it. PATH turns a
 name into the one Seatbelt matches (SEATBELT-PATH); EXISTS decides which
@@ -173,9 +174,13 @@ entries of +SANDBOX-HOME-READ+ are named."
       (format out ";; the jail's own temporary directory, cache and runtime directory~%")
       (seatbelt-rule out "allow" '("file-read*" "file-write*") own)
       (when store
-        (format out ";; the store the launcher named, and its sidecars, wherever it lies~%")
-        (format out "(allow file-read* file-write* (regex #\"^~a([-.][^/]*)?$\"))~%"
-                (seatbelt-regex-quote store)))
+        ;; FOLDER-WRITE-ERRNO proves the directory writable with a probe file
+        ;; of its own before the store opens.
+        (let ((cut (position #\/ store :from-end t)))
+          (format out ";; the store the launcher named, its sidecars and nodecode's write probe beside it~%")
+          (format out "(allow file-read* file-write* (regex #\"^~a/(~a([-.][^/]*)?|\\.nodecode-write-probe-[0-9]+)$\"))~%"
+                  (seatbelt-regex-quote (subseq store 0 cut))
+                  (seatbelt-regex-quote (subseq store (1+ cut))))))
       (format out "~%;; network: the gateway's own loopback port, and the launcher's proxy~%")
       (when port
         (format out "(allow network-bind network-inbound (local ip \"localhost:~d\"))~%" port)
