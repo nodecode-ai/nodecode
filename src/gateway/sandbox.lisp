@@ -392,8 +392,9 @@ folder's commits past the HEAD the mark recorded, with the files they touch."
   (merge-pathnames "sandbox.jsonc" (uiop:ensure-directory-pathname home)))
 
 (defun sandbox-os-jail-p ()
-  "Whether this OS has a jail nodecode runs: Linux for now."
-  #+linux t #-linux nil)
+  "Whether this OS has a jail nodecode runs: Linux (bubblewrap) and macOS
+(Seatbelt) for now."
+  #+(or linux darwin) t #-(or linux darwin) nil)
 
 (defun sandbox-setting (home)
   ":OFF when HOME's sandbox.jsonc says \"jail\": false, else :ON."
@@ -712,16 +713,23 @@ EXPLICIT is a launch that asked for --sandbox: it alone refuses a home an
 organism already serves outside the jail. A launch jailed by default attaches
 to whatever serves the home, as every launch does, and jails the organism it
 starts itself."
-  (cond #-linux
-        (t "--sandbox runs on Linux for now; macOS and Windows jails are not yet wired")
+  (cond #-(or linux darwin)
+        (t "--sandbox runs on Linux and macOS for now; the Windows jail is not yet wired")
+        #+darwin
+        ((sandbox-seatbelt-requirements))
+        #+linux
         ((null (srt-program))
          "the jail needs srt, Anthropic's sandbox runtime: npm install -g @anthropic-ai/sandbox-runtime (or set NODECODE_SRT to it)")
+        #+linux
         ((null (nlk::executable-on-path "bwrap"))
          "the jail needs bubblewrap: install bwrap")
+        #+linux
         ((null (nlk::executable-on-path "socat"))
          "the jail needs socat")
+        #+linux
         ((not (socat-accepts-a-descriptor-p))
          "the jail needs socat 1.7.4 or later: the jail takes its one way in as a listening socket (socat's ACCEPT-FD)")
+        #+linux
         ((> (length (uiop:native-namestring (sandbox-srt-temporary-directory (nlk:home))))
             +sandbox-socket-path-room+)
          (format nil "this home's path is too long for srt's sockets under it (~a): use -p NAME for a home with a shorter one"
@@ -730,6 +738,9 @@ starts itself."
          "the background gateway serves this home unsandboxed: `nodecode gateway off' first, or use -p NAME for another home")
         ((and explicit (ignore-errors (nlk::store-lease-held-p store-path)))
          "an organism already runs this home unsandboxed: quit its shells or `nodecode gateway off', or use -p NAME for another home")
+        ;; srt can only mask a key it finds in a file of its own; under
+        ;; Seatbelt the home's key stores are refused whole.
+        #+linux
         ((sandbox-unsplit-keys)
          (format nil "auth.json still holds the API key~p of ~{~a~^, ~}: `nodecode secrets split' moves each into a file of its own, which the jail sees only as a stand-in"
                  (length (sandbox-unsplit-keys)) (sandbox-unsplit-keys)))))
@@ -760,6 +771,8 @@ whose jail holds no folder of the launch's (SANDBOX-WORK-FOLDER)."
               reason
               (format nil "nodecode runs its organism in a jail on this machine by default, and the jail cannot start here: ~a. Install what it needs, or run `nodecode sandbox off' to run this home without the jail, with your user's full access"
                       (string-right-trim "." reason))))
+        #+darwin (sandbox-seatbelt-preflight :serve serve)
+        #-darwin
         (let* ((home (nlk:home))
                (srt (srt-program))
                (run (merge-pathnames "sandbox/run/" (uiop:ensure-directory-pathname home)))
@@ -843,15 +856,20 @@ must be the host-side listener on PORT (CALL-WITH-SANDBOX-STDOUT)."
 
 (defun sandbox-wrap-command (command)
   "COMMAND, a serve argv, as this shell spawns it: unchanged outside a
-sandboxed shell; inside one, jailed (SANDBOX-WRAP), to be spawned with
+sandboxed shell; inside one, jailed -- under Seatbelt on macOS
+(SANDBOX-SEATBELT-WRAP), else by srt (SANDBOX-WRAP), to be spawned with
 the plan's listener as its stdout (CALL-WITH-SANDBOX-STDOUT)."
   (let ((plan *sandbox-plan*))
-    (if (and plan command)
-        (sandbox-wrap command :srt (getf plan :srt) :settings (getf plan :settings)
-                              :port (getf plan :port) :run (getf plan :run) :cache (getf plan :cache)
-                              :srt-temporary (getf plan :srt-temporary)
-                              :jail-temporary (getf plan :jail-temporary))
-        command)))
+    (cond ((not (and plan command)) command)
+          ((getf plan :seatbelt)
+           (sandbox-seatbelt-wrap command :profile (getf plan :seatbelt) :port (getf plan :port)
+                                          :run (getf plan :run) :cache (getf plan :cache)
+                                          :temporary (getf plan :temporary)
+                                          :proxy-port (getf plan :proxy-port)))
+          (t (sandbox-wrap command :srt (getf plan :srt) :settings (getf plan :settings)
+                                   :port (getf plan :port) :run (getf plan :run) :cache (getf plan :cache)
+                                   :srt-temporary (getf plan :srt-temporary)
+                                   :jail-temporary (getf plan :jail-temporary))))))
 
 (defparameter +sandbox-stop-grace-seconds+ 10
   "How long a jail has, once the signal that stops its launcher reached it,
@@ -919,7 +937,9 @@ outside a sandboxed shell, and answer what it answers. This shell's own
 copy of the listener closes once FUNCTION returns: the jail alone holds it,
 so the port refuses once the jail is gone."
   (let ((plan *sandbox-plan*))
-    (if (null plan)
+    ;; Under Seatbelt the jailed gateway binds the host's loopback port
+    ;; itself: there is no namespace to hand a listener into.
+    (if (or (null plan) (getf plan :seatbelt))
         (funcall function nil)
         (let ((listener (sandbox-listener (getf plan :port))))
           (unwind-protect (funcall function (sb-bsd-sockets:socket-file-descriptor listener))
