@@ -952,15 +952,17 @@ makes a new home."
                                                 (and description (plusp (length description))
                                                      description))))
                   :value name))
-   ;; The roster's last row: the gesture that makes a home instead of entering one. The
+   ;; The roster's last rows: the gestures that make a home instead of entering one. The
    ;; mark column says what the row does -- a plus, in the tone a row that acts gets --
    ;; and the detail says what lands on disk.
-   (list (make-picker-row
-          :label "New profile"
-          :mark "+"
-          :mark-tone :accent
-          :detail "make a home of its own, this one's settings and secrets carried over"
-          :value +new-profile-action+))))
+   (loop for (label detail value)
+           in `(("New profile" "make a home of its own, this one's settings and secrets carried over"
+                ,+new-profile-action+)
+                ("New empty profile" "nothing carried: the setup walk runs at its first launch" (:new :blank))
+                ("New fork" "your own cells and the layer copied too" (:new :all))
+                ("Bring a profile in" "from an archive an export wrote" :import)
+                ("Install a distribution" "a home from a git repository" :install))
+         collect (make-picker-row :label label :mark "+" :mark-tone :accent :detail detail :value value))))
 
 (defun profile-create-context ()
   "The muted rule line under the create field: what ENTER is about to make. A
@@ -969,38 +971,43 @@ why the field is still open with the name still in it."
   (format nil "ENTER makes ~a<name>/ — sharing memory, skills and credentials; Esc goes back to the roster"
           (namestring nlk:*profiles-directory*)))
 
-(defun open-profile-create-picker (model)
-  "The roster's create row: one field for a new home's name, in the pane the
-roster occupies. ENTER and ESC are PROFILE-CREATE-PICKER-INPUT's, which owns
-what each gesture means."
+(defun open-profile-create-picker (model &key (clone :settings) from)
+  "The roster's create rows: one field for a new home's name, in the pane the
+roster occupies, CLONE what it carries (:SETTINGS, :BLANK or :ALL, the
+`create' verb's) and FROM the profile it clones instead of this one. ENTER
+and ESC are PROFILE-CREATE-PICKER-INPUT's, which owns what each gesture
+means."
   (open-picker-dialog
    model "Profiles" '() nil
    :kind :profiles
-   :context " New"
-   :subtitle "a-z, 0-9, `-' and `_' — a home of its own that reads your memory, skills and credentials where they are"
+   :context (if from (format nil " New from ~a" from) " New")
+   :subtitle (ecase clone
+               (:settings "a-z, 0-9, `-' and `_' — a home of its own that reads your memory, skills and credentials where they are")
+               (:blank "a-z, 0-9, `-' and `_' — an empty home: the setup walk runs at its first launch")
+               (:all "a-z, 0-9, `-' and `_' — a fork: your own cells and the layer, with its history, copied too"))
    :input-label "New profile"
    :input ""
    :input-context (profile-create-context)
    :hint "enter create  esc back to the roster"
-   :on-input (lambda (model text) (profile-create-picker-input model text)))
+   :on-input (lambda (model text) (profile-create-picker-input model text :clone clone :from from)))
   nil)
 
-(defun profile-create-picker-input (model text &aux (dialog model.dialog)
-                                                    (name (and text (nlk:trimmed text))))
+(defun profile-create-picker-input (model text &key (clone :settings) from
+                                    &aux (dialog model.dialog) (name (and text (nlk:trimmed text))))
   "ENTER or ESC on the create field. ESC (TEXT NIL) is the way back to the
-roster, making nothing. ENTER makes the home the text names — the same
-NLK:PROFILE-CREATE the `create' verb calls, so the clone default and every
-refusal are that function's, not this gesture's — and reopens the roster
-seated on the new row, where the next ENTER takes this shell there. A refusal
-leaves the field open, the words in it, and says why underneath: the gesture
-was right, the name needs fixing."
+roster, making nothing. ENTER makes the home the text names, CLONE and FROM
+as the field was opened with — the same NLK:PROFILE-CREATE the `create' verb
+calls, so every refusal is that function's, not this gesture's — and
+reopens the roster seated on the new row, where the next ENTER takes this
+shell there. A refusal leaves the field open, the words in it, and says why
+underneath: the gesture was right, the name needs fixing."
   (if (null text)
       (progn (open-profiles-picker model) nil)
       (handler-case
           (open-profiles-picker
            model :seat name
            :notice (format nil "created ~a at ~a — ENTER takes this shell there"
-                           name (string-right-trim "/" (namestring (nlk:profile-create name)))))
+                           name (string-right-trim "/" (namestring (nlk:profile-create name :clone clone :from from)))))
         (nlk:profile-error (refusal)
           ;; The field and its words stay; the rule line carries the reason.
           (when dialog
@@ -1010,6 +1017,105 @@ was right, the name needs fixing."
 (defmacro with-profile-refusal (&body body)
   "BODY, with a profile refusal answered as the one line it is."
   `(with-handlers ((nlk:profile-error (refusal) (format nil "profile: ~a" refusal))) ,@body))
+
+(defun open-profile-field (model context label subtitle act)
+  "One field in the roster's pane under LABEL, CONTEXT beside the title and
+SUBTITLE over it: ENTER calls ACT with the text -- (MODEL TEXT) => the
+notice the roster comes back with -- and a refusal stays on the field with
+the words in it; ESC goes back to the roster."
+  (open-picker-dialog
+   model "Profiles" '() nil
+   :kind :profiles
+   :context context :subtitle subtitle
+   :input-label label :input ""
+   :hint "enter go  esc back to the roster"
+   :on-input (lambda (model text &aux (dialog model.dialog))
+               (if (null text)
+                   (open-profiles-picker model)
+                   (handler-case (open-profiles-picker model :notice (funcall act model (nlk:trimmed text)))
+                     (nlk:profile-error (refusal)
+                       (when dialog (setf dialog.input-context (format nil "~a" refusal)))
+                       nil)))))
+  nil)
+
+(defun profile-roster-act (model value)
+  "ENTER on one of the roster's rows past the homes: VALUE says which."
+  (cond
+    ((eql value +new-profile-action+) (open-profile-create-picker model))
+    ((equal value '(:new :blank)) (open-profile-create-picker model :clone :blank))
+    ((equal value '(:new :all)) (open-profile-create-picker model :clone :all))
+    ((eq value :import)
+     (open-profile-field model " Bring in" "Archive" "The tar.gz an export wrote: the profile is named as it says"
+                         (lambda (model path)
+                           (declare (ignore model))
+                           (nlk:profile-command (list "import" path) :command "/profile"))))
+    ((eq value :install)
+     (open-profile-field model " Install" "Repository" "A git repository laid out as a home, with a profile.jsonc naming it"
+                         (lambda (model url)
+                           (declare (ignore model))
+                           (nlk:profile-command (list "install" url) :command "/profile"))))))
+
+(defun profile-actions (record)
+  "What the roster's Right offers on RECORD's home, as (LABEL DETAIL ACTION)
+lists."
+  (let ((name (nlk:profile-record-name record))
+        (current (nlk:profile-record-current-p record))
+        (sticky (nlk:profile-record-sticky-p record)))
+    (remove nil
+            (list (and (not current) '("Run it here, now" "this shell comes back in that home" :switch))
+                  (if sticky
+                      '("Stop booting it by default" "a launch that names no profile takes the default home" :unuse)
+                      '("Boot it by default" "from the next launch that names no profile" :use))
+                  '("Export its home…" "settings and cells, without its store and keys" :export)
+                  '("Export it whole…" "its keys and a copy of its store with it" :export-whole)
+                  '("New profile from it…" "a clone of this home rather than the one running" :from)
+                  (and (profile-git-home-p record) '("Pull its distribution" "your edits ride on top" :update))
+                  (and (not current) (string/= name "default")
+                       '("Delete its whole home" "store, layer and secrets: asked first" :delete))))))
+
+(defun open-profile-actions (model name)
+  "The roster's Right on the home NAME: what can be done to it besides
+running it here; Esc goes back to the roster, seated on it."
+  (when-let (record (find name (nlk:profiles) :key #'nlk:profile-record-name :test #'string=))
+    (flet ((done (model notice) (open-profiles-picker model :seat name :notice notice)))
+      (open-picker-dialog
+       model "Profiles"
+       (loop for (label detail action) in (profile-actions record)
+             collect (make-picker-row :label label :detail detail :value action))
+       (lambda (model action)
+         (ecase action
+           (:switch (switch-profile-here model.program name))
+           (:use (done model (with-profile-refusal (nlk:profile-command (list "use" name) :command "/profile"))))
+           (:unuse (done model (with-profile-refusal (nlk:profile-command '("use" "default") :command "/profile"))))
+           (:export (open-profile-field model (format nil " Export ~a" name) "Archive path"
+                                        "Where the tar.gz goes: a folder or a file"
+                                        (lambda (model path)
+                                          (declare (ignore model))
+                                          (nlk:profile-command (list "export" name path) :command "/profile"))))
+           (:export-whole (open-profile-field model (format nil " Export ~a whole" name) "Archive path"
+                                              "Its keys and store ride with it: keep it where you keep passwords"
+                                              (lambda (model path)
+                                                (declare (ignore model))
+                                                (nlk:profile-command (list "export" name path "--whole")
+                                                                     :command "/profile"))))
+           (:from (open-profile-create-picker model :from name))
+           (:update (done model (with-profile-refusal (nlk:profile-command (list "update" name) :command "/profile"))))
+           (:delete (open-profiles-picker model :seat name)
+                    (profile-picker-delete model name)))
+         nil)
+       :kind :profiles
+       :context (format nil " ~a" name)
+       :hint "enter choose  esc back to the roster  ↑↓ navigate"
+       :on-cancel (lambda (model) (open-profiles-picker model :seat name)))))
+  nil)
+
+(defun profile-roster-arrow (model dialog direction)
+  "Right on a home of the roster opens what can be done to it (OPEN-PROFILE-
+ACTIONS). => T when it did."
+  (let ((value (picker-highlighted-value dialog)))
+    (when (and (eq direction :right) (stringp value))
+      (open-profile-actions model value)
+      t)))
 
 (defun profile-picker-delete (model value &aux (roster model.dialog))
   "The roster's Delete / Ctrl+X: confirm whole-home removal, then refresh
@@ -1061,10 +1167,11 @@ rechecks them at confirmation; the create action is never a delete target."
      model "Profiles" (profile-picker-rows)
      ;; ENTER, one gesture per kind of row: the create row opens the name field, a
      ;; profile's name switches this shell into that home.
+     ;; Right on a home opens what else can be done to it (OPEN-PROFILE-ACTIONS).
      (lambda (model value)
-       (if (eql value +new-profile-action+)
-           (open-profile-create-picker model)
-           (switch-profile-here model.program value)))
+       (if (stringp value)
+           (switch-profile-here model.program value)
+           (profile-roster-act model value)))
      :kind :profiles
      :searchable t
      :context " Homes"
@@ -1072,7 +1179,8 @@ rechecks them at confirmation; the create action is never a delete target."
      :empty-label "No profiles"
      :no-match-label "No matching profiles"
      :on-delete #'profile-picker-delete
-     :hint "enter switch/create  del/ctrl+x delete  esc close  up/down navigate  type search")
+     :on-arrow #'profile-roster-arrow
+     :hint "enter switch/create  → more  del/ctrl+x delete  esc close  ↑↓ navigate  type search")
     (when seat
       (picker-reseat-selection model.dialog seat))
     (when notice
@@ -1088,13 +1196,41 @@ terminal has."
   ;; either way; what differs is that this process is a gateway serving every
   ;; attached shell, and replacing its image would take all of them with it.
   ;; The decline says where the gesture lives and what moves a home from here.
+  ;; A delete nobody said yes to is asked as a dialog whose one row says it.
+  ;; A home's name alone, what a row of bare /profile's dialog runs
+  ;; (bare-sheets.lisp), answers what can be done to it.
   (declare (ignore session-id))
-  (if (and tokens (string-equal (first tokens) "switch"))
-      (format nil "profile: switch relaunches the terminal it is typed in, ~
-                     and this organism has none. Run `/profile switch ~a' in ~
-                     a shell, or `/profile use ~:*~a' to move the next launch."
-              (or (second tokens) "NAME"))
-      (with-profile-refusal (nlk:profile-command (or args "") :command "/profile"))))
+  (cond
+    ((and (= 1 (length tokens)) (profile-word-names-home-p (first tokens)))
+     (let ((record (profile-record-named (first tokens))))
+       (values (format nil "~a~@[ · ~a~]" (nlk:profile-record-name record)
+                       (let ((facts (profile-row-facts record))) (and (plusp (length facts)) facts)))
+               (dialog-json (profile-home-dialog record)))))
+    ((and tokens (string-equal (first tokens) "switch"))
+     (let ((name (second tokens)))
+       (values (format nil "profile: switching relaunches the terminal it runs in, ~
+                            and this organism has none: /profile in a shell switches~@[; ~
+                            booting ~a by default moves the next launch instead~]" name)
+               (and name
+                    (dialog-json
+                     (list-dialog :title (format nil "Switch to ~a" name)
+                                  :summary "Only a shell switches: this organism has no terminal"
+                                  :rows (list (run-row (format nil "Boot ~a by default" name)
+                                                       (format nil "/profile use ~a" name)
+                                                       :detail "from the next launch that names no profile"))))))))
+    (t
+     (handler-case (nlk:profile-command (or args "") :command "/profile")
+       (nlk:profile-needs-yes ()
+         (let ((name (first (last tokens))))
+           (values (format nil "profile: deleting ~a removes its whole home: its store, layer and secrets" name)
+                   (dialog-json
+                    (list-dialog :title (format nil "Delete ~a?" name)
+                                 :summary "Its whole home goes: store, layer and secrets"
+                                 :tone :danger
+                                 :rows (list (run-row (format nil "Delete ~a" name)
+                                                      (format nil "/profile delete ~a --yes" name)
+                                                      :detail "nothing of it comes back")))))))
+       (nlk:profile-error (refusal) (format nil "profile: ~a" refusal))))))
 
 (defun switch-profile-here (program name)
   "Run NAME in this shell, now: hand the plan to whatever performer this
@@ -1125,6 +1261,9 @@ replaced."
   ;; runs in this shell's own image on both shells, like /cells.
   (cond
     ((null tokens) (open-profiles-picker model))
+    ;; A home's name alone: what the roster's Right on its row opens.
+    ((and (= 1 (length tokens)) (profile-word-names-home-p (first tokens)))
+     (open-profile-actions model (first tokens)))
     ((and (string-equal (first tokens) "switch")
           (second tokens)
           (null (cddr tokens)))

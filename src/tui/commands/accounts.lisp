@@ -121,7 +121,7 @@ none' in the dialog until the next prompt (checkout audit, 2026-10-22)."
 (defun slash-usage-op (model &optional args &aux (range (usage-range-word args)))
   "Open the /usage dialog on the range ARGS names, its reads off the loop."
   (cond
-    ((null range) "Usage: /usage [today | 7d | 30d | all]")
+    ((null range) "usage: no range by that name; /usage alone offers today, 7 days, 30 days and all")
     (t (open-picker-dialog model "Usage"
                            (loop for (id) in +usage-tabs+ append (usage-dialog-rows id nil))
                            #'usage-dialog-pick

@@ -110,24 +110,58 @@ setup walk."
 (defun slash-import-op (model args &aux (words (split-words (or args ""))))
   "/import in a shell: the setup walk's import stage over the request ARGS
 name, as `nodecode import' opens it -- the plan read off the loop with its
-progress, a preview to confirm unless --yes. `--sources' and `--remove LABEL'
-are the organism's lists, answered as text."
+progress, a preview to confirm unless --yes; `all', what the first row of
+bare /import's dialog runs (bare-sheets.lisp), every world. `--sources' and
+`--remove LABEL' are the organism's lists, the held repositories a dialog
+whose rows take one back."
+  (when (equal (first words) "all")
+    (pop words))
   (with-slash-notice ("/import")
     (if (member (first words) '("--sources" "--remove") :test #'string=)
-        (json-value (gateway-slash-answer model (format nil "/import ~a" args)) :string "text")
+        (run-gateway-command model (find-builtin-slash-command "import") args)
         (multiple-value-bind (request rest) (import-request words)
           (when rest
-            (error "unknown word ~a; usage ~a" (first rest)
-                   (slash-command-usage (find-builtin-slash-command "import"))))
+            (error "unknown word ~a: /import alone offers what it reads" (first rest)))
           (setf model.setup-requested request)
           (slash-setup-op model)
           nil))))
 
+(defun import-dialog ()
+  "/import typed alone, on a shell or not: where to read from -- every agent
+found here, one of them, a folder or a repository -- each previewed before
+anything lands, and the repositories already held."
+  (let ((found (ignore-errors (nlk:detect-agent-worlds :worlds *import-worlds*))))
+    (list-dialog
+     :title "Import"
+     :summary "Another coding agent's home brought into this one: a preview first, nothing lands until you say so"
+     :rows (append
+            (list (run-row "Every agent found here" "/import all"
+                           :detail (if found
+                                       (format nil "~{~a~#[~; and ~:;, ~]~}"
+                                               (mapcar (lambda (row)
+                                                         (nlk:agent-world-label (nlk:detected-world-world row)))
+                                                       found))
+                                       "none found on this machine")))
+            (loop for row in found
+                  for world = (nlk:detected-world-world row)
+                  collect (run-row (nlk:agent-world-label world)
+                                   (format nil "/import ~a" (nlk:agent-world-name world))
+                                   :detail (if-let (root (first (nlk:agent-world-roots world)))
+                                             (format nil "~~/~a" root)
+                                             "")))
+            (list (ask-row "A folder or a repository" "Source" "/import --source"
+                           :detail "another home at a path, or skills and MCP servers from git"
+                           :placeholder "a path, OWNER/REPO or an https URL" :verb "preview")
+                  (run-row "Repositories held" "/import --sources"
+                           :detail "what each brought, and the way to take one back"))))))
+
 (defun headless-import (args session-id)
   "/import where no shell walks it -- a room, the page: the summary and where
-the report is, as text (NIK:RUN-SLASH)."
+the report is, as text, and the dialog a preview or the held repositories
+answer (NIK:RUN-SLASH)."
   (declare (ignore session-id))
-  (nik:run-slash args))
+  (multiple-value-bind (text dialog) (nik:run-slash args)
+    (values text (and dialog (dialog-json dialog)))))
 
 (defun slash-setup-op (model)
   "/setup, nodecode setup and first launch share discovery/provider/model/effort.
@@ -744,6 +778,15 @@ seconds on a large home."
                       :keep)
                 ;; the report, a page of this dialog that comes back here
                 (and (setup-report-items value) '("Details" "each item, and why any is skipped" :details))
+                ;; what --overwrite and --only once asked for, planned again
+                (and (not (getf request :overwrite))
+                     (find-if (lambda (item)
+                                (member (json-value item :string "status") '("skipped" "conflict") :test #'equal))
+                              (json-array value "items"))
+                     '("Replace what is here" "plan it again, what the import brings over what this home has" :overwrite))
+                (and (not (getf request :only))
+                     (rest (import-plan-kinds value))
+                     '("Only some of it…" "tick the kinds to bring over, then plan again" :only))
                 '("Skip" "nothing written; /import later" :skip))))
     (open-picker-dialog
      model "Setup" rows
@@ -753,6 +796,8 @@ seconds on a large home."
          (:keep (setup-import-apply model run request nil next))
          (:details (setup-details-page
                     model value (lambda (model) (setup-import-confirm model run request value next))))
+         (:overwrite (setup-import-again model (list* :overwrite t request)))
+         (:only (setup-import-kinds model run request value next))
          (:skip (funcall skip model)))
        nil)
      :context (setup-context run :import "Import")
@@ -761,6 +806,53 @@ seconds on a large home."
      :kind :setup-import-confirm
      :option-marker t
      :on-cancel skip)))
+
+(defun import-plan-kinds (value)
+  "The kinds the plan VALUE would bring something of, in the order the
+import plans them."
+  (let ((items (coerce (json-array value "items") 'list)))
+    (remove-if-not (lambda (kind)
+                     (find-if (lambda (item)
+                                (and (equal kind (json-value item :string "kind"))
+                                     (equal "imported" (json-value item :string "status"))))
+                              items))
+                   (remove-duplicates (mapcar (lambda (item) (json-value item :string "kind")) items)
+                                      :test #'equal :from-end t))))
+
+(defun setup-import-again (model request)
+  "Plan REQUEST, the import request the question over a plan changed, as
+the first was planned: a walk of its own, which asks again."
+  (setf model.setup-requested request)
+  (slash-setup-op model))
+
+(defun setup-import-kinds (model run request value next)
+  "The kinds the plan VALUE brings, as a checklist every one ticked: Enter
+plans REQUEST again over the ticked ones alone (--only); Esc, or none
+ticked, goes back to the question."
+  (let ((kinds (import-plan-kinds value)))
+    (open-picker-dialog
+     model "Setup"
+     (loop for kind in kinds
+           collect (make-picker-row :label kind
+                                    :detail (format nil "~d item~:p"
+                                                    (count-if (lambda (item)
+                                                                (and (equal kind (json-value item :string "kind"))
+                                                                     (equal "imported" (json-value item :string "status"))))
+                                                              (json-array value "items")))
+                                    :value kind))
+     (lambda (model chosen)
+       (let ((taken (remove-if-not (lambda (kind) (member kind chosen :test #'equal)) kinds)))
+         (if taken
+             (setup-import-again model (list* :only (format nil "~{~a~^,~}" taken) request))
+             (setup-import-confirm model run request value next)))
+       nil)
+     :context (setup-context run :import "Import")
+     :subtitle "Tick the kinds to bring over"
+     :hint "space toggle  enter plan again  esc back  ↑↓ navigate"
+     :kind :setup-import-choose
+     :marks (copy-list kinds)
+     :on-toggle (lambda (model value marked) (declare (ignore model value marked)) nil)
+     :on-cancel (lambda (model) (setup-import-confirm model run request value next)))))
 
 (defun note-import-declined (value)
   "Put the worlds the plan VALUE read on the marker as declined: the import

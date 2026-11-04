@@ -238,7 +238,7 @@ each -- its label, the skills it brought and the servers it declares that are
 configured here."
   (let ((rows (source-folders)))
     (if (null rows)
-        "no repository source here: /import OWNER/REPO brings one's skills and MCP servers"
+        "no repository source here: /import brings one's skills and MCP servers"
         (format nil "~{~a~^~%~}"
                 (loop for (label folder) in rows
                       collect (let ((skills (source-skills label folder))

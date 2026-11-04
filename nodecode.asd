@@ -359,6 +359,7 @@ of stacking."
      (:file "client/client-update")
      (:file "client/client-boot")
      (:file "tui/commands/bare")
+     (:file "tui/commands/bare-sheets")
      (:file "tui/commands/dispatch")
      (:file "tui/commands/models")
      (:file "tui/commands/accounts")
@@ -613,6 +614,7 @@ of stacking."
      (:file "tui/worker-test")
      (:file "tui/slash-test")
      (:file "tui/bare-test")
+     (:file "tui/bare-sheets-test")
      ;; own-models-test reuses slash-test's listing fixtures.
      (:file "tui/own-models-test")
      (:file "tui/profile-delete-test")

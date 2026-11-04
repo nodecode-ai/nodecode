@@ -559,8 +559,9 @@
           (nlk:home-abbreviated (namestring (merge-pathnames "import/" home)))))
 
 (deftest import-slash-previews-then-applies (with-import-runtime (home box :commandcode))
-  (let ((line (nik::run-slash "commandcode")))
-    (is-carrying line ("(dry run)" "a bare /import previews") "--yes applies")
+  (multiple-value-bind (line dialog) (nik::run-slash "commandcode")
+    (is-carrying line ("(dry run)" "a bare /import previews") (:absent "--yes"))
+    (is (equal "/import commandcode --yes" (getf (getf (first (getf dialog :rows)) :run) :enter)))
     (is (null (probe-file (merge-pathnames "auth.json" home))) "and writes nothing")
     ;; The notice is the summary and where the report is, never the report
     ;; cut at a toast's four rows, and the hint that stays says where too,

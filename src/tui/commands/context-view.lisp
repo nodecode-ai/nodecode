@@ -23,7 +23,7 @@
 LABEL TONE): TONE the theme tone a part's cells and chip paint in.")
 
 (defparameter +context-usage+
-  "Usage: /context [prompt | tools | index | notes | history | time]"
+  "context: no part by that name; /context alone shows them all"
   "What /context answers an argument it does not open.")
 
 (defparameter +context-grid-width+ 40
