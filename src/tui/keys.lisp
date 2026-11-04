@@ -290,14 +290,25 @@ it.")
 NIL -- never an action name, as +KEYBIND-SOURCE-KEY+ is not.")
 
 (defun chord-taken-by (keymap chord)
-  "The action of KEYMAP that the key CHORD describes would dispatch, or NIL."
+  "The action of KEYMAP that the key CHORD describes would dispatch, :TYPING
+for a character no Ctrl or Alt holds, or NIL."
   ;; The press the chord spells, read the way a key is: a binding that an
-  ;; action answers never fires, because the actions are asked first.
+  ;; action answers never fires, because the actions are asked first. A bare
+  ;; character (`x', `shift+x') is what the box is typed with, so it stays
+  ;; typing rather than every x in a prompt running a command.
   (let ((mod (logior (if chord.ctrl nlt:+mod-ctrl+ 0) (if chord.alt nlt:+mod-alt+ 0)
                      (if chord.shift nlt:+mod-shift+ 0))))
-    (loop for (action) in *keybind-actions*
-          when (keybind-matches-p keymap action chord.code mod)
-            return action)))
+    (or (loop for (action) in *keybind-actions*
+              when (keybind-matches-p keymap action chord.code mod)
+                return action)
+        (and (characterp chord.code) (not chord.ctrl) (not chord.alt) :typing))))
+
+(defun keybind-line-label (keymap line)
+  "The chord KEYMAP runs the slash LINE with, as a label, or NIL when no
+chord it holds does."
+  (loop for (chord bound taken) in (gethash +keybind-lines-key+ keymap)
+        when (and (not taken) (string= line bound))
+          return (key-chord-label chord)))
 
 (defun resolve-keybinds (&optional (overrides (load-keybind-overrides)))
   "The resolved keymap: ACTION -> list of KEY-CHORD, and under

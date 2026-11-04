@@ -30,10 +30,10 @@ included), then every keybind action with its resolved key label."
    (loop for (chord line taken) in (gethash +keybind-lines-key+ (chat-model-keymap model))
          collect (make-picker-row
                   :label (key-chord-label chord)
-                  :detail (if taken
-                              (format nil "~a (the key is taken by ~a)" line
-                                      (second (assoc taken *keybind-actions*)))
-                              line)))))
+                  :detail (cond ((eq taken :typing) (format nil "~a (the key types itself)" line))
+                                (taken (format nil "~a (the key is taken by ~a)" line
+                                               (second (assoc taken *keybind-actions*))))
+                                (t line))))))
 
 (defun open-help-dialog (model)
   "Open the keyboard help dialog (the `?` trigger and the /help command)."

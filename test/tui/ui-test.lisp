@@ -3439,6 +3439,30 @@ nothing opens: the target, or NIL."
           (is (equal "/t-freed" (first lines)) "a chord an override moved off is free for a line")
           (is (eq :standard model.tool-detail) "and no longer switches the viewport"))))))
 
+(deftest a-bound-line-leaves-typing-alone-and-names-its-chord-in-the-dropdown ()
+  ;; #199: a bare character bound to a line stays the character it types --
+  ;; otherwise every x of a prompt would run the command -- and help says so;
+  ;; a chord bound to a bare command shows in the / dropdown's hotkey lane.
+  (with-temp-file (nle::*keybinds-path*
+                   :contents "{\"/exit\": \"x\", \"/clear\": \"f6\", \"/think high\": \"f7\"}")
+    (with-frame-model (model 80 30 :session-id "kb-line-typing")
+      (nle:update model (nlt:make-key-press-msg :code #\x :text "x"))
+      (is (equal "x" (nle::editor-value model.editor)) "x types")
+      (is (null (nle::keybind-line model.keymap #\x 0)) "and runs nothing")
+      (is (equal "F6" (nle::keybind-line-label model.keymap "/clear")))
+      (is (null (nle::keybind-line-label model.keymap "/exit")) "a typing key labels no line")
+      (nle::editor-reset model.editor)
+      (type-string model "/cle")
+      (is (equal "F6" (nle::composer-suggestion-hotkey
+                       model (find "/clear" (nle::composer-suggestions-for model)
+                                   :key #'nle::composer-suggestion-text :test #'string=)))
+          "the dropdown names /clear's chord")
+      (nle::editor-reset model.editor)
+      (nle::open-help-dialog model)
+      (is (find "/exit (the key types itself)" (nle::picker-dialog-rows model.dialog)
+                :key #'nle::picker-row-detail :test #'equal)
+          "help says why x runs nothing"))))
+
 (deftest a-run-effect-runs-its-line-and-stops-a-loop ()
   ;; #199: (:run LINE) is the line a chord or a row would run, so an answer
   ;; can chain one; a line whose answer runs itself stops after a few.

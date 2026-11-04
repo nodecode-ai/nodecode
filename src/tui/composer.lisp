@@ -427,8 +427,11 @@ the / dropdown's hotkey lane (SLASH-COMMAND-KEYBIND)."
   ;; unbound shows nothing: a hotkey exists here only when a key really fires
   ;; it. NIL for a lane that is no command at all (@file), which is
   ;; every row without a catalog entry.
-  (when-let (action (and suggestion.entry (slash-command-keybind suggestion.entry)))
-    (keybind-chords-label (chat-model-keymap model) action :unbound nil)))
+  ;; A chord keybinds.json binds to the bare command (#199) is its hotkey too.
+  (when-let (entry suggestion.entry)
+    (or (when-let (action (slash-command-keybind entry))
+          (keybind-chords-label (chat-model-keymap model) action :unbound nil))
+        (keybind-line-label (chat-model-keymap model) (format nil "/~a" (slash-command-name entry))))))
 
 (defun dropdown-hotkey-lane (model suggestion key-width)
   "The row's right lane for SUGGESTION, or NIL when its command has no
