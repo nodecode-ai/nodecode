@@ -387,6 +387,9 @@ renderer, the program loop.")
    #:define-memory #:define-skill #:index
    #:unregister-tool #:eval-string
    #:sh #:$ #:edit #:write-file #:look
+   ;; --- the agent's own prompt, rules and soul: each verb answers its
+   ;; file's path, a handle for edit and write-file (turn.lisp) ---
+   #:system-prompt #:agents-md #:soul-md
    ;; --- what a tool call did (turn.lisp): the record a verb stamps on the
    ;; result fact of the call it runs under — a cell's verb names itself
    ;; to the transcript this way (tool-summary.lisp) — and whether it failed,
