@@ -971,6 +971,86 @@ attach earns its replay."
           (nle::switch-to-fresh-gateway-session model "far-parent")
           (is (equal "/parent/folder/" (opened-cwd)) "/fork opens in its parent's"))))))
 
+(deftest a-launch-settles-its-session-once-the-organism-answers (with-temp-gateway (port))
+  ;; #224. `nodecode -c' opens the newest session begun in the shell's folder:
+  ;; never a fork under one, nor one of another folder. `resume ID' keeps an
+  ;; id the organism holds; for one it holds no session under, the shell
+  ;; stands on a fresh id with the picker open and saying why, instead of
+  ;; making a session under the mistyped word. A folder with nothing to
+  ;; continue keeps the id the shell painted on.
+  (nlk:create-session :id "s-old" :cwd "/proj/a/" :occurred-at "2026-11-04T10:00:00.000Z")
+  (nlk:create-session :id "s-elsewhere" :cwd "/proj/b/" :occurred-at "2026-11-04T12:00:00.000Z")
+  (nlk:create-session :id "s-new" :cwd "/proj/a/" :occurred-at "2026-11-04T11:00:00.000Z")
+  (nlk:create-session :id "s-fork" :cwd "/proj/a/" :parent "s-new"
+                      :occurred-at "2026-11-04T13:00:00.000Z")
+  (flet ((settle (resume sid folder &key prompt)
+           (let ((model (gateway-shell port sid :ui t))
+                 (nle::*workspace-directory* folder))
+             (setf (nle::gateway-model-launch-resume model) resume)
+             (when prompt
+               (setf (nle::gateway-model-launch-prompt model) (list :session-id sid :composer prompt)))
+             (let ((settled (nle::resolve-launch-session model sid port "test-token")))
+               (list settled model)))))
+    (destructuring-bind (settled model) (settle :continue "s-painted" "/proj/a" :prompt "go on")
+      (is (equal "s-new" settled) "the newest session begun here, not its fork nor another folder's")
+      (is (equal "s-new" (nle::chat-model-session-id model)) "the shell stands on it before it subscribes")
+      ;; and the launch's first prompt goes with it
+      (is (equal "s-new" (getf (nle::gateway-model-launch-prompt model) :session-id)))
+      (is (null (nle::gateway-model-launch-resume model)) "settled once"))
+    (destructuring-bind (settled model) (settle :continue "s-painted" "/proj/c")
+      (is (equal "s-painted" settled) "a folder with nothing to continue keeps the fresh id")
+      (is (null (nle::chat-model-dialog model))))
+    (is (equal "s-old" (first (settle :named "s-old" "/proj/c"))) "an id the organism holds is kept")
+    (destructuring-bind (settled model) (settle :named "list" "/proj/a")
+      (is (not (equal "list" settled)) "no session is made under the mistyped word")
+      (is (equal settled (nle::chat-model-session-id model)))
+      (let ((dialog (nle::chat-model-dialog model)))
+        ;; the picker opens on what there is, its header saying why
+        (is (and (nle::picker-dialog-p dialog) (eq :sessions (nle::picker-dialog-kind dialog))))
+        (is (equal "No session list in this home" (nle::picker-dialog-title dialog)))))
+    ;; a bare resume is the first frame's to answer, not the attach's
+    (is (equal "s-painted" (first (settle :pick "s-painted" "/proj/a"))))))
+
+(deftest the-sessions-picker-opened-before-the-organism-answers-waits-for-it (with-temp-gateway (port))
+  ;; `nodecode resume' opens the picker on the first frame, and Ctrl+S can come
+  ;; just as early: with no gateway yet it waits on the reading copy instead
+  ;; of failing, and the read the attach makes fills it.
+  (nlk:create-session :id "s-here" :cwd "/proj/a/")
+  (let ((model (make-instance 'nle::gateway-chat-model :session-id "s-painted" :ws nil
+                                                       :http-port nil :http-token "test-token"))
+        (nle::*workspace-directory* "/proj/a"))
+    (nle::initialize-chat-model-ui model)
+    (nle::slash-sessions-op model)
+    (is (nle::sessions-picker-awaiting-p model) "open, on the reading copy")
+    (is (null (nle::chat-model-composer-status model)) "and nothing failed")
+    (setf (nle::gateway-model-http-port model) port)
+    (nle::refresh-session-directory model)
+    (is (not (nle::sessions-picker-awaiting-p model)) "the attach's read fills it")
+    (is (find "s-here" (nle::picker-visible-rows (nle::chat-model-dialog model))
+              :key #'nle::picker-row-value :test #'equal))))
+
+(deftest continue-skips-what-nobody-began-here ()
+  ;; A cron fire and a layer evaluation began on nobody's word; a session a
+  ;; shell, the page or rpc began says `gateway', and one imported or not yet
+  ;; run says nothing. The newest that is left wins, whatever the order.
+  (flet ((entry (id source updated &key (folder "/proj/a/") parent)
+           (nlk:json-object "id" id "source" (or source :null) "updated_at" updated
+                            "working_directory" folder "parent_id" (or parent :null))))
+    (is (equal "s-shell"
+               (nle::folder-continue-session
+                (list (entry "s-cron" "cron" "2026-11-04T12:00:00.000Z")
+                      (entry "s-layer" "layer" "2026-11-04T11:30:00.000Z")
+                      (entry "s-imported" nil "2026-11-04T09:00:00.000Z")
+                      (entry "s-shell" "gateway" "2026-11-04T11:00:00.000Z")
+                      (entry "s-lane" "channel" "2026-11-04T13:00:00.000Z" :parent "s-room"))
+                "/proj/a")))
+    (is (equal "s-imported" (nle::folder-continue-session
+                             (list (entry "s-imported" nil "2026-11-04T09:00:00.000Z"))
+                             "/proj/a")))
+    (is (null (nle::folder-continue-session (list (entry "s-b" "gateway" "2026-11-04T09:00:00.000Z"
+                                                         :folder "/proj/b"))
+                                            "/proj/a")))))
+
 (deftest gateway-session-create-refuses-non-not-found-errors (let ((calls 0)))
   (with-stubbed-fdefinition (nle::gateway-http-session-request (&rest args)
                               (incf calls)

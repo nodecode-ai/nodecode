@@ -26,10 +26,14 @@ Cells name their own sessions. A session nobody typed in is never stored.
 | Rename in the picker | Press F2 on a row. |
 | Fold or unfold forks | Left and Right. |
 | Resume from the command line | `nodecode resume SESSION-ID` |
+| Pick from the command line | `nodecode resume`. The picker opens on the sessions begun in this folder. |
+| Continue the last session here | `nodecode -c`. The newest session begun in this folder. |
 | See what waits on you | The web page's Sessions list: under a session whose answer asked you something, its question; `its last turn failed` when it did. A stopped turn waits on nobody. |
 
 ```sh
 nodecode resume s-K3F9Q2ZA
+nodecode resume
+nodecode -c -- "run the tests again"
 ```
 
 The shell prints the resume line when it exits: `To resume: nodecode resume SESSION-ID`, then `--store PATH` when it ran with `--store` or `--ephemeral`. `resume` needs a terminal.
