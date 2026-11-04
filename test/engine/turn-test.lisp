@@ -4166,6 +4166,15 @@ every one of them."
     (is (equal '("x-api-key" . "k") (second h)) "and keeps the caller's headers")
     (is (equal '(("user-agent" . "custom")) (nle::with-user-agent '(("user-agent" . "custom")))))))
 
+(deftest user-agent-names-the-release-a-hot-upgrade-moved-to ()
+  ;; A hot upgrade moves the definitions past the build without a restart:
+  ;; the image's requests then name the release it runs, as a fresh
+  ;; `nodecode --version' does, not the build the process booted from.
+  (with-saved-globals ((nlk::*effective-version* "tvua"))
+    (let ((ua (nle::user-agent)))
+      (is (eql 0 (search (format nil "nodecode_cli/~a " (nle::effective-version)) ua)))
+      (is (search "+tvua " ua) "the release the upgrade moved to"))))
+
 (deftest an-openrouter-round-names-nodecode-for-the-app-rankings ()
   ;; OpenRouter ranks apps by the tokens that reach it carrying HTTP-Referer:
   ;; without the header, a nodecode round there counts for no app at all.

@@ -4028,15 +4028,19 @@ name neither reports the bare base)."
 ;;; Read once, at load, so a dumped image carries the version it was built
 ;;; from.
 (defvar *user-agent-version* (compose-user-agent-version)
-  "The organism's version, the one it reports everywhere: the user-agent
-header, `nodecode --version', and the line under the home screen's logo.")
+  "The version of the build this process booted from: what `nodecode
+--version' prints. What the image reports for itself once a hot upgrade has
+moved its definitions on -- the user-agent header, the line under the home
+screen's logo -- is EFFECTIVE-VERSION, which starts out the same.")
 
 (defun user-agent ()
   "The user-agent header value: product/version (os release; arch) terminal."
   ;; The terminal is read at call time, not at load, so a dumped image reports
   ;; the terminal it runs in rather than the one it was built in.
+  ;; The version is the release the live definitions are at (EFFECTIVE-VERSION),
+  ;; so a hot-upgraded image does not keep naming the build it booted from.
   (format nil "nodecode_cli/~a (~a ~a; ~a) ~a"
-          *user-agent-version*
+          (effective-version)
           (software-type) (software-version) (machine-type)
           (or (uiop:getenv "TERM") "unknown")))
 

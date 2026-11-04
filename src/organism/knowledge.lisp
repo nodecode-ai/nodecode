@@ -225,23 +225,84 @@ not read."
   (when (plusp (hash-table-count *knowledge-memo*))
     (remhash (sb-ext:native-namestring (or (ignore-errors (truename path)) path)) *knowledge-memo*)))
 
-(defun knowledge-entries (&aux (seen (make-hash-table :test 'equal)))
+(defun memoized-entries (path seen read)
+  "The entries READ makes of PATH, called with PATH's write date as a universal
+time and again only when PATH's stat moved; PATH is marked in SEEN."
+  (let* ((native (sb-ext:native-namestring path))
+         (stamp (file-stamp path))
+         (hit (gethash native *knowledge-memo*)))
+    (unless (and hit stamp (equal (car hit) stamp))
+      (setf hit (cons stamp (funcall read (if stamp (+ (car stamp) +unix-epoch+) 0)))
+            (gethash native *knowledge-memo*) hit))
+    (setf (gethash native seen) t)
+    (cdr hit)))
+
+;;; --- a skill another harness keeps, read where it lives -----------------------------
+;;; A folder a cell holds -- or a link in it -- may be a skill in the shape
+;;; every other coding agent writes, a folder with a SKILL.md, or a library of
+;;; them (`/import --link' links one per library). Each is a prose skill read
+;;; in place: an edit made in the harness that keeps it is the skill here at
+;;; the next read, and nothing is copied to drift. It ranks as an import does,
+;;; its :origin the folder it was found through, and never takes a name the
+;;; organism's own definitions hold.
+
+(defun linked-skill-files (folder)
+  "((PATH ORIGIN) ...): each SKILL.md under a folder FOLDER holds -- a skill's,
+or a library's one further down -- links followed, ORIGIN that folder's
+name; by name, a hidden folder left out."
+  (loop for child in (sort (directory (merge-pathnames "*/" folder) :resolve-symlinks nil)
+                           #'string< :key #'namestring)
+        for origin = (folder-name child)
+        unless (uiop:string-prefix-p "." origin)
+          append (loop for path in (sort (append (directory (merge-pathnames "SKILL.md" child))
+                                                 (directory (merge-pathnames "*/SKILL.md" child)))
+                                         #'string< :key #'namestring)
+                       collect (list path origin))))
+
+(defun skill-file-entries (path folder label origin written)
+  "PATH, a SKILL.md, as the prose skill it is, in a list: its frontmatter's
+name -- the folder's when that is no name -- and description, the text after
+the frontmatter the procedure HELP reads. NIL when the frontmatter declares
+no skill."
+  (when-let (text (read-text path))
+    (multiple-value-bind (declared description) (funcall 'nle::parse-skill-frontmatter text)
+      (when declared
+        (let* ((slug (string-downcase (substitute #\- #\Space (trimmed declared))))
+               (name (if (every (lambda (char) (or (alphanumericp char) (find char "-_."))) slug)
+                         slug
+                         (string-downcase (folder-name (uiop:pathname-directory-pathname path))))))
+          (list (make-knowledge-entry
+                 :key (list :operator "DEFINE-SKILL" :name (string-upcase name))
+                 :name name :operator "DEFINE-SKILL" :description description
+                 :body (trimmed (or (cdr (funcall 'nle::frontmatter-block text)) ""))
+                 :path path :label label :folder folder :start 0 :end (length text)
+                 :written written :origin origin)))))))
+
+(defun knowledge-entries (&aux (seen (make-hash-table :test 'equal))
+                               (taken (make-hash-table :test 'equal))
+                               (folders (definition-folders)))
   "Every definition the organism keeps, read as data: the layer's, then each
-knowledge cell's, each folder's files by name."
-  (prog1 (loop for folder in (definition-folders)
-               for label = (folder-label folder)
-               append (loop for path in (sort (directory (merge-pathnames "*.lisp" folder))
-                                              #'string< :key #'namestring)
-                            for native = (sb-ext:native-namestring path)
-                            for stamp = (file-stamp path)
-                            for hit = (gethash native *knowledge-memo*)
-                            do (unless (and hit stamp (equal (car hit) stamp))
-                                 (setf hit (cons stamp (file-knowledge-entries
-                                                        path folder label
-                                                        (if stamp (+ (car stamp) +unix-epoch+) 0)))
-                                       (gethash native *knowledge-memo*) hit))
-                               (setf (gethash native seen) t)
-                            append (cdr hit)))
+knowledge cell's, each folder's files by name; then each skill a folder links
+in (LINKED-SKILL-FILES) whose name none of those took, the first of a name."
+  (prog1 (let ((own (loop for folder in folders
+                          for label = (folder-label folder)
+                          append (loop for path in (sort (directory (merge-pathnames "*.lisp" folder))
+                                                         #'string< :key #'namestring)
+                                       append (memoized-entries
+                                               path seen (lambda (written)
+                                                           (file-knowledge-entries path folder label written)))))))
+           (dolist (entry own) (setf (gethash (knowledge-entry-name entry) taken) t))
+           (append own
+                   (loop for folder in folders
+                         for label = (folder-label folder)
+                         append (loop for (path origin) in (linked-skill-files folder)
+                                      append (loop for entry in (memoized-entries
+                                                                 path seen
+                                                                 (lambda (written)
+                                                                   (skill-file-entries path folder label
+                                                                                       origin written)))
+                                                   unless (shiftf (gethash (knowledge-entry-name entry) taken) t)
+                                                     collect entry)))))
     ;; a file that is gone is forgotten with it
     (sb-ext:with-locked-hash-table (*knowledge-memo*)
       (loop for native being the hash-keys of *knowledge-memo*

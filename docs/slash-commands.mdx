@@ -55,7 +55,7 @@ In a chat room or eval, a shell-only command answers `/name needs an interactive
 | `/gc [reset]` | Shows garbage collection and stall stats. `reset` restarts the window. | Yes |
 | `/exit`, `/quit` | Exits the shell. | No |
 | `/index [reload \| TEXT]` | Knowledge: the meter and the picker. `reload` re-pins; a text finds hot and cold. `$` at the start of a word opens it. | Yes |
-| `/import [WORLD] [--source PATH] [--only KINDS] [--dry-run] [--overwrite] [--keep-running] [--yes]` | Brings another coding agent's home into this one: a preview first, `--yes` applies. `/import --sources` lists the repositories held, `/import --remove LABEL` takes one back. | Yes |
+| `/import [WORLD] [--source PATH] [--only KINDS] [--dry-run] [--overwrite] [--link] [--keep-running] [--yes]` | Brings another coding agent's home into this one: a preview first, `--yes` applies. `--link` links its skills, read where they are, instead of copying them. `/import --sources` lists the repositories held, `/import --remove LABEL` takes one back. | Yes |
 
 The gateway registers `/index` itself as it serves. It is no cell's.
 
@@ -68,7 +68,7 @@ The gateway registers `/index` itself as it serves. It is no cell's.
 | `/context` | Shell: a grid, each part opening to what it holds. Chat room: one card that wears the window's state, from fine to past the eviction line. |
 | `/login` | Shell only. No chat room or web page can sign this home in to an account. |
 
-Details: [Sessions and undo](/sessions), [Models and providers](/models), [Context](/context), [Profiles](/profiles), [Gateway](/gateway).
+Details: [Sessions and undo](sessions.mdx), [Models and providers](models.mdx), [Context](context.mdx), [Profiles](profiles.mdx), [Gateway](gateway.mdx).
 
 {/* source: src/gateway/gateway.lisp */}
 ## Cell
@@ -77,4 +77,4 @@ A cell is a folder of code under `~/.nodecode/cells/`. Its command exists while 
 
 A built-in wins over a cell command of the same name.
 
-A cell adds its own commands with the `:command` clause. See [Cell API](/cell-api#define-cell). The cells you can add are listed under <CellsTab />.
+A cell adds its own commands with the `:command` clause. See [Cell API](cell-api.mdx#define-cell). The cells you can add are listed under <CellsTab />.

@@ -5457,7 +5457,48 @@ and the DELIVERY its handler declares."
         (setf (nle::chat-model-selection model) (cons (cons first-row 0) (cons last-row 39)))
         (let ((copied (nle::frame-selection-text model)))
           (is (not (search "↦" copied)) "the copy leaves it behind")
-          (is (search "epsilon zeta eta theta" copied) "and keeps the code it marked"))))))
+          (is (equal code copied) "and keeps the code it marked, the one line it is"))))))
+
+(deftest a-copy-puts-a-wrapped-line-back-together (dolist (width '(40 60 80 120)))
+  ;; A line too long for the row is broken on the screen, not in the text,
+  ;; yet the copy put a newline at every break: a command a code block
+  ;; wrapped (its later rows under a ↦) pasted into a shell as one broken
+  ;; command per row. A row the line goes on in joins back onto it with the
+  ;; blanks the break took out -- the space between two words, nothing where
+  ;; a word was cut or broke after its / or - -- and only the text's own
+  ;; newlines stay, whichever gesture laid the mark.
+  (let* ((command (format nil "echo gh pr create --repo example/project --head fork:feat/a-branch-name-longer-than-the-row --base main --body-file notes/pull-request-draft.md --sha ~a --title \"copy a  wrapped line\" --draft"
+                          (make-string 64 :initial-element #\d)))
+         (paragraph (format nil "~{word~2,'0d~^ ~}" (loop for i from 1 to 40 collect i))))
+    (with-frame-model (model width 60 :session-id "wrap-copy"
+                       :paint ((nle::ingest-message-fact
+                                "assistant" (format nil "~a~%~%```~%~a~%ls -la~%```" paragraph command))))
+      (let* ((rows (nle::frame-plain-rows model))
+             (opens (row-index-of "echo gh" rows :required t))
+             (ends (row-index-of "--draft" rows :required t))
+             (end-column (1- (nle::text-display-width (string-right-trim " " (aref rows ends)))))
+             (mark (lambda (from to)
+                     (setf model.selection (cons (cons (row-index-of from rows :required t) 0)
+                                                 (cons (row-index-of to rows :required t) (1- width))))
+                     (nle::frame-selection-text model))))
+        (is (< opens ends) "the command wraps")
+        (is (search "↦" (aref rows ends)) "under the mark")
+        (is (equal paragraph (funcall mark "word01" "word40")) "a paragraph copies as its own line")
+        (is (equal (format nil "~a~%ls -la" command) (funcall mark "echo gh" "ls -la")) "the command whole, the next line under it")
+        ;; A drag from the command's first character to its last: the mark
+        ;; is read off the transcript's own lines (SPAN-MARK-ROWS).
+        (setf model.selection nil)
+        (let ((y0 (1+ opens)) (y1 (1+ ends))
+              (x0 (1+ (nle::text-display-width (subseq (aref rows opens) 0 (search "echo gh" (aref rows opens)))))))
+          (mouse-update model #'nlt:make-mouse-click-msg x0 y0 :button :left)
+          (mouse-update model #'nlt:make-mouse-motion-msg (1+ end-column) y1 :button :left)
+          (is (nle::mark-span model) "the drag holds its mark on the transcript's lines")
+          (is (equal command (nle::frame-selection-text model)) "a drag copies the command whole")))))
+  (is (equal " " (nle::wrap-joint "alpha " "beta")) "a break between words gives its space back")
+  (is (equal "" (nle::wrap-joint "fork:feat/" "a-branch")) "a break after a / gives nothing")
+  (is (equal "   " (nle::wrap-joint "alpha  " " beta")) "every blank either side of the break")
+  (is (equal "" (nle::wrap-joint "    " "beta")) "a blank row gave its blanks to the joint before it")
+  (is (equal "    " (nle::wrap-joint "    " "beta" t)) "unless it opens the line"))
 
 (deftest cached-transcript-links-survive-string-compaction (dolist (width '(24 70 160)))
   ;; ASCII rows were narrowed AFTER their EQ-keyed click ranges

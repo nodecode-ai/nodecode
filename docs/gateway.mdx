@@ -81,7 +81,7 @@ On macOS the launcher is copied once to `~/Library/Application Support/nodecode/
 | The gateway restarts: for an update, or after a clean exit | Open shells wait up to 60 s for it to take the store again, then attach. Meanwhile they start no organism of their own. |
 | `/gateway off` from an attached shell | The gateway stops. That shell takes the organism over. |
 
-See [The organism](/organism).
+See [The organism](organism.mdx).
 
 {/* source: src/gateway/background.lisp */}
 ## Logout
@@ -143,4 +143,4 @@ The unit names the installer's `current` link. A restart runs the build installe
 | `nodecode update` needs a restart | The organism restarts itself through the unit at an idle moment. |
 | `nodecode gateway restart` | Rewrites the unit first if the binary path or `PATH` changed. |
 
-The installer restarts only units that Nodecode wrote. See [Updates](/updates).
+The installer restarts only units that Nodecode wrote. See [Updates](updates.mdx).

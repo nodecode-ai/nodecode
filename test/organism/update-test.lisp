@@ -686,6 +686,22 @@ asks again after a pause -- and stops the moment the image has caught up."
         (cons "src/nodecode.asd"
               (format nil "(defsystem \"upg\" :version \"~a\" :depends-on (\"uiop\") :components ((:file \"a\")))" number))))
 
+(deftest update-a-hot-upgrade-reports-the-number-of-the-release-it-took ()
+  ;; A hot upgrade across a version bump (0.1.8 to a 0.1.9 nightly) says the
+  ;; number the release it moved to declares, not the build's; a release not
+  ;; laid out here keeps the build's number.
+  (with-release-host (dist (list (cons "tv1" (numbered-release-files "9.0.1"))
+                                 (cons "tv2" (numbered-release-files "9.0.2"))))
+    (nle::stage-release "tv2")
+    (with-saved-globals ((nle::*user-agent-version* "9.0.1+tv1")
+                         (nlk::*effective-version* nil))
+      (is (equal "9.0.1+tv1" (nle::effective-version)) "the build's own until an upgrade")
+      (setf nlk::*effective-version* "tv2")
+      (is (equal "9.0.2+tv2" (nle::effective-version)))
+      (is (search "nodecode_cli/9.0.2+tv2 " (nle::user-agent)))
+      (setf nlk::*effective-version* "no-such")
+      (is (equal "9.0.1+no-such" (nle::effective-version))))))
+
 (deftest update-a-window-whose-path-predates-the-update-is-told-why ()
   ;; Windows puts the version's own folder on the user PATH, and a window keeps
   ;; the PATH it opened with: after `nodecode update' there, `nodecode' still

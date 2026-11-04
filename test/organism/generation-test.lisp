@@ -526,7 +526,7 @@ exit 0~%" ,report ,score))
 
 (deftest the-sealed-count-reads-the-manifests-again-only-when-the-directory-moves ()
   ;; The home screen says the count every frame: one stat of the directory,
-  ;; and the manifests decoded again only once it moved. A count read in the
+  ;; and the manifests listed again only once it moved. A count read in the
   ;; second the directory last moved is never kept, since a seal later in that
   ;; second leaves the stat as it was.
   (labels ((seal (number)
@@ -538,7 +538,7 @@ exit 0~%" ,report ,score))
     (let ((reads 0)
           (past (- (sb-ext:get-time-of-day) 60))
           (ahead (+ (sb-ext:get-time-of-day) 60)))
-      (with-stubbed-fdefinition (nlk:manifests () (incf reads) (funcall original))
+      (with-stubbed-fdefinition (nlk::manifest-paths () (incf reads) (funcall original))
         (is (zerop (nlk:manifest-count)) "no directory, nothing sealed")
         (seal 1)
         (seal 2)
@@ -557,6 +557,20 @@ exit 0~%" ,report ,score))
         (stamp ahead)
         (is (= 4 (nlk:manifest-count)) "a stat not yet in the past is never kept")
         (is (= 5 reads))))))
+
+(deftest the-sealed-count-opens-no-manifest ()
+  ;; A new shell pays the count before its first frame: counting the files
+  ;; keeps that a directory listing, however many generations the home holds.
+  (let ((opened 0))
+    (dotimes (i 3)
+      (nlk::write-file-atomically
+       (nlk::manifest-path (1+ i))
+       (nlk::pretty-json (nlk:json-object "format" nlk::+manifest-format+ "number" (1+ i) "rows" #()))))
+    (setf nlk::*manifest-count* nil)
+    (with-stubbed-fdefinition (nlk::read-generation-manifest (path) (incf opened) (funcall original path))
+      (is (= 3 (nlk:manifest-count)))
+      (is (zerop opened) "no manifest was opened to count them")
+      (is (= 3 (length (nlk:manifests))) "the manifests themselves still read whole"))))
 
 ;;; --- the bytes a seal keeps, and a generation laid beside the folder ----------
 ;;; What no repository can put back is kept whole, so a generation can be laid

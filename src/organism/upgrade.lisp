@@ -34,8 +34,8 @@
   "An upgrade that cannot proceed as asked, and why. The image is as it was." :export t)
 
 ;;; The build identity stays *USER-AGENT-VERSION* (the evolved side's); what
-;;; an ack, the identity route and a build-skew notice compare is this,
-;;; through EFFECTIVE-VERSION (update.lisp).
+;;; an ack, the identity route, a build-skew notice and the user-agent header
+;;; report is this, through EFFECTIVE-VERSION (update.lisp).
 (defvar *effective-version* nil
   "The release label this image's live definitions are at once a hot
 upgrade moved them past the build's own -- NIL until one does.")
