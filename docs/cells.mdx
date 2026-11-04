@@ -11,8 +11,8 @@ Nodecode is built from cells. Discord, Telegram, cron, the guard: each is a fold
 
 1. Before installing, it shows the repository, the commit it is pinned at, and that the cell runs with full access to your files and keys.
 2. Pyright is on the PATH, so the cell starts it the first time the agent writes a Python file.
-3. The agent's edit multiplies a `Decimal` by a `float`. The eval that wrote the file comes back with pyright's error at `app/invoices.py:28:16`: Operator "\*" not supported for types "Decimal" and "float".
-4. The agent fixes it before a test runs. `/cells` lists lsp under From the hub, running.
+3. Asked to make `Reader.feed` take `str`, the agent changes the signature and leaves the `bytes` buffer under it. The eval that wrote the file comes back with pyright's error at `app/sse.py:12:9`: Operator "+=" not supported for types "bytes" and "str".
+4. The agent writes both files as text, and the eval's tests pass. `/cells` lists lsp under From the hub, running.
 
 {/* source: src/gateway/control.lisp, src/organism/cells.lisp, src/tui/cells-sheet.lisp */}
 ## How
