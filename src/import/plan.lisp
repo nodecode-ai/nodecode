@@ -70,10 +70,10 @@ before the folders that read them — comes first.")
 
 (nlk:define-record (plan (:copier nil) (:constructor %make-plan) (:export items))
   "One import: the HOMES read newest first, the switches (OVERWRITE,
-TAKEOVER, ONLY, WITHOUT, LINK), the ITEMS (oldest first once built), what
+TAKEOVER, ONLY, WITHOUT), the ITEMS (oldest first once built), what
 says a foreign gateway is RUNNING, whether the takeover STOPPED it, and where
 the report went."
-  (homes '()) settings overwrite (takeover t) only without link (items '()) (running '())
+  (homes '()) settings overwrite (takeover t) only without (items '()) (running '())
   stopped applied report-path)
 
 (defun add-item (plan kind status &key fact reason (source (and fact fact.source))
@@ -833,8 +833,8 @@ PLAN-KEEP, HOT the names a home's hot index lists."
                               (used (mapcar (lambda (fact) (getf fact.value :name))
                                             (plan-facts plan :usage))))
   "Each skill a home holds: linked, each library of them one link read where
-it is (PLAN-SKILL-LINKS), unless LINKED-SKILL-P says it is copied -- as a
-prose define-skill, SKILL.md's description its docstring, its other
+it is (PLAN-SKILL-LINKS), or where LINKED-SKILL-P says no link can hold it,
+converted -- a prose define-skill, SKILL.md's description its docstring, its other
 frontmatter and its procedure the prose, a small text file beside it
 carried along and anything else named."
   ;; Each skill's text is made on eight lanes, its item added in turn, as a
@@ -885,27 +885,36 @@ PLAN-KEEP, USED the names a home's ledger says were used."
 ;;; index reads every SKILL.md through it where it lives (knowledge.lisp
 ;;; LINKED-SKILL-FILES). An edit made in the other harness is the skill here
 ;;; at its next read, and a skill added there is here with no import again.
-;;; --copy copies them instead, as an install on Windows, which makes no
-;;; symbolic link, always does.
+;;; A repository source's skills are linked the same way, from the folder its
+;;; fetch keeps. Nothing is copied: the one exception is an install on
+;;; Windows, which makes no symbolic link and so converts them.
 
 (defparameter +linked-skills-cell+ "linked-skills"
   "The knowledge cell an import puts its links in.")
 
-(defvar *defined* nil
-  "The names this organism's own definition files hold, read once per plan
-(MAKE-PLAN binds it).")
+(defvar *link-skills* #-win32 t #+win32 nil
+  "Whether an import links skills: an install on Windows, which makes no
+symbolic link, converts each to a definition instead.")
 
-(defun defined-here-p (name)
-  "Whether a definition file this organism keeps -- no SKILL.md read where it
-lives -- holds NAME: the index reads it in place of a linked skill of that
-name (NLK:KNOWLEDGE-ENTRIES)."
-  (gethash (string-downcase name)
-           (or *defined*
-               (setf *defined* (nlk:string-set
-                                (loop for entry in (nlk:knowledge-entries)
-                                      for path = (nlk:knowledge-entry-path entry)
-                                      when (and path (string-equal "lisp" (pathname-type path)))
-                                        collect (nlk:knowledge-entry-name entry)))))))
+(defvar *defined* nil
+  "Each name this organism's own definition files hold, to its :origin --
+T for none -- read once per plan (MAKE-PLAN binds it).")
+
+(defun defined-here (name)
+  "The :origin of the definition file this organism keeps under NAME -- no
+SKILL.md read where it lives -- T when it names none, NIL when no file holds
+NAME. The index reads such a file in place of a linked skill of that name
+(NLK:KNOWLEDGE-ENTRIES)."
+  (values (gethash (string-downcase name)
+                   (or *defined*
+                       (setf *defined*
+                             (let ((table (make-hash-table :test #'equal)))
+                               (dolist (entry (nlk:knowledge-entries) table)
+                                 (let ((path (nlk:knowledge-entry-path entry)))
+                                   (when (and path (string-equal "lisp" (pathname-type path)))
+                                     (setf (gethash (nlk:knowledge-entry-name entry) table)
+                                           (let ((origin (nlk::knowledge-entry-origin entry)))
+                                             (if (stringp origin) origin t))))))))))))
 
 (defun skill-root (plan directory &aux (path (truename directory)))
   "The root of one of PLAN's homes DIRECTORY, a skill's folder, sits in, as
@@ -925,17 +934,14 @@ read at one skill's path, whose parent is no library of the home's."
       (truename (uiop:pathname-parent-directory-pathname folder))))
 
 (defun linked-skill-p (plan fact &aux (directory (getf fact.value :directory)))
-  "Whether the skill FACT comes over as a link rather than a copy: the plan
-links, and the skill is no project's (SKILL-PROJECT), in no carrier its world
-retires once converted, and not in this organism's own home -- a repository
-fetched at its commit, which /import --remove takes back by its copies."
-  (and plan.link
+  "Whether the skill FACT comes over as a link: always, but on Windows
+(*LINK-SKILLS*), for a skill a project's own .nodecode/skills/ holds -- a link
+would make it every session's (SKILL-PROJECT) -- and for one in a carrier its
+world retires once converted."
+  (and *link-skills*
        (null (skill-project directory))
        (let ((home (nth-value 1 (skill-root plan directory))))
-         (not (and home home.world (nlk:agent-world-retire home.world))))
-       (not (ignore-errors
-             (uiop:subpathp (truename directory)
-                            (truename (uiop:ensure-directory-pathname (getf plan.settings :home))))))))
+         (not (and home home.world (nlk:agent-world-retire home.world))))))
 
 (defun library-link-name (library &aux (path (uiop:native-namestring library))
                                        (home (uiop:native-namestring
@@ -964,14 +970,26 @@ knowledge cell when this is its first link. => LINK."
   (nlk::ensure-knowledge-system cell)
   (nlk::make-symlink library link))
 
+(defun unlink-libraries-in (folder &aux (cell (nlk::knowledge-directory +linked-skills-cell+))
+                                        (folder (ignore-errors (truename folder))))
+  "Each link in the linked-skills cell reaching FOLDER or a folder in it,
+removed -- a repository source taken back (REMOVE-SOURCE). => their names."
+  (when (and folder (probe-file cell))
+    (loop for link in (directory (merge-pathnames "*/" cell) :resolve-symlinks nil)
+          for library = (linked-library link)
+          when (and library (uiop:subpathp library folder))
+            collect (prog1 (nlk:folder-name link)
+                      (sb-posix:unlink (string-right-trim "/" (sb-ext:native-namestring link)))))))
+
 (defun plan-skill-links (plan facts &aux (libraries '())
                                          (cell (nlk::knowledge-directory +linked-skills-cell+)))
   "Each library FACTS, skills, sit in, as one item linking it into the
 linked-skills cell: skipped when it is linked already, a conflict when its
 name is taken by a folder or, unless the plan overwrites, by a link reaching
-another. A skill a definition file kept here names stays that definition --
-the index reads the file in place of the link -- and the item says so;
-under --overwrite the definition is forgotten and the link read."
+another. A copy an earlier import made of a skill it links is forgotten, so
+the link is what the index reads; a definition of the name kept here from
+anywhere else stays -- the index reads it in place of the link -- and the
+item says so, until --overwrite forgets it too."
   (dolist (fact facts)
     (let* ((library (skill-library plan (getf fact.value :directory)))
            (entry (assoc library libraries :test #'equal)))
@@ -980,11 +998,18 @@ under --overwrite the definition is forgotten and the link read."
         for name = (library-link-name library)
         for link = (merge-pathnames name cell)
         for linked = (equal (linked-library link) library)
+        for world = (fact-world (first (last facts)))
         for held = (nlk:distinct (loop for fact in (reverse facts)
-                                       when (defined-here-p fact.id) collect (string-downcase fact.id)))
-        for forget = (and held plan.overwrite)
-        for note = (and held (format nil "~{~a~^, ~} kept here win~:[s~;~] (--overwrite forgets ~:*~:[it~;them~])"
-                                     held (rest held)))
+                                       when (defined-here fact.id) collect (string-downcase fact.id)))
+        ;; A copy an earlier import made of this very skill is replaced by
+        ;; the link; a definition of the name from anywhere else wins until
+        ;; --overwrite.
+        for copies = (remove-if-not (lambda (name) (equal world (defined-here name))) held)
+        for own = (remove-if (lambda (name) (member name copies :test #'string=)) held)
+        for forget = (if plan.overwrite held copies)
+        for note = (and own (not plan.overwrite)
+                        (format nil "~{~a~^, ~} kept here win~:[s~;~] (--overwrite replaces ~:*~:[it~;them~])"
+                                own (rest own)))
         for keys = (list :fact (first (last facts))
                          :source (nlk:home-abbreviated (uiop:native-namestring library))
                          :destination (format nil "~a/~a" +linked-skills-cell+ name)
@@ -1000,15 +1025,15 @@ under --overwrite the definition is forgotten and the link read."
                   (apply #'add-item plan "skills" "conflict"
                          :reason "a link of that name reaches another folder (--overwrite links this one)" keys))
                  (t (apply #'add-item plan "skills" "imported"
-                           :reason (cond (forget (format nil "~d skill~:p, read where ~:[it is~;they are~]; ~{~a~^, ~} kept here forgotten"
-                                                         (length facts) (rest facts) held))
-                                         (note (format nil "~d skill~:p; ~a" (length facts) note))
-                                         (t (format nil "~d skill~:p, read where ~:[it is~;they are~]"
-                                                    (length facts) (rest facts))))
+                           :reason (format nil "~:[~d skill~:p~:[~*~;, read where ~:[it is~;they are~]~]~;linked already~3*~]~
+                                                ~@[; replaces the copy of ~{~a~^, ~} kept here~]~
+                                                ~@[; ~{~a~^, ~} kept here forgotten~]~@[; ~a~]"
+                                           linked (length facts) (null note) (rest facts)
+                                           copies (and plan.overwrite own) note)
                            :action (let ((library library) (link link) (linked linked)
-                                         (held (and forget held)) (world (fact-world (first (last facts)))))
+                                         (forget forget) (world world))
                                      (lambda ()
-                                       (when held (forget-definitions held world))
+                                       (when forget (forget-definitions forget world))
                                        (unless linked (link-skill-library library link cell))
                                        link))
                            keys)))))
@@ -1390,16 +1415,14 @@ another token is another, and a home with no token is its own."
 
 ;;; --- the plan ------------------------------------------------------------------------
 
-(defun make-plan (&key source overwrite (takeover t) only without copy
+(defun make-plan (&key source overwrite (takeover t) only without
                         (settings (import-settings)))
   "The plan for SOURCE — a world name, a path, a repository (its skills and
 MCP servers alone, +SOURCE-KINDS+), a list of world names, or every world on
 the box — over every kind in +KINDS+, or ONLY the named ones,
 leaving out any WITHOUT names; OVERWRITE replaces what is already here;
 TAKEOVER, the default, stops a foreign gateway so its bots answer from here;
-skills are linked, each library of them read where it is (PLAN-SKILL-LINKS),
-unless COPY -- or an install on Windows, which makes no symbolic link --
-copies them."
+skills are linked, each library of them read where it is (PLAN-SKILL-LINKS)."
   ;; Nothing is written; the actions wait on APPLY-PLAN. A list is the setup
   ;; walk's unasked offer: the worlds on the box less those the operator declined.
   (let* ((repository (and (stringp source) (not (nlk:find-agent-world source)) (parse-source source)))
@@ -1412,7 +1435,6 @@ copies them."
                     (mapcar #'open-home (if (consp source) source (list source)))))
          (plan (%make-plan :homes homes :settings settings
                            :overwrite overwrite :takeover takeover
-                           :link (and (not copy) #-win32 t #+win32 nil)
                            :only (if repository (source-kinds only) (kind-list only))
                            :without (kind-list without))))
     (read-homes homes :sessions (kind-wanted-p plan "sessions")

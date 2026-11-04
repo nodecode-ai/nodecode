@@ -332,8 +332,8 @@ Zig launcher gives the same thing."
                   :detail "Connect a provider, pick a model and its reasoning effort. /setup does the same from inside the shell.")
    (nlk:make-verb "import" "read another coding agent's home into this one; a preview until --yes"
                   :label "import [WORLD]" :terminal t
-                  :arguments "[WORLD] [--source PATH] [--only KINDS] [--dry-run] [--overwrite] [--copy] [--keep-running] [--yes]"
-                  :detail "Providers, standing instructions, memory, skills, MCP servers, channels, cron jobs, sessions and profiles, each through the cell that owns it, keys and tokens with them. WORLD names one harness to read; naming none reads every coding-agent home on this box and merges them, newest first, with an existing fact here always winning. --source reads a home at a path instead, or a repository's skills and MCP servers (OWNER/REPO, an https URL, #REF pinning a branch, tag or commit); --only names the kinds, comma-separated; --overwrite replaces what is already here; skills are linked, each folder of them one link in the linked-skills cell, so each SKILL.md is read where it is and an edit in the other harness shows here at once; --copy copies them instead. A foreign gateway polling the same bots is stopped and disabled so they answer from here (the report names the command that gives them back); --keep-running leaves it running, and its bots land off and come on by themselves once it stops. The preview opens in the setup walk; --yes applies it without asking.")
+                  :arguments "[WORLD] [--source PATH] [--only KINDS] [--dry-run] [--overwrite] [--keep-running] [--yes]"
+                  :detail "Providers, standing instructions, memory, skills, MCP servers, channels, cron jobs, sessions and profiles, each through the cell that owns it, keys and tokens with them. WORLD names one harness to read; naming none reads every coding-agent home on this box and merges them, newest first, with an existing fact here always winning. --source reads a home at a path instead, or a repository's skills and MCP servers (OWNER/REPO, an https URL, #REF pinning a branch, tag or commit); --only names the kinds, comma-separated; --overwrite replaces what is already here. Skills are linked, each folder of them one link in the linked-skills cell, so each SKILL.md is read where it is and an edit in the other harness shows here at once. A foreign gateway polling the same bots is stopped and disabled so they answer from here (the report names the command that gives them back); --keep-running leaves it running, and its bots land off and come on by themselves once it stops. The preview opens in the setup walk; --yes applies it without asking.")
    (nlk:make-verb "add" "install a cell from the hub, or one this release ships, and turn it on"
                   :label "add nc://NAME"
                   :arguments "nc://NAME [--yes] [--wait SECONDS]"
@@ -434,7 +434,7 @@ read one line alike."
              (or (pop args) (launch-usage-error refusal))))
       (loop while (and args (member (first args)
                                     '("--source" "--only" "--dry-run"
-                                      "--overwrite" "--copy" "--keep-running" "--yes")
+                                      "--overwrite" "--keep-running" "--yes")
                                     :test #'string=))
             do (let ((key (intern (string-upcase (subseq (pop args) 2)) :keyword)))
                  (setf (getf request key)

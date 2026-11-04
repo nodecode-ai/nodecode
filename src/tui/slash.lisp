@@ -245,7 +245,7 @@
         ;; or the page gets the summary as text (NIK:RUN-SLASH).
         (make-slash-command "import"
                             "Bring another coding agent's home into this one: preview first, --yes applies"
-                            :usage "/import [WORLD] [--source PATH] [--only KINDS] [--dry-run] [--overwrite] [--copy] [--keep-running] [--yes]"
+                            :usage "/import [WORLD] [--source PATH] [--only KINDS] [--dry-run] [--overwrite] [--keep-running] [--yes]"
                             :dispatch :args :headless 'headless-import :session nil
                             :completer (nlk:agent-world-names)
                             :help-detail
