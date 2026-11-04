@@ -3274,9 +3274,10 @@ a surface that draws one wears (a room's card its edge), NIL for none."
 key OWNER, replacing any command of that name; SESSION NIL says it acts on no
 session, so a client with none open runs it as it is, TRIGGER, a
 one-character string, is what the shell's composer opens it on when it is
-typed at a word's start (the index's `$'). A command is its name: RUN
-called with no argument answers what it offers as a LIST-DIALOG, whose rows
-run its lines or ask for text (tui/commands/bare.lisp). => COMMAND's entry."
+typed as the draft's first character (the index's `$'). A command is its
+name: RUN called with no argument answers what it offers as a LIST-DIALOG,
+whose rows run its lines or ask for text (tui/commands/bare.lisp).
+=> COMMAND's entry."
   ;; ARGUMENT-HINT and COMPLETE, the words a cell written before that
   ;; offered typed after the name, are taken and shown nowhere, so such a
   ;; cell still loads.

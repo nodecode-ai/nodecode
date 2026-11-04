@@ -5666,11 +5666,12 @@ default target is PROVIDER/MODEL-ID, restored after."
           (dialog-keys model :escape)
           (is (null (nle::chat-model-dialog model)) "Esc on the list it all opened from closes it"))))))
 
-(deftest cell-command-trigger-opens-its-dialog-at-a-word-start (with-temp-gateway (port))
-  ;; A command registered with a TRIGGER answers that character typed at a
-  ;; word's start -- the index's `$' opening /index, which this picker
-  ;; stands in for: the character stays in the draft, the dialog opens, and
-  ;; the pick takes its place. Mid-word it is text, and Esc leaves it as typed.
+(deftest cell-command-trigger-opens-its-dialog-only-as-the-first-character (with-temp-gateway (port))
+  ;; A command registered with a TRIGGER answers that character typed as the
+  ;; draft's first character -- the index's `$' opening /index, which this
+  ;; picker stands in for: the character stays in the draft, the dialog
+  ;; opens, and the pick takes its place. Anywhere later in the draft it is
+  ;; text: mid-word, after a space (`costs $5'), at a second line's start.
   (with-saved-globals (nle::*registered-commands* nle::*gateway-commands*)
     (nle:unregister-commands "index")
     (register-picker-command :trigger "$")
@@ -5680,14 +5681,21 @@ default target is PROVIDER/MODEL-ID, restored after."
       (type-string model "costs a" #\$)
       (is (null (nle::chat-model-dialog model)) "mid-word it is text")
       (type-string model " " #\$)
-      (is (nle::picker-dialog-p (nle::chat-model-dialog model)) "at a word's start it opens")
-      (is (equal "costs a$ $" (composer-value model)) "with the character in the draft")
+      (is (null (nle::chat-model-dialog model)) "after a space it is text too")
+      (type-string model (format nil "~%") #\$)
+      (is (null (nle::chat-model-dialog model)) "and at a second line's start")
+      (is (equal (format nil "costs a$ $~%$") (composer-value model)) "each one stays as typed")
+      (nle::editor-reset (nle::chat-model-editor model))
+      (press model #\$)
+      (is (nle::picker-dialog-p (nle::chat-model-dialog model)) "as the draft's first character it opens")
+      (is (equal "$" (composer-value model)) "with the character in the draft")
       (nle::picker-dialog-key model :enter)
-      (is (equal "costs a$ $alpha " (composer-value model)) "the pick takes its place")
+      (is (equal "$alpha " (composer-value model)) "the pick takes its place")
+      (nle::editor-reset (nle::chat-model-editor model))
       (press model #\$)
       (nle::picker-dialog-key model :escape)
       (is (null (nle::chat-model-dialog model)))
-      (is (equal "costs a$ $alpha $" (composer-value model)) "Esc leaves it as typed"))))
+      (is (equal "$" (composer-value model)) "Esc leaves it as typed"))))
 
 (deftest cell-command-without-a-dialog-answers-its-text (with-temp-gateway (port))
   ;; A command whose answer is its text alone opens nothing: the text is the

@@ -54,7 +54,7 @@
   ;; no hotkey.
   ;;
   ;; TRIGGER is a cell command's opener in the composer: the character,
-  ;; typed at a word's start, opens the command's dialog and stays in the
+  ;; typed as the draft's first, opens the command's dialog and stays in the
   ;; draft until a pick replaces it (COMPOSER-TRIGGER-COMMAND). NIL for most.
   (name nil :type string) (description nil :type string)
   (aliases nil :type list) (help-detail nil :type string)
