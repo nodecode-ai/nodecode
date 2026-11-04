@@ -113,7 +113,7 @@ Like an organism, Nodecode decides what stays in its context and what goes, and 
 
 ## One organism, every client
 
-The gateway is the local server every client attaches to: the terminal, a browser tab (`nodecode web`), your phone (`/link on`), bots in Discord, Telegram and Slack, and programs (`nodecode rpc`). They all talk to the same running Nodecode, so a tool it writes in one is there in all of them.
+The gateway is the local server every client attaches to: the terminal, a browser tab (`nodecode web`), your phone (`/link`), bots in Discord, Telegram and Slack, and programs (`nodecode rpc`). They all talk to the same running Nodecode, so a tool it writes in one is there in all of them.
 
 On Linux and macOS the background gateway is on by default: it keeps Nodecode running with no shell open and starts it at login. `nodecode gateway` shows its state. On Windows, keep `nodecode serve` open in a terminal. See [The gateway](https://nodecode.ai/docs/gateway).
 
@@ -151,7 +151,7 @@ Turn one on with Space in `/cells`, or `nodecode add nc://NAME`:
 | Cell | What it does |
 | --- | --- |
 | `discord` · `telegram` · `slack` | Talk to Nodecode through a bot |
-| `web` · `link` | Use it in a browser tab with `nodecode web`; open that page from anywhere with `/link on` |
+| `web` · `link` | Use it in a browser tab with `nodecode web`; open that page from anywhere with `/link` |
 | `chrome` | Drive Chrome, with the companion extension |
 | `websearch` | Web search and page fetch, no key needed |
 | `mcp` | Tools from the MCP servers you list in the config |

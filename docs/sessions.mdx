@@ -37,24 +37,25 @@ The shell prints the resume line when it exits: `To resume: nodecode resume SESS
 {/* source: src/gateway/gateway.lisp */}
 ## Rename
 
-| Command | Does |
+`/rename` shows the session's name and offers two rows.
+
+| Row | Does |
 | --- | --- |
-| `/rename` | Shows the session's name. |
-| `/rename NAME` | Names the session. One line, 64 characters at most. |
-| `/rename default` | Gives back the first prompt's line. |
+| Type a new name | Asks for the name. One line, 64 characters at most. |
+| The name the first prompt makes | Gives back the first prompt's line. |
 
 A session has no name before its first prompt. Then it wears that prompt's first line, until the auxiliary model writes it a title of three to seven words. A prompt of five words or fewer is its own title. A name you give first wins.
 
 {/* source: src/tui/commands/headless.lisp */}
 ## Export
 
-`/export [path]` saves the session as Markdown. It works in the shell only.
+`/export` saves the session as Markdown: in this shell's folder, or in a folder or at a file it asks for. It works in the shell only.
 
-| Argument | File written |
+| Row | File written |
 | --- | --- |
-| None | A file named after the session, in the shell's folder. |
-| A folder | That file name, inside the folder. |
-| A file path | That path. |
+| Save it in this folder | A file named after the session, in the shell's folder. |
+| Save it somewhere else, given a folder | That file name, inside the folder. |
+| Save it somewhere else, given a file path | That path. |
 
 | In the file | Left out |
 | --- | --- |

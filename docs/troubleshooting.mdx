@@ -77,7 +77,7 @@ nodecode gateway                 # state, pid, port, uptime, build
 - The boot log sits beside the store. With `--store PATH` it is `PATH.stdio.log`.
 - The boot log holds cell load failures as `cell NAME: FAILED ...` lines.
 - `NODECODE_PHASE_LOG` is off unless set before launch.
-- `/gateway logs` works in the shell. `--follow` works on the command line only.
+- `/gateway` shows the log in the shell: its log row. `--follow` works on the command line only.
 
 {/* source: src/tools/install.sh */}
 ## Install failures
@@ -120,7 +120,7 @@ nodecode gateway                 # state, pid, port, uptime, build
 | The footer says `run /setup to add a model` | Same. | Same. |
 | `` `/setup` does not take arguments. `` | `/setup NAME` was typed. | `/cells`, then type to search. |
 | The import report says `no key imported here serves it` | The import brought the model's name over, not the sign-in behind it. | `/models`. |
-| The import report says `lands off` | Imported MCP servers start off. | `/mcp on NAME`. |
+| The import report says `lands off` | Imported MCP servers start off. | `/mcp`, then the server's row. |
 | `/doctor` says a provider failed its key check | The provider's model listing refused the key. | Run `/models` and paste a working key (Ctrl+E). |
 | `/doctor` says `none for PROVIDER: a turn on it sends none` | The default provider has no key. | Run `/models`. |
 
