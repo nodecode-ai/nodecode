@@ -48,6 +48,12 @@
   "The folder key this image was dumped under, or NIL in the origin binary
 and every developer image.")
 
+;;; Non-NIL is what makes a process a SAVED image (heap-image.lisp): a heap
+;;; kept as it stood, which boots past the folder whatever it became since.
+(defvar *saved-image* nil
+  "What the saved image this process boots says of itself, a plist -- :NAME,
+:SAVED (a universal time), :BUILD, :FOLDER-KEY -- or NIL in every other image.")
+
 ;;; --- boot phases -----------------------------------------------------------
 ;;; One append-only line per landmark of a launch, epoch-stamped, into the
 ;;; same NODECODE_PHASE_LOG the provider writes its rounds to: the launch's
@@ -888,6 +894,17 @@ release reads as in use. => the stream, or NIL when it will not open."
       (setf *origin-hold*
             (ignore-errors (open (origin-pathname) :element-type '(unsigned-byte 8))))))
 
+(defun saved-image-drift ()
+  "How the folder moved since this saved image was dumped: NIL when it did
+not (or nothing can say), else one line."
+  (when *saved-image*
+    (let ((current (and *cells-directory* (ignore-errors (folder-key))))
+          (saved (getf *saved-image* :folder-key)))
+      (when (and current saved (not (equal current saved)))
+        (format nil "the cell folder moved since image ~a was saved; ~
+                     this heap runs as it was saved, and a plain launch loads the folder as it is now"
+                (getf *saved-image* :name))))))
+
 (defun boot-cells (&key spawn hand-over receipt)
   "Load the folder — through the warm-image cache when a published image
 matches its current key — and answer the records. Under RECEIPT (a serve)
@@ -922,6 +939,17 @@ if this one dies before it serves."
      (setf *cells* '())
      (format *error-output* "~&pristine: generation 0, no folder loaded~@[ -- ~a~]~%"
              (ignore-errors (pristine-reason)))
+     *cells*)
+    ;; A SAVED IMAGE holds the folder as it was loaded when its heap was
+    ;; kept, and everything the session built on it: it loads nothing, and
+    ;; never hands the process back for a folder that moved since -- the
+    ;; heap is what was asked for. It only says how the folder moved.
+    (*saved-image*
+     (nlk:note-boot-phase "saved-image" (getf *saved-image* :name))
+     (hold-origin)
+     (spawn "saved-image-drift"
+       (let ((drift (saved-image-drift)))
+         (when drift (format *error-output* "~&image: ~a~%" drift))))
      *cells*)
     (*image-folder-key*
      (nlk:note-boot-phase "warm-image")

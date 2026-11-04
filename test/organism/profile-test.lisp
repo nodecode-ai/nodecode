@@ -371,7 +371,7 @@ RUN-CHECKED, newest first: nothing runs and nothing is moved."
                "/history.db*" "/.locks/" "/composer-history" "/usage.jsonl" "/theme-selection"
                "/keybinds.json" "/operator-token" "/generations/" "/release-pin" "/distribution.json"
                "/gateway-off/" "/hermes/" "/mcp/" "/secrets" "/auth.json"
-               "/link" "/backups" "/cells" "")
+               "/link" "/backups" "/images/" "/cells" "")
              (uiop:split-string
               (nlk:read-text (merge-pathnames ".git/info/exclude" (nlk:profile-home "dist")))
               :separator (string #\Newline)))))

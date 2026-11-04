@@ -570,6 +570,21 @@ ended the transaction (the ROLLBACK's own when NIL)."
   ;; A probe, not a claim: FILE-LOCKED-P never contends with the owner.
   (file-locked-p (lock-path-for-store path)))
 
+(defun store-lease-held-elsewhere-p (path)
+  "True when a live process other than this one holds PATH's ownership lock."
+  ;; This one holds it before its store opens only when a saved heap image
+  ;; it became was handed the lease across the exec (HOLD-STORE-LEASE).
+  (and (store-lease-held-p path) (not (store-lease-mine-p path))))
+
+(defun hold-store-lease (path &aux (full (merge-pathnames path)))
+  "Take PATH's ownership lock with no store open and advertise this process
+as its holder, for a store about to reopen in this pid: => the lock, NIL when
+another process holds it."
+  (let ((lock (lock-file (lock-path-for-store full))))
+    (when lock
+      (write-store-holder (lease-path-for-store full) :pid (sb-posix:getpid)))
+    lock))
+
 (defun store-lease-mine-p (path)
   "True when this process holds PATH's ownership lock."
   ;; *HELD-LOCKS* is the only way to ask: opening the lock file to probe it
@@ -637,7 +652,10 @@ store."
            ;; The store's directory exists, 0700, before the lease is taken.
            (lock-fd (progn (ensure-directories-exist directory)
                            (ignore-errors (sb-posix:chmod (namestring directory) #o700))
-                           (lock-file (lock-path-for-store full))))
+                           ;; A lease this process already holds -- handed
+                           ;; across a saved image's exec -- is the lease.
+                           (or (held-lock (lock-path-for-store full))
+                               (lock-file (lock-path-for-store full)))))
            (lease-path (lease-path-for-store full))
            (store (make-store :path full :lease-path lease-path :lock-fd lock-fd)))
       (unless lock-fd

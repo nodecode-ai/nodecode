@@ -256,7 +256,11 @@ launch boots it. => words: the model's and the operator's (restore-image NAME)."
 (define-gateway-route handle-gateway-images-http (env)
   "GET /api/gateway/images: the saved heaps in words (SAVED-IMAGES-TEXT)."
   (:route :get "/api/gateway/images" "images")
-  (json-object "text" (saved-images-text)))
+  ;; RUNNING names the heap this organism boots from, and when it was saved:
+  ;; a shell that asked for a save waits for exactly that answer.
+  (json-object "text" (saved-images-text)
+               :opt "running" (getf nlk::*saved-image* :name)
+               :opt "running_saved" (getf nlk::*saved-image* :saved)))
 
 (define-gateway-route handle-gateway-image-save-http (env)
   "POST /api/gateway/images/save {name}: this organism's heap saved as NAME

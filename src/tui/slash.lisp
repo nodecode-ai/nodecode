@@ -188,6 +188,15 @@
         ;; Check everything shows) — and a cell's own facts, which reach it
         ;; by hooking HEALTH-FACTS. A shell asks its gateway, off its loop:
         ;; reading a large store back takes seconds.
+        ;; Saved heap images (organism/heap-image.lisp): the organism kept as
+        ;; it stands, values and all, beside the folder's generations.
+        (make-slash-command "image"
+                            "Saved heaps: keep this organism as it stands, boot one again later"
+                            :usage "/image [save|restore|delete NAME]" :dispatch :args
+                            :op 'slash-image-op :headless 'headless-image
+                            :session nil
+                            :help-detail
+                            "A saved image is this organism's heap as it stands -- every value a session built up, closures mid-count, definitions that were only ever evaluated -- kept under ~/.nodecode/images/NAME/ on this machine alone: it holds what this machine holds, keys among them, so it is never shared; the folder is what you share. /image save NAME waits for no turn to be in flight, stops the organism for a moment, keeps its heap and runs on from that image in place: the same process, the shells attached reconnecting as after a restart. /image restore NAME has the next launch boot that heap once (a running organism exits once idle for it), /image delete NAME removes one, and bare /image lists them. A heap boots only on the build that saved it, and a plain launch still loads the folder as it is now")
         (make-slash-command "doctor"
                             "What this organism is missing, and what to do about it"
                             :usage "/doctor" :dispatch :args :headless 'headless-doctor
