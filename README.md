@@ -197,7 +197,14 @@ No. You ask in plain words, the model writes the Lisp, and your project can be i
 <summary><b>Is it safe to run?</b></summary>
 <br>
 
-Nodecode ships no sandbox. `eval` runs Lisp and shell commands with everything your user account can do. The `guard` cell refuses listed risky commands, but it is not a security boundary. A cell is code with full access to your files and keys, and a message in a chat room runs with the same authority, so allowlists decide who may send one. Run it in a container or a VM before you leave it working alone. See [Safety and trust](https://nodecode.ai/docs/security).
+On Linux and macOS, Nodecode runs the agent in a jail by default. There is nothing to set up.
+
+- **Files:** the agent reads and writes the project folder you started it in and its own `~/.nodecode`. The rest of your home isn't there: not `~/.ssh`, `~/.aws`, your browser profiles or other agents' homes. The system is read-only. Started in your home folder itself, Nodecode asks for a project folder instead.
+- **Network:** only through Nodecode's own proxy, to your model providers, nodecode.ai, models.dev, GitHub and the chat services you connected. Everything else is refused. `nodecode sandbox allow HOST` adds a host.
+- **Keys:** your API keys and sign-ins never enter the jail. The proxy adds each one to the requests bound for its own provider, so a prompt injection has no key to read. Setup's Import leaves other agents' keys and bot tokens behind unless you pick Import with keys.
+- **The background gateway** runs in the same jail.
+
+What the jail doesn't stop: the agent can change anything in the project folder, so keep it in git. Anyone on a chat bot's allowlist can give it work. A cell you install runs inside the jail with the agent's access. Windows has no jail yet: there Nodecode runs with your account's full access and says so at every launch. `nodecode sandbox off` turns the jail off, and asks first. Updates come over HTTPS from nodecode.ai and are checked against their sha256 before they apply; `update.mode` `ask` makes each one wait for you. See [Safety and trust](https://nodecode.ai/docs/security).
 
 </details>
 

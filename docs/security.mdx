@@ -1,22 +1,66 @@
 ---
 title: Safety and trust
-summary: "What protects the machine, and what Nodecode does not protect."
+summary: "What the jail stops, what it doesn't, and what protects the rest."
 ---
 
-Nodecode has no sandbox. Read the limits before you connect a channel or run unattended.
+On Linux and macOS, Nodecode runs the agent in a jail by default. Read what it stops and what it doesn't before you connect a channel or run unattended.
+
+{/* source: src/gateway/sandbox.lisp */}
+## The jail
+
+The jail holds the agent: every `eval`, every shell command it runs, every cell, and the background gateway. The terminal you type in stays outside it.
+
+| What | Inside the jail |
+| --- | --- |
+| Files | The project folder you started in, read and write. Its own `~/.nodecode`, read and write, except the files below. The system, read-only. |
+| Your home | Not there: `~/.ssh`, `~/.aws`, `~/.gnupg`, browser profiles, other agents' homes. Neither is the host's `/tmp`. |
+| Keys and sign-ins | Not there: `auth.json` and `secrets/` are left out. Nodecode's proxy adds a key or sign-in token to each request bound for its own provider. |
+| Network | Only through the proxy, to the hosts it allows: your providers, nodecode.ai, models.dev, GitHub, and the chat services you configured. Any other host is refused. |
+| Local sockets | None of the host's: no Docker socket, no display, no desktop bus, no tmux server. |
+| `config.jsonc`, `sandbox.jsonc` | Read-only. The agent can't widen its own jail. |
+
+Started in your home folder or `/`, Nodecode asks for a project folder: a jail around the whole home would hold nothing back.
+
+| Command | What it does |
+| --- | --- |
+| `nodecode sandbox status` | Shows the folders and hosts the jail allows. |
+| `nodecode sandbox allow PATH` | Adds a folder, read-only. `--write` makes it writable. Kept in `sandbox.jsonc`. |
+| `nodecode sandbox allow HOST` | Adds a host to the proxy's list. |
+| `nodecode sandbox revoke PATH` | Takes a folder back out. |
+| `nodecode sandbox off` | Turns the jail off for this home, after asking. `nodecode sandbox on` turns it back on. |
+| `nodecode --no-sandbox` | Runs once without it, after asking. |
+
+| System | Jail |
+| --- | --- |
+| Linux | bubblewrap (`bwrap`), which Fedora and Ubuntu desktops ship. Without it Nodecode doesn't start, and says how to install it or turn the jail off. |
+| macOS | The system sandbox, `sandbox-exec`. |
+| Windows | None yet. Nodecode runs with your account's full access and says so at every launch. |
+
+A home the jail ran is marked. A launch without the jail refuses until you have read `nodecode sandbox review`, which lists what the jailed agent wrote that would run outside it: the layer and the cells.
+
+## What the jail doesn't stop
+
+| Fact | Consequence |
+| --- | --- |
+| The project folder is the agent's to change. | Keep it in git. `/undo` restores what a turn changed there. |
+| Allowed hosts are reachable. | The agent can send what it reads in the folder to them, GitHub included. |
+| Channel messages give the agent work. | Anyone on a bot's allowlist can make it run commands inside the jail. A bot's token is in the jail, so a prompt injection could post as that bot. |
+| Cells are code. | A cell runs inside the jail with the agent's access. A hub cell is someone else's code: read it first. |
+| The guard is not a security boundary. | It refuses known spellings of risky commands. Any other spelling runs, inside the jail. |
+| Without the jail, eval has your account's authority. | `--no-sandbox`, `sandbox off` and Windows: the model can read, write and run anything your user can, `auth.json` and `secrets/` included. |
 
 {/* source: src/gateway/gateway.lisp */}
-## Protections
+## Protections around it
 
 | Protection | What it does |
 | --- | --- |
 | Loopback gateway | The gateway, the local server shells attach to, listens on `127.0.0.1`. |
 | Host check | A request whose `Host` is not `127.0.0.1` or `localhost` gets 403. |
 | Origin check | A socket opened by a page of another origin gets 403. |
-| Operator token | Every `/api/gateway/` route needs `Authorization: Bearer TOKEN`. `/healthz` needs none. |
+| Operator token | Every `/api/gateway/` route needs `Authorization: Bearer TOKEN`. `/healthz` needs none. A jailed gateway gets a token made for that launch. |
 | Cell routes | A route a cell serves on the gateway's port needs the same token, unless the cell marks it public: a browser page, a webhook, a sign-in callback. A public route is responsible for its own checks. |
 | File modes | Secrets are readable by you alone. See the table below. |
-| Kernel lock | The kernel, the locked core, refuses redefinition of its names. |
+| Kernel lock | The kernel, the locked core, refuses redefinition of its names. The model can lower it with `lower-floor`; the store records who asked and why. It is not a security boundary: the jail is. |
 | Secret redaction | `config-get` shows a secret as `[set]`. `config-set` refuses to write `[set]` back. |
 | Channel allowlists | A Discord, Slack or Telegram bot refuses to start without an allowlist. |
 | Channel tokens | A bot token is named by a `*_env` or `*_file` key. Inline tokens are not read. |
@@ -37,35 +81,28 @@ Nodecode has no sandbox. Read the limits before you connect a channel or run una
 | `snapshots/` | 0700, and each snapshot's program: it holds your keys. Each manifest: 0600. |
 | `config.jsonc` | No mode is forced. A write keeps the mode the file has. |
 
-<Note head="Redaction is a courtesy">Redaction keeps secrets out of the transcript. Eval can still read `auth.json` and `secrets/` directly.</Note>
+{/* source: src/organism/update.lisp */}
+## Updates
 
-The model can lower the kernel lock itself with `lower-floor`. The store records who asked and why.
+Nodecode checks nodecode.ai for a new release. A release is a tarball fetched over HTTPS and checked against its sha256 before it is staged. Releases are not signed yet.
 
-{/* source: src/session/snapshot.lisp */}
-## Not protected
-
-| Fact | Consequence |
+| `update.mode` | What happens |
 | --- | --- |
-| Eval has full host authority. | The model can read, write and run anything your user can. |
-| A new process isolates a crash only. | It does not stop file or network damage. |
-| Cell folders are full-authority code. | A folder under `~/.nodecode/cells/` loads in every Nodecode process. Nothing asks first. |
-| The guard is not a sandbox. | It refuses known spellings. Any other spelling runs. |
-| Built-in guard rules are gated. | A file edit that mentions `rm -rf` is not refused. |
-| Channel messages run with full host authority. | Anyone on an allowlist can drive eval on this machine. |
-| Writes outside the session's folder are not snapshotted. | `/undo` cannot restore them. |
+| `auto` | The release is applied in the running process. What can't change live lands at the next launch. |
+| `ask` | The release is staged, and waits for `nodecode update`. |
+| `off` | Nodecode never looks. |
 
-For unattended work, supply containment outside Nodecode: a container or a host policy.
+`nodecode update VERSION` goes back to a release and holds there.
 
 {/* source: cells/channels/kit/config.lisp */}
 ## Safe baseline
 
-1. Run Nodecode on a machine you trust. Leave the gateway on loopback.
-2. Turn the background gateway off until you mean to run unattended: `/settings` > System > Gateway, or `nodecode gateway off`. It is on from the first boot of `~/.nodecode/` or a named profile. Sessions, schedules and bots then go on with no shell open, and it comes back at every login.
-3. Keep the `nodecode web` link and the `operator-token` file private.
-4. Give every channel an allowlist of users, channels or chats.
-5. Keep `require_mention` on in channels.
-6. Name channel tokens with `*_env` or `*_file`.
-7. Install the guard cell. Read its refusals before you work around them.
-8. Install cells only from sources you trust. Read the code first.
-9. Use `nodecode --ephemeral` for trials. It isolates the store only.
-10. Run inside a container before you let Nodecode change things unattended.
+1. Keep the jail on. Start Nodecode in the project folder it should work on.
+2. Keep the project in git.
+3. Give every channel an allowlist of users, channels or chats, and keep `require_mention` on.
+4. Name channel tokens with `*_env` or `*_file`.
+5. Keep the `nodecode web` link and the `operator-token` file private.
+6. Install cells only from sources you trust. Read the code first.
+7. Set `update.mode` to `ask` if you want to read each release before it applies.
+8. Turn the background gateway off when you don't need it: `/settings` > System > Gateway, or `nodecode gateway off`. It comes back at every login, and runs in the jail.
+9. On Windows, until the jail ships there, run Nodecode in a VM or under a separate account before you leave it working alone.
