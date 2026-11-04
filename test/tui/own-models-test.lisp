@@ -9,7 +9,9 @@
 ;;;;      as nodecode/<model> in the :own-model tone, leading every model
 ;;;;      list; a search for `nodecode' finds it, and Enter picks it.
 ;;;;   3. Signed out, the root opens as it always did, and a search for
-;;;;      `nodecode' finds the one row that opens /login.
+;;;;      `nodecode' finds the one row that opens /login -- only while
+;;;;      nodecode.ai's sign-in is offered (*OFFER-NODECODE-SIGN-IN*); by
+;;;;      default it finds none.
 ;;;;
 ;;;; Loads after slash-test: reuses WITH-MODEL-LISTINGS, ENTER-ROW and
 ;;;; DIALOG-AFTER from there.
@@ -63,7 +65,15 @@ nodecode.ai's chat and image model, and zeta's one model."
             (enter-row model "nodecode/foresight-cyber-v1")
             (is (equal '("nodecode" "foresight-cyber-v1") picked) "Enter on it picks it")))))))
 
-(deftest models-root-signs-in-for-own-models ()
+(deftest models-root-offers-no-sign-in-by-default ()
+  (with-model-listings (:config +listed-providers-config+ :cache (listed-providers-cache))
+    (with-frame-model (model 100 40 :session-id "own-models-hidden")
+      (nle::open-models-provider-picker model)
+      (let ((dialog model.dialog))
+        (dialog-after model "nodecode")
+        (is (notany (lambda (row) (equal "Sign in to nodecode.ai" (nle::picker-row-label row))) (nle::picker-visible-rows dialog)) "a search for nodecode finds no sign-in while it is not offered")))))
+
+(deftest models-root-signs-in-for-own-models (let ((nle::*offer-nodecode-sign-in* t)))
   (with-model-listings (:config +listed-providers-config+ :cache (listed-providers-cache))
     (with-frame-model (model 100 40 :session-id "own-models-signed-out")
       (let ((asked nil))

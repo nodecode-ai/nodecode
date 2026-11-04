@@ -11,11 +11,11 @@
 ;;;;
 ;;;; The fetch clones it at that commit into sources/ in this organism's home,
 ;;;; the folder named host/owner/repo@COMMIT with its .git gone: the folder is
-;;;; the pin, and the scripts and references a skill names stay there to be
-;;;; read. That name, and the folder of it a source names, is the label every
-;;;; skill it brings carries as its :origin -- the index ranks it as an
-;;;; import's until this organism's own use vouches for it, and REMOVE-SOURCE
-;;;; takes it back by that. A repository is somebody else's project, not a
+;;;; the pin, and its skills are linked from there (PLAN-SKILL-LINKS), each
+;;;; SKILL.md read where it sits with the scripts and references it names.
+;;;; That name, and the folder of it a source names, is the source's label:
+;;;; REMOVE-SOURCE takes back the links reaching its folder, and any copy an
+;;;; older build made that carries the label as its :origin. A repository is somebody else's project, not a
 ;;;; harness home: its CLAUDE.md and memory are its maintainers', so a source
 ;;;; plans skills and MCP servers alone, and its servers land off as every
 ;;;; imported server does.
@@ -186,12 +186,25 @@ it SOURCE names, labelled host/owner/repo@COMMIT[/FOLDER]."
                                                               (nlk:folder-name owner) (nlk:folder-name folder))
                                                       folder url commit))))))
 
-(defun source-skills (label &aux (inside (format nil "~a/" label)))
-  "The names of the definitions whose :origin is LABEL, or a folder of it."
+(defun source-copies (label &aux (inside (format nil "~a/" label)))
+  "The names of the definitions whose :origin is LABEL, or a folder of it:
+the copies an older build made of the source's skills."
   (loop for entry in (nlk::knowledge-entries)
         for origin = (nlk::knowledge-entry-origin entry)
         when (and (stringp origin) (or (string= origin label) (uiop:string-prefix-p inside origin)))
           collect (nlk::knowledge-entry-name entry)))
+
+(defun source-skills (label folder &aux (folder (ignore-errors (truename folder))))
+  "The names of the skills the source LABEL brought, sorted: each SKILL.md the
+index reads from its FOLDER, and each copy an older build made (SOURCE-COPIES)."
+  (sort (nlk:distinct
+         (append (loop for entry in (nlk::knowledge-entries)
+                       for path = (nlk::knowledge-entry-path entry)
+                       when (and folder path (string-equal "md" (pathname-type path))
+                                 (uiop:subpathp path folder))
+                         collect (nlk::knowledge-entry-name entry))
+                 (source-copies label)))
+        #'string<))
 
 (defun source-servers (folder &aux (home (make-home :name "source" :roots (list folder))))
   "The MCP servers FOLDER declares that are configured here as it declares
@@ -225,26 +238,28 @@ each -- its label, the skills it brought and the servers it declares that are
 configured here."
   (let ((rows (source-folders)))
     (if (null rows)
-        "no repository source here: /import OWNER/REPO brings one's skills and MCP servers"
+        "no repository source here: /import brings one's skills and MCP servers"
         (format nil "~{~a~^~%~}"
                 (loop for (label folder) in rows
-                      collect (let ((skills (source-skills label))
+                      collect (let ((skills (source-skills label folder))
                                     (servers (source-servers folder)))
                                 (format nil "~a: ~d skill~:p~@[ (~{~a~^, ~})~], ~d server~:p~@[ (~{~a~^, ~})~]"
                                         label (length skills) skills (length servers) servers)))))))
 
 (defun remove-source (label &aux (rows (source-folders)))
-  "Take back what the repository source LABEL brought -- each skill whose
-origin it is, each MCP server it declares that is configured as it declares
+  "Take back what the repository source LABEL brought -- the links reaching
+its folder and any copy carrying its label, each MCP server it declares that is configured as it declares
 it -- and delete its folder. => what came of it."
   (let ((row (or (find label rows :key #'first :test #'string=)
                  (fail "no source ~a here~@[; there ~:*~[~;is~:;are~] ~]~{~a~^, ~}"
                        label (and rows (length rows)) (mapcar #'first rows)))))
     (destructuring-bind (label folder &rest more) row
       (declare (ignore more))
-      (let ((skills (source-skills label))
+      (let ((skills (source-skills label folder))
+            (copies (source-copies label))
             (servers (source-servers folder)))
-        (when skills (forget-definitions skills label))
+        (unlink-libraries-in folder)
+        (when copies (forget-definitions copies label))
         (dolist (name servers)
           (nle:config-set (list "mcp" "servers" name) :remove))
         (nlk::remove-tree folder)

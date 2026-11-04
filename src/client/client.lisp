@@ -47,6 +47,13 @@
      ;; replay is in place (SEND-LAUNCH-PROMPT). An edit makes it the
      ;; operator's: it is then never sent by itself.
      (launch-prompt :initform nil :accessor gateway-model-launch-prompt)
+     ;; What the command line asked of the session the shell opens when it
+     ;; named none it could paint on: :PICK (`nodecode resume', the picker on
+     ;; the first frame), :CONTINUE (`nodecode -c') or :NAMED (`nodecode
+     ;; resume ID', ID to be found), settled once the organism answers
+     ;; (RESOLVE-LAUNCH-SESSION) and NIL from then on.
+     (launch-resume :initarg :launch-resume :initform nil
+                    :accessor gateway-model-launch-resume)
      ;; The organism's refusal of the launch's target, (CODE . DETAIL), from
      ;; the session's create; said once the shell is live, and nothing is
      ;; sent by itself while it stands.

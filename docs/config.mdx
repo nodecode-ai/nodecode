@@ -13,12 +13,12 @@ summary: "The config file, how to change it, and every core key with type and de
 | Scope | One per home. The home is `~/.nodecode/`, or a profile's folder. |
 | Missing file | Allowed. Every key has a default or is optional. |
 
-The other files of the home are listed in [Files](/files).
+The other files of the home are listed in [Files](files.mdx).
 
 {/* source: src/engine/provider.lisp */}
 ## Change it
 
-Edit the file, or use eval. See [Eval](/eval).
+Edit the file, or use eval. See [Eval](eval.mdx).
 
 ```lisp
 (config-get '("channels" "discord"))
@@ -52,7 +52,7 @@ Edit the file, or use eval. See [Eval](/eval).
 | Cell sections | When the cell starts. | `(restart-cells)` or `(restart-cells "NAME")` in eval. |
 | `providers`, `failover` | At the start of each turn, when the file changed. | The next turn. |
 | `fork.seconds` | At each `(fork ...)` call. | The next call. |
-| `general.default_model`, `general.auxiliary_model` | When the organism boots. An organism is a running Nodecode. | A restart, or `/models`: its Main and Auxiliary tabs, or `/models aux`. |
+| `general.default_model`, `general.auxiliary_model` | When the organism boots. An organism is a running Nodecode. | A restart, or `/models`: its Main and Auxiliary tabs. |
 | `workspace.captures` | When the gateway starts. The gateway is the local server shells attach to. | A restart. |
 | `general.theme` | When the shell starts. | `/themes`, or a new shell. |
 
@@ -68,7 +68,7 @@ Edit the file, or use eval. See [Eval](/eval).
 | `general.decider_model` | Object: `provider`, a decider id (`djev`), and `model` | None. No decider. |
 | `general.theme` | String | `Tungstene`. A `/themes` pick outranks it. |
 
-See [Models and providers](/models).
+See [Models and providers](models.mdx).
 
 {/* source: src/engine/provider.lisp */}
 ## providers
@@ -78,7 +78,7 @@ One entry per provider id, under `providers.<id>`.
 | Key | Type | Default |
 | --- | --- | --- |
 | `sdk` | `openai-completions`, `openai-responses`, `anthropic` or `google` | None |
-| `base_url` | String | By dialect. See [Models and providers](/models). |
+| `base_url` | String | By dialect. See [Models and providers](models.mdx). |
 | `api_key` | String. A leading `!` runs a shell command. | None |
 | `display_name` | String | The id |
 | `models[].id` | String | None |
@@ -103,12 +103,12 @@ One entry per provider id, under `providers.<id>`.
 | `failover.on` | Array of trigger ids: `rate_limit`, `outage`, `slow_start`, `broken_answer`, `refusal` | Every trigger. `[]` turns every one off. |
 | `failover.first_token_seconds` | Number, 0 or more. `0` never cuts. | 60: seconds an attempt with a backup behind it waits for its first token |
 
-`/models backups` writes `chain` and `on`. See [Models and providers](/models#failover).
+`/models`' Backup tab writes `chain` and `on`. See [Models and providers](models.mdx#failover).
 
 {/* source: src/organism/fork.lisp */}
 ## fork
 
-`(fork "task" ...)` hands a turn's independent tasks to forks of its session. See [Eval](/eval).
+`(fork "task" ...)` hands a turn's independent tasks to forks of its session. See [Eval](eval.mdx).
 
 | Key | Type | Default |
 | --- | --- | --- |
@@ -122,7 +122,7 @@ One entry per provider id, under `providers.<id>`.
 | `gateway.operator_token` | String | None. Read after the environment and the `operator-token` file. |
 | `workspace.captures` | Boolean | `true`. `false` turns workspace snapshots off. |
 
-See [Gateway](/gateway) and [Sessions and undo](/sessions).
+See [Gateway](gateway.mdx) and [Sessions and undo](sessions.mdx).
 
 {/* source: src/organism/update.lisp */}
 ## update
@@ -135,7 +135,7 @@ See [Gateway](/gateway) and [Sessions and undo](/sessions).
 | `update.url` | String: a release host | The host this build was installed from. |
 | `update.feed` | String: the feed address, or `off` | Beside the release host. |
 
-See [Updates](/updates).
+See [Updates](updates.mdx).
 
 {/* source: src/engine/turn.lisp */}
 ## request_bodies
@@ -180,4 +180,4 @@ A cell is a folder of code under `~/.nodecode/cells/`. Each cell reads its own s
 
 Every cell section takes `enabled`, a boolean, default `true`. `"enabled": false` stops that cell from starting.
 
-A cell declares its section in its own code. `/settings` shows its fields. On `/cells`, Enter opens a cell's settings. See [Cell API](/cell-api#the-section).
+A cell declares its section in its own code. `/settings` shows its fields. On `/cells`, Enter opens a cell's settings. See [Cell API](cell-api.mdx#the-section).

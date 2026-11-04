@@ -8,17 +8,21 @@ One `nle:define-cell` form declares a cell: its config section, what it adds, an
 {/* source: src/organism/made-cells.lisp */}
 ## Ask for one
 
-The shortest way to a cell is to ask the agent for it: [Cells](/cells#ask-for-one). It writes the cell with these verbs, through `eval`; you can call them yourself.
+The shortest way to a cell is to ask the agent for it: [Cells reference](cells-reference.mdx#ask-for-one). It writes the cell with these verbs, through `eval`; you can call them yourself.
 
 | Verb | What it does |
 | --- | --- |
-| `(new-cell "NAME" :description "...")` | Writes `cells/<you>-NAME/`: the `.asd`, a README and `cell.lisp` with the package, in a git repository of its own. Loads it, and makes it this session's current cell. |
-| `(current-cell)` | The cell this session keeps its definitions in, or NIL. |
-| `(enter-cell "NAME")` | Takes a made cell up again after a restart. |
-| `(leave-cell)` | Sends what the session keeps back to the layer. |
-| `(move-to-cell "NAME" 'fn '*var* ...)` | Moves definitions the layer already keeps into the cell. They load from it at the next start. |
+| `(new-cell "NAME" :description "...")` | Writes `cells/<you>-NAME/`: the `.asd`, a README, `cell.lisp` with the package and `NAME.lisp` for the code, in a git repository of its own. Loads it, and makes it this session's current cell. |
+| `(new-cell "NAME" :source "DIR")` | The same, with the folder in DIR, absent or empty: a repository of yours. `cells/<you>-NAME` links to it. |
+| `(current-cell)` | The cell this session works in, or NIL. |
+| `(enter-cell "NAME")` | Takes a made cell up again after a restart, or from another conversation. |
+| `(leave-cell)` | Ends the session's work on the cell. What it keeps goes to the layer again. |
+| `(move-to-cell "NAME" 'fn '*var* ...)` | Moves definitions the layer already keeps into the cell, one file each. They load from it at the next start. |
+| `(fold-cell "NAME" :drop '(...))` | Folds a cell kept one file per definition into `cell.lisp` and `NAME.lisp`, in load order, in one commit that names what it left out. `:drop` names definitions to leave out. |
+| `(cell-drift "NAME")` | Reads only. `:live-only`: what runs for the cell that no file keeps, gone at the next start. `:not-live`: what a file defines that is not loaded. `:clean t` when both are empty. |
+| `(reload-cell "<you>-NAME")` | Makes the image agree with the folder's files after an edit made outside the session: what changed is evaluated, what was cut leaves. The cell restarts when its `define-cell` changed. |
 
-While a cell is current, every definition the session keeps is written there, one file each, never to the layer. A snippet working on it opens with `(in-package #:<you>-NAME)`. That package uses the kernel and the evolved package's exports, so `define-cell`, `notice` and `on-stop` read bare. One `define-cell` kept beside the code declares what the cell adds:
+While a cell is current, its files are its code. A `write-file` or `edit` of `NAME.lisp` makes what changed live and commits it, and a definition cut from the file leaves the image. An `eval` there defines live and keeps nothing: its receipt names the file to write. Memories and skills are kept as before. `NAME.lisp` reads in `(in-package #:<you>-NAME)`. That package uses the kernel and the evolved package's exports, so `define-cell`, `notice` and `on-stop` read bare. One `define-cell` in the file declares what the cell adds, here in `tokyo-time.lisp`:
 
 ```lisp
 (in-package #:thomas-tokyo-time)
@@ -33,15 +37,14 @@ While a cell is current, every definition the session keeps is written there, on
 (define-cell tokyo-time
   (:section ("tokyo-time"))
   (:command "tokyo-time" 'tokyo-time :description "The time in Tokyo"))
-
-(restart-cells "thomas-tokyo-time")
 ```
 
 | Case | Result |
 | --- | --- |
-| `restart-cells` on the folder | The `define-cell` starts. `/tokyo-time` answers in every attached shell. |
-| The `define-cell` evaluated again | It replaces the kept one. Run `restart-cells` on the folder again. |
-| A `defun` and a `define-cell` of one name | Two files: `tokyo-time.lisp` and `tokyo-time-define-cell.lisp`. |
+| `(restart-cells "thomas-tokyo-time")` | The `define-cell` starts. `/tokyo-time` answers in every attached shell. |
+| The `define-cell` edited in the file | Run `restart-cells` on the folder again. |
+| A `defun` only evaluated | It runs now and is gone at the next start. `cell-drift` lists it under `:live-only`. |
+| One definition in the file fails to load | Only it is skipped. `(cells)` names the file and the definition. |
 | Nodecode restarts | The cell loads from its folder and starts. The session's hold on it ends: `enter-cell` takes it up again. |
 
 The clauses are the same as a hand-written cell's: [define-cell](#define-cell).
@@ -73,7 +76,7 @@ mv nodecode-template.asd nodecode-weather.asd
 | Part | Content |
 | --- | --- |
 | `nodecode-template.asd` | The system. Depends on `nodecode`. |
-| `cell.lisp` | One section, one `:tool` hook, `/template [NAME]`, one notice at start. |
+| `cell.lisp` | One section, one `:tool` hook, `/template`, one notice at start. |
 | `config.example.jsonc` | The section, commented. Nodecode does not read it. |
 
 <Mistakes>
@@ -121,13 +124,22 @@ The whole cell, as it ran for every screen on this page:
 
 (defun run-slash (args session-id)
   (declare (ignore session-id))
-  (today (if (plusp (length args)) args (or (first (setting :cities)) "Oslo"))))
+  ;; Typed alone, /weather offers the cities as rows, and one that asks for
+  ;; another; a row's line comes back here with the city after the name.
+  (if (nle:bare-args-p args)
+      (values "Which city?"
+              (nle:list-dialog
+               :title "Weather"
+               :rows (append (mapcar (lambda (city) (nle:run-row city (format nil "/weather ~a" city)))
+                                     (or (setting :cities) '("Oslo")))
+                             (list (nle:ask-row "Another city" "City" "/weather" :verb "look up")))))
+      (today args)))
 
 (defun refresh () nil)
 
 (nle:define-cell weather
   (:section ("weather")
-    (:guide "units is c or f; cities is what /weather answers for with no argument")
+    (:guide "units is c or f; cities is what /weather offers typed alone")
     ("units"   :choice :options '("c" "f") :default "c" :doc "degrees")
     ("cities"  :list :doc "what the primer names")
     ("timeout_seconds" :integer :default 10 :min 1 :doc "one lookup's ceiling"))
@@ -135,7 +147,7 @@ The whole cell, as it ran for every screen on this page:
   (:help :weather "weather: today's forecast for a city - (weather:today \"Oslo\")"
          "(nodecode-weather::today CITY) answers today's forecast.")
   (:command "weather" 'run-slash
-            :description "Today, where you are" :argument-hint "CITY")
+            :description "Today, where you are")
   (:start (lambda ()
             (let ((worker (nlk:worker-start "weather" #'refresh :wake 900)))
               (nle:on-stop (lambda () (nlk:worker-stop worker)))))))
@@ -165,11 +177,11 @@ A `:command` takes these keys:
 | Key | Does |
 | --- | --- |
 | `:description` | Its line in the slash menu. |
-| `:argument-hint` | Shown after `/NAME` while it is typed. |
 | `:label`, `:catches` | A `:catches` condition answers `LABEL: it`. Defaults: the command's name, and `error`. |
 | `:session` | `nil` for a command that acts on no session. |
-| `:trigger` | One character that opens it at a word's start. |
-| `:complete` | Takes `(text session-id)` and answers `(:name :value)` plists while the argument is typed. |
+| `:trigger` | One character that opens it when typed as the draft's first character. |
+
+A command is its name: nobody types after it. Typed alone, RUN gets an empty ARGS, which `nle:bare-args-p` tells, and answers a `nle:list-dialog` of what it offers. A row is `(nle:run-row LABEL LINE)`, whose pick runs LINE, or `(nle:ask-row LABEL ASK LINE :placeholder TEXT :verb WORD)`, which asks for one line of text under ASK and then runs LINE with the text after it. The shell asks in its composer, a room in its own way. RUN reads those lines as it always read its ARGS. `:argument-hint` and `:complete` are still accepted, so an older cell loads, and nothing shows them.
 
 <Screen name="cell-manual" />
 
@@ -416,7 +428,7 @@ When the declaration does not fit, write `START-CELL` by hand from the same piec
 
 <Screen name="cell-lock" />
 
-A cell reads its home through `(nlk:home "...")`, never a literal `~/.nodecode/`. It then follows a [profile](/profiles).
+A cell reads its home through `(nlk:home "...")`, never a literal `~/.nodecode/`. It then follows a [profile](profiles.mdx).
 
 Dependencies the image lacks go in `vendor/`, from `ql:bundle-systems`. `vendor/bundle.lisp` loads before the folder's systems.
 
@@ -445,4 +457,4 @@ Dependencies the image lacks go in `vendor/`, from `ql:bundle-systems`. `vendor/
 | List it on the hub | Submit it at [nodecode.ai/cells/submit](https://nodecode.ai/cells/submit). Nodecode's own cells arrive as pull requests to `nodecode-ai/cells`, where `.github/test-cell.sh FOLDER` runs one cell's tests. |
 | Undo a change | `nodecode rollback N` puts every folder back to generation N. A folder's git HEAD is its revision. A folder with no repository is never restored, and the rollback refuses by name. |
 
-When one goes wrong, find the line in [Troubleshooting](/troubleshooting#cell-failures).
+When one goes wrong, find the line in [Troubleshooting](troubleshooting.mdx#cell-failures).

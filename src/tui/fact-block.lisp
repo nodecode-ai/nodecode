@@ -229,8 +229,10 @@ absolute-row placement."
                 for row from 0
                 do (emit (mark-line-segs line row heat) :mark))
           ;; The semantic tag belongs directly under the logo. Commit metadata
-          ;; remains in `nodecode --version`; both read the same build identity.
-          (emit (list (seg (format nil "v~a" (subseq *user-agent-version* 0 (position #\+ *user-agent-version*)))
+          ;; remains in `nodecode --version`. The release the live definitions
+          ;; are at, so a hot upgrade across a bump shows the new number.
+          (emit (list (seg (let ((version (effective-version)))
+                             (format nil "v~a" (subseq version 0 (position #\+ version))))
                            :muted)))
           (blank)
           ;; The shell's tip (HOME-TIP), the one thing to type in it brighter

@@ -236,9 +236,10 @@ file is gone. NIL where there is no /proc."
   ("mallopt" %mallopt int (param int) (value int))
   ("__nss_configure_lookup" %nss-configure-lookup int (database str) (service str)))
 
-(defun spawn-detached (command log)
+(defun spawn-detached (command log &key stdout)
   "Launch COMMAND fully detached, output appended to LOG: the child survives
-this process's exit and owns no terminal."
+this process's exit and owns no terminal. STDOUT, a descriptor of this
+process's, is the child's stdout instead, LOG then its stderr alone."
   ;; => COMMAND, or (values NIL
   ;; REASON). On POSIX the child is double-forked into a session of its own
   ;; (setsid -f, or macOS's wrapped shell), the wrapper started through
@@ -258,7 +259,7 @@ this process's exit and owns no terminal."
              #-linux (append *session-wrapper*
                              (list "/bin/sh" "-c" "exec \"$0\" \"$@\" &")
                              command)
-             :output log :error-output :output)))
+             :output (or stdout log) :error-output (if stdout log :output))))
       (wait-for-child pid process))
     #+win32
     (let* ((command-line
@@ -679,8 +680,9 @@ says: :STREAM, a pipe of its own; :OUTPUT, joined to stdout; a namestring.
   "Start ARGV — the program first, searched on PATH — as a child of this
 process: DIRECTORY its working directory when given, ENVIRONMENT
 (\"NAME=value\" strings) its whole environment, this process's own when NIL."
-  ;; OUTPUT is :STREAM for a stdout pipe, NIL for the null device, or a
-  ;; pathname the child's stdout is appended to, created when absent.
+  ;; OUTPUT is :STREAM for a stdout pipe, NIL for the null device, a
+  ;; pathname the child's stdout is appended to, created when absent, or a
+  ;; descriptor of this process's (an integer) the child's stdout is.
   ;; ERROR-OUTPUT takes the same three, or :OUTPUT to join stderr to stdout in
   ;; the child, so one stream carries both in the order the child wrote them.
   ;; A child that leaves a daemon behind -- a clipboard owner, a browser --
@@ -694,7 +696,13 @@ process: DIRECTORY its working directory when given, ENVIRONMENT
   ;; the fork path started it and NIL when posix_spawn did. WAIT-FOR-CHILD takes PID and PROCESS and
   ;; the caller closes the streams.
   (flet ((target (value)
-           (if (or (null value) (keywordp value)) value (uiop:native-namestring value))))
+           (cond ((or (null value) (keywordp value)) value)
+                 ;; A descriptor: posix_spawn duplicates it into place; the
+                 ;; fork path's RUN-PROGRAM takes it as an fd-stream.
+                 ((integerp value) (if (eq *spawn-primitive* :posix)
+                                       value
+                                       (sb-sys:make-fd-stream value :output t :auto-close nil)))
+                 (t (uiop:native-namestring value)))))
     (let ((directory (and directory
                           (uiop:native-namestring
                            (uiop:ensure-directory-pathname directory))))
@@ -1057,6 +1065,13 @@ the kernel will not lock the file at all (POSIX: Windows answers at once)."
           ((= (sb-win32::get-last-error) +error-sharing-violation+) nil)
           (t (error "cannot lock ~a: Windows error ~d"
                     path (sb-win32::get-last-error))))))
+
+(defun held-lock (path &aux (native (uiop:native-namestring path)))
+  "The lock this process holds on the file at PATH (a LOCK-FILE answer), or
+NIL when it holds none."
+  (sb-ext:with-locked-hash-table (*held-locks*)
+    (loop for lock being the hash-keys of *held-locks* using (hash-value held)
+          when (equal held native) return lock)))
 
 (defun file-locked-p (path &aux (native (uiop:native-namestring path)))
   "Whether a live process holds the lock on the file at PATH: a probe,

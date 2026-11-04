@@ -233,6 +233,27 @@ N; KEYS reach RECORD-EVENT, whose answer this is."
           do (setf (gethash (nlk::make-durable-id "event") ids) t))
     (is (= 5000 (hash-table-count ids)) "5000 generated IDs are distinct")))
 
+(defun insert-statement-reprepares ()
+  "How many times SQLite has re-prepared the store's cached event insert."
+  ;; SQLITE_STMTSTATUS_REPREPARE (5), read off the statement cl-sqlite keeps
+  ;; in its cache; FINALIZE-STATEMENT hands it back there.
+  (let ((statement (sqlite:prepare-statement (nlk::require-open-store) nlk::+insert-event-sql+)))
+    (unwind-protect
+         (cffi:foreign-funcall "sqlite3_stmt_status" :pointer (sqlite::handle statement)
+                                                     :int 5 :int 0 :int)
+      (sqlite:finalize-statement statement))))
+
+(deftest the-event-insert-is-prepared-once (with-session-store ("s-prep"))
+  ;; Given a store, when fifty events land on one aggregate, then the cached
+  ;; insert ran on its first plan: no append compiles it again. SQLite 3.54
+  ;; re-prepares a statement whose min/max subquery compares a column to a
+  ;; bare parameter each time it is bound anew, with no ANALYZE ever run,
+  ;; and the insert carries the log's triggers, so a re-prepare per append
+  ;; made every write some seven times slower. Red only on 3.54.x.
+  (dotimes (i 50)
+    (record-probe "s-prep" i))
+  (is (zerop (insert-statement-reprepares)) "the insert was never re-prepared"))
+
 (deftest two-thousand-appends-under-250ms (with-session-store ("s-perf"))
   ;; The window times the appends alone: a nursery that earlier tests left
   ;; nearly full would bill their collection, some 60 ms, to it.

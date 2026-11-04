@@ -49,7 +49,7 @@ of stacking."
 (defsystem "nodecode"
   :description "A self-modifying agent organism in SBCL: gateway, session, turn loop, and heredity."
   :license "MIT"
-  :version "0.1.7"
+  :version "0.1.8"
   ;; Dependency amendment seam.
   ;; A1 added: shasht (JSON codec) and two SBCL contribs.
   ;;
@@ -209,6 +209,10 @@ of stacking."
      (:file "organism/made-cells")
      ;; cell-move follows made-cells: what the layer kept, moved into one after the fact
      (:file "organism/cell-move")
+     ;; cell-fold follows cell-move: a made cell's files folded into two
+     (:file "organism/cell-fold")
+     ;; cell-drift follows cell-move: what a made cell runs live that no file keeps
+     (:file "organism/cell-drift")
      ;; upgrade: what a staged tree changes in this image, classified: reads
      ;; the scribe's definitions and the loader's residue rule, evaluates nothing.
      (:file "organism/upgrade")
@@ -226,6 +230,10 @@ of stacking."
      ;; generation after launch: the self sealed -- a manifest of the folder
      ;; the keeper's trial child proved, written before its image is built.
      (:file "organism/generation")
+     ;; heap images after generation: a saved heap is the organism kept as it
+     ;; stood, beside the folder's generations; it disarms timers and keys the
+     ;; folder as the launch cache does.
+     (:file "organism/heap-image")
      ;; fork after generation: a way back lays generations whole
      ;; (BUILD-GENERATION) and asks them (TRIAL), a race's winner is HELD
      ;; (HOLD-DEFINITIONS); the escrow, the scribe and the unkept report ask
@@ -267,10 +275,6 @@ of stacking."
      ;; webp follows image-fit: it decodes to the PIXELS image-fit shrinks,
      ;; named in *IMAGE-DECODERS* there for image/webp.
      (:file "engine/image/webp")
-     ;; jpeg follows image-fit: it reads every JPEG to the PIXELS image-fit
-     ;; shrinks, cl-jpeg's baseline and the progressive form cl-jpeg cannot,
-     ;; named in *IMAGE-DECODERS* there for image/jpeg.
-     (:file "engine/image/jpeg")
      ;; gif follows image-fit: it reads a GIF's first frame to the PIXELS
      ;; image-fit shrinks, named in *IMAGE-DECODERS* there for image/gif.
      (:file "engine/image/gif")
@@ -358,6 +362,8 @@ of stacking."
      (:file "client/client")
      (:file "client/client-update")
      (:file "client/client-boot")
+     (:file "tui/commands/bare")
+     (:file "tui/commands/bare-sheets")
      (:file "tui/commands/dispatch")
      (:file "tui/commands/models")
      (:file "tui/commands/accounts")
@@ -388,6 +394,12 @@ of stacking."
      ;; verb, the route, the poller and the watcher. After client: the
      ;; watcher and the verb call the gateway the way a shell does.
      (:file "organism/update")
+     ;; images after update: a saved heap names the build that saved it
+     ;; (EFFECTIVE-VERSION) and boots only on that build
+     (:file "organism/images")
+     ;; image-save after images: the live save writes where images prepares
+     ;; and seals what it dumped (heap-image.lisp's fork).
+     (:file "organism/image-save")
      ;; setup follows client: the walk chains the shell's own dialogs
      ;; (provider/model/effort pickers) and the writers they already own.
      (:file "tui/setup")
@@ -395,6 +407,8 @@ of stacking."
      ;; Settings tab and the shell's /settings, a pasted secret kept in a
      ;; file of its own.
      (:file "gateway/settings")
+     (:file "gateway/secrets")
+     (:file "gateway/sandbox")
      ;; sheet: the canvas, inks, pointer targets and key-row line every
      ;; dialog in the middle of the frame paints and calls with.
      (:file "tui/sheet")
@@ -411,6 +425,8 @@ of stacking."
      ;; over the owner a shell's verb already calls; its cell listing is
      ;; what the page and the shell's /cells both read.
      (:file "gateway/control")
+     ;; /snapshot and /snapshots: the organism's heap kept, over control's save route.
+     (:file "tui/commands/snapshot")
      ;; /cells: every cell on a sheet over the cells routes (control.lisp),
      ;; the chosen one laid open beside the list.
      (:file "tui/cells-sheet")
@@ -507,6 +523,7 @@ of stacking."
      (:file "lib/config-test")
      (:file "lib/os-test")
      (:file "lib/dial-test")
+     (:file "lib/proxy-test")
      (:file "lib/paths-test")
      (:file "lib/verbs-test")
      (:file "lib/textrules-test")
@@ -539,6 +556,8 @@ of stacking."
      ;; through a shell fixture playing the trial child, and lends that
      ;; fixture to the keeper's gates below.
      (:file "organism/generation-test")
+     (:file "organism/images-test")
+     (:file "organism/heap-image-test")
      (:file "organism/fork-test")
      (:file "organism/fork-progress-test")
      ;; launch-keeper-test follows warm-test: it drives the same warm fixtures
@@ -561,6 +580,7 @@ of stacking."
      (:file "organism/made-cells-test")
      ;; cell-move-test follows made-cells-test: its fixture and helpers
      (:file "organism/cell-move-test")
+     (:file "organism/cell-drift-test")
      ;; recall-test follows scribe-test: it drives the store fixtures plus
      ;; support's seeded turns and binds the scribe ambient recall defaults
      ;; to.
@@ -607,6 +627,8 @@ of stacking."
      ;; Raw worker isolation is proved in disposable debugger-disabled processes.
      (:file "tui/worker-test")
      (:file "tui/slash-test")
+     (:file "tui/bare-test")
+     (:file "tui/bare-sheets-test")
      ;; own-models-test reuses slash-test's listing fixtures.
      (:file "tui/own-models-test")
      (:file "tui/profile-delete-test")
@@ -675,6 +697,8 @@ of stacking."
      ;; cells-test's hub fixtures and opens ui-test's frame-model wizard.
      (:file "gateway/provider-offers-test")
      (:file "gateway/settings-test")
+     (:file "gateway/secrets-test")
+     (:file "gateway/sandbox-test")
      ;; Quick TUI settings gates reuse the canonical route's isolated fixture.
      (:file "tui/settings-sheet-test")
      (:file "tui/channel-setup-test")
@@ -690,9 +714,7 @@ of stacking."
      (:file "engine/image/image-fit-test")
      ;; webp-test follows image-fit-test: it shrinks a WebP through FIT-IMAGE.
      (:file "engine/image/webp-test")
-     ;; jpeg-test and gif-test follow image-fit-test: each shrinks its
-     ;; format through FIT-IMAGE.
-     (:file "engine/image/jpeg-test")
+     ;; gif-test follows image-fit-test: it shrinks a GIF through FIT-IMAGE.
      (:file "engine/image/gif-test")
      ;; background-steer-test follows exec-test: it drives the drained
      ;; registry beside it, turn-test's wire helpers and the provider stub.

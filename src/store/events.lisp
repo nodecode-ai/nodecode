@@ -1095,9 +1095,15 @@ facts that waited on it, in order."
               (loop for column in columns
                     for n from 1
                     collect (if (string= column "aggregate_sequence")
+                                ;; The unary + keeps the plan (the same covering
+                                ;; index search) and keeps SQLite 3.54 from
+                                ;; re-preparing the statement each time it is
+                                ;; bound: it does that for a min/max whose WHERE
+                                ;; compares a column to a bare parameter, and
+                                ;; this one carries the log's triggers.
                                 (format nil "coalesce(?~d, coalesce((select max(aggregate_sequence) ~
-                                             from events where aggregate_type = ?~d ~
-                                             and aggregate_id = ?~d), 0) + 1)"
+                                             from events where aggregate_type = +?~d ~
+                                             and aggregate_id = +?~d), 0) + 1)"
                                         n (parameter "aggregate_type")
                                         (parameter "aggregate_id"))
                                 (format nil "?~d" n))))))

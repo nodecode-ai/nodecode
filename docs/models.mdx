@@ -19,7 +19,7 @@ A provider is an endpoint, a key and the wire dialect it speaks. Providers live 
 }
 ```
 
-Every provider key is listed in [Config](/config). `/models` connects a provider from the models.dev catalog and saves its key in `auth.json`. Ctrl+E on a connected provider replaces its key.
+Every provider key is listed in [Config](config.mdx). `/models` connects a provider from the models.dev catalog and saves its key in `auth.json`. Ctrl+E on a connected provider replaces its key.
 
 A provider whose `base_url` is a machine of your own, on localhost, your LAN or your tailnet, is listed under Local in `/models`. Its models come from `GET <base_url>/models`.
 
@@ -97,7 +97,7 @@ nodecode.ai serves Nodecode's own models at `https://api.nodecode.ai/v1`, on Ope
 }
 ```
 
-A sign-in never changes your default model. Pick one with `/models nodecode foresight-cyber-v1`.
+A sign-in never changes your default model. Pick one in `/models`: nodecode, then Cyber v1.
 
 | Model | Id | What it is |
 | --- | --- | --- |
@@ -109,7 +109,7 @@ A sign-in never changes your default model. Pick one with `/models nodecode fore
 | --- | --- |
 | Keys | Start with `sk-nc-`. A key made at https://nodecode.ai/account/keys works the same. Any other key answers 401 `invalid_api_key`: run `nodecode login` again. |
 | Routes | `POST /v1/chat/completions`, `POST /v1/images/generations`, `GET /v1/models`, `GET /v1/models/ID`, `GET /v1/usage`. There is no `/v1/messages` or `/v1/responses`. |
-| Who pays | The plan's month first, then the topped-up balance. With neither, a call answers 402. See [Pricing](/pricing). |
+| Who pays | The plan's month first, then the topped-up balance. With neither, a call answers 402. See [Pricing](pricing.mdx). |
 | What is left | `GET /v1/usage`: the plan's requests left, its reset and seats, the credit. The shell's footer and `/usage` show it. |
 
 {/* source: src/engine/provider.lisp */}
@@ -145,22 +145,14 @@ A model pick pins the session. The pin survives restarts.
 {/* source: src/tui/slash.lisp */}
 ## /models
 
-Bare `/models` opens the providers under four tabs: Main, Auxiliary, Decider and Backup. Tab moves between them. Decider is the model that answers judgments as probabilities. Backup is the [failover chain](#failover).
+`/models` opens the providers under four tabs: Main, Auxiliary, Decider and Backup. Tab moves between them. Decider is the model that answers judgments as probabilities. Backup is the [failover chain](#failover). In a chat room or on the web page, the same choices are rows.
 
-| Command | Does |
+| Tab | Does |
 | --- | --- |
-| `/models` | Opens the providers on the Main tab. Headless: prints the current target. |
-| `/models MODEL` | Picks a model on the current provider. |
-| `/models PROVIDER MODEL` | Picks a provider and a model. |
-| `/models list [PROVIDER]` | Prints the catalog, or one provider's models. |
-| `/models refresh` | Drops the cached listings, then opens the providers. |
-| `/models aux` | Opens the Auxiliary tab. Headless: prints the auxiliary target. |
-| `/models aux [PROVIDER] MODEL` | Writes `general.auxiliary_model`. Pins no session. |
-| `/models aux default` | Removes `general.auxiliary_model`. Its work goes back to each session's own model. |
-| `/models decider` | Opens the Decider tab. Headless: prints the decider. |
-| `/models decider ID` | Pins a decider in `general.decider_model`. The one decider is `djev`. |
-| `/models decider none` | Removes the pin. |
-| `/models backups` | Opens the Backup tab: the failover chain and its triggers. |
+| Main | Picks a provider, then a model: this session's, and the one new sessions start on. Then the model's reasoning ladder opens. |
+| Auxiliary | Picks the model that names sessions and writes recaps and summaries, in `general.auxiliary_model`. Pins no session. Same as main gives that work back to each session's own model. |
+| Decider | Pins a decider in `general.decider_model`. The one decider is `djev`. None removes the pin. |
+| Backup | The failover chain and its triggers. |
 
 The decider pin offers `djev`, a decider on a machine of your own. Decide v1, nodecode.ai's hosted classifier, is called by its id and is not offered there.
 
@@ -176,12 +168,12 @@ The picker lists each provider from `GET <base_url>/models`.
 
 The ladder, weakest first: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. A model offers the rungs it declares.
 
-| Command | Does |
+`/think`, or its alias `/effort`, offers the rungs of the model's ladder, the one in use marked, and Default first.
+
+| Row | Does |
 | --- | --- |
-| `/think` | Opens the reasoning controls. Headless: prints the effort and the ladder. |
-| `/think RUNG` | Sets the effort for this session and every new session. Applies from the next turn. |
-| `/think default` | Uses the model's own reasoning. |
-| `/effort` | Alias of `/think`. |
+| A rung | Sets the effort for this session and every new session. Applies from the next turn. |
+| Default | Uses the model's own reasoning. |
 
 | Source | Detail |
 | --- | --- |
@@ -204,10 +196,10 @@ Set these per provider, under `providers.<id>`.
 | --- | --- | --- |
 | `request_max_retries` | 4 | Failures before any stream bytes. Counted per stream attempt. |
 | `stream_max_retries` | 5 | Failures after the response started. |
-| `stream_idle_timeout_ms` | 120000 | Milliseconds with no byte before the attempt fails. |
+| `stream_idle_timeout_ms` | 120000 | Milliseconds with no byte before the attempt fails. Once the answer has started, three times this with no new text, reasoning or tool input fails it too. |
 | `stream_rerun_ceiling_seconds` | 120 | A stream cut after this much output is continued. `0`: always re-run. |
 
-The two retry budgets multiply. A stream that keeps sending bytes has no time limit.
+The two retry budgets multiply. A stream that keeps sending content has no time limit. Keep-alives and empty chunks alone don't keep it going.
 
 | HTTP status | Retried |
 | --- | --- |
@@ -223,7 +215,7 @@ The two retry budgets multiply. A stream that keeps sending bytes has no time li
 | Status 503 | Starts at 5 seconds, capped at 60 seconds. |
 | Refused connection | Spends the request budget at once. |
 
-A context overflow is handled apart: 413, or 400 with an overflow message. Nodecode evicts old history and retries, up to 8 times. See [Context](/context).
+A context overflow is handled apart: 413, or 400 with an overflow message. Nodecode evicts old history and retries, up to 8 times. See [Context](context.mdx).
 
 {/* source: src/engine/provider.lisp, src/engine/turn.lisp */}
 ## Failover
@@ -269,7 +261,7 @@ When every model fails, the turn's error starts `every model failed` and lists e
 {/* source: src/tui/commands/models.lisp */}
 ## Backup tab
 
-`/models backups` opens it. Its rows, top to bottom:
+`/models`, then Tab to Backup. Its rows, top to bottom:
 
 | Row | Does |
 | --- | --- |
@@ -283,4 +275,4 @@ The tab writes `failover.chain` and `failover.on`. The next turn reads them.
 {/* source: src/engine/provider.lisp */}
 ## Environment
 
-`NODECODE_PROVIDER`, `NODECODE_MODEL`, `NODECODE_API_KEY`, `NODECODE_ENDPOINT` and `NODECODE_REASONING_EFFORT` override the config for one process. See [Environment variables](/environment).
+`NODECODE_PROVIDER`, `NODECODE_MODEL`, `NODECODE_API_KEY`, `NODECODE_ENDPOINT` and `NODECODE_REASONING_EFFORT` override the config for one process. See [Environment variables](environment.mdx).

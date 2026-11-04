@@ -2863,8 +2863,8 @@ the verb's own 400."
     (:get (make-json-object
            "commands" (map 'vector
                            (lambda (entry)
-                             (json-object (:getf entry "name" "description" "usage" "session")
-                                          (:getf entry :opt "autocomplete" "trigger")))
+                             (json-object (:getf entry "name" "description" "session")
+                                          (:getf entry :opt "trigger")))
                            (slash-catalog))))
     (:post (let* ((request (gateway-request-json env))
                   (line (gethash "line" request)))
@@ -2872,20 +2872,6 @@ the verb's own 400."
              (multiple-value-bind (text dialog)
                  (slash line :session-id (json-value request :string "session_id"))
                (json-object "text" text :opt "dialog" dialog))))))
-
-(define-gateway-route handle-gateway-slash-completions-http (env)
-  "POST /api/gateway/slash/completions {name, text, session_id?} — what
-NAME's argument completes to from the TEXT typed so far, in the session the
-command would act on (SLASH-COMPLETIONS): {choices: [{name, value}]}, empty
-for a command that offers none."
-  (:route :post "/api/gateway/slash/completions" "slash completions")
-  (let* ((request (gateway-request-json env))
-         (name (gethash "name" request)))
-    (require-non-empty (list name) "name must be a non-empty string" :required t)
-    (make-json-object
-     "choices" (map 'vector (lambda (choice) (json-object (:getf choice "name" "value")))
-                    (slash-completions name (json-value request :string "text")
-                                       :session-id (json-value request :string "session_id"))))))
 
 (define-gateway-route handle-gateway-model-http (env)
   (:route (:get :post) "/api/gateway/model" "model")
@@ -3192,6 +3178,11 @@ a surface that draws one wears (a room's card its edge), NIL for none."
   ;; over this one, whose Esc comes back here, and otherwise its text is the
   ;; notice and this dialog is read again on the same row (the shell's
   ;; ANSWER-GESTURE) -- a list whose rows open their record and move it.
+  ;; A row's :ASK, (:label LABEL :line LINE :placeholder TEXT :verb WORD),
+  ;; asks for one line of text instead: the shell's composer takes it under
+  ;; LABEL, a room's card asks for it, and LINE then runs with the text after
+  ;; it (ASK-LINE) -- what a command once took typed after its name, which
+  ;; no surface asks anyone to spell (tui/commands/bare.lisp).
   ;;
   ;; TABS are the dialog's tab strip as plists (:label the tab's own text,
   ;; :count the rows behind it, :value the row KEY it selects — NIL for the
@@ -3259,6 +3250,9 @@ a surface that draws one wears (a room's card its edge), NIL for none."
                     (:getf row :opt "suffix" "value" "verb")
                     :opt "run" (when-let (run (getf row :run))
                                  (json-object (:getf run :opt "enter" "space")))
+                    :opt "ask" (when-let (ask (getf row :ask))
+                                 (json-object (:getf ask "label" "line")
+                                              (:getf ask :opt "placeholder" "verb")))
                     "mark" (or (getf row :mark) "")
                     :opt "mark_tone" (tone (getf row :mark-tone))
                     :opt "options" (when-let (options (getf row :options))
@@ -3280,10 +3274,14 @@ a surface that draws one wears (a room's card its edge), NIL for none."
 key OWNER, replacing any command of that name; SESSION NIL says it acts on no
 session, so a client with none open runs it as it is, TRIGGER, a
 one-character string, is what the shell's composer opens it on when it is
-typed at a word's start (the index's `$'), and COMPLETE completes the
-argument while it is typed (SLASH-COMPLETIONS): it takes the tail typed so
-far and the session id, as RUN takes its argument, and answers (:name
-:value) plists. => COMMAND's entry."
+typed as the draft's first character (the index's `$'). A command is its
+name: RUN called with no argument answers what it offers as a LIST-DIALOG,
+whose rows run its lines or ask for text (tui/commands/bare.lisp).
+=> COMMAND's entry."
+  ;; ARGUMENT-HINT and COMPLETE, the words a cell written before that
+  ;; offered typed after the name, are taken and shown nowhere, so such a
+  ;; cell still loads.
+  (declare (ignore argument-hint complete))
   ;; RUN is a function designator, so a command whose whole implementation is
   ;; one defun passes the symbol and a reload of that file reaches the command
   ;; without a re-install. RUN takes the command's argument string and the
@@ -3296,11 +3294,7 @@ far and the session id, as RUN takes its argument, and answers (:name
     (error "a registered command needs a non-empty name"))
   (let ((entry (make-slash-command
                 command (or description "")
-                :usage (if (json-value argument-hint :text)
-                           (format nil "/~a ~a" command argument-hint)
-                           "")
                 :dispatch nil :owner owner :session session :trigger trigger
-                :completer complete
                 :headless (lambda (args session-id)
                             (multiple-value-bind (text dialog)
                                 (handler-case (funcall run args session-id)
@@ -4876,6 +4870,12 @@ the boot's pages back once the peripherals are up (a headless owner's boot)."
     (handler-case (local-port last)
       (usocket:socket-error () nil))))
 
+(defun gateway-port-from-environment ()
+  "The port NODECODE_GATEWAY_PORT names, 1 to 65535, or NIL: how a sandboxed
+shell tells the jailed gateway which loopback port its bridge serves."
+  (let ((port (ignore-errors (parse-integer (or (uiop:getenv "NODECODE_GATEWAY_PORT") "")))))
+    (and (integerp port) (< 0 port 65536) port)))
+
 (defun open-gateway-listener (&key (port *gateway-port*) operator-token
                       (workspace-captures
                        ;; An absent file, section or key, or an unreadable file, says nothing.
@@ -4912,7 +4912,9 @@ SERVE-GATEWAY."
         *gateway-connection-read-timeout*)
   ;; Port 0: bind 127.0.0.1:0, read the kernel's assignment, release — the
   ;; ephemeral allocator never hands out a port still bound or lingering.
-  (let ((bound (if (zerop port) (or (remembered-port) (local-port 0)) port)))
+  (let ((bound (if (zerop port)
+                   (or (gateway-port-from-environment) (remembered-port) (local-port 0))
+                   port)))
     (setf *gateway-handler*
           (clack:clackup (make-sync-app)
                          :port bound
@@ -4942,8 +4944,8 @@ update poller and the folder's peripherals, TRIM as START-GATEWAY takes it.
   ;; The index's command, ahead of every cell's: the composer's `$' opens the
   ;; first command that names it (COMPOSER-TRIGGER-COMMAND).
   (register-command "index" "index" 'index-slash
-                    :description "Knowledge: the meter and the picker; reload re-pins; a text finds hot and cold"
-                    :argument-hint "[reload | TEXT]" :trigger "$")
+                    :description "What you keep: the meter, the picker, a search through it, a fresh pin"
+                    :trigger "$")
   ;; Another coding agent's home brought in (src/import/): the setup
   ;; walk's route, and the watch over any bot an earlier import held for a
   ;; foreign gateway still running. /import is a builtin (tui/slash.lisp).

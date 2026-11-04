@@ -1,9 +1,11 @@
 ---
 title: Slash commands
-summary: "Every built-in and cell slash command, with syntax, aliases and headless support."
+summary: "Every built-in and cell slash command: what each offers typed alone, its aliases and headless support."
 ---
 
 Type `/` in the composer for the list. `/help` shows it with the key bindings.
+
+A command is its name. Nothing is typed after it: typed alone, it offers what it does as choices. That is its sheet, or a list whose rows run when picked, or a row that asks for one line of text, such as a name or a path. In the shell the composer takes that text under the row's label; Enter runs it, and Esc puts it away and gives back the draft it stood over. Tab completes a name, and Enter runs it.
 
 {/* source: src/tui/commands/headless.lisp */}
 ## Headless
@@ -13,49 +15,53 @@ A headless command answers without the shell, the terminal UI.
 | Surface | How |
 | --- | --- |
 | Web page | Type the command in the page's composer, by its name. An alias, or a command with no headless arm, goes to the model. |
-| Chat room | Send the command as a message. |
-| Eval | `(slash "/think high")` |
+| Chat room | Send the command as a message, or pick it from the platform's command menu. |
+| Eval | `(slash "/undo")` |
+
+Typed alone in a chat room or on the web page, a command answers its choices: a room draws them as buttons, and a row that asks for text asks for it there. Eval gets them as text, a line a row, and the dialog as the second value.
 
 In a chat room or eval, a shell-only command answers `/name needs an interactive shell`.
 
 {/* source: src/tui/slash.lisp */}
 ## Built-in
 
-| Command | Does | Headless |
+| Command | Offers | Headless |
 | --- | --- | --- |
 | `/help` | Shows commands and key bindings. | Yes |
 | `/clear`, `/new` | Starts a fresh session. Headless: moves this session back to its start. | Yes |
 | `/sessions`, `/agents` | Opens the session picker. | No |
-| `/rename [name \| default]` | Names the session, 64 characters at most. Bare: shows the name. | Yes |
-| `/export [path]` | Saves the session as Markdown. | No |
+| `/rename` | Shows the session's name, asks for a new one (64 characters at most), or gives back the name the first prompt makes. | Yes |
+| `/export` | Saves the session as Markdown: in this shell's folder, or in a folder or at a file it asks for. | No |
 | `/execs` | Shows an exec's output. Ctrl+X or Delete interrupts it. | No |
 | `/tree`, `/checkpoints` | Opens the session tree. Continue from a turn, or rewind. | No |
 | `/undo` | Rewinds the last turn. | Yes |
 | `/redo` | Returns to the branch the last rewind left. | Yes |
 | `/fork` | Forks a new session at the current head. | No |
 | `/history` | Picks a past prompt into the composer. | No |
-| `/themes [name]` | Lists themes, or switches to one. | No |
+| `/themes` | Lists themes, each previewed as it is highlighted; Enter switches to it. | No |
 | `/settings` | Browses and changes settings. | No |
-| `/models [provider] [model] \| aux [provider] [model \| default] \| decider [id \| none] \| list \| refresh` | Shows or changes the main, auxiliary and decider models. Bare: opens the picker. | Yes |
-| `/evict [percent \| through TURN]`, `/compact` | Drops the oldest turns from the provider context: a percent of retained history, 1 to 100, default 50, or every retained turn through TURN. | Yes |
-| `/context [prompt \| tools \| index \| notes \| history \| time]` | Shows this session's context window and usage. A part opens to what it holds. | Yes |
+| `/models` | Shows or changes the main, auxiliary and decider models, and the backups. | Yes |
+| `/evict`, `/compact` | Drops the oldest turns from the provider context: half of the retained history (the first row), a quarter, three quarters or all of it, or every retained turn through one picked from `/context`'s history. | Yes |
+| `/context` | Shows this session's context window and usage. A part opens to what it holds, history to its turns. | Yes |
 | `/status` | Nodecode right now: attention, runtime, services and today's usage. | Yes |
-| `/usage [today \| 7d \| 30d \| all]` | Reports spend across sessions. Default: 7 days. Signed in to nodecode.ai, the shell shows the account first: the plan's requests left and the API credit. | Yes |
-| `/login [subscription \| api]` | Signs in to your nodecode.ai account: a subscription or API credits. Bare asks which one. Same as `nodecode login`. | No |
-| `/details developer\|standard` | Sets the Developer or Standard viewport, the mode Ctrl+O switches. Bare: reports it. | No |
-| `/cells` | Every cell: turn one on or off, see why one failed. Headless: this process's cell report. | Yes |
-| `/generations [N]` | The history of this organism, and the way back to a change in it. | Yes |
+| `/usage` | Reports spend across sessions: today, 7 days, 30 days or all, 7 days first. Signed in to nodecode.ai, the shell shows the account first: the plan's requests left and the API credit. | Yes |
+| `/login` | Signs in to your nodecode.ai account: it asks whether for a subscription or for API credits. Same as `nodecode login`. | No |
+| `/details` | Offers the Developer and Standard viewports, the one in use marked; Ctrl+O switches them too. | No |
+| `/cells` | Every cell: turn one on or off, see why one failed, make a new one. Headless: this process's cell report. | Yes |
+| `/generations` | The history of this organism, and the way back to a change in it. | Yes |
+| `/snapshot` | Takes a snapshot now: this organism's memory whole, values and all, under a dated name, and runs on from it. It holds this machine's keys, so it never leaves it. | Yes |
+| `/snapshots` | Your snapshots, newest first, and Fresh from files. Enter switches to one in place, F2 renames one, Delete removes one after a confirm. | Yes |
 | `/doctor` | Lists what is missing, with the remedy. | Yes |
 | `/backup` | Archives the home under `~/.nodecode/backups/`. The archive holds your keys. The web page's Settings pane lists, downloads and restores them. | Yes |
-| `/profile [switch \| list \| use \| create \| delete \| export \| import \| install \| update \| help]`, `/profiles` | Manages profiles. Bare: opens the roster. | Yes |
-| `/gateway [on \| off \| restart \| logs \| help]` | Same as `nodecode gateway`. | No |
+| `/profile`, `/profiles` | The roster of profiles: switch to one, and what else a profile can do on its rows; `+ New profile` makes another. | Yes |
+| `/gateway` | Where the gateway stands, then turning it on or off, a restart, its log, and setting up Discord, Telegram or Slack. What `nodecode gateway` does. | No |
 | `/web` | Same as `nodecode web`. | No |
-| `/setup` | Opens the setup walk. Takes no arguments. | No |
-| `/think [rung]`, `/effort` | Sets reasoning effort. `default` uses the model's own. | Yes |
-| `/gc [reset]` | Shows garbage collection and stall stats. `reset` restarts the window. | Yes |
+| `/setup` | Opens the setup walk. | No |
+| `/think`, `/effort` | The model's reasoning rungs, the one in use marked; Default uses the model's own. | Yes |
+| `/gc` | Shows garbage collection and stall stats, or starts a fresh window to count them in. | Yes |
 | `/exit`, `/quit` | Exits the shell. | No |
-| `/index [reload \| TEXT]` | Knowledge: the meter and the picker. `reload` re-pins; a text finds hot and cold. `$` at the start of a word opens it. | Yes |
-| `/import [WORLD] [--source PATH] [--only KINDS] [--dry-run] [--overwrite] [--keep-running] [--yes]` | Brings another coding agent's home into this one: a preview first, `--yes` applies. `/import --sources` lists the repositories held, `/import --remove LABEL` takes one back. | Yes |
+| `/index` | What you keep: the meter and the picker, a search through it, files too, and a fresh pin. `$` at the start of a word opens it. | Yes |
+| `/import` | Brings another coding agent's home into this one: it asks where to read from, previews what would land, then applies it. Its skills are linked and read where they are. The repositories an import holds are listed there, each one to take back. | Yes |
 
 The gateway registers `/index` itself as it serves. It is no cell's.
 
@@ -63,18 +69,18 @@ The gateway registers `/index` itself as it serves. It is no cell's.
 | --- | --- |
 | `/clear` | Shell: opens a new session. Headless: rewinds this session to its start. `/redo` returns. |
 | `/undo` | Shell: restores files too. Headless: moves the conversation only. |
-| `/models` | Shell: bare opens a picker with Main, Auxiliary, Decider and Backup tabs. A new provider is connected there; Ctrl+E replaces a key. Backup is the failover chain: `/models backups` opens on it. Headless: bare prints the current target. |
-| `/generations` | Shell: a sheet of the changes; Enter asks in place, then restores. Headless: one card of the changes to page and pick from. `/generations N` asks first; `/generations N go` restores, or `keep` / `discard` when uncommitted edits hold it. |
+| `/models` | Shell: a picker with Main, Auxiliary, Decider and Backup tabs. A new provider is connected there; Ctrl+E replaces a key. Backup is the failover chain. Headless: the same choices as rows. |
+| `/generations` | Shell: a sheet of the changes; Enter asks in place, then restores. Headless: one card of the changes to page and pick from; a pick asks first, then restores, or keeps or discards uncommitted edits that hold it. |
 | `/context` | Shell: a grid, each part opening to what it holds. Chat room: one card that wears the window's state, from fine to past the eviction line. |
 | `/login` | Shell only. No chat room or web page can sign this home in to an account. |
 
-Details: [Sessions and undo](/sessions), [Models and providers](/models), [Context](/context), [Profiles](/profiles), [Gateway](/gateway).
+Details: [Sessions and undo](sessions.mdx), [Models and providers](models.mdx), [Context](context.mdx), [Profiles](profiles.mdx), [Gateway](gateway.mdx).
 
 {/* source: src/gateway/gateway.lisp */}
 ## Cell
 
 A cell is a folder of code under `~/.nodecode/cells/`. Its command exists while the cell runs. Every cell command is headless.
 
-A built-in wins over a cell command of the same name.
+A built-in wins over a cell command of the same name. A cell's command is its name too: typed alone, it answers its choices as a dialog, whose rows run its lines or ask for a line of text.
 
-A cell adds its own commands with the `:command` clause. See [Cell API](/cell-api#define-cell). The cells you can add are listed under <CellsTab />.
+A cell adds its own commands with the `:command` clause. See [Cell API](cell-api.mdx#define-cell). The cells you can add are listed under <CellsTab />.

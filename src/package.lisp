@@ -137,7 +137,7 @@ renderer, the program loop.")
    #:gateway-log-path #:gateway-unit-text #:gateway-on #:gateway-off #:temporary-home-p
    #:gateway-off-p #:gateway-restart #:gateway-start #:gateway-start-argv
    #:gateway-installed-p #:gateway-by-default-p #:gateway-process-p #:gateway-log-argv
-   #:gateway-log-text #:gateway-report #:gateway-text
+   #:gateway-log-text #:gateway-report #:gateway-text #:inside-own-gateway-p
    ;; --- the operating system beneath the organism (os.lisp) ---
    #:platform #:architecture #:disable-huge-pages #:cap-malloc-arenas #:resident-bytes
    #:skip-openssl-exit-cleanup #:resolve-names-directly
@@ -153,7 +153,7 @@ renderer, the program loop.")
    #:with-folder-lock #:replace-file #:random-bytes #:with-output-file
    #:call-with-severed-stdio
    ;; --- reaching a peer by name (dial.lisp) ---
-   #:*dial-stagger-seconds* #:dial-order #:dial #:http #:body-text #:decode-octets #:read-events
+   #:*dial-stagger-seconds* #:dial-order #:dial #:http #:proxy-for #:body-text #:decode-octets #:read-events
    #:sever-websocket
    ;; --- wire-value waist, both directions (json.lisp) ---
    #:octets #:decode-json #:json-value #:json-array #:with-json
@@ -298,7 +298,7 @@ renderer, the program loop.")
    #:record-definitions #:*scribe-session-id* #:definition-location
    #:definition-text #:definition-prose #:definition-key
    #:forget-shipped-definitions #:layer-directory #:toplevel-definitions
-   #:load-source #:source-loaded #:*unit-operators*
+   #:load-source #:reload-cell #:source-loaded #:*unit-operators*
    ;; the file write and the git a folder's repository is kept with (scribe.lisp)
    #:write-file-atomically #:git #:git-exclude-dot-directories #:git-commit-all
    ;; --- knowledge: the cells nothing loads, the one index, the use ledger
@@ -309,8 +309,8 @@ renderer, the program loop.")
    #:knowledge-help-text #:note-knowledge-use #:knowledge-ledger-lines #:knowledge-stats #:import-session
    #:mark-index-refresh #:pin-index-section
    ;; --- made cells: a folder of kept code beside the layer (made-cells.lisp) ---
-   #:kept-folder-kind #:new-cell #:enter-cell #:leave-cell #:current-cell
-   #:cell-directory #:add-cell-component #:move-to-cell
+   #:kept-folder-kind #:new-cell #:fold-cell #:enter-cell #:leave-cell #:current-cell
+   #:cell-directory #:add-cell-component #:move-to-cell #:cell-drift
    ;; --- provisional definitions: the stack as evidence (provisional.lisp) ---
    ;; A redefinition of a name the caller is standing on is held until it
    ;; has run once; the boot snapshot is what a revert puts back.
@@ -387,6 +387,9 @@ renderer, the program loop.")
    #:define-memory #:define-skill #:index
    #:unregister-tool #:eval-string
    #:sh #:$ #:edit #:write-file #:look
+   ;; --- the agent's own prompt, rules and soul: each verb answers its
+   ;; file's path, a handle for edit and write-file (turn.lisp) ---
+   #:system-prompt #:agents-md #:soul-md
    ;; --- what a tool call did (turn.lisp): the record a verb stamps on the
    ;; result fact of the call it runs under — a cell's verb names itself
    ;; to the transcript this way (tool-summary.lisp) — and whether it failed,
@@ -516,6 +519,7 @@ renderer, the program loop.")
    #:await-port #:start-gateway #:stop-gateway #:serve-organism-candidate
    ;; --- a cell's slash commands (SLASH-CATALOG, SLASH) ---
    #:register-command #:unregister-commands #:list-dialog
+   #:run-row #:ask-row #:ask-line #:bare-args-p
    ;; --- gateway TUI client (G1) ---
    #:gateway-chat-model #:run-chat-gateway #:start-client-organism))
 

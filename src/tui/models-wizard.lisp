@@ -26,7 +26,7 @@
      :context "" :searchable t
      :subtitle "Choose a provider from models.dev."
      ;; /models' own, under its Main and Auxiliary tabs (a walk has no strip)
-     :hint "enter select  ←→ main/auxiliary/decider/backup  ctrl+e new key  esc close  ↑↓ navigate"
+     :hint "enter select  ←→ main/auxiliary/decider/backup  ctrl+e new key  ctrl+r refetch  esc close  ↑↓ navigate"
      ;; a walk's Esc moves it on rather than closing it
      :walk-hint "enter select  ctrl+e new key  esc skip  ←→ steps  ↑↓ navigate  type search"
      :empty-label "Other provider" :no-match-label "No matching providers")
@@ -437,6 +437,13 @@ showing for one to mean anything else."
           (or (not (eq step :provider))
               (zerop (length (connect-dialog-search dialog)))))
      (connect-back model dialog)
+     t)
+    ;; Every provider's fetched list forgotten and fetched again behind the
+    ;; list, which repaints as each lands: what a stale catalog needs.
+    ((and (eq step :provider) ctrl (characterp key) (char-equal key #\r))
+     (drop-provider-models-cache (listable-provider-ids))
+     (start-provider-models-refresh model)
+     (show-status model "fetching every provider's models again")
      t)
     ((and (eq step :provider) ctrl (characterp key) (char-equal key #\e))
      (let ((row (selected-of (picker-visible-rows dialog) (connect-dialog-selection dialog))))

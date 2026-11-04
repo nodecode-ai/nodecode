@@ -66,7 +66,8 @@ line each: the world, where it sits, and when it was last used."
 (defun import (&key source overwrite (takeover t) only)
   "Import SOURCE, keys and tokens with it: OVERWRITE replaces what is
 already here, ONLY names the kinds (providers, instructions, memory,
-skills, mcp, channels, cron, sessions, profiles) comma-separated."
+skills, mcp, channels, cron, sessions, profiles) comma-separated. Skills are
+linked, each read where it is."
   ;; A foreign gateway polling bots is stopped and disabled so they answer
   ;; from here; TAKEOVER nil leaves it running, and its bots land off and come
   ;; on by themselves once it stops. Answers the report.
@@ -150,18 +151,23 @@ every run of eight or more key characters that is a piece of one replaced."
 (defun run-slash (args &aux (words (nlk:split-words args))
                             (head (first words))
                             (source nil) (overwrite nil) (takeover t) (only nil) (yes nil))
-  "The answer to one /import: the summary line and where the report file is,
-said as a notice too; `--sources' lists the repositories held, `--remove
-LABEL' takes one back."
-  (cond ((equal head "--sources") (return-from run-slash (sources)))
+  "The answer to one /import, (values TEXT DIALOG): the summary line and where
+the report file is, said as a notice too, and a preview's dialog, whose rows
+land it (PREVIEW-DIALOG); `--sources' lists the repositories held, its
+dialog's rows each taking one back, and `--remove LABEL' takes one back.
+`all', the line bare /import's first row runs, reads every world, as
+naming none does."
+  (cond ((equal head "--sources") (return-from run-slash (values (sources) (sources-dialog))))
         ((equal head "--remove")
          (return-from run-slash
-           (remove-source (or (second words) (fail "--remove needs a source's label; /import --sources lists them"))))))
+           (remove-source (or (second words) (fail "--remove needs a source's label"))))))
+  (when (equal head "all")
+    (pop words)
+    (setf head nil))
   (when (and head (not (uiop:string-prefix-p "--" head)))
     (pop words)
     (unless (or (nlk:find-agent-world head) (parse-source head))
-      (fail "~a is not a world this build knows (~{~a~^, ~}) nor a repository (OWNER/REPO, an https URL); ~
-             name a path with --source"
+      (fail "~a is not a world this build knows (~{~a~^, ~}) nor a repository (OWNER/REPO, an https URL)"
             head (nlk:agent-world-names)))
     (setf source head))
   (loop for word = (pop words) while word
@@ -172,9 +178,7 @@ LABEL' takes one back."
              ("--keep-running" (setf takeover nil))
              ("--yes" (setf yes t))
              ("--dry-run" (setf yes nil))
-             (t (fail "unknown word ~a; usage /import [WORLD|OWNER/REPO[#REF]] [--source PATH] [--only KINDS] ~
-                       [--overwrite] [--keep-running] [--yes], /import --sources, /import --remove LABEL"
-                      word))))
+             (t (fail "unknown word ~a: /import alone offers what it reads" word))))
   (let* ((plan (run-import :source source :overwrite overwrite :takeover takeover
                            :only only :apply yes))
          (report (and plan.report-path
@@ -190,8 +194,54 @@ LABEL' takes one back."
                 :level :info)
     (if yes
         (format nil "import ~a: ~a~@[ — ~a~]" (plan-source-line plan) (summary-line plan) report)
-        (format nil "import ~a (dry run): ~a — /import~@[ ~a~] --yes applies~@[; ~a~]"
-                (plan-source-line plan) (summary-line plan) source report))))
+        (values (format nil "import ~a (dry run): ~a~@[ — ~a~]"
+                        (plan-source-line plan) (summary-line plan) report)
+                (preview-dialog plan (nlk:trimmed (or args "")) :overwrite overwrite
+                                                                :takeover takeover :only only)))))
+
+(defun preview-dialog (plan line &key overwrite takeover only
+                                 &aux (head (if (plusp (length line)) (format nil "/import ~a" line) "/import all")))
+  "The dialog a preview of PLAN answers, LINE the words /import read for it:
+the rows that land it -- as planned, over what this home already has, the
+foreign gateway left running -- and, while it brings more than one kind,
+the rows that preview one kind alone."
+  (let ((kinds (loop for kind in +kinds+
+                     when (find-if (lambda (item) (and (equal item.kind kind) (equal item.status "imported")))
+                                   plan.items)
+                       collect kind))
+        (held (find-if (lambda (item) (member item.status '("skipped" "conflict") :test #'equal)) plan.items))
+        (unit (and takeover (plan-takeover-unit plan)
+                   (some (lambda (item) (getf item.detail :bot)) plan.items)
+                   (plan-takeover-unit plan))))
+    (nle:list-dialog
+     :title "Import" :context (plan-source-line plan) :summary (summary-line plan)
+     :rows (append
+            (list (nle:run-row "Bring it over" (format nil "~a --yes" head)
+                               :detail "everything the preview lists, keys and tokens with it"))
+            (when (and held (not overwrite))
+              (list (nle:run-row "Bring it over, replacing what is here" (format nil "~a --overwrite --yes" head)
+                                 :detail "what this home already has gives way to what the import brings")))
+            (when unit
+              (list (nle:run-row (format nil "Bring it over, leaving ~a running" unit)
+                                 (format nil "~a --keep-running --yes" head)
+                                 :detail "its bots answer from here once it stops")))
+            (when (and (rest kinds) (null only))
+              (loop for kind in kinds
+                    collect (nle:run-row (format nil "Only its ~a" kind) (format nil "~a --only ~a" head kind)
+                                         :detail "previewed alone first")))))))
+
+(defun sources-dialog ()
+  "The dialog `--sources' answers: a row each repository held, taking it
+back; NIL when none is."
+  (let ((rows (source-folders)))
+    (and rows
+         (nle:list-dialog
+          :title "Repositories held"
+          :summary "Each one's skills and the MCP servers it declares"
+          :rows (loop for (label) in rows
+                      collect (nle:run-row (format nil "Take back ~a" label)
+                                           (format nil "/import --remove ~a" label)
+                                           :detail "its skills and servers go, and its folder"))))))
 
 (defun param-flag (params key)
   (eq (nlk:json-value params :any key) t))

@@ -17,7 +17,7 @@ trap 'rm -rf "$root"' EXIT INT TERM
 
 release="$root/release"
 mkdir -p "$release/nodecode-test-x86_64-linux"
-printf '%s\n' '#!/bin/sh' 'case "${1:-}" in' '  --help) printf "%s\\n" "usage: nodecode" ;;' '  gateway) [ "${2:-}" = restart ] || exit 1; printf "NODECODE_HOME=%s\\nXDG_CONFIG_HOME=%s\\n" "${NODECODE_HOME:-}" "${XDG_CONFIG_HOME:-}" > "$NODECODE_INSTALL_TEST_TRACE" ;;' '  *) exit 1 ;;' 'esac' > "$release/nodecode-test-x86_64-linux/nodecode"
+printf '%s\n' '#!/bin/sh' 'case "${1:-}" in' '  --help) printf "%s\\n" "usage: nodecode" ;;' '  gateway) [ "${2:-}" = restart ] || exit 1; if [ -n "${NODECODE_INSTALL_TEST_OLD:-}" ] && [ "${3:-}" = --force ]; then exit 2; fi; printf "NODECODE_HOME=%s\\nXDG_CONFIG_HOME=%s\\nARGS=%s\\n" "${NODECODE_HOME:-}" "${XDG_CONFIG_HOME:-}" "$*" > "$NODECODE_INSTALL_TEST_TRACE" ;;' '  *) exit 1 ;;' 'esac' > "$release/nodecode-test-x86_64-linux/nodecode"
 chmod +x "$release/nodecode-test-x86_64-linux/nodecode"
 tar -czf "$release/nodecode-test-x86_64-linux.tar.gz" -C "$release" nodecode-test-x86_64-linux
 sha256sum "$release/nodecode-test-x86_64-linux.tar.gz" > "$release/nodecode-test-x86_64-linux.tar.gz.sha256"
@@ -55,6 +55,22 @@ grep -q 'refreshed and restarted nodecode-gateway.service on test' "$root/output
 grep -q "NODECODE_HOME=$root/organism" "$root/trace"
 grep -q "XDG_CONFIG_HOME=$home/.config" "$root/trace"
 printf '%s\n' 'install-test: active gateway refresh carries the systemd config root'
+
+# The installer's restart is forced: it is meant from wherever it runs, a
+# gateway's own tool shell included. A build from before --force refuses the
+# word with exit 2, and is asked again without it.
+grep -qx 'ARGS=gateway restart --force' "$root/trace"
+PATH="$fake_bin:$PATH" \
+HOME="$home" \
+NODECODE_HOME="$root/install-old" \
+NODECODE_VERSION=test \
+NODECODE_BASE_URL="file://$release" \
+NODECODE_INSTALL_TEST_TRACE="$root/trace-old" \
+NODECODE_INSTALL_TEST_OLD=1 \
+  sh "$(dirname "$0")/install.sh" --no-modify-path > "$root/output-old"
+grep -q 'refreshed and restarted nodecode-gateway.service on test' "$root/output-old"
+grep -qx 'ARGS=gateway restart' "$root/trace-old"
+printf '%s\n' 'install-test: the refresh forces its restart, and asks a build without --force plainly'
 
 # --- the channel pointer names the release ----------------------------------
 # No release is written into the installer any more: it reads

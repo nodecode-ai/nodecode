@@ -121,7 +121,12 @@
   (dolist (verb nle::*launch-verbs*)
     (let* ((extra (cdr (assoc verb.name '(("resume" "s-1") ("warm-dump" "/x") ("machine" "link")) :test #'string=)))
            (plan (apply #'launch-plan verb.name extra)))
-      (is (eq (and verb.terminal t) (and (null (first plan)) (null (second plan)))) (format nil "~a: the table and the parser agree" verb.name)))))
+      (if (string= verb.name "snapshots")
+          ;; Bare, it opens the shell on the list where a terminal is and
+          ;; prints the list where none is (MAIN): it draws on a terminal
+          ;; without needing one, so the table says no.
+          (is (and (null verb.terminal) (member '(:image-picker) plan :test #'equal)) "snapshots: the list, needing no terminal")
+          (is (eq (and verb.terminal t) (and (null (first plan)) (null (second plan)))) (format nil "~a: the table and the parser agree" verb.name))))))
 
 (deftest a-launch-that-needs-a-terminal-refuses-where-there-is-none ()
   (let ((nlt::*terminal-device* "/nonexistent/tty")

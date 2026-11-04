@@ -1310,7 +1310,7 @@ every output gate measures against."
     (is (null (nle::slash-details-op model "developer")))
     (is (equal "Switched to Developer viewport" (nle::status-said model)))
     (is (eq :developer model.tool-detail))
-    (is (search "usage: details" (nle::slash-details-op model "expanded")))
+    (is (equal (nle::slash-unoffered "details") (nle::slash-details-op model "expanded")))
     (is-shape model (.tool-detail eq :developer) (nle::toggle-tool-detail eq :standard))
     (is (member "details" (mapcar #'nle::slash-command-name nle::*slash-commands*) :test #'equal))))
 
@@ -3417,7 +3417,7 @@ nothing opens: the target, or NIL."
       (is (null model.dialog-fullscreen))
       (nle::open-picker-dialog model "Sessions" (picker-rows "one" "two") nil)
       (is (= (+ 1 4 2 3 1) (nle::docked-dialog-frame-rows model)) "docked, the panel fits its rows")
-      (is (search " up/down  navigate   ctrl+f  full screen" (hint-row)))
+      (is (not (search "full screen" (hint-row))) "every row shows: nothing to offer")
       (ctrl-f)
       (is (nle::chat-model-dialog-fullscreen model) "Ctrl+F flips the flag")
       (is (nle::chat-model-dialog model) "and the dialog stays open")
@@ -3445,8 +3445,9 @@ nothing opens: the target, or NIL."
       (is-shape model (.dialog-fullscreen null) (nle::docked-dialog-frame-rows = 9))
       ;; Key-hint footers get the same trailing pair.
       (nle::picker-dialog-key model :escape)
-      (nle::open-picker-dialog model "Shortcuts" (picker-rows "one") nil
-                               :footer-hints :help)
+      (nle::open-picker-dialog model "Shortcuts"
+                               (apply #'picker-rows (loop for i below 30 collect (format nil "k~d" i)))
+                               nil :footer-hints :help)
       (is (search " up/down  navigate   ctrl+f  full screen" (hint-row)) "a key-hint set's keys are caps")))
   ;; A short window: the reach is under the Zig docked height already, so
   ;; a list long enough for the cap docks as tall as fullscreen and nothing
@@ -3456,6 +3457,8 @@ nothing opens: the target, or NIL."
                              (apply #'picker-rows (loop for i below 30 collect (format nil "s~d" i)))
                              nil)
     (is (= 19 (nle::docked-dialog-frame-rows model)))
+    (let ((panel (format nil "~{~a~}" (nle::dialog-panel-rows model 80 nil))))
+      (is (not (search "full screen" panel)) "docked as tall as full: nothing more to show"))
     (nle:update model (nlt:make-key-press-msg :code #\f :mod nlt:+mod-ctrl+))
     (is (= 19 (nle::docked-dialog-frame-rows model)))
     (is (= 24 (length (nle::compose-frame model))) "the frame stacks"))
@@ -3721,16 +3724,47 @@ at in MODEL's last composed frame, or NIL."
           (mouse-update model #'nlt:make-mouse-release-msg (+ x 1) y :button :left))
         (is (= 1 (nle::picker-dialog-tab dialog)) "a drag from a chip shows nothing")))))
 
+(deftest the-full-screen-hint-shows-only-when-the-panel-cuts-rows ()
+  ;; Every dialog's key row ended `ctrl+f full screen', even a short list
+  ;; whose rows all showed, where the key changes nothing. It stands only
+  ;; while the docked panel cuts off rows a full one would show, says
+  ;; `restore' while the panel is full, and names the chord the keymap binds.
+  (flet ((hint (model)
+           (let ((rows (nle::dialog-panel-rows model 80 nil)))
+             (string-trim " " (nth (- (length rows) 2) rows))))
+         (list-of (n) (apply #'picker-rows (loop for i below n collect (format nil "r~d" i)))))
+    (with-frame-model (model 80 40 :session-id "fs-hint")
+      (nle::open-picker-dialog model "Fits" (list-of 3) nil)
+      (is (string= "esc  close   up/down  navigate" (hint model)) "three rows fit: no offer")
+      (press model #\f :mod nlt:+mod-ctrl+)
+      (is (search "ctrl+f  restore" (hint model)) "the way back stands while full")
+      (press model #\f :mod nlt:+mod-ctrl+)
+      (nle::picker-dialog-key model :escape)
+      (nle::open-picker-dialog model "Long" (list-of 40) nil)
+      (is (search "ctrl+f  full screen" (hint model)) "forty rows: the panel hides some"))
+    (with-temp-file (nle::*keybinds-path*
+                     :contents "{\"toggle_dialog_fullscreen\": \"ctrl+g\"}")
+      (with-frame-model (model 80 40 :session-id "fs-hint-kb")
+        (nle::open-picker-dialog model "Long" (list-of 40) nil)
+        (is (search "ctrl+g  full screen" (hint model)) "the chord the keymap binds")))
+    (with-temp-file (nle::*keybinds-path*
+                     :contents "{\"toggle_dialog_fullscreen\": \"none\"}")
+      (with-frame-model (model 80 40 :session-id "fs-hint-unbound")
+        (nle::open-picker-dialog model "Long" (list-of 40) nil)
+        (is (not (search "full screen" (hint model))) "unbound: no key to offer")))))
+
 (deftest a-click-on-a-dialog-key-hint-is-that-key ()
   ;; The panel's key row names keys, and a click on one is that key, run as
   ;; a typed one: ctrl+f flips the panel's height, esc closes -- a HINT's
   ;; cap and words or a key-hint set's alike -- and a hint naming no single
   ;; key (up/down) is no target.
-  (with-frame-model (model 80 24 :session-id "hint-click")
+  (with-frame-model (model 80 40 :session-id "hint-click")
     (flet ((target (needle)
              (multiple-value-bind (x y) (frame-cell-of model needle)
                (and x (nle::frame-target-at-position model x y)))))
-      (nle::open-picker-dialog model "Hints" (picker-rows '("a" :value :a) '("b" :value :b))
+      (nle::open-picker-dialog model "Hints"
+                               (apply #'picker-rows '("a" :value :a) '("b" :value :b)
+                                      (loop for i below 30 collect (list (format nil "r~d" i) :value i)))
                                (constantly nil))
       (nle::compose-frame model)
       (is (equal '(:key . "esc") (target " esc  close")))
@@ -3768,17 +3802,17 @@ at in MODEL's last composed frame, or NIL."
              (nle::open-picker-dialog model "Hints" (picker-rows "one") nil :hint hint)))
       (open-with "enter select  ←→ main/auxiliary/decider/backup  ctrl+e new key  esc close  ↑↓ navigate")
       ;; every run's key is a cap, the arrows' too
-      (is (search " enter  select   ←→  main/auxiliary/decider/backup   ctrl+e  new key   esc  close   ↑↓  navigate   ctrl+f  full screen"
+      (is (search " enter  select   ←→  main/auxiliary/decider/backup   ctrl+e  new key   esc  close   ↑↓  navigate"
                   (hint-row)))
       ;; keys a slash joins are one cap, and typing is one
       (open-with "space pause/resume  del/ctrl+x delete  esc close  type search")
-      (is (search " space  pause/resume   del/ctrl+x  delete   esc  close   type  search   ctrl+f  full screen"
+      (is (search " space  pause/resume   del/ctrl+x  delete   esc  close   type  search"
                   (hint-row)))
       ;; a run naming no key stays words, and so does a sentence
       (open-with "esc close  /link on or /link off switches it")
-      (is (search " esc  close  /link on or /link off switches it   ctrl+f  full screen" (hint-row)))
+      (is (search " esc  close  /link on or /link off switches it" (hint-row)))
       (open-with "Enter returns the pick to the composer - Esc or Ctrl+R closes")
-      (is (search "Enter returns the pick to the composer - Esc or Ctrl+R closes   ctrl+f  full screen"
+      (is (search "Enter returns the pick to the composer - Esc or Ctrl+R closes"
                   (hint-row))))))
 
 (defmacro with-highlight-picker ((model highlighted session
@@ -4734,6 +4768,7 @@ and the DELIVERY its handler declares."
     (is (equal (list :prompt exact) (launch-asks "--" exact)) "one word arrives as it was"))
   (is (equal '(nil nil "s-1") (subseq (multiple-value-list (nle::parse-launch-arguments '("resume" "s-1" "--" "go"))) 0 3)))
   (is (equal '(:prompt "go") (launch-asks "resume" "s-1" "--" "go")) "a resumed session takes a prompt")
+  (is (equal '(:prompt "go") (launch-asks "-c" "--" "go")) "and so does a continued one")
   (is (equal "work" (nth-value 6 (nle::parse-launch-arguments '("-p" "work" "--" "-p" "x")))) "the profile ahead of it")
   (with-temp-directory (dir "prompt-file")
     (let ((file (write-temp-file (merge-pathnames "p.md" dir) (format nil "line one~%~cline two~%~%" #\Tab)))
@@ -4865,6 +4900,19 @@ and the DELIVERY its handler declares."
   (is (equal '(nil nil nil nil nil nil nil) (launch-plan)) "bare: attach to or own the default store")
   (is (equal '(t nil nil "/tmp/x.db" nil nil nil) (launch-plan "serve" "--store" "/tmp/x.db")))
   (is (equal '(nil nil "s-1" nil nil nil nil) (launch-plan "resume" "s-1")))
+  ;; #224: a bare resume opens the picker, -c the newest session begun in
+  ;; this folder; the shell settles either once its organism answers.
+  (is (equal '(nil nil :pick nil nil nil nil) (launch-plan "resume")))
+  ;; an option after it is no session id
+  (is (equal '(nil nil :pick "/tmp/x.db" nil nil nil) (launch-plan "resume" "--store" "/tmp/x.db")))
+  (is (equal '(nil nil :continue nil nil nil nil) (launch-plan "-c")))
+  (is (equal '(nil nil :continue nil nil nil nil) (launch-plan "--continue")))
+  (is-table (in in2) (search in in2)
+    ("opens one session" (launch-refusal "resume" "s-1" "-c"))
+    ("opens one session" (launch-refusal "-c" "resume"))
+    ("cannot resume" (launch-refusal "--ephemeral" "-c"))
+    ("needs its session" (launch-refusal "resume" "--" "go"))
+    ("keeps the model the session began on" (launch-refusal "-c" "--model" "m")))
   (is (equal '(nil (:trial) nil nil nil nil nil) (launch-plan "trial")))
   (is (equal '(nil (:warm-dump "/p") nil nil nil nil nil) (launch-plan "warm-dump" "/p")))
   (is (equal '(nil (:warm) nil nil nil nil nil) (launch-plan "warm")))
@@ -4872,7 +4920,7 @@ and the DELIVERY its handler declares."
   (is (equal '(nil nil nil nil nil nil nil t nil) (multiple-value-list (nle::parse-launch-arguments '("--pristine")))) "pristine: the floor by hand")
   (is (equal '(t nil nil nil nil nil nil t nil) (multiple-value-list (nle::parse-launch-arguments '("serve" "--pristine")))) "and a serve stands on it too")
   (is-table (in in2) (search in in2) ("no option \"--bogus\"." (launch-refusal "--bogus"))
-    ("needs a PATH" (launch-refusal "--store")) ("needs a SESSION-ID" (launch-refusal "resume"))
+    ("needs a PATH" (launch-refusal "--store"))
     ("cannot resume" (launch-refusal "--ephemeral" "resume" "s-1"))
     ("shell's flag" (launch-refusal "serve" "--ephemeral"))
     ("chooses the store" (launch-refusal "--ephemeral" "--store" "/tmp/x.db")))
@@ -5329,9 +5377,11 @@ and the DELIVERY its handler declares."
     (setf model.term-height 40)
     (nle::open-picker-dialog
      model "Sessions"
-     (picker-rows '("hi" :detail "s-3KIWR4SB  1m ago  49 blocks"
+     (apply #'picker-rows '("hi" :detail "s-3KIWR4SB  1m ago  49 blocks"
                     :path "/tmp/a-long-scratch-folder/campaign/clip/project" :value "s-1")
-                  '("other" :detail "s-2" :path "/tmp/elsewhere" :value "s-2"))
+                  '("other" :detail "s-2" :path "/tmp/elsewhere" :value "s-2")
+                  ;; more than the panel holds, so ctrl+f's pair stands last
+                  (loop for i below 30 collect (list (format nil "s~d" i) :value i)))
      nil
      :footer-hints :sessions)
     (flet ((rows (width) (nle::dialog-panel-rows model width nil)))
@@ -5421,7 +5471,48 @@ and the DELIVERY its handler declares."
         (setf (nle::chat-model-selection model) (cons (cons first-row 0) (cons last-row 39)))
         (let ((copied (nle::frame-selection-text model)))
           (is (not (search "↦" copied)) "the copy leaves it behind")
-          (is (search "epsilon zeta eta theta" copied) "and keeps the code it marked"))))))
+          (is (equal code copied) "and keeps the code it marked, the one line it is"))))))
+
+(deftest a-copy-puts-a-wrapped-line-back-together (dolist (width '(40 60 80 120)))
+  ;; A line too long for the row is broken on the screen, not in the text,
+  ;; yet the copy put a newline at every break: a command a code block
+  ;; wrapped (its later rows under a ↦) pasted into a shell as one broken
+  ;; command per row. A row the line goes on in joins back onto it with the
+  ;; blanks the break took out -- the space between two words, nothing where
+  ;; a word was cut or broke after its / or - -- and only the text's own
+  ;; newlines stay, whichever gesture laid the mark.
+  (let* ((command (format nil "echo gh pr create --repo example/project --head fork:feat/a-branch-name-longer-than-the-row --base main --body-file notes/pull-request-draft.md --sha ~a --title \"copy a  wrapped line\" --draft"
+                          (make-string 64 :initial-element #\d)))
+         (paragraph (format nil "~{word~2,'0d~^ ~}" (loop for i from 1 to 40 collect i))))
+    (with-frame-model (model width 60 :session-id "wrap-copy"
+                       :paint ((nle::ingest-message-fact
+                                "assistant" (format nil "~a~%~%```~%~a~%ls -la~%```" paragraph command))))
+      (let* ((rows (nle::frame-plain-rows model))
+             (opens (row-index-of "echo gh" rows :required t))
+             (ends (row-index-of "--draft" rows :required t))
+             (end-column (1- (nle::text-display-width (string-right-trim " " (aref rows ends)))))
+             (mark (lambda (from to)
+                     (setf model.selection (cons (cons (row-index-of from rows :required t) 0)
+                                                 (cons (row-index-of to rows :required t) (1- width))))
+                     (nle::frame-selection-text model))))
+        (is (< opens ends) "the command wraps")
+        (is (search "↦" (aref rows ends)) "under the mark")
+        (is (equal paragraph (funcall mark "word01" "word40")) "a paragraph copies as its own line")
+        (is (equal (format nil "~a~%ls -la" command) (funcall mark "echo gh" "ls -la")) "the command whole, the next line under it")
+        ;; A drag from the command's first character to its last: the mark
+        ;; is read off the transcript's own lines (SPAN-MARK-ROWS).
+        (setf model.selection nil)
+        (let ((y0 (1+ opens)) (y1 (1+ ends))
+              (x0 (1+ (nle::text-display-width (subseq (aref rows opens) 0 (search "echo gh" (aref rows opens)))))))
+          (mouse-update model #'nlt:make-mouse-click-msg x0 y0 :button :left)
+          (mouse-update model #'nlt:make-mouse-motion-msg (1+ end-column) y1 :button :left)
+          (is (nle::mark-span model) "the drag holds its mark on the transcript's lines")
+          (is (equal command (nle::frame-selection-text model)) "a drag copies the command whole")))))
+  (is (equal " " (nle::wrap-joint "alpha " "beta")) "a break between words gives its space back")
+  (is (equal "" (nle::wrap-joint "fork:feat/" "a-branch")) "a break after a / gives nothing")
+  (is (equal "   " (nle::wrap-joint "alpha  " " beta")) "every blank either side of the break")
+  (is (equal "" (nle::wrap-joint "    " "beta")) "a blank row gave its blanks to the joint before it")
+  (is (equal "    " (nle::wrap-joint "    " "beta" t)) "unless it opens the line"))
 
 (deftest cached-transcript-links-survive-string-compaction (dolist (width '(24 70 160)))
   ;; ASCII rows were narrowed AFTER their EQ-keyed click ranges
@@ -5448,7 +5539,7 @@ and the DELIVERY its handler declares."
     (is (eq :standard nle::*tool-detail*) "the render-scope default matches fresh shells")
     (is (eq :standard model.tool-detail))
     (is (equal "viewport Standard" (nle::slash-details-op model "")))
-    (is (search "usage:" (nle::slash-details-op model "expanded")))
+    (is (equal (nle::slash-unoffered "details") (nle::slash-details-op model "expanded")))
     (is (eq :standard model.tool-detail) "invalid mode leaves the viewport unchanged")
     (is (eq :developer (nle::toggle-tool-detail model)))))
 

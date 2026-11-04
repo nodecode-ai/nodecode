@@ -104,6 +104,32 @@
       (is (eql 0 (nlk:wait-for-child pid process)))
       (is (equal (format nil "out~%err~%") (uiop:read-file-string log)) "created, in order"))))
 
+#-win32
+(deftest a-descriptor-of-this-process-can-be-a-childs-stdout (with-temp-workspace (dir))
+  ;; A sandboxed shell hands its jailed serve a listening socket as stdout
+  ;; (the one descriptor besides stdin and stderr srt passes through): the
+  ;; child's stdout is the descriptor itself, its stderr the log alone.
+  (let ((log (merge-pathnames "child.log" dir))
+        (file (merge-pathnames "stdout.txt" dir)))
+    (let ((descriptor (sb-posix:open (uiop:native-namestring file)
+                                     (logior sb-posix:o-wronly sb-posix:o-creat) #o600)))
+      (unwind-protect
+           (multiple-value-bind (pid output errors process)
+               (nlk:spawn-program (nlk:shell-argv "echo out; echo err 1>&2")
+                                  :output descriptor :error-output log)
+             (is (and (null output) (null errors)) "no pipes")
+             (is (eql 0 (nlk:wait-for-child pid process))))
+        (sb-posix:close descriptor)))
+    (is (equal (format nil "out~%") (uiop:read-file-string file)) "stdout went down the descriptor")
+    (is (equal (format nil "err~%") (uiop:read-file-string log)) "stderr to the log")
+    (let ((descriptor (sb-posix:open (uiop:native-namestring file)
+                                     (logior sb-posix:o-wronly sb-posix:o-trunc) #o600)))
+      (unwind-protect
+           (is (nlk:spawn-detached (nlk:shell-argv "echo detached-out; echo detached-err 1>&2") log :stdout descriptor))
+        (sb-posix:close descriptor)))
+    (is (await (:rest 0.05) (search "detached-out" (or (ignore-errors (uiop:read-file-string file)) ""))) "a detached child's stdout goes down the descriptor too")
+    (is (search "detached-err" (uiop:read-file-string log)) "and its stderr to the log")))
+
 (deftest a-spawn-whose-log-folder-is-missing-names-the-log (with-temp-workspace (dir))
   ;; Opening the log fails with ENOENT, the errno a missing program gives:
   ;; `nodecode rpc' on a home never made said `spawning setsid: No such file

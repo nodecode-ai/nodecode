@@ -154,15 +154,15 @@ all of it comes back off."
   ;;       refuses, as the start does.
   ;;   (:tool NAME SCHEMA FUNCTION)   REGISTER-TOOL; stop
   ;;       unregisters it.
-  ;;   (:command COMMAND RUN &key description argument-hint label catches session
-  ;;             trigger complete)
+  ;;   (:command COMMAND RUN &key description label catches session trigger)
   ;;       REGISTER-COMMAND under the cell's key, LABEL and CATCHES naming
   ;;       the failure line the way it does (the command and ERROR by
   ;;       default), SESSION NIL for a command that acts on no session,
-  ;;       TRIGGER the character typed at a word's start that opens it,
-  ;;       COMPLETE what its argument completes to while it is typed;
-  ;;       stop takes the cell's commands out of the catalog. One clause
-  ;;       per command.
+  ;;       TRIGGER the character typed as the draft's first that opens it;
+  ;;       RUN called with no argument answers the command's dialog. An
+  ;;       ARGUMENT-HINT or COMPLETE a cell written before still passes is
+  ;;       taken and shown nowhere. Stop takes the cell's commands out of
+  ;;       the catalog. One clause per command.
   ;;   (:help TOPIC SUMMARY TEXT)   the cell's manual: (help TOPIC) answers
   ;;       TEXT, and every request's help section carries SUMMARY, one line
   ;;       (SET-HELP-TOPIC); stop takes the topic off.

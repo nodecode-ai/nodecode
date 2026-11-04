@@ -105,7 +105,13 @@ each row's text whole; and the ids in their order."
 (deftest a-rows-view-closes-with-its-client (with-temp-gateway (port))
   (seed-completed-turn "rows-c" "hello" "answer")
   (frames-while (ws port) (send-command ws (rows-subscribe "rows-c")))
-  (is-eventually (zerop (hash-table-count nle::*rows-views*)) "no view outlives its socket"))
+  ;; Its own session's views, not the table's count: a view another test's
+  ;; socket still holds while this one runs in the suite is not this one's.
+  (flet ((views-of (session-id)
+           (sb-ext:with-locked-hash-table (nle::*rows-views*)
+             (loop for views being the hash-values of nle::*rows-views*
+                   append (remove session-id views :key #'nle::rows-view-session-id :test-not #'string=)))))
+    (is-eventually (null (views-of "rows-c")) "no view outlives its socket")))
 
 (defun output-band-row (output &rest keys)
   (apply #'nle::make-bg-band-row :output-tail (nlk:utf-8-octets output) keys))

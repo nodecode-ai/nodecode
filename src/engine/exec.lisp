@@ -285,8 +285,7 @@ mid-escape while it streams — decoded."
    "(?s)\\\\(?:u(.{0,4})|(.)|\\z)" encoded
    (lambda-ignoring (match hex other)
      (cond ((and hex (= 4 (length hex)))
-            (let ((code (parse-integer hex :radix 16 :junk-allowed t)))
-              (if code (string (code-char code)) "")))
+            (if-let (code (parse-integer hex :radix 16 :junk-allowed t)) (string (code-char code)) ""))
            ;; \" \\ and \/ give their own character, as does an unknown escape
            (other (string (case (char other 0)
                             (#\n #\Newline) (#\t #\Tab) (#\r #\Return)
@@ -2653,7 +2652,7 @@ nothing, which is no fence's to repeat."
  (list :description
        (concatenate 'string
                     "Evaluate Common Lisp forms in the live image and return their printed values; only the last value prints in full. (sh \"ls -la\") runs a shell command and returns its output. (edit path ($ \"old\") ($ \"new\")) with strings {\"old\": \"<the text now in the file>\", \"new\": \"<its replacement>\"} replaces the one occurrence of old in the file; (write-file path ($ \"text\")) with strings {\"text\": \"<the whole file>\"} writes a whole file, parents created. $ takes an entry's name, never the text itself. (look path) shows you an image file. In a Lisp string a backslash only escapes the next character (\"\\n\" reads as n), so text dense with backslashes, double quotes or newlines goes in the strings object, whichever verb takes it, or raw in the form itself: #>END ends its line, the text follows exactly as written, and a line starting with END closes it - (write-file \"a.py\" #>PY, the file's lines, PY); a shell command carrying a heredoc goes there whole: strings {\"script\": \"...\"} with (sh ($ \"script\")). A snippet's opening ;; line is its note, kept past eviction: write what you would resume from. When you use eval for work, begin the form with one concise leading ;; progress comment naming what you are about to do; this comment becomes the live activity label in channel cards and the TUI."
-                    #+linux " A snippet's last form, when it only reads - no verb, file, process, socket, assignment or definition - is watched: it runs again after each later snippet and comes back as one line only when its value changes."
+                    #+linux " A snippet's last form, when it uses only known memory reads and simple control forms - no unexamined functions or macros, verb, file, process, socket, assignment or definition - is watched: it runs again after each later snippet and comes back as one line only when its value changes."
                     " (help :eval) has the rest.")
        :parameters
        (make-json-object

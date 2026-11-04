@@ -686,6 +686,22 @@ asks again after a pause -- and stops the moment the image has caught up."
         (cons "src/nodecode.asd"
               (format nil "(defsystem \"upg\" :version \"~a\" :depends-on (\"uiop\") :components ((:file \"a\")))" number))))
 
+(deftest update-a-hot-upgrade-reports-the-number-of-the-release-it-took ()
+  ;; A hot upgrade across a version bump (0.1.8 to a 0.1.9 nightly) says the
+  ;; number the release it moved to declares, not the build's; a release not
+  ;; laid out here keeps the build's number.
+  (with-release-host (dist (list (cons "tv1" (numbered-release-files "9.0.1"))
+                                 (cons "tv2" (numbered-release-files "9.0.2"))))
+    (nle::stage-release "tv2")
+    (with-saved-globals ((nle::*user-agent-version* "9.0.1+tv1")
+                         (nlk::*effective-version* nil))
+      (is (equal "9.0.1+tv1" (nle::effective-version)) "the build's own until an upgrade")
+      (setf nlk::*effective-version* "tv2")
+      (is (equal "9.0.2+tv2" (nle::effective-version)))
+      (is (search "nodecode_cli/9.0.2+tv2 " (nle::user-agent)))
+      (setf nlk::*effective-version* "no-such")
+      (is (equal "9.0.1+no-such" (nle::effective-version))))))
+
 (deftest update-a-window-whose-path-predates-the-update-is-told-why ()
   ;; Windows puts the version's own folder on the user PATH, and a window keeps
   ;; the PATH it opened with: after `nodecode update' there, `nodecode' still
@@ -901,6 +917,73 @@ are LISTS ((LABEL . LINES) ...), any other list a 404."
                    (when says
                      (is (search "tv9 is out" (board-line "update")) "the board says what landed")
                      (is (search says (board-line "update")) why))))))))
+
+(deftest update-a-bare-update-refuses-an-older-channel ()
+  ;; A channel switched back to stable from nightly names a build older than
+  ;; this one. An update naming no release leaves this build be, the way the
+  ;; poller does, and says how to go back on purpose; the hold stays.
+  (with-saved-globals ((nlk::*effective-version* "tv5") (nle::*release-list* nil)
+                       (nle::*release-fetch* (changes-host '(("tv1" "tv1") ("tv5" "tv5" "tv1")) "tv1")))
+    (nlk:with-cleanup ((nle::lift-hold))
+      (nle::hold-release "tv5")
+      (is-carrying (text (refusal-text nlk:upgrade-refusal (nle::upgrade-organism :apply t)))
+        ("tv1, the stable channel's latest, is older than this build, tv5" "the refusal names both builds")
+        ("`nodecode update tv1' goes back to it" "and the way back on purpose"))
+      (is-carrying (text (refusal-text nlk:upgrade-refusal (nle::upgrade-organism :check t)))
+        ("is older than this build" "a check says the same"))
+      (is (equal "tv5" (nle::held-release)) "a refused update moves no hold"))))
+
+(deftest update-a-named-step-back-runs-at-the-restart (let ((exited '())))
+  ;; Going back is named, and runs whole at the restart: older definitions
+  ;; evaluated over a newer image would meet state the newer ones left.
+  (with-organism-tree ("tv3" (upg-source 2 "a"))
+    (write-temp-file (merge-pathnames "changes-tv3" dist) (changes-list "tv3"))
+    (write-temp-file (merge-pathnames "changes-tv9" dist) (changes-list "tv9" "tv3"))
+    (with-saved-globals ((nlk::*effective-version* "tv9") (nle::*release-list* nil)
+                         (nle::*gateway-run* t) (nle::*idle-poll-seconds* 0.05)
+                         (nle::*restart-wait* nil) (nle::*refused-release* nil)
+                         (nle::*restart-exit* (lambda (to) (push to exited))))
+      (with-stubbed-fdefinitions ((nlk:gateway-installed-p (&optional home) t)
+                                  (nlk:any-active-turn-p () nil)
+                                  (nle::start-release-feed () nil))
+        (nlk:with-cleanup ((nle::lift-hold))
+          (let ((result (nle::upgrade-organism :version "tv3" :apply t :hold t)))
+            (is (eq :live (getf result :applied)) "linked, not hot")
+            (is-carrying (text (getf result :line))
+              ("tv3 runs at the gateway's restart" "the step back waits for the restart")
+              ("tv3 is older than tv9" "and says why")))
+          (is (eql 1 (funcall 'nodecode.evolved::upg-route-f)) "no older definition was evaluated")
+          (is (equal "tv3" (nle::held-release)) "a named step back holds this home there")
+          (let ((current (truename (merge-pathnames "current" nle::*release-directory*))))
+            (is (equal "tv3" (car (last (pathname-directory current)))) "current names the older build"))
+          (bt2:join-thread nle::*restart-wait*)
+          (is (equal '("tv3") exited) "the unit's gateway restarts onto it"))))))
+
+(deftest update-poller-follows-a-channel-switched-in-the-config (let ((asked '()) (stopped 0)))
+  "A channel switched in the config is looked at within a settings look -- not
+at the next look, six hours on with a feed up -- and the feed, which reads its
+URL when it connects, is ended so that look starts it on the new channel."
+  (with-temp-trees ((home "poller-config"))
+    (let ((config (merge-pathnames "config.jsonc" home)))
+      (write-temp-file config "{\"update\": {\"channel\": \"stable\"}}")
+      (with-idle-feed ((nle::*update-poller* nil)
+                       (nle::*shared-config-path* config)
+                       (nle::*update-poller-first-look-seconds* 0.05)
+                       (nle::*update-settings-look-seconds* 0.05)
+                       (nle::*release-fetch* (lambda (url)
+                                               (push url asked)
+                                               (values (nle::effective-label) nil))))
+        (with-stubbed-fdefinitions ((nle::start-release-feed () nil)
+                                    (nle::stop-release-feed () (incf stopped)))
+          (nlk:with-cleanup ((nle::stop-update-poller) (nlk:note-standing "update" nil :info))
+            (nle::start-update-poller)
+            (await (:rest 0.05) asked)
+            (is (every (lambda (url) (search "/stable-" url)) asked) "the first look reads stable")
+            (is (zerop stopped) "and leaves the feed be")
+            (write-temp-file config "{\"update\": {\"channel\": \"nightly\"}}")
+            (await (:rest 0.05) (find "/nightly-" asked :test #'search))
+            (is (find "/nightly-" asked :test #'search) "the switched channel is looked at at once")
+            (is (plusp stopped) "and the feed reconnects onto it")))))))
 
 (deftest update-a-release-that-loses-a-provider-is-undone (with-organism-tree ("tv3" (upg-source 2 "a")))
   ;; Every definition evaluated and a provider this image served no longer
