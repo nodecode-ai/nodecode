@@ -420,12 +420,13 @@ the same column."
   (when-let (label (composer-suggestion-hotkey model suggestion))
     (list (seg (pad-frame-row label (text-display-width label) key-width nil) :muted))))
 
-(defun dropdown-panel-row (segs width bg surface &key scrollbar right)
-  "One full-WIDTH dropdown row on the composer box's columns: its canvas
-margins either side — painted with the box's own bg, not the dropdown surface —
-around a DOCKED-PANEL-ROW with no side padding and the 2 + 1 + 2 scrollbar lane
-the dropdown reserves (*SCROLLBAR-RESERVED-COLUMNS*, Zig dropdownItemWindow +
-renderDropdownScrollbar)."
+(defun dropdown-panel-row (segs width bg surface margin &key scrollbar right)
+  "One full-WIDTH dropdown row on the composer box's columns: MARGIN canvas
+columns on its left (the composer's own, COMPOSER-LEFT-MARGIN) and the rest
+of the row on its right — painted with the box's own bg, not the dropdown
+surface — around a DOCKED-PANEL-ROW with no side padding and the 2 + 1 + 2
+scrollbar lane the dropdown reserves (*SCROLLBAR-RESERVED-COLUMNS*, Zig
+dropdownItemWindow + renderDropdownScrollbar)."
   ;; A description too long for the row ends in `…' at the cut; without this
   ;; it would stop mid-word at the edge.
   (let* ((box (composer-box-width width))
@@ -434,14 +435,14 @@ renderDropdownScrollbar)."
                                   :bar-gap 2 :scrollbar scrollbar
                                   :right right :mark "…"))
          (row (concatenate 'string
-                           (blank-frame-row 2 bg)
+                           (blank-frame-row margin bg)
                            inner
-                           (blank-frame-row (- width 2 box) bg))))
-    ;; The panel row's targets stand two columns in on the frame's row.
+                           (blank-frame-row (- width margin box) bg))))
+    ;; The panel row's targets stand MARGIN columns in on the frame's row.
     (if-let (links (plain-row-links inner))
       (link-plain-row (nlk:narrow-string row)
                       (loop for (start end target) in links
-                            collect (list (+ start 2) (+ end 2) target)))
+                            collect (list (+ start margin) (+ end margin) target)))
       row)))
 
 (defun composer-dropdown-panel-rows (model width bg)
@@ -452,6 +453,12 @@ whole dropdown rect). NIL while no lane matches or the window has no room."
       (composer-dropdown-geometry model)
     (when panel
       (bind ((entries (composer-suggestions-for model))
+             (height (chat-model-term-height model))
+             ;; The composer's own columns: a completion target starts on
+             ;; the column its typed text does, so `/mo' and the `/models'
+             ;; it completes to read as one word.
+             (margin (composer-left-margin height))
+             (indent (composer-text-indent height))
              (selection (min (chat-model-slash-selection model) (1- count)))
              (top (max 0 (min (- count visible) (1+ (- selection visible)))))
              (window (subseq entries top (+ top visible)))
@@ -487,7 +494,10 @@ whole dropdown rect). NIL while no lane matches or the window has no room."
                for target = (cons :suggestion (+ top row))
                collect (dropdown-panel-row
                         (append
-                         (list (seg (if (and (null surface) selected) "> " "  ") :user-block :link target)
+                         ;; The text indent, ending in the selection mark where
+                         ;; no surface brightens the selected row.
+                         (list (seg (format nil "~v@a" indent (if (and (null surface) selected) "> " ""))
+                                    :user-block :link target)
                                (seg (composer-suggestion-text entry) :syntax-command :link target))
                          (when (plusp (length alias))
                            (list (seg (format nil " (~a)" alias) :muted :link target)))
@@ -497,7 +507,7 @@ whole dropdown rect). NIL while no lane matches or the window has no room."
                          ;; (/checkpoints) Browse'.
                          (list (seg (format nil "~va" gap "") :user-block :link target)
                                (seg (composer-suggestion-detail entry) (if selected :user-block :muted) :link target)))
-                        width bg surface
+                        width bg surface margin
                         ;; The chord this command also answers to, parked
                         ;; at the row's right edge — past the description,
                         ;; the way a menu names a command's key.
@@ -505,7 +515,7 @@ whole dropdown rect). NIL while no lane matches or the window has no room."
                         :scrollbar (scrollbar-cell thumb-top thumb-height row)))
          ;; The panel's own bottom padding row: surface fill, no
          ;; scrollbar cell (Zig draws the bar on the row window only).
-         (list (dropdown-panel-row '() width bg surface)))))))
+         (list (dropdown-panel-row '() width bg surface margin)))))))
 
 (defun attach-composer-prompt (model text)
   "Put TEXT, a prompt the command line gave (#141), in the composer exactly:

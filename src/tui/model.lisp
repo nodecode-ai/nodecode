@@ -222,6 +222,21 @@ gutter a sent prompt's words start on, so typed text stays put on Enter."
   ;; its band.
   (nth-value 2 (body-gutter :prose)))
 
+(defun composer-left-margin (height)
+  "Canvas columns left of the composer on a HEIGHT-row shell: the side
+gutter (a blank and the steering rail) beside the box on tall windows, none
+for the single-line composer short windows fall back to."
+  (if (shell-footer-p height) 2 0))
+
+(defun composer-text-indent (height)
+  "Columns from the composer's left edge to its typed text on a HEIGHT-row
+shell: the box's text inset on tall windows, two in the single-line mode."
+  ;; With COMPOSER-LEFT-MARGIN this is the one place the text's column is
+  ;; decided: the composer row, its parked caret and the dropdown under it
+  ;; all read it, so a completion target starts on the column its typed
+  ;; text does.
+  (if (shell-footer-p height) (composer-text-inset) 2))
+
 (defun composer-text-width (width)
   "Columns the composer's text wraps at — the one width authority for
 composer content, and a different number from TRANSCRIPT-TEXT-WIDTH even

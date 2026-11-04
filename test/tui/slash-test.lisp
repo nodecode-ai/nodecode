@@ -114,10 +114,29 @@ character at a time; NIL once it closed."
       ;; 16-18, the entry row 19 plus the panel's padding row 20, gap
       ;; 21, footer 22, final blank 23 (the Zig composer lift: the
       ;; dropdown docks BELOW the box and the band yields its rows).
-      (is (eql 2 (search "> /themes" (nth 19 rows))))
+      (is (eql 3 (search "> /themes" (nth 19 rows))))
       (is (not (search "[name]" (nth 19 rows)))))
     (nle::editor-reset model.editor)
     (is (not (rows-carry-p "/themes" (nle::compose-frame model))))))
+
+(deftest slash-dropdown-targets-start-on-the-typed-texts-column ()
+  ;; `/mo' and the `/models' under it read as one word: the dropdown's
+  ;; targets stand on the column the composer's typed text does, in the boxed
+  ;; composer and in the single-line mode a short window falls back to. The
+  ;; dropdown once started a column left of the box's text, and two left of
+  ;; the single line's.
+  (dolist (height '(24 11))
+    (with-frame-model (model 80 height :session-id "slash-align" :typed "/mo")
+      ;; The dropdown row is the one its description is on; the typed text is
+      ;; the nearest row above it carrying `/mo' (the home band's tip may
+      ;; name a command too, so the search never starts from the top).
+      (is-let* ((rows (nle::compose-frame model))
+                (entry (row-index-of "Show or change the main" rows
+                                     :required "the dropdown's /models row"))
+                (typed (position "/mo" rows :test #'search :end entry :from-end t))
+                (column (search "/mo" (nth typed rows))))
+        ((search "/models" (nth entry rows)) = column)
+        (column = (if (= height 24) 5 2))))))
 
 (deftest slash-dropdown-names-the-command-hotkey ()
   ;; The `/` palette is where an operator learns a command's key: a command
