@@ -101,7 +101,7 @@
         (make-slash-command "models" "Show or change the main, auxiliary and decider models"
                             :dispatch nil :headless 'headless-models
                             :help-detail
-                            "Providers with Frequently used and Local model shortcuts under four tabs; Tab moves between them. Main is this session's model and the one new sessions start on; after choosing one, its reasoning effort view opens too. Local lists the models served from your own machines: localhost, your LAN or your tailnet. Auxiliary is the model session names, recaps and summaries run on; Same as main gives that work back to each session's own model. Decider is the model that answers judgments as probabilities (DJev); None picks none. Backup is the failover chain: the models a failing turn moves on to, in order, Add a backup, Test backups, and the triggers, which Enter switches; Enter on a backup takes it out. Pick a connected provider to browse its models, or connect a new one here; Ctrl+E replaces its key. Esc from models returns to providers. A room or the web page gets the same choices as rows: the models now, each seat's picks, the backups and the catalog")
+                            "Opens on providers, with Frequently used and Local shortcuts, under four tabs; Tab moves between them. Main is this session's model and the one new sessions start on; after choosing one, its reasoning effort view opens too. Local lists the models served from your own machines: localhost, your LAN or your tailnet. Auxiliary is the model session names, recaps and summaries run on; Same as main gives that work back to each session's own model. Decider is the model that answers judgments as probabilities (DJev); None picks none. Backup is the failover chain: the models a failing turn moves on to, in order, Add a backup, Test backups, and the triggers, which Enter switches; Enter on a backup takes it out. Pick a connected provider to browse its models, or connect a new one here; Ctrl+E replaces its key, Ctrl+R fetches every provider's list again. Esc from models returns to providers. In a room or on the web page, Main, Auxiliary and Decider as tabs: the frequently used models, each provider a row whose picks are its models, and a field for any other")
         (make-slash-command "evict"
                             "Drop the oldest turns from the provider context"
                             :aliases '("compact")
@@ -123,7 +123,7 @@
                             :dispatch :args :headless 'headless-usage
                             :session nil
                             :help-detail
-                            "Spend at catalog prices, model calls, the cache share and what it saved, first-token waits and failed turns across every session, then spend by day, the models, the costliest sessions and the folders. On a shell, a dialog: Tab moves between today, 7 days, 30 days and all, seven days first, and Enter on a session opens it; on a channel or the web page, the same periods to pick, each answered as text")
+                            "Spend at catalog prices, model calls, the cache share and what it saved, first-token waits and failed turns across every session, then spend by day, the models, the costliest sessions and the folders. On a shell, a dialog: Tab moves between today, 7 days, 30 days and all, Enter on a session opens it; on a channel or the web page, the four ranges to pick, each answered as text")
         ;; What the footer's account badge opens (tui/commands/accounts.lisp SLASH-ACCOUNT-OP). No
         ;; headless arm: a room or a page would be shown this home's balance.
         (make-slash-command "account"
@@ -162,7 +162,7 @@
                             :headless 'headless-cells
                             :session nil
                             :help-detail
-                            "A sheet in the middle of the window: Home lists this machine's cells, those that need a look first, then the ones shipped with nodecode, from the hub, your own and the ones off; Hub lists the hub's. The chosen one is laid open beside the list: what it is for, every failure and skipped file whole, the commands it adds, its settings, whether it runs, its folder. Space turns it on or off; a hub cell says where it comes from first, and a second Space installs it. Enter opens its settings; Left and Right, or Tab, switch Home and Hub; typing searches both; Esc closes. Home's first row, + New cell, leaves “Make a cell that ” in the composer: finish the sentence and the agent asks what it still needs, then builds it as a cell of its own, on at once.")
+                            "A sheet in the middle of the window: Home lists this machine's cells, those that need a look first, then the ones shipped with nodecode, from the hub, your own and the ones off; Hub lists the hub's. The chosen one is laid open beside the list: what it is for, every failure and skipped file whole, the commands it adds, its settings, whether it runs, its folder. Space turns it on or off; a hub cell says where it comes from first, and a second Space installs it. Enter opens its settings; Left and Right, or Tab, switch Home and Hub; typing searches both; Esc closes. Home's first row, + New cell, leaves “Make a cell that ” in the composer: finish the sentence and the agent asks what it still needs, then builds it as a cell of its own, on at once. In a room or on the web page, the same report as rows, a cell each, and + New cell, which says what to tell the agent.")
         ;; The sealed generations (organism/generation.lisp): on a shell the
         ;; history sheet over the gateway's routes (tui/generations.lisp
         ;; SLASH-GENERATIONS-OP), Enter asking in place before the restore;
@@ -206,7 +206,7 @@
                             :dispatch :args :op 'profile-slash-op
                             :headless 'profile-headless-text
                             :help-detail
-                            "A profile is a home of its own — config, secrets, store, layer — under ~/.nodecode/profiles/<name>/, and it reads your memory, skills and credentials where they are rather than copying them; /profile opens the roster — Enter relaunches this shell in the home you picked, what else a home can do is on its rows, and the `+ New profile' row under them opens a field that makes another")
+                            "A profile is a home of its own — config, secrets, store, layer — under ~/.nodecode/profiles/<name>/, and it reads your memory, skills and credentials where they are rather than copying them. /profile opens the roster: Enter relaunches this shell in the home you picked; Right on a home offers the rest — boot it by default, export it whole or not, a new profile cloned from it, pull its distribution, delete it — and the rows under the homes make another: like this one, empty, a fork, brought in from an archive or installed from a repository. In a room or on the web page, the same homes and rows, a home's row opening what it takes; switching is a shell's alone")
 
         ;; The organism kept running by the operating system: where the
         ;; gateway stands and the verbs that turn it on and off, a one-line
@@ -239,7 +239,7 @@
                             "Bring another coding agent's home into this one: preview first, then apply"
                             :dispatch :args :headless 'headless-import :session nil
                             :help-detail
-                            "Reads another harness's home -- providers, instructions, memory, skills, MCP servers, channels, cron, sessions, profiles -- and shows what would land, then applies it once you say so. In a shell it opens the setup walk's import stage with its progress, as nodecode import does; the repositories an import holds are listed beside it, each one to take back")
+                            "Reads another harness's home -- providers, instructions, memory, skills, MCP servers, channels, cron, sessions, profiles -- and shows what would land before anything does. It asks where to read from first: every agent found here, one of them, a folder or a repository, or the repositories already held, each with a row that takes it back. The preview then lands it as planned, over what this home already has, or one kind of it alone; in a shell it is the setup walk's import stage with its progress, as nodecode import opens it. Skills are linked and read where they are")
         (make-slash-command "think" "Open provider-native reasoning controls"
                             :aliases '("effort") :dispatch :args :headless 'headless-think
                             :help-detail

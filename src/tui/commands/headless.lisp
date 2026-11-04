@@ -96,8 +96,8 @@ move is conversation-only."
            "cleared: the session is back at its start; /redo returns")))
 
 (defun model-catalog-list-text (provider)
-  "The catalog the picker shows, as text: every provider with its count —
-each row naming its own drill-down — or one provider's ids with its
+  "The catalog the picker shows, as text: every provider with its count, or
+one provider's ids with its
 listing failure beside them. The /models list answer."
   (if provider
       (multiple-value-bind (ids listing-error) (models provider)
@@ -105,8 +105,7 @@ listing failure beside them. The /models list answer."
                 provider (length ids) listing-error ids))
       (format nil "~{~a~^~%~}"
               (loop for (provider . count) in (models)
-                    collect (format nil "~a: ~d model~:p — /models list ~a"
-                                    provider count provider)))))
+                    collect (format nil "~a: ~d model~:p" provider count)))))
 
 (defun headless-models (args session-id &aux (tokens (split-words args))
                                              (aux (equalp (first tokens) "aux"))
