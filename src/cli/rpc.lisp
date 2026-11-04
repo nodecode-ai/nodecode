@@ -147,9 +147,9 @@ before anything reaches OUTPUT."
         (when on-end (funcall on-end (car outcome)))
         (car outcome)))))
 
-(defun organism-port (path deadline &key (held-p #'nlk::store-lease-held-p)
-                                        (published #'live-published-endpoint)
-                                        (start #'front-organism))
+(defun store-organism-port (path deadline &key (held-p #'nlk::store-lease-held-p)
+                                              (published #'live-published-endpoint)
+                                              (start #'front-organism))
   "The port the organism serving the store at PATH publishes, once one does,
 or NIL past DEADLINE (DEADLINE-AFTER's): a live owner's at once; else, each
 time no process holds the store, one this shell starts (START)."
@@ -182,7 +182,7 @@ stdin ends; signals the reason when the gateway lets go first."
           (outcome nil))
       (with-cleanup ((stop-front :why (and (eq outcome :eof) "quit")))
         (loop
-          (let ((port (or (organism-port path deadline)
+          (let ((port (or (store-organism-port path deadline)
                           (error "no organism serves ~a" (namestring path)))))
             (handler-case
                 (return (setf outcome (run-rpc :port port :token (gateway-configured-operator-token)
