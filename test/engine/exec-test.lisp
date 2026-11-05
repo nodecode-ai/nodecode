@@ -773,7 +773,11 @@ completed. BODY runs with SID bound."
     (is (eql 0 (nth-value 1 (nle:sh "time true"))) "time is the shell's own")))
 
 (deftest sh-runs-argv-without-a-shell ()
-  (is (equal "a b" (nle:sh (list "printf" "%s" "a b"))) "argv is not re-split"))
+  ;; The program is the shell itself, the one program every platform's image
+  ;; has (no printf on Windows' PATH): "a b" reaches it as its one $1 only
+  ;; when nothing between joined the argv into a line and split it again.
+  (is (equal "a b" (nle:sh (append (nlk:shell-argv "printf %s \"$1\"") (list "argv" "a b"))))
+      "argv is not re-split"))
 
 (deftest sh-reads-past-a-byte-that-is-not-utf-8 ()
   ;; One stray byte -- a Latin-1 file name in an ls -- was a decoding error

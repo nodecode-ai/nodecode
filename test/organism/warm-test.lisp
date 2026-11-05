@@ -484,7 +484,7 @@ esac
 exit 0
 ")
     (flet ((ask (form deadline)
-             (nlk::ask-child (list "/bin/sh" (namestring child)) form deadline)))
+             (nlk::ask-child (shell-script-command child) form deadline)))
       (multiple-value-bind (score detail) (ask "answer" 10.0)
         (is (eql 42 score) detail))
       (is-values (score detail) (ask "silent" 10.0) (score null "no marked line, no score")
