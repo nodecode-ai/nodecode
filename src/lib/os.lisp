@@ -77,6 +77,8 @@ and each TYPE are SB-ALIEN's, or SAP, INT or STR for the three most written."
      (disposition sb-win32::dword) (attributes sb-win32::dword) (template sb-win32::handle))
     ("FlushFileBuffers" %flush-file-buffers int (handle sb-win32::handle))
     ("GetFileType" %get-file-type sb-win32::dword (handle sb-win32::handle))
+    ("GetFileAttributesExW" %get-file-attributes-ex int (name sb-win32::system-string)
+     (level int) (data sap))
     ("SetStdHandle" %set-std-handle int (which sb-win32::dword) (handle sb-win32::handle))
     ("SetEnvironmentVariableW" %set-environment-variable int (name sb-win32::system-string)
      (value sb-win32::system-string))
@@ -88,6 +90,8 @@ and each TYPE are SB-ALIEN's, or SAP, INT or STR for the three most written."
      (counters sap) (size sb-win32::dword))
     ("GetFinalPathNameByHandleW" %get-final-path-name sb-win32::dword
      (handle sb-win32::handle) (buffer sap) (size sb-win32::dword) (flags sb-win32::dword))
+    ("GetFileInformationByHandle" %get-file-information-by-handle int
+     (handle sb-win32::handle) (information sap))
     ("GetHandleInformation" %get-handle-information int (handle sb-win32::handle) (flags sap))
     ("InitializeProcThreadAttributeList" %initialize-attribute-list int (attributes sap)
      (count sb-win32::dword) (flags sb-win32::dword) (size sap))
@@ -96,13 +100,19 @@ and each TYPE are SB-ALIEN's, or SAP, INT or STR for the three most written."
      (previous sap) (returned sap))
     ("DeleteProcThreadAttributeList" %delete-attribute-list sb-alien:void (attributes sap))
     ("GetConsoleProcessList" %get-console-process-list sb-win32::dword (list sap)
-     (count sb-win32::dword)))
+     (count sb-win32::dword))
+    ("CreateJobObjectW" %create-job-object sb-win32::handle (security (* t)) (name (* t)))
+    ("AssignProcessToJobObject" %assign-process-to-job-object int (job sb-win32::handle)
+     (process sb-win32::handle))
+    ("TerminateJobObject" %terminate-job-object int (job sb-win32::handle) (code sb-win32::dword)))
   (defconstant +handle-flag-inherit+ 1)
   (defconstant +proc-thread-attribute-handle-list+ #x20002)
   (defconstant +extended-startupinfo-present+ #x80000)
   (defconstant +file-share-all+ 7)
   (defconstant +file-flag-backup-semantics+ #x02000000)
   (defconstant +process-query-limited-information+ #x1000)
+  (defconstant +process-terminate+ #x0001)
+  (defconstant +process-set-quota+ #x0100)
   (defconstant +still-active+ 259)
   (defconstant +error-access-denied+ 5)
   (defconstant +error-sharing-violation+ 32)
@@ -184,6 +194,28 @@ when nothing is there."
                          ((uiop:string-prefix-p "\\\\?\\" name) (subseq name 4))
                          (t name))
                    :ensure-directory (uiop:directory-pathname-p path)))))))))))
+
+#+win32
+(defun file-identity (path)
+  "Which file PATH, a native namestring, is -- links followed -- as one
+string, VOLUME:INDEX, what device:inode is on POSIX; NIL when it cannot be
+opened."
+  ;; Windows' stat answers 0 for every file's inode, so device:inode names
+  ;; one file for the whole volume. The file's own handle carries the volume's
+  ;; serial number and the file's 64-bit index on it
+  ;; (BY_HANDLE_FILE_INFORMATION: the serial at byte 28, the index's high and
+  ;; low halves at 44 and 48).
+  (let ((handle (%create-file path 0 +file-share-all+ nil
+                              +open-existing+ +file-flag-backup-semantics+ 0)))
+    (unless (= handle sb-win32::invalid-handle)
+      (with-cleanup ((sb-win32::close-handle handle))
+        (let ((information (make-array 52 :element-type '(unsigned-byte 8))))
+          (sb-sys:with-pinned-objects (information)
+            (let ((sap (sb-sys:vector-sap information)))
+              (when (/= 0 (%get-file-information-by-handle handle sap))
+                (format nil "~d:~d" (sb-sys:sap-ref-32 sap 28)
+                        (logior (ash (sb-sys:sap-ref-32 sap 44) 32)
+                                (sb-sys:sap-ref-32 sap 48)))))))))))
 
 (defun git-redirector (program)
   "When PROGRAM is one of Git for Windows' redirectors, itself or behind a scoop
@@ -528,17 +560,68 @@ process id; an error when Windows refuses."
                                      +detached-process+
                                      0)))))))
 
+;;; --- a child's tree, on Windows ---------------------------------------------
+;;; Windows keeps no process group, and a parent's process id draws no tree:
+;;; MSYS's sh forks and execs through processes that exit, so the `sleep' a
+;;; shell ran names a parent no walk down from the shell reaches. `taskkill
+;;; /T' ended the shell and left that sleep holding the shell's pipes, so a
+;;; bounded run returned ten seconds past its bound and the child ran on. A
+;;; job object holds every process started from inside it, whatever became
+;;; of its parent: each child SPAWN-PROGRAM starts is put in a job of its
+;;; own, KILL-TREE ends the job, and the job is let go when the child is
+;;; reaped -- not ended, so a daemon a child leaves behind on purpose (a
+;;; clipboard owner) lives on.
+
+#+win32
+(defvar *child-jobs* (make-hash-table :test #'eql :synchronized t)
+  "PID -> the job object holding that child's tree, for each child
+SPAWN-PROGRAM started that is not reaped yet.")
+
+#+win32
+(defun enroll-child (pid)
+  "Put the child PID in a job object of its own, so KILL-TREE reaches all
+it starts. Never signals: a child it cannot enroll is ended through
+`taskkill /T' instead."
+  ;; The child runs from CreateProcess on, so what it starts in the moment
+  ;; before it is enrolled stays outside the job; a shell takes far longer
+  ;; than that to start its first command.
+  (let ((job (%create-job-object nil nil)))
+    (unless (zerop job)
+      (let ((process (%open-process (logior +process-set-quota+ +process-terminate+) 0 pid)))
+        (if (or (zerop process) (= process sb-win32::invalid-handle))
+            (sb-win32::close-handle job)
+            (unwind-protect
+                 (if (zerop (%assign-process-to-job-object job process))
+                     (sb-win32::close-handle job)
+                     (setf (gethash pid *child-jobs*) job))
+              (sb-win32::close-handle process)))))))
+
+#+win32
+(defun release-child-job (pid)
+  "Let go of the job object holding the reaped child PID's tree, leaving
+what still runs in it running."
+  ;; Under the table's lock, as KILL-TREE ends a job: a handle closed between
+  ;; its lookup and its use could by then name another process's job.
+  (sb-ext:with-locked-hash-table (*child-jobs*)
+    (let ((job (gethash pid *child-jobs*)))
+      (when job
+        (remhash pid *child-jobs*)
+        (sb-win32::close-handle job)))))
+
 (defun kill-tree (pid)
   "End PID and everything under it, now: SIGKILL to PID's process group
 (RUN-BOUNDED's and SPAWN-DETACHED's children lead their own groups) and to
-PID itself; on Windows `taskkill /T /F', which walks the tree the same
-way. Never signals."
+PID itself; on Windows the job object a child SPAWN-PROGRAM started runs
+in, else `taskkill /T /F', which walks the tree by parent. Never signals."
   #-win32 (ignore-errors (sb-posix:kill (- pid) sb-posix:sigkill))
   #-win32 (ignore-errors (sb-posix:kill pid sb-posix:sigkill))
   #+win32
-  (ignore-errors
-   (uiop:run-program (list "taskkill" "/PID" (princ-to-string pid) "/T" "/F")
-                     :output nil :error-output nil :ignore-error-status t))
+  (unless (sb-ext:with-locked-hash-table (*child-jobs*)
+            (let ((job (gethash pid *child-jobs*)))
+              (and job (/= 0 (%terminate-job-object job 1)))))
+    (ignore-errors
+     (uiop:run-program (list "taskkill" "/PID" (princ-to-string pid) "/T" "/F")
+                       :output nil :error-output nil :ignore-error-status t)))
   t)
 
 (defun %drain (in out)
@@ -1059,6 +1142,7 @@ process: DIRECTORY its working directory when given, ENVIRONMENT
                                  :directory directory
                                  (when environment
                                    (list :environment environment)))))
+            #+win32 (enroll-child (sb-ext:process-pid process))
             (values (sb-ext:process-pid process)
                     (and (eq output :stream) (sb-ext:process-output process))
                     (and (eq errors :stream) (sb-ext:process-error process))
@@ -1100,6 +1184,7 @@ without the wait."
   ;; to have exited, so ask this, or WAIT-FOR-CHILD, never both after it has.
   (if process
       (unless (sb-ext:process-alive-p process)
+        #+win32 (release-child-job pid)
         (let ((code (sb-ext:process-exit-code process)))
           (if (eq (sb-ext:process-status process) :signaled) (+ 128 code) code)))
       #-win32
@@ -1545,8 +1630,11 @@ where the file system does not say."
   "What is at the native PATH, a last link not followed: :DIRECTORY, :FILE (a
 regular one), :LINK, :OTHER or :ABSENT, or :UNKNOWN when the question itself
 was refused. The stat is the second value."
+  ;; A folder's native namestring ends in its separator, and Windows' stat
+  ;; finds nothing by such a name: every folder read :ABSENT there.
+  ;; NATIVE-PATH drops it, but for a drive's root, which needs it.
   (handler-case
-      (let* ((stat (sb-posix:lstat path))
+      (let* ((stat (sb-posix:lstat #-win32 path #+win32 (native-path path)))
              (kind (logand (sb-posix:stat-mode stat) sb-posix:s-ifmt)))
         (values (cond ((= kind sb-posix:s-ifdir) :directory)
                       ((= kind sb-posix:s-ifreg) :file)
@@ -1557,6 +1645,26 @@ was refused. The stat is the second value."
       (if (member (sb-posix:syscall-errno condition) (list sb-posix:enoent sb-posix:enotdir))
           :absent
           :unknown))))
+
+(defun stat-write-time (stat native)
+  "When the file at the native path NATIVE, whose STAT this is, was last
+written: whole seconds since 1970, UTC."
+  ;; Not SB-POSIX:STAT-MTIME alone: on Windows that is msvcrt's _stat, which
+  ;; takes the file's UTC time to local time by today's offset and back by
+  ;; that date's -- an hour early or late for a time in the other daylight
+  ;; saving season, and -1 for one before 1970 local time (T-447). Windows
+  ;; keeps the time itself as a FILETIME, which has neither fault.
+  #-win32 (declare (ignore native))
+  #-win32 (sb-posix:stat-mtime stat)
+  #+win32
+  ;; GetFileExInfoStandard (0) fills a WIN32_FILE_ATTRIBUTE_DATA: the
+  ;; attributes, the creation, access and write FILETIMEs -- each two DWORDs,
+  ;; the low first, counting 100 ns from 1601 -- and the size.
+  (sb-alien:with-alien ((data (sb-alien:array (sb-alien:unsigned 32) 9)))
+    (if (zerop (%get-file-attributes-ex native 0 (sb-alien:alien-sap data)))
+        (sb-posix:stat-mtime stat)
+        (- (floor (logior (sb-alien:deref data 5) (ash (sb-alien:deref data 6) 32)) 10000000)
+           11644473600))))
 
 (defun claim-temp-beside (path claim)
   "Call CLAIM with fresh names beside PATH until one is not taken, CLAIM
@@ -2204,6 +2312,40 @@ call that waits (+WAITING-SYSCALLS+)."
   "How long INTERRUPT-THREAD-SAFELY waits before sending again an
 interruption that landed inside C code.")
 
+;;; Windows' SBCL wakes a thread for an interruption by flipping its safepoint
+;;; state, so that the thread traps at its next safepoint and runs what is
+;;; queued (wake_thread_impl, src/runtime/safepoint.c). A thread inside a
+;;; foreign call during the flip has no safepoint to trap at, and when it
+;;; comes back out after the flip nothing makes it look: the interruption
+;;; waits for the next GC. Sending again does not help, since a wake is not
+;;; made while the first one's mark (*THRUPTION-PENDING*) still stands.
+;;; Probed on the winbox: a thread calling malloc in a loop missed one stop in
+;;; fifteen, and fifty sends over ten seconds did not reach it.
+
+#+win32
+(defun rewake-thread (thread)
+  "Wake THREAD once more for the interruptions queued on it, as the runtime's
+first wake would have, had THREAD not been inside a foreign call."
+  ;; The mark is cleared so the wake is made, and a no-op carries it.
+  (ignore-errors
+   (setf (sb-thread::symbol-value-in-thread 'sb-sys:*thruption-pending* thread) nil)
+   (sb-thread:interrupt-thread thread (lambda ()))))
+
+(defun await-landing (landed thread seconds)
+  "Wait up to SECONDS on the semaphore LANDED, which an interruption sent to
+THREAD signals when it runs. => true once it ran."
+  #-win32 (progn thread (sb-thread:wait-on-semaphore landed :timeout seconds))
+  ;; On Windows the wait is cut in twentieths of a second, and the thread
+  ;; woken again after each (REWAKE-THREAD).
+  #+win32
+  (let ((deadline (+ (get-internal-real-time) (* seconds internal-time-units-per-second))))
+    (loop (let ((left (/ (- deadline (get-internal-real-time)) internal-time-units-per-second)))
+            (when (sb-thread:wait-on-semaphore landed :timeout (max 0.001 (min 0.05 left)))
+              (return t))
+            (when (<= left 0.05)
+              (return nil))
+            (rewake-thread thread)))))
+
 (defun interrupt-thread-safely (thread function &key (within 2))
   "Run FUNCTION in THREAD as BT2:INTERRUPT-THREAD does, but only where an
 unwind out of it strands nothing (INTERRUPTION-MAY-UNWIND-P): landed inside
@@ -2230,9 +2372,9 @@ THREAD stayed inside C code for WITHIN seconds and FUNCTION did not run."
                              (when safe (funcall function)))))
                  t)
           (return :gone))
-        (unless (sb-thread:wait-on-semaphore
-                 landed :timeout (max 0.05 (/ (- deadline (get-internal-real-time))
-                                              internal-time-units-per-second)))
+        (unless (await-landing
+                 landed native (max 0.05 (/ (- deadline (get-internal-real-time))
+                                            internal-time-units-per-second)))
           (return (if (sb-thread:thread-alive-p native) :queued :gone)))
         (when (eq (car where) :ran)
           (return :ran))
