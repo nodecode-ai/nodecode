@@ -273,7 +273,11 @@ registry however BODY leaves."
 (deftest gateway-notice-reaches-attached-peers-and-stands-for-late-ones ()
   (with-gateway-session (port "notice-s")
     (let ((frames
-            (frames-while (ws port :subscribe '("notice-s"))
+            ;; The notices are said in-process, so the body waits for the
+            ;; gateway to hold the peer: the connect ack goes out a moment
+            ;; before the peer is marked attached, and a transient notice
+            ;; said in that moment reaches no one.
+            (frames-while (ws port :subscribe '("notice-s") :await-subscription t)
               (is (equal "discord: refused — no token"
                          (nle:notice "discord: refused — no token"
                                      :level :error :key "channels.discord")))

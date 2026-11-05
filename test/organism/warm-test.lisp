@@ -32,7 +32,7 @@ folder's KEY bound; BODY may edit the folder and recompute."
   "PATH, its times set AGE seconds from now: a negative AGE is the past."
   ;; utime takes unix seconds; universal time is 1900-based.
   (let ((unix (- (get-universal-time) 2208988800 (- age))))
-    (sb-posix:utime (namestring path) unix unix))
+    (set-file-times path unix))
   path)
 
 (defun write-fake-image (image &key (length 64))

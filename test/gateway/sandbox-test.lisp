@@ -138,7 +138,7 @@
   (let ((nle::*sandbox-plan* nil))
     (is (equal '("nodecode" "serve") (nle::sandbox-wrap-command '("nodecode" "serve"))))))
 
-(deftest sandbox-flag-is-a-shells ()
+(deftest sandbox-flag-is-a-shells (let ((nle::*offer-sandbox* t)))
   (let ((nle::*sandbox-asked* nil))
     (nle::parse-launch-arguments '("--sandbox"))
     (is (eq t nle::*sandbox-asked*) "--sandbox is read"))
