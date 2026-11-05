@@ -3428,6 +3428,18 @@ nothing opens: the target, or NIL."
       (press model :f5)
       (is (eq :standard model.tool-detail) "the action override still binds"))))
 
+(deftest a-slash-binding-shows-its-chord-in-the-slash-dropdown ()
+  ;; Given keybinds.json binding Ctrl+G to the bare /details and Alt+X to a
+  ;; line with an argument, the / dropdown's hotkey lane names Ctrl+G beside
+  ;; /details: a key that runs the command as typed is its hotkey. A line
+  ;; with an argument is not the bare command, so it names nothing.
+  (with-temp-file (nle::*keybinds-path*
+                   :contents "{\"/details\": \"ctrl+g\", \"/help me\": \"alt+x\"}")
+    (let ((keymap (nle::resolve-keybinds)))
+      (is (equal "Ctrl+G" (nle::keybind-line-label keymap "/details")) "the bare line's chord")
+      (is (null (nle::keybind-line-label keymap "/help")) "a line with an argument is not the command's hotkey")
+      (is (equal "Alt+X" (nle::keybind-line-label keymap "/help me")) "it answers its own whole line"))))
+
 (deftest a-slash-binding-waits-for-a-dialog-and-never-takes-a-typing-key ()
   ;; Given keybinds.json binding slash lines to Ctrl+G, to a bare letter, to
   ;; shift and a letter, to a function key, to Ctrl+R, the history picker's
