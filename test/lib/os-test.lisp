@@ -6,8 +6,8 @@
 ;;;; Every primitive here has a POSIX arm and a Windows arm behind one name;
 ;;;; these gates pin the contract the callers rely on, and run on whichever
 ;;;; arm the suite's host has. The cross-process cases use a python child the
-;;;; way the store lease tests do: a lock is a per-process fact, so only a
-;;;; second process can hold one against this image.
+;;;; way the store lease tests do, a PowerShell one on Windows: a lock is a
+;;;; per-process fact, so only a second process can hold one against this image.
 
 (in-package #:nodecode.test)
 
@@ -385,22 +385,58 @@ and TOOLCHAIN willing, the programs they start."
       (is (equal value (child-read "NODECODE_OS_WIDE_SET" :environment handed)) "a child handed this process's environment")
       (is (equal value (child-read "NODECODE_OS_WIDE" :environment handed)) "a child handed the value itself"))))
 
-(defmacro with-lock-holder ((path &optional (text "")) &body body
-                           &aux (holder (gensym "HOLDER")))
-  "Run BODY while a python3 child holds an exclusive lock on PATH — the
-foreign holder a per-process lock needs — after asserting it took the lock,
-and end the child on unwind."
-  ;; TEXT is written into the locked file first: what a holder says of itself.
-  `(let ((,holder (uiop:launch-program
-                   (list "python3" "-c"
-                         "import fcntl,sys,time
+(defun powershell-quoted (text)
+  "TEXT as a PowerShell single-quoted string."
+  (with-output-to-string (out)
+    (write-char #\' out)
+    (loop for char across text
+          do (when (char= char #\') (write-char char out))
+             (write-char char out))
+    (write-char #\' out)))
+
+(defun lock-holder-argv (path text)
+  "The argv of a child that takes the exclusive lock on PATH the way LOCK-FILE
+takes it, writes TEXT into the file, prints `locked' and holds it 30 s."
+  ;; The lock is fcntl's on POSIX; on Windows the file open with no sharing.
+  #-win32
+  (list "python3" "-c"
+        "import fcntl,sys,time
 f=open(sys.argv[1],'w')
 f.write(sys.argv[2]); f.flush()
 fcntl.lockf(f,fcntl.LOCK_EX|fcntl.LOCK_NB)
 print('locked',flush=True)
 time.sleep(30)"
-                         (namestring ,path) ,text)
-                   :output :stream)))
+        (namestring path) text)
+  #+win32
+  (list "powershell" "-NoProfile" "-Command"
+        (format nil "$f = [IO.File]::Open(~a, 'Create', 'ReadWrite', 'None'); $b = [Text.Encoding]::UTF8.GetBytes(~a); $f.Write($b, 0, $b.Length); $f.Flush(); [Console]::Out.Write('locked' + [char]10); [Console]::Out.Flush(); Start-Sleep 30"
+                (powershell-quoted (uiop:native-namestring path)) (powershell-quoted text))))
+
+(defun lock-try-argv (path)
+  "The argv of a child that tries to take the lock on PATH once and prints
+`took' or `refused'."
+  #-win32
+  (list "python3" "-c"
+        "import fcntl,sys
+f=open(sys.argv[1],'w')
+try:
+    fcntl.lockf(f,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    print('took',flush=True)
+except OSError:
+    print('refused',flush=True)"
+        (namestring path))
+  #+win32
+  (list "powershell" "-NoProfile" "-Command"
+        (format nil "try { [IO.File]::Open(~a, 'OpenOrCreate', 'ReadWrite', 'None').Close(); [Console]::Out.Write('took' + [char]10) } catch { [Console]::Out.Write('refused' + [char]10) }"
+                (powershell-quoted (uiop:native-namestring path)))))
+
+(defmacro with-lock-holder ((path &optional (text "")) &body body
+                           &aux (holder (gensym "HOLDER")))
+  "Run BODY while a child holds an exclusive lock on PATH — the foreign
+holder a per-process lock needs — after asserting it took the lock, and end
+the child on unwind."
+  ;; TEXT is written into the locked file first: what a holder says of itself.
+  `(let ((,holder (uiop:launch-program (lock-holder-argv ,path ,text) :output :stream)))
      (nlk:with-cleanup ((uiop:terminate-process ,holder) (uiop:wait-process ,holder))
        (is (equal "locked" (read-line (uiop:process-info-output ,holder) nil)))
        ,@body)))
@@ -452,16 +488,7 @@ time.sleep(30)"
     (is lock "the claim succeeds")
     (is (nlk:file-locked-p path) "the holder reads its own lock as held")
     (dotimes (i 5) (nlk:file-locked-p path))
-    (is (equal (format nil "refused~%")
-               (nlk:run-bounded (list "python3" "-c"
-                                      "import fcntl,sys
-f=open(sys.argv[1],'w')
-try:
-    fcntl.lockf(f,fcntl.LOCK_EX|fcntl.LOCK_NB)
-    print('took',flush=True)
-except OSError:
-    print('refused',flush=True)"
-                                      (namestring path)))))
+    (is (equal (format nil "refused~%") (nlk:run-bounded (lock-try-argv path))))
     (nlk:unlock-file lock)
     (is (not (nlk:file-locked-p path)) "the release forgets it too")))
 
