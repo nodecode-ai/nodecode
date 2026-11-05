@@ -56,28 +56,15 @@ the cache is full, or no terminal stream exists yet."
            (setf (gethash key cache) (or image :failed))
            image))))))
 
-(defun image-band-at (refs plains index &aux (ref (aref refs index)) (start index))
-  "The image fact whose inline band opens on lane row INDEX, or NIL: a band
-of the row that owns that lane row, as its last render noted them
-(ROW-BODY-LLINES)."
-  ;; A block paints as [pad] body [pad], every row of it under the same ref,
-  ;; and a member card of an open group as its body alone: a blank first row is
-  ;; the block's own padding, which no offset counts. Read off the whole
-  ;; projection rather than the visible window: a row scrolled halfway out of
-  ;; the band must answer where its image STARTS.
-  (loop while (and (plusp start) (eq ref (aref refs (1- start))))
-        do (decf start))
-  (when (zerop (length (string-trim '(#\Space) (aref plains start))))
-    (incf start))
-  (cdr (assoc (- index start) (row-image-bands ref))))
-
 (defun image-band-covering (refs plains index width &aux (ref (aref refs index)) (start index))
   "The image fact whose inline band holds lane row INDEX at frame WIDTH, and
 as a second value how many of its rows stand above INDEX: (values NIL NIL)
 where no band holds it."
-  ;; IMAGE-BAND-AT's reading of the block, for a band scrolled partly above
-  ;; the viewport: a sixel or half-block picture is drawn from the row that
-  ;; shows.
+  ;; A block paints as [pad] body [pad], every row of it under the same ref,
+  ;; and a member card of an open group as its body alone: a blank first row is
+  ;; the block's own padding, which no offset counts. Read off the whole
+  ;; projection rather than the visible window: a band scrolled partly above
+  ;; the viewport is drawn from the row that shows.
   (loop while (and (plusp start) (eq ref (aref refs (1- start))))
         do (decf start))
   (when (zerop (length (string-trim '(#\Space) (aref plains start))))
@@ -206,15 +193,16 @@ or the cache is full."
 (defun image-placements (model &aux (protocol (image-protocol model)))
   "Declarative placements for the pictures visible in the transcript band, an
 image card's and an answer's alike, through the terminal's IMAGE-PROTOCOL:
-each anchors its image at the first row of its own reserved band
-(IMAGE-BAND-AT), at the body column."
-  ;; Placement identity (image, id, x, y, rows) is deterministic, so unchanged
-  ;; frames emit no image traffic — the renderer's placement-diff contract. A
-  ;; band that begins above the viewport anchors nothing: the kitty protocol
-  ;; places a whole image at a cell, and showing part of one is a crop this
-  ;; does not ask for. A sixel or half-block picture is cut where the band
-  ;; leaves the viewport instead, at its head or its foot: it is drawn into
-  ;; the cells, and cells past the band are another's. An image draws over the cells, a sheet's
+each anchors its image at the first row of its own reserved band that shows
+(IMAGE-BAND-COVERING), at the body column."
+  ;; Placement identity (image, id, x, y, rows, crop) is deterministic, so
+  ;; unchanged frames emit no image traffic — the renderer's placement-diff
+  ;; contract. A band is cut where it leaves the viewport, at its head (above
+  ;; it, or under the prompt pinned at its top) or its foot (a panel, the
+  ;; composer): cells past the band are another's, and an image draws over
+  ;; them. A sixel or half-block picture is drawn again for the rows that
+  ;; show; a kitty image keeps its one transmission and is placed through a
+  ;; source rectangle of those rows' pixels. An image draws over a sheet's
   ;; window too, so none is placed while one is open.
   (when (and protocol (not (sheet-dialog-p (chat-model-dialog model))))
     (bind (((vp-height _ _ top-pad) (transcript-band-metrics model))
@@ -233,16 +221,15 @@ each anchors its image at the first row of its own reserved band
             ;; A sixel or half-block band whose head is off the screen -- above
             ;; the viewport, or under the prompt pinned at its top -- is met at
             ;; the first of its rows that shows, and drawn from there.
-            for (fact skip) = (cond ((null (and ref (transcript-row-p ref) (row-image-bands ref))) nil)
-                                    ((eq protocol :kitty) (list (image-band-at refs plains index) 0))
-                                    (t (multiple-value-bind (fact skip)
-                                           (image-band-covering refs plains index width)
-                                         (and fact
-                                              (or (zerop skip) (not (eql above (1- index))))
-                                              (list fact skip)))))
+            for (fact skip) = (and ref (transcript-row-p ref) (row-image-bands ref)
+                                   (multiple-value-bind (fact skip)
+                                       (image-band-covering refs plains index width)
+                                     (and fact
+                                          (or (zerop skip) (not (eql above (1- index))))
+                                          (list fact skip))))
             for payload = (and fact (image-preview-payload fact ref))
             for band = (and payload (image-preview-rows fact width))
-            for rows = (and band (if (eq protocol :kitty) band (min (- band skip) (- vp-height row))))
+            for rows = (and band (min (- band skip) (- vp-height row)))
             ;; A card's own call owns the transmission: two
             ;; looks at one path are two images. An answer's
             ;; picture is a file named by its bytes.
@@ -251,19 +238,27 @@ each anchors its image at the first row of its own reserved band
                                  (ensure-kitty-image model (or ref.tool-call-id payload) payload)
                                  (ensure-raster-image model protocol (or ref.tool-call-id payload) payload
                                                       band skip rows (max 8 (- width 4)))))
+            ;; The kitty image's pixel rows behind the band's rows that show,
+            ;; when they are not all of it: a picture whose height the PNG
+            ;; never said cannot be cut, and waits to show whole.
+            for height = (and image (eq protocol :kitty) (< rows band) (nlt:terminal-image-height image))
             for top = (+ 3 top-pad row)
             ;; An image draws over the cells, so one sharing a row with a
             ;; toast would cover it: it waits for the toast to go. A
             ;; placement says no width, so a shared row is the whole test.
             ;; Half blocks are cells under the toast's own, so they stay.
-            when (and image (or (eq protocol :blocks) (not (toasts-cover-rows-p model top rows))))
+            when (and image
+                      (or (not (eq protocol :kitty)) (= rows band) height)
+                      (or (eq protocol :blocks) (not (toasts-cover-rows-p model top rows))))
               collect (nlt:make-image-placement
                        image
                        :x x
                        :y top
                        :rows rows
                        :placement-id
-                       (incf (gethash (nlt:terminal-image-id image) counts 0)))))))
+                       (incf (gethash (nlt:terminal-image-id image) counts 0))
+                       :crop-y (and height (round (* height skip) band))
+                       :crop-height (and height (max 1 (round (* height rows) band))))))))
 
 (defun shell-window-title ()
   "The name this shell's window wears: the profile, then the workspace it
