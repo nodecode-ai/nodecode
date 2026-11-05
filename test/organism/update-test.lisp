@@ -96,8 +96,10 @@ repo's own installer, for BODY."
 
 (deftest update-polls-every-half-hour-where-no-feed-streams ()
   ;; A box the feed cannot reach hears of a release only from the poller.
+  ;; The backend is the platform's: WinHTTP on Windows, usocket elsewhere.
   (with-saved-globals ((nle::*installed-build* t))
-    (is (= 360 (nth-value 2 (nle::update-settings))))
+    (let ((dex:*dexador-backend* :usocket))
+      (is (= 360 (nth-value 2 (nle::update-settings)))))
     (let ((dex:*dexador-backend* :winhttp))
       (is (= 30 (nth-value 2 (nle::update-settings)))))))
 
@@ -147,7 +149,8 @@ repo's own installer, for BODY."
 (deftest update-settings-default-to-auto-stable ()
   (with-saved-globals ((nle::*installed-build* t))
     (is-values (mode channel minutes url) (nle::update-settings) (mode "auto") (channel "stable")
-      (minutes eql 360)
+      ;; six hours where the feed streams, half an hour where it cannot (WinHTTP)
+      (minutes eql (if (nle::feed-streams-p) 360 30))
       (url nle::*release-url* "the release host is the parameter's unless the config says")))
   (with-saved-globals ((nle::*installed-build* nil))
     (is (equal "off" (nle::update-settings)) "a build outside the installer's layout -- a checkout's -- never updates itself unasked")))
