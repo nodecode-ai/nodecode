@@ -90,37 +90,19 @@ function Find-OpenSsl {
 }
 
 # The runtime nodecode.exe is dumped on, and so the one every nodecode process
-# starts on: the installed SBCL's, or the same release's runtime with
-# core-views.patch (sbcl-win\build-runtime.sh), which maps the image into
-# memory where the stock runtime reads all ~90 MB of it - about 30 ms off
-# every process start, the shell's, the organism's and each worker's. It runs
-# the installed SBCL's own core and contribs, and only when it takes them: a
-# runtime built for another SBCL refuses the core, and the build stays on the
-# stock runtime.
-function Use-CoreViewsRuntime {
-  $runtime = Join-Path $PSScriptRoot 'sbcl-win\sbcl-2.6.8-coreviews.exe'
-  $sbclDir = Split-Path -Parent $script:sbcl
-  $core = Join-Path $sbclDir 'sbcl.core'
-  if (-not (Test-Path $runtime) -or -not (Test-Path $core)) { return }
-  $home0 = $env:SBCL_HOME
-  $env:SBCL_HOME = $sbclDir
-  # A refusal is a line on stderr, which 'Stop' would raise
-  $ErrorActionPreference = 'Continue'
-  & $runtime --core $core --noinform --non-interactive --no-sysinit --no-userinit `
-    --eval '(progn (require :sb-posix) (sb-ext:exit :code 0))' *> $null
-  if ($LASTEXITCODE -ne 0) {
-    $env:SBCL_HOME = $home0
-    Write-Host "sbcl: stock runtime ($(Split-Path -Leaf $runtime) does not run $core)"
-    return
-  }
-  $script:sbcl = $runtime
-  $script:sbclCore = @('--core', $core)
-}
-
-$script:sbcl = Find-Sbcl
+# starts on: the installed SBCL's, or the same release's runtime that maps the
+# image into memory where the stock one reads all ~90 MB of it - about 30 ms
+# off every process start, the shell's, the organism's and each worker's
+# (sbcl-win\runtime.ps1). Either runs the installed SBCL's own core and contribs.
+$installed = Find-Sbcl
+$script:sbcl = & (Join-Path $PSScriptRoot 'sbcl-win\runtime.ps1') -Sbcl $installed
 $script:sbclCore = @()
-Use-CoreViewsRuntime
-Write-Host "sbcl: $script:sbcl $script:sbclCore"
+if ($script:sbcl -ne $installed) {
+  $sbclDir = Split-Path -Parent $installed
+  $env:SBCL_HOME = $sbclDir
+  $script:sbclCore = @('--core', (Join-Path $sbclDir 'sbcl.core'))
+}
+Write-Host "sbcl: $script:sbcl"
 Ensure-Quicklisp
 $sqlite = Ensure-Sqlite
 $openssl = Find-OpenSsl
