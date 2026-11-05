@@ -1703,15 +1703,34 @@ holds. Re-entrancy lives here and nowhere else: POSIX takes a second record
 lock from this process without a word, and CLOSING that second descriptor
 releases the first lock with it.")
 
+(defun resolved-directory (directory &aux (directory (uiop:ensure-directory-pathname directory)))
+  "DIRECTORY with its symbolic links resolved as far as it exists: the
+truename of its deepest ancestor that does, the steps below it appended as
+spelled."
+  ;; One folder answers one path before it is made and after: a writer takes
+  ;; a folder's lock, makes the folder, and releases the lock by the same name.
+  ;; A truename alone answered the spelling until the folder existed and the
+  ;; resolved path after -- a link above it resolved, or on Windows the drive
+  ;; a `/tmp/...' path never named -- so the release missed the lock it took.
+  (or (ignore-errors (truename directory))
+      (let ((steps (pathname-directory directory)))
+        (if (and (consp steps) (rest steps) (stringp (car (last steps))))
+            (merge-pathnames (make-pathname :directory (list :relative (car (last steps))))
+                             (resolved-directory (make-pathname :directory (butlast steps)
+                                                                :name nil :type nil :version nil
+                                                                :defaults directory)))
+            directory))))
+
 (defun folder-lock-path (directory)
   "The file that stands for the folder DIRECTORY: in a `.locks' directory
 beside it, named after it -- ~/.nodecode/cells/you-memory/ and
-~/.nodecode/cells/.locks/you-memory.lock -- with DIRECTORY's symbolic links resolved
-first, so two homes sharing one folder contend for one lock rather than two.
-A dot-directory, so the folder's own repository never carries it:
-GIT-EXCLUDE-DOT-DIRECTORIES keeps those out of every commit."
-  (let* ((resolved (uiop:ensure-directory-pathname
-                    (or (ignore-errors (truename directory)) (pathname directory))))
+~/.nodecode/cells/.locks/you-memory.lock -- with DIRECTORY's symbolic links
+resolved first, as far as it exists (RESOLVED-DIRECTORY), so two homes sharing
+one folder contend for one lock rather than two, and a folder answers the same
+lock before it is made and after. A dot-directory, so the folder's own
+repository never carries it: GIT-EXCLUDE-DOT-DIRECTORIES keeps those out of
+every commit."
+  (let* ((resolved (resolved-directory directory))
          (name (car (last (pathname-directory resolved)))))
     (merge-pathnames (concatenate 'string ".locks/" name ".lock")
                      (uiop:pathname-parent-directory-pathname resolved))))

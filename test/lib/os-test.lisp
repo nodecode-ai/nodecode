@@ -563,6 +563,22 @@ the child on unwind."
     (is (signals-error error (nlk:with-folder-lock (folder) (error "the body blew up"))) "and it rides out")
     (is (not (nlk:file-locked-p path)) "and the lock is not left behind")))
 
+(deftest a-folder-lock-taken-before-its-folder-exists-is-the-one-released (with-temp-workspace (dir))
+  ;; A knowledge cell's first keep takes the folder's lock, then makes the
+  ;; folder. Reached through a link -- on Windows, by a path naming no drive --
+  ;; the folder resolved one way before it existed and another after, so the
+  ;; release missed the lock it took and the next keep waited on this process.
+  (let* ((parent #-win32 (let ((link (merge-pathnames "link/" dir)))
+                           (nlk:make-symlink (ensure-directories-exist (merge-pathnames "real/" dir)) link)
+                           link)
+                 #+win32 (make-pathname :device nil :defaults dir))
+         (folder (merge-pathnames "memory/" parent))
+         (before (nlk:folder-lock-path folder)))
+    (nlk:with-folder-lock (folder) (ensure-directories-exist folder))
+    (is (equal (namestring before) (namestring (nlk:folder-lock-path folder))) "one lock file, made or not")
+    (is (null (nlk::held-lock before)) "the release lets go of the lock it took")
+    (is (nlk:with-folder-lock (folder :wait 0.2) t) "and the next claim takes it")))
+
 (deftest replace-file-renames-over-an-existing-target (with-temp-workspace (dir))
   (let ((from (merge-pathnames "from" dir))
         (to (merge-pathnames "to" dir)))
