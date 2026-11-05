@@ -274,8 +274,9 @@
           "left out: with it" "AGENTS.md would be"
           (is (search (format nil "past the ~a a session reads" (nlk:size-text limit)) text))
           ;; The file to trim, by its path, and the command that tries again.
-          (is (search (format nil "/~a or what is already there, and run `nodecode import ~a'"
-                              (nik:item-source left) (nik::item-world left))
+          (is (search (format nil "~a or what is already there, and run `nodecode import ~a'"
+                              (uiop:native-namestring (format nil "/~a" (nik:item-source left)))
+                              (nik::item-world left))
                       text))))
       (nik:apply-plan plan)
       (is (<= (nlk:utf-8-size (uiop:read-file-string (nlk:home "AGENTS.md"))) limit))
@@ -287,7 +288,9 @@
                                    "instructions"))))
     (is (equal "skipped" (nik:item-status item)))
     (is-carrying (text (nik:item-reason item))
-      (is (search (format nil ".claude/CLAUDE.md is ~a" (nlk:size-text (* 2 nle::+instructions-byte-limit+))) text))
+      (is (search (format nil "~a is ~a" (uiop:native-namestring ".claude/CLAUDE.md")
+                          (nlk:size-text (* 2 nle::+instructions-byte-limit+)))
+                  text))
       "trim it and run `nodecode import claude'")
     (is (null (probe-file (merge-pathnames "AGENTS.md" home))) "nothing written for it"))
   ;; Sized as a session sizes it, in UTF-8 bytes: under the limit in
@@ -298,7 +301,8 @@
     (let ((item (first (import-items (nik:make-plan :source "claude" :only "instructions")
                                      "instructions"))))
       (is (equal "skipped" (nik:item-status item)) "32 Ki characters of CJK are 96 KiB")
-      (is (search (format nil ".claude/CLAUDE.md is ~a" (nlk:size-text (* 3 characters))) (nik:item-reason item)))
+      (is (search (format nil "~a is ~a" (uiop:native-namestring ".claude/CLAUDE.md") (nlk:size-text (* 3 characters)))
+                  (nik:item-reason item)))
       (is (null (probe-file (merge-pathnames "AGENTS.md" home))) "nothing written for it")))
   ;; A persona is held to what a chat bot reads (channels/kit/soul.lisp):
   ;; past it, no bot speaks in it, so it is not reported as their voice.
@@ -307,7 +311,8 @@
                                    "instructions"))))
     (is (equal "skipped" (nik:item-status item)))
     (is-carrying (text (nik:item-reason item))
-      ".hermes/SOUL.md is" (:absent "the voice your chat bots speak in" "not called their voice")
+      (is (search (format nil "~a is" (uiop:native-namestring ".hermes/SOUL.md")) text))
+      (:absent "the voice your chat bots speak in" "not called their voice")
       (is (search (format nil "past the ~a a chat bot reads" (nlk:size-text nlk::+max-harness-bytes+)) text)))
     (is (null (probe-file (merge-pathnames "SOUL.md" home))) "nothing written for it"))
   ;; A home read at a path is no world the import verb takes by name: it is

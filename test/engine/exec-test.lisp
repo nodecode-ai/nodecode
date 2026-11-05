@@ -773,7 +773,10 @@ completed. BODY runs with SID bound."
     (is (eql 0 (nth-value 1 (nle:sh "time true"))) "time is the shell's own")))
 
 (deftest sh-runs-argv-without-a-shell ()
-  (is (equal "a b" (nle:sh (list "printf" "%s" "a b"))) "argv is not re-split"))
+  ;; The program is the shell itself, the one program every platform's image
+  ;; has (no printf on Windows' PATH): "a b" reaches it as its one $1 only
+  ;; when nothing between joined the argv into a line and split it again.
+  (is (equal "a b" (nle:sh (append (nlk:shell-argv "printf %s \"$1\"") (list "argv" "a b")))) "argv is not re-split"))
 
 (deftest sh-reads-past-a-byte-that-is-not-utf-8 ()
   ;; One stray byte -- a Latin-1 file name in an ls -- was a decoding error
@@ -789,8 +792,12 @@ completed. BODY runs with SID bound."
   (is (equal "" (nle:sh "cat")) "cat sees EOF")
   (is (equal (format nil "fed~%") (nle:sh (format nil "cat <<'EOF'~%fed~%EOF")))))
 
-(deftest sh-runs-in-the-named-directory ()
-  (is (equal (format nil "/tmp~%") (nle:sh "pwd" :directory "/tmp"))))
+(deftest sh-runs-in-the-named-directory (with-temp-workspace (dir))
+  ;; `pwd -W' on Windows: MSYS's own `pwd' says /c/..., the folder as sh sees it.
+  (is (equal (namestring (truename dir))
+             (namestring (uiop:ensure-directory-pathname
+                          (string-right-trim '(#\Newline #\Return)
+                                             (nle:sh #-win32 "pwd" #+win32 "pwd -W" :directory dir)))))))
 
 ;; A shell child names the session that ran it -- a task claim, a log line --
 ;; from NODECODE_SESSION_ID, the id exactly as Nodecode prints it.
@@ -842,11 +849,19 @@ completed. BODY runs with SID bound."
   (is (equal "\"hi\"" (nle:eval-string "(sh \"printf hi\")")))
   (is (search "[exit 1]" (nle:eval-string "(sh \"exit 1\")"))))
 
+(defun sleep-running-p (marker)
+  "Whether a `sleep MARKER' still runs on this machine, any process's."
+  ;; On Windows the sleep is MSYS's sleep.exe, and Git for Windows has no pgrep.
+  #-win32 (plusp (length (nle:sh (format nil "pgrep -x -f 'sleep ~a' || true" marker))))
+  #+win32 (search marker (nlk:run-bounded
+                          (list "powershell" "-NoProfile" "-Command"
+                                "(Get-CimInstance Win32_Process -Filter \"Name = 'sleep.exe'\").CommandLine -join ' '")
+                          :seconds 60)))
+
 (deftest sh-bounds-a-command-by-its-timeout ()
   ;; (sh "..." :timeout 600) was the model's first reach 81 times in three
   ;; days while sh took no such key: the bound is real, the tree dies with
   ;; it, and the answer says why the output stops.
-  #-win32
   (let ((marker "47.3")
         (start (get-internal-real-time)))
     (multiple-value-bind (output status)
@@ -856,7 +871,7 @@ completed. BODY runs with SID bound."
       (is (not (search "never" output)) "nothing past the bound ran")
       (is (not (eql 0 status)) "a killed command is no success")
       (is (< (/ (- (get-internal-real-time) start) internal-time-units-per-second) 10) "the call returned at the bound, not at the command's end"))
-    (is (equal "" (nle:sh (format nil "pgrep -x -f 'sleep ~a' || true" marker))) "no child outlives the bound"))
+    (is (not (sleep-running-p marker)) "no child outlives the bound"))
   (is (equal "hi" (nle:sh "printf hi" :timeout 10)) "a command inside its bound answers as before"))
 
 (deftest sh-kills-its-child-when-the-evaluation-unwinds ()
@@ -864,11 +879,13 @@ completed. BODY runs with SID bound."
   (let* ((marker "31.7")
          (thread (bt2:make-thread
                   (lambda ()
-                    (handler-case (nle:sh (list "sleep" marker)) (error () :unwound))))))
+                    ;; Windows has no sleep on its PATH, only in sh's.
+                    (handler-case (nle:sh #-win32 (list "sleep" marker) #+win32 (format nil "sleep ~a" marker))
+                      (error () :unwound))))))
     (sleep 0.3)
     (nlk:interrupt-thread-safely thread (lambda () (error "eval-interrupt")))
     (is (eq :unwound (bt2:join-thread thread)) "the evaluation unwound")
-    (is (equal "" (nle:sh (format nil "pgrep -x -f 'sleep ~a' || true" marker))))))
+    (is (not (sleep-running-p marker)) "no child outlives the unwind")))
 
 (deftest cancel-of-a-parked-call-stops-its-evaluation-and-its-child (with-exec-registry (registry))
   ;; Cancelling a turn parked in eval takes the call's evaluation with it:
@@ -896,8 +913,7 @@ completed. BODY runs with SID bound."
               (await (:tries 300 :rest 0.01) (eq :exited (nle::exec-process-status process)))
               (is-shape process (.status eq :exited) (.exit-code eql 130)
                 (.eval-value "interrupted by user"))
-              (is (equal "" (nle:sh (format nil "pgrep -x -f 'sleep ~a' || true"
-                                            marker))))
+              (is (not (sleep-running-p marker)) "no child outlives the cancel")
               (is (equal "turn.cancelled" (nlk:turn-terminal-kind turn-id)))
               (is (= 1 (%turn-kind-count turn-id nlk::+kind-tool-result+)))
               (let ((result (first (session-events "cancel-parked" :type 'nlk:tool-result-event))))
@@ -1469,15 +1485,18 @@ turn carrying that id."
 
 ;;; --- child liveness and the exit wake ------------------------------------
 
-(deftest sh-children-lead-their-own-sessions (let ((answer (nle:sh "echo $$ $(ps -o sid= -p $$)"))))
+(deftest sh-children-lead-their-own-sessions ()
   ;; setsid gives every sh child a session of its own, so there is no
   ;; controlling terminal to be stopped over: /dev/tty simply fails.
   ;; Without setsid, a sh child would inherit the serving TUI's controlling
   ;; terminal; a background write would stop the tree with SIGTTOU, and the
   ;; timeout cannot kill it.
-  (destructuring-bind (pid sid) (nlk:split-words answer)
-    (is (equal pid sid)
-        (format nil "the child is its own session leader: ~a" answer))))
+  #+win32 (is nil "cannot exist on Windows: no POSIX sessions or setsid there, and no SIGTTOU to stop a child over a terminal (*SESSION-WRAPPER* is NIL)")
+  #-win32
+  (let ((answer (nle:sh "echo $$ $(ps -o sid= -p $$)")))
+    (destructuring-bind (pid sid) (nlk:split-words answer)
+      (is (equal pid sid)
+          (format nil "the child is its own session leader: ~a" answer)))))
 
 (deftest stopped-child-tree-collapses-with-a-verdict (with-exec-registry (registry))
   ;; A job-control-stopped process can never finish here: nothing holds
@@ -1485,6 +1504,8 @@ turn carrying that id."
   ;; process. The liveness scan names the verdict on the output stream and
   ;; SIGKILLs the tree, so the evaluation exits instead of parking its
   ;; readers forever.
+  #+win32 (progn registry (is nil "cannot exist on Windows: no job-control stop there (no SIGSTOP), and the stall scan reads /proc's state T, which only Linux has"))
+  #-win32
   (let ((id (spawn-test-eval
              registry :form "(sh \"kill -STOP $$\")"
              :value (lambda ()

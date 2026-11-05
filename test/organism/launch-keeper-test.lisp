@@ -80,6 +80,27 @@ spawns pushed onto SPAWNS instead of run."
       (is (= 100 files) "every file is visited")
       (is (< (- (sb-ext:get-bytes-consed) before) (* 100 1024)) "under a kilobyte a file"))))
 
+(deftest the-folder-walk-follows-a-link-and-cuts-its-cycle (with-temp-trees ((root "walk-cycle")))
+  ;; A link back up the tree is followed and cut where it comes round: the
+  ;; walk knows a folder by what it is, not by the path it came in by -- on
+  ;; Windows by the volume and file index its handle carries, where stat's
+  ;; inode is 0 for every file. A junction there, a symbolic link elsewhere.
+  (write-temp-file (merge-pathnames "a/f.lisp" root) "x")
+  (write-temp-file (merge-pathnames "b/g.lisp" root) "x")
+  (let ((up (string-right-trim "/\\" (uiop:native-namestring (merge-pathnames "a/up/" root))))
+        (top (string-right-trim "/\\" (uiop:native-namestring root)))
+        (seen '()))
+    #-win32 (sb-posix:symlink top up)
+    #+win32 (uiop:run-program (list "cmd" "/c" "mklink" "/J" up top) :output nil)
+    ;; The link goes first: a tree removed through a link back up it is
+    ;; removed again under its own name.
+    (nlk:with-cleanup (#-win32 (sb-posix:unlink up)
+                       #+win32 (uiop:run-program (list "cmd" "/c" "rmdir" up) :output nil))
+      (is (probe-file (merge-pathnames "a/up/b/g.lisp" root)) "the link leads back up")
+      (nlk::map-visible-file-tree root (lambda (path stat) (declare (ignore stat))
+                                         (push (subseq path (length (namestring root))) seen)))
+      (is (equal '("a/f.lisp" "b/g.lisp") (sort seen #'string<)) "each file once, the cycle cut"))))
+
 (deftest cells-layer-cache-keeps-the-newest-two-stamps (with-cell-fixture (root))
   ;; A warm update runs two builds at once -- the one serving and the one its
   ;; successor boots -- and without this, a compile under either would delete
@@ -101,3 +122,25 @@ spawns pushed onto SPAWNS instead of run."
         (nlk::prune-stamp-cache "stamp-newest" cache)
         (is (probe-file middle) "the one behind the running stamp stays")
         (is (probe-file newest) "and the running stamp with it")))))
+
+(deftest cells-layer-cache-spares-a-stamp-a-load-marked-in-use (with-cell-fixture (root))
+  ;; A third build alive on the machine -- a shell left open on an older
+  ;; release -- loads from a directory two behind the pruning build's: a load
+  ;; marks its stamp in use, and the mark spares it for the hour; an older
+  ;; mark keeps nothing.
+  (with-temp-directory (cache "layer-cache-in-use")
+    (nlk::note-stamp-in-use cache "stamp-reading")
+    (nlk::note-stamp-in-use cache "stamp-left")
+    (backdate (nlk::stamp-in-use-marker (merge-pathnames "stamp-left/" cache)) -7200)
+    (flet ((stamp-dir (stamp age)
+             (backdate (ensure-directories-exist (merge-pathnames (format nil "~a/" stamp) cache))
+                       age)))
+      (let ((reading (stamp-dir "stamp-reading" -400))
+            (left (stamp-dir "stamp-left" -300))
+            (middle (stamp-dir "stamp-middle" -200))
+            (newest (stamp-dir "stamp-newest" -100)))
+        (nlk::prune-stamp-cache "stamp-middle" cache)
+        (is (probe-file reading) "a stamp a load marked within the hour stays")
+        (is (null (probe-file left)) "a mark two hours old spares nothing")
+        (is (probe-file middle) "the running stamp stays")
+        (is (probe-file newest) "and the newest beside it")))))
