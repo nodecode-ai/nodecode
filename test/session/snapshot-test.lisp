@@ -154,6 +154,36 @@ completed once BODY is done."
           (format nil "a staged change writes its tree: ~a" asked))
       (is (not (equal first-sha changed)) "which is a tree of its own"))))
 
+(deftest a-large-staging-packs-its-blobs-and-a-small-one-stays-loose (with-git-workspace (store dir))
+  ;; A first walk writes a blob per file: as loose objects that is a file
+  ;; created per workspace file, 15.9 s for 5,000 files on Windows, and 0.6 s
+  ;; as one pack (T-442). Past the threshold the staging packs; an edit of a
+  ;; few files stays loose; the trees are the trees either way.
+  (let ((nlk::+snapshot-packed-staging-paths+ 3))
+    (flet ((loose-blobs ()
+             (count "blob" (%loose-objects store)
+                    :test #'equal
+                    :key (lambda (path)
+                           (nlk::git-line store (list "cat-file" "-t"
+                                                      (concatenate 'string (car (last (pathname-directory path)))
+                                                                   (file-namestring path))))))))
+    (dotimes (i 5) (%write-file dir (format nil "f~d.txt" i) (format nil "file ~d" i)))
+    (nlk:bind (((asked first-tree) (git-asked (nlk:capture-workspace-tree store))))
+      (is (member "add" asked :test #'equal))
+      (let ((packs (directory (merge-pathnames "objects/pack/*.pack"
+                                               (uiop:ensure-directory-pathname
+                                                (nlk::snapshot-store-git-dir store)))))
+            (blob (nlk::run-snapshot-git store (list "cat-file" "blob" (format nil "~a:f3.txt" first-tree)))))
+        (is (= 1 (length packs)) "the five blobs went into one pack")
+        (is (zerop (loose-blobs)) "and none of them loose")
+        (is (equal "file 3" blob) "a packed blob reads back"))
+      (%write-file dir "f1.txt" "edited")
+      (let ((second-tree (nlk:capture-workspace-tree store)))
+        (is (not (equal first-tree second-tree)))
+        (is (= 1 (loose-blobs)) "a one-file edit stays a loose object")
+        (let ((diff (nlk::run-snapshot-git store (list "diff-tree" "-p" first-tree second-tree))))
+          (is (search "+edited" diff) "and the diff between them is a text diff")))))))
+
 (deftest an-unchanged-workspace-is-captured-by-its-census-alone (with-git-workspace (store dir))
   ;; A tool call that wrote nothing is most calls, and each is bracketed by
   ;; two captures: when the census finds nothing to stage, the capture is

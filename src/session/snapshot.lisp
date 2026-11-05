@@ -62,6 +62,9 @@ stored).")
   "The most paths one walk may stage: a large source tree is a tenth of it.")
 (defparameter +snapshot-walk-max-bytes+ (* 2 1024 1024 1024)
   "The most bytes one walk may stage.")
+(defparameter +snapshot-packed-staging-paths+ 256
+  "A staging of more paths than this writes its blobs into one pack, not a
+loose object each (STAGE-WORKSPACE).")
 (defvar *git-program* "git"
   "Test seam: bind to a nonexistent path to force unavailability.")
 ;;; A TRUE GLOBAL (not a special): every
@@ -162,8 +165,9 @@ SAVE-LISP-AND-DIE or fork."
          #-win32 "GIT_CONFIG_GLOBAL=/dev/null" #+win32 "GIT_CONFIG_GLOBAL=NUL"
          "GIT_TERMINAL_PROMPT=0")))
 
-(defun run-snapshot-git (store args &key (with-work-tree t))
-  "Run one git plumbing call under the isolation prefix and a walltime bound."
+(defun run-snapshot-git (store args &key (with-work-tree t) config)
+  "Run one git plumbing call under the isolation prefix and a walltime bound;
+CONFIG, KEY=VALUE strings, rides this one call as -c options."
   ;; Returns stdout as a string; any exit but 0 signals the snapshot condition
   ;; taxonomy.
   ;;
@@ -179,7 +183,8 @@ SAVE-LISP-AND-DIE or fork."
                               ;; DIFF-FILES and ADD -A walk a 20,000-file tree
                               ;; in a third of the time with it (T-442).
                               #+win32 "-c" #+win32 "core.fscache=true"
-                              args)
+                              (append (loop for setting in config collect "-c" collect setting)
+                                      args))
                        :seconds +snapshot-git-timeout-seconds+
                        :environment (snapshot-git-environment
                                      store :with-work-tree with-work-tree)
@@ -505,10 +510,19 @@ found nothing to stage. => true when it staged."
   ;; yet there is no tree to keep: the first walk always stages.
   ;; --ignore-errors: one unreadable path does not void the walk; a file the
   ;; process may not read was never going to be restored by it either.
-  (when (or (plusp (check-walk-bound store))
-            (not (probe-file (snapshot-store-index-path store))))
-    (run-snapshot-git store (list* "add" "-A" "--ignore-errors" (staging-pathspec store)))
-    t))
+  ;;
+  ;; A staging of more than +SNAPSHOT-PACKED-STAGING-PATHS+ paths -- a
+  ;; workspace's first walk, a checkout, an unpacked archive -- streams its
+  ;; blobs into one pack instead of a loose file each: the first walk of
+  ;; 5,000 files took 15.9 s on Windows as loose objects and 0.6 s as one
+  ;; pack, the same tree (T-442). The threshold rides `add' alone: a diff
+  ;; reading it would take every file past it for binary.
+  (let ((paths (check-walk-bound store)))
+    (when (or (plusp paths) (not (probe-file (snapshot-store-index-path store))))
+      (run-snapshot-git store (list* "add" "-A" "--ignore-errors" (staging-pathspec store))
+                        :config (when (> paths +snapshot-packed-staging-paths+)
+                                  '("core.bigFileThreshold=1")))
+      t)))
 
 (defun capture-workspace-tree (store)
   "Stage the whole workspace and return its tree sha."
