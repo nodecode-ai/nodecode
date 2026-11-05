@@ -590,20 +590,30 @@ none repeats: the name of the recursion, for the verdict."
   ;; 195 of 232 probes, where the walk named the recursion on all of them. A
   ;; hundred and twenty frames, because the interruption's own machinery sits
   ;; on top.
-  (ignore-errors
-   (let ((counts '()))
-     (loop for frame = (sb-di:top-frame) then (ignore-errors (sb-di:frame-down frame))
-           repeat 120 while frame
-           do (let ((name (ignore-errors
-                           (sb-di:debug-fun-name (sb-di:frame-debug-fun frame)))))
-                (when (and name
-                           (not (and (symbolp name) (symbol-package name)
-                                     (eql 0 (search "SB-" (package-name (symbol-package name)))))))
-                  (if-let (entry (assoc name counts :test #'equal))
-                    (incf (cdr entry)) (push (cons name 1) counts)))))
-     (let ((best (first (sort counts #'> :key #'cdr))))
-       (and best (> (cdr best) 3)
-            (nlk:clip (princ-to-string (car best)) 80 :ellipsis ""))))))
+  (flet ((most-present (top)
+           (let ((counts '()))
+             (loop for frame = top then (ignore-errors (sb-di:frame-down frame))
+                   repeat 120 while frame
+                   do (let ((name (ignore-errors
+                                   (sb-di:debug-fun-name (sb-di:frame-debug-fun frame)))))
+                        (when (and name
+                                   (not (and (symbolp name) (symbol-package name)
+                                             (eql 0 (search "SB-" (package-name (symbol-package name)))))))
+                          (if-let (entry (assoc name counts :test #'equal))
+                            (incf (cdr entry)) (push (cons name 1) counts)))))
+             (let ((best (first (sort counts #'> :key #'cdr))))
+               (and best (> (cdr best) 3)
+                    (nlk:clip (princ-to-string (car best)) 80 :ellipsis ""))))))
+    (or (ignore-errors (most-present (sb-di:top-frame)))
+        ;; Windows runs an interruption on top of the runtime's own C frames
+        ;; (its safepoint trap), which the walk cannot cross: it ends there,
+        ;; nine frames down. The interrupted frames hang off the context the
+        ;; runtime pushed for the interruption.
+        (ignore-errors
+         (let ((index sb-kernel:*free-interrupt-context-index*))
+           (and (plusp index)
+                (most-present (sb-di::signal-context-frame
+                               (sb-alien:alien-sap (sb-di::nth-interrupt-context (1- index)))))))))))
 
 (defun scan-eval-runaways (registry &aux (backgrounded '()))
   "The watcher's pass over the running evaluations: interrupt each live
