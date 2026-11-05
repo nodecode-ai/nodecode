@@ -94,9 +94,15 @@ and each TYPE are SB-ALIEN's, or SAP, INT or STR for the three most written."
     ("UpdateProcThreadAttribute" %update-attribute int (attributes sap) (flags sb-win32::dword)
      (attribute (sb-alien:unsigned 64)) (value sap) (size (sb-alien:unsigned 64))
      (previous sap) (returned sap))
-    ("DeleteProcThreadAttributeList" %delete-attribute-list sb-alien:void (attributes sap)))
+    ("DeleteProcThreadAttributeList" %delete-attribute-list sb-alien:void (attributes sap))
+    ("CreateJobObjectW" %create-job-object sb-win32::handle (security sap) (name sap))
+    ("TerminateJobObject" %terminate-job-object int (job sb-win32::handle)
+     (code sb-win32::dword))
+    ("IsProcessInJob" %process-in-job int (process sb-win32::handle) (job sb-win32::handle)
+     (result sap)))
   (defconstant +handle-flag-inherit+ 1)
   (defconstant +proc-thread-attribute-handle-list+ #x20002)
+  (defconstant +proc-thread-attribute-job-list+ #x2000D)
   (defconstant +extended-startupinfo-present+ #x80000)
   (defconstant +file-share-all+ 7)
   (defconstant +file-flag-backup-semantics+ #x02000000)
@@ -498,14 +504,18 @@ process's, is the child's stdout instead, LOG then its stderr alone."
 (defun kill-tree (pid)
   "End PID and everything under it, now: SIGKILL to PID's process group
 (RUN-BOUNDED's and SPAWN-DETACHED's children lead their own groups) and to
-PID itself; on Windows `taskkill /T /F', which walks the tree the same
-way. Never signals."
+PID itself. On Windows the job SPAWN-PROGRAM started PID in, ended whole;
+for any other process `taskkill /T /F', which walks the tree by parent.
+Never signals."
   #-win32 (ignore-errors (sb-posix:kill (- pid) sb-posix:sigkill))
   #-win32 (ignore-errors (sb-posix:kill pid sb-posix:sigkill))
   #+win32
   (ignore-errors
-   (uiop:run-program (list "taskkill" "/PID" (princ-to-string pid) "/T" "/F")
-                     :output nil :error-output nil :ignore-error-status t))
+   (let ((job (child-job pid)))
+     (if job
+         (%terminate-job-object job 1)
+         (uiop:run-program (list "taskkill" "/PID" (princ-to-string pid) "/T" "/F")
+                           :output nil :error-output nil :ignore-error-status t))))
   t)
 
 (defun %drain (in out)
@@ -706,6 +716,60 @@ name case-blind as Windows keeps its own, one more NUL closing it."
     (sb-int:encapsulate 'sb-win32::create-process 'unicode-environment
                         '%create-process-in-unicode)))
 
+;;; --- a Windows child's whole tree, in a job of its own ---------------------
+;;; KILL-TREE ended a Windows child with `taskkill /T', which finds a tree by
+;;; the parent each process names. An MSYS program -- Git's sh -- starts what
+;;; it runs from a process of its own that is gone by the time the tree is
+;;; walked, so `sh -c "sleep 30"' killed at RUN-BOUNDED's bound left sleep.exe
+;;; running, holding the pipes, and each reader waited out its 5 s. A child
+;;; SPAWN-PROGRAM starts begins inside a job object of its own
+;;; (PROC_THREAD_ATTRIBUTE_JOB_LIST: nothing it starts slips out between its
+;;; creation and an assignment), whatever it starts lands in the same job, and
+;;; KILL-TREE ends the job. The job allows no breakaway, since MSYS breaks
+;;; away from any job that lets it. Closing a job's handle ends nothing: a
+;;; child outlives this image as it did before.
+
+#+win32
+(progn
+  (defvar *child-job* nil
+    "The job object the child CreateProcess starts on this thread is put in, or
+NIL.")
+
+  (defvar *child-jobs* (make-hash-table :synchronized t)
+    "PID -> the job object SPAWN-PROGRAM started that child in, for KILL-TREE.")
+
+  (defun make-child-job ()
+    "A new job object's handle, or NIL when Windows refuses one."
+    (let ((job (%create-job-object (sb-sys:int-sap 0) (sb-sys:int-sap 0))))
+      (unless (zerop job) job)))
+
+  (defun adopt-child-job (pid process job)
+    "Name JOB as PID's for KILL-TREE until PROCESS, its SB-EXT:PROCESS, is
+collected, and close JOB's handle then."
+    (setf (gethash pid *child-jobs*) job)
+    (sb-ext:finalize process
+                     (lambda ()
+                       (sb-ext:with-locked-hash-table (*child-jobs*)
+                         (when (eql job (gethash pid *child-jobs*))
+                           (remhash pid *child-jobs*)))
+                       (sb-win32::close-handle job))
+                     :dont-save t))
+
+  (defun child-job (pid)
+    "The job SPAWN-PROGRAM started PID in, while PID is that child or has
+exited (its descendants may not have); NIL for any other process."
+    (let ((job (gethash pid *child-jobs*)))
+      (when job
+        (let ((process (%open-process +process-query-limited-information+ 0 pid)))
+          (if (zerop process)
+              job
+              (with-cleanup ((sb-win32::close-handle process))
+                (sb-alien:with-alien ((in sb-alien:int 0))
+                  (and (/= 0 (%process-in-job process job
+                                              (sb-alien:alien-sap (sb-alien:addr in))))
+                       (/= 0 in)
+                       job)))))))))
+
 ;;; --- a Windows child inherits its three standard handles, no more ---------
 ;;; CreateProcess told to inherit hands the child every handle of this process
 ;;; marked inheritable, not only the three its STARTUPINFO names. SBCL's
@@ -743,35 +807,46 @@ other."
                      (logtest flags +handle-flag-inherit+))
             (push handle handles))))))
 
-  (defun call-with-handle-list (startup handles function)
+  (defun call-with-attributes (startup handles job function)
     "FUNCTION called with the address of a STARTUPINFOEXW: STARTUP's fields and
-an attribute list naming HANDLES as the only handles a child inherits."
+an attribute list naming HANDLES, when there are any, as the only handles a
+child inherits, and JOB, when given, as the job object it starts in."
     (let* ((size (sb-alien:alien-size sb-win32::startup-info :bytes))
-           (array (sb-alien:make-alien (sb-alien:unsigned 64) (length handles)))
+           (count (+ (if handles 1 0) (if job 1 0)))
+           (array (sb-alien:make-alien (sb-alien:unsigned 64) (max 1 (length handles))))
+           (jobs (sb-alien:make-alien (sb-alien:unsigned 64) 1))
            (extended (sb-alien:make-alien (sb-alien:unsigned 8) (+ size 8)))
            (needed (sb-alien:make-alien (sb-alien:unsigned 64)))
            (attributes nil))
       (with-cleanup ((when attributes (sb-alien:free-alien attributes))
                      (sb-alien:free-alien needed)
                      (sb-alien:free-alien extended)
+                     (sb-alien:free-alien jobs)
                      (sb-alien:free-alien array))
         (loop for handle in handles
               for index from 0
               do (setf (sb-alien:deref array index) handle))
-        ;; Asked with no list, it answers the size one list of one attribute takes.
+        (setf (sb-alien:deref jobs 0) (or job 0))
+        ;; Asked with no list, it answers the size a list of COUNT attributes takes.
         (setf (sb-alien:deref needed) 0)
-        (%initialize-attribute-list (sb-sys:int-sap 0) 1 0 (sb-alien:alien-sap needed))
+        (%initialize-attribute-list (sb-sys:int-sap 0) count 0 (sb-alien:alien-sap needed))
         (setf attributes (sb-alien:make-alien (sb-alien:unsigned 8) (sb-alien:deref needed)))
-        (when (zerop (%initialize-attribute-list (sb-alien:alien-sap attributes) 1 0
+        (when (zerop (%initialize-attribute-list (sb-alien:alien-sap attributes) count 0
                                                  (sb-alien:alien-sap needed)))
           (error "InitializeProcThreadAttributeList: Windows error ~d"
                  (sb-win32::get-last-error)))
         (with-cleanup ((%delete-attribute-list (sb-alien:alien-sap attributes)))
-          (when (zerop (%update-attribute (sb-alien:alien-sap attributes) 0
-                                          +proc-thread-attribute-handle-list+
-                                          (sb-alien:alien-sap array) (* 8 (length handles))
-                                          (sb-sys:int-sap 0) (sb-sys:int-sap 0)))
-            (error "UpdateProcThreadAttribute: Windows error ~d" (sb-win32::get-last-error)))
+          (flet ((attribute (attribute value bytes)
+                   (when (zerop (%update-attribute (sb-alien:alien-sap attributes) 0 attribute
+                                                   value bytes
+                                                   (sb-sys:int-sap 0) (sb-sys:int-sap 0)))
+                     (error "UpdateProcThreadAttribute: Windows error ~d"
+                            (sb-win32::get-last-error)))))
+            (when handles
+              (attribute +proc-thread-attribute-handle-list+
+                         (sb-alien:alien-sap array) (* 8 (length handles))))
+            (when job
+              (attribute +proc-thread-attribute-job-list+ (sb-alien:alien-sap jobs) 8)))
           (let ((sap (sb-alien:alien-sap extended)))
             (sb-kernel:system-area-ub8-copy startup 0 sap 0 size)
             (setf (sb-sys:sap-ref-32 sap 0) (+ size 8)
@@ -783,26 +858,39 @@ an attribute list naming HANDLES as the only handles a child inherits."
                                                  flags environment directory startup
                                                  information)
     "SB-WIN32::CREATE-PROCESS, its child inheriting only the standard handles its
-STARTUP names when it was to inherit at all."
-    (flet ((create (inheritp flags startup)
-             (funcall create-process application command-line process-security
-                      thread-security inheritp flags environment directory startup
-                      information)))
-      (if (not (and inheritp
-                    (sb-sys:system-area-pointer-p startup)
-                    (logtest (sb-alien:slot (sb-alien:deref (sb-alien:sap-alien
-                                                             startup (* sb-win32::startup-info)))
-                                            'sb-win32::flags)
-                             sb-win32::+startf-use-std-handles+)))
-          ;; No standard handles named (RUN-PROGRAM's :PRESERVE-FDS alone): as asked.
-          (create inheritp flags startup)
-          (let ((handles (inheritable-std-handles startup)))
-            (if handles
-                (call-with-handle-list
-                 startup handles
-                 (lambda (extended)
-                   (create t (logior flags +extended-startupinfo-present+) extended)))
-                (create nil flags startup))))))
+STARTUP names when it was to inherit at all, and started in *CHILD-JOB* when
+one is bound."
+    (let* ((startup-p (sb-sys:system-area-pointer-p startup))
+           (std-handles-p (and inheritp startup-p
+                               (logtest (sb-alien:slot (sb-alien:deref
+                                                        (sb-alien:sap-alien
+                                                         startup (* sb-win32::startup-info)))
+                                                       'sb-win32::flags)
+                                        sb-win32::+startf-use-std-handles+)))
+           (handles (and std-handles-p (inheritable-std-handles startup)))
+           ;; No standard handles named (RUN-PROGRAM's :PRESERVE-FDS alone): as asked.
+           (inheritp (if std-handles-p (and handles t) inheritp)))
+      (flet ((create (job)
+               (if (or handles job)
+                   (call-with-attributes
+                    startup handles job
+                    (lambda (extended)
+                      (funcall create-process application command-line process-security
+                               thread-security inheritp
+                               (logior flags +extended-startupinfo-present+)
+                               environment directory extended information)))
+                   (funcall create-process application command-line process-security
+                            thread-security inheritp flags environment directory startup
+                            information))))
+        (let ((job (and startup-p *child-job*)))
+          ;; A job this process may not nest under its own refuses the child
+          ;; outright; the child then starts as it did before jobs, outside one.
+          (if job
+              (or (create job)
+                  (progn (sb-win32::close-handle job)
+                         (setf *child-job* nil)
+                         (create nil)))
+              (create nil))))))
 
   (sb-ext:without-package-locks
     (sb-int:encapsulate 'sb-win32::create-process 'inherit-std-handles-only
@@ -989,7 +1077,8 @@ process: DIRECTORY its working directory when given, ENVIRONMENT
   ;; holds it open past its parent's exit. INPUT is :NULL
   ;; for the null device on stdin, or :STREAM for a pipe the parent writes the
   ;; child's stdin down — a child this image talks to rather than only reads.
-  ;; The child leads its own process group, so KILL-TREE reaches what it starts.
+  ;; The child leads its own process group, so KILL-TREE reaches what it starts;
+  ;; on Windows it starts in a job object of its own, for the same reach.
   ;; => (values PID OUTPUT-STREAM ERROR-STREAM PROCESS INPUT-STREAM): each
   ;; stream NIL unless its pipe was asked for, PROCESS the SB-EXT:PROCESS when
   ;; the fork path started it and NIL when posix_spawn did. WAIT-FOR-CHILD takes PID and PROCESS and
@@ -1017,15 +1106,25 @@ process: DIRECTORY its working directory when given, ENVIRONMENT
                  #+win32 (*unicode-environment*
                           (and environment (unicode-environment-block environment)))
                  #+win32 (environment nil)
-                 (process (apply #'sb-ext:run-program (first argv) (rest argv)
-                                 :search t :wait nil
-                                 :input (and (eq input :stream) :stream)
-                                 :output output :if-output-exists :append
-                                 :error errors :if-error-exists :append
-                                 :external-format *child-external-format*
-                                 :directory directory
-                                 (when environment
-                                   (list :environment environment)))))
+                 #+win32 (*child-job* (make-child-job))
+                 (process (let ((started nil))
+                            (unwind-protect
+                                 (setf started
+                                       (apply #'sb-ext:run-program (first argv) (rest argv)
+                                              :search t :wait nil
+                                              :input (and (eq input :stream) :stream)
+                                              :output output :if-output-exists :append
+                                              :error errors :if-error-exists :append
+                                              :external-format *child-external-format*
+                                              :directory directory
+                                              (when environment
+                                                (list :environment environment))))
+                              #+win32
+                              (when *child-job*
+                                (if started
+                                    (adopt-child-job (sb-ext:process-pid started) started
+                                                     *child-job*)
+                                    (sb-win32::close-handle *child-job*)))))))
             (values (sb-ext:process-pid process)
                     (and (eq output :stream) (sb-ext:process-output process))
                     (and (eq errors :stream) (sb-ext:process-error process))
