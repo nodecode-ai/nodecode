@@ -58,6 +58,7 @@ renderer, the program loop.")
    #:color-scheme-msg-p #:color-scheme-msg-scheme #:make-color-scheme-msg
    #:device-attributes-msg-p #:device-attributes-msg-attributes #:make-device-attributes-msg
    #:cell-size-msg-p #:cell-size-msg-width #:cell-size-msg-height #:make-cell-size-msg
+   #:terminal-version-msg-p #:terminal-version-msg-name #:make-terminal-version-msg
    #:terminal-io-msg-p #:terminal-io-msg-thunk #:make-terminal-io-msg
    ;; --- the declarative view: CURSOR, its constructor, predicate and
    ;; readers are exported by DEFINE-RECORD at the declaration ---
@@ -81,7 +82,7 @@ renderer, the program loop.")
    #:*png-transcoders* #:transcode-to-png #:transmit-image #:place-image
    #:request-kitty-graphics #:request-terminal-attributes #:current-multiplexer
    ;; --- sixel and half blocks (raster.lisp) ---
-   #:raster-colors #:unpack-rgb #:quantize-colors #:sixel-data #:half-block-grid
+   #:raster-colors #:unpack-rgb #:quantize-colors #:sixel-data #:half-block-grid #:mosaic-grid
    #:*sixel-colors*
    ;; --- the renderer (render.lisp) ---
    #:make-renderer #:render #:renderer-width #:renderer-height

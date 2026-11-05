@@ -278,6 +278,168 @@ OLD-BUFFER to NEW-BUFFER will write over: each is drawn again after it."
                     (%cells-differ-p old-buffer new-buffer p))
             collect p)))
 
+;;; Octants and sextants: a cell of 2 x 4 (or 2 x 3) pixels, each the
+;;; cell's foreground or its ground, so a cell carries four times the half
+;;; block's pixels in the same two colours. Unicode numbers a cell's pixels
+;;; 1 2 / 3 4 / 5 6 / 7 8 and encodes the patterns in rising order of the
+;;; mask that sets bit N-1 for pixel N, leaving out the ones an older block
+;;; already draws: the block elements, and for octants eight more kept in
+;;; blocks fewer terminals draw, which are painted here as their complement
+;;; over swapped colours.
+
+(defun %cells-mask (cells)
+  "The mask of CELLS, a string of pixel numbers 1-8."
+  (loop for digit across cells sum (ash 1 (1- (digit-char-p digit)))))
+
+(defparameter *mosaic-block-elements*
+  '(("" . #\Space) ("1234" . #\UPPER_HALF_BLOCK) ("5678" . #\LOWER_HALF_BLOCK)
+    ("1357" . #\LEFT_HALF_BLOCK) ("2468" . #\RIGHT_HALF_BLOCK)
+    ("13" . #\QUADRANT_UPPER_LEFT) ("24" . #\QUADRANT_UPPER_RIGHT)
+    ("57" . #\QUADRANT_LOWER_LEFT) ("68" . #\QUADRANT_LOWER_RIGHT)
+    ("1368" . #\QUADRANT_UPPER_LEFT_AND_LOWER_RIGHT)
+    ("2457" . #\QUADRANT_UPPER_RIGHT_AND_LOWER_LEFT)
+    ("123457" . #\QUADRANT_UPPER_LEFT_AND_UPPER_RIGHT_AND_LOWER_LEFT)
+    ("123468" . #\QUADRANT_UPPER_LEFT_AND_UPPER_RIGHT_AND_LOWER_RIGHT)
+    ("135678" . #\QUADRANT_UPPER_LEFT_AND_LOWER_LEFT_AND_LOWER_RIGHT)
+    ("245678" . #\QUADRANT_UPPER_RIGHT_AND_LOWER_LEFT_AND_LOWER_RIGHT)
+    ("78" . #\LOWER_ONE_QUARTER_BLOCK) ("345678" . #\LOWER_THREE_QUARTERS_BLOCK)
+    ("12345678" . #\FULL_BLOCK))
+  "The octant patterns the block elements draw, by pixel numbers.")
+
+(defparameter *sextant-block-elements*
+  '(("" . #\Space) ("135" . #\LEFT_HALF_BLOCK) ("246" . #\RIGHT_HALF_BLOCK)
+    ("123456" . #\FULL_BLOCK))
+  "The sextant patterns the block elements draw, by pixel numbers.")
+
+(defun %mosaic-glyphs (pixels first elements elsewhere)
+  "A vector by mask over a cell of PIXELS pixels: the character drawing the
+mask's pixels in the foreground, from ELEMENTS or else the run Unicode
+encodes from FIRST, which skips them and the ELSEWHERE masks (NIL here)."
+  (let ((table (make-array (ash 1 pixels) :initial-element nil))
+        (skip (append (mapcar (lambda (e) (%cells-mask (car e))) elements)
+                      (mapcar #'%cells-mask elsewhere)))
+        (code first))
+    (loop for (cells . char) in elements do (setf (aref table (%cells-mask cells)) char))
+    (dotimes (mask (length table) table)
+      (unless (member mask skip)
+        (setf (aref table mask) (code-char code))
+        (incf code)))))
+
+(defparameter *octant-glyphs*
+  (%mosaic-glyphs 8 #x1CD00 *mosaic-block-elements* '("1" "2" "7" "8" "12" "35" "46" "123456"))
+  "Octants (U+1CD00, Unicode 16) and the block elements, by mask.")
+
+(defparameter *sextant-glyphs*
+  (%mosaic-glyphs 6 #x1FB00 *sextant-block-elements* '())
+  "Sextants (U+1FB00, Unicode 13) and the block elements, by mask.")
+
+(defun %nearest-glyph-masks (glyphs)
+  "For each mask, itself when GLYPHS draws it, else the drawn mask fewest
+pixels away: a cell with clear pixels cannot swap its colours."
+  (let ((drawn (loop for mask below (length glyphs) when (aref glyphs mask) collect mask)))
+    (coerce (loop for mask below (length glyphs)
+                  collect (if (aref glyphs mask)
+                              mask
+                              (loop with best and distance
+                                    for other in drawn
+                                    for d = (logcount (logxor mask other))
+                                    ;; Of the nearest, the one with more pixels: a
+                                    ;; lone pixel of a thin line is kept, not dropped.
+                                    when (or (null best) (< d distance)
+                                             (and (= d distance) (> (logcount other) (logcount best))))
+                                      do (setf best other distance d)
+                                    finally (return best))))
+            'simple-vector)))
+
+(defparameter *octant-nearest* (%nearest-glyph-masks *octant-glyphs*))
+(defparameter *sextant-nearest* (%nearest-glyph-masks *sextant-glyphs*))
+
+(defun %color-distance (a b)
+  "Weighted squared distance of packed RGBs A and B, green heaviest."
+  (let ((dr (- (ldb (byte 8 16) a) (ldb (byte 8 16) b)))
+        (dg (- (ldb (byte 8 8) a) (ldb (byte 8 8) b)))
+        (db (- (ldb (byte 8 0) a) (ldb (byte 8 0) b))))
+    (+ (* 2 dr dr) (* 4 dg dg) (* 3 db db))))
+
+(defun %mean-color (pixels mask want)
+  "The mean packed RGB of PIXELS whose bit in MASK is WANT (1 or 0)."
+  (let ((r 0) (g 0) (b 0) (n 0))
+    (dotimes (i (length pixels))
+      (when (= want (ldb (byte 1 i) mask))
+        (let ((c (aref pixels i)))
+          (incf r (ldb (byte 8 16) c)) (incf g (ldb (byte 8 8) c)) (incf b (ldb (byte 8 0) c))
+          (incf n))))
+    (%pack-rgb (round r n) (round g n) (round b n))))
+
+(defun %two-colors (pixels)
+  "PIXELS, opaque packed RGBs, split in two: (values MASK FOREGROUND
+BACKGROUND), MASK's pixels nearer FOREGROUND; MASK is every pixel when they
+are one colour."
+  ;; Two-means seeded with the pair farthest apart: a few passes settle a
+  ;; cell of eight.
+  (let ((n (length pixels)) (far 0) (seed-a 0) (seed-b 0))
+    (dotimes (i n)
+      (loop for j from (1+ i) below n
+            for d = (%color-distance (aref pixels i) (aref pixels j))
+            when (> d far) do (setf far d seed-a i seed-b j)))
+    (if (zerop far)
+        (values (1- (ash 1 n)) (aref pixels 0) (aref pixels 0))
+        (let ((a (aref pixels seed-a)) (b (aref pixels seed-b)) (mask 0))
+          (dotimes (pass 4)
+            (let ((next (loop for i below n
+                              when (<= (%color-distance (aref pixels i) a)
+                                       (%color-distance (aref pixels i) b))
+                                sum (ash 1 i))))
+              (when (or (= next mask) (zerop next) (= next (1- (ash 1 n))))
+                (return))
+              (setf mask next
+                    a (%mean-color pixels mask 1)
+                    b (%mean-color pixels mask 0))))
+          (values mask a b)))))
+
+(defun mosaic-grid (colors width height sgr cell)
+  "COLORS, WIDTH x HEIGHT packed RGBs with -1 for clear (RASTER-COLORS), as
+cells of CELL, (2 . 4) octants or (2 . 3) sextants, laid out as
+HALF-BLOCK-GRID lays its own: each cell NIL where all its pixels are clear,
+else (CHAR FG BG), its pixels split between two colours, or between their
+mean and :KEEP, the cell's own ground, where some are clear. SGR answers a
+packed colour's SGR text, foreground when its second argument is true."
+  (destructuring-bind (cw . ch) cell
+    (let* ((octants (= ch 4))
+           (glyphs (if octants *octant-glyphs* *sextant-glyphs*))
+           (nearest (if octants *octant-nearest* *sextant-nearest*))
+           (n (* cw ch))
+           (full (1- (ash 1 n)))
+           (pixels (make-array n))
+           (cache (make-hash-table)))
+      (flet ((text (color foreground-p)
+               (alexandria:ensure-gethash (if foreground-p color (- -2 color)) cache
+                                          (funcall sgr color foreground-p))))
+        (coerce
+         (loop for top from 0 below height by ch
+               collect
+               (coerce
+                (loop for left from 0 below width by cw
+                      collect
+                      (let ((opaque 0))
+                        (dotimes (i n)
+                          (let ((x (+ left (mod i cw))) (y (+ top (floor i cw))))
+                            (setf (aref pixels i)
+                                  (if (and (< x width) (< y height)) (aref colors (+ (* y width) x)) -1))
+                            (unless (minusp (aref pixels i)) (setf opaque (logior opaque (ash 1 i))))))
+                        (cond
+                          ((zerop opaque) nil)
+                          ((/= opaque full)
+                           (let ((fg (%mean-color pixels opaque 1)))
+                             (list (aref glyphs (aref nearest opaque)) (text fg t) :keep)))
+                          (t
+                           (multiple-value-bind (mask fg bg) (%two-colors pixels)
+                             (if (aref glyphs mask)
+                                 (list (aref glyphs mask) (text fg t) (text bg nil))
+                                 (list (aref glyphs (logxor mask full)) (text bg t) (text fg nil))))))))
+                'simple-vector))
+         'simple-vector)))))
+
 (defun paint-block-images (buffer placements)
   "Lay each half-block placement of PLACEMENTS into BUFFER's cells, over what
 the rows painted there."

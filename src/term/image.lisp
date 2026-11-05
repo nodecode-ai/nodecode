@@ -267,14 +267,17 @@ take it as a title."
     (force-output stream)))
 
 (defun request-terminal-attributes (stream)
-  "Ask the terminal for its cell size in pixels (XTWINOPS 16) and then its
-primary device attributes (DA1), whose 4 says it draws sixel."
+  "Ask the terminal for its cell size in pixels (XTWINOPS 16), its name and
+version (XTVERSION), and then its primary device attributes (DA1), whose 4
+says it draws sixel."
   ;; Every terminal answers DA1, and in the order it was asked, so its answer
   ;; also says the kitty query sent before it went unanswered: the shell
   ;; picks a picture's protocol once it arrives (FRAME's DEVICE-ATTRIBUTES-MSG).
   ;; A multiplexer answers both itself, which is why its sixel bit is not
-  ;; taken (IMAGE-PROTOCOL).
-  (format stream "~C[16t~C[c" #\Escape #\Escape)
+  ;; taken (IMAGE-PROTOCOL). The name says which glyphs a terminal draws
+  ;; itself, finer than half blocks (BLOCK-CELL); one that keeps no name
+  ;; ignores the query, as it does every CSI it does not know.
+  (format stream "~C[16t~C[>q~C[c" #\Escape #\Escape #\Escape)
   (force-output stream))
 
 ;;; --- the renderer seam ---------------------------------------------------

@@ -78,8 +78,8 @@ where no band holds it."
 (defun image-protocol (model)
   "How MODEL's terminal is given a picture: :KITTY once it answered the kitty
 graphics query OK; once it answered DA1 instead, :SIXEL when that listed
-sixel, else :BLOCKS where the colour profile draws half blocks; NIL until
-then, and for a terminal of no colour."
+sixel, else :BLOCKS where the colour profile draws block glyphs (BLOCK-CELL);
+NIL until then, and for a terminal of no colour."
   ;; DA1 is asked after the kitty query and answered in order, so a kitty
   ;; terminal's OK is in before the DA1 answer settles anything: the
   ;; protocol never flips from a fallback to kitty after a picture was drawn.
@@ -88,6 +88,35 @@ then, and for a terminal of no colour."
           ((null graphics) nil)
           ((eq graphics :sixel) :sixel)
           ((member (effective-color-profile) '(:truecolor :ansi256)) :blocks))))
+
+(defparameter *vte-octants-version* 7800
+  "The VTE (as XTVERSION names it, VTE(8401) for 0.84.1) that first draws
+octants itself, whatever its font: 0.78.")
+
+(defun block-cell (model &key (term (or (uiop:getenv "TERM") ""))
+                              (alacritty-window (uiop:getenv "ALACRITTY_WINDOW_ID"))
+                              (multiplexer (nlt:current-multiplexer)))
+  "The pixels, (WIDTH . HEIGHT), one cell of MODEL's block picture holds:
+octants, (2 . 4), where the terminal draws them itself, sextants, (2 . 3),
+where it draws those, else half blocks, (1 . 2). TERM, ALACRITTY-WINDOW and
+MULTIPLEXER are this process's own unless given."
+  ;; Drawn by the terminal itself means drawn whatever its font: a font
+  ;; that lacks a glyph shows a box, or a fallback glyph that leaves gaps. VTE
+  ;; (GNOME Terminal, Ptyxis) says its name to XTVERSION and draws octants
+  ;; from 0.78. Alacritty says no name; its TERM, or the window id it leaves
+  ;; when TERM was set otherwise, says it, and it draws sextants itself but
+  ;; octants only from the font. Under a multiplexer the terminal outside
+  ;; is unknown, and the multiplexer answers XTVERSION itself.
+  (let ((name (chat-model-terminal-name model)))
+    (cond ((and name
+                (ppcre:register-groups-bind ((#'parse-integer version)) ("^VTE\\((\\d+)\\)" name)
+                  (>= version *vte-octants-version*)))
+           '(2 . 4))
+          ((and (null multiplexer)
+                (or (uiop:string-prefix-p "alacritty" term)
+                    (and (null name) alacritty-window)))
+           '(2 . 3))
+          (t '(1 . 2)))))
 
 (defparameter *sixel-cell-pixels* '(10 . 20)
   "The cell, (WIDTH . HEIGHT) in pixels, a sixel is scaled to where the
@@ -100,23 +129,31 @@ COLORS (and a sixel's INDICES and PALETTE) were made for, and the
 TERMINAL-IMAGEs drawn from them, by the rows shown."
   pixels shape colors indices palette grid (images '()))
 
-(defun raster-image (entry protocol rows skip visible columns cell)
+(defun raster-image (entry protocol rows skip visible columns cell &optional (aspect 1))
   "ENTRY's picture as a TERMINAL-IMAGE of PROTOCOL (:SIXEL or :BLOCKS) for a
 band of ROWS rows, the VISIBLE on screen below the SKIP scrolled above it,
-COLUMNS wide, under CELL, the (WIDTH . HEIGHT) in pixels of a cell: the
-band's height, never wider than the columns, never larger than the
-picture. NIL when none of the picture falls in the rows shown."
+COLUMNS wide, under CELL, the (WIDTH . HEIGHT) in pixels of a cell, each
+pixel ASPECT times as tall as wide: the band's height, never wider than the
+columns, never larger than the picture. NIL when none of the picture falls
+in the rows shown."
+  ;; A sixel's pixels are the screen's, square; a block cell's are its
+  ;; glyph's, square for half blocks and octants on a cell twice as tall as
+  ;; wide, a third taller than wide for sextants.
   (let* ((pixels (raster-entry-pixels entry))
          (w (pixels-width pixels))
          (h (pixels-height pixels))
          (cw (car cell))
          (ch (cdr cell))
          (th (min h (* rows ch)))
-         (tw (max 1 (min w (round (* w th) h)))))
+         (tw (round (* w th aspect) h)))
+    (when (> tw w)
+      (setf tw w
+            th (max 1 (min th (round h aspect)))))
+    (setf tw (max 1 tw))
     (when (> tw (* columns cw))
       (setf tw (* columns cw)
-            th (max 1 (min h (round (* h tw) w)))))
-    (let ((shape (list protocol tw th (effective-color-profile) (canvas-rgb))))
+            th (max 1 (min h (round (* h tw) (* w aspect))))))
+    (let ((shape (list protocol cell tw th (effective-color-profile) (canvas-rgb))))
       (unless (equal shape (raster-entry-shape entry))
         (let* ((small (shrink-pixels pixels tw th))
                (colors (nlt:raster-colors (pixels-data small) tw th (pixels-channels small)
@@ -128,11 +165,13 @@ picture. NIL when none of the picture falls in the rows shown."
               (multiple-value-bind (indices palette) (nlt:quantize-colors colors)
                 (setf (raster-entry-indices entry) indices
                       (raster-entry-palette entry) palette))
-              (let ((profile (effective-color-profile)))
+              (let* ((profile (effective-color-profile))
+                     (sgr (lambda (color foreground-p)
+                            (color-sgr (nlt:unpack-rgb color) foreground-p profile))))
                 (setf (raster-entry-grid entry)
-                      (nlt:half-block-grid colors tw th
-                                           (lambda (color foreground-p)
-                                             (color-sgr (nlt:unpack-rgb color) foreground-p profile))))))))
+                      (if (equal cell '(1 . 2))
+                          (nlt:half-block-grid colors tw th sgr)
+                          (nlt:mosaic-grid colors tw th sgr cell)))))))
       ;; The rows shown are cut out of the picture: a band scrolled partly
       ;; above the viewport, or running past its foot, draws what shows.
       (let* ((top (min th (* skip ch)))
@@ -150,8 +189,8 @@ picture. NIL when none of the picture falls in the rows shown."
                                (let ((grid (raster-entry-grid entry)))
                                  (nlt:make-terminal-image
                                   :protocol :blocks :width tw :height (- bottom top)
-                                  :columns tw :rows (ceiling (- bottom top) 2)
-                                  :data (subseq grid (floor top 2) (min (length grid) (ceiling bottom 2))))))))
+                                  :columns (ceiling tw cw) :rows (ceiling (- bottom top) ch)
+                                  :data (subseq grid (floor top ch) (min (length grid) (ceiling bottom ch))))))))
                 ;; A band scrolling into view asks for one cut a row: the last
                 ;; few are kept, never every one it passed through.
                 (setf (raster-entry-images entry)
@@ -182,10 +221,12 @@ or the cache is full."
        (when (raster-entry-p entry)
          ;; A picture that cannot be drawn is not tried again every frame.
          (handler-case
-             (raster-image entry protocol rows skip visible columns
-                           (if (eq protocol :sixel)
-                               (or (chat-model-cell-pixels model) *sixel-cell-pixels*)
-                               '(1 . 2)))
+             (if (eq protocol :sixel)
+                 (raster-image entry protocol rows skip visible columns
+                               (or (chat-model-cell-pixels model) *sixel-cell-pixels*))
+                 (let ((cell (block-cell model)))
+                   (raster-image entry protocol rows skip visible columns cell
+                                 (/ (* 2 (car cell)) (cdr cell)))))
            (error ()
              (setf (gethash key cache) :failed)
              nil)))))))

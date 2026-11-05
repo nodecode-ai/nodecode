@@ -58,10 +58,13 @@ once STREAM has ended."
                                     (round (* 255 (parse-integer hex :radix 16))
                                            (1- (expt 16 (length hex)))))
                                   (list r g b)))))
-                 ;; DCS: a DECRQSS SGR read-back keeping the probe's 1 2 3, or XTGETTCAP RGB.
+                 ;; DCS: a DECRQSS SGR read-back keeping the probe's 1 2 3, XTGETTCAP
+                 ;; RGB, or XTVERSION's name, which REQUEST-TERMINAL-ATTRIBUTES asks for.
                  ((char= char #\P)
                   (let ((payload (%read-until-st stream)))
-                    (cond ((and (search "$r" payload) (uiop:string-suffix-p payload "m"))
+                    (cond ((uiop:string-prefix-p ">|" payload)
+                           (make-terminal-version-msg :name (subseq payload 2)))
+                          ((and (search "$r" payload) (uiop:string-suffix-p payload "m"))
                            (make-truecolor-msg :ok-p (and (or (search ":1:2:3" payload)
                                                               (search ";1;2;3" payload))
                                                           t)))
