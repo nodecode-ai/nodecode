@@ -488,6 +488,10 @@ pid, open fds and job control carry over."
   ;; from: the refusal is the answer.
   #+win32 (declare (ignore argv))
   (mapc #'finish-output (list *standard-output* *error-output*))
+  ;; A launch walk's claim names this pid, which the successor keeps
+  ;; without the walk's thread: left, it would hold every session of the
+  ;; folder waiting on a walk that no longer runs (snapshot.lisp).
+  #-win32 (release-launch-walk-claims)
   #+win32 (format nil "exec ~a: not on Windows" (namestring path))
   #-win32
   (let ((file (namestring path)))
@@ -522,6 +526,21 @@ NIL) when this build has published nothing."
 process costs CPU, dead time a key walk's remaining
 reads hide behind."
   (spawn "sha256-warm" (ignore-errors (sha256-text "warm"))))
+
+(defun warm-the-boot-probes ()
+  "Settle on a thread what a first turn otherwise settles on its own path:
+the journal of the folder this process runs in, armed before its launch walk
+settles so the session's first capture can take that walk's tree with no git
+(ARM-WORKSPACE-JOURNAL), and the two git questions the image remembers the
+answer of -- whether git runs at all (GIT-AVAILABLE-P, the snapshot store's
+first check) and the layer's name (LAYER-NAME, git's user.name, read by the
+prompt's index)."
+  ;; Some 40 ms apiece where a process start is dear (Windows, 2026-11-05):
+  ;; asked behind the folder load, they are answered before a turn asks.
+  (spawn "boot-probes"
+    (ignore-errors (arm-workspace-journal (uiop:getcwd)))
+    (ignore-errors (git-available-p))
+    (ignore-errors (layer-name))))
 
 (defvar *warm-verification* nil
   "The thread checking a receipt-less image's folder key, or NIL.")
@@ -1013,6 +1032,8 @@ if this one dies before it serves."
      ;; build left — points back at this image's own folder, so the key
      ;; digests and the load compiles the cells this core shipped with.
      (warm-the-digest)
+     ;; Only where threads may start: a child forks after its boot.
+     (when spawn (warm-the-boot-probes))
      (nlk:note-boot-phase "refresh-start")
      (multiple-value-bind (refreshed failed retired)
          (handler-case (refresh-installed-cells) (error () (values nil nil nil)))
@@ -1077,7 +1098,12 @@ if this one dies before it serves."
        (when receipt (write-self-receipt key))
        (load-cells)
        (nlk:note-boot-phase "folder-loaded")
-       (refresh-shipped-cell-notice)
+       ;; Off the ready line's path where threads may start, as a warm image
+       ;; has it: the notice parses every .asd the release ships, a boot's
+       ;; 22 ms on Windows (2026-11-05).
+       (if spawn
+           (spawn "shipped-cell-notice" (ignore-errors (refresh-shipped-cell-notice)))
+           (refresh-shipped-cell-notice))
        ;; Bounded like AWAIT-WARM-VERIFICATION: a key that failed or ran over
        ;; is no builder this launch, and the keeper asks again in 5 s.
        (when keying

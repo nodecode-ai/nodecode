@@ -724,7 +724,7 @@ with the reason, and write the file afresh either way."
            (turn *current-durable-turn*)
            (path (context-file id))
            (record-path (context-record-file id)))
-      (when (and (probe-file path) (probe-file record-path))
+      (when (and (nlk:path-kind path) (nlk:path-kind record-path))
         (let ((text (uiop:read-file-string path :external-format :utf-8)))
           (multiple-value-bind (receipt rejected)
               (handler-case

@@ -76,6 +76,8 @@ and each TYPE are SB-ALIEN's, or SAP, INT or STR for the three most written."
      (access sb-win32::dword) (share sb-win32::dword) (security (* t))
      (disposition sb-win32::dword) (attributes sb-win32::dword) (template sb-win32::handle))
     ("FlushFileBuffers" %flush-file-buffers int (handle sb-win32::handle))
+    ("GetFileAttributesExW" %get-file-attributes-ex int (name sb-win32::system-string)
+     (level int) (data sap))
     ("GetFileType" %get-file-type sb-win32::dword (handle sb-win32::handle))
     ("SetStdHandle" %set-std-handle int (which sb-win32::dword) (handle sb-win32::handle))
     ("SetEnvironmentVariableW" %set-environment-variable int (name sb-win32::system-string)
@@ -335,11 +337,11 @@ environment; anything else unchanged."
   ;; found by, or PATH's own `git', answers as it did before.
   (let ((program (first argv)))
     (cond ((and *git-shell* (stringp program) (string-equal program (getf *git-shell* :program)))
-           (if (probe-file program)
+           (if (path-kind program)
                (values argv (git-redirector-environment *git-shell* (or environment (process-environment))))
                (values (cons (getf *git-shell* :redirector) (rest argv)) environment)))
           ((and *git-direct* (stringp program) (member program '("git" "git.exe") :test #'string-equal)
-                (probe-file (getf *git-direct* :program)))
+                (path-kind (getf *git-direct* :program)))
            (values (cons (getf *git-direct* :program) (rest argv))
                    (git-redirector-environment *git-direct* (or environment (process-environment)))))
           (t (values argv environment)))))
@@ -1666,6 +1668,54 @@ in this process: Windows ships tar but no gzip program. => TO."
   "The size of the file at PATH in bytes, or NIL when it cannot be opened."
   (ignore-errors (with-open-file (in path :element-type '(unsigned-byte 8)) (file-length in))))
 
+(defun path-metadata (path)
+  "(values KIND SIZE WRITE-DATE) from one look at what is at PATH: KIND
+:FILE, :DIRECTORY or :OTHER, the length in bytes, and when it was last
+written as a universal time, the answer FILE-WRITE-DATE gives; NIL when
+nothing is there."
+  ;; One metadata call where PROBE-FILE is a truename -- on Windows an open,
+  ;; a final-path query and a close, some 140 us against 30 (T-442). A link
+  ;; answers for what it points at, except on Windows, where it answers for
+  ;; itself.
+  #+win32
+  (let ((data (make-array 36 :element-type '(unsigned-byte 8))))
+    (sb-sys:with-pinned-objects (data)
+      ;; WIN32_FILE_ATTRIBUTE_DATA: attributes, three FILETIMEs (the last
+      ;; write at 20), the size's high then low half.
+      (unless (zerop (%get-file-attributes-ex (uiop:native-namestring path) 0 (sb-sys:vector-sap data)))
+        (flet ((dword (at) (logior (aref data at) (ash (aref data (+ at 1)) 8)
+                                   (ash (aref data (+ at 2)) 16) (ash (aref data (+ at 3)) 24))))
+          (values (if (logtest (dword 0) #x10) :directory :file) ; FILE_ATTRIBUTE_DIRECTORY
+                  (logior (ash (dword 28) 32) (dword 32))
+                  ;; FILETIME counts 100 ns from 1601; 1601 to 1900 is
+                  ;; 9435484800 seconds.
+                  (- (floor (logior (ash (dword 24) 32) (dword 20)) 10000000)
+                     9435484800))))))
+  #-win32
+  (multiple-value-bind (ok dev ino mode nlink uid gid rdev size atime mtime)
+      (sb-unix:unix-stat (uiop:native-namestring path))
+    (declare (ignore dev ino nlink uid gid rdev atime))
+    (when ok
+      (values (case (logand mode #o170000) (#o100000 :file) (#o040000 :directory) (t :other))
+              size (+ mtime 2208988800)))))
+
+(defun path-kind (path)
+  "What is at PATH -- :FILE, :DIRECTORY or :OTHER -- or NIL when nothing is,
+from one look at its metadata (PATH-METADATA): the existence probe for a
+path asked after on every step."
+  (values (path-metadata path)))
+
+(defun file-identity (path)
+  "(values SIZE WRITE-DATE) of the regular file at PATH from one look at its
+metadata -- its length in bytes and when it was last written, a universal
+time as FILE-WRITE-DATE answers it -- or NIL when no file is there."
+  ;; One call: PROBE-FILE, an open for the length and FILE-WRITE-DATE were
+  ;; three, some 400 us on Windows, for a config read every round (T-442).
+  ;; The write date stays the universal time the callers compare ages in
+  ;; (MODELS-CATALOG-TABLE's TTL).
+  (multiple-value-bind (kind size written) (path-metadata path)
+    (when (eq kind :file) (values size written))))
+
 (defun claim-file (path stale-seconds)
   "Create the file at PATH exclusively, this process's pid in it, as a claim
 another process honours: one there already is broken, once, when it is
@@ -1911,6 +1961,30 @@ to say."
 (defvar *file-limit* nil
   "What RAISE-FILE-LIMIT found and left: (:was SOFT :soft SOFT :hard HARD
 :cap CAP), NIL before it ran and on Windows.")
+
+(defun raise-timer-resolution ()
+  "Ask Windows to wake this process's waits to the millisecond. => T when
+it granted it, NIL where the platform needs no asking."
+  ;; Windows wakes a waiting thread on its timer tick, 15.6 ms unless a
+  ;; process asks for less: a (SLEEP 0.001) slept 15.8 ms on the Windows lane
+  ;; (2026-11-05), so every short poll here -- a launch waiting for its
+  ;; organism's endpoint, the shell's input loop, a store waiting out a launch
+  ;; walk -- and every short timeout ran at that tick. timeBeginPeriod(1)
+  ;; asks 1 ms, kept per process since Windows 10 2004 and let go at exit;
+  ;; the function is looked up, and winmm.dll loaded for it only when no
+  ;; library already in the process exports it. POSIX sleeps to the
+  ;; microsecond. Process-wide, which is why MAIN asks first.
+  #+win32
+  (with-handlers ((error () nil))
+    (let ((address (or (sb-sys:find-dynamic-foreign-symbol-address "timeBeginPeriod")
+                       (progn (sb-alien:load-shared-object "winmm.dll" :dont-save t)
+                              (sb-sys:find-dynamic-foreign-symbol-address "timeBeginPeriod")))))
+      (and address
+           (zerop (sb-alien:alien-funcall
+                   (sb-alien:sap-alien (sb-sys:int-sap address)
+                                       (function sb-alien:unsigned-int sb-alien:unsigned-int))
+                   1)))))
+  #-win32 nil)
 
 (defun raise-file-limit (&optional (cap +select-safe-descriptors+))
   "Raise this process's soft open-file limit toward its hard limit, to CAP at

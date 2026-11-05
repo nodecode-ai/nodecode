@@ -97,8 +97,11 @@ lives in the installer's layout -- <release-directory>/<label>/nodecode
 beside a `current' link, where the folder is the release's identity and the
 stamp inside the binary agrees with it for every published build -- else
 the build's own stamp."
+  ;; The layout is the one *INSTALLED-BUILD* found at start: every provider
+  ;; request's user agent asks, and a probe of the `current' link was a
+  ;; truename per request, some 140 us on Windows (T-442).
   (or nlk::*effective-version*
-      (and (installed-release-root) (car (last (pathname-directory (nlk:runtime-directory)))))
+      (and *installed-build* (car (last (pathname-directory (nlk:runtime-directory)))))
       (version-label *user-agent-version*)))
 
 (defun effective-version (&aux (label (effective-label)))
@@ -320,15 +323,6 @@ NIL: the poller leaves it be rather than refuse it again at every look.")
   "What the refusal of *REFUSED-RELEASE* said, for an update that asks for it
 again before the restart that runs it.")
 
-;;; dexador's Windows backend (WinHTTP) reads a whole body before it answers
-;;; -- "This obviously isn't streaming", its own note -- and a feed never
-;;; ends: every connection through it would time out. There the feed rides a
-;;; socket of the image's own (FEED-OPEN-SOCKET), which knows nothing of the
-;;; system's proxy, so the poller keeps a short fallback.
-(defun feed-streams-p ()
-  "Whether dexador can hold the release feed open itself."
-  (not (eq dex:*dexador-backend* :winhttp)))
-
 (nlk:define-section ("update")
   (:guide "How this organism hears of a release and takes it: auto applies one as it lands -- live where it can go live, else from the next restart; ask stages it and says so, for `nodecode update' to apply; off never looks.")
   ("mode" :choice :options '("auto" "ask" "off")
@@ -358,7 +352,7 @@ the release host and the feed's host unless it says otherwise."
          (feed (cond ((plusp (length feed)) feed) ((uiop:string-prefix-p "https://" url) url) (t "off"))))
     (values (or (getf settings :mode) (if *installed-build* "auto" "off"))
             (getf settings :channel)
-            (or (getf settings :check-minutes) (if (and (feed-streams-p) (string/= feed "off")) 360 30))
+            (or (getf settings :check-minutes) (if (string/= feed "off") 360 30))
             url feed)))
 
 (defun release-url ()
@@ -753,56 +747,12 @@ beside its /dl path, naming the pointer this platform reads."
           (ppcre:regex-replace "(.)/dl\\z" (string-right-trim "/" host) "\\1")
           channel (release-platform) cache-buster))
 
-(defun feed-open-socket (url &aux (uri (quri:uri url)) (host (quri:uri-host uri))
-                                   (tls (equal "https" (quri:uri-scheme uri))))
-  "GET URL over a socket of this image's own and answer its body as an octet
-stream, chunked transfer undone; signals when the answer is not a 200."
-  ;; TLS is cl+ssl's, which on Windows checks no certificate: it has no store
-  ;; to check one against (cl-plus-ssl#54). What this stream can say is a
-  ;; label, and a label only makes the box look: the pointer is then read
-  ;; over the system's own TLS and the release fetched and checked against
-  ;; its sha256 by the installer, so a forged label buys a look, never an
-  ;; install.
-  (let* ((socket (usocket:socket-connect host (or (quri:uri-port uri) (if tls 443 80))
-                                         :element-type '(unsigned-byte 8) :timeout 10))
-         (stream (usocket:socket-stream socket)))
-    (with-handlers ((error (condition) (ignore-errors (usocket:socket-close socket)) (error condition)))
-      (when tls
-        (setf stream (cl+ssl:make-ssl-client-stream stream :hostname host)))
-      (write-sequence
-       (sb-ext:string-to-octets
-        (format nil "GET ~a~@[?~a~] HTTP/1.1~C~CHost: ~a~C~CAccept: text/event-stream~C~CUser-Agent: nodecode~C~CConnection: close~C~C~C~C"
-                (or (quri:uri-path uri) "/") (quri:uri-query uri) #\Return #\Newline host
-                #\Return #\Newline #\Return #\Newline #\Return #\Newline #\Return #\Newline
-                #\Return #\Newline)
-        :external-format :latin-1)
-       stream)
-      (finish-output stream)
-      ;; The status line and the headers, a line at a time, to the blank one.
-      (flet ((header-line ()
-               (map 'string #'code-char (loop for byte = (read-byte stream nil nil)
-                                              until (or (null byte) (= byte 10))
-                                              unless (= byte 13) collect byte))))
-        (let ((status (header-line)))
-          (unless (search " 200" status)
-            (error "the feed answered ~a" (nlk:trimmed status)))
-          ;; Every header is read, to the blank line, whichever says chunked.
-          (if (plusp (loop for line = (string-downcase (header-line))
-                           until (zerop (length line))
-                           count (and (uiop:string-prefix-p "transfer-encoding:" line)
-                                      (search "chunked" line))))
-              (let ((body (chunga:make-chunked-stream stream)))
-                (setf (chunga:chunked-stream-input-chunking-p body) t)
-                body)
-              stream))))))
-
 (defun feed-open (url)
   "Open URL as an event stream => the stream, or (values NIL REASON)."
   ;; Binary on purpose. dexador's character stream reads ahead for a fill that
   ;; a quiet feed -- one label, then twenty seconds of ping -- never gives it,
   ;; and the reader sits on octets the socket already had. The octets stream
-  ;; answers with each one as it lands. Where dexador cannot stream at all
-  ;; (FEED-STREAMS-P) the image's own socket carries it.
+  ;; answers with each one as it lands.
   ;;
   ;; The headers are read under a deadline for the reason READ-EVENTS reads
   ;; each line under one: over TLS, dexador's :read-timeout bounds nothing.
@@ -810,12 +760,10 @@ stream, chunked transfer undone; signals when the answer is not a 200."
                     (values nil (format nil "no answer in ~a seconds" *feed-read-timeout*)))
                   (error (condition) (values nil (feed-failure-text condition url))))
     (values (nth-value 0 (sb-sys:with-deadline (:seconds *feed-read-timeout*)
-                           (if (feed-streams-p)
-                               (dex:get url :want-stream t :force-binary t
-                                            :proxy (nlk:proxy-for url)
-                                            :connect-timeout 10
-                                            :use-connection-pool nil)
-                               (feed-open-socket url))))
+                           (dex:get url :want-stream t :force-binary t
+                                        :proxy (nlk:proxy-for url)
+                                        :connect-timeout 10
+                                        :use-connection-pool nil)))
             nil)))
 
 (defun feed-note-label (payload &optional (poke *release-poke*) &aux (label (nlk:trimmed payload)))

@@ -167,9 +167,10 @@ SAVE-LISP-AND-DIE or fork."
          ;; WALK-CENSUS reads the lines `add --dry-run' prints: untranslated
          "LC_ALL=C")))
 
-(defun run-snapshot-git (store args &key (with-work-tree t) config)
+(defun run-snapshot-git (store args &key (with-work-tree t) config input)
   "Run one git plumbing call under the isolation prefix and a walltime bound;
-CONFIG, KEY=VALUE strings, rides this one call as -c options."
+CONFIG, KEY=VALUE strings, rides this one call as -c options, and INPUT, a
+string, is its stdin."
   ;; Returns stdout as a string; any exit but 0 signals the snapshot condition
   ;; taxonomy.
   ;;
@@ -188,6 +189,7 @@ CONFIG, KEY=VALUE strings, rides this one call as -c options."
                               (append (loop for setting in config collect "-c" collect setting)
                                       args))
                        :seconds +snapshot-git-timeout-seconds+
+                       :input input
                        :environment (snapshot-git-environment
                                      store :with-work-tree with-work-tree)
                        :directory (snapshot-store-workspace store))
@@ -342,28 +344,189 @@ environment names (SystemRoot, ProgramFiles, ProgramData on Windows)."
   ;; => (values SNAPSHOT-STORE-or-NIL unavailable-keyword-or-NIL). Never signals.
   (with-handlers ((snapshot-git-unavailable () (values nil :git-missing))
                   (error () (values nil :store-init-failed)))
-    (flet ((canonical (path)
-             (ignore-errors
-              (namestring (uiop:ensure-directory-pathname (truename path))))))
-      (let* ((root (uiop:ensure-directory-pathname workspace))
-             (canonical-root (canonical root)))
-        (cond
-          ((not (git-available-p)) (values nil :git-missing))
-          ((not (uiop:directory-exists-p root)) (values nil :store-init-failed))
-          ;; $HOME and a filesystem root are never a workspace to stage:
-          ;; refused before any git runs, and recorded as the reason. The
-          ;; account's home too, whatever $HOME this image was handed: a
-          ;; scratch $HOME does not make the real one a workspace. Nor is
-          ;; /tmp or a system folder (SYSTEM-DIRECTORY-P).
-          ((or (null canonical-root)
-               (equal canonical-root (canonical (user-homedir-pathname)))
-               (let ((account (account-home)))
-                 (and account (equal canonical-root (canonical account))))
-               ;; no directory, or the filesystem root alone
-               (null (rest (pathname-directory canonical-root)))
-               (system-directory-p canonical-root))
-           (values nil :workspace-too-large))
-          (t (open-snapshot-store root (snapshot-git-dir canonical-root) session-id)))))))
+    (let ((root (uiop:ensure-directory-pathname workspace)))
+      (cond
+        ((not (git-available-p)) (values nil :git-missing))
+        ((not (eq (path-kind root) :directory)) (values nil :store-init-failed))
+        (t (multiple-value-bind (canonical-root refusal) (workspace-standing root)
+             (if refusal
+                 (values nil refusal)
+                 (open-snapshot-store root (snapshot-git-dir canonical-root) session-id))))))))
+
+;;; A workspace's standing -- the folder it canonically is, or why it can be
+;;; none -- rests on truenames: its own, $HOME's, the account's, the temporary
+;;; folder's and, on Windows, each system folder's, every one a CreateFile and
+;;; a path query there (~100 us apiece, T-442). Every tool call asks; the
+;;; folders it compares stand still for the life of a process, so it is
+;;; decided once for each folder and each set of the names it is compared by.
+(define-side-table workspace-standings (:test #'equal :synchronized t)
+  "(WORKSPACE HOME ACCOUNT-HOME TEMPORARY . SYSTEM-FOLDERS) -> (CANONICAL-ROOT . REFUSAL).")
+
+(defun workspace-standing (root)
+  "(values CANONICAL-ROOT REFUSAL) for the existing folder ROOT: the one
+namestring its spellings share, or the reason it is no workspace to stage."
+  (let* ((key (list* (namestring root) (namestring (user-homedir-pathname)) (account-home)
+                     (namestring (uiop:temporary-directory))
+                     (mapcar #'uiop:getenv '("SystemRoot" "ProgramFiles" "ProgramFiles(x86)" "ProgramData"))))
+         (known (workspace-standings key)))
+    (if known
+        (values (car known) (cdr known))
+        (flet ((canonical (path) (canonical-workspace path)))
+          (let* ((canonical-root (canonical root))
+                 ;; $HOME and a filesystem root are never a workspace to stage:
+                 ;; refused before any git runs, and recorded as the reason. The
+                 ;; account's home too, whatever $HOME this image was handed: a
+                 ;; scratch $HOME does not make the real one a workspace. Nor is
+                 ;; /tmp or a system folder (SYSTEM-DIRECTORY-P).
+                 (refusal (when (or (null canonical-root)
+                                    (equal canonical-root (canonical (user-homedir-pathname)))
+                                    (let ((account (account-home)))
+                                      (and account (equal canonical-root (canonical account))))
+                                    ;; no directory, or the filesystem root alone
+                                    (null (rest (pathname-directory canonical-root)))
+                                    (system-directory-p canonical-root))
+                            :workspace-too-large)))
+            ;; A folder that would not resolve may yet: only an answer is kept.
+            (when canonical-root
+              (setf (workspace-standings key) (cons canonical-root refusal)))
+            (values canonical-root refusal))))))
+
+(defun canonical-workspace (path)
+  "PATH's directory as one namestring for every spelling of it, or NIL when
+it names none."
+  (ignore-errors
+   (namestring (uiop:ensure-directory-pathname (truename path)))))
+
+;;; --- the launch walk ------------------------------------------------------
+;;; A workspace's first walk stages every file: about 600 ms for 540 files on
+;;; Windows, where the first message of a session would otherwise wait on it
+;;; at its first tool call (T-442). A shell starting in a folder knows that
+;;; folder before anything else, so it walks it then, on a thread of its own,
+;;; into the store's launch index -- while the organism boots and the person
+;;; types. The session that follows seeds its index from that one
+;;; (SEED-SESSION-INDEX), and the tree it wrote rides beside it, so the
+;;; session's first capture is its census alone. The organism is another
+;;; process: the walk holds a claim file beside the store for as long as it
+;;; runs, and a store opened meanwhile waits for it rather than walk the same
+;;; tree a second time beside it.
+
+(defparameter +launch-session-id+ "launch"
+  "The session name of the launch walk's index: index-launch in the store.")
+
+(defvar *launch-walk-p* nil
+  "True on the thread of a launch walk, which never waits on its own claim.")
+
+(defvar *held-launch-claims* '()
+  "The launch walk claims this process holds, released before an exec: the
+pid in them is the successor's, whose walk thread is gone.")
+
+(define-side-table armed-workspace-journal (:test #'equal :synchronized t)
+  "Workspace root namestring -> (EPOCH . CLOCK): the epoch its journal stood
+at when ARM-WORKSPACE-JOURNAL opened it, and the JOURNAL-CLOCK read once it
+was armed. Live-only, as the journals are.")
+
+(defun drop-armed-workspace-journals ()
+  "Forget every arming: a dumped image holds none of this process's journals."
+  (clrhash *armed-workspace-journal*))
+
+(pushnew 'drop-armed-workspace-journals sb-ext:*save-hooks*)
+
+(defun arm-workspace-journal (directory)
+  "Open the journal of the workspace DIRECTORY now, ahead of its first
+capture, and keep the epoch and clock it was armed at: a launch walk another
+process settled after that clock is the workspace as it stands while the
+epoch holds (ADOPT-LAUNCH-TREE). => the epoch, or NIL where no journal can
+say. Never signals."
+  ;; The journal is the one every capture of DIRECTORY reads after (one per
+  ;; root namestring), its ignored paths read now: the home's snapshot
+  ;; storage when it sits in the workspace and already exists.
+  (with-handlers ((error () nil))
+    (when-let (canonical (canonical-workspace (uiop:ensure-directory-pathname directory)))
+      (let* ((root (namestring (uiop:ensure-directory-pathname directory)))
+             (probe (make-snapshot-store
+                     :workspace root
+                     :git-dir (string-right-trim "/" (namestring (snapshot-git-dir canonical)))))
+             (epoch (workspace-journal-epoch
+                     root :ignored (lambda () (ignore-errors (journal-ignored-paths probe)))))
+             (clock (and epoch (journal-clock))))
+        (when clock
+          (setf (armed-workspace-journal root) (cons epoch clock))
+          epoch)))))
+
+(defun release-launch-walk-claims ()
+  "Delete every launch walk claim this process holds."
+  (dolist (claim *held-launch-claims*)
+    (ignore-errors (delete-file claim)))
+  (setf *held-launch-claims* '()))
+
+(defun launch-walk-claim (git-dir)
+  "The claim file a launch walk of GIT-DIR's store holds: beside the store,
+which may not exist yet."
+  (concatenate 'string (string-right-trim "/\\" (namestring git-dir)) ".walking"))
+
+(defun launch-walk-live-p (claim)
+  "True while the launch walk holding CLAIM runs: the file stands, younger than
+the git bound, and names a live process."
+  (with-handlers ((error () nil))
+    (let ((date (file-write-date claim))
+          (pid (parse-integer (read-text claim) :junk-allowed t)))
+      (and date (< (- (get-universal-time) date) +snapshot-git-timeout-seconds+)
+           pid (pid-live-p pid)))))
+
+(defun await-launch-walk (git-dir)
+  "Return once no launch walk of GIT-DIR's store runs, within the git bound."
+  (let ((claim (launch-walk-claim git-dir))
+        (deadline (deadline-after +snapshot-git-timeout-seconds+)))
+    (loop while (and (probe-file claim) (launch-walk-live-p claim)
+                     (< (get-internal-real-time) deadline))
+          do (sleep 0.005))))
+
+(defun launch-tree-file (store)
+  "The file beside STORE's index naming the tree that index was walked to."
+  (concatenate 'string (snapshot-store-index-path store) ".tree"))
+
+(defun walk-at-launch (directory &aux claim)
+  "Walk DIRECTORY into its store's launch index and anchor the tree, under
+the store's launch claim. => the tree's sha, or NIL when DIRECTORY is no
+workspace or another launch walk holds the claim."
+  (when-let (root (canonical-workspace (uiop:ensure-directory-pathname directory)))
+    (setf claim (launch-walk-claim (snapshot-git-dir root)))
+    (ensure-directories-exist claim)
+    (when (claim-file claim +snapshot-git-timeout-seconds+)
+      (push claim *held-launch-claims*)
+      (unwind-protect
+           (let ((*launch-walk-p* t))
+             (when-let (store (ensure-snapshot-store directory +launch-session-id+))
+               (let* ((tree (capture-anchored-tree store "launch walk"))
+                      ;; Settled: the census after a first walk writes the
+                      ;; untracked cache into its index, and the tree that
+                      ;; rides beside the index is for the index as it then is.
+                      ;; A census git runs, never the journal's word that
+                      ;; nothing moved (Windows): that answers without one,
+                      ;; and the session's first capture would write the cache.
+                      ;; Its clock is read before the census looks: a journal
+                      ;; armed earlier saw every change the census missed.
+                      (clock (journal-clock))
+                      (settled (and tree
+                                    (progn (setf (quiet-trees store) nil)
+                                           (capture-workspace-tree store))))
+                      (digest (and (equal settled tree) (index-digest store)))
+                      (tip (anchor-tip-cache store)))
+                 (when (and tree digest)
+                   (with-output-file (out (launch-tree-file store))
+                     (format out "~a ~a ~a ~a~%" digest tree
+                             (if (equal (cdr tip) tree) (car tip) "-")
+                             (or clock "-"))))
+                 tree)))
+        (setf *held-launch-claims* (remove claim *held-launch-claims* :test #'equal))
+        (ignore-errors (delete-file claim))))))
+
+(defun prewarm-workspace (directory)
+  "Start the launch walk of DIRECTORY on a thread of its own. Never signals."
+  (with-handlers ((error () nil))
+    (spawn "workspace-launch-walk"
+      (with-handlers ((error () nil))
+        (walk-at-launch directory)))))
 
 (defun git-index-file-p (path)
   "True when PATH begins with DIRC, the signature git writes at the head of
@@ -409,24 +572,82 @@ newest index another session of the workspace left. => that index, or NIL."
                             nil))
             (uiop:copy-file source seed)
             (rename-file seed index)
+            (adopt-launch-tree store source)
             source))))))
+
+(defun adopt-launch-tree (store source)
+  "Take the tree a walk wrote beside SOURCE, the index STORE's was copied
+from, as the answer for STORE's index while it holds the same bytes; and its
+anchor as the tip, when this process knows none. Where this process armed
+the workspace's journal before that walk settled and nothing has moved since
+(ARM-WORKSPACE-JOURNAL), the tree is the workspace's as it stands: the
+session's first capture answers it with no git at all."
+  ;; The copy's digest is the source's: the tree answers for it until a
+  ;; staging moves it (CAPTURE-WORKSPACE-TREE), with no WRITE-TREE and no
+  ;; anchor resolve between the session's census and its first capture.
+  (with-handlers ((error () nil))
+    (let ((fields (uiop:split-string (string-trim '(#\Newline #\Return #\Space)
+                                                  (read-text (concatenate 'string (namestring source) ".tree")))
+                                     :separator " "))
+          (digest (index-digest store)))
+      (destructuring-bind (written tree &optional commit settled) fields
+        (when (and digest (equal written digest) (tree-sha-p tree))
+          (setf (index-trees store) (cons digest tree))
+          (when (and commit (tree-sha-p commit) (null (anchor-tip-cache store)))
+            (setf (anchor-tip-cache store) (cons commit tree)))
+          ;; Armed before the walk's census looked, and quiet since: every
+          ;; change after the arming moved the epoch, and every one before it
+          ;; is in what the census saw.
+          (let ((armed (armed-workspace-journal (snapshot-store-workspace store)))
+                (settled (and settled (parse-integer settled :junk-allowed t))))
+            (when (and armed settled (< (cdr armed) settled))
+              (let ((epoch (workspace-journal-epoch (snapshot-store-workspace store))))
+                (when (and epoch (eql epoch (car armed)))
+                  (setf (quiet-trees store) (list* epoch digest tree)))))))))))
+
+(define-side-table opened-snapshot-stores (:test #'equal :synchronized t)
+  "(INDEX-PATH . WORKSPACE) -> the store OPEN-SNAPSHOT-STORE opened there in
+this process: what opening it set up -- the store's init, its attributes and
+excludes, the session's seeded index -- holds until the store is gone, so a
+later open of it looks for the store and its index's lock alone.")
+
+(defun drop-opened-snapshot-stores ()
+  "Forget every opened store and every decided workspace: a dumped image
+holds none of this process's folders."
+  (clrhash *opened-snapshot-stores*)
+  (clrhash *workspace-standings*))
+
+(pushnew 'drop-opened-snapshot-stores sb-ext:*save-hooks*)
+
+(defun clear-stale-index-lock (store)
+  "Delete STORE's index lock when it is older than RUN-SNAPSHOT-GIT's
+walltime bound: a process that died mid-walk left it; a younger one may be
+a capture."
+  (let* ((lock (concatenate 'string (snapshot-store-index-path store) ".lock"))
+         (age (and (path-kind lock)
+                   (ignore-errors (- (get-universal-time) (file-write-date lock))))))
+    (when (and (integerp age) (> age +snapshot-git-timeout-seconds+))
+      (ignore-errors (delete-file lock)))))
 
 (defun open-snapshot-store (root git-dir session-id)
   "The store over the workspace ROOT kept in GIT-DIR, with SESSION-ID's index,
 initializing GIT-DIR when absent: ENSURE-SNAPSHOT-STORE's last step, past its
 refusals."
-  (let ((store (make-snapshot-store
-                :workspace (namestring root)
-                :git-dir (string-right-trim "/" (namestring git-dir))
-                :index-path (namestring
-                             (merge-pathnames (format nil "index-~a" session-id) git-dir)))))
-    ;; An index lock older than RUN-SNAPSHOT-GIT's walltime bound was left by
-    ;; a process that died mid-walk; a younger one may be a capture.
-    (let* ((lock (concatenate 'string (snapshot-store-index-path store) ".lock"))
-           (age (and (probe-file lock)
-                     (ignore-errors (- (get-universal-time) (file-write-date lock))))))
-      (when (and (integerp age) (> age +snapshot-git-timeout-seconds+))
-        (ignore-errors (delete-file lock))))
+  (let* ((store (make-snapshot-store
+                 :workspace (namestring root)
+                 :git-dir (string-right-trim "/" (namestring git-dir))
+                 :index-path (namestring
+                              (merge-pathnames (format nil "index-~a" session-id) git-dir))))
+         (key (cons (snapshot-store-index-path store) (snapshot-store-workspace store)))
+         (opened (opened-snapshot-stores key)))
+    (when (and opened (path-kind (snapshot-store-file opened "config")))
+      (clear-stale-index-lock opened)
+      (return-from open-snapshot-store (values opened nil)))
+    ;; A session with no index yet seeds it from the newest of the store's,
+    ;; and a launch walk of the folder still running is writing that one.
+    (unless (or *launch-walk-p* (probe-file (snapshot-store-index-path store)))
+      (await-launch-walk git-dir))
+    (clear-stale-index-lock store)
     (bt2:with-lock-held (*store-init-lock*)
       (unless (probe-file (snapshot-store-file store "config"))
         (ensure-directories-exist git-dir)
@@ -452,6 +673,7 @@ refusals."
       (bt2:with-lock-held ((capture-lock store))
         (run-snapshot-git store (list "--literal-pathspecs" "rm" "-r" "-f" "--cached" "--quiet"
                                       "--ignore-unmatch" "--" storage))))
+    (setf (opened-snapshot-stores key) store)
     (values store nil)))
 
 ;;; --- capture and anchor --------------------------------------------------
@@ -546,10 +768,11 @@ with no index yet, from `ls-files --others'."
           (when-let (path (census-path line))
             (push path paths))))))
 
-(defun check-walk-bound (store &aux (paths 0) (bytes 0))
+(defun check-walk-bound (store &aux (paths 0) (bytes 0) census)
   "Signal SNAPSHOT-WALK-TOO-LARGE when one walk of STORE would stage more than
 +SNAPSHOT-WALK-MAX-PATHS+ paths or +SNAPSHOT-WALK-MAX-BYTES+ bytes; else
-answer how many paths it would stage, 0 when the workspace matches the index."
+answer how many paths it would stage, 0 when the workspace matches the index,
+and the census that listed them."
   ;; What `add -A' writes a blob for: every untracked path and every tracked
   ;; one whose content moved, through the walk's own ignore rules and
   ;; exclusions. A warm index counts only what changed since its last walk; a
@@ -561,10 +784,11 @@ answer how many paths it would stage, 0 when the workspace matches the index."
                                        at most ~:d paths and ~:d bytes"
                                   (snapshot-store-workspace store) amount
                                   +snapshot-walk-max-paths+ +snapshot-walk-max-bytes+))))
-    (dolist (path (handler-case (walk-census store)
-                    (snapshot-output-too-large ()
-                      (too-large (format nil "~:d bytes of path names"
-                                         +snapshot-max-output-bytes+)))))
+    (setf census (handler-case (walk-census store)
+                   (snapshot-output-too-large ()
+                     (too-large (format nil "~:d bytes of path names"
+                                        +snapshot-max-output-bytes+)))))
+    (dolist (path census)
       (unless (zerop (length path))
         (incf paths)
         (incf bytes (entry-bytes (concatenate 'string (snapshot-store-workspace store) path)))
@@ -572,12 +796,13 @@ answer how many paths it would stage, 0 when the workspace matches the index."
           (too-large (format nil "~:d paths" +snapshot-walk-max-paths+)))
         (when (> bytes +snapshot-walk-max-bytes+)
           (too-large (format nil "~:d bytes" +snapshot-walk-max-bytes+)))))
-    paths))
+    (values paths census)))
 
 (defun stage-workspace (store)
   "Stage STORE's workspace into its session's index: one `add -A' past the
 walk bound and without the home's snapshot storage, or none when the census
-found nothing to stage. => true when it staged."
+found nothing to stage. => :PACKED when it staged into one pack, another
+true value when it staged loose objects, NIL when it staged nothing."
   ;; The census is the walk: WALK-CENSUS lists what `add -A' would change in
   ;; the index under the same ignore rules and pathspec -- untracked paths,
   ;; content and mode changes, deletions -- and more (a touched file), never
@@ -600,12 +825,245 @@ found nothing to stage. => true when it staged."
   ;; deflated at level 1, the level git gives a loose object: 540 files,
   ;; 23 MB, took 0.70 s at the default and 0.50 s at 1 on Windows, the pack
   ;; 5% larger.
-  (let ((paths (check-walk-bound store)))
-    (when (or (plusp paths) (not (probe-file (snapshot-store-index-path store))))
-      (run-snapshot-git store (list* "add" "-A" "--ignore-errors" (staging-pathspec store))
-                        :config (when (> paths +snapshot-packed-staging-paths+)
-                                  '("core.bigFileThreshold=1" "pack.compression=1")))
+  (multiple-value-bind (paths census) (check-walk-bound store)
+    (let ((fresh (not (probe-file (snapshot-store-index-path store)))))
+      (when (or (plusp paths) fresh)
+        (let ((packed (> paths +snapshot-packed-staging-paths+)))
+          (unless (and packed fresh (stage-in-parallel store census))
+            (run-snapshot-git store (list* "add" "-A" "--ignore-errors" (staging-pathspec store))
+                              :config (when packed
+                                        '("core.bigFileThreshold=1" "pack.compression=1"))))
+          (if packed :packed t))))))
+
+;;; --- a first walk in parallel ---------------------------------------------
+;;; One `add' reads, hashes and deflates every file of a first walk on one
+;;; core: 520 ms for 540 files on Windows, where opening a file costs what
+;;; the file system filter makes it cost (T-442). The census already lists
+;;; every path, so the walk is shared out: each part an `add' of its own into
+;;; an index of its own, the parts' entries then written as one index here.
+;;; An entry is the part's own -- stat data, mode, blob -- and one the part
+;;; may have stat'ed in the second its index was written is smudged, the
+;;; size git compares zeroed, as git itself smudges an entry its index could
+;;; not tell from a later write: the merged index is written later than any
+;;; part's, and would otherwise vouch for it.
+
+(defparameter +snapshot-staging-parts+ 4
+  "The most `add' processes one first walk is shared out to.")
+
+(defparameter +snapshot-paths-per-part+ 128
+  "The fewest paths a part of a first walk is given: fewer, and starting
+another git costs more than it shares.")
+
+(sb-alien:define-alien-routine ("EVP_sha1" %evp-sha1) sb-sys:system-area-pointer)
+
+(defun sha1-octets (octets)
+  "The SHA-1 of OCTETS, 20 bytes: the checksum an index file ends with."
+  (let ((digest (make-array 20 :element-type '(unsigned-byte 8))))
+    (sb-sys:with-pinned-objects (octets digest)
+      (unless (= 1 (%evp-digest (sb-sys:vector-sap octets) (length octets)
+                                (sb-sys:vector-sap digest) (sb-sys:int-sap 0)
+                                (%evp-sha1) (sb-sys:int-sap 0)))
+        (error "OpenSSL could not digest ~d bytes" (length octets))))
+    digest))
+
+(defun octets-u32 (octets at)
+  "The big-endian 32-bit word of OCTETS at AT."
+  (logior (ash (aref octets at) 24) (ash (aref octets (+ at 1)) 16)
+          (ash (aref octets (+ at 2)) 8) (aref octets (+ at 3))))
+
+(defun index-entries (path)
+  "The entries of the version 2 index at PATH, each its own octets -- stat
+data, mode, object, flags, name and padding -- in the index's order; NIL when
+the file is no version 2 index."
+  (let ((octets (file-octets path)))
+    (when (and octets (> (length octets) 32)
+               (equalp (subseq octets 0 4) #(68 73 82 67))
+               (= 2 (octets-u32 octets 4)))
+      (loop with at = 12
+            repeat (octets-u32 octets 8)
+            for name-length = (logand #xFFF (logior (ash (aref octets (+ at 60)) 8)
+                                                   (aref octets (+ at 61))))
+            for name-end = (if (< name-length #xFFF)
+                               (+ at 62 name-length)
+                               (position 0 octets :start (+ at 62)))
+            ;; 62 bytes and the name, NUL-padded to a multiple of 8, at least one NUL
+            for size = (* 8 (ceiling (1+ (- name-end at)) 8))
+            collect (subseq octets at (+ at size))
+            do (incf at size)))))
+
+(defun entry-name (entry)
+  "The name octets of one index ENTRY."
+  (subseq entry 62 (position 0 entry :start 62)))
+
+(defun octets< (a b)
+  "Whether octet vector A sorts before B, byte by byte, as git sorts names."
+  (let ((at (mismatch a b)))
+    (and at (or (= at (length a))
+                (and (< at (length b)) (< (aref a at) (aref b at)))))))
+
+(defun write-merged-index (path parts)
+  "Write at PATH one version 2 index of the entries of the index files PARTS,
+by name, entries racy against their part smudged. => true when written."
+  (let ((entries '()))
+    (dolist (part parts)
+      (let ((written (- (file-write-date part) +unix-epoch+))
+            (own (index-entries part)))
+        (unless own (return-from write-merged-index nil))
+        (dolist (entry own)
+          ;; mtime seconds at 8; the size git compares at 36
+          (when (>= (octets-u32 entry 8) written)
+            (fill entry 0 :start 36 :end 40))
+          (push (cons (entry-name entry) entry) entries))))
+    (setf entries (sort entries #'octets< :key #'car))
+    (let* ((size (+ 12 (reduce #'+ entries :key (lambda (entry) (length (cdr entry)))) 20))
+           (octets (make-array size :element-type '(unsigned-byte 8)))
+           (at 12))
+      (replace octets #(68 73 82 67 0 0 0 2))
+      (loop for shift from 24 downto 0 by 8 for i from 8
+            do (setf (aref octets i) (ldb (byte 8 shift) (length entries))))
+      (dolist (entry entries)
+        (replace octets (cdr entry) :start1 at)
+        (incf at (length (cdr entry))))
+      (replace octets (sha1-octets (subseq octets 0 at)) :start1 at)
+      ;; No dot added: RENAME-FILE would carry a type the target lacks onto it.
+      (let ((staged (concatenate 'string path "-merged")))
+        (with-open-file (out staged :direction :output :element-type '(unsigned-byte 8)
+                                    :if-exists :supersede)
+          (write-sequence octets out))
+        (rename-file staged path))
       t)))
+
+(defun stage-in-parallel (store census)
+  "Stage the paths of CENSUS, a first walk's, into STORE's new index through
+as many `add' processes as +SNAPSHOT-STAGING-PARTS+ allows, each a share of
+them into an index of its own, then those indexes as STORE's. => true when
+staged; NIL, and nothing left behind, when any part failed."
+  (let* ((index (snapshot-store-index-path store))
+         (count (min +snapshot-staging-parts+
+                     (max 1 (floor (length census) +snapshot-paths-per-part+))))
+         (shares (make-array count :initial-element '()))
+         (parts (loop for k below count collect (format nil "~a.part~d" index k)))
+         (failed nil))
+    (when (< count 2)
+      (return-from stage-in-parallel nil))
+    (loop for path in census for k from 0
+          do (push path (aref shares (mod k count))))
+    (unwind-protect
+         (let ((threads
+                 (loop for part in parts for k from 0
+                       collect (let ((part part)
+                                     (listing (concatenate 'string part ".paths"))
+                                     (share (aref shares k)))
+                                 (with-open-file (out listing :direction :output
+                                                              :external-format :utf-8
+                                                              :if-exists :supersede)
+                                   (dolist (path share)
+                                     (write-string path out) (write-char (code-char 0) out)))
+                                 (bt2:make-thread
+                                  (lambda ()
+                                    (handler-case
+                                        (run-snapshot-git
+                                         (make-snapshot-store
+                                          :workspace (snapshot-store-workspace store)
+                                          :git-dir (snapshot-store-git-dir store)
+                                          :index-path part)
+                                         (list "--literal-pathspecs" "add" "--ignore-errors"
+                                               (concatenate 'string "--pathspec-from-file=" listing)
+                                               "--pathspec-file-nul")
+                                         :config '("core.bigFileThreshold=1" "pack.compression=1"
+                                                   "index.version=2"))
+                                      (error () (setf failed t))))
+                                  :name "snapshot-staging-part")))))
+           (mapc #'bt2:join-thread threads)
+           (and (not failed)
+                (every #'probe-file parts)
+                (with-handlers ((error () nil))
+                  (write-merged-index index parts))))
+      (dolist (part parts)
+        (ignore-errors (delete-file part))
+        (ignore-errors (delete-file (concatenate 'string part ".paths")))))))
+
+(defun fast-import-path (path)
+  "PATH as a `fast-import' file command names it: as it is, or C-quoted when
+it holds a newline or opens with a double quote."
+  (if (or (find #\Newline path) (find #\Return path)
+          (and (plusp (length path)) (char= (char path 0) #\")))
+      (with-output-to-string (out)
+        (write-char #\" out)
+        (loop for char across path
+              do (case char
+                   (#\" (write-string "\\\"" out))
+                   (#\\ (write-string "\\\\" out))
+                   (#\Newline (write-string "\\n" out))
+                   (#\Return (write-string "\\r" out))
+                   (t (write-char char out))))
+        (write-char #\" out))
+      path))
+
+(defun anchor-ref-present-p (store)
+  "True when STORE's git directory holds the anchor ref, loose or packed:
+read from the files, no git started."
+  (or (probe-file (snapshot-store-file store +snapshot-anchor-ref+))
+      (with-handlers ((error () nil))
+        (let ((packed (snapshot-store-file store "packed-refs")))
+          (and (probe-file packed)
+               (search (concatenate 'string " " +snapshot-anchor-ref+ (string #\Newline))
+                       (read-text packed)))))))
+
+(defun write-packed-tree (store message)
+  "Write the trees of STORE's index and an anchor commit of its root under
+MESSAGE into one pack, through one `fast-import'. => the root tree's sha, or
+NIL when the index holds what this writer leaves to WRITE-TREE or the import
+failed."
+  ;; WRITE-TREE writes each tree as a loose object, and on Windows a loose
+  ;; object costs some 3.5 ms (its temporary file, the rename, the scan the
+  ;; file system filter gives every new file): the 54 trees of a 540-file
+  ;; workspace's first walk took 200 ms there, the anchor's COMMIT-TREE and
+  ;; UPDATE-REF 75 ms more, where one import of the index's listing writes
+  ;; trees and commit into one pack and moves the ref in 50 ms (T-442).
+  ;; unpackLimit=0 keeps the pack: under 100 objects the import would
+  ;; explode it into loose objects again. The ref's tip as the import reads
+  ;; it (FROM REF^0, which an absent ref has none of) is the commit's parent,
+  ;; and an import that finds the ref moved past that tip by its end leaves
+  ;; it -- the compare-and-swap ANCHOR-TREE makes -- and fails, which the
+  ;; caller answers by WRITE-TREE over trees this import already packed.
+  ;; DELETEALL: the tree is the index's alone, never the tip's with the index
+  ;; laid over it.
+  (with-handlers ((snapshot-git-failed () (forget-anchor-tip-cache store) nil))
+    (let ((listing (run-snapshot-git store (list "ls-files" "-s" "-z"))))
+      (when (find (code-char #xFFFD) listing)
+        ;; A path git printed in bytes this image could not decode: the
+        ;; import would name another path.
+        (return-from write-packed-tree nil))
+      (let ((input
+              (with-output-to-string (out)
+                (format out "commit ~a~%mark :1~%committer nodecode <nodecode@localhost> ~d +0000~%data ~d~%~a~%~@[from ~a^0~%~]deleteall~%"
+                        +snapshot-anchor-ref+ (unix-now)
+                        (length (sb-ext:string-to-octets message :external-format :utf-8))
+                        message (and (anchor-ref-present-p store) +snapshot-anchor-ref+))
+                (dolist (record (uiop:split-string listing :separator (string (code-char 0))))
+                  (unless (zerop (length record))
+                    (let* ((tab (position #\Tab record))
+                           (head (and tab (uiop:split-string (subseq record 0 tab) :separator " "))))
+                      ;; MODE SHA STAGE: a conflicted entry (stage past 0) has
+                      ;; no tree of its own to write.
+                      (unless (and head (= 3 (length head)) (equal (third head) "0"))
+                        (return-from write-packed-tree nil))
+                      (format out "M ~a ~a ~a~%" (first head) (second head)
+                              (fast-import-path (subseq record (1+ tab)))))))
+                (format out "~%ls :1 \"\"~%get-mark :1~%done~%"))))
+        (let* ((answer (lines (run-snapshot-git store (list "fast-import" "--quiet" "--done"
+                                                            "--cat-blob-fd=1")
+                                                :config '("fastimport.unpackLimit=0")
+                                                :input input)))
+               (root (first answer))
+               (tab (and root (position #\Tab root)))
+               (fields (and tab (uiop:split-string (subseq root 0 tab) :separator " ")))
+               (tree (third fields))
+               (commit (second answer)))
+          (when (and (equal (second fields) "tree") (tree-sha-p tree) (tree-sha-p commit))
+            (setf (anchor-tip-cache store) (cons commit tree))
+            tree))))))
 
 (define-side-table quiet-trees (:test #'equal :synchronized t :key snapshot-store-index-path)
   "index path -> (EPOCH DIGEST . TREE-SHA): the tree the walk of that index
@@ -619,8 +1077,13 @@ storage when it sits inside the workspace, as a relative Windows path."
     (unless (equal storage ".")
       (list (substitute #\\ #\/ (string-right-trim "/" storage))))))
 
+(defvar *walk-anchor-message* "workspace walk"
+  "The message a walk that packs its trees anchors them under: the label of
+the CAPTURE-ANCHORED-TREE it runs for.")
+
 (defun capture-workspace-tree (store)
-  "Stage the whole workspace and return its tree sha."
+  "Stage the whole workspace and return its tree sha. A staging that packs its
+objects anchors the tree as it writes it, under *WALK-ANCHOR-MESSAGE*."
   ;; An unchanged workspace
   ;; yields the previous sha, so no-op captures allocate nothing — and an index
   ;; the staging left untouched answers from the written-tree cache, without the
@@ -643,11 +1106,18 @@ storage when it sits inside the workspace, as a relative Windows path."
       (if (and epoch quiet (eql epoch (first quiet))
                (equal (second quiet) (index-digest store)))
           (cddr quiet)
-          (progn
-            (stage-workspace store)
+          (let ((staged (stage-workspace store)))
             (let* ((digest (index-digest store))
                    (entry (and digest (index-trees store)))
                    (tree (or (and (equal (car entry) digest) (cdr entry))
+                             ;; A staging past +SNAPSHOT-PACKED-STAGING-PATHS+
+                             ;; packs its trees too, and anchors them: the
+                             ;; import leaves the index without a cache tree,
+                             ;; so DIGEST, the index as staged, answers for it.
+                             (when-let (tree (and digest (eq staged :packed)
+                                                  (write-packed-tree store *walk-anchor-message*)))
+                               (setf (index-trees store) (cons digest tree))
+                               tree)
                              (let ((tree (validate-tree-sha (git-line store (list "write-tree")))))
                                ;; Read the digest again: WRITE-TREE records the tree it
                                ;; wrote in the index as its cache tree, so the content
@@ -722,7 +1192,8 @@ ref did not exist at resolve time.")
   (if-let (refusal (capture-refusal store))
     (values nil refusal)
     (handler-case
-        (let ((tree-sha (capture-workspace-tree store)))
+        (let ((tree-sha (let ((*walk-anchor-message* message))
+                          (capture-workspace-tree store))))
           (anchor-tree store tree-sha message)
           (values tree-sha nil))
       (snapshot-walk-too-large (condition)
@@ -1072,16 +1543,31 @@ guarded by the parallel EXPECTED sha list."
                                :occurred-at occurred-at)
           checkpoint-id))
 
+(define-side-table capture-counts (:test #'equal :synchronized t :key snapshot-store-git-dir)
+  "Git dir -> anchoring captures since the store's last repack, as this
+process counts them: read from the store's capture-count once, written back
+every +CAPTURE-COUNT-STRIDE+.")
+
+(defparameter +capture-count-stride+ 8
+  "How many captures pass between writes of a store's capture-count: a file
+read and written at every tool call was two opens and a directory check on
+its round, 0.5 ms of each on Windows (T-442); a process that dies loses at
+most this many toward the next repack.")
+
 (defun note-anchoring-capture (store)
   "Count one anchoring capture toward the repack cadence: a repack every 64,
 off the provider path; a held repack lock skips this one."
-  (let* ((count (1+ (or (ignore-errors
-                         (parse-integer
-                          (read-text (snapshot-store-file store "capture-count"))
-                          :junk-allowed t))
-                        0)))
+  (let* ((count (sb-ext:with-locked-hash-table (*capture-counts*)
+                  (setf (capture-counts store)
+                        (1+ (or (capture-counts store)
+                                (ignore-errors
+                                 (parse-integer
+                                  (read-text (snapshot-store-file store "capture-count"))
+                                  :junk-allowed t))
+                                0)))))
          (repack (and (>= count 64) (acquire-repack-lock store))))
-    (when (or repack (< count 64))
+    (when repack (setf (capture-counts store) 0))
+    (when (or repack (and (< count 64) (zerop (mod count +capture-count-stride+))))
       (ignore-errors
         (with-output-file (stream (snapshot-store-file store "capture-count"))
           (format stream "~a~%" (if repack 0 count)))))

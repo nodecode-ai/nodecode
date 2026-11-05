@@ -1049,6 +1049,9 @@ condition's report, exit 1."
   ;; Room for descriptors: macOS starts a process at 256 open files
   ;; (os.lisp, RAISE-FILE-LIMIT), inherited by every child spawned after.
   (nlk::raise-file-limit)
+  ;; And waits woken to the millisecond, not Windows' 15.6 ms tick
+  ;; (os.lisp, RAISE-TIMER-RESOLUTION).
+  (nlk::raise-timer-resolution)
   ;; The gc.lisp collection policy, here, not in the boot ladder, so every
   ;; entry gets it -- the nursery once the arguments say which process this
   ;; is, below. The heap as a whole: garbage past a slack earns a full walk
@@ -1191,7 +1194,10 @@ condition's report, exit 1."
           (:add (answer-and-quit (call-saying-waits (lambda () (add-text (second child))))
                   (gateway-http-error (refusal)
                     (values (gateway-http-error-detail refusal) 1 :error))))
-          (:rpc (rpc-main (second child) (third child) store-path))
+          ;; The program's session works in this folder: its first walk
+          ;; starts now, beside the organism's boot (PREWARM-WORKSPACE).
+          (:rpc (nlk:prewarm-workspace (uiop:getcwd))
+                (rpc-main (second child) (third child) store-path))
           (:trial nil)))
       ;; The folder loads in EVERY process before anything else runs:
       ;; the owner, an attached TUI, a headless serve
@@ -1232,6 +1238,10 @@ condition's report, exit 1."
                         ;; the operator chose to boot (images.lisp).
                         (follow-restore-pointer)
                         (nlk::hand-over-to-published-image)
+                        ;; The shell's session works in this folder: its first
+                        ;; walk starts now, while the organism boots and the
+                        ;; operator types (PREWARM-WORKSPACE).
+                        (nlk:prewarm-workspace (uiop:getcwd))
                         (attach-or-own-organism :session-id session-id
                                                 :store-path store-path
                                                 :setup setup

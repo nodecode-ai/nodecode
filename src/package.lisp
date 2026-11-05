@@ -155,7 +155,7 @@ renderer, the program loop.")
    #:*wait-deadline* #:wait-seconds #:wait-deadline-passed-p #:wait-deadline-reason #:with-wait-deadline #:call-with-wait-deadline
    #:call-with-lock-in-time
    #:*wait-hook* #:with-named-wait
-   #:file-locked-p #:unlock-file #:folder-lock-path #:lock-folder #:unlock-folder #:file-bytes
+   #:file-locked-p #:unlock-file #:folder-lock-path #:lock-folder #:unlock-folder #:file-bytes #:file-identity #:path-kind
    #:with-folder-lock #:replace-file #:gzip-file #:random-bytes #:with-output-file
    #:call-with-severed-stdio
    ;; --- reaching a peer by name (dial.lisp) ---
@@ -368,7 +368,7 @@ renderer, the program loop.")
    #:turn-chain-depth #:session-log-cursor
    #:defer-turn-fact #:settle-turn-facts
    ;; --- workspace snapshots (snapshot.lisp) ---
-   #:ensure-snapshot-store #:git-available-p #:capture-workspace-tree
+   #:ensure-snapshot-store #:git-available-p #:capture-workspace-tree #:prewarm-workspace
    #:open-workspace-bracket #:close-workspace-bracket #:workspace-diff-document
    #:anchor-tree #:changed-paths #:restore-paths #:hash-in-tree #:repack-store
    #:record-workspace-capture #:checkpoint-capture-boundary

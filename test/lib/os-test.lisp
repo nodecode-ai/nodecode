@@ -913,3 +913,34 @@ five seconds on a thread of its own."
       (sleep 0.2)
       (is (eq :ran (nlk:interrupt-thread-safely thread (lambda () (throw 'stopped :stopped)))))
       (is (eq :stopped (nlk::%join-bounded thread 5)) "and unwound it out of its wait"))))
+
+(deftest file-identity-is-a-files-size-and-stamp-from-one-look ()
+  ;; What a memo of a file's parse is keyed by (READ-JSON-FILE-MEMO): one
+  ;; metadata call where PROBE-FILE, an open and FILE-WRITE-DATE were three.
+  (let* ((dir (uiop:ensure-directory-pathname (merge-pathnames (format nil "identity-~d/" (random 1000000)) (uiop:temporary-directory))))
+         (file (merge-pathnames "a.json" dir)))
+    (ensure-directories-exist dir)
+    (nlk:with-cleanup ((uiop:delete-directory-tree dir :validate t :if-does-not-exist :ignore))
+      (is (null (nlk:file-identity file)) "no file, no identity")
+      (is (null (nlk:file-identity dir)) "a folder is no file")
+      (with-open-file (o file :direction :output) (write-string "{\"a\":1}" o))
+      (multiple-value-bind (size stamp) (nlk:file-identity file)
+        (is (eql 7 size) "its length in bytes")
+        (is (< (abs (- stamp (get-universal-time))) 120) "and when it was written, a universal time")
+        (with-open-file (o file :direction :output :if-exists :supersede) (write-string "{\"a\":12}" o))
+        (is (eql 8 (nlk:file-identity file)) "a rewrite moves it")))))
+
+(deftest path-kind-tells-a-file-from-a-folder-from-nothing ()
+  ;; The existence probe of the paths a step asks after (an opened snapshot
+  ;; store's config, a workspace folder): one metadata look, where PROBE-FILE
+  ;; resolves a truename.
+  (let* ((dir (uiop:ensure-directory-pathname (merge-pathnames (format nil "kind-~d/" (random 1000000)) (uiop:temporary-directory))))
+         (file (merge-pathnames "a.txt" dir)))
+    (is (null (nlk:path-kind dir)) "nothing there yet")
+    (ensure-directories-exist dir)
+    (nlk:with-cleanup ((uiop:delete-directory-tree dir :validate t :if-does-not-exist :ignore))
+      (is (eq :directory (nlk:path-kind dir)) "a folder, named as one")
+      (is (eq :directory (nlk:path-kind (string-right-trim "/\\" (uiop:native-namestring dir)))) "or as a file name")
+      (is (null (nlk:path-kind file)) "no file")
+      (with-open-file (o file :direction :output) (write-string "x" o))
+      (is (eq :file (nlk:path-kind file)) "a file"))))
