@@ -3408,7 +3408,7 @@ look at the fetch while it is still in flight. => (values URL THREAD)."
 (defun age-file (path seconds)
   "Set PATH's mtime SECONDS into the past."
   (let ((then (- (get-universal-time) (encode-universal-time 0 0 0 1 1 1970 0) seconds)))
-    (sb-posix:utimes path then then)))
+    (set-file-times path then)))
 
 (defvar *memo-raced* nil
   "The memo READERS-THAT-MISS-A-JSON-MEMO-TOGETHER-PARSE-IT-ONCE races on: a

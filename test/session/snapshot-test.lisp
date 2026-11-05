@@ -142,7 +142,7 @@ completed once BODY is done."
   ;; turns over, and the pair runs while it does. Age the file and the
   ;; settled workspace — what a turn spends most of its calls in — is what
   ;; this gate reads.
-  (sb-posix:utimes (namestring (merge-pathnames "a.txt" dir)) 0 0)
+  (set-file-times (merge-pathnames "a.txt" dir) 0)
   (let ((first-sha (nlk:capture-workspace-tree store)))
     (is (= 40 (length first-sha)) "the first capture writes a tree")
     (nlk:bind (((asked second-sha) (git-asked (nlk:capture-workspace-tree store))))
@@ -262,7 +262,7 @@ completed once BODY is done."
   ;; those two listings and no `add -A' -- the walk a Windows step paid
   ;; twice over (T-442). Whatever the census does find still stages: a
   ;; deletion, a new file, an edit. A touch moves no content and so no tree.
-  (flet ((age (name) (sb-posix:utimes (namestring (merge-pathnames name dir)) 0 0))
+  (flet ((age (name) (set-file-times (merge-pathnames name dir) 0))
          (tree-paths (sha)
            (sort (remove "" (uiop:split-string (nlk::run-snapshot-git store (list "ls-tree" "-r" "--name-only" sha))
                                                 :separator '(#\Newline))
@@ -286,7 +286,7 @@ completed once BODY is done."
       (%write-file dir "it's 'quoted'.txt" "four")
       (let ((added (nlk:capture-workspace-tree store)))
         (is (equal '("a.txt" "c.txt" "it's 'quoted'.txt") (tree-paths added)) "new files stage, quotes in a name too")
-        (sb-posix:utimes (namestring (merge-pathnames "c.txt" dir)) 1000 1000)
+        (set-file-times (merge-pathnames "c.txt" dir) 1000)
         (is (equal added (nlk:capture-workspace-tree store)) "a touch keeps the tree")
         (%write-file dir "a.txt" "uno")
         (is (not (equal added (nlk:capture-workspace-tree store))) "an edit of the same length stages")))))
@@ -352,7 +352,7 @@ completed once BODY is done."
   (when (nlk:git-available-p)
     (let* ((store (nlk:ensure-snapshot-store (namestring dir) "exclude"))
            (exclude (%store-file store "info/exclude")))
-      (sb-posix:utimes (namestring exclude) 1000 1000)
+      (set-file-times exclude 1000)
       (nlk:ensure-snapshot-store (namestring dir) "exclude")
       (is (= 1000 (sb-posix:stat-mtime (sb-posix:stat (namestring exclude)))) "an unchanged exclude file is not written")
       (with-open-file (o exclude :direction :output :if-exists :supersede) (write-line "stale" o))
@@ -625,7 +625,7 @@ completed once BODY is done."
     (write-temp-file lock-path (format nil "99999~%"))
     (is (null (nlk::acquire-repack-lock store)))
     ;; A stale lock (older than the horizon) is broken and retaken.
-    (sb-posix:utimes (namestring lock-path) 0 0)
+    (set-file-times lock-path 0)
     (is (nlk::acquire-repack-lock store))
     (ignore-errors (delete-file lock-path))))
 
@@ -767,7 +767,7 @@ completed once BODY is done."
     (is (probe-file lock) "a young lock may be a running capture's: left alone")
     #-win32
     (let ((stale (- (nlk:unix-now) nlk::+snapshot-git-timeout-seconds+ 120)))
-      (sb-posix:utime lock stale stale)
+      (set-file-times lock stale)
       (nlk:ensure-snapshot-store (namestring dir) "locked")
       (is (null (probe-file lock)) "a lock older than the git bound is swept")
       (%write-file dir "a.txt" "one")
