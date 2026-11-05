@@ -33,7 +33,7 @@ more. => (values URL V1 HEAD), URL its file:// address."
   (import-write repo "SKILL.md"
                 (format nil "---~%name: root-skill~%description: The first root skill.~%---~%Say where it sits.~%"))
   (import-write repo ".mcp.json"
-                "{\"mcpServers\": {\"probe-srv\": {\"command\": \"git\", \"args\": [\"${CLAUDE_PLUGIN_ROOT}/bin/serve.sh\", \"--quiet\"]}}}")
+                "{\"mcpServers\": {\"probe-srv\": {\"command\": \"sh\", \"args\": [\"${CLAUDE_PLUGIN_ROOT}/bin/serve.sh\", \"--quiet\"]}}}")
   (import-write repo "CLAUDE.md" (format nil "Maintainers: run make test before each push.~%"))
   (import-write repo "memory/notes.md" (format nil "The maintainers prefer tabs.~%"))
   (fixture-git repo "init" "--quiet" "--initial-branch=main")
