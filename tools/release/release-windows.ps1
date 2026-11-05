@@ -153,6 +153,16 @@ Set-Location $tree
   # reads it whole too: printed as UTF-16 code units, numbers no console code
   # page can bend.
   if ((Trial '(let ((want (map (quote string) (function code-char) (list 74 252 114 103 101 110 45 26085)))) (if (and (member (format nil "NODECODE_SMOKE_WIDE=~a" want) (nlk:process-environment) :test (function equal)) (equal "74 252 114 103 101 110 45 26085" (string-trim (list #\Return #\Newline #\Space) (nlk:run-bounded (list "powershell" "-NoProfile" "-Command" "[string]::Join('' '', [int[]][char[]]$env:NODECODE_SMOKE_WIDE_CHILD)") :seconds 30 :environment (list (format nil "NODECODE_SMOKE_WIDE_CHILD=~a" want)))))) 1 0))') -ne '1') { throw 'a non-ASCII environment value, read or handed on' }
+  # A child inherits the three standard handles it is given and nothing else of
+  # the image's: here a pipe end left inheritable, as RUN-PROGRAM leaves one for
+  # a spawn running beside this one, is closed by the image, and the read end
+  # sees end of file at once. Before the handle list the child kept it open, so
+  # a drain waited on it for as long as the child lived (2026-11-05).
+  if ((Trial '(multiple-value-bind (r w) (sb-unix:unix-pipe) (setf (sb-win32::inheritable-handle-p w) t) (multiple-value-bind (pid out) (nlk:spawn-program (list "powershell" "-NoProfile" "-Command" "Start-Sleep 15") :output :stream :error-output nil) (declare (ignore out)) (sb-unix:unix-close w) (let* ((s (sb-sys:make-fd-stream r :input t)) (th (sb-thread:make-thread (lambda () (read-char s nil :eof)))) (v (sb-thread:join-thread th :default :blocked :timeout 5))) (nlk:kill-tree pid) (sb-thread:join-thread th :default nil :timeout 5) (if (eq v :eof) 1 0))))') -ne '1') { throw 'a child inherits only its standard handles' }
+  # A grandchild that keeps run-bounded's pipes past its parent's exit costs the
+  # bounded drain, never a close that waits on the grandchild: a Windows close
+  # under a parked read waits, and every other close in the image behind it.
+  if ((Trial '(let ((t0 (get-internal-real-time))) (nlk:run-bounded (list "cmd" "/c" "start /b powershell -NoProfile -Command Start-Sleep 40") :seconds 30) (if (< (- (get-internal-real-time) t0) (* 20 internal-time-units-per-second)) 1 0))') -ne '1') { throw 'run-bounded closes no pipe under a parked drain' }
   # The idle release on Windows is a working-set trim: the working set is read,
   # and the policy's release shrinks it.
   if ((Trial '(let ((before (nlk:resident-bytes))) (if (and (integerp before) (eq t (nlk::release-image-pages)) (< (nlk:resident-bytes) before)) 1 0))') -ne '1') { throw 'working-set trim' }
