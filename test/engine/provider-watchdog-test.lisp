@@ -90,11 +90,14 @@ a word."
                                                      (make-string 130 :initial-element #\-))))
                              (last-chunk (format nil "data: [DONE]~%~%")))
                            (when (eq mode :paced)
-                             ;; one 20-byte data: line, flushed, then a
-                             ;; second's silence before the next
+                             ;; one 20-byte data: line, flushed, then
+                             ;; silence before the next -- well inside the
+                             ;; walk's one-second idle cut, which a sleep
+                             ;; of a whole second raced on Windows' coarse
+                             ;; timer
                              (chunk (format nil "data: {\"n\": 1234567}~%~%"))
                              (setf *paced-flush-at* (get-internal-real-time))
-                             (sleep 1)
+                             (sleep 0.6)
                              (chunk (format nil "data: {\"n\": 2}~%~%"))
                              (last-chunk (format nil "data: [DONE]~%~%")))
                            (flet ((word () (chunk (chat-delta-line "hi")))
@@ -184,7 +187,7 @@ the fold receives handed to ON-FRAME => the provider error signalled, or :DONE."
   ;; The walk splits SSE lines from the socket's octets itself and decodes
   ;; each as its newline arrives. Through dexador's character decoder a
   ;; 20-byte line sat until 128 octets had accumulated: here, until the
-  ;; second line and the sentinel a second later. The server stamps its
+  ;; second line and the sentinel 0.6 s later. The server stamps its
   ;; flush; the fold stamps its receipt; the same process clock reads both.
   (setf *paced-flush-at* nil)
   (multiple-value-bind (outcome seconds frames url server)
@@ -195,7 +198,7 @@ the fold receives handed to ON-FRAME => the provider error signalled, or :DONE."
     (is-present (first-at (and *paced-flush-at* (car (last folded-at)))) "both stamped"
       (let ((lag (/ (- first-at *paced-flush-at*) internal-time-units-per-second)))
         (is (< lag 0.3) (format nil "the first line folded ~,3f s after its flush" lag))))
-    (is (>= seconds 0.9) (format nil "the stream took its second: ~,1f" seconds))
+    (is (>= seconds 0.5) (format nil "the stream took its pause: ~,1f" seconds))
     (is (= 1 (nle::pooled-connection-count url)) "a clean stream pools its socket")
     (nle::flush-provider-connection-pool)
     (is (thread-ends-within server 3) "the flush closed it: the server saw the socket close")))
