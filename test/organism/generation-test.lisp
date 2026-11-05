@@ -593,7 +593,8 @@ exit 0~%" ,report ,score))
           (nlk::lay-tree digest target)
           (is (equal digest (nlk::tree-digest target)) "the folder laid digests the same")
           (is (probe-file (merge-pathnames "deep/inner.lisp" target)) "a subfolder comes back")
-          (is (= #o755 (file-mode (merge-pathnames "run.sh" target))) "and a file's mode")
+          ;; a Windows file has no execute bit to keep: its mode is only read-only or not
+          #-win32 (is (= #o755 (file-mode (merge-pathnames "run.sh" target))) "and a file's mode")
           (is (signals-error error (nlk::lay-tree digest target)) "never over a folder that stands")
           (is (signals-error error (nlk::lay-tree (nlk::tree-digest elsewhere) (merge-pathnames "none/" elsewhere))) "a digest nothing was kept under refuses"))))))
 
