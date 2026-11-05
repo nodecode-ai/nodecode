@@ -1536,8 +1536,11 @@ where the file system does not say."
   "What is at the native PATH, a last link not followed: :DIRECTORY, :FILE (a
 regular one), :LINK, :OTHER or :ABSENT, or :UNKNOWN when the question itself
 was refused. The stat is the second value."
+  ;; A folder's native namestring ends in its separator, and Windows' stat
+  ;; finds nothing by such a name: every folder read :ABSENT there.
+  ;; NATIVE-PATH drops it, but for a drive's root, which needs it.
   (handler-case
-      (let* ((stat (sb-posix:lstat path))
+      (let* ((stat (sb-posix:lstat #-win32 path #+win32 (native-path path)))
              (kind (logand (sb-posix:stat-mode stat) sb-posix:s-ifmt)))
         (values (cond ((= kind sb-posix:s-ifdir) :directory)
                       ((= kind sb-posix:s-ifreg) :file)
