@@ -189,7 +189,7 @@
 
 (deftest launch-home-refusal-says-what-stops-the-write ()
   (ensure-directories-exist nlk::*home*)
-  (let ((home (nle::home-abbreviated (string-right-trim "/" (namestring nlk::*home*)))))
+  (let ((home (nle::home-abbreviated (string-right-trim "/\\" (uiop:native-namestring nlk::*home*)))))
     (flet ((refusal (errno &optional store-path)
              (with-stubbed-fdefinition (nle::folder-write-errno (folder) errno)
                (nle::home-refusal store-path))))
@@ -206,7 +206,7 @@
                                  30))
       (is-carrying (text (nle::home-refusal
                           (merge-pathnames "no-such/deeper/x.db" (temp-path "store-side"))))
-        "/no-such/deeper does not exist and "
+        #-win32 "/no-such/deeper does not exist and " #+win32 "\\no-such\\deeper does not exist and "
         " is read-only, so nodecode cannot make it; make "
         "name a store elsewhere with --store PATH"
         (:absent "SB-")))))
@@ -257,9 +257,10 @@
   ;; own store a folder: SQLite refused each at the boot, behind the walk (ip-03)
   (ensure-directories-exist nlk::*home*)
   (with-temp-directory (dir "store-shape")
-    (let ((folder (string-right-trim "/" (namestring dir))))
-      (is-refusal ((nle::home-refusal folder) folder)
-        "~a is a folder, not a store file; name a file, such as --store ~:*~a/history.db"))
+    ;; a refusal names a path the way the platform spells it: `\' on Windows
+    (let ((folder (string-right-trim "/\\" (uiop:native-namestring dir))))
+      (is-refusal ((nle::home-refusal folder) folder (uiop:native-namestring (merge-pathnames "history.db" dir)))
+        "~a is a folder, not a store file; name a file, such as --store ~a"))
     (let ((store (namestring (merge-pathnames "x.db" dir))))
       (is (null (nle::home-refusal store)) "a store not made yet is made at boot")
       (write-temp-file store)
@@ -280,7 +281,7 @@
     (dolist (bytes (list (apply #'octets (make-list 8000 :initial-element 171)) (octets 10)))
       (alexandria:write-byte-vector-into-file bytes own :if-exists :supersede)
       (nlk:with-cleanup ((delete-file own))
-        (is-refusal ((nle::home-refusal nil) own)
+        (is-refusal ((nle::home-refusal nil) (uiop:native-namestring own))
           "~a is not a nodecode store (not an SQLite database); move it aside and run ~
            nodecode again")))
     ;; a store SQLite wrote, in the write-ahead log the organism keeps it in, is
@@ -295,7 +296,7 @@
       (is (null (nle::home-refusal nil))))
     (ensure-directories-exist (uiop:ensure-directory-pathname own))
     (nlk:with-cleanup ((uiop:delete-empty-directory (uiop:ensure-directory-pathname own)))
-      (is-refusal ((nle::home-refusal nil) own)
+      (is-refusal ((nle::home-refusal nil) (uiop:native-namestring own))
         "~a is a folder, not a store file; move it aside and run nodecode again"))))
 
 (deftest launch-store-refusal-opens-nothing-that-is-no-store-file ()
