@@ -1094,7 +1094,12 @@ if this one dies before it serves."
        (when receipt (write-self-receipt key))
        (load-cells)
        (nlk:note-boot-phase "folder-loaded")
-       (refresh-shipped-cell-notice)
+       ;; Off the ready line's path where threads may start, as a warm image
+       ;; has it: the notice parses every .asd the release ships, a boot's
+       ;; 22 ms on Windows (2026-11-05).
+       (if spawn
+           (spawn "shipped-cell-notice" (ignore-errors (refresh-shipped-cell-notice)))
+           (refresh-shipped-cell-notice))
        ;; Bounded like AWAIT-WARM-VERIFICATION: a key that failed or ran over
        ;; is no builder this launch, and the keeper asks again in 5 s.
        (when keying
