@@ -23,9 +23,11 @@ summary: "Every nodecode command and option, the rules for combining them, and t
 <Command line="nodecode update [VERSION] [--check]" tty="No" show="help-update">Moves to the latest release, or to VERSION.</Command>
 <Command line="nodecode generations" tty="No" show="help">Lists the sealed generations of this home's organism.</Command>
 <Command line="nodecode rollback N" tty="No" show="help">Restores this home's organism to generation N.</Command>
+<Command line="nodecode snapshot [NAME]" tty="No" show="help">Takes a snapshot of this home's running organism, its memory whole, and runs on from it.</Command>
+<Command line="nodecode snapshots [VERB]" tty="No" show="help">Opens the list of snapshots, or prints it with no terminal. `restore`, `rename` and `delete` act on one.</Command>
 <Command line="nodecode web" tty="No" show="web">Prints the web page link and opens it in a browser.</Command>
-<Command line="nodecode resume SESSION-ID" tty="Yes" show="resume-pipe">Opens the shell on that session.</Command>
-<Command line="nodecode rpc [SESSION-ID]" tty="No" show="help">Drives this home's organism from a program: JSON lines in and out. See [RPC](/rpc).</Command>
+<Command line="nodecode resume [SESSION-ID]" tty="Yes" show="resume-pipe">Opens the shell on that session. With no id, opens the session picker.</Command>
+<Command line="nodecode rpc [SESSION-ID]" tty="No" show="help">Drives this home's organism from a program: JSON lines in and out. See [RPC](rpc.mdx).</Command>
 <Command line="nodecode help [COMMAND]" tty="No" show="help-resume">Prints general help, or one command's help.</Command>
 </Commands>
 
@@ -52,6 +54,7 @@ Terms: the organism is a running Nodecode. The shell is the terminal UI. The hom
 | Option | Does |
 | --- | --- |
 | `-p NAME`, `--profile NAME` | Runs profile NAME. Read anywhere on the line. One per launch. |
+| `-c`, `--continue` | Opens the shell on the newest session begun in this folder. |
 | `--store PATH` | Runs on the store at PATH. |
 | `--ephemeral` | Runs on a throwaway store at `$TMPDIR/nodecode-ephemeral-<pid>.db`. |
 | `--pristine` | Runs generation 0: the binary alone, no folder loaded. Keeps are refused while it runs. |
@@ -88,7 +91,7 @@ First match wins:
 3. The profile named in `~/.nodecode/active-profile`
 4. `~/.nodecode/`
 
-Nodecode exports the chosen home to child processes as `NODECODE_HOME`. See [Profiles](/profiles).
+Nodecode exports the chosen home to child processes as `NODECODE_HOME`. See [Profiles](profiles.mdx).
 
 <Mistakes>
 <Mistake>
@@ -122,7 +125,9 @@ nodecode import [WORLD] [--source PATH] [--only KINDS] [--dry-run] [--overwrite]
 | `--source` | A home at a path, or a repository's skills and MCP servers: `OWNER/REPO` or an https URL, `#REF` pinning a branch, tag or commit. |
 | `--dry-run` | The preview only. |
 
-In the shell, `/import --sources` lists the repositories held and `/import --remove LABEL` takes one back.
+Skills are linked, never copied: each folder of them becomes one link in the `linked-skills` cell, and every `SKILL.md` is read where it is, so an edit made in the other harness shows here at once. A repository's skills are linked from the folder its fetch keeps. On Windows, which makes no symbolic link, they are converted instead.
+
+In the shell, `/import` lists the repositories held, each one to take back.
 
 <Mistakes>
 <Mistake>
@@ -158,8 +163,9 @@ nodecode machine link [CODE]
 | `nodecode login --subscription` | A plan's requests. |
 | `nodecode login --api` | API credits. |
 | `nodecode machine link [CODE]` | The Machines page's link: bring the code from https://nodecode.ai/account/machines, or omit CODE to get one to type there, then approve the machine. |
+| `nodecode logout` | Signs this machine out: the key leaves this home's `auth.json` and the machine link is forgotten. The key stays on the account until you remove the machine at https://nodecode.ai/account/machines. |
 
-In the shell, `/login` does the same. From then on the footer shows the account's meter, and a click on it opens `/usage`.
+In the shell, `/login` does the same. From then on the footer shows the account's meter, and a click on it opens `/usage`. `/logout` signs out again.
 
 <Mistakes>
 <Mistake>
@@ -207,7 +213,7 @@ A shipped cell installs with no question. A hub cell prints its <Term screen="hu
 <Mistake>
 <What>Answering `y` without opening the repository</What>
 <Why>Hub code runs inside Nodecode with full access to your files and keys.</Why>
-<Instead>Open the repository at the commit it prints. Answer after. See [Cells](/cells).</Instead>
+<Instead>Open the repository at the commit it prints. Answer after. See [Cells reference](cells-reference.mdx#hub).</Instead>
 </Mistake>
 </Mistakes>
 
@@ -227,7 +233,7 @@ A shipped cell installs with no question. A hub cell prints its <Term screen="hu
 | `update` | `NAME` |
 | `help` | `[VERB]` |
 
-What each verb does: [Profiles](/profiles).
+What each verb does: [Profiles](profiles.mdx).
 
 <Mistakes>
 <Mistake>
@@ -252,7 +258,7 @@ What each verb does: [Profiles](/profiles).
 | `run` | Runs the gateway in the foreground. The unit runs this. |
 | `help [VERB]` | Prints help. |
 
-Detail: [Gateway](/gateway) and [Operations](/operations).
+Detail: [Gateway](gateway.mdx) and [Operations](operations.mdx).
 
 <Mistakes>
 <Mistake>
@@ -275,7 +281,7 @@ nodecode update [VERSION] [--check]
 | `nodecode update VERSION` | Moves to that release and holds this home there, until a bare `nodecode update` lifts it. |
 | `nodecode update --check` | Stages and classifies the release. Applies nothing. |
 
-Detail: [Updates](/updates).
+Detail: [Updates](updates.mdx).
 
 <Mistakes>
 <Mistake>
@@ -314,10 +320,19 @@ Prints `http://127.0.0.1:PORT/web/#t=TOKEN`. Opens it when a display exists.
 ## resume
 
 ```sh
-nodecode resume SESSION-ID [--store PATH]
+nodecode resume [SESSION-ID] [--store PATH]
+nodecode -c [-- PROMPT]
 ```
 
-The shell prints the resume line when it exits. See [Sessions](/sessions).
+| Line | Opens |
+| --- | --- |
+| `nodecode resume SESSION-ID` | That session. |
+| `nodecode resume` | The session picker, on its This folder tab: the sessions begun in this folder. Tab shows every session. Enter opens one. |
+| `nodecode -c`, `nodecode --continue` | The newest session begun in this folder. A fork, a helper, a room's lane and a cron fire are skipped. With none, a fresh session, and the shell says so. |
+
+A SESSION-ID the home holds no session under opens the picker, its header naming the id. No session is made under it.
+
+The shell prints the resume line when it exits. See [Sessions](sessions.mdx).
 
 <Mistakes>
 <Mistake>
@@ -340,7 +355,8 @@ The shell prints the resume line when it exits. See [Sessions](/sessions).
 <Refusal typed="nodecode --store PATH add nc://web" said={"nodecode: add is a command of its own: nodecode [-p NAME] add ..."}>`nodecode add nc://web`</Refusal>
 <Refusal typed="nodecode -p work -p play" said={"nodecode: -p names a second profile, play; a launch runs one"}>One `-p` per launch.</Refusal>
 <Refusal typed="nodecode -p ghost" said={"nodecode: no profile \"ghost\". \"nodecode profile create ghost\" makes one."}>`nodecode profile create ghost`</Refusal>
-<Refusal typed="nodecode resume" said={"nodecode: resume needs a SESSION-ID"}>`nodecode resume SESSION-ID`</Refusal>
+<Refusal typed="nodecode resume s-1NXO4JMW -c" said={"nodecode: a launch opens one session: nodecode resume [SESSION-ID], or nodecode -c"}>One of the two.</Refusal>
+<Refusal typed="nodecode resume -- PROMPT" said={"nodecode: a bare resume opens the picker, and a first prompt needs its session: nodecode resume SESSION-ID -- PROMPT, or nodecode -c -- PROMPT"}>`nodecode -c -- PROMPT`</Refusal>
 <Refusal typed="nodecode servve" said={"nodecode: no command \"servve\". Did you mean \"serve\"?"}>The word it names.</Refusal>
 </Refusals>
 

@@ -547,7 +547,9 @@ one name both answer — then of every knowledge cell, as the index read it."
                          collect (list path (second hit) (third hit)))))
    (when directory
      (loop for entry in (knowledge-entries)
+           ;; a linked SKILL.md is the other harness's file, never a definition to patch
            when (and (string= name (getf (knowledge-entry-key entry) :name))
+                     (string-equal "lisp" (pathname-type (knowledge-entry-path entry)))
                      (string/= (layer-name) (folder-name (knowledge-entry-folder entry))))
              collect (list (knowledge-entry-path entry) (knowledge-entry-start entry)
                            (knowledge-entry-end entry))))))
@@ -1104,6 +1106,9 @@ out of every one."
   ;; Nor does a fork: what it defines stays live, and the parent keeps what
   ;; it chooses (FORK-RECORD, fork.lisp).
   (when (fork-record form session-id)
+    (return-from record-definitions nil))
+  ;; Nor in a made cell: its code is its files (CELL-SESSION-RECORD, made-cells.lisp)
+  (when (cell-session-record form session-id)
     (return-from record-definitions nil))
   (when *pristine*
     (format t "~&[pristine: nothing is kept; (rollback N) restores a sealed generation, ~

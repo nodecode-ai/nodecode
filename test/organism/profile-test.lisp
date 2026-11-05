@@ -73,13 +73,17 @@ exist to prevent."
   (with-temp-workspace (target "guard/nodecode-guard.asd")
     (profile-test-seed-every-entry nlk:*home*)
     (let ((shipped (string-right-trim "/" (namestring (merge-pathnames "guard/" target)))))
-      (nlk:make-symlink shipped (merge-pathnames "cells/guard/" nlk:*home*))
+      ;; As the installer puts a shipped cell: a link, or on Windows a copy
+      ;; carrying its marker (COPY-INSTALL).
+      #-win32 (nlk:make-symlink shipped (merge-pathnames "cells/guard/" nlk:*home*))
+      #+win32 (nlk::copy-install (merge-pathnames "guard/" target) (merge-pathnames "cells/guard/" nlk:*home*))
       ;; A layer: the organism's own git repository under cells/.
       (let ((layer (merge-pathnames "cells/tester/" nlk:*home*)))
         (write-temp-file (merge-pathnames "tester.asd" layer) "(defsystem \"tester\")")
         (is (nlk:git-commit-all layer "one")))
       (let ((home (nlk:profile-create "coder" :clone :settings)))
-        (is (equal shipped (nlk:symlink-target (merge-pathnames "cells/guard/" home))))
+        #-win32 (is (equal shipped (nlk:symlink-target (merge-pathnames "cells/guard/" home))))
+        #+win32 (is (probe-file (merge-pathnames (format nil "cells/guard/~a" nlk::+installed-marker+) home)) "the installer's copy comes along, marker and all")
         (is (null (uiop:directory-exists-p (merge-pathnames "cells/own/" home))))
         (is (null (uiop:directory-exists-p (merge-pathnames "cells/tester/" home))))
         (is (equal "settings" (gethash "clone" (nlk::read-manifest home)))))
@@ -207,6 +211,31 @@ exist to prevent."
     (is (probe-file (merge-pathnames "auth.json" (nlk:profile-home "kept"))) "a whole one carries the keys")
     (is (probe-file (merge-pathnames "secrets/token" (nlk:profile-home "kept"))) "and the secrets")))
 
+(deftest profile-export-needs-no-gzip-program ()
+  ;; Windows ships tar.exe and no gzip (Git for Windows keeps its copy in
+  ;; usr\bin, off PATH), and the export ran `gzip -f' after tar: /backup and
+  ;; every export refused there with "Couldn't execute gzip". Here PATH holds
+  ;; tar alone while the export packs, then the archive goes round. GNU tar's
+  ;; own -x -z runs gzip, so the import reads the archive on the real PATH.
+  (profile-test-seed-every-entry (nlk:profile-create "coder"))
+  (let ((dir (uiop:ensure-directory-pathname
+              (merge-pathnames (format nil "nodecode-tar-only-~36r/" (random (expt 36 8)))
+                               (uiop:temporary-directory))))
+        (saved-path (uiop:getenv "PATH")))
+    (with-temp-file (archive :type "tar.gz")
+      (unwind-protect
+           (progn
+             (ensure-directories-exist dir)
+             #-win32 (sb-posix:symlink (uiop:native-namestring (nlk::executable-on-path "tar"))
+                                       (uiop:native-namestring (merge-pathnames "tar" dir)))
+             #-win32 (nlk::set-environment-variable "PATH" (string-right-trim "/" (uiop:native-namestring dir)))
+             #-win32 (is (null (nlk::executable-on-path "gzip")) "no gzip on PATH, as on Windows")
+             (is (probe-file (nlk:profile-export "coder" archive)) "the export packs with tar alone"))
+        (nlk::set-environment-variable "PATH" (or saved-path ""))
+        (uiop:delete-directory-tree dir :validate t :if-does-not-exist :ignore))
+      (is (equal "restored" (nlk:profile-import archive :name "restored")) "the archive comes back")
+      (is (probe-file (merge-pathnames "SOUL.md" (nlk:profile-home "restored"))) "with its rows"))))
+
 (deftest profile-install-and-update-from-a-distribution (with-temp-workspace (remote "SOUL.md"))
   (write-temp-file (merge-pathnames "profile.jsonc" remote)
                    "{\"name\": \"dist\", \"description\": \"a distribution\"}")
@@ -272,6 +301,14 @@ one of everything it must refuse: settings, secrets, state, the store."
                   "link/state.json" "mcp/log.txt" "hermes/marker"
                   "gateway-off/flag" "cells/own/own.asd"))
     (write-temp-file (merge-pathnames file home) "x"))
+  ;; The store as SQLite writes one, since a whole export copies it: Windows'
+  ;; SQLite refuses a one-byte file as no database, where Linux's reads it as
+  ;; an empty one.
+  (let ((store (merge-pathnames "history.db" home)))
+    (delete-file store)
+    (let ((db (sqlite:connect (uiop:native-namestring store))))
+      (unwind-protect (sqlite:execute-non-query db "create table seed (x)")
+        (sqlite:disconnect db))))
   home)
 
 (deftest pin-what-a-clone-carries ()
@@ -305,6 +342,8 @@ RUN-CHECKED, newest first: nothing runs and nothing is moved."
   (with-stubbed-fdefinitions ((nlk::run-checked (argv-in refuse &key seconds)
                                (push argv-in calls)
                                "")
+                              (nlk:gzip-file (from to)
+                                to)
                               (nlk:replace-file (from to)
                                 to))
     (if (stringp what)
@@ -371,7 +410,7 @@ RUN-CHECKED, newest first: nothing runs and nothing is moved."
                "/history.db*" "/.locks/" "/composer-history" "/usage.jsonl" "/theme-selection"
                "/keybinds.json" "/operator-token" "/generations/" "/release-pin" "/distribution.json"
                "/gateway-off/" "/hermes/" "/mcp/" "/secrets" "/auth.json"
-               "/link" "/backups" "/cells" "")
+               "/link" "/backups" "/snapshots/" "/cells" "")
              (uiop:split-string
               (nlk:read-text (merge-pathnames ".git/info/exclude" (nlk:profile-home "dist")))
               :separator (string #\Newline)))))

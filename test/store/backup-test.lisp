@@ -49,11 +49,14 @@ shipped cell link's target."
          (archive (merge-pathnames name (nle::backups-directory))))
     (is (equal '("copying the store" "packing" "compressing") (reverse steps)) "it says how it goes")
     (is (uiop:string-prefix-p (format nil "nodecode-~a-" (nlk:profile-label)) name) "named by whose home it is")
-    (is (= #o600 (backup-test-mode archive)) "the archive is the operator's alone")
-    (is (= #o700 (backup-test-mode (nle::backups-directory))) "and so is its folder")
+    ;; Mode bits are POSIX: on Windows the home's own ACL closes both.
+    #-win32 (is (= #o600 (backup-test-mode archive)) "the archive is the operator's alone")
+    #-win32 (is (= #o700 (backup-test-mode (nle::backups-directory))) "and so is its folder")
+    ;; The seed's links are POSIX: on Windows MAKE-SYMLINK makes none (an
+    ;; install there copies), so no row reaches what they point to.
     (is-carrying (listed (nlk::run-checked (list "tar" "-tzf" (uiop:native-namestring archive))
                                            (lambda (err) (error "tar: ~a" err))))
-      "/history.db" "/config.jsonc" "/auth.json" "/secrets/bot.token" "/cells/tester-memory/kept.lisp" "/SOUL.md"
+      "/history.db" "/config.jsonc" "/auth.json" #-win32 "/secrets/bot.token" #-win32 "/cells/tester-memory/kept.lisp" "/SOUL.md"
       (:absent "operator-token" "this home's gateway token stays") (:absent "link/" "and its link")
       (:absent "composer-history" "and what was typed") (:absent "backups" "and no backup holds another")
       (:absent "elsewhere" "and nothing no row claims"))
@@ -63,11 +66,11 @@ shipped cell link's target."
       (is (find "auth.json" holds :test #'equal) "and names what it holds"))
     (is (equal "back" (nlk:profile-import archive :name "back")))
     (let ((home (nlk:profile-home "back")))
-      (is (probe-file (merge-pathnames "secrets/bot.token" home)) "the keys come back")
+      #-win32 (is (probe-file (merge-pathnames "secrets/bot.token" home)) "the keys come back")
       (is (null (nlk:symlink-target (merge-pathnames "secrets" home))) "a linked row comes back as its content")
       (is (null (nlk:symlink-target (merge-pathnames "cells/tester-memory" home))) "and so does a linked knowledge cell")
-      (is (equal "remembered" (nlk:read-text (merge-pathnames "cells/tester-memory/kept.lisp" home))))
-      (is (equal cell (nlk:symlink-target (merge-pathnames "cells/shipped" home))) "a cell's link as a link")
+      #-win32 (is (equal "remembered" (nlk:read-text (merge-pathnames "cells/tester-memory/kept.lisp" home))))
+      #-win32 (is (equal cell (nlk:symlink-target (merge-pathnames "cells/shipped" home))) "a cell's link as a link")
       (is (= 2 (backup-test-sessions (merge-pathnames "history.db" home))) "and the store holds the sessions"))))
 
 (deftest backup-routes-make-list-send-restore-and-delete (with-temp-gateway (port))

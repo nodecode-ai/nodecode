@@ -519,9 +519,10 @@ be watched."
   ;; The rule reads the form: something in it can move, and nothing in it
   ;; assigns, destroys, defines or reads the REPL's history.
   (is-table (expected source) (eq expected (watchable-source-p source))
-    (t "(length (masks))" "a reader the model wrote")
+    (nil "(length (masks))" "an unexamined reader stays one-shot")
     (t "*level*" "a variable")
-    (t "(reduce #'* (sizes))" "* named as a function is not the history")
+    (nil "(reduce #'* (sizes))" "callback-taking readers stay one-shot")
+    (t "(* *level* 2)" "* as an operator is not the history")
     (nil "(+ 1 2)" "nothing in it can change")
     (nil "(setf *level* 2)" "an assignment")
     (nil "(incf (gethash :k *seen*))" "an assignment through a place")
@@ -532,6 +533,63 @@ be watched."
     (nil "(eval-status 1006)" "takes the output since the last look")
     (nil "(eval-await 1006)" "parks on a background evaluation and takes its output")
     (t "(list-evals)" "listing the evaluations only reads")))
+
+(deftest a-watch-admits-only-known-memory-read-operators ()
+  ;; Classification only: no resource is created, opened or closed here.
+  ;; An absent read/write syscall does not establish that a call only read.
+  (dolist (source '("(make-instance 'watch-resource)"
+                    "(close *watch-stream*)"
+                    "(unknown-reader *watch-state*)"
+                    "(let ((x (unknown-reader))) (list x *watch-state*))"
+                    "(if *watch-state* 1 (unknown-reader))"
+                    "(funcall *watch-reader*)"
+                    "(reduce *watch-reader* *watch-state*)"
+                    "(mapcar #'unknown-reader *watch-state*)"
+                    "(symbol-macrolet ((x (unknown-reader))) (list x *watch-state*))"))
+    (is (null (watchable-source-p source)) (format nil "~a stays one-shot" source)))
+  (dolist (source '("(length *watch-state*)"
+                    "(let ((x *watch-state*)) (list (length x) (car x)))"
+                    "(if *watch-state* (length *watch-state*) 0)"
+                    "(cond (*watch-state* (length *watch-state*)) (t 0))"
+                    "(case *watch-state* (:a 1) (otherwise 0))"
+                    "(gethash :count *watch-state*)"))
+    (is (watchable-source-p source) (format nil "~a remains watchable" source))))
+
+(deftest a-watch-refuses-global-symbol-macros-without-expanding-them ()
+  ;; Only install expansion data; never evaluate its unknown call.
+  (let ((alias (gensym "WATCH-ALIAS-")))
+    (eval `(define-symbol-macro ,alias (unknown-reader)))
+    (is (null (nle::watchable-form-p alias)) "a variable-shaped expansion stays one-shot")
+    (is (null (nle::watchable-form-p `(list ,alias))) "a nested expansion stays one-shot")
+    (is (nle::watchable-form-p `(list ',alias nle::*watch-state*)) "quoted names remain data")
+    (is (nle::replay-safe-form-p alias) "default restart classification is unchanged")))
+
+(deftest an-unexamined-call-runs-once-not-after-later-snippets
+    (with-session-store ("watch-once"))
+  ;; An in-memory counter stands in for any effect with no read/write syscall.
+  (with-durable-turn (turn "watch-once" :current t)
+    (nle:eval-string "(defparameter *watch-counter* 0) (defparameter *watch-other* 0)")
+    (nle:eval-string "(defun watch-once () (incf *watch-counter*))")
+    (is-eval "(watch-once)" (:absent "[watching:"))
+    (nle:eval-string "(setf *watch-other* 1)")
+    (is (= 1 (symbol-value (find-symbol "*WATCH-COUNTER*" '#:nodecode.evolved))) "only the requested evaluation ran")))
+
+(deftest an-old-unapproved-watch-closes-without-running-its-cached-thunk
+    (with-session-store ("watch-retained"))
+  ;; A live repair must retire watches admitted by the previous classifier.
+  ;; Neither the cached thunk nor compilation may run before that decision.
+  (with-durable-turn (turn "watch-retained" :current t)
+    (let ((calls 0))
+      (dolist (thunk (list nil (lambda () (incf calls))))
+        (let* ((nle::*watches* (make-hash-table :test #'equal))
+               (watch (nle::make-watch :text "(old-unknown-reader)"
+                                       :form '(nle::old-unknown-reader)
+                                       :thunk thunk :value "0" :object 0)))
+          (setf (gethash "watch-retained" nle::*watches*) (list watch))
+          (let ((lines (nle::run-watches "watch-retained")))
+            (is (some (lambda (line) (search "not a known memory read" line)) lines) "the form is retired before compilation or invocation"))
+          (is (= 0 calls) "a stale cached thunk is never invoked")
+          (is (null (gethash "watch-retained" nle::*watches*)) "the old watch is removed"))))))
 
 (deftest a-read-snippet-is-watched-and-comes-back-only-when-it-changes
     (with-session-store ("watch"))
@@ -548,19 +606,17 @@ be watched."
        "an assignment is not watched: it runs the watched snippets, and the moved one comes back"))
     (is-eval "(setf *watch-other* 5)" (:absent "[watched"))))
 
-(deftest a-reader-defined-and-called-in-one-snippet-is-watched
+(deftest an-unexamined-reader-is-one-shot-but-its-data-can-be-watched
     (with-session-store ("watch-reader"))
-  ;; The model's reader is a definition and its call in one snippet. The
-  ;; call is the read, and the one watched; the definition makes the snippet
-  ;; act, so the snippets already watched run first.
+  ;; Definitions can hide effects; a quiet call is not a purity proof.
   (with-durable-turn (turn "watch-reader" :current t)
     (nle:eval-string "(defparameter *watch-seen* 1) (defparameter *watch-left* 5)")
     (is-eval "*watch-left*" ("[watching:"))
     (nle:eval-string "(setf *watch-left* 4)")
     (is-eval "(defun watch-facts () (list :seen *watch-seen*)) (watch-facts)"
-      ("[watching:" "the call that closes the snippet is watched")
-      (:absent "[watched (watch-facts)" "a form watched again is not run again"))
-    (is-eval "(setf *watch-seen* 2)" ("[watched (watch-facts): (:SEEN 1) -> (:SEEN 2)]"))))
+      (:absent "[watching:" "an unexamined function is not repeated"))
+    (is-eval "(list :seen *watch-seen*)" ("[watching:"))
+    (is-eval "(setf *watch-seen* 2)" ("[watched (list :seen *watch-seen*): (:SEEN 1) -> (:SEEN 2)]"))))
 
 (deftest a-long-watched-value-names-the-places-that-changed
     (with-session-store ("watch-long"))
@@ -579,19 +635,19 @@ be watched."
        "a change as long as the value shows the new value whole")
       (:absent "…" "never cut"))))
 
-(deftest a-watched-snippet-that-would-act-is-closed-before-it-does
+(deftest a-watched-snippet-still-refuses-a-verb-before-it-acts
     (with-session-store ("watch-act"))
-  ;; Watched snippets only read: one that would act on a run again is refused
-  ;; at its verb's stamp, before the verb runs, and closed.
+  ;; Keep the runtime guard too: even a trusted reader can change at runtime.
   (with-durable-turn (turn "watch-act" :current t)
-    (nle:eval-string "(defparameter *watch-armed* nil) (defparameter *watch-fired* 0)")
-    (nle:eval-string "(defun watch-fire () (if *watch-armed* (progn (sh \"true\") (incf *watch-fired*)) :idle))")
-    (is-eval "(watch-fire)" ("[watching:"))
-    (is-eval "(setf *watch-armed* t)"
-      ("[no longer watching (watch-fire): it reached outside the image]"))
-    (let ((fired (symbol-value (find-symbol "*WATCH-FIRED*" '#:nodecode.evolved))))
-      (is (eql 0 fired) "the verb refused before it ran"))
-    (is-eval "(setf *watch-armed* nil)" (:absent "watch-fire" "a closed snippet stays closed"))))
+    (let* ((fired 0)
+           (watch (nle::make-watch :form '(nle::list-evals)
+                                   :thunk (lambda ()
+                                            (nle::receipt "calls" (list :verb "cell:act"))
+                                            (incf fired)))))
+      (multiple-value-bind (value closed) (nle::rerun-watch watch)
+        (declare (ignore value))
+        (is (equal "it reached outside the image" closed) "the verb's stamp closes the watch"))
+      (is (= 0 fired) "the verb refused before it acted"))))
 
 (deftest a-snippet-that-reaches-outside-the-image-is-not-watched
     (with-session-store ("watch-io"))
@@ -604,26 +660,16 @@ be watched."
 
 (deftest a-cell-verb-that-acts-in-the-image-is-never-watched
     (with-session-store ("watch-stamp"))
-  ;; A cell verb that only hands the running answer its buttons, reaching
-  ;; nothing outside the image, would be read as a read without the rule
-  ;; below: watched, it would run again after every later snippet and put an
-  ;; earlier question's buttons on later answers. A cell verb's stamp says
-  ;; what it is: one naming no family, or one that changes something, acts;
-  ;; one naming a read's family stays a read.
+  ;; Receipt stamps still reject effects, but a read stamp alone does not
+  ;; establish that an arbitrary wrapper is safe to repeat in the future.
   (with-durable-turn (turn "watch-stamp" :current t)
-    (nle:eval-string "(defparameter *watch-handed* 0) (defparameter *watch-shown* 1) (defparameter *watch-armed* nil)")
+    (nle:eval-string "(defparameter *watch-handed* 0) (defparameter *watch-shown* 1)")
     (nle:eval-string "(defun watch-hand () (receipt \"calls\" (list :verb \"cell:hand\")) (incf *watch-handed*))")
     (nle:eval-string "(defun watch-show () (receipt \"calls\" (list :verb \"cell:show\" :family \"recall\")) *watch-shown*)")
-    (nle:eval-string "(defun watch-maybe () (if *watch-armed* (watch-hand) :idle))")
-    (is-eval "(watch-hand)" (:absent "[watching" "a verb that acts in the image is not watched"))
-    (is-eval "(watch-show)" ("[watching:" "a cell's read stays watched"))
-    (is-eval "(setf *watch-shown* 2)" ("[watched (watch-show): 1 -> 2]"))
-    (is-eval "(watch-maybe)" ("[watching:"))
-    (is-eval "(setf *watch-armed* t)"
-      ("[no longer watching (watch-maybe): it reached outside the image]"
-       "a run again that reaches the stamp is closed"))
-    (let ((handed (symbol-value (find-symbol "*WATCH-HANDED*" '#:nodecode.evolved))))
-      (is (eql 1 handed) "the verb ran once: no run again repeated it, and the closed one refused before it acted"))))
+    (is-eval "(watch-hand)" (:absent "[watching"))
+    (is-eval "(watch-show)" (:absent "[watching:" "an opaque reader stays one-shot"))
+    (is-eval "(setf *watch-shown* 2)" (:absent "[watched (watch-show)"))
+    (is (= 1 (symbol-value (find-symbol "*WATCH-HANDED*" '#:nodecode.evolved))) "the verb ran only when requested")))
 
 (deftest eval-tool-hints-where-a-misqualified-symbol-lives ()
   ;; "Symbol RECALL-LOG not found in the COMMON-LISP package" is true and
@@ -3362,7 +3408,7 @@ look at the fetch while it is still in flight. => (values URL THREAD)."
 (defun age-file (path seconds)
   "Set PATH's mtime SECONDS into the past."
   (let ((then (- (get-universal-time) (encode-universal-time 0 0 0 1 1 1970 0) seconds)))
-    (sb-posix:utimes path then then)))
+    (set-file-times path then)))
 
 (defvar *memo-raced* nil
   "The memo READERS-THAT-MISS-A-JSON-MEMO-TOGETHER-PARSE-IT-ONCE races on: a
@@ -3693,6 +3739,14 @@ ATTACH-VISIBLE-IMAGES puts in front of the round."
 anthropic lane."
   (anthropic-context (list (nle::message "user" text))))
 
+(deftest anthropic-asks-with-tool-choice-none ()
+  ;; A turn limited to no tools (SUBMIT :TOOLS '()) asks with tool_choice
+  ;; none and its tools still declared, which Anthropic spells {"type": "none"}.
+  (let* ((nle::*tool-choice* "none")
+         (body (nle::anthropic-request-body (anthropic-context (list (nle::message "user" "why?"))))))
+    (is (equal "none" (gethash "type" (gethash "tool_choice" body))))
+    (is (vectorp (gethash "tools" body)) "the tools are still declared")))
+
 (deftest anthropic-request-hoists-system-and-converts-history ()
   (let* ((assistant (wire-message "assistant" :content "let me check"
                                   :tool-calls (vector (wire-tool-call
@@ -3875,6 +3929,35 @@ thinking signed sig-N against PREFIX (none when NIL)."
         (is (equal '("sig-1") (replayed-signatures
                                (first (on "claude-binding-test" ask one (bound-result 1)
                                           two (bound-result 2))))))))))
+
+(deftest anthropic-thinking-never-replays-to-another-provider ()
+  ;; Two providers can serve one model id and still sign against different
+  ;; prefixes: the claude-code cell's lane folds as this one does, but its CLI
+  ;; writes the request's system blocks and tool names, so a block signed
+  ;; there is refused here (400 `The system prompt differs from the one this
+  ;; block was created with') though the body Nodecode built is the same. A
+  ;; failover or a /models pick from one to the other sheds the other's
+  ;; thinking.
+  (let ((twin (nle::make-provider-lane :name "binding-twin"
+                                       :stream-symbol 'nle::call-anthropic-streaming
+                                       :family :anthropic :reasoning-carry :text
+                                       :default-endpoint "https://api.anthropic.com/v1/messages"
+                                       :path "/messages")))
+    (nlk:bind ((nle::*provider-lanes* (cons twin nle::*provider-lanes*)))
+      (flet ((on (provider &rest messages)
+               (nlk:bind ((nle::*provider* provider) (nle::*endpoint* nil))
+                 (multiple-value-list (nle::anthropic-request-body (compiled-context messages))))))
+        (with-adaptive-claude ()
+          (let* ((ask (nle::message "user" "count"))
+                 (one (bound-round 1 (third (on "binding-twin" ask))))
+                 (two (bound-round 2 (third (on "anthropic" ask one (bound-result 1))))))
+            (is (not (equal (third (on "binding-twin" ask)) (third (on "anthropic" ask)))))
+            ;; the other provider's round sheds the first one's thinking
+            (is (null (replayed-signatures (first (on "anthropic" ask one (bound-result 1))))))
+            ;; back on the first provider, its own thinking replays and the other's does not
+            (is (equal '("sig-1") (replayed-signatures
+                                   (first (on "binding-twin" ask one (bound-result 1)
+                                              two (bound-result 2))))))))))))
 
 (deftest anthropic-stamps-a-thinking-reply-with-the-prefix-it-is-bound-to ()
   (with-adaptive-claude ()
@@ -4165,6 +4248,15 @@ every one of them."
     (is (equal "user-agent" (car (first h))) "with-user-agent puts the header first")
     (is (equal '("x-api-key" . "k") (second h)) "and keeps the caller's headers")
     (is (equal '(("user-agent" . "custom")) (nle::with-user-agent '(("user-agent" . "custom")))))))
+
+(deftest user-agent-names-the-release-a-hot-upgrade-moved-to ()
+  ;; A hot upgrade moves the definitions past the build without a restart:
+  ;; the image's requests then name the release it runs, as a fresh
+  ;; `nodecode --version' does, not the build the process booted from.
+  (with-saved-globals ((nlk::*effective-version* "tvua"))
+    (let ((ua (nle::user-agent)))
+      (is (eql 0 (search (format nil "nodecode_cli/~a " (nle::effective-version)) ua)))
+      (is (search "+tvua " ua) "the release the upgrade moved to"))))
 
 (deftest an-openrouter-round-names-nodecode-for-the-app-rankings ()
   ;; OpenRouter ranks apps by the tokens that reach it carrying HTTP-Referer:
@@ -9182,3 +9274,52 @@ thinking types DECLARED (a list, :UNDECLARED, or NIL for never asked)."
           (is (< (- (get-internal-real-time) start) (* 2 internal-time-units-per-second)) "never past its bound"))
         (setf nlk::*cells-starting* nil)
         (is (null (nle::await-cells-starting "nl-cell-lane")) "no start pass under way, no wait")))))
+
+;;; --- the agent's own prompt, rules and soul: handles onto the home's files ----
+
+(deftest the-own-file-handles-answer-the-home-files ()
+  ;; Peas: (agents-md), (soul-md) and (system-prompt) are each a symlink to
+  ;; the real file, a path EDIT and WRITE-FILE take, never a copy.
+  (loop for (verb name) in '((nle:system-prompt "SYSTEM.md") (nle:agents-md "AGENTS.md")
+                             (nle:soul-md "SOUL.md"))
+        do (is (equal (sb-ext:native-namestring (nlk:home name)) (funcall verb)) name)
+           (is (member verb nle::*help-verbs*) "(help) lists it")))
+
+(deftest system-prompt-file-is-the-system-message-while-it-stands ()
+  ;; SYSTEM.md, while it is there and not blank, is what every request opens
+  ;; on; an edit through the handle binds the next request; blank or gone is
+  ;; the shipped prompt again.
+  (let ((nle::*system-prompt* "shipped prompt")
+        (path (nle:system-prompt)))
+    (flet ((opens-on ()
+             (nle::message-content
+              (aref (gethash "messages"
+                             (nle::request-body (compiled-context (list (nle::message "user" "hi")))))
+                    0))))
+      (nlk:with-cleanup ((uiop:delete-file-if-exists path))
+        (uiop:delete-file-if-exists path)
+        (is (eql 0 (search "shipped prompt" (opens-on))) "no file: the shipped prompt")
+        (nle:write-file path "own prompt")
+        (is-present (text (opens-on)) "the file is the system message"
+          (is (eql 0 (search "own prompt" text)))
+          (is (null (search "shipped prompt" text))))
+        (nle:edit path "own" "edited")
+        (is (eql 0 (search "edited prompt" (opens-on))) "an edit through the handle binds the next request")
+        (write-temp-file path (format nil "  ~%"))
+        (is (eql 0 (search "shipped prompt" (opens-on))) "a blank file is none")
+        (delete-file path)
+        (is (eql 0 (search "shipped prompt" (opens-on))) "deleting it goes back")))))
+
+(deftest agents-md-handle-edits-the-rules-the-next-request-reads ()
+  (with-temp-workspace (dir "proj/.git/HEAD")
+    (with-temp-store ()
+      (nlk:create-session :id "own-rules" :cwd (namestring (merge-pathnames "proj/" dir)))
+      (flet ((rules () (cdr (assoc "operator-rules" (nle::read-harness-sections "own-rules")
+                                   :test #'string=))))
+        (nlk:with-cleanup ((uiop:delete-file-if-exists (nle:agents-md)))
+          (write-temp-file (nle:agents-md) (format nil "# Rules~%~%Use just.~%"))
+          (is (search "Use just." (rules)))
+          (nle:edit (nle:agents-md) "Use just." "Use make.")
+          (is-present (text (rules)) "the edit is what the next request reads"
+            (is (search "Use make." text))
+            (is (null (search "Use just." text)))))))))

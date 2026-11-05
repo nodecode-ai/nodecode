@@ -285,8 +285,7 @@ mid-escape while it streams — decoded."
    "(?s)\\\\(?:u(.{0,4})|(.)|\\z)" encoded
    (lambda-ignoring (match hex other)
      (cond ((and hex (= 4 (length hex)))
-            (let ((code (parse-integer hex :radix 16 :junk-allowed t)))
-              (if code (string (code-char code)) "")))
+            (if-let (code (parse-integer hex :radix 16 :junk-allowed t)) (string (code-char code)) ""))
            ;; \" \\ and \/ give their own character, as does an unknown escape
            (other (string (case (char other 0)
                             (#\n #\Newline) (#\t #\Tab) (#\r #\Return)
@@ -591,20 +590,30 @@ none repeats: the name of the recursion, for the verdict."
   ;; 195 of 232 probes, where the walk named the recursion on all of them. A
   ;; hundred and twenty frames, because the interruption's own machinery sits
   ;; on top.
-  (ignore-errors
-   (let ((counts '()))
-     (loop for frame = (sb-di:top-frame) then (ignore-errors (sb-di:frame-down frame))
-           repeat 120 while frame
-           do (let ((name (ignore-errors
-                           (sb-di:debug-fun-name (sb-di:frame-debug-fun frame)))))
-                (when (and name
-                           (not (and (symbolp name) (symbol-package name)
-                                     (eql 0 (search "SB-" (package-name (symbol-package name)))))))
-                  (if-let (entry (assoc name counts :test #'equal))
-                    (incf (cdr entry)) (push (cons name 1) counts)))))
-     (let ((best (first (sort counts #'> :key #'cdr))))
-       (and best (> (cdr best) 3)
-            (nlk:clip (princ-to-string (car best)) 80 :ellipsis ""))))))
+  (flet ((most-present (top)
+           (let ((counts '()))
+             (loop for frame = top then (ignore-errors (sb-di:frame-down frame))
+                   repeat 120 while frame
+                   do (let ((name (ignore-errors
+                                   (sb-di:debug-fun-name (sb-di:frame-debug-fun frame)))))
+                        (when (and name
+                                   (not (and (symbolp name) (symbol-package name)
+                                             (eql 0 (search "SB-" (package-name (symbol-package name)))))))
+                          (if-let (entry (assoc name counts :test #'equal))
+                            (incf (cdr entry)) (push (cons name 1) counts)))))
+             (let ((best (first (sort counts #'> :key #'cdr))))
+               (and best (> (cdr best) 3)
+                    (nlk:clip (princ-to-string (car best)) 80 :ellipsis ""))))))
+    (or (ignore-errors (most-present (sb-di:top-frame)))
+        ;; Windows runs an interruption on top of the runtime's own C frames
+        ;; (its safepoint trap), which the walk cannot cross: it ends there,
+        ;; nine frames down. The interrupted frames hang off the context the
+        ;; runtime pushed for the interruption.
+        (ignore-errors
+         (let ((index sb-kernel:*free-interrupt-context-index*))
+           (and (plusp index)
+                (most-present (sb-di::signal-context-frame
+                               (sb-alien:alien-sap (sb-di::nth-interrupt-context (1- index)))))))))))
 
 (defun scan-eval-runaways (registry &aux (backgrounded '()))
   "The watcher's pass over the running evaluations: interrupt each live
@@ -1992,6 +2001,40 @@ given, is called with each piece as it arrives."
            (incf taken got))
   (values (get-output-stream-string out) (>= taken limit)))
 
+;;; A shell child reads the id of the session that ran it from
+;;; NODECODE_SESSION_ID, to name that session back -- a task claim, a log
+;;; line, a script that keys its files off the session.
+(defparameter +session-id-variable+ "NODECODE_SESSION_ID"
+  "The variable a shell child reads its session's id from.")
+
+;;; Defined here, its first reader in load order; the gateway's boot
+;;; (client/client-session.lisp) names its session by it.
+(defparameter +gateway-session-id+ "s-GATEWAY"
+  "The session a gateway's boot names: one per home across every restart,
+so a unit that comes up at each login and after each crash leaves one
+session behind, not one a start.")
+
+(defun claimable-session-id (session-id)
+  "SESSION-ID when a child may name it as its own, else NIL: no session
+outside a turn, and none for the gateway's boot session +GATEWAY-SESSION-ID+,
+which every home has one of and no one works in."
+  (and (stringp session-id) (plusp (length session-id))
+       (string/= session-id +gateway-session-id+)
+       session-id))
+
+(defun session-shell-environment (&optional (session-id nlk:*scribe-session-id*)
+                                            (environment (nlk:process-environment)))
+  "ENVIRONMENT, this process's by default, for a shell child of SESSION-ID's
+snippet: NODECODE_SESSION_ID the id exactly, case kept, or no
+NODECODE_SESSION_ID at all where CLAIMABLE-SESSION-ID refuses it -- a
+Nodecode started from another Nodecode's shell inherits that one's id, and
+must not hand it on as its own."
+  (let ((id (claimable-session-id session-id)))
+    (nlk:environment-with (list (if id
+                                    (format nil "~a=~a" +session-id-variable+ id)
+                                    +session-id-variable+))
+                          environment)))
+
 (defun sh (command &key directory timeout)
   "Run COMMAND — a string through the shell's -c (*SHELL*: bash where the
 machine has it, else /bin/sh; Git for Windows' sh.exe on Windows), a list as argv with no shell — and answer its output: stdout and stderr merged as they arrived, with a
@@ -2052,6 +2095,7 @@ after N s] line."
                                              (shell-argv command)
                                              command))
                            :directory (or directory (ambient-session-directory :present t))
+                           :environment (session-shell-environment)
                            :error-output :output)))
       (when snippet (setf (exec-process-child-pid snippet) pid
                           (exec-process-stalled-ticks snippet) 0))
@@ -2129,6 +2173,47 @@ exactly as the model sent it, JSON escaping only."
             ((not (stringp value))
              (error "strings entry ~s is not a string: ~s" name value))
             (t value)))))
+
+(defun kept-snippet-text (text &optional (strings *eval-strings*))
+  "TEXT as the scribe keeps it: each ($ \"name\") call the reader reads in
+it, whose entry STRINGS carries, replaced by that entry as a string literal."
+  ;; The strings object rides one call, and the boot that loads the layer is
+  ;; no call: a kept DEFPARAMETER of a post's text, or a DEFUN whose body
+  ;; reads a script, refused to load ("this eval call carried no strings
+  ;; object") and named itself again at every boot, its text gone with the
+  ;; call (cron-nodecode-cyber-security's *fire56*, 2026-11-05). Kept as the
+  ;; literal, it loads to what it evaluated to.
+  ;;
+  ;; The reader finds the calls, never a pattern: a reference in a comment,
+  ;; a string or raw text is no call and stays as written, and so does a call
+  ;; naming an entry STRINGS lacks. A text that does not read back whole --
+  ;; a #. form, which this read never evaluates -- is kept as it is.
+  (if (and (hash-table-p strings) (find #\$ text))
+      (handler-case
+          (let ((calls '()))
+            (let* ((*readtable* (copy-readtable (raw-text-readtable)))
+                   (*read-eval* nil)
+                   (read-list (get-macro-character #\()))
+              (set-macro-character
+               #\( (lambda (stream char &aux (start (1- (file-position stream))))
+                     (let* ((list (funcall read-list stream char))
+                            (name (and (consp list) (eq (first list) '$) (consp (rest list))
+                                       (null (cddr list)) (second list)))
+                            (value (and (stringp name) (gethash name strings))))
+                       (when (stringp value)
+                         (push (list start (file-position stream) value) calls))
+                       list)))
+              (with-input-from-string (in text)
+                (loop with eof = '#:eof until (eq eof (read in nil eof)))))
+            (with-output-to-string (out)
+              (let ((at 0) (*print-readably* nil) (*print-pretty* nil))
+                (loop for (start end value) in (nreverse calls)
+                      do (write-string text out :start at :end start)
+                         (prin1 value out)
+                         (setf at end))
+                (write-string text out :start at))))
+        (error () text))
+      text))
 
 (defun eval-snippet-path (path)
   "PATH resolved the way SH anchors its children: a relative path is
@@ -2285,9 +2370,10 @@ OLD replaced by NEW, evaluated and kept again. Answers NAME."
           ;; Kept the way a snippet keeps a definition it evaluated: held while the
           ;; name is running on the stack, else recorded now; and named to the
           ;; snippet as kept, so the change is not reported as one the layer lost.
-          (or (nlk:hold-definitions escrow patched new-text (length new-text))
-              (nlk:record-definitions patched new-text (length new-text)
-                                      :package (package-name package)))
+          (let ((new-text (kept-snippet-text new-text)))
+            (or (nlk:hold-definitions escrow patched new-text (length new-text))
+                (nlk:record-definitions patched new-text (length new-text)
+                                        :package (package-name package))))
           (pushnew key nlk::*source-loaded-names* :test #'string-equal)
           name)))))
 
@@ -2588,8 +2674,12 @@ image. Never signals."
     (loop for target in targets
           ;; A file: URL is its path, a name with no scheme is itself, and
           ;; anything else is somewhere this never reaches.
+          ;; On Windows the URL's path leads its drive with a slash,
+          ;; file:///C:/x, and file://C:/x is how one is often written.
           for path = (cond ((ppcre:scan "^(?i)file:" target)
-                            (ppcre:regex-replace "^(?i)file:(?://(?:localhost)?(?=/))?" target ""))
+                            (let ((path (ppcre:regex-replace "^(?i)file:(?://(?:localhost)?(?=/))?" target "")))
+                              #+win32 (ppcre:regex-replace "^/{1,2}(?=[A-Za-z]:[/\\\\])" path "")
+                              #-win32 path))
                            ((not (ppcre:scan "^[A-Za-z][A-Za-z0-9+.-]+:" target)) target))
           for fact = (ignore-errors
                       (when path
@@ -2618,7 +2708,7 @@ nothing, which is no fence's to repeat."
  (list :description
        (concatenate 'string
                     "Evaluate Common Lisp forms in the live image and return their printed values; only the last value prints in full. (sh \"ls -la\") runs a shell command and returns its output. (edit path ($ \"old\") ($ \"new\")) with strings {\"old\": \"<the text now in the file>\", \"new\": \"<its replacement>\"} replaces the one occurrence of old in the file; (write-file path ($ \"text\")) with strings {\"text\": \"<the whole file>\"} writes a whole file, parents created. $ takes an entry's name, never the text itself. (look path) shows you an image file. In a Lisp string a backslash only escapes the next character (\"\\n\" reads as n), so text dense with backslashes, double quotes or newlines goes in the strings object, whichever verb takes it, or raw in the form itself: #>END ends its line, the text follows exactly as written, and a line starting with END closes it - (write-file \"a.py\" #>PY, the file's lines, PY); a shell command carrying a heredoc goes there whole: strings {\"script\": \"...\"} with (sh ($ \"script\")). A snippet's opening ;; line is its note, kept past eviction: write what you would resume from. When you use eval for work, begin the form with one concise leading ;; progress comment naming what you are about to do; this comment becomes the live activity label in channel cards and the TUI."
-                    #+linux " A snippet's last form, when it only reads - no verb, file, process, socket, assignment or definition - is watched: it runs again after each later snippet and comes back as one line only when its value changes."
+                    #+linux " A snippet's last form, when it uses only known memory reads and simple control forms - no unexamined functions or macros, verb, file, process, socket, assignment or definition - is watched: it runs again after each later snippet and comes back as one line only when its value changes."
                     " (help :eval) has the rest.")
        :parameters
        (make-json-object

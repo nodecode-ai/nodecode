@@ -97,8 +97,8 @@ in flight and TURN-ID names the admitted turn."
 
 (deftest tab-idle-keeps-suggestion-accept (with-temp-store ())
   (let ((model (make-steer-model "queue-idle")))
-    (type-string model "/models" :tab)
-    (is-shape model (composer-value "/models ") (.turn-in-flight not))))
+    (type-string model "/mod" :tab)
+    (is-shape model (composer-value "/models") (.turn-in-flight not))))
 
 (deftest queued-command-result-sets-the-composer-status ()
   (with-running-turn-model (model "queue-result")

@@ -33,7 +33,14 @@
     {
       "name": "Cells",
       "pages": [
-        "cells",
+        "cells"
+      ]
+    },
+    {
+      "name": "Reference",
+      "pages": [
+        "context-reference",
+        "cells-reference",
         "cell-api"
       ]
     }

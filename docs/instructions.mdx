@@ -8,6 +8,7 @@ summary: "Which files Nodecode reads into the prompt, where the model finds them
 
 | File | Applies to | Block |
 | --- | --- | --- |
+| `~/.nodecode/SYSTEM.md` | Every session, in place of the shipped base prompt, while the file is there and not blank. | The system message |
 | `~/.nodecode/AGENTS.md` | Every session, in any folder. | `operator-rules` |
 | Every project file above the session | Sessions in that folder and below it. | `instructions` |
 
@@ -18,6 +19,19 @@ Both ride in the conversation's first user message, ahead of your prompt. Each i
 A profile has its own home, so it has its own `AGENTS.md`. A new profile starts with a copy of this home's, unless made with `--blank`. `nodecode import` writes another agent's rules into `~/.nodecode/AGENTS.md`, one `##` heading per file it read. A file that would take it past 64.0 KB is left out, and the import says so.
 
 Chat bots also read `~/.nodecode/SOUL.md`, for their voice. A terminal session does not. The channel cells under <CellsTab /> say how.
+
+{/* source: src/engine/turn.lisp */}
+## The agent's own files
+
+The agent reaches these files through three verbs. Each answers the file's path, like a symlink, so `edit` and `write-file` work on it and no copy of the text is kept anywhere else.
+
+| Verb | File | What it is |
+| --- | --- | --- |
+| `(system-prompt)` | `~/.nodecode/SYSTEM.md` | The base prompt. While the file is missing or blank, the shipped prompt stands. |
+| `(agents-md)` | `~/.nodecode/AGENTS.md` | The `operator-rules` block. |
+| `(soul-md)` | `~/.nodecode/SOUL.md` | A chat bot's voice, unless a channel's `soul_file` names another file. |
+
+`(edit (agents-md) old new)` changes the rules from the next turn. `(write-file (system-prompt) *system-prompt*)` starts `SYSTEM.md` from the shipped prompt, ready to edit. Delete `SYSTEM.md` to go back to the shipped prompt: while it is there, a release's changes to the shipped prompt do not reach this home.
 
 {/* source: src/engine/context.lisp */}
 ## Project files
@@ -98,11 +112,11 @@ The warning names the file, its size and the limit: <Said>{"~/big/AGENTS.md is n
 
 | File | Read | Edit takes effect |
 | --- | --- | --- |
-| `~/.nodecode/AGENTS.md`, project file | At the first request of each turn. | At the next turn. |
+| `~/.nodecode/SYSTEM.md`, `~/.nodecode/AGENTS.md`, project file | At the first request of each turn. | At the next turn. |
 
 No restart is needed.
 
-A conversation keeps the prompt of its first request. A later edit reaches the model at the next turn, as a `<system-reminder>` after your message. It lists the lines added (`+`) and removed (`-`), or the whole file when that is shorter. A deleted file reads `(withdrawn)`. A file that appears mid-conversation arrives whole. After an eviction the prompt is built again from the current files. See [Context](/context).
+A conversation keeps the prompt of its first request. A later edit reaches the model at the next turn, as a `<system-reminder>` after your message. It lists the lines added (`+`) and removed (`-`), or the whole file when that is shorter. A deleted file reads `(withdrawn)`. A file that appears mid-conversation arrives whole. After an eviction the prompt is built again from the current files. See [Context](context.mdx).
 
 <Received name="edit-line" />
 

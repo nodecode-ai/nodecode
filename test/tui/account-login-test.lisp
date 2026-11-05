@@ -55,7 +55,7 @@
           (is (= 3 (length calls)))
           (is (equal "poll-secret-fixture" (fourth (first calls))))
           (let ((text (get-output-stream-string out)))
-            (is-carrying text "DDAN-UY56" "https://nodecode.ai/account/machines" "Linked" "With /link on in nodecode, the Machines page shows its address"
+            (is-carrying text "DDAN-UY56" "https://nodecode.ai/account/machines" "Linked" "With /link turned on in nodecode, the Machines page shows its address"
               (:absent "machine-key-fixture") (:absent "poll-secret-fixture")))
           (is (equal "machine-key-fixture" (nlk:json-value (nle::read-auth-file nle::*auth-file-path*) :string "api_keys" "nodecode" "key")))
           (is (equal "00000000-0000-0000-0000-000000000001" (nlk:json-value (nle::read-auth-file nle::*auth-file-path*) :string "machine_link" "request")))
@@ -131,7 +131,7 @@
           (is (equal "machine-key-fixture" (nlk:json-value (nle::read-auth-file nle::*auth-file-path*) :string "api_keys" "nodecode" "key"))))))))
 
 (deftest account-login-says-what-the-chosen-mode-still-lacks ()
-  (dolist (case `(("subscription" ,+account-usage-empty+ "subscribe at https://nodecode.ai/pricing")
+  (dolist (case `(("subscription" ,+account-usage-empty+ "plans are not sold now: it runs on API credit, added at https://nodecode.ai/account/top-up")
                   ("api" ,+account-usage-empty+ "add some at https://nodecode.ai/account/top-up")
                   ("api" ,+account-usage-credit+ nil)))
     (destructuring-bind (mode usage hint) case
@@ -150,6 +150,18 @@
   (is (search "--subscription" (refusal-text error (nle::account-ask-mode :ask (constantly nil)))))
   (is (search "takes 1" (refusal-text error (nle::account-ask-mode :ask (constantly "3")))))
   (is (null (nle::account-mode-word "bogus"))))
+
+(deftest account-login-bare-opens-the-choice-from-the-shell (with-temp-store ())
+  ;; #230: a bare /login typed at the prompt, and the /models sign-in row that runs it the same
+  ;; way, handed the setup walk's CONTEXT keyword, NIL outside the walk, to the picker's string
+  ;; slot: the event loop caught a TYPE-ERROR and no picker opened.
+  (let ((model (make-frame-model 100 30)))
+    (nle::execute-slash-command model "login" "")
+    (is-present (dialog (nle::chat-model-dialog model)) "bare /login opens a picker"
+      (is (equal "Sign in to nodecode.ai" (nle::picker-dialog-title dialog)))
+      (is (equal "" (nle::picker-dialog-context dialog)) "no walk, no context label")
+      (is (equal '("Subscription" "API credits")
+                 (mapcar #'nle::picker-row-label (nle::picker-dialog-rows dialog)))))))
 
 (deftest account-login-terminal-verdicts-save-nothing ()
   (dolist (state '("refused" "expired" "gone" "unknown"))
@@ -406,6 +418,40 @@
       (let ((json (nle::account-json)))
         (is (eq :false (gethash "signed_in" json)))
         (is (eq :null (gethash "meter" json)))))))
+
+(deftest account-logout-forgets-the-key-and-the-link-and-says-so ()
+  (is (equal '(nil (:logout) nil nil nil nil nil) (launch-plan "logout")))
+  (is (search "no argument" (launch-refusal "logout" "now")))
+  (is (null (nle::terminal-refusal '(:logout) nil '("logout"))))
+  (with-temp-file (nle::*auth-file-path*)
+    (with-temp-file (nle::*shared-config-path*)
+      (let ((nle::*account-usage* (list :usage (shasht:read-json +account-usage-plan+) :read-at (get-universal-time)))
+            (nle::*account-login* (list :state :signed-in :mode "api")))
+        (nle::account-login-save (shasht:read-json +account-linked+))
+        (nle::save-machine-link "00000000-0000-0000-0000-000000000002" "poll-secret-fixture")
+        (nle::save-provider-api-key "deepseek" "other-provider-key")
+        (nle::config-set '("providers" "nodecode" "api_key") "inline-key")
+        (nle::persist-shared-model-pin "default_model" "nodecode" "cyber-v1")
+        (multiple-value-bind (text out) (nle::account-logout)
+          (is out "a key and a link went")
+          (is (search "Signed out of nodecode.ai" text))
+          (is (search "https://nodecode.ai/account/machines" text) "it says where the key ends on the account")
+          (is (search "needs /login or /models" text) "a nodecode default model needs a sign-in or another pick"))
+        (is (null (nle::account-credential)) "no nodecode.ai key answers any more")
+        (is (null (nlk:json-value (nle::read-shared-config) :string "providers" "nodecode" "api_key")) "the inline key went too")
+        (is (null (nlk:json-value (nle::read-auth-file nle::*auth-file-path*) :object "machine_link")) "the link's secret is forgotten")
+        (is (equal "other-provider-key" (nlk:json-value (nle::read-auth-file nle::*auth-file-path*) :string "api_keys" "deepseek" "key")) "another provider's key stays")
+        (is (and (null nle::*account-usage*) (null nle::*account-login*)) "the meter and the sign-in are dropped")
+        (is (eq :false (gethash "signed_in" (nle::account-json))))
+        (multiple-value-bind (text out) (nle::account-logout)
+          (is (not out) "signed out already, nothing is written")
+          (is (search "Not signed in" text)))))))
+
+(deftest account-logout-is-a-shell-command-that-takes-no-word (with-temp-store ())
+  (let ((model (make-frame-model 100 30)) (command (nle::find-slash-command "logout")))
+    (is command "/logout is offered")
+    (is (null (nle::slash-command-headless command)) "no room or page signs the owner's home out")
+    (is (search "takes no word" (nle::slash-logout-op model "now")) "a word is refused, nothing is sent")))
 
 (deftest account-login-start-refuses-a-mode-and-answers-a-waiting-sign-in-again ()
   (is (search "subscription or api" (refusal-text error (nle::account-login-start "bogus"))))

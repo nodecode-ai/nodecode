@@ -20,14 +20,16 @@ nodecode gateway logs --follow
 | --- | --- |
 | none, `status` | Prints the state: off, serving, waiting, starting, stopped, restarting, failed or unavailable. |
 | `on` | Writes the unit. Enables it. Starts it. On Linux, asks logind to keep it running after logout. |
-| `off` | Disables the unit, removes its file and stops the process. Writes `gateway-off`. |
-| `restart` | Restarts on the current build with the current config. Refused while the gateway is off. |
+| `off` | Disables the unit, removes its file and stops the process. Writes `gateway-off`. Refused from inside the gateway, see below. |
+| `off --force` | The same, from inside the gateway too. |
+| `restart` | Restarts on the current build with the current config. Refused while the gateway is off, and from inside it. |
+| `restart --force` | The same, from inside the gateway too. |
 | `logs` | Prints the last 60 log lines. |
 | `logs --follow`, `logs -f` | Keeps printing new lines. Command line only. |
 | `run` | Runs the gateway in the foreground. This is what the unit runs. Command line only. |
 | `help [VERB]` | Prints help. |
 
-`/gateway [on | off | restart | logs | help]` does the same from a shell. A shell is the terminal UI. `/settings` > System > Gateway > Run in the background turns it on or off: Off is `off`, and writes `gateway-off`. On is `on`.
+`/gateway` does the same from a shell, its verbs as rows: where it stands, on, a restart, off, its log, and setting up Discord, Telegram or Slack. A shell is the terminal UI. `/settings` > System > Gateway > Run in the background turns it on or off: Off is `off`, and writes `gateway-off`. On is `on`.
 
 For a profile, add `-p NAME`:
 
@@ -79,9 +81,9 @@ On macOS the launcher is copied once to `~/Library/Application Support/nodecode/
 | A shell owns the store, then the gateway starts | The gateway waits. It takes the organism over when that shell closes. |
 | The gateway serves, then a shell opens | The shell attaches. Its footer shows `Gateway`, colored by the connection. A click opens the web page on Sessions. |
 | The gateway restarts: for an update, or after a clean exit | Open shells wait up to 60 s for it to take the store again, then attach. Meanwhile they start no organism of their own. |
-| `/gateway off` from an attached shell | The gateway stops. That shell takes the organism over. |
+| Turned off in `/gateway`, from an attached shell | The gateway stops. That shell takes the organism over. |
 
-See [The organism](/organism).
+See [The organism](organism.mdx).
 
 {/* source: src/gateway/background.lisp */}
 ## Logout
@@ -123,6 +125,13 @@ Nothing turns the gateway on by itself in these cases:
 - The platform is Windows.
 
 {/* source: src/gateway/background.lisp */}
+## From inside the gateway
+
+A process the gateway started inherits its `NODECODE_HOME`: an agent's tool shell, a script that shell runs, a tmux session it leaves behind. On Linux that is every process in the unit's control group. There `nodecode gateway off` and `nodecode gateway restart` are refused, because stopping the gateway would end the process part way.
+
+The refusal names the unit and its home, and nothing is changed. A script meant for another home sets `NODECODE_HOME` first. `--force` stops or restarts the gateway anyway. The gateway's own web page and the installer always force.
+
+{/* source: src/gateway/background.lisp */}
 ## gateway-off
 
 `nodecode gateway off` writes the file `~/.nodecode/gateway-off`.
@@ -143,4 +152,4 @@ The unit names the installer's `current` link. A restart runs the build installe
 | `nodecode update` needs a restart | The organism restarts itself through the unit at an idle moment. |
 | `nodecode gateway restart` | Rewrites the unit first if the binary path or `PATH` changed. |
 
-The installer restarts only units that Nodecode wrote. See [Updates](/updates).
+The installer restarts only units that Nodecode wrote. See [Updates](updates.mdx).

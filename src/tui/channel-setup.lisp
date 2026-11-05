@@ -619,7 +619,7 @@ row ticks it."
       (:start (say "Starting the channels…" :tone :muted) nil)
       (:done
        (when setup.channel
-         (say (format nil "Change it any time: /gateway setup ~a, or /settings › Channels." setup.channel) :tone :muted))
+         (say (format nil "Change it any time: /gateway, then Set up ~@(~a~), or /settings › Channels." setup.channel) :tone :muted))
        nil))))
 
 (defun paint-channel-setup (setup canvas edges)

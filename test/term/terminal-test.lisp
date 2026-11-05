@@ -60,6 +60,86 @@ event type at 0, bKeyDown at 4, wRepeatCount at 8, uChar at 14."
     (is (equal (string (code-char #x1F600))
                (nlt::console-records-text (console-record :unit #xDE00) 1 pending)))))
 
+;;; Windows Terminal and conhost send Shift+Enter as the bare CR Enter is, and
+;;; ignore the kitty flags; under win32-input-mode (DEC 9001) each key event
+;;; arrives as ESC [ Vk;Sc;Uc;Kd;Cs;Rc _ instead. The reports below are the
+;;; ones Windows Terminal 1.24 sent for real keys, and the bytes each must come
+;;; back as are what conhost's own legacy encoding sent for the same key.
+
+(defun win32-report (vk scan unit state &key (down 1) (repeat 1))
+  (format nil "~C[~D;~D;~D;~D;~D;~D_" #\Escape vk scan unit down state repeat))
+
+(defun win32-press (vk scan unit state)
+  "A key's press and release, the two reports a keystroke sends."
+  (concatenate 'string (win32-report vk scan unit state)
+               (win32-report vk scan unit state :down 0)))
+
+(deftest win32-input-reports-come-back-as-the-legacy-keys ()
+  (is-table (vk scan unit state expected) (equal expected (nlt::win32-input-text (win32-press vk scan unit state)))
+    (13 28 13 16 (csi "13;2u") "Shift+Enter is the kitty Shift+Enter")
+    (13 28 13 0 (string #\Return) "Enter is CR")
+    (13 28 13 256 (string #\Return) "keypad Enter is CR")
+    (13 28 10 8 (string #\Newline) "Ctrl+Enter is LF")
+    (13 28 13 2 (format nil "~C~C" #\Escape #\Return) "Alt+Enter is ESC CR")
+    (65 30 97 0 "a" "a")
+    (65 30 65 16 "A" "Shift+a")
+    (67 46 3 8 (string (code-char 3)) "Ctrl+C")
+    (88 45 120 2 (format nil "~Cx" #\Escape) "Alt+x")
+    (81 16 64 9 "@" "AltGr+Q composes, no ESC")
+    (16 42 0 16 "" "a bare modifier sends nothing")
+    (32 57 32 8 "" "Ctrl+Space sends nothing")
+    (27 1 27 0 (string #\Escape) "Escape")
+    (8 14 8 0 (string (code-char 127)) "Backspace is DEL")
+    (8 14 127 8 (string (code-char 8)) "Ctrl+Backspace is BS")
+    (9 15 9 0 (string #\Tab) "Tab")
+    (9 15 9 16 (csi "Z") "Shift+Tab is CSI Z")
+    (38 72 0 256 (csi "A") "Up")
+    (38 72 0 264 (csi "1;5A") "Ctrl+Up")
+    (36 71 0 256 (csi "H") "Home")
+    (112 59 0 0 (format nil "~COP" #\Escape) "F1 is SS3 P")
+    (113 60 0 16 (csi "1;2Q") "Shift+F2")
+    (116 63 0 0 (csi "15~") "F5")
+    (46 83 0 256 (csi "3~") "Delete")
+    (33 73 0 264 (csi "5;5~") "Ctrl+PageUp")))
+
+(deftest win32-input-keeps-what-is-not-a-report ()
+  ;; A paste, a mouse report and everything a terminal without 9001 sends
+  ;; arrive as text; a paste's line breaks come as reports among it.
+  (let ((legacy (format nil "hi~A~C~A~A~C[" (csi "<0;10;5M") #\Return (csi "1;5A")
+                        (csi "200~") #\Escape)))
+    (is (equal legacy (nlt::win32-input-text legacy)) "untouched, Alt+[ at the end too"))
+  (let ((pasted (format nil "~Aa~Ab~A" (csi "200~") (win32-press 13 28 13 0) (csi "201~"))))
+    (is (equal (format nil "~Aa~Cb~A" (csi "200~") #\Return (csi "201~")) (nlt::win32-input-text pasted)) "a paste's CR report is a CR"))
+  (is (equal "aaa" (nlt::win32-input-text (win32-report 65 30 97 0 :repeat 3))) "a repeat count repeats"))
+
+(deftest win32-input-holds-a-report-cut-in-two ()
+  (let ((shift-enter (win32-report 13 28 13 16)))
+    (multiple-value-bind (text tail) (nlt::win32-input-text (subseq shift-enter 0 9))
+      (is (equal "" text) "nothing of a cut report is sent")
+      (is (equal (subseq shift-enter 0 9) tail) "it waits as the tail")
+      (is (equal (csi "13;2u") (nlt::win32-input-text (concatenate 'string tail (subseq shift-enter 9)))) "and the rest completes it")))
+  (multiple-value-bind (text tail surrogate)
+      (nlt::win32-input-text (win32-press 0 0 #xD83D 0))
+    (is (equal "" text) "a high half alone waits")
+    (is (equal "" tail))
+    (is (equal (string (code-char #x1F600)) (nlt::win32-input-text (win32-press 0 0 #xDE00 0) surrogate)) "for its low half")))
+
+(deftest win32-shift-enter-decodes-apart-from-enter ()
+  (is (key-is (key-from-string (nlt::win32-input-text (win32-press 13 28 13 16))) :enter :mod nlt:+mod-shift+) "Shift+Enter reaches the keymap as shift+enter")
+  (let ((enter (key-from-string (nlt::win32-input-text (win32-press 13 28 13 0)))))
+    (is (key-is enter :enter))
+    (is (zerop (logand nlt:+mod-shift+ (nlt:key-event-mod enter))) "Enter carries no Shift")))
+
+(deftest kitty-keyboard-asks-windows-for-win32-input ()
+  ;; The kitty flags are what tell Shift+Enter apart on Unix terminals;
+  ;; on Windows the same switch turns on win32-input-mode, and its undo off.
+  (let ((push (written #'nlt:push-kitty-keyboard))
+        (pop (written #'nlt:pop-kitty-keyboard)))
+    (is (search (csi ">1u") push))
+    (is (search (csi "<u") pop))
+    (is (eq #+win32 t #-win32 nil (and (search (csi "?9001h") push) t)))
+    (is (eq #+win32 t #-win32 nil (and (search (csi "?9001l") pop) t)))))
+
 ;;; Quit used to hand back a blank terminal: the library's launch prelude
 ;;; erased the primary buffer (ESC[2J ESC[H) before the first frame entered
 ;;; the alt screen, so ESC[?1049l on exit restored the wipe.
@@ -72,16 +152,22 @@ event type at 0, bKeyDown at 4, wRepeatCount at 8, uChar at 14."
   (is (search (csi "?2004h") out) "bracketed paste on")
   (is (search (csi "?2031h") out) "colour-scheme reports on"))
 
+(defun without-cursor-shape (string)
+  "STRING with its DECSCUSR (ESC [ N SP q) cursor-shape sequences taken out."
+  (cl-ppcre:regex-replace-all (format nil "~C\\[\\d* q" #\Escape) string ""))
+
 (deftest epilogue-shows-the-cursor-last (let* ((out (written #'nlt:exit-modes))
+                                               (shape (search (csi "0 q") out))
                                                (show (search (csi "?25h") out))))
-  (is (listp (dec-private-modes out)) "the epilogue is modes only")
+  (is (and shape show (< shape show)) "the terminal's own cursor shape back, before the cursor shows")
+  (is (listp (dec-private-modes (without-cursor-shape out))) "the rest of the epilogue is modes only")
   (is (search (csi "?2004l") out) "bracketed paste off")
   (is (search (csi "?2031l") out) "colour-scheme reports off")
   (is (and show (= (+ show (length (csi "?25h"))) (length out))) "cursor shown last"))
 
 (deftest every-mode-the-prelude-sets-the-epilogue-clears ()
   (let ((on (dec-private-modes (written #'nlt:enter-modes)))
-        (off (dec-private-modes (written #'nlt:exit-modes))))
+        (off (dec-private-modes (without-cursor-shape (written #'nlt:exit-modes)))))
     (is (and (listp on) (listp off)) "both parse")
     ;; 1049 pairs with DECAWM 7 (on with 7l, off with 7h), so compare the
     ;; numbers touched rather than h/l per number.
@@ -101,8 +187,8 @@ event type at 0, bKeyDown at 4, wRepeatCount at 8, uChar at 14."
     (is (search (csi "?1049l") (transition alt plain)) "leaving the alt screen")
     (is (search (csi "?1003h") (transition nil mouse)) "all-motion tracking on")
     (is (search (csi "?1003l") (transition mouse plain)) "tracking off when the mode goes")
-    (is (search (csi "2 q") (transition nil cursor)) "a cursor appearing sets the steady block")
-    (is (null (search (csi "2 q") (transition cursor cursor))) "and only once")
+    (is (search (csi "1 q") (transition nil cursor)) "a cursor appearing sets the blinking block")
+    (is (null (search (csi "1 q") (transition cursor cursor))) "and only once")
     (is (search (csi ">1u") (transition nil keys)) "the enhancements push disambiguation, flag 1")
     (is (equal "" (transition keys keys)) "and only once")
     (is (search (csi "<u") (transition keys plain)) "dropping the enhancements pops the mode")))
@@ -240,6 +326,8 @@ as a window title, the empty string included."
 (defconstant +tiocswinsz+ #+linux #x5414 #+darwin #x80087467 #-(or linux darwin) #x5414)
 
 (deftest terminal-size-reads-both-dimensions-off-a-real-terminal ()
+  #+win32 (is nil "cannot exist on Windows: no pseudo-terminal takes TIOCSWINSZ there; the console's size is read through GetConsoleScreenBufferInfo")
+  #-win32
   ;; The live binary once died at boot setting the renderer's height to NIL:
   ;; OR over the ioctl form kept only its primary value. A pty with a size
   ;; set through TIOCSWINSZ exercises the real path, not the fallback.
@@ -313,8 +401,9 @@ as a window title, the empty string included."
 
 (deftest clipboard-helper-runner-keys-off-the-exit-status ()
   (is (null (nlk:exits-zero-p '("nlt-missing-clipboard-helper") :input "text")))
-  (is (eq t (nlk:exits-zero-p '("true") :input "text")) "exit 0 is success")
-  (is (null (nlk:exits-zero-p '("false") :input "text")) "exit 1 is failure"))
+  ;; Through sh: Windows has no `true' or `false' on its PATH.
+  (is (eq t (nlk:exits-zero-p (nlk:shell-argv "true") :input "text")) "exit 0 is success")
+  (is (null (nlk:exits-zero-p (nlk:shell-argv "false") :input "text")) "exit 1 is failure"))
 
 ;;; --- the descriptor never crosses a dump ---------------------------------
 
@@ -324,16 +413,19 @@ as a window title, the empty string included."
   ;; release built from a terminal baked fd 10; the owner path's gateway
   ;; socket landed on it and the launch died in TCGETATTR).
   (is (member 'nlt::forget-terminal sb-ext:*save-hooks*))
-  (multiple-value-bind (read-fd write-fd) (sb-posix:pipe)
-    (nlk:with-cleanup ((ignore-errors (sb-posix:close read-fd)))
-      (let ((nlt::*tty-fd* write-fd)
+  ;; Any descriptor stands for the terminal's: a file opens alike everywhere.
+  (let* ((path (temp-path "terminal-state" "txt"))
+         (fd (sb-posix:open (sb-ext:native-namestring path)
+                            (logior sb-posix:o-creat sb-posix:o-wronly) #o600)))
+    (nlk:with-cleanup ((ignore-errors (delete-file path)))
+      (let ((nlt::*tty-fd* fd)
             (nlt::*tty-stream* nil)
             (nlt::*original-termios* :saved))
         (nlt::forget-terminal)
         (is (null nlt::*tty-fd*) "the descriptor is forgotten")
         (is (null nlt::*tty-stream*) "the stream over it too")
         (is (null nlt::*original-termios*) "and the saved attributes"))
-      (is (null (ignore-errors (sb-posix:fstat write-fd)))))))
+      (is (null (ignore-errors (sb-posix:fstat fd))) "and closed"))))
 
 ;;; --- a process with no terminal --------------------------------------------
 ;;; The device the terminal is opened by is the one seam: a path that will not

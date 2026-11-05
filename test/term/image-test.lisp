@@ -93,7 +93,10 @@
     (let ((written (with-output-to-string (out)
                      (nlt:place-image image 4 2 :rows 3 :placement-id 7 :stream out))))
       (is (search (csi "3;5H") written) "the cursor goes to the cell, 1-based")
-      (is (search (format nil "_Ga=p,i=~D,p=7,r=3,C=1" image.id) written)))))
+      (is (search (format nil "_Ga=p,i=~D,p=7,r=3,C=1" image.id) written)))
+    (let ((written (with-output-to-string (out)
+                     (nlt:place-image image 4 2 :rows 3 :placement-id 7 :crop-y 10 :crop-height 30 :stream out))))
+      (is (search (format nil "_Ga=p,i=~D,p=7,r=3,y=10,h=30,C=1" image.id) written) "a cut placement names its source rectangle's pixel rows"))))
 
 (deftest the-graphics-query-loads-a-pixel-so-the-answer-can-be-ok ()
   ;; a=q asks the terminal to LOAD an image and answer OK or the error, so

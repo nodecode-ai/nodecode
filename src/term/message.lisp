@@ -168,6 +168,22 @@ claimed.")
   :documentation "The terminal's answer to the background query (OSC 11):
 RGB, its background colour.")
 
+(defmessage device-attributes-msg
+  ((attributes :initarg :attributes :initform nil :reader device-attributes-msg-attributes))
+  :documentation "The terminal's primary device attributes (DA1, CSI ? ... c):
+ATTRIBUTES, the numbers it listed, 4 among them when it draws sixel.")
+
+(defmessage cell-size-msg
+  ((width :initarg :width :initform nil :reader cell-size-msg-width)
+   (height :initarg :height :initform nil :reader cell-size-msg-height))
+  :documentation "The terminal's cell size in pixels (XTWINOPS 16's answer,
+CSI 6 ; height ; width t).")
+
+(defmessage terminal-version-msg
+  ((name :initarg :name :initform nil :reader terminal-version-msg-name))
+  :documentation "The terminal's name and version (XTVERSION's answer, DCS > |
+NAME ST): NAME as it wrote it, `VTE(8401)' or `kitty(0.47.1)'.")
+
 (defmessage color-scheme-msg
   ((scheme :initarg :scheme :initform nil :reader color-scheme-msg-scheme))
   :documentation "The terminal's report that its colour scheme turned (DEC
@@ -188,7 +204,7 @@ thread.")
   key-press-msg paste-msg window-size-msg
   mouse-click-msg mouse-release-msg mouse-motion-msg mouse-wheel-msg
   tick-msg quit-msg kitty-graphics-msg truecolor-msg background-msg color-scheme-msg
-  terminal-io-msg)
+  device-attributes-msg cell-size-msg terminal-version-msg terminal-io-msg)
 
 ;;; --- the declarative view ------------------------------------------------
 
@@ -206,8 +222,9 @@ steady block."
   "What one frame declares: ROWS (the rendered rows, one string each, top to
 bottom, each already styled and cut to the width), whether the ALT-SCREEN is on, the MOUSE-MODE (:cell-motion, :all-motion, or
 NIL), whether the kitty keyboard's disambiguation is on (KEYBOARD-ENHANCEMENTS;
-NIL pops the kitty keyboard mode), the CURSOR (NIL hides it), the kitty
-IMAGES to place over the content (a list of IMAGE-PLACEMENT), the TITLE
+NIL pops the kitty keyboard mode), the CURSOR (NIL hides it), the
+IMAGES to place over the content (a list of IMAGE-PLACEMENT, kitty, sixel or
+half blocks), the TITLE
 the window wears (NIL says nothing and leaves whatever the shell set), and
 the OVERLAY: NIL, or a function the painter calls with the frame's
 SCREEN-BUFFER once ROWS are laid out into it and before it is diffed."

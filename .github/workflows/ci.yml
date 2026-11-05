@@ -5,6 +5,10 @@ name: CI
 #   linux    lint, the release tarball (pack.sh), the core test suite
 #   macos    the Mac half of the release, driven over ssh (pack-macos.sh)
 #   windows  the release's Windows half: build-windows.ps1 and both smokes
+#   windows-suite  after windows: the core suite on Windows, held to the
+#            reds tools/ci/windows-known-red.txt lists -- a test not on the
+#            list going red there fails it, and a fix takes its test off.
+#            Not yet a required check: Windows parity is that list emptying.
 #   proofs   every Lean proof under proofs/, strict and on the classical
 #            axioms only (`just proofs')
 #   perf     after linux: this revision against its base on the TUI's keys
@@ -116,3 +120,22 @@ jobs:
       - name: Build nodecode.exe and run both smokes
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\ci\ci-windows.ps1
+
+  windows-suite:
+    name: Windows suite
+    needs: windows
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, nc-windows]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the core suite, held to its known reds
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\ci\ci-windows-suite.ps1
+      - name: Keep the results and load logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-suite
+          path: ${{ runner.temp }}\nodecode-suite\out
+          if-no-files-found: ignore

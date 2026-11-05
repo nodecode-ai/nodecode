@@ -24,6 +24,10 @@
 ;;;;   12. The walk's answer is kept across processes: the boot
 ;;;;      installs the cached catalogs before the first frame, so the first
 ;;;;      `$' paints rows without waiting on the walk at all.
+;;;;   13. An @ token that starts at a root of its own (`~/', `../', `./',
+;;;;      `/', and `C:\' on Windows) completes shell-style from a listing of
+;;;;      that one folder, read on a lister thread: hidden names only once the
+;;;;      typed name starts with `.', a folder row going on into the folder.
 ;;;;
 ;;;; Loads after ui-test: reuses MAKE-FRAME-MODEL.
 
@@ -67,7 +71,7 @@ ABOVE, then expires into the placeholder with the band as it was."
     (expire-status-news model)
     (nlt:view model)
     (is (null model.composer-status))
-    (is (search "Ready" (nth 19 (nle::compose-frame model))))
+    (is (equal "" (string-trim " " (nth 19 (nle::compose-frame model)))) "the caret alone again")
     (is (equal lines (nle::band-window-lines model.band)))))
 
 (defun open-openai-connect (model)
@@ -121,7 +125,7 @@ ABOVE, then expires into the placeholder with the band as it was."
 (deftest composer-horizontal-tab-accepts-the-suggestion ()
   (with-frame-model (model 80 24 :session-id "composer-ht" :typed "/th")
     (press-wire model 9)
-    (is-composer model "/themes " "a bare HT completes the ghost")
+    (is-composer model "/themes" "a bare HT completes the ghost, the name alone")
     (is (null model.turn-in-flight))))
 
 ;;; The decoder contract itself, at the byte level. Every keymap assertion
@@ -253,7 +257,7 @@ ABOVE, then expires into the placeholder with the band as it was."
     (press model :left)
     (is (null (nle::composer-ghost-remainder model)))
     (press model :right :tab)
-    (is-composer model "/themes " "the accept gesture completes the ghost")
+    (is-composer model "/themes" "the accept gesture completes the ghost, the name alone")
     (is (null (nle::composer-ghost-remainder model)))))
 
 (deftest composer-file-trigger-completes-workspace-paths ()
@@ -272,6 +276,75 @@ ABOVE, then expires into the placeholder with the band as it was."
       (type-string model "@RE" :enter)
       (is-composer model "@src/main.lisp @README.md " "Enter over the dropdown completes instead of submitting")
       (is (null model.turn-in-flight)))))
+
+(deftest composer-at-path-token-takes-the-folder-lane ()
+  ;; A token naming a root of its own leaves the workspace catalog; a bare
+  ;; name, a hidden name and a workspace folder stay in it.
+  (dolist (token '("~/" "~/notes" "../" "../../src/" "./" "/" "/etc/ho" "~" ".."))
+    (is (nle::path-token-p token nil) token))
+  (dolist (token '("" "src/" "README" "~x" ".hidden" "..x" "C:\\x" "~\\x" "."))
+    (is (not (nle::path-token-p token nil)) token))
+  ;; Windows adds the drive and the backslash.
+  (dolist (token '("C:\\" "c:/Users" "~\\" "..\\" "\\" ".\\x"))
+    (is (nle::path-token-p token t) token))
+  (dolist (token '("C:" "src\\x" "1:\\"))
+    (is (not (nle::path-token-p token t)) token))
+  (is (equal "~/notes/" (nle::path-token-head "~/notes/re" nil)) "the head is the folder the token lists")
+  (is (equal "C:\\Users\\" (nle::path-token-head "C:\\Users\\mi" t)) "either separator ends it on Windows")
+  (is (null (nle::path-token-head "~" nil)) "a bare ~ has no head")
+  (is (equal (user-homedir-pathname) (nle::path-token-folder "~/")) "~/ is the operator's home")
+  (is (equal (merge-pathnames "notes/" (user-homedir-pathname)) (nle::path-token-folder "~/notes/")) "and a folder under it")
+  (with-temp-workspace (dir "sub/a.lisp")
+    (is (equal (uiop:native-namestring (truename dir)) (uiop:native-namestring (truename (nle::path-token-folder "../" (merge-pathnames "sub/" dir))))) "../ is the folder's parent")
+    (is (equal (uiop:native-namestring dir) (uiop:native-namestring (nle::path-token-folder (uiop:native-namestring dir)))) "an absolute path is itself")))
+
+(deftest composer-at-path-rows-complete-shell-style ()
+  (let ((entries '((".config" . t) ("docs" . t) ("Documents" . t) ("notes.md") (".profile"))))
+    (flet ((rows (filter &rest keys)
+             (mapcar (lambda (row) (list (nle::composer-suggestion-text row) (nle::composer-suggestion-remainder row) (nle::composer-suggestion-source row)))
+                     (apply #'nle::path-token-rows filter entries keys))))
+      (is (equal '(("~/docs/" "docs/" :folder) ("~/Documents/" "Documents/" :folder) ("~/notes.md" "notes.md" :file)) (rows "~/" :windows nil :fold-case nil)) "a folder lists its visible entries, a folder ending in its separator")
+      (is (equal '("~/.config/" "~/.profile") (mapcar #'first (rows "~/." :windows nil :fold-case nil))) "hidden names show once the name starts with a dot")
+      (is (equal '("~/docs/") (mapcar #'first (rows "~/doc" :windows nil :fold-case nil))) "a case-sensitive file system matches the exact case")
+      (is (equal '("~/docs/" "~/Documents/") (mapcar #'first (rows "~/doc" :windows nil :fold-case t))) "a case-insensitive one matches either")
+      (is (equal '("C:\\Users\\Documents\\" "cuments\\") (subseq (second (rows "C:\\Users\\Do" :windows t)) 0 2)) "a folder ends in the separator the token uses")
+      (is (equal '(("~/" "/" :folder)) (rows "~" :windows nil)) "a bare ~ completes to the home folder")
+      (is (equal '(("../" "/" :folder)) (rows ".." :windows nil)) "a bare .. to the parent"))))
+
+(deftest composer-at-path-lists-the-folder-off-the-keystroke ()
+  ;; The lane end to end through the shell's own keys: a path token asks its
+  ;; lister thread for the folder and answers at once from what is in hand,
+  ;; the listing lands on the tick the lister posts, and Tab over a folder row
+  ;; goes on into it while Tab over a file row ends the mention. The catalog
+  ;; cache is off, so a workspace walk this model starts never reaches the
+  ;; next test's boot.
+  (with-temp-workspace (dir "notes.md" "sub/a.lisp" ".hidden")
+    (let* ((nle::*composer-catalog-cache-path* nil)
+           (root (uiop:native-namestring dir))
+           ;; A folder row ends in the token's own separator: the root's last.
+           (sub (uiop:strcat root "sub" (string (char root (1- (length root)))))))
+      (with-frame-model (model 80 24 :session-id "at-paths")
+        (let ((program (nlt:make-program model)))
+          (setf (nlt:program-running program) t model.program program)
+          (flet ((land ()
+                   (nlt::mailbox-drain (nlt::program-mailbox program) :timeout 10)
+                   (nle::land-composer-catalog-walks model))
+                 (texts () (mapcar #'nle::composer-suggestion-text (nle::token-suggestions-for model))))
+            (unwind-protect
+                 (progn
+                   (type-string model (uiop:strcat "@" root))
+                   (is (null (texts)) "nothing is listed on the keystroke itself")
+                   (is (land) "the lister's listing lands on its tick")
+                   (is (equal (list (uiop:strcat root "notes.md") sub) (texts)) "the folder's visible entries, the hidden one left out")
+                   (type-string model "s")
+                   (press model :tab)
+                   (is-composer model (uiop:strcat "@" sub) "Tab over a folder goes on into it, no space")
+                   (is (null (texts)) "the new folder is asked for, not read on the key")
+                   (is (land) "and its listing lands")
+                   (press model :tab)
+                   (is-composer model (uiop:strcat "@" sub "a.lisp ") "Tab over a file ends the mention with a space")
+                   (is (and (null (texts)) (null model.path-listing-asked)) "with no path token typed the lane forgets its folder"))
+              (setf (nlt:program-running program) nil))))))))
 
 (deftest skill-frontmatter-reads-a-block-scalar-description ()
   ;; Another harness writes long descriptions as YAML block scalars; the
@@ -921,6 +994,6 @@ reader: ESC [ 200 ~, the text, ESC [ 201 ~."
     (is (equal "my draft" (composer-value model)))
     (is (equal "viewport Developer" (nle::slash-details-op model "")))
     (is (null model.composer-status) "querying does not announce a switch")
-    (is (search "usage: details" (nle::slash-details-op model "expanded")))
+    (is (equal (nle::slash-unoffered "details") (nle::slash-details-op model "expanded")))
     (is (eq :developer model.tool-detail))
     (is (null model.composer-status) "invalid input does not announce a switch")))

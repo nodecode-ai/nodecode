@@ -155,6 +155,116 @@ PENDING)."
                               (emit unit))))))
       (values (get-output-stream-string out) pending))))
 
+;;; --- win32-input-mode ------------------------------------------------------
+;;; Virtual-terminal input encodes a key the legacy way, and the legacy way has
+;;; no Shift+Enter: Windows Terminal and conhost send it as the bare CR Enter
+;;; is, and neither takes the kitty keyboard flags that would tell the two
+;;; apart. What both take is win32-input-mode (DEC 9001, switched on beside
+;;; the kitty flags): every key event then arrives as
+;;; ESC [ Vk ; Sc ; Uc ; Kd ; Cs ; Rc _ -- the virtual key, scan code,
+;;; character, down flag, modifier state and repeat count of one record. Each
+;;; report is put back into the bytes the legacy encoding gives its key, but
+;;; Shift+Enter, which becomes the kitty CSI 13;2u the decoder already reads.
+;;; A paste and a mouse report still arrive as plain text and pass through, and
+;;; so does everything a terminal that ignores 9001 sends.
+
+(defun win32-key-text (vk unit state)
+  "The legacy virtual-terminal bytes of the key-down report VK UNIT STATE,
+Shift+Enter as CSI 13;2u; NIL for a key that sends nothing."
+  ;; STATE is dwControlKeyState: SHIFT_PRESSED #x10, either Ctrl #x0C, either
+  ;; Alt #x03. AltGr reports itself as Right Alt with Left Ctrl, and its
+  ;; character is the one composed, so it takes no ESC prefix. MODS is the
+  ;; xterm modifier parameter less one.
+  (let* ((shift (logtest state #x10))
+         (ctrl (logtest state #x0C))
+         (alt (logtest state #x03))
+         (alt-gr (and (logtest state #x01) (logtest state #x08)))
+         (mods (logior (if shift 1 0) (if alt 2 0) (if ctrl 4 0)))
+         (final (case vk (38 #\A) (40 #\B) (39 #\C) (37 #\D) (36 #\H) (35 #\F)
+                  (112 #\P) (113 #\Q) (114 #\R) (115 #\S)))
+         (tilde (case vk (45 2) (46 3) (33 5) (34 6) (116 15) (117 17) (118 18)
+                  (119 19) (120 20) (121 21) (122 23) (123 24))))
+    (flet ((alt-prefixed (code)
+             (if (and alt (not alt-gr))
+                 (format nil "~C~C" #\Escape (code-char code))
+                 (string (code-char code)))))
+      (cond ((= vk 13)
+             (cond ((and shift (not ctrl)) (format nil "~C[13;~Du" #\Escape (1+ mods)))
+                   (ctrl (alt-prefixed 10))
+                   (t (alt-prefixed 13))))
+            ;; Cursor keys and F1-F4: CSI or SS3 alone, CSI 1;m with modifiers.
+            (final (cond ((plusp mods) (format nil "~C[1;~D~C" #\Escape (1+ mods) final))
+                         ((find final "PQRS") (format nil "~CO~C" #\Escape final))
+                         (t (format nil "~C[~C" #\Escape final))))
+            (tilde (if (plusp mods)
+                       (format nil "~C[~D;~D~~" #\Escape tilde (1+ mods))
+                       (format nil "~C[~D~~" #\Escape tilde)))
+            ((= vk 8) (alt-prefixed (if ctrl 8 127)))
+            ((and (= vk 9) shift) (format nil "~C[Z" #\Escape))
+            ;; A bare modifier, and Ctrl+Space, whose NUL the legacy
+            ;; encoding's reader never passed on.
+            ((or (zerop unit) (and ctrl (not alt-gr) (= unit 32))) nil)
+            (t (alt-prefixed unit))))))
+
+(defun win32-input-text (text &optional surrogate)
+  "TEXT with each win32-input-mode report in it put back into its key's
+bytes => (values TRANSLATED TAIL SURROGATE)."
+  ;; TAIL is a report cut off at TEXT's end, to lead the next batch; SURROGATE
+  ;; a high half whose low half has not been read yet, to be passed back in.
+  ;; A report needs a digit after ESC [, so an Alt+[ a legacy terminal sends
+  ;; at the end of a batch is passed on rather than held.
+  (let ((out (make-string-output-stream))
+        (n (length text))
+        (i 0))
+    (flet ((report-end (at)
+             ;; The index of the _ closing the report at AT, :CUT when TEXT
+             ;; ends inside one, NIL when AT starts no report.
+             (when (and (char= (char text at) #\Escape)
+                        (< (1+ at) n) (char= (char text (1+ at)) #\[)
+                        (< (+ at 2) n) (digit-char-p (char text (+ at 2))))
+               (let ((end (position-if-not (lambda (c) (or (digit-char-p c) (char= c #\;)))
+                                           text :start (+ at 2))))
+                 (cond ((null end) :cut)
+                       ((char= (char text end) #\_) end)))))
+           (fields (start end)
+             (loop for from = start then (1+ to)
+                   for to = (or (position #\; text :start from :end end) end)
+                   collect (if (= from to) 0 (parse-integer text :start from :end to))
+                   until (= to end))))
+      (loop while (< i n)
+            do (let ((end (report-end i)))
+                 (cond ((eq end :cut)
+                        (return-from win32-input-text
+                          (values (get-output-stream-string out) (subseq text i) surrogate)))
+                       ((null end)
+                        (write-char (char text i) out)
+                        (incf i))
+                       (t
+                        (destructuring-bind (&optional (vk 0) (scan 0) (unit 0) (down 0) (state 0)
+                                                       (repeat 1) &rest more)
+                            (fields (+ i 2) end)
+                          (declare (ignore scan more))
+                          ;; Releases send nothing; a character outside
+                          ;; UTF-16 is no key.
+                          (when (and (plusp down) (<= unit #xFFFF))
+                            (let ((key (cond ((<= #xD800 unit #xDBFF) (setf surrogate unit) nil)
+                                             ((and surrogate (<= #xDC00 unit #xDFFF))
+                                              (prog1 (string (code-char (+ #x10000
+                                                                           (ash (- surrogate #xD800) 10)
+                                                                           (- unit #xDC00))))
+                                                (setf surrogate nil)))
+                                             ((<= #xDC00 unit #xDFFF) nil)
+                                             ;; A character typed or pasted
+                                             ;; with no key behind it.
+                                             ((zerop vk) (setf surrogate nil)
+                                              (and (plusp unit) (string (code-char unit))))
+                                             (t (setf surrogate nil)
+                                                (win32-key-text vk unit state)))))
+                              (when key
+                                (dotimes (r (max 1 repeat)) (write-string key out))))))
+                        (setf i (1+ end))))))
+      (values (get-output-stream-string out) "" surrogate))))
+
 #+win32
 (progn
   (defclass console-input-stream (sb-gray:fundamental-character-input-stream)
@@ -162,7 +272,9 @@ PENDING)."
      (handle :initarg :handle :reader console-input-stream-handle)
      (text :initform "" :accessor console-input-stream-text)
      (index :initform 0 :accessor console-input-stream-index)
-     (pending :initform nil :accessor console-input-stream-pending))
+     (pending :initform nil :accessor console-input-stream-pending)
+     (report-tail :initform "" :accessor console-input-stream-report-tail)
+     (surrogate :initform nil :accessor console-input-stream-surrogate))
     (:documentation "The console's input records as a character stream: what
 READ-KEY reads on Windows, in place of an fd-stream over CONIN$."))
 
@@ -170,28 +282,46 @@ READ-KEY reads on Windows, in place of an fd-stream over CONIN$."))
     (< (console-input-stream-index stream)
        (length (console-input-stream-text stream))))
 
-  (defun console-input-fill (stream)
-    "Move the key input the console holds into STREAM's buffer without
-waiting. => true when a character is buffered."
-    (let ((handle (console-input-stream-handle stream)))
-      (multiple-value-bind (ok waiting) (%get-number-of-console-input-events handle)
-        (when (and (/= ok 0) (plusp waiting))
-          (nlk:bind ((wanted (min waiting 256))
+  (defun console-records-waiting (stream)
+    "The text of every input record the console holds, read without waiting."
+    ;; Every one, not a bufferful: a key's report is written as one batch of
+    ;; records, and reading until none wait never cuts one in two.
+    (let ((handle (console-input-stream-handle stream))
+          (out (make-string-output-stream)))
+      (loop
+        (multiple-value-bind (ok waiting) (%get-number-of-console-input-events handle)
+          (unless (and (/= ok 0) (plusp waiting)) (return))
+          (nlk:bind ((wanted (min waiting 1024))
                      (octets (make-array (* wanted +console-record-bytes+)
                                          :element-type '(unsigned-byte 8)))
                      ((ok read) (sb-sys:with-pinned-objects (octets)
                                   (%read-console-input handle (sb-sys:vector-sap octets) wanted))))
-            (when (and (/= ok 0) (plusp read))
-              (multiple-value-bind (text pending)
-                  (console-records-text octets read (console-input-stream-pending stream))
-                (setf (console-input-stream-pending stream) pending)
-                (when (plusp (length text))
-                  (setf (console-input-stream-text stream)
-                        (concatenate 'string
-                                     (subseq (console-input-stream-text stream)
-                                             (console-input-stream-index stream))
-                                     text)
-                        (console-input-stream-index stream) 0))))))))
+            (unless (and (/= ok 0) (plusp read)) (return))
+            (multiple-value-bind (text pending)
+                (console-records-text octets read (console-input-stream-pending stream))
+              (setf (console-input-stream-pending stream) pending)
+              (write-string text out)))))
+      (get-output-stream-string out)))
+
+  (defun console-input-fill (stream)
+    "Move the key input the console holds into STREAM's buffer without
+waiting. => true when a character is buffered."
+    (let ((records (console-records-waiting stream)))
+      (when (plusp (length records))
+        (nlk:bind (((text tail surrogate)
+                    (win32-input-text (concatenate 'string
+                                                   (console-input-stream-report-tail stream)
+                                                   records)
+                                      (console-input-stream-surrogate stream))))
+          (setf (console-input-stream-report-tail stream) tail
+                (console-input-stream-surrogate stream) surrogate)
+          (when (plusp (length text))
+            (setf (console-input-stream-text stream)
+                  (concatenate 'string
+                               (subseq (console-input-stream-text stream)
+                                       (console-input-stream-index stream))
+                               text)
+                  (console-input-stream-index stream) 0)))))
     (console-input-buffered-p stream))
 
   (defmethod sb-gray:stream-read-char-no-hang ((stream console-input-stream))
@@ -215,7 +345,9 @@ waiting. => true when a character is buffered."
 
   (defmethod sb-gray:stream-clear-input ((stream console-input-stream))
     (setf (console-input-stream-text stream) ""
-          (console-input-stream-index stream) 0)
+          (console-input-stream-index stream) 0
+          (console-input-stream-report-tail stream) ""
+          (console-input-stream-surrogate stream) nil)
     nil)
 
   (defmethod close ((stream console-input-stream) &key abort)
@@ -498,10 +630,12 @@ the whole frame.")
 terminal reads as `no title of mine'; the shell repaints its own on the
 next prompt.")
 
-(define-escape push-kitty-keyboard ("[>1u")
-  "The kitty keyboard's disambiguation, flag 1: the one enhancement a shell asks for.")
+(define-escape push-kitty-keyboard ("[>1u" #+win32 "[?9001h")
+  "The kitty keyboard's disambiguation, flag 1: the one enhancement a shell
+asks for. On Windows win32-input-mode too, which is how Windows Terminal and
+conhost tell Shift+Enter from Enter (WIN32-INPUT-TEXT).")
 
-(define-escape pop-kitty-keyboard ("[<u"))
+(define-escape pop-kitty-keyboard ("[<u" #+win32 "[?9001l"))
 
 ;;; The first frame then takes that screen for
 ;;; this shell rather than entering the alternate screen again, which clears
@@ -551,9 +685,10 @@ that leaves the canvas to the terminal stands on.")
 colour-scheme report (DEC 2031): a terminal that follows the desktop between
 light and dark says when it turns, and the shell asks its background again.")
 
-(define-escape (exit-modes :flush t) ("[?2031l" "[?2004l" "[?25h")
+(define-escape (exit-modes :flush t) ("[?2031l" "[?2004l" "[0 q" "[?25h")
   "Undo ENTER-MODES in reverse: the colour-scheme report and bracketed paste
-off, the cursor shown last.")
+off, the terminal's own cursor shape back (DECSCUSR 0, over the blinking
+block the frames set), the cursor shown last.")
 
 (defun apply-terminal-transitions (previous current stream &aux (was (or previous (make-view '()))))
   "Write to STREAM the mode changes between view-states PREVIOUS (NIL for
@@ -577,8 +712,9 @@ they come and popped when they go away, the window title when it moved."
   (unless (eq was.mouse-mode current.mouse-mode)
     (when was.mouse-mode (disable-mouse stream))
     (enable-mouse stream current.mouse-mode))
-  ;; The steady block, the same cursor the Zig TUI shows.
-  (when (and current.cursor (not was.cursor)) (format stream "~C[2 q" #\Escape))
+  ;; The blinking block: the empty composer is the caret alone, and the
+  ;; blink is what says it takes typing.
+  (when (and current.cursor (not was.cursor)) (format stream "~C[1 q" #\Escape))
   (when (and current.keyboard-enhancements (not was.keyboard-enhancements))
     (push-kitty-keyboard stream))
   (when (and was.keyboard-enhancements (not current.keyboard-enhancements))

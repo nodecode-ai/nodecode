@@ -70,7 +70,9 @@ nothing of the folder loaded, so no cell and no cell's command. NIL otherwise."
   ;; Said where the operator looks -- the landing screen's :danger rows and /doctor --
   ;; and not only to the layer's session (HAND-FAILED-SELF): a shell attached
   ;; to a pristine gateway otherwise reads every cell command as unknown.
-  (when nlk:*pristine*
+  ;; A sandboxed shell stands on the binary alone by design -- its organism
+  ;; loads the folder in the jail -- so that floor is no fault to report.
+  (when (and nlk:*pristine* (not *sandboxed-shell*))
     (let ((held (>= (or (json-value (nlk:read-death-marker) :integer "deaths") 0) 2)))
       (health-fact :self "self"
                    (format nil "pristine: generation 0, no cell loaded -- ~a" (nlk:pristine-reason))
@@ -307,10 +309,11 @@ the free GET /models asks before it saves)."
              (where (format nil "~a · ~a" provider
                             (case source
                               (:config "set in config.jsonc") (:api-key "saved in auth.json")
+                              (:secret-file "saved in secrets/")
                               (:env "from the environment") (t (string-downcase source)))))
              ;; Only a key of its own is asked about: a !command is not run
              ;; for a question, and a login is its cell's to check.
-             (key (and (member source '(:config :api-key :env)) (credential-key credential)))
+             (key (and (member source '(:config :secret-file :api-key :env)) (credential-key credential)))
              (refusal (and (plusp (length key)) (char/= #\! (char key 0))
                            (multiple-value-bind (verdict words) (provider-key-check provider key)
                              (and (member verdict '(:refused :unreachable)) words)))))

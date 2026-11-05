@@ -23,7 +23,7 @@
 LABEL TONE): TONE the theme tone a part's cells and chip paint in.")
 
 (defparameter +context-usage+
-  "Usage: /context [prompt | tools | index | notes | history | time]"
+  "context: no part by that name; /context alone shows them all"
   "What /context answers an argument it does not open.")
 
 (defparameter +context-grid-width+ 40
@@ -451,6 +451,11 @@ the caller performs (:CLIPBOARD, :DRAFT), bound as *SLASH-EFFECTS*."
     (let ((entry (or (find-builtin-slash-command name) (find-registered-command name))))
       (cond
         ((null entry) (format nil "unknown command /~a; /help lists them" name))
+        ;; Typed alone, a builtin a room can run answers the dialog it
+        ;; files (bare.lisp), whose rows run where it ran.
+        ((when-let (dialog (and entry.headless (bare-args-p args)
+                                (bare-dialog entry.name session-id)))
+           (return-from slash (values (dialog-words dialog) (dialog-json dialog)))))
         (entry.headless (let ((*slash-effects* effects))
                           (funcall entry.headless args session-id)))
         (t (format nil "/~a needs an interactive shell" entry.name))))))

@@ -13,13 +13,26 @@ otherwise the bytes of the PNG file at that path."
   ;; NIL when it is neither, which is what marks a payload failed so nothing
   ;; retries it.
   (or (inline-image-base64 payload)
-      (let ((octets (and (stringp payload) (plusp (length payload))
-                         ;; Ceiling on a PNG file read for an inline preview: the
-                         ;; whole of it goes to the terminal as base64, once per
-                         ;; shell, so a file past 8 MiB simply shows no preview.
-                         (nlt:file-octets payload (* 8 1024 1024)))))
-        (when (equal "image/png" (nlt:image-media-type octets))
+      (let ((octets (image-file-png payload)))
+        (when octets
           (cl-base64:usb8-array-to-base64-string octets)))))
+
+(defun image-file-png (payload)
+  "The bytes of the PNG file PAYLOAD names, or NIL when it names none."
+  (let ((octets (and (stringp payload) (plusp (length payload))
+                     ;; Ceiling on a PNG file read for an inline preview: the
+                     ;; whole of it goes to the terminal as base64, once per
+                     ;; shell, so a file past 8 MiB simply shows no preview.
+                     (nlt:file-octets payload (* 8 1024 1024)))))
+    (when (equal "image/png" (nlt:image-media-type octets))
+      octets)))
+
+(defun image-payload-png (payload)
+  "The PNG bytes PAYLOAD stands for, as IMAGE-PAYLOAD-BASE64 reads it."
+  (let ((inline (inline-image-base64 payload)))
+    (if inline
+        (ignore-errors (cl-base64:base64-string-to-usb8-array inline))
+        (image-file-png payload))))
 
 (defun ensure-kitty-image (model key payload &aux (cache (chat-model-kitty-image-cache model))
                                                   (cached (gethash key cache)))
@@ -43,34 +56,196 @@ the cache is full, or no terminal stream exists yet."
            (setf (gethash key cache) (or image :failed))
            image))))))
 
-(defun image-band-at (refs plains index &aux (ref (aref refs index)) (start index))
-  "The image fact whose inline band opens on lane row INDEX, or NIL: a band
-of the row that owns that lane row, as its last render noted them
-(ROW-BODY-LLINES)."
+(defun image-band-covering (refs plains index width &aux (ref (aref refs index)) (start index))
+  "The image fact whose inline band holds lane row INDEX at frame WIDTH, and
+as a second value how many of its rows stand above INDEX: (values NIL NIL)
+where no band holds it."
   ;; A block paints as [pad] body [pad], every row of it under the same ref,
   ;; and a member card of an open group as its body alone: a blank first row is
   ;; the block's own padding, which no offset counts. Read off the whole
-  ;; projection rather than the visible window: a row scrolled halfway out of
-  ;; the band must answer where its image STARTS.
+  ;; projection rather than the visible window: a band scrolled partly above
+  ;; the viewport is drawn from the row that shows.
   (loop while (and (plusp start) (eq ref (aref refs (1- start))))
         do (decf start))
   (when (zerop (length (string-trim '(#\Space) (aref plains start))))
     (incf start))
-  (cdr (assoc (- index start) (row-image-bands ref))))
+  (loop with offset = (- index start)
+        for (opens . fact) in (and (transcript-row-p ref) (row-image-bands ref))
+        when (and (<= opens offset) (< offset (+ opens (image-preview-rows fact width))))
+          return (values fact (- offset opens))
+        finally (return (values nil nil))))
 
-(defun kitty-image-placements (model)
-  "Declarative kitty placements for the pictures visible in the transcript
-band, an image card's and an answer's alike: each anchors its transmitted
-image at the first row of its own reserved band (IMAGE-BAND-AT), at the body
-column."
-  ;; Placement identity (image, id, x, y, rows) is deterministic, so unchanged
-  ;; frames emit no kitty traffic — the renderer's placement-diff contract. A
-  ;; band that begins above the viewport anchors nothing: the protocol
-  ;; places a whole image at a cell, and showing part of one is a crop this
-  ;; does not ask for. An image draws over the cells, a sheet's window
-  ;; too, so none is placed while one is open.
-  (when (and (chat-model-kitty-graphics model)
-             (not (sheet-dialog-p (chat-model-dialog model))))
+(defun image-protocol (model)
+  "How MODEL's terminal is given a picture: :KITTY once it answered the kitty
+graphics query OK; once it answered DA1 instead, :SIXEL when that listed
+sixel, else :BLOCKS where the colour profile draws block glyphs (BLOCK-CELL);
+NIL until then, and for a terminal of no colour."
+  ;; DA1 is asked after the kitty query and answered in order, so a kitty
+  ;; terminal's OK is in before the DA1 answer settles anything: the
+  ;; protocol never flips from a fallback to kitty after a picture was drawn.
+  (let ((graphics (chat-model-terminal-graphics model)))
+    (cond ((chat-model-kitty-graphics model) :kitty)
+          ((null graphics) nil)
+          ((eq graphics :sixel) :sixel)
+          ((member (effective-color-profile) '(:truecolor :ansi256)) :blocks))))
+
+(defparameter *vte-octants-version* 7800
+  "The VTE (as XTVERSION names it, VTE(8401) for 0.84.1) that first draws
+octants itself, whatever its font: 0.78.")
+
+(defun block-cell (model &key (term (or (uiop:getenv "TERM") ""))
+                              (alacritty-window (uiop:getenv "ALACRITTY_WINDOW_ID"))
+                              (multiplexer (nlt:current-multiplexer)))
+  "The pixels, (WIDTH . HEIGHT), one cell of MODEL's block picture holds:
+octants, (2 . 4), where the terminal draws them itself, sextants, (2 . 3),
+where it draws those, else half blocks, (1 . 2). TERM, ALACRITTY-WINDOW and
+MULTIPLEXER are this process's own unless given."
+  ;; Drawn by the terminal itself means drawn whatever its font: a font
+  ;; that lacks a glyph shows a box, or a fallback glyph that leaves gaps. VTE
+  ;; (GNOME Terminal, Ptyxis) says its name to XTVERSION and draws octants
+  ;; from 0.78. Alacritty says no name; its TERM, or the window id it leaves
+  ;; when TERM was set otherwise, says it, and it draws sextants itself but
+  ;; octants only from the font. Under a multiplexer the terminal outside
+  ;; is unknown, and the multiplexer answers XTVERSION itself.
+  (let ((name (chat-model-terminal-name model)))
+    (cond ((and name
+                (ppcre:register-groups-bind ((#'parse-integer version)) ("^VTE\\((\\d+)\\)" name)
+                  (>= version *vte-octants-version*)))
+           '(2 . 4))
+          ((and (null multiplexer)
+                (or (uiop:string-prefix-p "alacritty" term)
+                    (and (null name) alacritty-window)))
+           '(2 . 3))
+          (t '(1 . 2)))))
+
+(defparameter *sixel-cell-pixels* '(10 . 20)
+  "The cell, (WIDTH . HEIGHT) in pixels, a sixel is scaled to where the
+terminal never said its own: the VT340's, which Windows Terminal draws
+sixels on whatever its font, and answers with.")
+
+(defstruct (raster-entry (:constructor make-raster-entry (pixels)))
+  "A picture this shell draws itself: its decoded PIXELS, the SHAPE its
+COLORS (and a sixel's INDICES and PALETTE) were made for, and the
+TERMINAL-IMAGEs drawn from them, by the rows shown."
+  pixels shape colors indices palette grid (images '()))
+
+(defun raster-image (entry protocol rows skip visible columns cell &optional (aspect 1))
+  "ENTRY's picture as a TERMINAL-IMAGE of PROTOCOL (:SIXEL or :BLOCKS) for a
+band of ROWS rows, the VISIBLE on screen below the SKIP scrolled above it,
+COLUMNS wide, under CELL, the (WIDTH . HEIGHT) in pixels of a cell, each
+pixel ASPECT times as tall as wide: the band's height, never wider than the
+columns, never larger than the picture. NIL when none of the picture falls
+in the rows shown."
+  ;; A sixel's pixels are the screen's, square; a block cell's are its
+  ;; glyph's, square for half blocks and octants on a cell twice as tall as
+  ;; wide, a third taller than wide for sextants.
+  (let* ((pixels (raster-entry-pixels entry))
+         (w (pixels-width pixels))
+         (h (pixels-height pixels))
+         (cw (car cell))
+         (ch (cdr cell))
+         (th (min h (* rows ch)))
+         (tw (round (* w th aspect) h)))
+    (when (> tw w)
+      (setf tw w
+            th (max 1 (min th (round h aspect)))))
+    (setf tw (max 1 tw))
+    (when (> tw (* columns cw))
+      (setf tw (* columns cw)
+            th (max 1 (min h (round (* h tw) (* w aspect))))))
+    (let ((shape (list protocol cell tw th (effective-color-profile) (canvas-rgb))))
+      (unless (equal shape (raster-entry-shape entry))
+        (let* ((small (shrink-pixels pixels tw th))
+               (colors (nlt:raster-colors (pixels-data small) tw th (pixels-channels small)
+                                          (canvas-rgb))))
+          (setf (raster-entry-shape entry) shape
+                (raster-entry-colors entry) colors
+                (raster-entry-images entry) '())
+          (if (eq protocol :sixel)
+              (multiple-value-bind (indices palette) (nlt:quantize-colors colors)
+                (setf (raster-entry-indices entry) indices
+                      (raster-entry-palette entry) palette))
+              (let* ((profile (effective-color-profile))
+                     (sgr (lambda (color foreground-p)
+                            (color-sgr (nlt:unpack-rgb color) foreground-p profile))))
+                (setf (raster-entry-grid entry)
+                      (if (equal cell '(1 . 2))
+                          (nlt:half-block-grid colors tw th sgr)
+                          (nlt:mosaic-grid colors tw th sgr cell)))))))
+      ;; The rows shown are cut out of the picture: a band scrolled partly
+      ;; above the viewport, or running past its foot, draws what shows.
+      (let* ((top (min th (* skip ch)))
+             (bottom (min th (* (+ skip visible) ch)))
+             (cut (cons top bottom)))
+        (when (< top bottom)
+          (or (cdr (assoc cut (raster-entry-images entry) :test #'equal))
+              (let ((image (if (eq protocol :sixel)
+                               (nlt:make-terminal-image
+                                :protocol :sixel :width tw :height (- bottom top)
+                                :columns (ceiling tw cw) :rows (ceiling (- bottom top) ch)
+                                :data (nlt:sixel-data (raster-entry-indices entry)
+                                                      (raster-entry-palette entry)
+                                                      tw (- bottom top) :top top))
+                               (let ((grid (raster-entry-grid entry)))
+                                 (nlt:make-terminal-image
+                                  :protocol :blocks :width tw :height (- bottom top)
+                                  :columns (ceiling tw cw) :rows (ceiling (- bottom top) ch)
+                                  :data (subseq grid (floor top ch) (min (length grid) (ceiling bottom ch))))))))
+                ;; A band scrolling into view asks for one cut a row: the last
+                ;; few are kept, never every one it passed through.
+                (setf (raster-entry-images entry)
+                      (cons (cons cut image) (subseq (raster-entry-images entry)
+                                                     0 (min 7 (length (raster-entry-images entry))))))
+                image)))))))
+
+(defun ensure-raster-image (model protocol key payload rows skip visible columns)
+  "The NLT:TERMINAL-IMAGE drawing PAYLOAD under KEY as PROTOCOL, :SIXEL or
+:BLOCKS, for a band of ROWS rows, the VISIBLE on screen below the SKIP above
+it, COLUMNS wide (RASTER-IMAGE): NIL when the payload is no PNG this reads,
+or the cache is full."
+  ;; KEY is the kitty cache's: the call the image belongs to, or the path.
+  ;; The PNG is decoded once; a resize, a scroll or a new profile draws it
+  ;; again from the pixels.
+  (let* ((cache (chat-model-raster-cache model))
+         (entry (gethash key cache)))
+    (cond
+      ((eq entry :failed) nil)
+      ((and (null entry) (>= (hash-table-count cache) 16)) nil)   ; Zig max_cached_images
+      (t
+       (unless entry
+         (let ((pixels (ignore-errors
+                        (let ((octets (image-payload-png payload)))
+                          (and octets (png-pixels octets))))))
+           (setf entry (if (pixels-p pixels) (make-raster-entry pixels) :failed)
+                 (gethash key cache) entry)))
+       (when (raster-entry-p entry)
+         ;; A picture that cannot be drawn is not tried again every frame.
+         (handler-case
+             (if (eq protocol :sixel)
+                 (raster-image entry protocol rows skip visible columns
+                               (or (chat-model-cell-pixels model) *sixel-cell-pixels*))
+                 (let ((cell (block-cell model)))
+                   (raster-image entry protocol rows skip visible columns cell
+                                 (/ (* 2 (car cell)) (cdr cell)))))
+           (error ()
+             (setf (gethash key cache) :failed)
+             nil)))))))
+
+(defun image-placements (model &aux (protocol (image-protocol model)))
+  "Declarative placements for the pictures visible in the transcript band, an
+image card's and an answer's alike, through the terminal's IMAGE-PROTOCOL:
+each anchors its image at the first row of its own reserved band that shows
+(IMAGE-BAND-COVERING), at the body column."
+  ;; Placement identity (image, id, x, y, rows, crop) is deterministic, so
+  ;; unchanged frames emit no image traffic — the renderer's placement-diff
+  ;; contract. A band is cut where it leaves the viewport, at its head (above
+  ;; it, or under the prompt pinned at its top) or its foot (a panel, the
+  ;; composer): cells past the band are another's, and an image draws over
+  ;; them. A sixel or half-block picture is drawn again for the rows that
+  ;; show; a kitty image keeps its one transmission and is placed through a
+  ;; source rectangle of those rows' pixels. An image draws over a sheet's
+  ;; window too, so none is placed while one is open.
+  (when (and protocol (not (sheet-dialog-p (chat-model-dialog model))))
     (bind (((vp-height _ _ top-pad) (transcript-band-metrics model))
            (window (chat-model-band model))
            (refs (chat-model-line-rows model))
@@ -81,33 +256,50 @@ column."
            (x (+ 2 (nth-value 2 (body-gutter :image-slot))))
            (counts (make-hash-table :test #'eql)))
       (loop for row from 0 below (min vp-height (length refs) (length plains))
+            for above = nil then index
             for index = (band-window-row-index window row)
             for ref = (and index (< index (min (length refs) (length plains))) (aref refs index))
-            for fact = (and ref (transcript-row-p ref) (row-image-bands ref)
-                            (image-band-at refs plains index))
+            ;; A sixel or half-block band whose head is off the screen -- above
+            ;; the viewport, or under the prompt pinned at its top -- is met at
+            ;; the first of its rows that shows, and drawn from there.
+            for (fact skip) = (and ref (transcript-row-p ref) (row-image-bands ref)
+                                   (multiple-value-bind (fact skip)
+                                       (image-band-covering refs plains index width)
+                                     (and fact
+                                          (or (zerop skip) (not (eql above (1- index))))
+                                          (list fact skip))))
             for payload = (and fact (image-preview-payload fact ref))
+            for band = (and payload (image-preview-rows fact width))
+            for rows = (and band (min (- band skip) (- vp-height row)))
             ;; A card's own call owns the transmission: two
             ;; looks at one path are two images. An answer's
             ;; picture is a file named by its bytes.
             for image = (and payload
-                             (ensure-kitty-image
-                              model
-                              (or ref.tool-call-id payload)
-                              payload))
+                             (if (eq protocol :kitty)
+                                 (ensure-kitty-image model (or ref.tool-call-id payload) payload)
+                                 (ensure-raster-image model protocol (or ref.tool-call-id payload) payload
+                                                      band skip rows (max 8 (- width 4)))))
+            ;; The kitty image's pixel rows behind the band's rows that show,
+            ;; when they are not all of it: a picture whose height the PNG
+            ;; never said cannot be cut, and waits to show whole.
+            for height = (and image (eq protocol :kitty) (< rows band) (nlt:terminal-image-height image))
             for top = (+ 3 top-pad row)
-            for rows = (and image (image-preview-rows fact width))
-            ;; An image draws over the cells, so one sharing a row
-            ;; with a toast would cover it: it waits for the toast
-            ;; to go. A placement says no width, so a shared row is
-            ;; the whole test.
-            when (and image (not (toasts-cover-rows-p model top rows)))
+            ;; An image draws over the cells, so one sharing a row with a
+            ;; toast would cover it: it waits for the toast to go. A
+            ;; placement says no width, so a shared row is the whole test.
+            ;; Half blocks are cells under the toast's own, so they stay.
+            when (and image
+                      (or (not (eq protocol :kitty)) (= rows band) height)
+                      (or (eq protocol :blocks) (not (toasts-cover-rows-p model top rows))))
               collect (nlt:make-image-placement
                        image
                        :x x
                        :y top
                        :rows rows
                        :placement-id
-                       (incf (gethash image.id counts 0)))))))
+                       (incf (gethash (nlt:terminal-image-id image) counts 0))
+                       :crop-y (and height (round (* height skip) band))
+                       :crop-height (and height (max 1 (round (* height rows) band))))))))
 
 (defun shell-window-title ()
   "The name this shell's window wears: the profile, then the workspace it
@@ -666,10 +858,10 @@ so a mutation (or a test) can redefine and faithfully restore the shell."
                  ;; the Zig TUI's cursor.
                  :cursor (when-let (park (chat-model-parked-cursor model))
                            (nlt:make-cursor :x (car park) :y (cdr park)))
-                 ;; Inline kitty previews for visible image cards; empty
-                 ;; (and therefore inert) when the terminal never answered
-                 ;; the graphics query.
-                 :images (kitty-image-placements model)
+                 ;; Inline previews for visible image cards; empty (and
+                 ;; therefore inert) until the terminal said how it takes
+                 ;; a picture.
+                 :images (image-placements model)
                  ;; The window wears what the footer's right lane says, so
                  ;; two shells are told apart by the window manager, the
                  ;; tab bar and the task switcher — where an operator with

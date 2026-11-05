@@ -58,7 +58,8 @@ it is set, never what it holds."
                    ("recap_lines" . "Recap length") ("verification_repair_attempts" . "Verification retries")
                    ("session_budget" . "Conversations per import") ("share" . "Share diagnostics")
                    ("nodes" . "Team size") ("budget_tokens" . "Token budget")
-                   ("budget_seconds" . "Time budget") ("max_results" . "Results per search")
+                   ("budget_seconds" . "Time budget") ("budget_calls" . "Tool call budget")
+                   ("max_results" . "Results per search")
                    ("background" . "Keep Chrome in background"))
                  :test #'equal))
       ;; A secret taken by reference is two members: the variable holding it
@@ -239,7 +240,7 @@ Models (SETTINGS-PAGES)."
                               ;; A channel sets up step by step on a sheet of its own.
                               (let ((id (second path)))
                                 (list (make-setting :label "Set up" :kind :action :part part :text "Step by step"
-                                                    :doc (format nil "The token, a wait while the bot joins a server, then its channels and people from a checklist: /gateway setup ~a." id)
+                                                    :doc (format nil "The token, a wait while the bot joins a server, then its channels and people from a checklist: /gateway, then Set up ~@(~a~)." id)
                                                     :act (lambda (model) (open-channel-setup model id))))))
                             (when-let (row (paste-setting part)) (list row))
                             (loop for field in (settings-section-fields section)
@@ -588,16 +589,15 @@ the QUERY typed and the result HIT under it, the focus the query came from
 (BACK) -- and what is under way: the field typed into (EDIT, (SETTING .
 TEXT)), the ids being marked (IDS, (SETTING CHOICES MARKS CURSOR)), what was
 SAID under a setting ((TEXT TONE KEY LABEL)), and the rows a reset asked to
-give their defaults back (ARMED, ((PART . SETTING) ...)). The last paint leaves
-whether it showed one view at a time (STACKED), and the sections' two
-COLUMNS, ((INDEX COLUMN ROW) ...); the key row's line, whether a call is
-busy and the pointer's targets are the sheet's own (SHEET-DIALOG). The
+give their defaults back (ARMED, ((PART . SETTING) ...)). The key row's line,
+whether a call is busy and the pointer's targets are the sheet's own
+(SHEET-DIALOG). The
 section /settings was ASKED to open at stays until the first read lands."
   (answer nil) (target nil) (release nil) (sections '()) (failed nil)
   (focus :rail) (section-at 0) (setting-at 0) (rail-top 0) (pane-top 0)
   (query "" :type string) (hit 0) (back :rail)
   (edit nil) (ids nil) (said nil) (armed nil)
-  (columns '()) (asked nil))
+  (asked nil))
 
 (nlk:access (settings settings-sheet))
 
@@ -1067,14 +1067,6 @@ its badge goes, and Latest changes keeps the release it lists as seen."
                  (moved settings.setting-at
                         (length (settings-section-rows (nth settings.section-at settings.sections)))))))))
 
-(defun settings-sideways (settings delta)
-  "On the two columns of sections, move to the nearest in the column DELTA over."
-  (when-let (here (find settings.section-at settings.columns :key #'first))
-    (when-let (best (alexandria:extremum (remove (+ (second here) delta) settings.columns
-                                                 :key #'second :test-not #'=)
-                                         #'< :key (lambda (spot) (abs (- (third spot) (third here))))))
-      (settings-choose settings (first best)))))
-
 (defun settings-edit-key (model settings key ctrl alt)
   "A key while a field is open: Enter writes it, Esc leaves it as it was,
 the rest edits it."
@@ -1108,8 +1100,7 @@ the marks, Esc leaves them as they were."
 
 (defun settings-key (model settings key &key ctrl alt shift)
   "Every key the shell's chords leave the open sheet."
-  (let ((setting (settings-current settings))
-        (stacked settings.stacked))
+  (let ((setting (settings-current settings)))
     (cond
       (settings.edit (settings-edit-key model settings key ctrl alt))
       (settings.ids (settings-ids-key model settings key))
@@ -1134,18 +1125,11 @@ the marks, Esc leaves them as they were."
        (settings-move settings (if (eq key :page-up) -10 10)))
       ((eq key :tab)
        (cond ((plusp (length settings.query)))
-             ((and stacked (eq settings.focus :pane)) (settings-step-section settings (if shift -1 1)))
              ((eq settings.focus :pane) (setf settings.focus :rail settings.said nil))
              (t (settings-open settings))))
       ;; A query that found nothing has nothing for the keys to act on.
       ((and (null setting) (plusp (length settings.query))))
-      ;; On the rail: the arrows across move between the two columns of a
-      ;; narrow window's sections, and into the open section on a wide one.
-      ((and (null setting) (eq settings.focus :rail) (member key '(:left :right)))
-       (if stacked
-           (settings-sideways settings (if (eq key :left) -1 1))
-           (when (eq key :right) (settings-open settings))))
-      ((and (null setting) (eq settings.focus :rail) (member key '(:enter #\Space)))
+      ((and (null setting) (eq settings.focus :rail) (member key '(:right :enter #\Space)))
        (settings-open settings))
       ((null setting))
       ;; Left is always the way back to the sections, whichever setting is
@@ -1179,7 +1163,7 @@ the marks, Esc leaves them as they were."
 list under the pointer: over the rail the page, over the pane its settings."
   (declare (ignore model y))
   (unless (or settings.edit settings.ids)
-    (when (and settings.layout (not settings.stacked) (zerop (length settings.query)))
+    (when (and settings.layout (zerop (length settings.query)))
       (destructuring-bind (rows left top width) settings.layout
         (declare (ignore rows top))
         (setf settings.focus (if (< (- x left) (rail-width width)) :rail :pane))))
@@ -1199,7 +1183,7 @@ list under the pointer: over the rail the page, over the pane its settings."
       (loop for (nil . label) in setting.options sum (+ 2 (text-display-width label)))
       0))
 
-(defun settings-keys (settings &aux (setting (settings-current settings)) (stacked settings.stacked))
+(defun settings-keys (settings &aux (setting (settings-current settings)))
   "The keys that act where the operator is, in the order the key row names them."
   (let ((act (and setting
                   (case setting.kind
@@ -1216,11 +1200,7 @@ list under the pointer: over the rail the page, over the pane its settings."
           (settings.ids '(("space" "mark") ("enter" "save") ("esc" "cancel")))
           ((settings-armed settings setting) '(("enter" "reset") ("esc" "keep")))
           ((plusp (length settings.query)) (append act '(("↑↓" "move") ("esc" "clear")) reset))
-          ((eq settings.focus :rail)
-           (if stacked
-               '(("↑↓" "move") ("enter" "open") ("type" "search") ("esc" "close"))
-               '(("↑↓" "section") ("→" "open") ("type" "search") ("esc" "close"))))
-          (stacked (append act '(("↑↓" "move") ("←" "sections") ("tab" "next")) reset))
+          ((eq settings.focus :rail) '(("↑↓" "section") ("→" "open") ("type" "search") ("esc" "close")))
           (t (append act '(("↑↓" "setting") ("←" "sections")) reset)))))
 
 (defun focus-setting-action (index)
@@ -1551,12 +1531,10 @@ badge until it is chosen, else a dot while any of its settings is set."
   (some #'setting-set part.rows))
 
 (defun open-section-action (index)
-  "A click's action on the section at INDEX: choose it, or open it once chosen."
+  "A click's action on the section at INDEX: open it."
   (lambda-ignoring (model settings)
-    (if (and (= index settings.section-at) settings.stacked)
-        (settings-open settings)
-        (progn (settings-choose settings index)
-               (setf settings.query "" settings.focus (if settings.stacked :rail :pane))))))
+    (settings-choose settings index)
+    (setf settings.query "" settings.focus :pane)))
 
 (defun hover-section-action (index)
   "The pointer's action resting on the section at INDEX: choose it, the keys
@@ -1634,8 +1612,9 @@ many it found."
                       (list (list :gap))))))
 
 (defun rail-width (width)
-  "The columns the rail takes of a wide sheet WIDTH columns across."
-  (if (>= width 104) 26 22))
+  "The columns the rail takes of a sheet WIDTH columns across: narrower
+windows keep the rail beside the pane, slimmer."
+  (cond ((>= width 104) 26) ((>= width 84) 22) (t 16)))
 
 (defun paint-wide (settings canvas edges)
   "The wide sheet: the rail of sections beside the open one, each setting's
@@ -1665,115 +1644,6 @@ options on its row while the pane holds them. => the caret's cell, or NIL."
       (paint-keys settings canvas hint-row px (+ px pw) (settings-keys settings) settings.flash pane)
       cursor)))
 
-(defun section-columns (entries rows)
-  "ENTRIES, RAIL-ENTRIES' lines, laid in columns ROWS rows deep, each group
-whole in one and a blank line between two a column holds: ((INDEX COLUMN
-ROW) ...), INDEX into ENTRIES; NIL when a group is deeper than ROWS."
-  (let ((groups '()) (group '()))
-    (loop for entry in entries
-          for i from 0
-          do (if (eq (first entry) :gap)
-                 (progn (push (nreverse group) groups) (setf group '()))
-                 (push i group)))
-    (push (nreverse group) groups)
-    (let ((column 0) (row 0) (spots '()))
-      (dolist (group (nreverse groups) (nreverse spots))
-        (when (> (length group) rows) (return nil))
-        (when (and (plusp row) (> (+ row 1 (length group)) rows))
-          (incf column)
-          (setf row 0))
-        (when (plusp row) (incf row))
-        (dolist (i group)
-          (push (list i column row) spots)
-          (incf row))))))
-
-(defun paint-sections (settings canvas top rows px pw ground)
-  "The pages down ROWS rows from TOP: in as many columns as their groups
-take whole, while a column keeps 16 columns, else in one that scrolls to
-keep the chosen one in view."
-  (let* ((entries (rail-entries settings))
-         (spots (section-columns entries rows))
-         (columns (if spots (1+ (reduce #'max spots :key #'second :initial-value 0)) 1))
-         (column-width (floor (- pw (* 4 (1- columns))) columns))
-         (scrolls nil))
-    (when (or (null spots) (< column-width 16))
-      (let ((item (position (list :section settings.section-at) entries :test #'equal)))
-        (setf columns 1 column-width pw scrolls t
-              settings.rail-top (min (max 0 (min settings.rail-top (1- item)) (- item rows -1))
-                                     (max 0 (- (length entries) rows)))
-              spots (loop for i from settings.rail-top below (min (length entries) (+ settings.rail-top rows))
-                          collect (list i 0 (- i settings.rail-top))))))
-    (setf settings.columns '())
-    (loop for (i column row) in spots
-          for entry = (nth i entries)
-          for x = (+ px (* column (+ column-width 4)))
-          for r = (+ top row)
-          do (case (first entry)
-               (:gap)
-               (:head (canvas-put canvas x r (second entry) (sheet-ink :muted :ground ground)))
-               (t
-                (let* ((index (second entry))
-                       (part (nth index settings.sections))
-                       (on (= index settings.section-at))
-                       (ground (if on (sheet-ground :sheet-focus) ground)))
-                  (when (> columns 1) (push (list index column row) settings.columns))
-                  (when on (paint-lift canvas (- x 2) r (+ column-width 4) ground))
-                  (canvas-put canvas x r (clip-text-to-width part.label (- column-width 3))
-                              (sheet-ink (if on :dialog-accent :system) :ground ground :bold on))
-                  (section-mark canvas (+ x column-width -1) r part ground on)
-                  (sheet-hit settings r (- x 2) (+ x column-width 2) (open-section-action index)
-                             :hover (hover-section-action index))))))
-    (when scrolls
-      (paint-scroll-marks canvas (+ px pw 1) top (+ top rows -1) settings.rail-top rows (length entries) ground))))
-
-(defun paint-stacked (settings canvas edges)
-  "The narrow sheet: the sections, or the open one, or a query's results, one
-view at a time, each setting one line until it is chosen. => the caret's
-cell, or NIL."
-  (with-stacked-sheet (canvas edges)
-    (let* ((list-top (+ header-row 1 (if (>= inner 8) 1 0)))
-           (rows (- hint-row (if (>= inner 9) 1 0) list-top))
-           (part (nth settings.section-at settings.sections))
-           (cursor nil))
-      (flet ((right (text ink)
-               (when (< (+ (text-display-width text) 2) pw)
-                 (canvas-put canvas (- (+ px pw) (text-display-width text)) header-row text ink)))
-             (lines (entries)
-               (multiple-value-bind (lines focus-line)
-                   (setting-lines settings entries pw (if (>= rows 10) 2 1))
-                 (let ((head (settings-failed-lines settings pw)))
-                   (when-let (caret (paint-lines settings canvas (append head lines)
-                                                 (+ (length head) focus-line)
-                                                 list-top rows px pw pane))
-                     (setf cursor caret))))))
-        (cond
-          ((plusp (length settings.query))
-           ;; The header is the search line.
-           (let ((count (length (settings-results settings))))
-             (setf cursor (paint-search-line canvas px header-row pw settings.query pane 22))
-             (right (if (plusp count) (format nil "~d match~:[es~;~]" count (= count 1)) "no match")
-                    (sheet-ink :muted :ground pane))
-             (lines (result-entries settings))))
-          ((eq settings.focus :rail)
-           (canvas-put canvas px header-row "Settings" (sheet-ink :title :ground pane :bold t))
-           (right "type to search" (sheet-ink :muted :ground pane))
-           (let ((failed (settings-failed-lines settings pw)))
-             (loop for (nil line) in failed
-                   for r from list-top
-                   do (canvas-put canvas px r line (sheet-ink :danger :ground pane)))
-             (paint-sections settings canvas (+ list-top (length failed)) (- rows (length failed))
-                             px pw pane)))
-          (t
-           (let ((at (canvas-put canvas px header-row "Settings › " (sheet-ink :muted :ground pane))))
-             (sheet-hit settings header-row px at
-                           (lambda-ignoring (model settings)
-                             (setf settings.focus :rail settings.said nil)))
-             (canvas-put canvas at header-row (clip-text-to-width part.label (max 1 (- pw 11)))
-                         (sheet-ink :title :ground pane :bold t))
-             (lines (page-entries part settings.setting-at))))))
-      (paint-keys settings canvas hint-row px (+ px pw) (settings-keys settings) settings.flash pane)
-      cursor)))
-
 (defparameter +settings-sheet-size+ '(108 32)
   "The columns and rows the sheet asks for: what a wide window gives it, the
 whole rail standing in it unscrolled.")
@@ -1783,7 +1653,7 @@ whole rail standing in it unscrolled.")
 page holding the config SECTION once it is read (/cells' Enter) -- every
 section read off the loop."
   (let ((settings (make-settings-sheet :kind :settings :title "Settings"
-                                       :paint (sheet-painter +settings-sheet-size+ #'paint-wide #'paint-stacked)
+                                       :paint (sheet-painter +settings-sheet-size+ #'paint-wide #'paint-wide)
                                        :key #'settings-key
                                        :paste #'settings-paste :click #'sheet-click
                                        :wheel #'settings-wheel :hover #'settings-hover

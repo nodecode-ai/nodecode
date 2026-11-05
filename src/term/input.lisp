@@ -58,10 +58,13 @@ once STREAM has ended."
                                     (round (* 255 (parse-integer hex :radix 16))
                                            (1- (expt 16 (length hex)))))
                                   (list r g b)))))
-                 ;; DCS: a DECRQSS SGR read-back keeping the probe's 1 2 3, or XTGETTCAP RGB.
+                 ;; DCS: a DECRQSS SGR read-back keeping the probe's 1 2 3, XTGETTCAP
+                 ;; RGB, or XTVERSION's name, which REQUEST-TERMINAL-ATTRIBUTES asks for.
                  ((char= char #\P)
                   (let ((payload (%read-until-st stream)))
-                    (cond ((and (search "$r" payload) (uiop:string-suffix-p payload "m"))
+                    (cond ((uiop:string-prefix-p ">|" payload)
+                           (make-terminal-version-msg :name (subseq payload 2)))
+                          ((and (search "$r" payload) (uiop:string-suffix-p payload "m"))
                            (make-truecolor-msg :ok-p (and (or (search ":1:2:3" payload)
                                                               (search ";1;2;3" payload))
                                                           t)))
@@ -174,8 +177,13 @@ modified arrows, kitty CSI-u keys, and bracketed paste."
                           while c
                           do (write-char c out)
                           until (alpha-char-p c)))))
-       (ppcre:register-groups-bind (scheme) ("^997;([12])n$" reply)
-         (make-color-scheme-msg :scheme (if (string= scheme "1") :dark :light)))))
+       (or (ppcre:register-groups-bind (scheme) ("^997;([12])n$" reply)
+             (make-color-scheme-msg :scheme (if (string= scheme "1") :dark :light)))
+           ;; DA1, the attributes REQUEST-TERMINAL-ATTRIBUTES asks for.
+           (ppcre:register-groups-bind (attributes) ("^([0-9;]*)c$" reply)
+             (make-device-attributes-msg
+              :attributes (mapcar #'parse-integer
+                                  (ppcre:all-matches-as-strings "[0-9]+" attributes)))))))
     ((and ch (digit-char-p ch))
      (nlk:bind (((groups term) (%read-parameters stream (digit-char-p ch)))
                 (params (mapcar #'first groups))
@@ -196,6 +204,9 @@ modified arrows, kitty CSI-u keys, and bracketed paste."
                               :mod (if (= (length params) 2) (%modifier-mask (second params)) 0)))
          ((and (eql term #\~) (eql (first params) 200))
           (make-paste-msg :text (%read-until stream (format nil "~C[201~~" #\Escape))))
+         ;; XTWINOPS 16's answer: the cell's height and width in pixels.
+         ((and (eql term #\t) (eql (first params) 6) (= (length params) 3))
+          (make-cell-size-msg :height (second params) :width (third params)))
          (t (make-key-press-msg :code :unknown)))))
     (t
      (loop while (listen stream) do (read-char-no-hang stream nil nil))

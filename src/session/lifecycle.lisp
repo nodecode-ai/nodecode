@@ -1108,6 +1108,17 @@ file rather than printing the stream object."
     (or (file-stream-error-detail condition)
         (princ-to-string condition))))
 
+(defstruct (printed-path (:constructor printed-path (text)))
+  "A file's path as a message shows it: TEXT itself under ~a, and in double
+quotes under ~s with nothing escaped, so a Windows path keeps its single
+backslashes where PRIN1 of the string would double every one."
+  (text "" :type string))
+
+(defmethod print-object ((path printed-path) stream)
+  (if *print-escape*
+      (format stream "\"~a\"" (printed-path-text path))
+      (write-string (printed-path-text path) stream)))
+
 (defun file-stream-error-detail (condition)
   "The message of CONDITION, a stream error on a file, with the stream shown
 as the file's path: SBCL says `Couldn't write to #<SB-SYS:FD-STREAM for
@@ -1120,7 +1131,7 @@ as the file's path: SBCL says `Couldn't write to #<SB-SYS:FD-STREAM for
     (when file
       (ignore-errors
        (apply #'format nil (simple-condition-format-control condition)
-              (subst file stream (simple-condition-format-arguments condition)))))))
+              (subst (printed-path file) stream (simple-condition-format-arguments condition)))))))
 
 (defun cancel-turn (turn reason)
   (record-turn-terminal turn +kind-turn-cancelled+

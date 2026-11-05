@@ -1283,7 +1283,8 @@ worker ran or not, then promote SESSION-ID's next queued prompt."
 of its own, :INLINE inside the SUBMIT that admits it (a gate that covers
 naming), NIL never (the test posture).")
 
-(defun submit (session-id prompt &key steer images command-id invocation source source-id)
+(defun submit (session-id prompt &key steer images command-id invocation source source-id
+                                 (tools nil tools-p))
   "Put PROMPT into SESSION-ID: the one in-process ingress, which the
 WebSocket start_turn/steer_turn commands are shells over."
   ;; Returns the
@@ -1300,6 +1301,12 @@ WebSocket start_turn/steer_turn commands are shells over."
   ;; record, defaulting to the kernel's in-process one. An in-process submitter
   ;; with no record of its own names its SOURCE kind (`cron', `team') and
   ;; SOURCE-ID instead, and the record is built here, turn.start or turn.steer.
+  ;; TOOLS, when given, names the only tools the turn may call: '() none at
+  ;; all -- a side question answered from the context alone -- and every
+  ;; tool's schema is still offered (TURN-TOOL-LIMIT says why). The limit is
+  ;; recorded with the input, so a queued prompt and a turn resumed at boot
+  ;; keep it. A steer's limit is the one of the turn it starts (it parks and
+  ;; is promoted like a follow-up); the turn it cuts short keeps its own.
   ;;
   ;; Signals rather than returning a status: NLK:UNKNOWN-SESSION, the kernel's
   ;; NLK:TURN-LIFECYCLE-ERROR family for a steer that found no matching active
@@ -1311,6 +1318,8 @@ WebSocket start_turn/steer_turn commands are shells over."
   ;; spawned, not joined.
   (check-type session-id string)
   (check-type prompt string)
+  (unless (and (listp tools) (every #'stringp tools))
+    (error "submit :tools must be a list of tool names, got ~s" tools))
   ;; The input cap is read here, at the one ingress every submitter comes
   ;; through, before anything is admitted: ADMIT's own check runs on the
   ;; worker after the durable admission, and without this an input past the
@@ -1329,8 +1338,10 @@ WebSocket start_turn/steer_turn commands are shells over."
          (unnamed (and *session-naming* (string= "" (nlk::session-title session-id))))
          ;; The pictures the operator's message shows, read once here, at
          ;; the one ingress: the admission records them with the input.
-         (metadata (when-let (facts (prompt-images images))
-                     (json-object "images" facts)))
+         (metadata (let ((facts (prompt-images images)))
+                     (when (or facts tools-p)
+                       (json-object :opt "images" facts
+                                    :when tools-p "tools" (coerce tools 'vector)))))
          (admission (nlk:admit-active-turn-input
                      session-id command-id prompt
                      :disposition (if steer :steer :follow-up)
@@ -2863,8 +2874,8 @@ the verb's own 400."
     (:get (make-json-object
            "commands" (map 'vector
                            (lambda (entry)
-                             (json-object (:getf entry "name" "description" "usage" "session")
-                                          (:getf entry :opt "autocomplete" "trigger")))
+                             (json-object (:getf entry "name" "description" "session")
+                                          (:getf entry :opt "trigger")))
                            (slash-catalog))))
     (:post (let* ((request (gateway-request-json env))
                   (line (gethash "line" request)))
@@ -2873,20 +2884,6 @@ the verb's own 400."
                  (slash line :session-id (json-value request :string "session_id")
                              :effects (performed-effects (json-value request :array "effects")))
                (json-object "text" text :opt "dialog" dialog :opt "effects" effects))))))
-
-(define-gateway-route handle-gateway-slash-completions-http (env)
-  "POST /api/gateway/slash/completions {name, text, session_id?} — what
-NAME's argument completes to from the TEXT typed so far, in the session the
-command would act on (SLASH-COMPLETIONS): {choices: [{name, value}]}, empty
-for a command that offers none."
-  (:route :post "/api/gateway/slash/completions" "slash completions")
-  (let* ((request (gateway-request-json env))
-         (name (gethash "name" request)))
-    (require-non-empty (list name) "name must be a non-empty string" :required t)
-    (make-json-object
-     "choices" (map 'vector (lambda (choice) (json-object (:getf choice "name" "value")))
-                    (slash-completions name (json-value request :string "text")
-                                       :session-id (json-value request :string "session_id"))))))
 
 (define-gateway-route handle-gateway-model-http (env)
   (:route (:get :post) "/api/gateway/model" "model")
@@ -3178,13 +3175,15 @@ line under the title of a dialog that does not search, in SUMMARY-TONE
 a surface that draws one wears (a room's card its edge), NIL for none."
   ;;
   ;; ROWS are plists in PICKER-ROW's own vocabulary --
-  ;; (:key :label :detail :suffix :value :mark :mark-tone :verb): LABEL the
+  ;; (:key :label :detail :suffix :value :mark :mark-tone :verb :heading): LABEL the
   ;; primary column, DETAIL the muted one after it, SUFFIX what the selected
   ;; row alone adds after DETAIL, VALUE what the shell's Enter hands back, VERB
   ;; the word a surface that gives the row its own button writes on it --
   ;; Leave, Change -- where the dialog's one Enter word will not do, KEY
   ;; a leading column -- or, in a tabbed dialog, the bucket the row belongs to --
-  ;; and MARK a one-glyph status column painted in the theme's TONE. OPTIONS,
+  ;; and MARK a one-glyph status column painted in the theme's TONE. HEADING
+  ;; makes the row a table's column names: the shell paints it muted and never
+  ;; chooses it, and the list opens on the first row that can be chosen. OPTIONS,
   ;; rows of their own (:label :detail :mark :run), are the picks the row's
   ;; line offers, the one in use marked: a surface that draws a menu draws
   ;; them as the row's, and one that does not runs the row's line. A row's
@@ -3193,6 +3192,11 @@ a surface that draws one wears (a room's card its edge), NIL for none."
   ;; over this one, whose Esc comes back here, and otherwise its text is the
   ;; notice and this dialog is read again on the same row (the shell's
   ;; ANSWER-GESTURE) -- a list whose rows open their record and move it.
+  ;; A row's :ASK, (:label LABEL :line LINE :placeholder TEXT :verb WORD),
+  ;; asks for one line of text instead: the shell's composer takes it under
+  ;; LABEL, a room's card asks for it, and LINE then runs with the text after
+  ;; it (ASK-LINE) -- what a command once took typed after its name, which
+  ;; no surface asks anyone to spell (tui/commands/bare.lisp).
   ;;
   ;; TABS are the dialog's tab strip as plists (:label the tab's own text,
   ;; :count the rows behind it, :value the row KEY it selects — NIL for the
@@ -3260,8 +3264,12 @@ a surface that draws one wears (a room's card its edge), NIL for none."
                     (:getf row :opt "suffix" "value" "verb")
                     :opt "run" (when-let (run (getf row :run))
                                  (json-object (:getf run :opt "enter" "space")))
+                    :opt "ask" (when-let (ask (getf row :ask))
+                                 (json-object (:getf ask "label" "line")
+                                              (:getf ask :opt "placeholder" "verb")))
                     "mark" (or (getf row :mark) "")
                     :opt "mark_tone" (tone (getf row :mark-tone))
+                    :opt "heading" (and (getf row :heading) t)
                     :opt "options" (when-let (options (getf row :options))
                                      (map 'vector
                                           (lambda (option)
@@ -3321,10 +3329,14 @@ malformed effect signals, naming it."
 key OWNER, replacing any command of that name; SESSION NIL says it acts on no
 session, so a client with none open runs it as it is, TRIGGER, a
 one-character string, is what the shell's composer opens it on when it is
-typed at a word's start (the index's `$'), and COMPLETE completes the
-argument while it is typed (SLASH-COMPLETIONS): it takes the tail typed so
-far and the session id, as RUN takes its argument, and answers (:name
-:value) plists. => COMMAND's entry."
+typed as the draft's first character (the index's `$'). A command is its
+name: RUN called with no argument answers what it offers as a LIST-DIALOG,
+whose rows run its lines or ask for text (tui/commands/bare.lisp).
+=> COMMAND's entry."
+  ;; ARGUMENT-HINT and COMPLETE, the words a cell written before that
+  ;; offered typed after the name, are taken and shown nowhere, so such a
+  ;; cell still loads.
+  (declare (ignore argument-hint complete))
   ;; RUN is a function designator, so a command whose whole implementation is
   ;; one defun passes the symbol and a reload of that file reaches the command
   ;; without a re-install. RUN takes the command's argument string and the
@@ -3338,11 +3350,7 @@ far and the session id, as RUN takes its argument, and answers (:name
     (error "a registered command needs a non-empty name"))
   (let ((entry (make-slash-command
                 command (or description "")
-                :usage (if (json-value argument-hint :text)
-                           (format nil "/~a ~a" command argument-hint)
-                           "")
                 :dispatch nil :owner owner :session session :trigger trigger
-                :completer complete
                 :headless (lambda (args session-id)
                             (multiple-value-bind (text dialog effects)
                                 (handler-case (funcall run args session-id)
@@ -3974,8 +3982,10 @@ default new sessions start on, and every attached shell's footer follows
 (SELECT-SESSION-MODEL)."
   ;; MODEL alone keeps the current lane; :PROVIDER names one. (select-model
   ;; nil) clears the pin so the session takes the default again at its next
-  ;; turn. An unknown lane refuses before anything moves. Other sessions that
-  ;; already ran keep their own model. => one line saying what landed.
+  ;; turn. An unknown lane, or a model its listing does not offer
+  ;; (CHECK-MODEL-OFFERED, which names the ids it does), refuses before
+  ;; anything moves. Other sessions that already ran keep their own model.
+  ;; => one line saying what landed.
   (check-type model (or null model-id))
   (check-type provider (or null provider-id))
   (unless (stringp session-id)
@@ -4777,6 +4787,52 @@ organism's log (LOG-SOURCE), never to the *ERROR-OUTPUT* it was made under."
   ;; the gateway's unit.
   (setf (hunchentoot:acceptor-message-log-destination acceptor) sb-sys:*stderr*))
 
+;;; The listen latch. A clack acceptor says so the moment its socket
+;;; listens, and the caller that just started one waits for that word before
+;;; it connects at all. Probing with connects alone cost Windows half a
+;;; second a boot: clackup binds on a thread of its own, so the first probe
+;;; always lands before the listener, and a refused loopback connect on
+;;; Windows is not answered in microseconds -- Winsock retries the SYN for
+;;; 500 ms before it gives up (T-442).
+(defvar *listening-ports* (make-hash-table)
+  "Port -> T for each port a clack acceptor of this process listens on.")
+(defvar *listening-lock* (bt2:make-lock :name "listening-ports"))
+(defvar *listening-changed* (bt2:make-condition-variable :name "listening-ports"))
+
+(defun note-listening (port listening)
+  (bt2:with-lock-held (*listening-lock*)
+    (if listening
+        (setf (gethash port *listening-ports*) t)
+        (remhash port *listening-ports*))
+    (bt2:condition-broadcast *listening-changed*)))
+
+(defmethod hunchentoot:start-listening :after
+    ((acceptor clack.handler.hunchentoot::clack-acceptor))
+  (note-listening (hunchentoot:acceptor-port acceptor) t))
+
+(defmethod hunchentoot:stop :after
+    ((acceptor clack.handler.hunchentoot::clack-acceptor) &key &allow-other-keys)
+  (note-listening (hunchentoot:acceptor-port acceptor) nil))
+
+(defun await-listening (port &key (seconds 4))
+  "Block until a clack acceptor of this process listens on PORT; => T, or
+NIL after SECONDS."
+  (let ((deadline (+ (get-internal-real-time)
+                     (round (* seconds internal-time-units-per-second)))))
+    (bt2:with-lock-held (*listening-lock*)
+      (loop (when (gethash port *listening-ports*) (return t))
+            (let ((left (- deadline (get-internal-real-time))))
+              (when (<= left 0) (return nil))
+              (bt2:condition-wait *listening-changed* *listening-lock*
+                                  :timeout (/ left internal-time-units-per-second)))))))
+
+(defun clackup-listening (app port &rest arguments)
+  "CLACK:CLACKUP APP on PORT under ARGUMENTS, its listen latch armed first."
+  ;; A latch left from an earlier acceptor on the same port must not answer
+  ;; for this one.
+  (note-listening port nil)
+  (apply #'clack:clackup app :port port :silent t :debug nil arguments))
+
 (defun await-port (port &key (attempts 100) (pause 0.002))
   "Poll until 127.0.0.1:PORT completes a TCP connect; => T, or NIL after
 ATTEMPTS laps of PAUSE seconds."
@@ -4813,7 +4869,8 @@ start-confirmed latch."
   ;; HTTP round trip then completes on its first lap. ATTEMPTS keeps its
   ;; proportional meaning for callers that bound the wait small. The round
   ;; trip itself runs on its own thread, so the boot path never waits for it.
-  (unless (await-port port :attempts (* 20 attempts))
+  (unless (and (await-listening port :seconds (* attempts 0.04))
+               (await-port port :attempts (* 20 attempts)))
     (return-from await-gateway-acceptance nil))
   (nlk:note-boot-phase "gateway-accepted-raw" port)
   (setf *gateway-acceptance-probe*
@@ -4869,10 +4926,10 @@ USOCKET:ADDRESS-IN-USE-ERROR."
   ;; that one, or an interrupt while the probe waits -- leaves the acceptor
   ;; behind. STOP-CLACK-HANDLER takes it down.
   (let* ((bound (local-port port))
-         (handler (clack:clackup app :address "127.0.0.1" :port bound :silent t :debug nil))
+         (handler (clackup-listening app bound :address "127.0.0.1"))
          (live nil))
     (with-cleanup ((unless live (stop-clack-handler handler)))
-      (unless (and (await-port bound :attempts 2000) (http-answers-p bound))
+      (unless (and (await-listening bound) (await-port bound :attempts 2000) (http-answers-p bound))
         (error "nothing started accepting on 127.0.0.1:~d" bound))
       (setf live t)
       (values handler bound))))
@@ -4919,6 +4976,12 @@ the boot's pages back once the peripherals are up (a headless owner's boot)."
     (handler-case (local-port last)
       (usocket:socket-error () nil))))
 
+(defun gateway-port-from-environment ()
+  "The port NODECODE_GATEWAY_PORT names, 1 to 65535, or NIL: how a sandboxed
+shell tells the jailed gateway which loopback port its bridge serves."
+  (let ((port (ignore-errors (parse-integer (or (uiop:getenv "NODECODE_GATEWAY_PORT") "")))))
+    (and (integerp port) (< 0 port 65536) port)))
+
 (defun open-gateway-listener (&key (port *gateway-port*) operator-token
                       (workspace-captures
                        ;; An absent file, section or key, or an unreadable file, says nothing.
@@ -4955,12 +5018,11 @@ SERVE-GATEWAY."
         *gateway-connection-read-timeout*)
   ;; Port 0: bind 127.0.0.1:0, read the kernel's assignment, release — the
   ;; ephemeral allocator never hands out a port still bound or lingering.
-  (let ((bound (if (zerop port) (or (remembered-port) (local-port 0)) port)))
+  (let ((bound (if (zerop port)
+                   (or (gateway-port-from-environment) (remembered-port) (local-port 0))
+                   port)))
     (setf *gateway-handler*
-          (clack:clackup (make-sync-app)
-                         :port bound
-                         :silent t
-                         :debug nil))
+          (clackup-listening (make-sync-app) bound))
     (nlk:note-boot-phase "gateway-clacked" bound)
     (unless (await-gateway-acceptance bound)
       ;; clackup binds on its own handler thread, so a bind failure never
@@ -4985,8 +5047,8 @@ update poller and the folder's peripherals, TRIM as START-GATEWAY takes it.
   ;; The index's command, ahead of every cell's: the composer's `$' opens the
   ;; first command that names it (COMPOSER-TRIGGER-COMMAND).
   (register-command "index" "index" 'index-slash
-                    :description "Knowledge: the meter and the picker; reload re-pins; a text finds hot and cold"
-                    :argument-hint "[reload | TEXT]" :trigger "$")
+                    :description "What you keep: the meter, the picker, a search through it, a fresh pin"
+                    :trigger "$")
   ;; Another coding agent's home brought in (src/import/): the setup
   ;; walk's route, and the watch over any bot an earlier import held for a
   ;; foreign gateway still running. /import is a builtin (tui/slash.lisp).

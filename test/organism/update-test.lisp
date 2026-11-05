@@ -11,24 +11,72 @@
 
 (in-package #:nodecode.test)
 
+(defvar *release-stub-executable* nil
+  "Windows: the nodecode.exe a fixture release carries, compiled once a process.")
+
+(defun release-stub-executable ()
+  "An executable that answers --help as the CLI does, with its usage line on
+stderr and exit 2: what install.ps1 probes a release it laid out with. Built
+by the C# compiler of the .NET Framework 4 every Windows carries, the one
+build-windows.ps1 builds the launcher with."
+  (or (and *release-stub-executable* (probe-file *release-stub-executable*) *release-stub-executable*)
+      (let ((source (temp-path "release-stub" "cs"))
+            (exe (temp-path "release-stub" "exe")))
+        (write-temp-file source "class P { static int Main() { System.Console.Error.WriteLine(\"usage: nodecode [-p NAME] [COMMAND] [OPTIONS]\"); return 2; } }")
+        (uiop:run-program (list (uiop:native-namestring
+                                 (merge-pathnames "Microsoft.NET/Framework64/v4.0.30319/csc.exe"
+                                                  (uiop:ensure-directory-pathname (uiop:getenv "WINDIR"))))
+                                "/nologo" "/target:exe" "/platform:x64"
+                                (format nil "/out:~a" (uiop:native-namestring exe)) (uiop:native-namestring source))
+                          :output :string :error-output :output)
+        (ignore-errors (delete-file source))
+        (setf *release-stub-executable* exe))))
+
 (defun write-release-tarball (dist version files &aux (name (format nil "nodecode-~a-~a" version (nle::release-platform)))
+                                                      (windows (eq (nlk:platform) :windows))
                                                       (work (temp-path "release-work"))
                                                       (tree (merge-pathnames (format nil "~a/" name) work)))
-  "nodecode-VERSION-<platform>.tar.gz under DIST with its sha256 sidecar: an
-executable `nodecode' answering --help with the usage line, and FILES
-((RELATIVE . TEXT) ...) under it."
-  (write-upgrade-tree tree (cons (cons "nodecode" "#!/bin/sh
+  "The release archive of VERSION under DIST, in this platform's container,
+with its sha256 sidecar: an executable `nodecode' answering --help with the
+usage line, and FILES ((RELATIVE . TEXT) ...) under it. A tar.gz holding a
+shell script on Linux and macOS; on Windows the tar.zst install.ps1 takes,
+its nodecode.exe at the top."
+  (write-upgrade-tree tree (if windows
+                               files
+                               (cons (cons "nodecode" "#!/bin/sh
 echo 'usage: nodecode [-p NAME] [COMMAND] [OPTIONS]'
-") files))
-  (sb-posix:chmod (namestring (merge-pathnames "nodecode" tree)) #o755)
+") files)))
+  (if windows
+      (uiop:copy-file (release-stub-executable) (merge-pathnames "nodecode.exe" tree))
+      (sb-posix:chmod (namestring (merge-pathnames "nodecode" tree)) #o755))
   (ensure-directories-exist dist)
-  (let ((tarball (uiop:native-namestring (merge-pathnames (format nil "~a.tar.gz" name) dist))))
-    (uiop:run-program (list "tar" "-czf" tarball "-C" (uiop:native-namestring work) name))
-    (let ((digest (uiop:run-program (list "sha256sum" tarball) :output :string)))
-      (write-temp-file (merge-pathnames (format nil "~a.tar.gz.sha256" name) dist)
-                       (format nil "~a  ~a.tar.gz~%" (subseq digest 0 64) name))))
+  (let* ((file (format nil "~a.~:[tar.gz~;tar.zst~]" name windows))
+         (archive (uiop:native-namestring (merge-pathnames file dist))))
+    ;; Windows' own bsdtar, not a GNU tar some PATH puts first: install.ps1
+    ;; unpacks with it too.
+    (uiop:run-program (if windows
+                          (list (uiop:native-namestring (merge-pathnames "System32/tar.exe" (uiop:ensure-directory-pathname (uiop:getenv "SystemRoot"))))
+                                "--zstd" "-cf" archive "-C" (uiop:native-namestring tree) ".")
+                          (list "tar" "-czf" archive "-C" (uiop:native-namestring work) name)))
+    (write-temp-file (merge-pathnames (format nil "~a.sha256" file) dist)
+                     (format nil "~a  ~a~%" (subseq (nlk::sha256-text (nlk::file-octets archive)) 7) file)))
   (ignore-errors (uiop:delete-directory-tree work :validate t))
   name)
+
+(defun release-installer ()
+  "The installer this platform's releases carry, in this checkout."
+  (asdf:system-relative-pathname "nodecode" (if (eq (nlk:platform) :windows)
+                                                "tools/install/install.ps1"
+                                                "tools/install/install.sh")))
+
+(defun release-current ()
+  "The release folder `current' names: a symbolic link's target, and on
+Windows a junction's, which TRUENAME leaves as it is."
+  (nlk::real-path (merge-pathnames "current/" nle::*release-directory*)))
+
+(defun release-executable (directory)
+  "The executable of the release laid out at DIRECTORY."
+  (merge-pathnames (if (eq (nlk:platform) :windows) "nodecode.exe" "nodecode") directory))
 
 (defun upg-source (answer slots)
   "The fixture's src/src/a.lisp: UPG-ROUTE-F answering ANSWER, UPG-ROUTE-S holding SLOTS."
@@ -56,19 +104,18 @@ repo's own installer, for BODY."
                            (format nil "file://~a" (string-right-trim "/" (namestring ,dist))))
                           (nle::*release-fetch* 'nle::release-fetch)
                           (nle::*release-directory* releases-dir)
-                          (nle::*installer-path*
-                           (asdf:system-relative-pathname "nodecode" "tools/install/install.sh")))
+                          (nle::*installer-path* (release-installer)))
        ,@body)))
 
 (deftest update-installer-stages-then-links ()
   (with-release-host (dist (list (cons "tv1" (release-files *update-old-a*))))
     (let ((directory (nle::stage-release "tv1")))
-      (is (probe-file (merge-pathnames "nodecode" directory)) "the version is laid out")
+      (is (probe-file (release-executable directory)) "the version is laid out")
       (is (probe-file (merge-pathnames "src/src/a.lisp" directory)) "with its source tree")
       (is (null (probe-file (merge-pathnames "current" nle::*release-directory*)))))
     (is (nle::link-release "tv1"))
-    (is (equal (namestring (truename (merge-pathnames "tv1/" nle::*release-directory*)))
-               (namestring (truename (merge-pathnames "current" nle::*release-directory*)))))
+    (is (equal (namestring (nlk::real-path (merge-pathnames "tv1/" nle::*release-directory*)))
+               (namestring (release-current))))
     (is-carrying (text (refusal-text nlk:upgrade-refusal (nle::stage-release "no-such")))
       ("no-such" "a release the host lacks is refused by name"))))
 
@@ -96,8 +143,10 @@ repo's own installer, for BODY."
 
 (deftest update-polls-every-half-hour-where-no-feed-streams ()
   ;; A box the feed cannot reach hears of a release only from the poller.
+  ;; The backend is the platform's: WinHTTP on Windows, usocket elsewhere.
   (with-saved-globals ((nle::*installed-build* t))
-    (is (= 360 (nth-value 2 (nle::update-settings))))
+    (let ((dex:*dexador-backend* :usocket))
+      (is (= 360 (nth-value 2 (nle::update-settings)))))
     (let ((dex:*dexador-backend* :winhttp))
       (is (= 30 (nth-value 2 (nle::update-settings)))))))
 
@@ -147,7 +196,8 @@ repo's own installer, for BODY."
 (deftest update-settings-default-to-auto-stable ()
   (with-saved-globals ((nle::*installed-build* t))
     (is-values (mode channel minutes url) (nle::update-settings) (mode "auto") (channel "stable")
-      (minutes eql 360)
+      ;; six hours where the feed streams, half an hour where it cannot (WinHTTP)
+      (minutes eql (if (nle::feed-streams-p) 360 30))
       (url nle::*release-url* "the release host is the parameter's unless the config says")))
   (with-saved-globals ((nle::*installed-build* nil))
     (is (equal "off" (nle::update-settings)) "a build outside the installer's layout -- a checkout's -- never updates itself unasked")))
@@ -282,7 +332,7 @@ it runs pushes :STOPPED or :STARTED onto (CAR LOG)."
         (is (search "defstruct" (nlk::json-value body :string "text")) "the held reason is named"))
       (is (eql 2 (funcall 'nodecode.evolved::upg-route-f)) "the release's definition is live")
       (is (equal "tv3" nlk::*effective-version*))
-      (let ((current (truename (merge-pathnames "current" nle::*release-directory*))))
+      (let ((current (release-current)))
         (is (equal "tv3" (car (last (pathname-directory current)))) "current names the new build"))
       (let ((record (nlk::events :kind nlk::+kind-organism-upgraded+
                                  :order :newest :as :payload)))
@@ -336,7 +386,7 @@ it runs pushes :STOPPED or :STARTED onto (CAR LOG)."
             "upg-route-g"))
         (is (eql 1 (funcall 'nodecode.evolved::upg-route-f)) "the image is as it was")
         (is (null nlk::*effective-version*))
-        (let ((current (truename (merge-pathnames "current" nle::*release-directory*))))
+        (let ((current (release-current)))
           (is (equal "tv5" (car (last (pathname-directory current)))) "current names the new build"))
         (is (search "refused it live" (board-line "update")))
         (bt2:join-thread nle::*restart-wait*)
@@ -510,7 +560,7 @@ ended by CRLF, then closes. => (values PORT LISTENER)."
 (defmacro with-octet-pipe ((in out) &body body &aux (read-fd (gensym)) (write-fd (gensym)))
   "BODY with IN an octet fd-stream reading what OUT, a character stream,
 writes: a socket's shape, where only a deadline bounds a read."
-  `(multiple-value-bind (,read-fd ,write-fd) (sb-posix:pipe)
+  `(multiple-value-bind (,read-fd ,write-fd) (make-pipe)
      (let ((,in (sb-sys:make-fd-stream ,read-fd :input t :element-type '(unsigned-byte 8)))
            (,out (sb-sys:make-fd-stream ,write-fd :output t)))
        (nlk:with-cleanup ((ignore-errors (close ,out)) (ignore-errors (close ,in)))
@@ -686,6 +736,22 @@ asks again after a pause -- and stops the moment the image has caught up."
         (cons "src/nodecode.asd"
               (format nil "(defsystem \"upg\" :version \"~a\" :depends-on (\"uiop\") :components ((:file \"a\")))" number))))
 
+(deftest update-a-hot-upgrade-reports-the-number-of-the-release-it-took ()
+  ;; A hot upgrade across a version bump (0.1.8 to a 0.1.9 nightly) says the
+  ;; number the release it moved to declares, not the build's; a release not
+  ;; laid out here keeps the build's number.
+  (with-release-host (dist (list (cons "tv1" (numbered-release-files "9.0.1"))
+                                 (cons "tv2" (numbered-release-files "9.0.2"))))
+    (nle::stage-release "tv2")
+    (with-saved-globals ((nle::*user-agent-version* "9.0.1+tv1")
+                         (nlk::*effective-version* nil))
+      (is (equal "9.0.1+tv1" (nle::effective-version)) "the build's own until an upgrade")
+      (setf nlk::*effective-version* "tv2")
+      (is (equal "9.0.2+tv2" (nle::effective-version)))
+      (is (search "nodecode_cli/9.0.2+tv2 " (nle::user-agent)))
+      (setf nlk::*effective-version* "no-such")
+      (is (equal "9.0.1+no-such" (nle::effective-version))))))
+
 (deftest update-a-window-whose-path-predates-the-update-is-told-why ()
   ;; Windows puts the version's own folder on the user PATH, and a window keeps
   ;; the PATH it opened with: after `nodecode update' there, `nodecode' still
@@ -715,7 +781,9 @@ asks again after a pause -- and stops the moment the image has caught up."
     (is (nle::path-names-directory-p #p"/opt/nc/tv1/" (format nil "/usr/bin~a/opt/nc/tv1~a/bin" sep sep)))
     (is (nle::path-names-directory-p #p"/opt/nc/tv1/" (format nil "/opt/nc/tv1/~a/bin" sep)))
     (is (not (nle::path-names-directory-p #p"/opt/nc/tv1/" (format nil "/opt/nc/tv2~a/opt/nc/current" sep))))
-    (is (not (nle::path-names-directory-p #p"/opt/nc/tv1/" nil)))))
+    (is (not (nle::path-names-directory-p #p"/opt/nc/tv1/" nil)))
+    ;; Windows reads an entry in any case, with `/' or `\' alike
+    #+win32 (is (nle::path-names-directory-p #p"C:/Nodecode/tv1/" "C:\\Windows;c:/nodecode/TV1/"))))
 
 (deftest update-locally-takes-the-release-current-names-as-it-lies (with-organism-tree ("tv2" (upg-source 2 "a")))
   ;; A second `nodecode update' in a window that still runs the old release
@@ -902,6 +970,73 @@ are LISTS ((LABEL . LINES) ...), any other list a 404."
                      (is (search "tv9 is out" (board-line "update")) "the board says what landed")
                      (is (search says (board-line "update")) why))))))))
 
+(deftest update-a-bare-update-refuses-an-older-channel ()
+  ;; A channel switched back to stable from nightly names a build older than
+  ;; this one. An update naming no release leaves this build be, the way the
+  ;; poller does, and says how to go back on purpose; the hold stays.
+  (with-saved-globals ((nlk::*effective-version* "tv5") (nle::*release-list* nil)
+                       (nle::*release-fetch* (changes-host '(("tv1" "tv1") ("tv5" "tv5" "tv1")) "tv1")))
+    (nlk:with-cleanup ((nle::lift-hold))
+      (nle::hold-release "tv5")
+      (is-carrying (text (refusal-text nlk:upgrade-refusal (nle::upgrade-organism :apply t)))
+        ("tv1, the stable channel's latest, is older than this build, tv5" "the refusal names both builds")
+        ("`nodecode update tv1' goes back to it" "and the way back on purpose"))
+      (is-carrying (text (refusal-text nlk:upgrade-refusal (nle::upgrade-organism :check t)))
+        ("is older than this build" "a check says the same"))
+      (is (equal "tv5" (nle::held-release)) "a refused update moves no hold"))))
+
+(deftest update-a-named-step-back-runs-at-the-restart (let ((exited '())))
+  ;; Going back is named, and runs whole at the restart: older definitions
+  ;; evaluated over a newer image would meet state the newer ones left.
+  (with-organism-tree ("tv3" (upg-source 2 "a"))
+    (write-temp-file (merge-pathnames "changes-tv3" dist) (changes-list "tv3"))
+    (write-temp-file (merge-pathnames "changes-tv9" dist) (changes-list "tv9" "tv3"))
+    (with-saved-globals ((nlk::*effective-version* "tv9") (nle::*release-list* nil)
+                         (nle::*gateway-run* t) (nle::*idle-poll-seconds* 0.05)
+                         (nle::*restart-wait* nil) (nle::*refused-release* nil)
+                         (nle::*restart-exit* (lambda (to) (push to exited))))
+      (with-stubbed-fdefinitions ((nlk:gateway-installed-p (&optional home) t)
+                                  (nlk:any-active-turn-p () nil)
+                                  (nle::start-release-feed () nil))
+        (nlk:with-cleanup ((nle::lift-hold))
+          (let ((result (nle::upgrade-organism :version "tv3" :apply t :hold t)))
+            (is (eq :live (getf result :applied)) "linked, not hot")
+            (is-carrying (text (getf result :line))
+              ("tv3 runs at the gateway's restart" "the step back waits for the restart")
+              ("tv3 is older than tv9" "and says why")))
+          (is (eql 1 (funcall 'nodecode.evolved::upg-route-f)) "no older definition was evaluated")
+          (is (equal "tv3" (nle::held-release)) "a named step back holds this home there")
+          (let ((current (release-current)))
+            (is (equal "tv3" (car (last (pathname-directory current)))) "current names the older build"))
+          (bt2:join-thread nle::*restart-wait*)
+          (is (equal '("tv3") exited) "the unit's gateway restarts onto it"))))))
+
+(deftest update-poller-follows-a-channel-switched-in-the-config (let ((asked '()) (stopped 0)))
+  "A channel switched in the config is looked at within a settings look -- not
+at the next look, six hours on with a feed up -- and the feed, which reads its
+URL when it connects, is ended so that look starts it on the new channel."
+  (with-temp-trees ((home "poller-config"))
+    (let ((config (merge-pathnames "config.jsonc" home)))
+      (write-temp-file config "{\"update\": {\"channel\": \"stable\"}}")
+      (with-idle-feed ((nle::*update-poller* nil)
+                       (nle::*shared-config-path* config)
+                       (nle::*update-poller-first-look-seconds* 0.05)
+                       (nle::*update-settings-look-seconds* 0.05)
+                       (nle::*release-fetch* (lambda (url)
+                                               (push url asked)
+                                               (values (nle::effective-label) nil))))
+        (with-stubbed-fdefinitions ((nle::start-release-feed () nil)
+                                    (nle::stop-release-feed () (incf stopped)))
+          (nlk:with-cleanup ((nle::stop-update-poller) (nlk:note-standing "update" nil :info))
+            (nle::start-update-poller)
+            (await (:rest 0.05) asked)
+            (is (every (lambda (url) (search "/stable-" url)) asked) "the first look reads stable")
+            (is (zerop stopped) "and leaves the feed be")
+            (write-temp-file config "{\"update\": {\"channel\": \"nightly\"}}")
+            (await (:rest 0.05) (find "/nightly-" asked :test #'search))
+            (is (find "/nightly-" asked :test #'search) "the switched channel is looked at at once")
+            (is (plusp stopped) "and the feed reconnects onto it")))))))
+
 (deftest update-a-release-that-loses-a-provider-is-undone (with-organism-tree ("tv3" (upg-source 2 "a")))
   ;; Every definition evaluated and a provider this image served no longer
   ;; resolves: the image is put back and the release waits for a boot, which
@@ -928,9 +1063,13 @@ are LISTS ((LABEL . LINES) ...), any other list a 404."
         (let ((thread (bt2:make-thread
                        (lambda () (nle::upgrade-organism :version "tv3" :apply t :idle t))
                        :name "idle-update")))
+          ;; Staging comes first and takes what installing a release takes
+          ;; here (on Windows, a tar child unpacking it): the release is
+          ;; waiting from the moment the board says so.
+          (is (await (:timeout 30)
+                (search "goes live the first moment no turn is running" (board-line "update"))))
           (sleep 0.3)
           (is (eql 1 (funcall 'nodecode.evolved::upg-route-f)) "not while a turn runs")
-          (is (search "goes live the first moment no turn is running" (board-line "update")) "the board says it waits")
           (setf busy nil)
           (is (eq :hot (getf (bt2:join-thread thread) :applied)))
           (is (eql 2 (funcall 'nodecode.evolved::upg-route-f)) "then it is live"))))))

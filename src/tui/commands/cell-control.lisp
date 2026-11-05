@@ -18,7 +18,6 @@ SET-GATEWAY-COMMANDS takes."
                                        "commands")
         collect (list :name (json-value command :string "name")
                       :description (or (json-value command :string "description") "")
-                      :usage (or (json-value command :string "usage") "")
                       :session (json-value command :boolean "session")
                       :trigger (json-value command :text "trigger"))))
 
@@ -86,7 +85,9 @@ JSON its value: what Enter inserts and the lines its keys run are read off it."
                  :suffix (or (json-value row :string "suffix") "")
                  :value row
                  :mark (or (json-value row :string "mark") "")
-                 :mark-tone (if tone (intern (string-upcase tone) :keyword) :muted))))
+                 :mark-tone (if tone (intern (string-upcase tone) :keyword) :muted)
+                 ;; A table's column names: painted, never chosen.
+                 :heading (json-value row :boolean "heading"))))
 
 (defun dialog-tabs (dialog)
   "The tab strip DIALOG's JSON carries (LIST-DIALOG's TABS) as the plists
@@ -105,11 +106,13 @@ REGISTER-PICKER-PICTURE takes, or NIL for a dialog with none."
              (append (and palette (list :palette palette))
                      (and (json-value picture :boolean "beside") (list :beside t)))))))
 
-(defun open-answer-dialog (model answer &key line trigger under (selection 0) label)
+(defun open-answer-dialog (model answer &key line trigger under (selection 0) label here)
   "Open the dialog ANSWER -- the answer to the slash LINE -- carries as
 MODEL's picker, on the row LABEL names, else row SELECTION, over UNDER: the
 answer dialogs it was opened from, nearest first, as (LINE SELECTION LABEL).
-A command whose answer is its text alone opens nothing."
+HERE runs a row's line in this shell (a builtin's dialog, OPEN-BARE-DIALOG)
+instead of at the gateway. A command whose answer is its text alone opens
+nothing."
   ;; The row's VALUE is what Enter hands the composer: a command that answers
   ;; with a list of things to name picks one into the draft at the caret,
   ;; which is how /index lands a `$name'. Opened by its TRIGGER, the
@@ -129,7 +132,16 @@ A command whose answer is its text alone opens nothing."
                (gesture (model value key)
                  (when-let (run (json-value value :text "run" key))
                    (setf (chat-model-dialog model) nil)
-                   (answer-gesture model run (stack))
+                   (if here
+                       (submit-slash model run :dropdown nil)
+                       (answer-gesture model run (stack)))
+                   t))
+               (ask (model value)
+                 ;; A row that asks for text hands the composer its label
+                 ;; (tui/commands/bare.lisp ASK-IN-COMPOSER).
+                 (when-let (ask (json-value value :object "ask"))
+                   (setf (chat-model-dialog model) nil)
+                   (ask-in-composer model ask)
                    t)))
         (open-picker-dialog
          model
@@ -137,6 +149,7 @@ A command whose answer is its text alone opens nothing."
          rows
          (lambda (model value &aux (text (json-value value :text "value")))
            (cond ((gesture model value "enter"))
+                 ((ask model value))
                  (text
                   (when (and trigger (uiop:string-prefix-p trigger text)
                              (uiop:string-suffix-p (editor-value model.editor) trigger))
@@ -165,7 +178,11 @@ A command whose answer is its text alone opens nothing."
          :kind :answer)
         (setf picker model.dialog)
         (register-picker-tabs picker (dialog-tabs dialog))
-        (register-picker-picture picker (dialog-picture dialog))))))
+        (register-picker-picture picker (dialog-picture dialog))
+        ;; A heading is never chosen: the list opens on the first row that can be,
+        ;; in the tab the strip opened on.
+        (setf (picker-dialog-selection picker)
+              (past-headings (picker-visible-rows picker) (picker-dialog-selection picker) 1))))))
 
 (defun answer-gesture (model line stack)
   "Run LINE, the line a row's key names in the answer dialog atop STACK, where

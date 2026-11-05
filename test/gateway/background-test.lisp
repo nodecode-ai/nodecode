@@ -28,7 +28,9 @@
   (linger-allowed t)
   (bus t)
   (calls '())
-  (stop-saw-file :unasked))
+  (cgroup nil)
+  (stop-saw-file :unasked)
+  (stop-saw-off :unasked))
 
 (nlk:access (fake fake-systemd) (service fake-unit))
 
@@ -49,8 +51,13 @@ under *UNIT-DIRECTORY*, its enablement and its process FAKE's."
           (cond
             ((string= verb "show")
              (values (format nil "LoadState=~:[not-found~;loaded~]~%ActiveState=~a~%SubState=~a~%~
-                             UnitFileState=~:[disabled~;enabled~]~%Result=success~%MainPID=~d~%"
-                             (file-p) service.active service.sub service.enabled (or service.pid 0))
+                             UnitFileState=~:[disabled~;enabled~]~%Result=success~%MainPID=~d~%~
+                             ControlGroup=~a~%"
+                             (file-p) service.active service.sub service.enabled (or service.pid 0)
+                             ;; a running unit's group: FAKE's own, or one no test process sits in
+                             (cond ((not service.pid) "")
+                                   (fake.cgroup)
+                                   (t (format nil "/user.slice/fake/~a" unit))))
                      "" 0))
             ((member verb '("daemon-reload" "reset-failed") :test #'string=)
              (values "" "" 0))
@@ -64,7 +71,10 @@ under *UNIT-DIRECTORY*, its enablement and its process FAKE's."
             ((string= verb "disable")
              (setf service.enabled nil)
              (values "" "Removed." 0))
-            ((string= verb "stop") (setf fake.stop-saw-file (file-p)) (halt) (values "" "" 0))
+            ((string= verb "stop")
+             (setf fake.stop-saw-file (file-p) fake.stop-saw-off (nlk:gateway-off-p))
+             (halt)
+             (values "" "" 0))
             ((member verb '("start" "restart") :test #'string=)
              (run)
              (values "" "" 0))
@@ -312,6 +322,57 @@ the unit folder: what another naming of the same home left there."
     (is (member "daemon-reload" verbs :test #'equal))
     (is (member "restart" verbs :test #'equal))))
 
+(deftest gateway-off-does-everything-before-its-stop ()
+  ;; A stop asked from inside the gateway (its own page's off, a forced off
+  ;; from its tool shell) ends the asking process with it: whatever came after
+  ;; the stop never ran, the operator's off was never written down, and the
+  ;; next shell's cell turned the gateway straight back on.
+  (with-scripted-systemd (fake)
+    (nlk:gateway-on :program +test-binary+)
+    (setf (fake-systemd-calls fake) '())
+    (nlk:gateway-off)
+    (is (eq t fake.stop-saw-off) "the off is written before the stop")
+    (is (nlk:gateway-off-p) "and stays")))
+
+#-win32
+(deftest a-gateway-this-process-descends-from-is-one-it-runs-inside ()
+  (is (member (sb-posix:getppid) (nlk::process-lineage)) "the lineage climbs past this process")
+  (is (nlk::inside-gateway-p (nlk::make-gateway-state :main-pid (sb-posix:getppid))) "an ancestor's gateway holds it")
+  (is (not (nlk::inside-gateway-p (nlk::make-gateway-state :main-pid nil))) "no process, nothing to sit inside")
+  #+linux
+  (let ((own (nlk::process-cgroup)))
+    (is own "Linux names this process's cgroup")
+    (is (nlk::inside-gateway-p (nlk::make-gateway-state :cgroup own)) "under systemd the unit's group decides")
+    (is (not (nlk::inside-gateway-p (nlk::make-gateway-state :cgroup "/user.slice/elsewhere/x.service" :main-pid (sb-posix:getppid)))) "the group, not the lineage")))
+
+#+linux
+(deftest gateway-off-and-restart-refuse-from-inside-the-gateway ()
+  ;; 2026-11-03: a scratch script an agent ran from its gateway's tool shell
+  ;; inherited that gateway's home, and its cleanup's `gateway off' stopped the
+  ;; gateway it ran inside; the stop killed it part way, and the bot stayed down.
+  (with-scripted-systemd (fake :cgroup (nlk::process-cgroup))
+    (nlk:gateway-on :program +test-binary+)
+    (setf (fake-systemd-calls fake) '())
+    (let ((text (refusal-text nlk:gateway-error (nlk:gateway-text "off" :command "nodecode gateway"))))
+      (is (search "runs inside nodecode-gateway" text) "the refusal names the gateway")
+      (is (search "--force stops" text) "and the way past it"))
+    (is (equal '("show") (remove-duplicates (unit-verbs fake) :test #'equal)) "systemd was only asked")
+    (is (probe-file (nlk:gateway-unit-path)) "the unit stays")
+    (is (not (nlk:gateway-off-p)) "and no off is written")
+    (is (search "--force restarts" (refusal-text nlk:gateway-error (nlk:gateway-restart :program +test-binary+))) "a restart is refused too")
+    (is (not (member "restart" (unit-verbs fake) :test #'equal)))
+    (is (search "the gateway restarted" (nlk:gateway-text "restart --force" :command "nodecode gateway")) "forced, it restarts")
+    (is (member "restart" (unit-verbs fake) :test #'equal))
+    (is (search "the gateway is off" (nlk:gateway-text "off --force" :command "nodecode gateway")) "forced, it stops")
+    (is (null (probe-file (nlk:gateway-unit-path))))
+    (is (nlk:gateway-off-p))))
+
+(deftest gateway-force-belongs-to-off-and-restart (with-scripted-systemd (fake))
+  (nlk:gateway-on :program +test-binary+)
+  (is (search "does not take \"--force\"" (refusal-text nlk:gateway-usage-error (nlk:gateway-text "status --force" :command "/gateway"))))
+  (is (search "the gateway restarted" (nlk:gateway-text "restart --force" :command "/gateway")))
+  (is (search "the gateway is off" (nlk:gateway-text "off --force" :command "/gateway"))))
+
 (deftest gateway-linger-refused-names-the-sudo-that-grants-it ()
   (with-scripted-systemd (fake :linger-allowed nil)
     (let ((state (nlk:gateway-on :program +test-binary+)))
@@ -371,9 +432,13 @@ the unit folder: what another naming of the same home left there."
     (is (reports "waiting: pid 7 runs the organism now"
                  :installed :ours :enabled t :active "active" :main-pid 42 :owner-pid 7))
     (is (reports "on — starting (pid 42)" :installed :ours :enabled t :active "active" :main-pid 42))
-    (is (says (nlk:gateway-report (state :installed :ours :enabled t :active "failed" :result "exit-code")
-                                  :command "/gateway")
-              "on, but it failed (exit-code) — `/gateway logs' says why"))
+    ;; A slash command's verbs are its rows, never words to type; the command
+    ;; line's are its words.
+    (let ((failed (state :installed :ours :enabled t :active "failed" :result "exit-code")))
+      (is (says (nlk:gateway-report failed :command "/gateway")
+                "on, but it failed (exit-code) — its log in /gateway says why"))
+      (is (says (nlk:gateway-report failed :command "nodecode gateway")
+                "on, but it failed (exit-code) — `nodecode gateway logs' says why")))
     (is (reports "restarting after it exited"
                  :installed :ours :enabled t :active "activating" :sub "auto-restart"))
     (is (reports "does not start at login" :installed :ours :enabled nil :active "active"))

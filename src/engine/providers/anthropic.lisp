@@ -154,7 +154,8 @@ THINKING-P."
 ;;; thinking block. The block is bound to a different conversation'. An eviction
 ;;; is such a change (the stub joins the first user message, the oldest rounds
 ;;; leave), and so is a turn whose prompt pinned another section or registered
-;;; another tool. So the lane keeps the API's check itself: the message it
+;;; another tool, and so is another provider serving the same model (a
+;;; failover, a /models pick): what it sends around the body is its own. So the lane keeps the API's check itself: the message it
 ;;; assembles carries the digest of the prefix its request sent
 ;;; (reasoning_prefix), and its thinking replays only while the prefix before
 ;;; it still digests the same. A changed prefix sheds every block behind the
@@ -172,16 +173,23 @@ or the system prompt as itself, a block or a tool declaration as its JSON."
   (nlk:sha256-text (concatenate 'string prefix
                                 (if (stringp item) item (encode-json-object item)))))
 
-(defun anthropic-frame-prefix (model system-prompt tools)
-  "The digest an adaptive request's messages extend: MODEL, SYSTEM-PROMPT, then
-TOOLS, the declarations, by name -- the API binds the tools as a set, so their
-order is no change."
-  ;; MODEL first: a block one model signed never replays to another, so a
-  ;; round a refusal sent to a candidate (CALL-PROVIDER) sheds the selection's
-  ;; thinking, and the selection's next round sheds the candidate's.
+(defun anthropic-frame-prefix (provider model system-prompt tools)
+  "The digest an adaptive request's messages extend: PROVIDER, MODEL,
+SYSTEM-PROMPT, then TOOLS, the declarations, by name -- the API binds the
+tools as a set, so their order is no change."
+  ;; PROVIDER and MODEL first. A block one model signed never replays to
+  ;; another, so a round a refusal sent to a candidate (CALL-PROVIDER) sheds
+  ;; the selection's thinking, and the selection's next round sheds the
+  ;; candidate's. Nor does one provider's replay to another serving the same
+  ;; model: the claude-code cell's lane builds this very body, but its CLI
+  ;; writes the request's system blocks and tool names, so a block signed
+  ;; there is refused here -- 400 `The system prompt differs from the one this
+  ;; block was created with' -- on the first round after a failover or a
+  ;; /models pick from one to the other, and the turn dies.
   (reduce #'anthropic-prefix
           (sort (map 'list #'identity tools) #'string< :key (lambda (tool) (or (gethash "name" tool) "")))
-          :initial-value (anthropic-prefix (anthropic-prefix "" model) (or system-prompt ""))))
+          :initial-value (anthropic-prefix (anthropic-prefix (anthropic-prefix "" provider) model)
+                                           (or system-prompt ""))))
 
 (defun anthropic-messages (wire &optional prefix)
   "Convert the chat-shaped message vector to Anthropic messages, merging
@@ -483,14 +491,16 @@ breakpoints placed by policy."
        (tools (and tools (tool-declarations tools "input_schema")))
        (mapped-choice (and tools (stringp choice)
                            (cdr (assoc choice
-                                       '(("auto" . "auto") ("required" . "any") ("any" . "any"))
+                                       '(("auto" . "auto") ("required" . "any") ("any" . "any")
+                                         ("none" . "none"))
                                        :test #'string-equal))))
        (sampling-p (not (or budget adaptive-effort)))
        ;; the head joins before the breakpoints: it is the prefix
        (conversation (multiple-value-list
                       (anthropic-messages (messages-with-head context)
                                           (and adaptive-p
-                                               (anthropic-frame-prefix config.model
+                                               (anthropic-frame-prefix config.provider
+                                                                       config.model
                                                                        context.system-prompt
                                                                        tools)))))
        (body (json-object

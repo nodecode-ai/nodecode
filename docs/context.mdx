@@ -1,177 +1,30 @@
 ---
-title: Context and recall
-summary: "The window budget, eviction, the stub it leaves, /evict, the working context, the recall forms and checkpoints."
+title: Context
+summary: "The agent edits its own context: it corrects what it got wrong, drops what it is done with, and can read any of it back."
 ---
 
-<WindowFigure />
+Most agents only add to their context, until something summarizes it or cuts it. Nodecode's agent edits its own, the way a [Context Language Model](https://arxiv.org/abs/2609.37725) does.
 
-{/* source: src/engine/provider.lisp */}
-## Budget
+<Recording name="selfedit" />
 
-The budget is the model's context window in tokens. The first source that has a number wins.
+Asked why customers were charged twice, it reads four logs and blames the retries. Told that retries are off, it finds the real cause. Before it answers, it cleans up after itself:
 
-| Order | Source |
-| --- | --- |
-| 1 | `NODECODE_CONTEXT_TOKENS` |
-| 2 | `providers.<id>.models[].context_window` in `config.jsonc` |
-| 3 | Overrides for the model recorded in the running image |
-| 4 | The models.dev cache at `~/.cache/nodecode/models.dev/api.json`, or the file `NODECODE_MODELS_CATALOG` names |
+1. It rewrites its wrong answer in its own context, so nothing after it leans on it.
+2. It drops the four logs that misled it. The context goes from 35k tokens to 3k.
 
-A model no source knows has an unknown window.
-
-<Note head="Unknown window">An unknown window is never proactively evicted. Eviction then starts only when the provider rejects a request as too large. Set `context_window` to give the model a budget.</Note>
-
-Nodecode also learns the window. A request the provider rejects as too large records a ceiling for that provider and model, and that ceiling is the budget from then on. A round that succeeds records a floor, which can raise a models.dev window. A number from rows 1 to 3 is never corrected.
-
-`/context [prompt | tools | index | notes | history | time]` shows this session's context window and usage: the newest round's prompt over the window, configured, learned or the model's own. It splits the prompt into the standing prompt, the tools, the skills and memories index, the model's notes and the history. `history` lists the turns, and Enter evicts through one. `time` charts each round's prompt from the log.
-
-{/* source: src/engine/context.lisp */}
-## Eviction
-
-| Setting | Value |
-| --- | --- |
-| Warns at | 0.85 of the budget, once: `[context X of Y, past the 85% line: the next request evicts your oldest history unless it shrinks first. ...]` |
-| Evicts | At the next request still over 0.85. A request already past the whole budget evicts at once. |
-| Evicts down to | 0.50 of the budget |
-
-Past 60k tokens, or half the window when that is smaller, every tool result says how full the window is: `context 95k of 180k`.
-
-Order:
-
-1. Finished turns go first, oldest first. Each goes whole.
-2. If that is not enough, the running turn is thinned: every round but its newest 8, and more while the window is still over. A thinned round keeps its call. Its tool result, if over 600 characters, keeps at most its first 300 and a line `[thinned from N characters; (getf (recall-entry S) :text) reads it whole]`. Every round the turn holds then loses its reasoning.
-3. If that is still not enough, the running turn sheds its oldest rounds.
-
-The running turn keeps its user message and its newest round. It is never evicted whole.
-
-Evicted history is never summarised. It stays in the log, word for word.
-
-The eviction boundary only moves forward. An undo does not bring evicted turns back into the window.
-
-{/* source: src/engine/context.lisp */}
-## Stub
-
-A stub is a system message that stands where the evicted history was.
-
-Whole turns:
-
-```lisp
-[history evicted: seq A–B · N turns · defined: NAMES · watching: VALUES · recall: (recall-log :match "text" :before B+1)]
-```
-
-Rounds of the running turn:
-
-```lisp
-[turn history evicted: N rounds · seq A–B · defined: NAMES · watching: VALUES · recall: (recall-log :match "text" :after A-1 :before B+1)]
-```
-
-A notes block may follow on the next lines:
-
-```lisp
-[the evicted snippets noted and judged, oldest first; (recall-entry seq) reads one whole
- seq N · NOTE
- seq N · NOTE]
-```
-
-A whole-turn stub may carry two more blocks. `[evicted in N blocks, oldest first; ...]` lists each eviction's seq range, at most 12 lines. `[your own notes in the evicted turns, oldest first]` carries the notes the agent wrote into its context: the newest, then older ones while 6,000 characters hold them.
-
-| Part | Meaning |
-| --- | --- |
-| `seq A–B` | The log positions that left the window. `recall-log` and `recall-entry` take the same numbers. |
-| `defined:` | Definitions the evicted rounds recorded. Shown only when there are any. |
-| `watching:` | The last values of watched cells. Shown only when there are any. |
-| Notes block | One line per evicted cell that opened with a `;;` note. |
-
-| Limit | Value |
-| --- | --- |
-| Names in `defined:` or `watching:` | 24, then `+N more` |
-| Note lines | The newest 100, then `+N earlier` |
-| Note line length | 320 characters |
-
-Write a `;;` line at the top of a cell. That line survives eviction.
-
-{/* source: src/tui/slash.lisp */}
-## /evict
-
-`/evict [percent | through TURN]` forces an eviction. `through TURN` drops every retained turn up to and including that turn id. `/context history` lists the turns and runs it.
-
-| Fact | Value |
-| --- | --- |
-| Alias | `/compact` |
-| `percent` | 1 to 100. `40` and `40%` both work. |
-| Default | 50 |
-| Drops | The oldest whole turns, until at least that share of the retained history is gone. |
-| Keeps | The newest turn, always. |
+Nothing it drops is lost. Every word stays in the session's log, and the agent reads any of it back when it needs it.
 
 {/* source: src/engine/working-context.lisp */}
-## Working context
+## How
 
-`(context)` writes the session's context to `context.txt` and returns its path. Each message is a block under a `[[m:NONCE ID ROLE]]` line, where ID is its log position. Delete a block and the message leaves the context. Edit its text and the message reads as edited. Text under a `[[note]]` line is the agent's own note. The next model request takes the edit, and `context.receipt.txt` says what it kept, changed and removed. `(context :drop SPANS :keep IDS :note TEXT)` makes the same edit without the file: SPANS is `t` for every block, or a list of seqs and `(from . to)` spans, and `:keep` holds seqs back from the drop. Every tool result ends with its seq, `[seq 57]`. The log is never edited.
+- `(context)` hands the agent its context as a file. What the file says is what the next request sends.
+- `(context :drop '(15 21) :note "...")` makes the same edit in one call.
+- If the window passes 85% and the agent has not made room, the oldest finished turns leave by themselves. They can still be read back.
 
-{/* source: src/session/recall.lisp */}
-## Recall
+The shell shows each edit as one row:
 
-The agent reads evicted history back from the log with three forms.
-
-<Recording />
-
-```lisp
-(recall-log :match "text" :before 1200 :limit 10)
-(recall-entry 1184)
-(recall-search "deploy script")
+```
+Context ~28.6k → ~489 tokens · 5 removed · by the model
 ```
 
-### recall-log
-
-Scans one session's log. Returns clipped rows, oldest first.
-
-| Keyword | Default | Does |
-| --- | --- | --- |
-| `:match` | none | SQL LIKE over the event payload, the message's thinking left out. `%` and `_` are wildcards. ASCII case is ignored. |
-| `:kinds` | input, assistant answer, tool call, tool result | One event kind or a list of kinds. |
-| `:before` | none | Only rows with a `:seq` below this number. |
-| `:after` | none | Only rows with a `:seq` above this number. |
-| `:limit` | 20 | Maximum rows. |
-| `:clip` | 200 | Characters kept per body. |
-| `:session-id` | The current session | Another session to read. |
-
-Each row carries `:seq`, `:at` (UTC time) and `:kind`. A tool result also carries `:duration-ms`. No row carries the model's thinking.
-
-When more rows match than `:limit`, the newest rows are returned. The first element is then `(:matched N :showing M)`. Page older with `:before` set to the oldest `:seq` returned.
-
-The scan includes the sessions this one was forked from, and turns hidden by an undo.
-
-### recall-entry
-
-`(recall-entry seq)` returns the one event at `seq` with its whole body. It returns `NIL` when no event holds that number.
-
-### recall-search
-
-`(recall-search query)` searches every session.
-
-| Keyword | Default | Does |
-| --- | --- | --- |
-| `:kinds` | Same as `recall-log` | Event kinds to search. |
-| `:limit` | 60 | Maximum rows. |
-| `:window` | 220 | Characters of text around the match. |
-| `:lead` | 32 | Characters of that text before the match. |
-
-The query is split on spaces. Every word must appear. Words are literal: `%` and `_` match themselves. An empty query is an error.
-
-Rows come newest first. Each carries `:session-id`, `:title`, `:seq` and a `:text` snippet.
-
-{/* source: src/session/checkpoint.lisp */}
-## Checkpoints
-
-Every turn is a checkpoint on the session tree.
-
-| Command | Does |
-| --- | --- |
-| `/tree` | Opens the session tree. Continue from a turn, or rewind to it. Alias `/checkpoints`. |
-| `/undo` | Rewinds the last turn. |
-| `/redo` | Returns to the branch the last rewind left. |
-| `/fork` | Forks a new session at the current head. |
-
-A rewind adds a head move to the log. Nothing is deleted. Abandoned branches stay reachable.
-
-In the shell, `/undo` also restores files by default. See [Sessions](/sessions).
+Every form and number: [Context reference](context-reference.mdx).

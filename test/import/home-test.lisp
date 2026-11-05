@@ -29,7 +29,7 @@
     ;; The whole plan reads the same home's prose, and asks.
     (let ((plan (nik:make-plan :source "claude")))
       (is (import-item plan "memory" "haiku-rule"))
-      (is (import-item plan "skills" "haiku"))
+      (is (import-item plan "skills" #-win32 "linked-skills/claude-skills" #+win32 "haiku"))
       (is (import-items plan "instructions"))
       (is (= 1 probes) "a plan that brings bots asks once"))))
 

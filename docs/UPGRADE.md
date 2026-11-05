@@ -46,7 +46,9 @@ binary, which is the restart path.
 
 The channel pointer is one line at `<release-url>/<channel>-<arch>-<os>`
 (`stable-x86_64-linux`) beside the tarballs; `publish.sh` writes it with
-every release (`NODECODE_PUBLISH_CHANNEL=beta` for the other channel).
+every release: `stable` for a tag, `nightly` for the Release workflow's
+nightly run (`NODECODE_PUBLISH_CHANNEL`), which moves only the nightly
+pointers -- no tag, no GitHub release, the installers left as stable put them.
 The web app beside that path serves the same fact pushed, at
 `/api/release/feed?pointer=<name>`: an event stream that answers the label
 now and on every move. That is what the feed holds open.

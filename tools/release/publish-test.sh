@@ -80,21 +80,35 @@ case "$1 ${2:-}" in
 esac
 EOF
 
+# A source on the host is read out of PUBLISH_TEST_HOST, the host's side of
+# remote_dir, when a test gives the host one.
 cat > "$fake_bin/scp" <<'EOF'
 #!/bin/sh
 set -eu
 [ "${1:-}" = -q ]
 shift
+for dest; do :; done
 while [ "$#" -gt 1 ]; do
-  [ -f "$1" ]
-  basename "$1" >> "$PUBLISH_TEST_SCP"
+  case "$1" in
+    *:*) cp "$PUBLISH_TEST_HOST/${1#*:}" "$dest"
+         printf 'from-host %s\n' "$(basename "$1")" >> "$PUBLISH_TEST_SCP" ;;
+    *) [ -f "$1" ]
+       basename "$1" >> "$PUBLISH_TEST_SCP" ;;
+  esac
   shift
 done
 EOF
 
+# The one host read a test can give an answer: what the host already holds
+# under the names a publish ships, run against PUBLISH_TEST_HOST.
 cat > "$fake_bin/ssh" <<'EOF'
 #!/bin/sh
 set -eu
+for last; do :; done
+case "$last" in
+  "cd 'dl' && for n in"*)
+    if [ -n "${PUBLISH_TEST_HOST:-}" ]; then cd "$PUBLISH_TEST_HOST" && exec sh -c "$last"; fi ;;
+esac
 exit 0
 EOF
 
@@ -163,7 +177,16 @@ if [ "${1:-}" = -C ]; then
   shift 2
 fi
 case "${1:-}" in
-  rev-parse) printf '%s\n' "$PUBLISH_TEST_LABEL" ;;
+  # The stable release before the commit, when a test names one: its tag, its
+  # commit and how many commits since.
+  describe) [ -n "${PUBLISH_TEST_PREVIOUS:-}" ] || exit 128
+            printf '%s\n' "$PUBLISH_TEST_PREVIOUS" ;;
+  rev-list) printf '%s\n' "${PUBLISH_TEST_SINCE:-0}" ;;
+  rev-parse) case "$*" in
+               *"${PUBLISH_TEST_PREVIOUS:-no previous}^{commit}"*)
+                 printf '%s\n' "${PUBLISH_TEST_PREVIOUS_HASH:-bbbbbbbbb2222222222222222222222222222222}" ;;
+               *) printf '%s\n' "$PUBLISH_TEST_LABEL" ;;
+             esac ;;
   # The system definition at the commit declares the version the release is.
   show) printf '%s\n' '(defsystem "nodecode"' '  :version "9.9.9"' ;;
   # A push lands the clone's installers on the site's remote, as GitHub would.
@@ -176,13 +199,16 @@ case "${1:-}" in
          for arg in "$@"; do dest="$arg"; done
          mkdir -p "$dest"; cp -R "$PUBLISH_TEST_SITE/." "$dest/" ;;
   # Two commits, the newer touching what ships; asked by path, only it.
-  log) case "$*" in
+  log) printf '%s\n' "$*" >> "${PUBLISH_TEST_GITLOG:-/dev/null}"
+       case "$*" in
          *' -- '*) printf '%s\n' aaaaaaaaa1111111111111111111111111111111 ;;
          *) printf '%s\n' 'aaaaaaaaa1111111111111111111111111111111 channels: a card -- the why' \
                            'bbbbbbbbb2222222222222222222222222222222 docs: a page' ;;
        esac ;;
   # The sandbox is the moved layout: the system definition sits at the root.
   cat-file) case "$*" in *:src/nodecode.asd) exit 1 ;; esac ;;
+  # Every commit is in the release's history but the one a test names newer.
+  merge-base) case " $* " in *" ${PUBLISH_TEST_NEWER:-no newer} "*) exit 1 ;; esac ;;
   *) exit 0 ;;
 esac
 EOF
@@ -295,6 +321,7 @@ grep -q -- '--path web/public/install.ps1' "$root/full-commits"
 if grep -q -- '--path tools/install/install.sh' "$root/full-commits"; then
   fail 'publish still commits to the authority installer'
 fi
+! grep -q '^nightly-' "$root/full-scp" || fail "a host with no nightly was given one: $(grep '^nightly-' "$root/full-scp" | tr '\n' ' ')"
 [ -f "$root/flaky-502" ] || fail 'the 502 retry path was not exercised'
 printf '%s\n' 'publish-test: one label on every platform, pointers last, 502 retry, edge hash verification pass'
 
@@ -399,6 +426,98 @@ for platform in x86_64-linux x86_64-windows; do
     || fail "stable-$platform does not name latest999 without the Mac"
 done
 printf '%s\n' 'publish-test: leaving the Mac out is said, and ships no darwin archive or pointer'
+
+# --- a nightly moves the nightly pointers alone --------------------------------
+# main's newest green build, for the homes whose config follows nightly: its
+# archives and changes ship and are proved like any release's, and only the
+# nightly pointers move. No tag is looked up and no release listed, and the
+# installers are not touched: whoever installs or follows stable meets none of
+# it.
+NODECODE_PUBLISH_CHANNEL=nightly publish fresh-nightly nightly \
+  || { cat "$root/nightly-errors" >&2; fail 'the nightly failed'; }
+for platform in x86_64-linux arm64-darwin x86_64-windows; do
+  grep -qx "nightly-$platform" "$root/nightly-scp" || fail "nightly-$platform was never shipped"
+  grep -q "nightly-$platform points at latest999" "$root/nightly-output" || fail "nightly-$platform does not name latest999"
+  grep -q "nodecode-latest999-$platform\..* edge sha256" "$root/nightly-output" || fail "no edge proof for the nightly $platform"
+done
+grep -qx 'changes-latest999' "$root/nightly-scp" || fail 'the nightly shipped no changes list'
+! grep -q '^stable-' "$root/nightly-scp" || fail "a nightly moved a stable pointer: $(grep '^stable-' "$root/nightly-scp" | tr '\n' ' ')"
+! grep -q 'install' "$root/nightly-scp" || fail 'a nightly shipped an installer'
+[ ! -s "$root/nightly-pushes" ] || fail "a nightly pushed the installers: $(cat "$root/nightly-pushes")"
+[ ! -s "$root/nightly-gh" ] || fail "a nightly asked GitHub: $(tr '\n' ' ' < "$root/nightly-gh")"
+grep -q "latest999 is the nightly channel's build; stable, the installers and the releases page are as they were" "$root/nightly-output" \
+  || fail 'the nightly did not say what it left alone'
+if NODECODE_PUBLISH_CHANNEL=beta publish fresh-beta beta; then fail 'a channel no one reads was published'; fi
+grep -q "the channel is stable or nightly, not 'beta'" "$root/beta-errors" || fail "the unknown channel was not named: $(cat "$root/beta-errors")"
+printf '%s\n' 'publish-test: a nightly moves the nightly pointers alone: no stable pointer, installer, tag or release'
+
+# --- the changes list reaches the stable release before it ----------------------
+# A home switched from nightly back to stable knows stable is a step back only
+# when stable's label is on the nightly's list, however many commits since.
+PUBLISH_TEST_PREVIOUS=v9.9.8 PUBLISH_TEST_SINCE=250 PUBLISH_TEST_GITLOG="$root/deep-gitlog" \
+  NODECODE_PUBLISH_CHANNEL=nightly publish fresh-deep deep \
+  || { cat "$root/deep-errors" >&2; fail 'a nightly 250 commits past stable failed'; }
+grep -q -- '-n 251 latest999' "$root/deep-gitlog" || fail "the list does not reach back 251 commits: $(tr '\n' ' ' < "$root/deep-gitlog")"
+grep -qx 'bbbbbbbbb' "$sandbox/fresh-deep/changes-latest999" || fail "stable's label is not on the list: $(cat "$sandbox/fresh-deep/changes-latest999")"
+if PUBLISH_TEST_PREVIOUS=v9.9.8 PUBLISH_TEST_PREVIOUS_HASH=ddddddddd4444444444444444444444444444444 \
+   NODECODE_PUBLISH_CHANNEL=nightly publish fresh-short short; then
+  fail 'a list that never reaches stable was published'
+fi
+grep -q 'changes-latest999 never reaches v9.9.8 (ddddddddd)' "$root/short-errors" || fail "the short list was not named: $(cat "$root/short-errors")"
+[ ! -s "$root/short-scp" ] || fail "a list that never reaches stable still shipped: $(tr '\n' ' ' < "$root/short-scp")"
+printf '%s\n' 'publish-test: the changes list reaches back to the stable release before it, or nothing ships'
+
+# --- a name already published ships the published bytes -------------------------
+# A stable release of a commit the nightly already carries: the host holds
+# its archives under the same names, and the edge caches those for 30 days. The
+# release ships the host's bytes -- built from the same commit -- not a second
+# body; a host body its own sidecar does not name is refused.
+host_dir="$root/host"
+mkdir -p "$host_dir/dl"
+printf 'the nightly of this commit\n' > "$host_dir/dl/nodecode-latest999-x86_64-linux.tar.gz"
+(cd "$host_dir/dl" && sha256sum nodecode-latest999-x86_64-linux.tar.gz > nodecode-latest999-x86_64-linux.tar.gz.sha256)
+PUBLISH_TEST_HOST="$host_dir" publish fresh-adopt adopt || { cat "$root/adopt-errors" >&2; fail 'a release over a nightly of its commit failed'; }
+grep -q 'nodecode-latest999-x86_64-linux.tar.gz is already published' "$root/adopt-output" || fail 'the published bytes were not said'
+cmp -s "$host_dir/dl/nodecode-latest999-x86_64-linux.tar.gz" "$sandbox/fresh-adopt/nodecode-latest999-x86_64-linux.tar.gz" \
+  || fail 'the release does not carry the bytes the host published'
+grep -q 'stable-x86_64-linux points at latest999' "$root/adopt-output" || fail 'the release over a nightly moved no pointer'
+printf '0000000000000000000000000000000000000000000000000000000000000000  nodecode-latest999-x86_64-linux.tar.gz\n' \
+  > "$host_dir/dl/nodecode-latest999-x86_64-linux.tar.gz.sha256"
+if PUBLISH_TEST_HOST="$host_dir" publish fresh-torn torn; then fail 'a host body its sidecar does not name was taken'; fi
+grep -q 'which its sidecar there (0000000000000000000000000000000000000000000000000000000000000000) does not name' "$root/torn-errors" \
+  || fail "the torn host copy was not named: $(cat "$root/torn-errors")"
+[ ! -s "$root/torn-scp" ] || fail "a torn host copy still shipped: $(tr '\n' ' ' < "$root/torn-scp")"
+printf '%s\n' 'publish-test: a name the host already holds ships its published bytes, and a torn one moves nothing'
+
+# --- a stable release carries the nightly it is past ----------------------------
+# A home on the nightly channel reads the nightly pointers alone: a stable
+# release of a commit past the nightly moves each nightly pointer naming a
+# commit it carries, in the same write as stable's. One naming a newer commit
+# stays, and one already naming the release is not written again.
+nightly_host="$root/nightly-host"
+mkdir -p "$nightly_host/dl"
+printf 'olderaaaa\n' > "$nightly_host/dl/nightly-x86_64-linux"
+printf 'newerbbbb\n' > "$nightly_host/dl/nightly-x86_64-windows"
+printf 'latest999\n' > "$nightly_host/dl/nightly-arm64-darwin"
+PUBLISH_TEST_NO_BUILD=1 PUBLISH_TEST_HOST="$nightly_host" PUBLISH_TEST_NEWER=newerbbbb publish dist follow \
+  || { cat "$root/follow-errors" >&2; fail 'a stable release past the nightly failed'; }
+grep -qx 'nightly-x86_64-linux' "$root/follow-scp" || fail "the nightly it carries did not move: $(tr '\n' ' ' < "$root/follow-scp")"
+grep -q 'nightly-x86_64-linux names olderaaaa, which latest999 carries: it moves with stable' "$root/follow-output" \
+  || fail "the nightly's move was not said: $(cat "$root/follow-output")"
+grep -q 'nightly-x86_64-linux points at latest999' "$root/follow-output" || fail 'the moved nightly was not read back at the edge'
+! grep -qx 'nightly-x86_64-windows' "$root/follow-scp" || fail 'a nightly past the release was moved back'
+grep -q 'nightly-x86_64-windows names newerbbbb, which latest999 does not carry: it stays' "$root/follow-output" \
+  || fail "the nightly that stays was not said: $(cat "$root/follow-output")"
+! grep -qx 'nightly-arm64-darwin' "$root/follow-scp" || fail 'a nightly already naming the release was written again'
+for platform in x86_64-linux arm64-darwin x86_64-windows; do
+  grep -qx "stable-$platform" "$root/follow-scp" || fail "stable-$platform was never shipped beside the nightly"
+done
+[ "$(grep -n '^nightly-x86_64-linux$' "$root/follow-scp" | cut -d: -f1)" -gt "$(grep -n '^nodecode-' "$root/follow-scp" | tail -n 1 | cut -d: -f1)" ] \
+  || fail 'the nightly pointer shipped before an archive it names'
+PUBLISH_TEST_NO_BUILD=1 PUBLISH_TEST_HOST="$nightly_host" NODECODE_PUBLISH_CHANNEL=nightly publish dist nightly-only \
+  || { cat "$root/nightly-only-errors" >&2; fail 'a nightly over a host with nightly pointers failed'; }
+! grep -q 'moves with stable' "$root/nightly-only-output" || fail 'a nightly publish read the nightly as a stable one would'
+printf '%s\n' 'publish-test: a stable release moves the nightly pointers it carries, and leaves a newer one'
 
 # --- the Windows arm runs on the build host -----------------------------------
 # A Windows guest is a whole VM: pack-windows.sh starts it on the host that

@@ -43,7 +43,9 @@ done < <(grep -o -E '(^|[ "])tools/[a-z0-9/-]+\.sh' "$repo/.github/workflows/rel
 say 'every script release.yml runs by path is executable in git'
 
 # --- release-check.sh -----------------------------------------------------------
-check() { (cd "$work" && env "$@" bash tools/release/release-check.sh) > "$root/check-out" 2>&1; }
+# No real host is ever read: a pointer read goes to the .invalid host, or to
+# the stub curl the later checks put on PATH.
+check() { (cd "$work" && env NODECODE_RELEASE_BASE_URL=https://release-test.invalid "$@" bash tools/release/release-check.sh) > "$root/check-out" 2>&1; }
 check GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v1.2.3 GITHUB_OUTPUT="$root/gh-output" \
   || fail "a matching tag on main was refused: $(cat "$root/check-out")"
 grep -qx 'version=1.2.3' "$root/gh-output" || fail 'the version was not written for the workflow'
@@ -201,3 +203,96 @@ mode=publish rehearse || fail "a publish whose installers changed did not mirror
 [ -z "$(ls -A "$root/runner-temp")" ] || fail 'a publish left its credentials behind'
 say 'a publish commits the changed installers to the site through the run helper'
 say 'a missing or wrong archive, a missing secret, or a silent host stops it, and no key is left'
+
+# --- release-publish.sh nightly: publish.sh on the nightly channel ------------------
+# A nightly is a publish whose channel is nightly, of the commit the check
+# named -- which may be older than the checkout running the job.
+cat > "$work/tools/release/publish.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'channel=%s args=%s\n' "${NODECODE_PUBLISH_CHANNEL:-}" "$*" > "$RELEASE_TEST_PUBLISHED"
+EOF
+chmod 0755 "$work/tools/release/publish.sh"
+head_commit="$(git -C "$work" rev-parse HEAD)"
+make_dist
+mode=nightly rehearse RELEASE_TEST_PUBLISHED="$root/published" || fail "the nightly publish failed: $(cat "$root/rehearse-out")"
+grep -qx "channel=nightly args=$head_commit $dist" "$root/published" || fail "the nightly did not publish to nightly: $(cat "$root/published")"
+make_dist
+mode=publish rehearse RELEASE_TEST_PUBLISHED="$root/published" || fail "the tag publish failed: $(cat "$root/rehearse-out")"
+grep -qx "channel=stable args=$head_commit $dist" "$root/published" || fail "a tag did not publish to stable: $(cat "$root/published")"
+[ -z "$(ls -A "$root/runner-temp")" ] || fail 'a nightly left its credentials behind'
+say 'a nightly publishes its commit to the nightly channel, a tag to stable'
+
+# --- release-check.sh nightly: main's newest green commit -------------------------
+# A nightly builds main's newest commit a CI run went green on -- by tree, so
+# the squash of a green pull request counts -- and a night whose pick every
+# nightly pointer already names builds nothing.
+echo two > "$work/two"
+git_c -C "$work" add two
+git_c -C "$work" commit -qm two
+git -C "$work" push -q origin main
+first="$(git -C "$work" rev-parse HEAD~1)"
+second="$(git -C "$work" rev-parse HEAD)"
+mkdir -p "$root/curl-bin" "$root/pointers"
+cat > "$root/curl-bin/curl" <<'EOF'
+#!/bin/sh
+for url; do :; done
+name="${url##*/}"
+name="${name%%\?*}"
+[ -f "$RELEASE_TEST_POINTERS/$name" ] || exit 22
+cat "$RELEASE_TEST_POINTERS/$name"
+EOF
+chmod 0755 "$root/curl-bin/curl"
+nightly() {
+  : > "$root/gh-output"
+  check PATH="$root/curl-bin:$PATH" RELEASE_TEST_POINTERS="$root/pointers" NODECODE_RELEASE_MODE=nightly \
+    GITHUB_OUTPUT="$root/gh-output" "$@"
+}
+tree_of() { git -C "$work" rev-parse "$1^{tree}"; }
+nightly NODECODE_RELEASE_GREEN_TREES="$(tree_of "$first")" || fail "the nightly check failed: $(cat "$root/check-out")"
+grep -qx "commit=$first" "$root/gh-output" || fail "the nightly did not pick the newest green commit: $(cat "$root/gh-output")"
+grep -qx 'mode=nightly' "$root/gh-output" && grep -qx 'skip=false' "$root/gh-output" || fail "a green commit was skipped: $(cat "$root/gh-output")"
+nightly NODECODE_RELEASE_GREEN_TREES="$(printf '%s\n' "$(tree_of "$first")" "$(tree_of "$second")")" || fail 'the nightly check failed'
+grep -qx "commit=$second" "$root/gh-output" || fail "the nightly did not take main's head when it is green: $(cat "$root/gh-output")"
+say "a nightly builds main's newest green commit"
+
+nightly NODECODE_RELEASE_GREEN_TREES= || fail "a night with no green commit failed: $(cat "$root/check-out")"
+grep -qx 'skip=true' "$root/gh-output" || fail 'a night with no green commit was not skipped'
+grep -q "none of main's newest 50 commits has a green CI run" "$root/check-out" || fail "the red night was not said: $(cat "$root/check-out")"
+for platform in x86_64-linux arm64-darwin x86_64-windows; do
+  git -C "$work" rev-parse --short=9 "$second" > "$root/pointers/nightly-$platform"
+done
+nightly NODECODE_RELEASE_GREEN_TREES="$(tree_of "$second")" || fail 'the nightly check failed'
+grep -qx 'skip=true' "$root/gh-output" || fail 'a night with nothing new was not skipped'
+grep -q 'every nightly pointer already names' "$root/check-out" || fail "the night with nothing new was not said: $(cat "$root/check-out")"
+rm "$root/pointers/nightly-arm64-darwin"
+nightly NODECODE_RELEASE_GREEN_TREES="$(tree_of "$second")" || fail 'the nightly check failed'
+grep -qx 'skip=false' "$root/gh-output" || fail 'a nightly one platform never got was skipped'
+if check NODECODE_RELEASE_MODE=weekly; then fail 'an unknown mode was taken'; fi
+say 'a night with no green commit, or nothing new on every platform, builds nothing'
+
+# --- release-check.sh publish: whether the nightly follows the tag ----------------
+# A tag past the nightly carries the nightly homes with it (publish.sh), and the
+# Linux job proves that upgrade too: nightly_follows=true only when the Linux
+# nightly pointer names a commit the tag carries and is not the tag itself.
+release() {
+  : > "$root/gh-output"
+  check PATH="$root/curl-bin:$PATH" RELEASE_TEST_POINTERS="$root/pointers" GITHUB_REF_TYPE=tag \
+    GITHUB_REF_NAME=v1.2.3 GITHUB_OUTPUT="$root/gh-output"
+}
+git -C "$work" rev-parse --short=9 "$first" > "$root/pointers/nightly-x86_64-linux"
+release || fail "the tag past the nightly was refused: $(cat "$root/check-out")"
+grep -qx 'nightly_follows=true' "$root/gh-output" || fail "a tag past the nightly does not carry it: $(cat "$root/gh-output")"
+grep -q "the nightly names $(git -C "$work" rev-parse --short=9 "$first"), which .* carries" "$root/check-out" \
+  || fail "the nightly the tag carries was not said: $(cat "$root/check-out")"
+git -C "$work" rev-parse --short=9 "$second" > "$root/pointers/nightly-x86_64-linux"
+release || fail 'the tag the nightly names was refused'
+grep -qx 'nightly_follows=false' "$root/gh-output" || fail 'a nightly already on the tag was proved again'
+rm "$root/pointers/nightly-x86_64-linux"
+release || fail 'the tag with no nightly was refused'
+grep -qx 'nightly_follows=false' "$root/gh-output" || fail 'a tag with no nightly to follow it says one follows'
+git -C "$work" rev-parse --short=9 "$second" > "$root/pointers/nightly-x86_64-linux"
+git -C "$work" checkout -q --detach "$first"
+release || fail "a tag behind the nightly was refused: $(cat "$root/check-out")"
+grep -qx 'nightly_follows=false' "$root/gh-output" || fail 'a tag behind the nightly would move it back'
+git -C "$work" checkout -q main
+say 'a tag carries the nightly only when the nightly is behind it'
