@@ -31,9 +31,6 @@ shipped cell link's target."
     (nlk:make-symlink cell (merge-pathnames "cells/shipped" home))
     (namestring cell)))
 
-(defun backup-test-mode (path)
-  (logand #o777 (sb-posix:stat-mode (sb-posix:stat (string-right-trim "/" (uiop:native-namestring path))))))
-
 (defun backup-test-sessions (store)
   "How many sessions the store file STORE holds, read as the doctor reads."
   (nle::call-with-store-reader store (lambda (db)
@@ -49,9 +46,8 @@ shipped cell link's target."
          (archive (merge-pathnames name (nle::backups-directory))))
     (is (equal '("copying the store" "packing" "compressing") (reverse steps)) "it says how it goes")
     (is (uiop:string-prefix-p (format nil "nodecode-~a-" (nlk:profile-label)) name) "named by whose home it is")
-    ;; Mode bits are POSIX: on Windows the home's own ACL closes both.
-    #-win32 (is (= #o600 (backup-test-mode archive)) "the archive is the operator's alone")
-    #-win32 (is (= #o700 (backup-test-mode (nle::backups-directory))) "and so is its folder")
+    (is (= #o600 (file-mode archive)) "the archive is the operator's alone")
+    (is (= #o700 (file-mode (nle::backups-directory))) "and so is its folder")
     ;; The seed's links are POSIX: on Windows MAKE-SYMLINK makes none (an
     ;; install there copies), so no row reaches what they point to.
     (is-carrying (listed (nlk::run-checked (list "tar" "-tzf" (uiop:native-namestring archive))
