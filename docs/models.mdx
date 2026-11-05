@@ -108,9 +108,24 @@ A sign-in never changes your default model. Pick one in `/models`: nodecode, the
 | Fact | Value |
 | --- | --- |
 | Keys | Start with `sk-nc-`. A key made at https://nodecode.ai/account/keys works the same. Any other key answers 401 `invalid_api_key`: run `nodecode login` again. |
-| Routes | `POST /v1/chat/completions`, `POST /v1/images/generations`, `GET /v1/models`, `GET /v1/models/ID`, `GET /v1/usage`. There is no `/v1/messages` or `/v1/responses`. |
+| Routes | `POST /v1/chat/completions`, `POST /v1/messages` and `POST /v1/messages/count_tokens` (Anthropic's Messages API), `POST /v1/images/generations`, `GET /v1/models`, `GET /v1/models/ID`, `GET /v1/usage`. There is no `/v1/responses`. |
 | Who pays | The topped-up balance, per token; a plan the account already holds pays first. With neither, a call answers 402. See [Pricing](pricing.mdx). |
 | What is left | `GET /v1/usage`: the plan's requests left, its reset and seats, the credit. The shell's footer and `/usage` show it. |
+
+### Claude Code
+
+The gateway also speaks Anthropic's Messages API at `POST /v1/messages`, so Claude Code runs on Cyber v1 with an `sk-nc-` key. Set these in the shell you start `claude` from:
+
+```sh
+export ANTHROPIC_BASE_URL=https://api.nodecode.ai
+export ANTHROPIC_AUTH_TOKEN=sk-nc-...
+export ANTHROPIC_MODEL=foresight-cyber-v1
+export ANTHROPIC_DEFAULT_OPUS_MODEL=foresight-cyber-v1
+export ANTHROPIC_DEFAULT_SONNET_MODEL=foresight-cyber-v1
+export ANTHROPIC_DEFAULT_HAIKU_MODEL=foresight-cyber-v1
+```
+
+The base URL has no `/v1`: Claude Code adds `/v1/messages` itself. Every model Claude Code asks for must be one the gateway serves, so all four model variables name Cyber v1. A call is paid and limited exactly as a chat call is. Thinking comes back as `thinking` blocks; prompt caching is automatic, so `cache_control` is ignored; server tools such as Anthropic's web search are left out. https://nodecode.ai/account/keys shows the same lines under Claude Code.
 
 {/* source: src/engine/provider.lisp */}
 ## Default and auxiliary model
