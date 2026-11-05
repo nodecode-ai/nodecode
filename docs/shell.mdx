@@ -117,7 +117,7 @@ A turn is one prompt and the work the model does to answer it. One turn runs per
 | Prefix | Opens |
 | --- | --- |
 | `/` | The command dropdown. See [Slash commands](slash-commands.mdx). |
-| `@` | Workspace file completion. Hidden files, `node_modules`, `target`, `zig-cache`, `zig-out`, `bazel-bin`, `bazel-out` and `bazel-testlogs` are skipped. At most 512 files, 10 folders deep. |
+| `@` | Workspace file completion. Hidden files, `node_modules`, `target`, `zig-cache`, `zig-out`, `bazel-bin`, `bazel-out` and `bazel-testlogs` are skipped. At most 512 files, 10 folders deep. A path that starts with `~/`, `../`, `./` or `/` (on Windows also `C:\` and `\`) completes from that one folder instead, as a shell does: a folder goes on into it, and hidden names show once you type the leading `.`. |
 | `$` at the start of a word | `/index`. Knowledge: the meter and the picker. |
 
 {/* source: src/tui/frame.lisp */}

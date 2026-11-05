@@ -178,7 +178,8 @@ a held one until the composer's text moves off the draft it was said over."
   "One dropdown row, whatever lane produced it."
   ;; TEXT is the completion
   ;; target as the row paints it, REMAINDER what the ghost shows after the cursor
-  ;; (and what a token lane inserts there), SOURCE :slash or :file, DETAIL the
+  ;; (and what a token lane inserts there), SOURCE :slash, :file or :folder (an
+  ;; @ path row that goes on into a folder, ACCEPT-SUGGESTION), DETAIL the
   ;; description column, ALIAS the command's other triggers painted beside the
   ;; label (slash rows only, empty elsewhere), and ENTRY the catalog
   ;; SLASH-COMMAND the row dispatches on Enter.
@@ -265,22 +266,109 @@ strict case-insensitive prefix, or full-length case-insensitive equality)."
                          :detail (string-downcase source))))
 
 (defun token-suggestions-for (model &aux (text (editor-value (chat-model-editor model))))
-  "The active @file suggestion list, or NIL."
+  "The active @ suggestion list, or NIL."
   ;; The slash lane owns `/` inputs outright (Zig
   ;; composerSuggestionsForComposerText order); the list exists only while the
   ;; caret sits at the end of the text (the Zig composerSuggestionList cursor
   ;; gate), so completions always land on the trigger token. The catalog is
   ;; walked off this path: an unloaded one asks for the walk
   ;; (START-COMPOSER-CATALOG-WALK) and this reads whatever has landed, so no
-  ;; keystroke ever waits on the filesystem.
-  (unless (or (slash-input-p text)
-              (not (composer-cursor-at-end-p (chat-model-editor model))))
-    (when-let (filter (composer-token-filter text #\@))
-      (unless (chat-model-file-catalog-loaded model)
-        (start-composer-catalog-walk model))
-      (loop for path in (chat-model-file-catalog model)
-            when (token-suggestion filter path :file)
-              collect it))))
+  ;; keystroke ever waits on the filesystem. A token that starts at a root of
+  ;; its own takes the path lane instead (PATH-TOKEN-SUGGESTIONS); while none
+  ;; is typed the lane forgets its last folder, so the next one lists fresh.
+  (let ((filter (unless (or (slash-input-p text)
+                            (not (composer-cursor-at-end-p (chat-model-editor model))))
+                  (composer-token-filter text #\@))))
+    (cond ((and filter (path-token-p filter))
+           (path-token-suggestions model filter))
+          (t
+           (setf (chat-model-path-listing-asked model) nil)
+           (when filter
+             (unless (chat-model-file-catalog-loaded model)
+               (start-composer-catalog-walk model))
+             (loop for path in (chat-model-file-catalog model)
+                   when (token-suggestion filter path :file)
+                     collect it))))))
+
+;;; --- the @ lane's paths outside the workspace --------------------------------
+;;; A token that starts at a root of its own -- the home `~/', the folder `./',
+;;; its parent `../', an absolute `/', and on Windows `C:\' and `\' with
+;;; either separator -- completes shell-style from a listing of the one folder
+;;; it names, not from the workspace catalog. The listing runs off the input
+;;; path as the catalog's walk does (ASK-PATH-LISTING), so no keystroke waits
+;;; on the disk. The accepted text is the path as typed (`@~/notes.md'): a sent
+;;; @path is plain text the agent reads with its own tools, so this lane opens
+;;; no file to anyone.
+
+(defun path-token-separator-p (char &optional (windows (uiop:os-windows-p)))
+  "Whether CHAR separates the folders of an @ path token: `/', and on
+Windows `\\' too."
+  (or (char= char #\/) (and windows (char= char #\\))))
+
+(defun path-token-p (filter &optional (windows (uiop:os-windows-p)) &aux (length (length filter)))
+  "Whether FILTER, the text after an `@', names a path from a root of its own
+rather than one in the workspace catalog. A bare `~' or `..' counts: it
+completes to its folder."
+  (flet ((separator-at (index)
+           (and (< index length) (path-token-separator-p (char filter index) windows))))
+    (or (member filter '("~" "..") :test #'string=)
+        (separator-at 0)
+        (and (plusp length) (member (char filter 0) '(#\~ #\.)) (separator-at 1))
+        (and (uiop:string-prefix-p ".." filter) (separator-at 2))
+        (and windows (> length 2) (alpha-char-p (char filter 0)) (char= #\: (char filter 1))
+             (separator-at 2)))))
+
+(defun path-token-head (filter &optional (windows (uiop:os-windows-p)))
+  "FILTER, an @ path token, up to and including its last separator: the
+folder it lists. NIL for a bare `~' or `..'."
+  (when-let (last (position-if (lambda (char) (path-token-separator-p char windows))
+                               filter :from-end t))
+    (subseq filter 0 (1+ last))))
+
+(defun path-token-folder (head &optional (workspace (uiop:getcwd)))
+  "The folder HEAD, an @ path token's head, names: `~' read against the
+operator's home, `./' and `../' against WORKSPACE, an absolute path as itself."
+  (let ((home (char= #\~ (char head 0))))
+    (let ((folder (uiop:parse-native-namestring (if home (subseq head 2) head)
+                                                :ensure-directory t)))
+      (cond (home (nlk:home-path folder))
+            ((char= #\. (char head 0)) (uiop:merge-pathnames* folder workspace))
+            (t folder)))))
+
+(defun path-token-rows (filter entries &key (windows (uiop:os-windows-p))
+                                            (fold-case (or windows (uiop:os-macosx-p))))
+  "The @ path rows ENTRIES, the listing of FILTER's folder, offer FILTER: each
+entry whose name starts with what FILTER typed past its head, a hidden one
+only once that starts with `.'. A folder row ends in the separator FILTER
+uses, so accepting it goes on into the folder. FOLD-CASE matches names as a
+case-insensitive file system does; elsewhere a row's case is exact, so the
+completed path names the file."
+  (if-let (head (path-token-head filter windows))
+    (let ((name (subseq filter (length head)))
+          (separator (char head (1- (length head)))))
+      (loop for (entry . folderp) in entries
+            for target = (format nil "~a~a~:[~;~c~]" head entry folderp separator)
+            when (and (or (uiop:string-prefix-p "." name) (not (uiop:string-prefix-p "." entry)))
+                      (<= (length name) (length entry))
+                      (if fold-case
+                          (string-equal name entry :end2 (length name))
+                          (string= name entry :end2 (length name))))
+              collect (composer-suggestion target (subseq target (length filter))
+                                           (if folderp :folder :file)
+                                           :detail (if folderp "folder" "file"))))
+    ;; A bare `~' or `..' is one row: its folder.
+    (list (composer-suggestion (uiop:strcat filter "/") "/" :folder :detail "folder"))))
+
+(defun path-token-suggestions (model filter &aux (head (path-token-head filter)))
+  "The path lane's rows for FILTER from the listing MODEL holds for its head,
+asking for that folder whenever the token moved to another one."
+  ;; A listing in hand paints at once while the fresh one is read, so the
+  ;; rows a folder answered before stand until its new listing lands.
+  (when (and head (not (equal head (chat-model-path-listing-asked model))))
+    (setf (chat-model-path-listing-asked model) head)
+    (ask-path-listing model head))
+  (path-token-rows filter (and head (cdr (assoc head (chat-model-path-listings model)
+                                                :test #'string=)))))
 
 (defun composer-trigger-command (model msg &aux (key (nlt:key-event-code msg)))
   "The cell command whose TRIGGER the key MSG just typed as the draft's
@@ -313,11 +401,16 @@ the token lanes take everything else."
   ;; A slash row rewrites the whole composer with the canonical name alone:
   ;; a command is its name, so nothing is invited after it, and the dropdown
   ;; stays on the row, Enter running it. A token row inserts its remainder
-  ;; plus a space at the cursor. => T when a completion landed.
+  ;; plus a space at the cursor; a folder row its remainder alone, which ends
+  ;; in the separator, so the dropdown goes on into the folder. => T when a
+  ;; completion landed.
   (when-let (suggestion (selected-composer-suggestion model))
     (let ((editor (chat-model-editor model)) (slash (eq :slash suggestion.source)))
       (when slash (editor-reset editor))
-      (editor-insert editor (if slash suggestion.text (uiop:strcat suggestion.remainder " "))))
+      (editor-insert editor (case suggestion.source
+                              (:slash suggestion.text)
+                              (:folder suggestion.remainder)
+                              (t (uiop:strcat suggestion.remainder " ")))))
     (setf (chat-model-slash-selection model) 0)
     t))
 

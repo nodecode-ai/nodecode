@@ -142,6 +142,13 @@ for the many bars and rows that paint one run of text in one tone."
    ;; walk again rather than waiting on it.
    (file-catalog :initform nil :accessor chat-model-file-catalog)
    (file-catalog-loaded :initform nil :accessor chat-model-file-catalog-loaded)
+   ;; The @ lane's folder listings for path tokens (`@~/', `@../', `@/'),
+   ;; each (HEAD . ENTRIES), newest first and bounded, HEAD the token up to
+   ;; its last separator; and the HEAD last asked for, NIL while no path
+   ;; token is typed, so a folder typed again is listed fresh
+   ;; (PATH-TOKEN-SUGGESTIONS, ASK-PATH-LISTING).
+   (path-listings :initform nil :accessor chat-model-path-listings)
+   (path-listing-asked :initform nil :accessor chat-model-path-listing-asked)
    ;; Mouse state: the transcript line table (parallel painted/plain/row
    ;; vectors stamped by RENDER-STATE), hover row, drag-selection state,
    ;; the armed scrollbar drag, the armed tool-block press, and the armed   ;; link press (its URL).
@@ -935,14 +942,87 @@ attach was for is on screen."
 (defun land-composer-catalog-walks (model)
   "Install the composer catalogs a walk landed since the last frame, on the
 loop thread, and put each failure up as an error toast (INSTALL-COMPOSER-
-CATALOGS owns what an answered lane and a failed one each take)."
-  (when-let (result (bt2:with-lock-held (*composer-catalog-walks-lock*)
-                      (prog1 (gethash model *composer-catalog-results*)
-                        (remhash model *composer-catalog-results*))))
-    (install-composer-catalogs model result)
-    (dolist (failure (getf result :failures))
-      (toast model failure :error-p t))
-    t))
+CATALOGS owns what an answered lane and a failed one each take); the folder
+listings @ path tokens asked for land with them (LAND-PATH-LISTINGS)."
+  (let ((listed (land-path-listings model)))
+    (or (when-let (result (bt2:with-lock-held (*composer-catalog-walks-lock*)
+                            (prog1 (gethash model *composer-catalog-results*)
+                              (remhash model *composer-catalog-results*))))
+          (install-composer-catalogs model result)
+          (dolist (failure (getf result :failures))
+            (toast model failure :error-p t))
+          t)
+        listed)))
+
+;;; An @ path token's folder is listed the same way: on a thread of its own,
+;;; landing on the tick. A model has one lister at most, and it lists
+;;; whichever folder the token named last, so typing through a long path
+;;; never queues a listing per keystroke.
+
+(defvar *path-listing-asks* (make-hash-table :test #'eq)
+  "MODEL -> (HEAD . FOLDER): the folder an @ path token asked for last, not
+yet taken by MODEL's lister.")
+
+(defvar *path-listers* (make-hash-table :test #'eq)
+  "The models whose path lister is running.")
+
+(defvar *path-listing-results* (make-hash-table :test #'eq)
+  "MODEL -> the listings its lister finished and the loop has not landed yet,
+newest first, each (HEAD . ENTRIES).")
+
+(defvar *path-listings-lock* (bt2:make-lock :name "composer-path-listings")
+  "One lock for the three tables: an ask, a lister's start and its stop are
+read and written together.")
+
+(defparameter *path-listings-kept* 8
+  "How many folders' listings a model keeps, so stepping back up a path
+paints at once.")
+
+(defun ask-path-listing (model head &aux (program (chat-model-program model)))
+  "List the folder HEAD, an @ path token's head, names on MODEL's lister
+thread, starting it when none runs, and tick the loop as each listing lands.
+NIL without a program: no loop means no frame to paint."
+  (when program
+    (let ((ask (cons head (ignore-errors (path-token-folder head)))) (start nil))
+      (bt2:with-lock-held (*path-listings-lock*)
+        (setf (gethash model *path-listing-asks*) ask)
+        (unless (gethash model *path-listers*)
+          (setf (gethash model *path-listers*) t start t)))
+      (when start
+        (spawn "nodecode-composer-paths"
+          ;; Taking the last ask and, finding none, marking the lister stopped
+          ;; is one step under the lock, so an ask made as it stops starts a
+          ;; lister of its own instead of waiting on this one.
+          (let ((stopped nil))
+            (with-cleanup ((unless stopped
+                             (bt2:with-lock-held (*path-listings-lock*)
+                               (remhash model *path-listers*))))
+              (loop for ask = (bt2:with-lock-held (*path-listings-lock*)
+                                (let ((ask (gethash model *path-listing-asks*)))
+                                  (if ask
+                                      (remhash model *path-listing-asks*)
+                                      (setf stopped (remhash model *path-listers*)))
+                                  ask))
+                    while ask
+                    do (let ((entries (and (cdr ask) (path-listing (cdr ask)))))
+                         (bt2:with-lock-held (*path-listings-lock*)
+                           (push (cons (car ask) entries)
+                                 (gethash model *path-listing-results*)))
+                         (nlt:send program (nlt:make-tick-msg))))))))
+      t)))
+
+(defun land-path-listings (model)
+  "Install the folder listings MODEL's lister finished since the last frame,
+on the loop thread, newest first and bounded by *PATH-LISTINGS-KEPT*.
+=> whether any landed."
+  (when-let (landed (bt2:with-lock-held (*path-listings-lock*)
+                      (prog1 (gethash model *path-listing-results*)
+                        (remhash model *path-listing-results*))))
+    (dolist (listing (reverse landed) t)
+      (let ((kept (cons listing (remove (car listing) (chat-model-path-listings model)
+                                        :key #'car :test #'string=))))
+        (setf (chat-model-path-listings model)
+              (subseq kept 0 (min (length kept) *path-listings-kept*)))))))
 
 ;;; A streaming turn's transcript is projected on this tick, so this is how
 ;;; often new text reaches the screen. 1/60 is three ticks per 50 ms, so the
