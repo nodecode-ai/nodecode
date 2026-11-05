@@ -2224,3 +2224,83 @@ strands nothing (INTERRUPT-THREAD-SAFELY, whose answer this is)."
                       (if (eq thread (bt2:current-thread))
                           (funcall next thread) ; its own refusal
                           (progn (terminate-thread-safely thread) thread))))
+
+;;; --- a deadline cuts a waiting read on Windows -------------------------------
+;;; SBCL keeps a deadline (WITH-DEADLINE) and a stream's timeout in the wait a
+;;; read makes before it reads: on Unix every descriptor but a file's waits
+;;; (WAIT-UNTIL-FD-USABLE), and the wait signals once either has passed. On
+;;; Windows the read goes straight to an overlapped ReadFile that waits for as
+;;; long as it takes, so a socket that never answered held its reader past any
+;;; deadline: a plain-HTTP peer's slow headers, a provider's silent stream, a
+;;; gateway socket gone quiet. That read is still woken by an interruption, so
+;;; one that would wait under a deadline or a timeout carries a timer that
+;;; interrupts it when the first of the two passes, and the interruption
+;;; signals what the wait would have: the deadline's timeout with its
+;;; restarts, or the stream's IO-TIMEOUT. TLS needs none of this: cl+ssl waits
+;;; through WAIT-UNTIL-FD-USABLE, which keeps both on Windows too.
+
+#+win32
+(defun refill-within-deadline (next stream)
+  "SB-IMPL::REFILL-INPUT-BUFFER's advice on Windows: STREAM's refill, cut
+as the wait before it is on Unix when the thread's deadline or STREAM's
+timeout passes first."
+  ;; HANDLE-LISTEN answers true for what cannot wait -- a file, input already
+  ;; there, an end -- and Windows names every stream's type :REGULAR, a
+  ;; socket's too, so it alone tells a read that would wait.
+  (if (or (and (null sb-impl::*deadline*) (null (sb-impl::fd-stream-timeout stream)))
+          (sb-win32:handle-listen (sb-impl::fd-stream-fd stream)))
+      (funcall next stream)
+      ;; ARMED: (LIVE TIMER STARTED), LIVE until the refill returns.
+      (let* ((armed (list t nil (get-internal-real-time)))
+             (timer (sb-ext:make-timer (lambda () (when (first armed) (cut-waiting-read stream armed)))
+                                       :thread sb-thread:*current-thread* :name "read deadline")))
+        (setf (second armed) timer)
+        (unwind-protect
+             (progn (arm-read-deadline stream armed)
+                    (funcall next stream))
+          (sb-sys:without-interrupts
+            (setf (first armed) nil)
+            (sb-ext:unschedule-timer timer))))))
+
+#+win32
+(defun read-deadline-due (stream started)
+  "=> (values DUE BY-DEADLINE): the internal real time a read of STREAM begun
+at STARTED is cut at -- the thread's deadline as it stands now, or STREAM's
+timeout from STARTED, whichever comes first -- and whether it is the
+deadline; NIL when neither holds."
+  (let* ((deadline (and sb-impl::*deadline* (sb-impl::deadline-internal-time sb-impl::*deadline*)))
+         (seconds (sb-impl::fd-stream-timeout stream))
+         (timeout (and seconds (+ started (round (* seconds internal-time-units-per-second))))))
+    (cond ((and deadline (or (null timeout) (<= deadline timeout))) (values deadline t))
+          (timeout (values timeout nil)))))
+
+#+win32
+(defun arm-read-deadline (stream armed)
+  "Schedule ARMED's timer for when STREAM's read is due, or cut it now when
+that has passed; leave it unscheduled when nothing bounds the read."
+  (let ((due (read-deadline-due stream (third armed))))
+    (when due
+      (let ((left (- due (get-internal-real-time))))
+        (if (plusp left)
+            (sb-ext:schedule-timer (second armed) (/ left internal-time-units-per-second))
+            (cut-waiting-read stream armed))))))
+
+#+win32
+(defun cut-waiting-read (stream armed)
+  "In the reading thread: signal the deadline or STREAM's IO-TIMEOUT, as the
+wait before a read does, once it has passed; a deadline moved since the timer
+was set -- deferred, cancelled, or already signalled by a wait of SBCL's own
+-- arms it again for what is left."
+  (multiple-value-bind (due by-deadline) (read-deadline-due stream (third armed))
+    (cond ((null due))
+          ((< (get-internal-real-time) due) (arm-read-deadline stream armed))
+          (by-deadline (sb-sys:signal-deadline)
+                       (when (first armed) (arm-read-deadline stream armed)))
+          (t (sb-impl::signal-timeout 'sb-sys:io-timeout :stream stream :direction :input
+                                                         :seconds (sb-impl::fd-stream-timeout stream))))))
+
+#+win32
+(progn
+  (when (sb-int:encapsulated-p 'sb-impl::refill-input-buffer 'deadline)
+    (sb-int:unencapsulate 'sb-impl::refill-input-buffer 'deadline))
+  (sb-int:encapsulate 'sb-impl::refill-input-buffer 'deadline #'refill-within-deadline))
