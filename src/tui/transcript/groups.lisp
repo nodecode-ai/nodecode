@@ -159,6 +159,18 @@ opened with."
                  (done)))
             ((row-notice-summary row) (push row receipts))))))
 
+(defun picture-round (members newest-call &aux (round (newest-round members)))
+  "The newest round of an ended turn's run MEMBERS while a picture stands in
+it: a call of it saw an image (ROW-IMAGE-PLIST), and no call has been made
+since -- NEWEST-CALL, the newest of the transcript, is one of its own. NIL
+otherwise."
+  ;; What the organism looked at stays in front of the operator until its next
+  ;; call, as a running turn's round does: the answer after it is no call.
+  (and newest-call
+       (member newest-call round :test #'eq)
+       (some #'row-image-plist round)
+       round))
+
 (defun group-rows (rows &optional (context rows) backgrounds)
   "ROWS as projection items, in order: a row, or a TOOL-GROUP for each run
 of routine calls. Reflection recaps appear only in the Developer viewport."
@@ -176,7 +188,9 @@ of routine calls. Reflection recaps appear only in the Developer viewport."
   ;; live or done, until a click opens it to its
   ;; calls' names, one line each; under the folded title stands the newest
   ;; round of a running turn, finished calls too, until the next round lists
-  ;; its first call, and then goes into the count. A call handed off to the
+  ;; its first call, and then goes into the count. A call of it that saw an
+  ;; image shows the picture under its line, and its round stands on past the
+  ;; turn's end until a next call is made (PICTURE-ROUND). A call handed off to the
   ;; background stays where it ran while its exec lives, its output streaming
   ;; under it. It stood under the run as the exec's code block. /execs stops it.
   ;; Developer keeps that block in the call's place. The model's words never
@@ -193,7 +207,11 @@ of routine calls. Reflection recaps appear only in the Developer viewport."
         (recap nil)
         ;; ENDED: the turns that have. NEWEST: each turn's newest words.
         (ended (make-hash-table :test #'equal))
-        (newest (make-hash-table :test #'equal)))
+        (newest (make-hash-table :test #'equal))
+        ;; The newest call made: an ended turn's round that holds it keeps
+        ;; standing while a picture stands in it (PICTURE-ROUND).
+        (newest-call (and (eq *tool-detail* :standard)
+                          (find :tool-call context :key #'transcript-row-kind :from-end t))))
     (when standard
       (dolist (row context)
         (when-let (turn row.turn-id)
@@ -282,7 +300,10 @@ of routine calls. Reflection recaps appear only in the Developer viewport."
                    (turn (transcript-row-turn-id (first members)))
                    ;; The turn's newest run, while the turn runs.
                    (live (and (not (gethash turn ended)) (not (member turn seen :test #'equal))))
-                   (round (and live (newest-round members))))
+                   ;; The round standing under its title: a running turn's
+                   ;; newest, and once the turn ended, one a picture stands in.
+                   (round (cond (live (newest-round members))
+                                ((gethash turn ended) (picture-round members newest-call)))))
               (setf (tool-group-tail item)
                     ;; A turn that ended never left a call running.
                     (remove-if-not (lambda (row) (or (member row round :test #'eq)
@@ -667,6 +688,31 @@ showed (HELD-WINDOW), so a finished call of the standing round keeps it."
                                                          :plain-lines plains)))))))
     (and held (eql width (car held)) (list (cdr held)))))
 
+(defun round-picture-llines (row width)
+  "The picture call ROW saw, as a run lists it under the call's line while
+ROW's round stands: the band a terminal draws it over, then its caption, as
+an answer's picture stands (IMAGE-BAND-LLINES). NIL for a call that saw none."
+  (when-let (image (row-image-plist row))
+    (mapcar #'stepped-in (image-band-llines image row width))))
+
+(defun noted-image-bands (row body width)
+  "BODY, the lines a run lists for its call ROW, once the bands of the
+pictures among them are noted on ROW for their placement (ROW-IMAGE-BANDS),
+counted from ROW's listed line."
+  ;; ROW's card notes its own bands as it lays out (ROW-BODY-LLINES), and its
+  ;; display block is memoized: noting others forgets that block, so the card
+  ;; notes its own again when it next shows.
+  (when (find-if (lambda (line) (and (lline-p line) (lline-image line))) body)
+    (let ((bands (loop with at = 0
+                       for line in body
+                       while (lline-p line)
+                       when (lline-image line) collect (cons at (lline-image line))
+                       do (incf at (length (lline-render line width))))))
+      (unless (equal bands (row-image-bands row))
+        (setf (row-image-bands row) bands)
+        (forget-row-display-cache row))))
+  body)
+
 (defun tool-group-display-block (group width &optional backgrounds)
   "GROUP rendered: its title, then a run's listing (LISTING) or another
 group's open members, or while closed its TAIL and any call clicked open under
@@ -792,29 +838,37 @@ the state's live execs, shows what it has written under it."
                (loop for member in (without-folded-receipts (or listing group.members))
                      for body = (cond
                                   (listing
-                                   (cons (let ((line (run-tail-lline member width (call-receipts member group.members))))
-                                           ;; A click opens it, so the pointer accents
-                                           ;; it as it does the title.
-                                           (cond ((eq member *hover-row*) (disclosure-hover-lline line))
-                                                 (t (when (ember-call-p member) (push line embers))
-                                                    line)))
-                                         ;; A listed line clicked open shows what its
-                                         ;; card held, two columns in under it, the
-                                         ;; card's title aside.
-                                         (append
-                                          ;; A call that forked lists its forks under it,
-                                          ;; the rail under the call's first word: stepped
-                                          ;; in, it stood two columns right of everything.
-                                          (fork-tree-llines member width)
-                                          (cond ((run-member-open-p member)
-                                                 (mapcar #'stepped-in (without-note member (rest (row-body-llines member width)))))
-                                                ;; The run's newest call that changed
-                                                ;; files shows them, each diff's head,
-                                                ;; shut or open; an earlier one's line
-                                                ;; opens its own.
-                                                ((eq member diff-call)
-                                                 (mapcar #'stepped-in (workspace-diff-llines member))))
-                                          (listed-output member width backgrounds))))
+                                   (noted-image-bands
+                                    member
+                                    (cons (let ((line (run-tail-lline member width (call-receipts member group.members))))
+                                            ;; A click opens it, so the pointer accents
+                                            ;; it as it does the title.
+                                            (cond ((eq member *hover-row*) (disclosure-hover-lline line))
+                                                  (t (when (ember-call-p member) (push line embers))
+                                                     line)))
+                                          ;; A listed line clicked open shows what its
+                                          ;; card held, two columns in under it, the
+                                          ;; card's title aside.
+                                          (append
+                                           ;; A call that forked lists its forks under it,
+                                           ;; the rail under the call's first word: stepped
+                                           ;; in, it stood two columns right of everything.
+                                           (fork-tree-llines member width)
+                                           (cond ((run-member-open-p member)
+                                                  (mapcar #'stepped-in (without-note member (rest (row-body-llines member width)))))
+                                                 ;; The run's newest call that changed
+                                                 ;; files shows them, each diff's head,
+                                                 ;; shut or open; an earlier one's line
+                                                 ;; opens its own.
+                                                 ((eq member diff-call)
+                                                  (mapcar #'stepped-in (workspace-diff-llines member)))
+                                                 ;; A call of the round standing
+                                                 ;; under the title shows the
+                                                 ;; picture it saw.
+                                                 ((member member group.tail :test #'eq)
+                                                  (round-picture-llines member width)))
+                                           (listed-output member width backgrounds)))
+                                    width))
                                   ((tool-group-p member) (list (tool-group-display-block member width backgrounds)))
                                   (mutation
                                    (cons (make-lline :text (format nil "  ~a" (kept-path-text (row-mutation-path member)))
