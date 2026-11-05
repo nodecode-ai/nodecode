@@ -152,16 +152,22 @@ event type at 0, bKeyDown at 4, wRepeatCount at 8, uChar at 14."
   (is (search (csi "?2004h") out) "bracketed paste on")
   (is (search (csi "?2031h") out) "colour-scheme reports on"))
 
+(defun without-cursor-shape (string)
+  "STRING with its DECSCUSR (ESC [ N SP q) cursor-shape sequences taken out."
+  (cl-ppcre:regex-replace-all (format nil "~C\\[\\d* q" #\Escape) string ""))
+
 (deftest epilogue-shows-the-cursor-last (let* ((out (written #'nlt:exit-modes))
+                                               (shape (search (csi "0 q") out))
                                                (show (search (csi "?25h") out))))
-  (is (listp (dec-private-modes out)) "the epilogue is modes only")
+  (is (and shape show (< shape show)) "the terminal's own cursor shape back, before the cursor shows")
+  (is (listp (dec-private-modes (without-cursor-shape out))) "the rest of the epilogue is modes only")
   (is (search (csi "?2004l") out) "bracketed paste off")
   (is (search (csi "?2031l") out) "colour-scheme reports off")
   (is (and show (= (+ show (length (csi "?25h"))) (length out))) "cursor shown last"))
 
 (deftest every-mode-the-prelude-sets-the-epilogue-clears ()
   (let ((on (dec-private-modes (written #'nlt:enter-modes)))
-        (off (dec-private-modes (written #'nlt:exit-modes))))
+        (off (dec-private-modes (without-cursor-shape (written #'nlt:exit-modes)))))
     (is (and (listp on) (listp off)) "both parse")
     ;; 1049 pairs with DECAWM 7 (on with 7l, off with 7h), so compare the
     ;; numbers touched rather than h/l per number.
@@ -181,8 +187,8 @@ event type at 0, bKeyDown at 4, wRepeatCount at 8, uChar at 14."
     (is (search (csi "?1049l") (transition alt plain)) "leaving the alt screen")
     (is (search (csi "?1003h") (transition nil mouse)) "all-motion tracking on")
     (is (search (csi "?1003l") (transition mouse plain)) "tracking off when the mode goes")
-    (is (search (csi "2 q") (transition nil cursor)) "a cursor appearing sets the steady block")
-    (is (null (search (csi "2 q") (transition cursor cursor))) "and only once")
+    (is (search (csi "1 q") (transition nil cursor)) "a cursor appearing sets the blinking block")
+    (is (null (search (csi "1 q") (transition cursor cursor))) "and only once")
     (is (search (csi ">1u") (transition nil keys)) "the enhancements push disambiguation, flag 1")
     (is (equal "" (transition keys keys)) "and only once")
     (is (search (csi "<u") (transition keys plain)) "dropping the enhancements pops the mode")))
