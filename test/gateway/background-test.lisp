@@ -235,10 +235,12 @@ the unit folder: what another naming of the same home left there."
                     <key>EnvironmentVariables</key>~%  <dict>~%    ~
                     <key>NODECODE_HOME</key><string>~a</string>~%  </dict>~%</dict>~%</plist>~%"
                home label home)
+       ;; Environment= quoted as nodecode writes it: a Windows home's
+       ;; backslashes escaped, as systemd's word reading wants them.
        (format nil "# nodecode gateway: ~a (moved here by hand)~%[Unit]~%Description=nodecode gateway~%~%~
                     [Service]~%ExecStart=\"/opt/nodecode/current/nodecode\" gateway run~%~
-                    Environment=\"NODECODE_HOME=~a\"~%"
-               home home))))
+                    Environment=~a~%"
+               home (nlk::unit-quoted (format nil "NODECODE_HOME=~a" home))))))
 
 (defun unit-files ()
   "The names of the unit files in the unit folder."
