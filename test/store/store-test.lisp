@@ -517,6 +517,11 @@ nursery collections on. => that generation's size while they were live."
 (deftest an-idle-organism-collects-the-generation-that-outgrew-its-budget (with-saved-nursery)
   ;; Promote a soon-dead structure into generation 1 past its budget, stop
   ;; allocating, and the idle timer collects it within two intervals.
+  ;; Windows measures the image's pages as what the working set took back
+  ;; since its last trim, and a boot (the shell's, the gateway's) makes the
+  ;; first: this image never booted, so it trims here as one would, before
+  ;; the releases are counted.
+  #+win32 (nlk:trim-memory)
   (let ((count nlk::*idle-collections*)
         (releases nlk::*image-releases*)
         (promotion (sb-ext:generation-number-of-gcs-before-promotion 1)))
@@ -643,11 +648,12 @@ nursery collections on. => that generation's size while they were live."
   ;; image has read most of them, and the trim hands them back to the kernel.
   (let ((count nlk::*forced-collections*))
     (multiple-value-bind (before after) (nlk:trim-memory)
-      #+linux (progn
-                (is (integerp before) "resident bytes read before")
-                (is (integerp after) "resident bytes read after")
-                (is (< after before) "the process is smaller after the trim"))
-      #-linux (is (and (null before) (null after)) "no residency figure off Linux")
+      ;; Windows reads its working set, and the trim empties it whole
+      #+(or linux win32) (progn
+                           (is (integerp before) "resident bytes read before")
+                           (is (integerp after) "resident bytes read after")
+                           (is (< after before) "the process is smaller after the trim"))
+      #-(or linux win32) (is (and (null before) (null after)) "no residency figure here")
       (is (= count nlk::*forced-collections*))
       (is (equal (list :before before :after after) nlk::*last-trim*))
       (is (nth-value 1 (get-properties (nlk::collection-stats) '(:last-trim)))))))
