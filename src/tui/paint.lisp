@@ -592,7 +592,7 @@ clause."
 ;;; --- the home / logo screen -------------------------------------------------
 ;;; The Zig landing surface (screens.zig + home.zig): an empty idle shell
 ;;; shows the logo and the tip line in the transcript
-;;; band, and the composer placeholder swaps to the gateway-state prompt.
+;;; band, and the composer stays the caret alone (a failed sync aside).
 ;;; It vanishes the moment any row, notice, turn, dialog, or submit exists —
 ;;; there is no home flag to fall out of sync, only the predicate, and a
 ;;; frame whose predicate moved since the band was composed composes it again.
