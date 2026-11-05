@@ -304,7 +304,7 @@ and TOOLCHAIN willing, the programs they start."
   ;; descriptor this image holds above stderr closed. A store handle or a
   ;; provider socket riding into a git call would hold the file open and
   ;; travel where it was never meant to.
-  (with-open-file (held "/dev/null" :direction :input)
+  (with-open-file (held (asdf:system-relative-pathname "nodecode" "nodecode.asd") :direction :input)
     (declare (ignorable held))
     #+linux
     (nlk:bind (((output _ status) (run-sh "ls /proc/self/fd | tr '\n' ' '; cat")))
@@ -530,7 +530,7 @@ except OSError:
 
 (deftest pid-live-p-tells-a-live-process-from-a-gone-one ()
   (is (nlk:pid-live-p (sb-posix:getpid)) "this process is alive")
-  (let* ((child (uiop:launch-program (list "true")))
+  (let* ((child (uiop:launch-program (nlk:shell-argv "exit 0")))
          (pid (uiop:process-info-pid child)))
     (uiop:wait-process child)
     (is (not (nlk:pid-live-p pid)) "a reaped child is gone")))
