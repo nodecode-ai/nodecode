@@ -98,7 +98,7 @@
              (write-line "{\"general\":{}}" o))
            (is (null (nle::sandbox-ensure-launcher-files home)) "a second launch makes none")
            (is (search "general" (uiop:read-file-string (merge-pathnames "config.jsonc" home))) "and never touches the operator's config"))
-      (uiop:delete-directory-tree home :validate t :if-does-not-exist :ignore))))
+      (nlk:remove-tree home))))
 
 (defun sandbox-port-taken-p (port)
   "Whether a listener holds the loopback PORT."
@@ -173,7 +173,7 @@
                                                                              :port 1 :run #p"/h/sandbox/run/")) "the jailed argv is words only")))
       (nlk::set-environment-variable "PATH" (or saved-path ""))
       (nlk::set-environment-variable "NODECODE_SRT" (or saved-srt ""))
-      (uiop:delete-directory-tree dir :validate t :if-does-not-exist :ignore))))
+      (nlk:remove-tree dir))))
 
 (deftest sandbox-gateway-port-from-the-environment ()
   (let ((saved (uiop:getenv "NODECODE_GATEWAY_PORT")))
@@ -259,7 +259,7 @@
              (sandbox-commit home "escape")
              (nle::sandbox-mark home)
              (is (equal first (uiop:read-file-string (nle::sandbox-mark-path home))) "a later sandboxed launch never moves the mark")))
-      (uiop:delete-directory-tree home :validate t :if-does-not-exist :ignore))))
+      (nlk:remove-tree home))))
 
 (deftest sandbox-mark-refuses-an-unjailed-load ()
   (let ((home (sandbox-test-home)))
@@ -270,7 +270,7 @@
            (is (null (nle::sandbox-jailed-refusal home :loads t :asked t)) "--sandbox runs")
            (is (null (nle::sandbox-jailed-refusal home :loads t :sandboxed "1")) "the organism inside the jail runs")
            (is (null (nle::sandbox-jailed-refusal home :loads nil)) "a verb that loads no folder runs"))
-      (uiop:delete-directory-tree home :validate t :if-does-not-exist :ignore))))
+      (nlk:remove-tree home))))
 
 (deftest sandbox-review-names-what-the-jail-wrote ()
   (let ((home (sandbox-test-home)))
@@ -287,7 +287,7 @@
              (is (search "escape-commit" text) "and named")
              (is (search "b.lisp" text) "with the files it touches")
              (is (search "cells/planted: a new folder" text) "a folder the jail planted is named")))
-      (uiop:delete-directory-tree home :validate t :if-does-not-exist :ignore))))
+      (nlk:remove-tree home))))
 
 (deftest sandbox-release-needs-yes-and-the-outside ()
   (let* ((home (sandbox-test-home))
@@ -304,5 +304,5 @@
            (is (zerop (nth-value 1 (nle::sandbox-answer '("release" "--yes")))) "from outside, with --yes, it lifts")
            (is (null (probe-file (nle::sandbox-mark-path home))) "and the mark is gone"))
       (nlk::set-environment-variable "NODECODE_SANDBOXED" (or saved ""))
-      (uiop:delete-directory-tree home :validate t :if-does-not-exist :ignore))))
+      (nlk:remove-tree home))))
 

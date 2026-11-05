@@ -136,7 +136,7 @@ under *UNIT-DIRECTORY*, its enablement and its process FAKE's."
     (is (nlk::own-account-home-p) "the suite's $HOME stands for the account's own")
     (is (equal "nodecode-gateway" (nlk:gateway-label (nlk:default-home))) "which keeps its name")
     (nlk:with-cleanup ((sb-posix:setenv "HOME" real-home 1)
-                       (ignore-errors (uiop:delete-directory-tree (pathname scratch) :validate t)))
+                       (ignore-errors (nlk:remove-tree (pathname scratch))))
       (ensure-directories-exist scratch)
       (sb-posix:setenv "HOME" (string-right-trim "/" scratch) 1)
       (is (not (nlk::own-account-home-p)) "a scratch $HOME is not the account's")

@@ -17,7 +17,7 @@
             (nle::*connection-memory-path* (merge-pathnames "connection-checks.sexp" ,dir))
             (nle::*connection-retry-delays* ,delays))
        (unwind-protect (progn ,@body)
-         (uiop:delete-directory-tree ,dir :validate t :if-does-not-exist :ignore)))))
+         (nlk:remove-tree ,dir)))))
 
 (defun connection-verdict-at (provider host &rest facts)
   (nle::connection-verdict provider (list* :host host (append facts +connection-tls+))))
