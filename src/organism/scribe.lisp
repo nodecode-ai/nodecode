@@ -656,9 +656,8 @@ PATH is new. DIRECTORY-MODE is the directory's mode."
   (let* ((native (if (stringp path) path (sb-ext:native-namestring path)))
          #+win32 (native (substitute #\/ #\\ native))
          (bits (case mode
-                 (:keep (ignore-errors (logand (sb-posix:stat-mode (sb-posix:stat native)) #o7777)))
-                 (:private (logand #o700 (or (ignore-errors (sb-posix:stat-mode (sb-posix:stat native)))
-                                             #o600)))
+                 (:keep (ignore-errors (file-mode native)))
+                 (:private (logand #o700 (or (ignore-errors (file-mode native)) #o600)))
                  (t mode)))
          (temp (flet ((claim ()
                         (claim-temp-beside
@@ -676,7 +675,7 @@ PATH is new. DIRECTORY-MODE is the directory's mode."
                                           (claim)))
                           (claim))
                    (when directory-mode
-                     (ignore-errors (sb-posix:chmod (path-parent native) directory-mode)))))))
+                     (ignore-errors (set-file-mode (path-parent native) directory-mode)))))))
     (with-cleanup ((unless renamed (ignore-errors (sb-posix:unlink temp))))
       ;; Closing the stream closes FD, so the bits are set while it is open.
       ;; On Windows an fd-stream is over a HANDLE, never a C runtime
@@ -694,15 +693,20 @@ PATH is new. DIRECTORY-MODE is the directory's mode."
                (write-sequence (sb-ext:string-to-octets content :external-format :utf-8) out))
               (t (write-sequence content out)))
         (finish-output out)
-        ;; FCHMOD holds the descriptor; SBCL's sb-posix has none on Windows,
-        ;; where the bits are set by name on a temp nothing else can see yet.
-        (when bits
-          #-win32 (sb-posix:fchmod fd bits)
-          #+win32 (sb-posix:chmod temp bits)))
+        ;; FCHMOD holds the descriptor.
+        #-win32 (when bits (sb-posix:fchmod fd bits)))
+      ;; SBCL's sb-posix has no FCHMOD on Windows, where the bits are set by
+      ;; name on a temp nothing else can see yet, closed so nothing shares it
+      ;; -- all but the read-only attribute: MoveFileEx refuses to replace a
+      ;; read-only file, so the old one is made writable first and the new
+      ;; one read-only once it stands.
+      #+win32 (when bits (set-file-mode temp (logior bits #o200)))
+      #+win32 (set-read-only native nil)
       ;; rename(2), MoveFileEx with replacement on Windows (REPLACE-FILE's call)
       (multiple-value-bind (ok errno) (sb-unix:unix-rename temp native)
         (unless ok (error "cannot replace ~a: ~a" native (sb-int:strerror errno))))
-      (setf renamed t))
+      (setf renamed t)
+      #+win32 (when (and bits (not (logtest #o200 bits))) (set-read-only native t)))
     path))
 
 (defun file-component-p (component)

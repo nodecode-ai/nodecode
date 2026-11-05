@@ -1152,8 +1152,7 @@ had it."
                                         name (short-revision (getf row :revision)) number)
                                 notes)))
                (error (condition)
-                 (ignore-errors (uiop:delete-directory-tree directory :validate t
-                                                                      :if-does-not-exist :ignore))
+                 (ignore-errors (remove-tree directory))
                  (today (format nil "its commit ~a would not lay: ~a"
                                 (short-revision (getf row :revision)) condition)))))))))
     (values target (nreverse notes))))

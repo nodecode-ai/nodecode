@@ -49,7 +49,7 @@ STEP is called with what it is doing as it goes. => the archive's name."
     ;; The folder first, closed to everyone else: nothing under it is ever
     ;; readable by another user, the keys in a half-made archive included.
     (ensure-directories-exist directory)
-    #-win32 (sb-posix:chmod (uiop:native-namestring directory) #o700)
+    (nlk:set-file-mode directory #o700)
     (multiple-value-bind (path holds) (nlk:export-home (nlk:home) archive :whole t :store (store-file) :step step)
       (write-file-atomically (backup-note-file name)
                              (encode-json-object

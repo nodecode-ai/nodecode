@@ -576,9 +576,6 @@ exit 0~%" ,report ,score))
 ;;; What no repository can put back is kept whole, so a generation can be laid
 ;;; somewhere else exactly while the folder it was read from stays put.
 
-(defun file-mode (path)
-  (logand #o777 (sb-posix:stat-mode (sb-posix:stat (namestring path)))))
-
 (deftest a-kept-folder-is-laid-back-whole (with-warm-fixture (key root cache))
   (let ((folder (merge-pathnames "nl-warm/" root)))
     (write-temp-file (merge-pathnames "deep/inner.lisp" folder) "(in-package #:nodecode.evolved)")

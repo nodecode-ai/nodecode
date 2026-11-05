@@ -490,7 +490,7 @@ model's reply when given; whatever turn BODY leaves open is finished after it."
          (root (merge-pathnames (format nil "~a/" (nlk::make-durable-id "working-context-proof")) #p"/tmp/"))
          (nlk::*home* root))
     (ensure-directories-exist root)
-    (nlk:with-cleanup ((uiop:delete-directory-tree root :validate t :if-does-not-exist :ignore))
+    (nlk:with-cleanup ((nlk:remove-tree root))
       (with-database (lambda ()
                        (edits-proof) (surgical-proof) (by-seq-proof) (relief-proof) (warning-proof) (overflow-proof)
                        (size-and-row-proof) (receipt-failure-proof)))

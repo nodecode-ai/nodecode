@@ -20,8 +20,6 @@ process key."
            (let ((nle::*api-key* nil))
              ,@body))))))
 
-;;; FILE-MODE is generation-test's, which loads first.
-
 (defun secret-file-text (id)
   "The text of provider ID's secret file, or NIL."
   (let ((path (nle::provider-secret-file id)))

@@ -733,7 +733,7 @@ store."
            (directory (make-pathname :directory (pathname-directory full)))
            ;; The store's directory exists, 0700, before the lease is taken.
            (lock-fd (progn (ensure-directories-exist directory)
-                           (ignore-errors (sb-posix:chmod (namestring directory) #o700))
+                           (ignore-errors (set-file-mode directory #o700))
                            ;; A lease this process already holds -- handed
                            ;; across a saved image's exec -- is the lease.
                            (or (held-lock (lock-path-for-store full))

@@ -107,7 +107,7 @@ name, a check -- and nl-settings.shut, whose probe refuses."
                            :body "{\"path\": [\"nl-settings\", \"lane\"], \"secret\": \"  bot-123:abc \"}")
     (let ((file (merge-pathnames "nl-settings.lane.token_file" nle::*secrets-directory*)))
       (is (equal (format nil "bot-123:abc~%") (uiop:read-file-string file)) "trimmed, in its own file")
-      (is (= #o600 (logand #o777 (sb-posix:stat-mode (sb-posix:stat (namestring file))))) "mode 0600")
+      (is (= #o600 (file-mode file)) "mode 0600")
       (is (search (namestring file) (nlk:json-value body :string "said")) "and the answer names it")
       (is-present (row (settings-row body "nl-settings.lane" "token_file")) "the section names the file"
         (is (equal (namestring file) (nlk:json-value row :string "value")))))

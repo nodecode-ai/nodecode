@@ -83,7 +83,7 @@ half-way never stands where a restore looks."
   "DIRECTORY made when missing and kept 0700 either way: it holds heaps
 with this machine's secrets in them."
   (ensure-directories-exist directory :mode #o700)
-  #-win32 (sb-posix:chmod (namestring directory) #o700)
+  (nlk:set-file-mode directory #o700)
   directory)
 
 ;;; --- a save: the dump's path, then the seal ----------------------------------
@@ -115,7 +115,7 @@ short, leaving any heap NAME already had in place."
     (unless (nlk::image-complete-p dump)
       (error "the heap saved as ~a is ~:[missing~;incomplete~]: nothing replaced"
              name (probe-file dump)))
-    #-win32 (sb-posix:chmod (uiop:native-namestring dump) #o700)
+    (nlk:set-file-mode dump #o700)
     (nlk::replace-file dump image)
     (let ((manifest (json-object "format" +image-manifest-format+
                                  "name" name
@@ -211,7 +211,7 @@ generation it stood at, and which one the next launch boots."
              name (length pids) pids))
     (when (equal (restore-pointer) name)
       (ignore-errors (delete-file (restore-pointer-path))))
-    (uiop:delete-directory-tree (truename directory) :validate t)
+    (nlk:remove-tree (truename directory))
     (format nil "snapshot ~a deleted" name)))
 
 (defun rename-saved-image (name new)

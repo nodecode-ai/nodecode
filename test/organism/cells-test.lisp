@@ -323,7 +323,7 @@ is not EQ to the one a later eval interns — names compare, symbols do not."
                        (if real-nodecode-home
                            (sb-posix:setenv "NODECODE_HOME" real-nodecode-home 1)
                            (sb-posix:unsetenv "NODECODE_HOME"))
-                       (ignore-errors (uiop:delete-directory-tree (pathname scratch) :validate t))
+                       (ignore-errors (nlk:remove-tree (pathname scratch)))
                        (nlk:resolve-startup-parameters))
       (with-saved-globals ((nlk:*profile-flag* nil))
         (sb-posix:unsetenv "NODECODE_HOME")

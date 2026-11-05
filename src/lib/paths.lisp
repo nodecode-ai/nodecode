@@ -450,7 +450,7 @@ folder someone else set UIOP:*TEMPORARY-DIRECTORY* to is answered as is."
           (t
            (let ((own (home "tmp/")))
              (ensure-directories-exist own)
-             #-win32 (ignore-errors (sb-posix:chmod (uiop:native-namestring own) #o700))
+             (ignore-errors (set-file-mode own #o700))
              (unless *temporary-fallback*
                (format *error-output* "~&nodecode: ~a takes no writes (full, or over its quota); ~
 scratch files go to ~a until it does~%"

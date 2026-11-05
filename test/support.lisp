@@ -238,7 +238,7 @@ operator file."
          ;; the host's; a gate that scripts the other arm
          ;; SETFs it, and it comes back.
          nodecode.kernel::*service-manager*)
-      (nlk:with-cleanup ((ignore-errors (uiop:delete-directory-tree scratch-home :validate t)))
+      (nlk:with-cleanup ((ignore-errors (nlk:remove-tree scratch-home)))
         (funcall thunk)))))
 
 (defmacro deftest (name fixture &body body)
@@ -518,6 +518,34 @@ the prior value on unwind."
       (setf *fixture-workspace*
             (ensure-directories-exist (format nil "/tmp/nl-fixture-~a/" (sb-posix:getpid))))))
 
+(defun make-test-link (target link)
+  "A link at LINK, a native namestring with no trailing separator, to
+TARGET: a symbolic link on Unix. On Windows a folder's is a junction, which
+any account may make, and a file's a symbolic link, which takes the
+account's privilege or Developer Mode. TARGET is a folder when it is one,
+or when it is named as one (a directory pathname, or a native name ending
+in its separator) and is not there yet. => LINK."
+  #-win32 (sb-posix:symlink (uiop:native-namestring target) link)
+  #+win32
+  (let ((folder (or (uiop:directory-exists-p target)
+                    (uiop:directory-pathname-p
+                     (if (pathnamep target) target (uiop:parse-native-namestring target)))))
+        (target (string-right-trim "/\\" (uiop:native-namestring target))))
+    (if folder
+        (nlk:run-bounded (list "cmd" "/c" "mklink" "/J" link target))
+        ;; SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE: no privilege needed
+        ;; where Developer Mode is on
+        (when (zerop (sb-alien:alien-funcall
+                      (sb-alien:extern-alien "CreateSymbolicLinkW"
+                                             (function sb-alien:unsigned-char sb-win32::system-string
+                                                       sb-win32::system-string sb-win32::dword))
+                      link target 2))
+          (error "no symbolic link at ~a: Windows error ~d (1314: this account may not make one; Developer Mode lets it)"
+                 link (sb-win32:get-last-error))))
+    (unless (nlk::windows-link-p link)
+      (error "no link at ~a after making one" link)))
+  link)
+
 (defun temp-path (tag &optional type)
   "A fresh path under the system temp directory, unique to this process and
 this call."
@@ -531,6 +559,11 @@ this call."
                          (format nil "~a.~a" name type)
                          (format nil "~a/" name))
                      (uiop:temporary-directory))))
+
+(defun file-mode (path)
+  "PATH's permission bits: a POSIX stat's, and on Windows what the read-only
+attribute and the DACL say of them (NLK:FILE-MODE)."
+  (logand #o777 (nlk:file-mode path)))
 
 #+win32
 (sb-alien:define-alien-routine ("SetFileTime" %set-file-time) sb-alien:int
@@ -611,7 +644,7 @@ last-named first."
   `(let ,(loop for (var tag) in specs collect `(,var (temp-path ,tag)))
      (unwind-protect (progn ,@body)
        ,@(loop for (var) in (reverse specs)
-               collect `(ignore-errors (uiop:delete-directory-tree ,var :validate t))))))
+               collect `(ignore-errors (nlk:remove-tree ,var))))))
 
 (defmacro with-temp-workspace ((dir &rest files) &body body)
   "Run BODY with DIR bound to a fresh temp directory holding FILES, deleting

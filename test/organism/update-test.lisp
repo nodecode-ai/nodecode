@@ -60,7 +60,7 @@ echo 'usage: nodecode [-p NAME] [COMMAND] [OPTIONS]'
                           (list "tar" "-czf" archive "-C" (uiop:native-namestring work) name)))
     (write-temp-file (merge-pathnames (format nil "~a.sha256" file) dist)
                      (format nil "~a  ~a~%" (subseq (nlk::sha256-text (nlk::file-octets archive)) 7) file)))
-  (ignore-errors (uiop:delete-directory-tree work :validate t))
+  (ignore-errors (nlk:remove-tree work))
   name)
 
 (defun release-installer ()
