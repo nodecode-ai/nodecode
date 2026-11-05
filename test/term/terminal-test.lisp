@@ -401,8 +401,9 @@ as a window title, the empty string included."
 
 (deftest clipboard-helper-runner-keys-off-the-exit-status ()
   (is (null (nlk:exits-zero-p '("nlt-missing-clipboard-helper") :input "text")))
-  (is (eq t (nlk:exits-zero-p '("true") :input "text")) "exit 0 is success")
-  (is (null (nlk:exits-zero-p '("false") :input "text")) "exit 1 is failure"))
+  ;; Through sh: Windows has no `true' or `false' on its PATH.
+  (is (eq t (nlk:exits-zero-p (nlk:shell-argv "true") :input "text")) "exit 0 is success")
+  (is (null (nlk:exits-zero-p (nlk:shell-argv "false") :input "text")) "exit 1 is failure"))
 
 ;;; --- the descriptor never crosses a dump ---------------------------------
 
