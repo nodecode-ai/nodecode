@@ -76,6 +76,8 @@ and each TYPE are SB-ALIEN's, or SAP, INT or STR for the three most written."
      (access sb-win32::dword) (share sb-win32::dword) (security (* t))
      (disposition sb-win32::dword) (attributes sb-win32::dword) (template sb-win32::handle))
     ("FlushFileBuffers" %flush-file-buffers int (handle sb-win32::handle))
+    ("GetFileAttributesExW" %get-file-attributes-ex int (name sb-win32::system-string)
+     (level int) (data sap))
     ("GetFileType" %get-file-type sb-win32::dword (handle sb-win32::handle))
     ("SetStdHandle" %set-std-handle int (which sb-win32::dword) (handle sb-win32::handle))
     ("SetEnvironmentVariableW" %set-environment-variable int (name sb-win32::system-string)
@@ -1665,6 +1667,30 @@ in this process: Windows ships tar but no gzip program. => TO."
 (defun file-bytes (path)
   "The size of the file at PATH in bytes, or NIL when it cannot be opened."
   (ignore-errors (with-open-file (in path :element-type '(unsigned-byte 8)) (file-length in))))
+
+(defun file-identity (path)
+  "(values SIZE STAMP) of the regular file at PATH from one look at its
+metadata -- its length in bytes and when it was last written, finer than a
+second where the platform keeps it so -- or NIL when no file is there."
+  ;; One call: PROBE-FILE, an open for the length and FILE-WRITE-DATE were
+  ;; three, some 400 us on Windows, for a config read every round (T-442).
+  #+win32
+  (let ((data (make-array 36 :element-type '(unsigned-byte 8))))
+    (sb-sys:with-pinned-objects (data)
+      ;; WIN32_FILE_ATTRIBUTE_DATA: attributes, three FILETIMEs (the last
+      ;; write at 20), the size's high then low half.
+      (unless (zerop (%get-file-attributes-ex (uiop:native-namestring path) 0 (sb-sys:vector-sap data)))
+        (flet ((dword (at) (logior (aref data at) (ash (aref data (+ at 1)) 8)
+                                   (ash (aref data (+ at 2)) 16) (ash (aref data (+ at 3)) 24))))
+          (when (zerop (logand (dword 0) #x10)) ; FILE_ATTRIBUTE_DIRECTORY
+            (values (logior (ash (dword 28) 32) (dword 32))
+                    (logior (ash (dword 24) 32) (dword 20))))))))
+  #-win32
+  (multiple-value-bind (ok dev ino mode nlink uid gid rdev size atime mtime)
+      (sb-unix:unix-stat (uiop:native-namestring path))
+    (declare (ignore dev ino nlink uid gid rdev atime))
+    (when (and ok (= (logand mode #o170000) #o100000))
+      (values size mtime))))
 
 (defun claim-file (path stale-seconds)
   "Create the file at PATH exclusively, this process's pid in it, as a claim

@@ -209,17 +209,15 @@ size, write-date) identity moved since the parse MEMO holds."
                (< (- now (cdr (symbol-value probe)))
                   (* probe-seconds internal-time-units-per-second)))
       (return-from read-json-file-memo (values (fourth memoed) (fifth memoed))))
-    (let ((truename (and path (not (equal path "")) (probe-file path))))
-      (unless truename
+    (multiple-value-bind (size mtime) (and path (not (equal path "")) (nlk:file-identity path))
+      (unless size
         (return-from read-json-file-memo (values nil nil)))
       (when probe (setf (symbol-value probe) (cons path now)))
       (bt2:with-lock-held ((sb-ext:with-locked-hash-table (*json-file-memo-locks*)
                              (alexandria:ensure-gethash memo *json-file-memo-locks*
                                                         (bt2:make-lock :name (symbol-name memo)))))
         (let ((memoed (symbol-value memo))
-              (name (namestring truename))
-              (size (nlk:file-bytes truename))
-              (mtime (ignore-errors (file-write-date truename))))
+              (name (namestring path)))
           (when (and max-bytes (not (and (integerp size) (<= size max-bytes))))
             (return-from read-json-file-memo (values nil nil)))
           (unless (and memoed (equal name (first memoed))
@@ -230,7 +228,7 @@ size, write-date) identity moved since the parse MEMO holds."
                                     ;; Read as the bytes it is: a 4 MB catalog
                                     ;; widened to characters is 17 MB of heap.
                                     (let ((parsed (funcall decoder (alexandria:read-file-into-byte-vector
-                                                                    truename))))
+                                                                    path))))
                                       (if (hash-table-p parsed)
                                           (list parsed nil)
                                           (list nil "JSON root is not an object")))
