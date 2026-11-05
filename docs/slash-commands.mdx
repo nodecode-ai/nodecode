@@ -46,6 +46,7 @@ In a chat room or eval, a shell-only command answers `/name needs an interactive
 | `/status` | Nodecode right now: attention, runtime, services and today's usage. | Yes |
 | `/usage` | Reports spend across sessions: today, 7 days, 30 days or all, 7 days first. Signed in to nodecode.ai, the shell shows the account first: the plan's requests left and the API credit. | Yes |
 | `/login` | Signs in to your nodecode.ai account: it asks whether for a subscription or for API credits. Same as `nodecode login`. | No |
+| `/logout` | Signs this machine out of your nodecode.ai account: the key leaves this home's `auth.json` and the footer's meter goes. Same as `nodecode logout`. | No |
 | `/details` | Offers the Developer and Standard viewports, the one in use marked; Ctrl+O switches them too. | No |
 | `/cells` | Every cell: turn one on or off, see why one failed, make a new one. Headless: this process's cell report. | Yes |
 | `/generations` | The history of this organism, and the way back to a change in it. | Yes |
@@ -73,6 +74,7 @@ The gateway registers `/index` itself as it serves. It is no cell's.
 | `/generations` | Shell: a sheet of the changes; Enter asks in place, then restores. Headless: one card of the changes to page and pick from; a pick asks first, then restores, or keeps or discards uncommitted edits that hold it. |
 | `/context` | Shell: a grid, each part opening to what it holds. Chat room: one card that wears the window's state, from fine to past the eviction line. |
 | `/login` | Shell only. No chat room or web page can sign this home in to an account. |
+| `/logout` | Shell only. No chat room or web page can sign this home out. |
 
 Details: [Sessions and undo](sessions.mdx), [Models and providers](models.mdx), [Context](context.mdx), [Profiles](profiles.mdx), [Gateway](gateway.mdx).
 

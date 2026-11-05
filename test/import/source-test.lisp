@@ -97,7 +97,7 @@ more. => (values URL V1 HEAD), URL its file:// address."
     (let ((plan (nik:make-plan :source (format nil "~a#v1" url) :only "skills")))
       (is (equal '("skills") (remove-duplicates (mapcar #'nik:item-kind (nik:plan-items plan)) :test #'string=)))
       (nik:apply-plan plan)
-      (is-present (skill (nlk:knowledge-entry-named "root-skill" nil))
+      (is-present (skill (nlk:knowledge-entry-named "root-skill" nil)) "the tag's root skill is imported"
         (is (equal "The first root skill." (nlk:knowledge-entry-description skill)) "the tag's commit, not the head")
         (is (uiop:subpathp (nlk:knowledge-entry-path skill)
                            (truename (merge-pathnames (format nil "sources/~a/" (source-label box v1)) home))))))
