@@ -194,6 +194,23 @@ KEYS, never with SO_REUSEADDR."
 #+win32
 (encapsulate-afresh 'usocket:socket-listen 'alone #'listen-alone)
 
+;;; --- a socket's flag read back on Windows -------------------------------------
+;;; Winsock answers a getsockopt of some flags -- TCP_NODELAY -- in one byte
+;;; where the call handed it an int's four, and sb-bsd-sockets asserts the
+;;; four: reading whether the gateway's accepted socket carries TCP_NODELAY
+;;; signalled instead of answering. One byte read is the flag's low byte.
+
+#+win32
+(defun flag-of-any-width (next value size)
+  "SB-BSD-SOCKETS::FOREIGN-INT-TO-BOOL's advice on Windows: VALUE, a flag
+getsockopt answered in SIZE bytes, as a boolean -- its low byte when SIZE is
+one, the bytes past it never written."
+  (if (= size 1)
+      (/= 0 (logand value #xFF))
+      (funcall next value size)))
+
+#+win32
+(encapsulate-afresh 'sb-bsd-sockets::foreign-int-to-bool 'any-width #'flag-of-any-width)
 
 ;;; --- a handshake that fails closes its socket ---------------------------------
 ;;; dexador connects the socket and then shakes hands over it (MAKE-SSL-STREAM)
