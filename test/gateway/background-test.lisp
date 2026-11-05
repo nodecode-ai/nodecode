@@ -652,10 +652,10 @@ FAKE-LAUNCHD made from OPTIONS."
       (is (eq :ours (nlk::unit-file-owner path)) "which is what makes the file ours"))
     ("<key>Label</key><string>nodecode-gateway-" "the label")
     (is (search (format nil "<array>~%    <string>~a</string>~%    <string>/opt/node &lt;code&gt;/nodecode&amp;x</string>~%    <string>gateway</string>~%    <string>run</string>"
-                        (uiop:native-namestring (nlk::gateway-launcher-path)))
+                        (uiop:unix-namestring (nlk::gateway-launcher-path)))
                 text) "launchd runs the launcher, and the launcher the program, XML-escaped")
     (is (search "/Library/Application Support/nodecode/launcher/1/nodecode"
-                (uiop:native-namestring (nlk::gateway-launcher-path))) "one launcher for the account")
+                (uiop:unix-namestring (nlk::gateway-launcher-path))) "one launcher for the account")
     ("<key>NODECODE_HOME</key><string>/tmp/h--x</string>" "the home pinned")
     ("<key>PATH</key><string>/usr/bin:/bin</string>" "the PATH of whoever turned it on")
     (:absent "<key>HOME</key>" "the account's own home is not carried")
