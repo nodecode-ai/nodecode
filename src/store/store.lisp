@@ -643,6 +643,7 @@ heap's or a warm image's are another process's -- and take back the lease an
 exec handed on (HAND-LEASE-ACROSS-EXEC) when its descriptor still holds it.
 => that lock, or NIL."
   (clrhash *held-locks*)
+  #+win32 nil ; no exec hands one on (HAND-LEASE-ACROSS-EXEC)
   #-win32
   (let* ((value (sb-posix:getenv +handed-lease-variable+))
          (space (and value (position #\Space value)))

@@ -46,8 +46,8 @@ there. An https URL that is no repository's is an error, never a path."
     (let* ((hash (position #\# text))
            (ref (and hash (subseq text (1+ hash))))
            (text (if hash (subseq text 0 hash) text)))
-      (labels ((segments (string)
-                 (remove "" (uiop:split-string string :separator "/") :test #'string=))
+      (labels ((segments (string &optional (separators "/"))
+                 (remove "" (uiop:split-string string :separator separators) :test #'string=))
                (bare (repo)
                  (if (and (> (length repo) 4) (string-equal ".git" repo :start2 (- (length repo) 4)))
                      (subseq repo 0 (- (length repo) 4))
@@ -65,7 +65,10 @@ there. An https URL that is no repository's is an error, never a path."
                       (named nil "github.com" (first parts) (second parts) (cddr parts)))))
         (cond
           ((uiop:string-prefix-p "file://" text)
-           (let ((parts (segments (subseq text 7))))
+           ;; a folder on this box, spelled as its own system spells one: on
+           ;; Windows file://C:\Users\me\repo as well as file:///C:/Users/me/repo,
+           ;; both of which git clones
+           (let ((parts (segments (subseq text 7) nlk::+path-separators+)))
              (or (and (>= (length parts) 2)
                       (named text "local" (car (last parts 2)) (car (last parts)) nil))
                  (fail "~a names no repository: file:///path/to/repo is one on this box" text))))

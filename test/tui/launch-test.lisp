@@ -34,9 +34,9 @@
   (let ((text (nle::launch-help-text)))
     (is (uiop:string-prefix-p "usage: nodecode [-p NAME] [COMMAND] [OPTIONS]" text))
     (dolist (verb nle::*launch-verbs*)
-      (if verb.internal
+      (if (or verb.internal (nle::withheld-launch-verb-p verb))
           (is (null (search (format nil "~%  ~a " verb.name) text))
-              (format nil "internal ~a is not listed" verb.name))
+              (format nil "internal or held back, ~a is not listed" verb.name))
           (is (search verb.summary text) (format nil "~a is listed with its summary" verb.name))))
     (is (search "-p, --profile NAME" text) "an option shows its short spelling")
     (is (search "profile [VERB]" text) "a label replaces the name and arguments"))
@@ -118,7 +118,7 @@
   (is (equal '("setup" "import" "resume") (loop for verb in nle::*launch-verbs* when verb.terminal collect verb.name)) "only the commands that open the shell")
   ;; The declaration and the parser cannot drift: a command's line launches
   ;; the shell exactly when its table entry says it draws on the terminal.
-  (dolist (verb nle::*launch-verbs*)
+  (dolist (verb (nle::offered-launch-verbs nle::*launch-verbs*))
     (let* ((extra (cdr (assoc verb.name '(("resume" "s-1") ("warm-dump" "/x") ("machine" "link")) :test #'string=)))
            (plan (apply #'launch-plan verb.name extra)))
       (if (string= verb.name "snapshots")
@@ -189,7 +189,7 @@
 
 (deftest launch-home-refusal-says-what-stops-the-write ()
   (ensure-directories-exist nlk::*home*)
-  (let ((home (nle::home-abbreviated (string-right-trim "/" (namestring nlk::*home*)))))
+  (let ((home (nle::home-abbreviated (string-right-trim "/\\" (uiop:native-namestring nlk::*home*)))))
     (flet ((refusal (errno &optional store-path)
              (with-stubbed-fdefinition (nle::folder-write-errno (folder) errno)
                (nle::home-refusal store-path))))
@@ -206,7 +206,7 @@
                                  30))
       (is-carrying (text (nle::home-refusal
                           (merge-pathnames "no-such/deeper/x.db" (temp-path "store-side"))))
-        "/no-such/deeper does not exist and "
+        #-win32 "/no-such/deeper does not exist and " #+win32 "\\no-such\\deeper does not exist and "
         " is read-only, so nodecode cannot make it; make "
         "name a store elsewhere with --store PATH"
         (:absent "SB-")))))
@@ -257,9 +257,10 @@
   ;; own store a folder: SQLite refused each at the boot, behind the walk (ip-03)
   (ensure-directories-exist nlk::*home*)
   (with-temp-directory (dir "store-shape")
-    (let ((folder (string-right-trim "/" (namestring dir))))
-      (is-refusal ((nle::home-refusal folder) folder)
-        "~a is a folder, not a store file; name a file, such as --store ~:*~a/history.db"))
+    ;; a refusal names a path the way the platform spells it: `\' on Windows
+    (let ((folder (string-right-trim "/\\" (uiop:native-namestring dir))))
+      (is-refusal ((nle::home-refusal folder) folder (uiop:native-namestring (merge-pathnames "history.db" dir)))
+        "~a is a folder, not a store file; name a file, such as --store ~a"))
     (let ((store (namestring (merge-pathnames "x.db" dir))))
       (is (null (nle::home-refusal store)) "a store not made yet is made at boot")
       (write-temp-file store)
@@ -280,7 +281,7 @@
     (dolist (bytes (list (apply #'octets (make-list 8000 :initial-element 171)) (octets 10)))
       (alexandria:write-byte-vector-into-file bytes own :if-exists :supersede)
       (nlk:with-cleanup ((delete-file own))
-        (is-refusal ((nle::home-refusal nil) own)
+        (is-refusal ((nle::home-refusal nil) (uiop:native-namestring own))
           "~a is not a nodecode store (not an SQLite database); move it aside and run ~
            nodecode again")))
     ;; a store SQLite wrote, in the write-ahead log the organism keeps it in, is
@@ -295,7 +296,7 @@
       (is (null (nle::home-refusal nil))))
     (ensure-directories-exist (uiop:ensure-directory-pathname own))
     (nlk:with-cleanup ((uiop:delete-empty-directory (uiop:ensure-directory-pathname own)))
-      (is-refusal ((nle::home-refusal nil) own)
+      (is-refusal ((nle::home-refusal nil) (uiop:native-namestring own))
         "~a is a folder, not a store file; move it aside and run nodecode again"))))
 
 (deftest launch-store-refusal-opens-nothing-that-is-no-store-file ()
@@ -355,3 +356,21 @@
              (multiple-value-list
               (nle::plain-error-text (make-condition 'simple-error :format-control "the store is a lie"))))))
 
+;;; --- what the launch holds back -------------------------------------------
+
+(deftest launch-holds-the-sandbox-back ()
+  ;; Off by default (*OFFER-SANDBOX*): help names none of the three words,
+  ;; no refusal suggests one, and the parser refuses --sandbox and secrets.
+  (let ((nle::*offer-sandbox* nil))
+    (let ((text (nle::launch-help-text)))
+      (dolist (name '("--sandbox" "sandbox" "secrets"))
+        (is (null (search (format nil "~%  ~a " name) text)) (format nil "help lists no ~a" name))))
+    (is (search "no option \"--sandbox\"" (launch-refusal "--sandbox")) "--sandbox is refused")
+    (is (search "no command \"secrets\"" (launch-refusal "secrets" "list")) "secrets is refused")
+    (is (null (search "secrets" (launch-refusal "secret"))) "no refusal suggests secrets")
+    (is (equal '(:sandbox ("review")) (second (launch-plan "sandbox" "review"))) "sandbox is still taken: a marked home can lift its mark"))
+  ;; On, the three are the launch's like any other.
+  (let ((nle::*offer-sandbox* t))
+    (let ((text (nle::launch-help-text)))
+      (is (search "--sandbox" text) "help lists --sandbox when it is offered"))
+    (is (equal '(:secrets ("list")) (second (launch-plan "secrets" "list"))) "secrets is taken when offered")))
