@@ -55,8 +55,9 @@ function Find-Sbcl {
 # Each thread gets the control stack a release ships (build-windows.ps1):
 # Windows commits a thread's whole stack as it starts, twice over -- the
 # thread's own block and the stack _beginthreadex commits -- so at 64MB a
-# shard of ~20 threads held 2.5 GB of the runner's commit charge, and the
-# next thread's allocation failed as `GC invariant lost, file "win32-os.c"'.
+# shard of 19 threads held 2 GB of the runner's commit charge (0.7 GB at
+# 8MB), and a thread that found none left died as `GC invariant lost, file
+# "win32-os.c", line 648'.
 function Start-Sbcl([string]$sbcl, [string]$log) {
   $argv = @('--dynamic-space-size', '3072', '--control-stack-size', '8MB', '--noinform', '--non-interactive',
             '--load', "`"$(Join-Path $tree 'tools\ci\windows-suite.lisp')`"")
