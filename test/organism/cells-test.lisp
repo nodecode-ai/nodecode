@@ -1975,7 +1975,10 @@ BIN/pids/ first, and is the real git for anything else. => its native path."
                      (values (/ (- (get-internal-real-time) started) internal-time-units-per-second) text))))
             (with-saved-globals ((nlk::*git-program* (write-hanging-git bin)))
               (multiple-value-bind (took text) (late 2)
-                (is (<= 2 took 7/2) (format nil "the install ended at its deadline: ~,1f s" took))
+                ;; GET-INTERNAL-REAL-TIME steps a millisecond at a time (a
+                ;; jiffy on a coarse clock), so a timed join it measures can
+                ;; read a tick short of its bound: 50 ms read as 49.999 ms.
+                (is (<= 199/100 took 7/2) (format nil "the install ended at its deadline: ~,3f s" took))
                 (is (search "ran out while fetching nl-hub-l1 from" text) text))
               (is (null (hanging-git-alive bin)) "its hung runs are killed")
               (is (not (nlk:installed-cell-p "nl-hub-l1" root)))
