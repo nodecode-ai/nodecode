@@ -11,24 +11,72 @@
 
 (in-package #:nodecode.test)
 
+(defvar *release-stub-executable* nil
+  "Windows: the nodecode.exe a fixture release carries, compiled once a process.")
+
+(defun release-stub-executable ()
+  "An executable that answers --help as the CLI does, with its usage line on
+stderr and exit 2: what install.ps1 probes a release it laid out with. Built
+by the C# compiler of the .NET Framework 4 every Windows carries, the one
+build-windows.ps1 builds the launcher with."
+  (or (and *release-stub-executable* (probe-file *release-stub-executable*) *release-stub-executable*)
+      (let ((source (temp-path "release-stub" "cs"))
+            (exe (temp-path "release-stub" "exe")))
+        (write-temp-file source "class P { static int Main() { System.Console.Error.WriteLine(\"usage: nodecode [-p NAME] [COMMAND] [OPTIONS]\"); return 2; } }")
+        (uiop:run-program (list (uiop:native-namestring
+                                 (merge-pathnames "Microsoft.NET/Framework64/v4.0.30319/csc.exe"
+                                                  (uiop:ensure-directory-pathname (uiop:getenv "WINDIR"))))
+                                "/nologo" "/target:exe" "/platform:x64"
+                                (format nil "/out:~a" (uiop:native-namestring exe)) (uiop:native-namestring source))
+                          :output :string :error-output :output)
+        (ignore-errors (delete-file source))
+        (setf *release-stub-executable* exe))))
+
 (defun write-release-tarball (dist version files &aux (name (format nil "nodecode-~a-~a" version (nle::release-platform)))
+                                                      (windows (eq (nlk:platform) :windows))
                                                       (work (temp-path "release-work"))
                                                       (tree (merge-pathnames (format nil "~a/" name) work)))
-  "nodecode-VERSION-<platform>.tar.gz under DIST with its sha256 sidecar: an
-executable `nodecode' answering --help with the usage line, and FILES
-((RELATIVE . TEXT) ...) under it."
-  (write-upgrade-tree tree (cons (cons "nodecode" "#!/bin/sh
+  "The release archive of VERSION under DIST, in this platform's container,
+with its sha256 sidecar: an executable `nodecode' answering --help with the
+usage line, and FILES ((RELATIVE . TEXT) ...) under it. A tar.gz holding a
+shell script on Linux and macOS; on Windows the tar.zst install.ps1 takes,
+its nodecode.exe at the top."
+  (write-upgrade-tree tree (if windows
+                               files
+                               (cons (cons "nodecode" "#!/bin/sh
 echo 'usage: nodecode [-p NAME] [COMMAND] [OPTIONS]'
-") files))
-  (sb-posix:chmod (namestring (merge-pathnames "nodecode" tree)) #o755)
+") files)))
+  (if windows
+      (uiop:copy-file (release-stub-executable) (merge-pathnames "nodecode.exe" tree))
+      (sb-posix:chmod (namestring (merge-pathnames "nodecode" tree)) #o755))
   (ensure-directories-exist dist)
-  (let ((tarball (uiop:native-namestring (merge-pathnames (format nil "~a.tar.gz" name) dist))))
-    (uiop:run-program (list "tar" "-czf" tarball "-C" (uiop:native-namestring work) name))
-    (let ((digest (uiop:run-program (list "sha256sum" tarball) :output :string)))
-      (write-temp-file (merge-pathnames (format nil "~a.tar.gz.sha256" name) dist)
-                       (format nil "~a  ~a.tar.gz~%" (subseq digest 0 64) name))))
+  (let* ((file (format nil "~a.~:[tar.gz~;tar.zst~]" name windows))
+         (archive (uiop:native-namestring (merge-pathnames file dist))))
+    ;; Windows' own bsdtar, not a GNU tar some PATH puts first: install.ps1
+    ;; unpacks with it too.
+    (uiop:run-program (if windows
+                          (list (uiop:native-namestring (merge-pathnames "System32/tar.exe" (uiop:ensure-directory-pathname (uiop:getenv "SystemRoot"))))
+                                "--zstd" "-cf" archive "-C" (uiop:native-namestring tree) ".")
+                          (list "tar" "-czf" archive "-C" (uiop:native-namestring work) name)))
+    (write-temp-file (merge-pathnames (format nil "~a.sha256" file) dist)
+                     (format nil "~a  ~a~%" (subseq (nlk::sha256-text (nlk::file-octets archive)) 7) file)))
   (ignore-errors (uiop:delete-directory-tree work :validate t))
   name)
+
+(defun release-installer ()
+  "The installer this platform's releases carry, in this checkout."
+  (asdf:system-relative-pathname "nodecode" (if (eq (nlk:platform) :windows)
+                                                "tools/install/install.ps1"
+                                                "tools/install/install.sh")))
+
+(defun release-current ()
+  "The release folder `current' names: a symbolic link's target, and on
+Windows a junction's, which TRUENAME leaves as it is."
+  (nlk::real-path (merge-pathnames "current/" nle::*release-directory*)))
+
+(defun release-executable (directory)
+  "The executable of the release laid out at DIRECTORY."
+  (merge-pathnames (if (eq (nlk:platform) :windows) "nodecode.exe" "nodecode") directory))
 
 (defun upg-source (answer slots)
   "The fixture's src/src/a.lisp: UPG-ROUTE-F answering ANSWER, UPG-ROUTE-S holding SLOTS."
@@ -56,19 +104,18 @@ repo's own installer, for BODY."
                            (format nil "file://~a" (string-right-trim "/" (namestring ,dist))))
                           (nle::*release-fetch* 'nle::release-fetch)
                           (nle::*release-directory* releases-dir)
-                          (nle::*installer-path*
-                           (asdf:system-relative-pathname "nodecode" "tools/install/install.sh")))
+                          (nle::*installer-path* (release-installer)))
        ,@body)))
 
 (deftest update-installer-stages-then-links ()
   (with-release-host (dist (list (cons "tv1" (release-files *update-old-a*))))
     (let ((directory (nle::stage-release "tv1")))
-      (is (probe-file (merge-pathnames "nodecode" directory)) "the version is laid out")
+      (is (probe-file (release-executable directory)) "the version is laid out")
       (is (probe-file (merge-pathnames "src/src/a.lisp" directory)) "with its source tree")
       (is (null (probe-file (merge-pathnames "current" nle::*release-directory*)))))
     (is (nle::link-release "tv1"))
-    (is (equal (namestring (truename (merge-pathnames "tv1/" nle::*release-directory*)))
-               (namestring (truename (merge-pathnames "current" nle::*release-directory*)))))
+    (is (equal (namestring (nlk::real-path (merge-pathnames "tv1/" nle::*release-directory*)))
+               (namestring (release-current))))
     (is-carrying (text (refusal-text nlk:upgrade-refusal (nle::stage-release "no-such")))
       ("no-such" "a release the host lacks is refused by name"))))
 
@@ -282,7 +329,7 @@ it runs pushes :STOPPED or :STARTED onto (CAR LOG)."
         (is (search "defstruct" (nlk::json-value body :string "text")) "the held reason is named"))
       (is (eql 2 (funcall 'nodecode.evolved::upg-route-f)) "the release's definition is live")
       (is (equal "tv3" nlk::*effective-version*))
-      (let ((current (truename (merge-pathnames "current" nle::*release-directory*))))
+      (let ((current (release-current)))
         (is (equal "tv3" (car (last (pathname-directory current)))) "current names the new build"))
       (let ((record (nlk::events :kind nlk::+kind-organism-upgraded+
                                  :order :newest :as :payload)))
@@ -336,7 +383,7 @@ it runs pushes :STOPPED or :STARTED onto (CAR LOG)."
             "upg-route-g"))
         (is (eql 1 (funcall 'nodecode.evolved::upg-route-f)) "the image is as it was")
         (is (null nlk::*effective-version*))
-        (let ((current (truename (merge-pathnames "current" nle::*release-directory*))))
+        (let ((current (release-current)))
           (is (equal "tv5" (car (last (pathname-directory current)))) "current names the new build"))
         (is (search "refused it live" (board-line "update")))
         (bt2:join-thread nle::*restart-wait*)
@@ -954,7 +1001,7 @@ are LISTS ((LABEL . LINES) ...), any other list a 404."
               ("tv3 is older than tv9" "and says why")))
           (is (eql 1 (funcall 'nodecode.evolved::upg-route-f)) "no older definition was evaluated")
           (is (equal "tv3" (nle::held-release)) "a named step back holds this home there")
-          (let ((current (truename (merge-pathnames "current" nle::*release-directory*))))
+          (let ((current (release-current)))
             (is (equal "tv3" (car (last (pathname-directory current)))) "current names the older build"))
           (bt2:join-thread nle::*restart-wait*)
           (is (equal '("tv3") exited) "the unit's gateway restarts onto it"))))))
