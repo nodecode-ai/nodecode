@@ -845,10 +845,15 @@ every call takes its arena's lock."
 
 (defun every-arena-answers-p ()
   "Whether malloc_trim, which takes every arena's lock in turn, returns within
-five seconds on a thread of its own."
+five seconds on a thread of its own. Windows' C library has no malloc_trim:
+there a thousand mallocs and frees over the sizes the spinner asks return in
+that time, each size class's lock taken."
   (eq :ok (nlk::%join-bounded
            (bt2:make-thread (lambda ()
+                              #-win32
                               (sb-alien:alien-funcall (sb-alien:extern-alien "malloc_trim" (function sb-alien:int sb-alien:unsigned-long)) 0)
+                              #+win32
+                              (loop for size from 2048 below 62048 by 60 do (c-malloc-and-free size))
                               :ok)
                             :name "arena probe")
            5)))
