@@ -73,13 +73,17 @@ exist to prevent."
   (with-temp-workspace (target "guard/nodecode-guard.asd")
     (profile-test-seed-every-entry nlk:*home*)
     (let ((shipped (string-right-trim "/" (namestring (merge-pathnames "guard/" target)))))
-      (nlk:make-symlink shipped (merge-pathnames "cells/guard/" nlk:*home*))
+      ;; As the installer puts a shipped cell: a link, or on Windows a copy
+      ;; carrying its marker (COPY-INSTALL).
+      #-win32 (nlk:make-symlink shipped (merge-pathnames "cells/guard/" nlk:*home*))
+      #+win32 (nlk::copy-install (merge-pathnames "guard/" target) (merge-pathnames "cells/guard/" nlk:*home*))
       ;; A layer: the organism's own git repository under cells/.
       (let ((layer (merge-pathnames "cells/tester/" nlk:*home*)))
         (write-temp-file (merge-pathnames "tester.asd" layer) "(defsystem \"tester\")")
         (is (nlk:git-commit-all layer "one")))
       (let ((home (nlk:profile-create "coder" :clone :settings)))
-        (is (equal shipped (nlk:symlink-target (merge-pathnames "cells/guard/" home))))
+        #-win32 (is (equal shipped (nlk:symlink-target (merge-pathnames "cells/guard/" home))))
+        #+win32 (is (probe-file (merge-pathnames (format nil "cells/guard/~a" nlk::+installed-marker+) home)) "the installer's copy comes along, marker and all")
         (is (null (uiop:directory-exists-p (merge-pathnames "cells/own/" home))))
         (is (null (uiop:directory-exists-p (merge-pathnames "cells/tester/" home))))
         (is (equal "settings" (gethash "clone" (nlk::read-manifest home)))))
