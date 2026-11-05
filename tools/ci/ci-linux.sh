@@ -84,6 +84,13 @@ step install
 sh tools/install/install-test.sh
 done_step install
 
+# The publisher's own checks, hermetic (no host, no network): which commit a
+# release or a nightly builds, and what each publish moves and leaves alone.
+step release
+bash tools/release/release-test.sh
+bash tools/release/publish-test.sh
+done_step release
+
 # The release build and the suite run on one SBCL and quicklisp, whose cache
 # key is this revision's build.sh and patches. When that SBCL is already built
 # (every run but the first after a patch changes it) the release build runs

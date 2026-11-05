@@ -17,30 +17,29 @@
 ;;; --- catalog ---------------------------------------------------------------
 
 (defstruct (slash-command (:constructor make-slash-command
-                              (name description &key (usage "") aliases
+                              (name description &key aliases
                                (help-detail "") owner
                                (dispatch :plain)
                                (op (and dispatch
                                         (intern (format nil "SLASH-~:@(~a~)-OP" name)
                                                 :nodecode.evolved)))
                                (headless (and (eq dispatch :local) op))
-                               completer keybind (session t) trigger reads)))
+                               keybind (session t) trigger reads)))
   "One catalog entry."
-  ;; NAME carries no leading slash; ALIASES are alternate
-  ;; names (also slash-less); USAGE is the display form when the command takes
-  ;; arguments, empty when the bare name is the whole usage. HELP-DETAIL carries
-  ;; the Zig help_detail copy for the help dialog, whose label column is
-  ;; SLASH-COMMAND-LABEL (the Zig help_label was a second label nothing rendered);
+  ;; NAME carries no leading slash, and is the whole of what anyone types: a
+  ;; command is its name, and what it once took after it is a row of the
+  ;; dialog it answers typed alone (tui/commands/bare.lisp). ALIASES are
+  ;; alternate names (also slash-less). HELP-DETAIL is what the help dialog
+  ;; says of it, in words: what typed alone it offers, never a line to spell.
   ;; OWNER is the key of the cell that registered the command (gateway.lisp
   ;; REGISTER-COMMAND), NIL for a builtin and for a shell's copy of the
-  ;; gateway's commands. A cell's argument hint is not a slot: it is spent
-  ;; building USAGE. The execution slots name functions defined later, so they are symbols: DISPATCH
+  ;; gateway's commands. The execution slots name functions defined later, so they are symbols: DISPATCH
   ;; is how the shell calls OP -- :PLAIN (OP MODEL), :ARGS (OP MODEL ARGS), :NAME
   ;; (OP MODEL NAME), :GUARDED (OP MODEL) behind the Zig usage_help gate, :LOCAL
   ;; (OP ARGS SESSION-ID) for a model-free command that answers alike with or
   ;; without a shell, NIL for one the shell arm spells out; OP defaults to
   ;; SLASH-<NAME>-OP; HEADLESS answers (ARGS SESSION-ID) without a shell (the op
-  ;; for :LOCAL, NIL when a shell is needed); COMPLETER completes the typed tail.
+  ;; for :LOCAL, NIL when a shell is needed).
   ;;
   ;; SESSION is NIL for a command that acts on no session -- /help, /cells,
   ;; /link -- so a client with no session open (the web page's opener) runs
@@ -55,16 +54,16 @@
   ;; no hotkey.
   ;;
   ;; TRIGGER is a cell command's opener in the composer: the character,
-  ;; typed at a word's start, opens the command's dialog and stays in the
+  ;; typed as the draft's first, opens the command's dialog and stays in the
   ;; draft until a pick replaces it (COMPOSER-TRIGGER-COMMAND). NIL for most.
   ;;
   ;; READS is what of the shell a cell's command declared it reads, a list
   ;; of keywords: (:DRAFT), the composer's text, is the one there is. The
   ;; shell sends it only to a command that names it (RUN-GATEWAY-COMMAND),
   ;; so what is being written never reaches a cell that did not ask.
-  (name nil :type string) (description nil :type string) (usage nil :type string)
+  (name nil :type string) (description nil :type string)
   (aliases nil :type list) (help-detail nil :type string)
-  owner dispatch op headless completer keybind session trigger reads)
+  owner dispatch op headless keybind session trigger reads)
 
 (nlk:access (entry slash-command))
 
@@ -79,14 +78,13 @@
         (make-slash-command "sessions" "Pick a session and switch to it" :keybind :sessions-dialog
                             :aliases '("agents"))
         (make-slash-command "rename" "Name this session, or show its name"
-                            :usage "/rename [name | default]"
                             :dispatch :args :headless 'headless-rename
                             :help-detail
-                            "The name /sessions and the web sidebar show: one line, at most 64 characters. Bare /rename shows it; /rename default gives back the name the first prompt makes. F2 on a row in /sessions renames that session")
+                            "The name /sessions and the web sidebar show: one line, at most 64 characters. It shows the name, asks for a new one, or gives back the name the first prompt makes. F2 on a row in /sessions renames that session")
         (make-slash-command "export" "Save this session as Markdown"
-                            :usage "/export [path]" :dispatch :args
+                            :dispatch :args
                             :help-detail
-                            "The prompts, the answers, the plans and one line per call, as the transcript shows them, in a file named after the session in this shell's folder, or at PATH (a folder or a file). Reasoning and a call's output stay out; the web page's Markdown button saves the same file")
+                            "The prompts, the answers, the plans and one line per call, as the transcript shows them, in a file named after the session: in this shell's folder, or in a folder or at a file it asks for. Reasoning and a call's output stay out; the web page's Markdown button saves the same file")
         (make-slash-command "execs" "Watch an exec's live output or how it ended, or interrupt it"
                             :help-detail
                             "The band shows a pending exec in a five-line window; /execs opens the exec's retained output at panel height, live while it runs. Ctrl+X there interrupts it (the soft abort), Delete the same; Esc closes. The last execs that ended here stay listed with how each ended and its last lines. With more than one exec, a picker opens first, running ones on top, and Enter opens one")
@@ -100,40 +98,37 @@
         (make-slash-command "history" "Pick a past prompt into the composer"
                             :op 'open-prompt-history-dialog :keybind :history-dialog)
         (make-slash-command "themes" "List themes or switch the active theme"
-                            :usage "/themes [name]" :dispatch :args)
+                            :dispatch :args)
         (make-slash-command "settings" "Browse and change settings"
                             :dispatch :guarded :session nil
                             :help-detail
                             "Every setting on one sheet in the middle of the window: the sections beside the open one, or one at a time on a narrow window, each setting's value on its row. Right steps a value on where it stands, as Space and Enter step a switch or a choice, and Shift with an arrow steps it either way; Left goes back to the sections from any setting; Enter types a number, text, ids, or a secret, which is never shown, only whether it is set; Delete gives a setting its default back. Typing searches every setting; Esc goes back, then closes. A saved change says when it applies.")
         (make-slash-command "models" "Show or change the main, auxiliary and decider models"
-                            :usage "/models [provider] [model] | aux [provider] [model | default] | decider [id | none] | backups | list | refresh"
-                            :dispatch nil :headless 'headless-models :completer 'models-argument-choices
+                            :dispatch nil :headless 'headless-models
                             :help-detail
-                            "Bare opens providers with Frequently used and Local model shortcuts under four tabs; Tab moves between them. Main is this session's model and the one new sessions start on; after choosing one, its reasoning effort view opens too. Local lists the models served from your own machines: localhost, your LAN or your tailnet. Auxiliary is the model session names, recaps and summaries run on; Same as main gives that work back to each session's own model. Decider is the model that answers judgments as probabilities (DJev); None picks none. Backup is the failover chain: the models a failing turn moves on to, in order, Add a backup, Test backups, and the triggers, which Enter switches; Enter on a backup takes it out. Pick a connected provider to browse its models, or connect a new one here; Ctrl+E replaces its key. Esc from models returns to providers. Typed, /models aux [provider] model sets the auxiliary model and /models aux default takes it out; /models decider djev pins the decider and /models decider none takes it out; /models backups opens on Backup")
+                            "Opens on providers, with Frequently used and Local shortcuts, under four tabs; Tab moves between them. Main is this session's model and the one new sessions start on; after choosing one, its reasoning effort view opens too. Local lists the models served from your own machines: localhost, your LAN or your tailnet. Auxiliary is the model session names, recaps and summaries run on; Same as main gives that work back to each session's own model. Decider is the model that answers judgments as probabilities (DJev); None picks none. Backup is the failover chain: the models a failing turn moves on to, in order, Add a backup, Test backups, and the triggers, which Enter switches; Enter on a backup takes it out. Pick a connected provider to browse its models, or connect a new one here; Ctrl+E replaces its key, Ctrl+R fetches every provider's list again. Esc from models returns to providers. In a room or on the web page, Main, Auxiliary and Decider as tabs: the frequently used models, each provider a row whose picks are its models, and a field for any other")
         (make-slash-command "evict"
                             "Drop the oldest turns from the provider context"
                             :aliases '("compact")
-                            :usage "/evict [percent | through TURN]" :dispatch nil :headless 'headless-evict
+                            :dispatch nil :headless 'headless-evict
                             :help-detail
-                            "Force a context eviction on the active Gateway session: a percent of its retained history (default 50%), or every retained turn through TURN, a turn id (/context history runs it)")
+                            "Force a context eviction on the active Gateway session: half, a quarter, three quarters or all of its retained history, or every retained turn through one picked from /context's history list")
         (make-slash-command "context"
                             "Show this session's context window and usage"
-                            :usage "/context [prompt | tools | index | notes | history | time]"
                             :dispatch nil :headless 'headless-context :help-detail
                             "Occupancy (the newest provider round's prompt) over the effective window — configured, learned, or the model's own default — split into its parts: the standing prompt, the tools, the skills and memories index, the model's notes and the history. A shell paints it as a grid; a part opens to what it holds, history to its turns, where Enter evicts through one; time charts each round's prompt from the log")
         (make-slash-command "status"
                             "Nodecode right now: attention, runtime, services and today's usage"
-                            :usage "/status" :dispatch :guarded :headless 'headless-status
+                            :dispatch :guarded :headless 'headless-status
                             :session nil
                             :help-detail
                             "A read-only overview of the serving organism: warnings first, version/profile/uptime, default model, cell-owned standing notices, active turns and today's API-equivalent usage across this store. Enter drills in or refreshes snapshots; Esc closes. Activity and notices update from the runtime stream. No provider probes: /doctor runs diagnostics; /usage owns the full breakdown")
         (make-slash-command "usage"
                             "What every session spent: today, this week, 30 days or all"
-                            :usage "/usage [today | 7d | 30d | all]"
-                            :dispatch :args :headless 'headless-usage :completer '("today" "7d" "30d" "all")
+                            :dispatch :args :headless 'headless-usage
                             :session nil
                             :help-detail
-                            "Spend at catalog prices, model calls, the cache share and what it saved, first-token waits and failed turns across every session, then spend by day, the models, the costliest sessions and the folders. On a shell, a dialog: Tab moves between today, 7 days, 30 days and all (seven days unless named), Enter on a session opens it; on a channel or the web page, the same as text")
+                            "Spend at catalog prices, model calls, the cache share and what it saved, first-token waits and failed turns across every session, then spend by day, the models, the costliest sessions and the folders. On a shell, a dialog: Tab moves between today, 7 days, 30 days and all, Enter on a session opens it; on a channel or the web page, the four ranges to pick, each answered as text")
         ;; What the footer's account badge opens (tui/commands/accounts.lisp SLASH-ACCOUNT-OP). No
         ;; headless arm: a room or a page would be shown this home's balance.
         (make-slash-command "account"
@@ -154,37 +149,44 @@
         ;; hand that account this machine's key.
         (make-slash-command "login"
                             "Sign in to your nodecode.ai account: a subscription or API credits"
-                            :usage "/login [subscription | api]"
-                            :dispatch :args :op 'slash-login-op :completer '("subscription" "api")
+                            :dispatch :args :op 'slash-login-op
                             :session nil
                             :help-detail
-                            "Bare asks which one; either way nodecode.ai opens in your browser with this machine's code in the page, and you sign in with your nodecode.ai account and allow the machine. Over ssh, open the page the status line names on any device. The key is saved in this home's auth.json, and the footer shows the account's meter from then on: the plan's requests left, or the API credit; click it for /account")
+                            "It asks which one; either way nodecode.ai opens in your browser with this machine's code in the page, and you sign in with your nodecode.ai account and allow the machine. Over ssh, open the page the status line names on any device. The key is saved in this home's auth.json, and the footer shows the account's meter from then on: the plan's requests left, or the API credit; click it for /account")
+        ;; /login's mirror (tui/account-login.lisp SLASH-LOGOUT-OP). No headless arm either: a
+        ;; room or a page must not sign the owner's home out.
+        (make-slash-command "logout"
+                            "Sign out of your nodecode.ai account on this machine"
+                            :dispatch :args :op 'slash-logout-op
+                            :session nil
+                            :help-detail
+                            "Takes the account's key out of this home's auth.json and forgets the machine link, so nothing here reaches the account any more; the footer's meter goes. The key stays on the account until you remove the machine at https://nodecode.ai/account/machines. Same as nodecode logout; /login signs in again")
         (make-slash-command "details"
                             "Set the Developer or Standard viewport"
-                            :usage "details developer|standard" :dispatch :args
+                            :dispatch :args
                             :help-detail
-                            "Ctrl+O switches viewport modes. Developer groups routine calls and previews output. Standard (default) shows each call as tool name plus comment, with input and output behind a click, like DSH normal web view. Both open individual cards on click; there is no open-all mode. Bare /details reports the viewport")
+                            "Ctrl+O switches viewport modes. Developer groups routine calls and previews output. Standard (default) shows each call as tool name plus comment, with input and output behind a click, like DSH normal web view. Both open individual cards on click; there is no open-all mode. It offers the two, the one in use marked")
         ;; The one folder: on a shell a sheet over the organism's
         ;; cells routes (tui/cells-sheet.lisp OPEN-CELLS-DIALOG), headless the
         ;; report's lines over (nlk:cells).
         (make-slash-command "cells"
                             "Every cell: turn one on or off, see why one failed, make a new one"
-                            :usage "/cells [new [NAME | WHAT IT DOES] | SEARCH]" :dispatch :args :op 'slash-cells-op
-                            :headless 'headless-cells :completer '("new")
+                            :dispatch :args :op 'slash-cells-op
+                            :headless 'headless-cells
                             :session nil
                             :help-detail
-                            "A sheet in the middle of the window: Home lists this machine's cells, those that need a look first, then the ones shipped with nodecode, from the hub, your own and the ones off; Hub lists the hub's. The chosen one is laid open beside the list: what it is for, every failure and skipped file whole, the commands it adds, its settings, whether it runs, its folder. Space turns it on or off; a hub cell says where it comes from first, and a second Space installs it. Enter opens its settings; Left and Right, or Tab, switch Home and Hub; typing searches both; Esc closes. Home's first row, + New cell, and /cells new leave “Make a cell that ” in the composer (/cells new NAME names it; more words say what it does): finish the sentence and the agent asks what it still needs, then builds it as a cell of its own, on at once. /cells WORDS opens the sheet searching them.")
+                            "A sheet in the middle of the window: Home lists this machine's cells, those that need a look first, then the ones shipped with nodecode, from the hub, your own and the ones off; Hub lists the hub's. The chosen one is laid open beside the list: what it is for, every failure and skipped file whole, the commands it adds, its settings, whether it runs, its folder. Space turns it on or off; a hub cell says where it comes from first, and a second Space installs it. Enter opens its settings; Left and Right, or Tab, switch Home and Hub; typing searches both; Esc closes. Home's first row, + New cell, leaves “Make a cell that ” in the composer: finish the sentence and the agent asks what it still needs, then builds it as a cell of its own, on at once. In a room or on the web page, the same report as rows, a cell each, and + New cell, which says what to tell the agent.")
         ;; The sealed generations (organism/generation.lisp): on a shell the
         ;; history sheet over the gateway's routes (tui/generations.lisp
         ;; SLASH-GENERATIONS-OP), Enter asking in place before the restore;
         ;; headless the list, or the restore to N where the organism runs.
         (make-slash-command "generations"
                             "The history of this organism, and the way back to a change in it"
-                            :usage "/generations [N]" :dispatch :args
+                            :dispatch :args
                             :op 'slash-generations-op :headless 'headless-generations
                             :session nil
                             :help-detail
-                            "A generation is the organism as it stood once a fresh child proved its folder: the binary's version and every loaded folder at its revision, numbered from 1 and never pruned. Bare, a sheet of the changes they were, newest first by day -- an agent's keeps, a nodecode update, a cell installed -- each in words; the one you stand on is where going back leaves you, the newer ones it would undo greyed, and a red line marks how far back anything can come. Enter asks in place, then restores it -- every folder back to what it recorded, the layer by one commit forward, a checkout's folders left where they stand -- and the organism exits once no turn is in flight, the next launch running it. Uncommitted edits that hold a restore are kept as a commit or discarded into git stash from the sheet. /generations N asks for N. Without a shell -- a room, eval -- the same changes are one card to page and pick from, the filters its tabs; a pick asks the same question, and /generations N go (keep or discard, when edits hold it) restores")
+                            "A generation is the organism as it stood once a fresh child proved its folder: the binary's version and every loaded folder at its revision, numbered from 1 and never pruned. A sheet of the changes they were, newest first by day -- an agent's keeps, a nodecode update, a cell installed -- each in words; the one you stand on is where going back leaves you, the newer ones it would undo greyed, and a red line marks how far back anything can come. Enter asks in place, then restores it -- every folder back to what it recorded, the layer by one commit forward, a checkout's folders left where they stand -- and the organism exits once no turn is in flight, the next launch running it. Uncommitted edits that hold a restore are kept as a commit or discarded into git stash from the sheet. Without a shell -- a room, eval -- the same changes are one card to page and pick from, the filters its tabs; a pick asks the same question, and its answer -- keep or discard, when edits hold it -- restores")
 
         ;; One place that answers `what is wrong with this organism right
         ;; now'. /cells says what the folder did; this says what is missing,
@@ -193,9 +195,25 @@
         ;; Check everything shows) — and a cell's own facts, which reach it
         ;; by hooking HEALTH-FACTS. A shell asks its gateway, off its loop:
         ;; reading a large store back takes seconds.
+        ;; Snapshots (organism/heap-image.lisp): the organism kept as it
+        ;; stands, values and all, beside the folder's generations.
+        (make-slash-command "snapshot"
+                            "Take a snapshot: this organism frozen whole, values and all"
+                            :dispatch :args
+                            :op 'slash-snapshot-op :headless 'headless-snapshot
+                            :session nil
+                            :help-detail
+                            "A snapshot is this organism's heap as it stands -- every value a session built up, closures mid-count, definitions that were only ever evaluated -- kept under ~/.nodecode/snapshots/NAME/ on this machine alone: it holds what this machine holds, keys among them, so it is never shared; the folder is what you share. /snapshot waits for no turn to be in flight, stops the organism for a moment, keeps its heap under a dated name and runs on from that snapshot in place: the same process, the shells attached reconnecting as after a restart. /snapshots switches between them")
+        (make-slash-command "snapshots"
+                            "Your snapshots: switch between them, rename, delete"
+                            :dispatch :args
+                            :op 'slash-snapshots-op :headless 'headless-snapshots
+                            :session nil
+                            :help-detail
+                            "The snapshots this machine keeps, newest first, and Fresh from files -- the cells as their files say, what a plain launch runs. Enter switches the organism to a row in place, in about half a second; F2 renames a snapshot; Delete removes one after a confirm. A snapshot boots only on the build that took it, and a plain launch still loads the folder as it is now")
         (make-slash-command "doctor"
                             "What this organism is missing, and what to do about it"
-                            :usage "/doctor" :dispatch :args :headless 'headless-doctor
+                            :dispatch :args :headless 'headless-doctor
                             :session nil
                             :help-detail
                             "The model pin this shell will actually bind, every cell folder that failed and why, what the store holds; then it looks: the store read back whole, the build on disk, the free disk, config.jsonc and every section declared in it, the default provider's key, a release waiting — each with the remedy where there is one")
@@ -204,7 +222,7 @@
         ;; takes a minute.
         (make-slash-command "backup"
                             "Back this home up whole: sessions, config, keys, memory, skills, cells"
-                            :usage "/backup" :dispatch :args :headless 'headless-backup
+                            :dispatch :args :headless 'headless-backup
                             :session nil
                             :help-detail
                             "One archive under ~/.nodecode/backups/, readable by you alone: a copy of the store taken while it runs, config.jsonc, auth.json and secrets/, memory, skills, SOUL.md and the cell folders. It holds your keys: the archive `nodecode profile export NAME PATH --whole' writes. `nodecode profile import FILE --name NAME' brings one back as a profile beside this home; the web page's Settings pane lists, downloads and restores them")
@@ -214,20 +232,18 @@
         (make-slash-command "profile"
                             "Profiles: walk your homes and switch to one, or run a verb on them"
                             :aliases '("profiles")
-                            :usage "/profile [switch | list | use | create | delete | export | import | install | update | help]"
                             :dispatch :args :op 'profile-slash-op
                             :headless 'profile-headless-text
                             :help-detail
-                            "A profile is a home of its own — config, secrets, store, layer — under ~/.nodecode/profiles/<name>/, and it reads your memory, skills and credentials where they are rather than copying them; bare /profile opens the roster — Enter relaunches this shell in the home you picked, and the `+ New profile' row under them opens a field that makes another — /profile switch NAME does it without the picker, /profile use NAME moves the next bare launch instead, /profile help names every verb's arguments")
+                            "A profile is a home of its own — config, secrets, store, layer — under ~/.nodecode/profiles/<name>/, and it reads your memory, skills and credentials where they are rather than copying them. /profile opens the roster: Enter relaunches this shell in the home you picked; Right on a home offers the rest — boot it by default, export it whole or not, a new profile cloned from it, pull its distribution, delete it — and the rows under the homes make another: like this one, empty, a fork, brought in from an archive or installed from a repository. In a room or on the web page, the same homes and rows, a home's row opening what it takes; switching is a shell's alone")
 
         ;; The organism kept running by the operating system: where the
         ;; gateway stands and the verbs that turn it on and off, a one-line
         ;; shell over (nlk:gateway-text).
         (make-slash-command "gateway"
                             "The gateway: this organism kept running in the background, and at login"
-                            :usage "/gateway [on | off | restart | logs | setup [CHANNEL] | help]"
                             :dispatch nil :help-detail
-                            "Bare says where it stands — serving, waiting for this shell to close, off — and what it keeps running; `on' has the operating system run it (systemd on Linux, launchd on macOS) from now on and at every login, `off' stops it and this shell takes the organism over; `setup discord' (or telegram, slack) sets a channel up step by step: the bot's token, a wait while it joins a server, then its channels and people picked from a checklist")
+                            "Where it stands — serving, waiting for this shell to close, off — and what it keeps running; turning it on has the operating system run it (systemd on Linux, launchd on macOS) from now on and at every login, turning it off stops it and this shell takes the organism over; a restart puts it on this build, its log says what it did, and Discord, Telegram or Slack is set up step by step: the bot's token, a wait while it joins a server, then its channels and people picked from a checklist")
 
         ;; This organism in a browser tab: a shell over WEB-TEXT, what
         ;; `nodecode web' answers. The link carries the operator token, so
@@ -249,31 +265,22 @@
         ;; loop, then failed at the 30 s read on a large home (T-350). A room
         ;; or the page gets the summary as text (NIK:RUN-SLASH).
         (make-slash-command "import"
-                            "Bring another coding agent's home into this one: preview first, --yes applies"
-                            :usage "/import [WORLD] [--source PATH] [--only KINDS] [--dry-run] [--overwrite] [--keep-running] [--yes]"
+                            "Bring another coding agent's home into this one: preview first, then apply"
                             :dispatch :args :headless 'headless-import :session nil
-                            :completer (nlk:agent-world-names)
                             :help-detail
-                            "Reads another harness's home -- providers, instructions, memory, skills, MCP servers, channels, cron, sessions, profiles -- and shows what would land; --yes applies. In a shell it opens the setup walk's import stage with its progress, as nodecode import does; /import --sources lists the repositories held, /import --remove LABEL takes one back")
+                            "Reads another harness's home -- providers, instructions, memory, skills, MCP servers, channels, cron, sessions, profiles -- and shows what would land before anything does. It asks where to read from first: every agent found here, one of them, a folder or a repository, or the repositories already held, each with a row that takes it back. The preview then lands it as planned, over what this home already has, or one kind of it alone; in a shell it is the setup walk's import stage with its progress, as nodecode import opens it. Skills are linked and read where they are")
         (make-slash-command "think" "Open provider-native reasoning controls"
                             :aliases '("effort") :dispatch :args :headless 'headless-think
-                            :usage "/think [rung]" :completer (cons "default" +effort-ladder+)
                             :help-detail
-                            "Bare opens reasoning controls; /think <rung> applies it from the next turn, here and in every new session; /think default picks the model's own")
+                            "The model's reasoning rungs: the one picked applies from the next turn, here and in every new session; Default picks the model's own")
         (make-slash-command "gc"
                             "Show collection cost and stall attribution"
-                            :usage "/gc [reset]" :dispatch :local :op 'headless-gc
+                            :dispatch :local :op 'headless-gc
                             :session nil
                             :help-detail
-                            "Show collection counters and the UI spans a collection stalled; /gc reset restarts the window")
+                            "The collection counters and the UI spans a collection stalled, or a fresh window to count them in")
         (make-slash-command "exit" "Exit the organism" :aliases '("quit") :dispatch nil))
   "The slash-command catalog, in /help display order.")
-
-(defparameter *evict-usage-hint*
-  "Usage: /evict [percent | through TURN] — 1-100, default 50"
-  "The feedback line for a malformed or out-of-range /evict argument: the
-Zig evict_usage_hint (src/tui/model/slash_commands.zig) and the turn form
-/context's history list runs.")
 
 ;;; --- the gateway's cell commands -----------------------------------------
 ;;; A cell's command runs where the cell runs: in the gateway's image,
@@ -298,14 +305,13 @@ NIL."
 
 (defun set-gateway-commands (entries)
   "Replace the shell's copy of the gateway's cell commands with ENTRIES,
-plists (:name :description :usage :session :trigger :reads); a name a builtin
+plists (:name :description :session :trigger :reads); a name a builtin
 answers to, or a blank one, is dropped."
   (setf *gateway-commands*
         (loop for entry in entries
               for name = (getf entry :name)
               when (and (json-value name :text) (not (find-builtin-slash-command name)))
                 collect (make-slash-command name (or (getf entry :description) "")
-                                            :usage (or (getf entry :usage) "")
                                             :dispatch nil
                                             :session (getf entry :session t)
                                             :trigger (json-value (getf entry :trigger) :text)
@@ -318,9 +324,8 @@ these."
     (find name *gateway-commands* :key #'slash-command-name :test #'string-equal)))
 
 (defun slash-command-label (entry)
-  "The display form for ENTRY: its usage when it takes arguments, else the
-bare /name."
-  (if (plusp (length entry.usage)) entry.usage (format nil "/~a" (slash-command-name entry))))
+  "The display form for ENTRY: its /name, the whole of what anyone types."
+  (format nil "/~a" (slash-command-name entry)))
 
 ;;; --- parsing ---------------------------------------------------------------
 
@@ -360,12 +365,17 @@ flags --help / -h); the Zig rejection line otherwise."
   "Catalog entries whose name or an alias starts with TEXT's bare /prefix."
   ;; NIL once the input carries whitespace: a command with arguments underway
   ;; is past choosing its name (the Zig composerSlashCommandPrefix rule).
+  ;; The command a whole name names leads, so the name Tab completed stays the
+  ;; highlighted row, and its Enter runs that command and not a longer one.
   (when (and (uiop:string-prefix-p "/" value) (notany #'blank-char-p value))
     (let ((prefix (subseq value 1)))
-      (remove-if-not
-       (lambda (entry)
-         (some (lambda (name) (slash-name-prefix-p prefix name)) (cons entry.name entry.aliases)))
-       (append *slash-commands* *gateway-commands*)))))
+      (stable-sort
+       (remove-if-not
+        (lambda (entry)
+          (some (lambda (name) (slash-name-prefix-p prefix name)) (cons entry.name entry.aliases)))
+        (append *slash-commands* *gateway-commands*))
+       (flet ((whole (entry) (member prefix (cons entry.name entry.aliases) :test #'string-equal)))
+         (lambda (entry other) (and (whole entry) (not (whole other)))))))))
 
 ;;; --- execution seam --------------------------------------------------------
 ;;; /help renders through the help dialog (tui/history.lisp OPEN-HELP-DIALOG): the

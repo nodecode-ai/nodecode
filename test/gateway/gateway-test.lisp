@@ -236,10 +236,12 @@ nothing else."
   "Run BODY with PEER a fresh silent peer — a list holding NAME, an identity
 the registry keys on — and STATE its registered peer state, dropped from the
 registry however BODY leaves."
+  ;; Left as a socket's close leaves it: the rows views a subscribe opened for
+  ;; PEER close with it, or the next test reads them in *ROWS-VIEWS*.
   `(let* ((,peer (list ,name))
           (,state (install-silent-peer ,peer)))
      (declare (ignorable ,state))
-     (nlk:with-cleanup ((nle::stop-gw-peer ,peer)) ,@body)))
+     (nlk:with-cleanup ((nle::stop-gw-peer ,peer) (nle::close-rows-views ,peer)) ,@body)))
 
 
 ;;; --- gate: G2a — empty session replay -----------------------------------
@@ -271,7 +273,11 @@ registry however BODY leaves."
 (deftest gateway-notice-reaches-attached-peers-and-stands-for-late-ones ()
   (with-gateway-session (port "notice-s")
     (let ((frames
-            (frames-while (ws port :subscribe '("notice-s"))
+            ;; The notices are said in-process, so the body waits for the
+            ;; gateway to hold the peer: the connect ack goes out a moment
+            ;; before the peer is marked attached, and a transient notice
+            ;; said in that moment reaches no one.
+            (frames-while (ws port :subscribe '("notice-s") :await-subscription t)
               (is (equal "discord: refused — no token"
                          (nle:notice "discord: refused — no token"
                                      :level :error :key "channels.discord")))
@@ -908,10 +914,19 @@ attach earns its replay."
         (nle::stop-gw-peer link2)))))
 
 (deftest gateway-client-rejects-local-store-path ()
-  (is (signals-error error
-        (nle:start-client-organism
-         :store-path "/tmp/should-not-open/history.db"
-         :port 1))))
+  ;; The refusal has to come before the client reaches for a gateway: with
+  ;; the real RUN-CHAT-GATEWAY the shell's own start signals (a test image has
+  ;; no controlling terminal), and would pass this test while the store path
+  ;; went through unchecked.
+  (let ((calls 0))
+    (with-stubbed-fdefinition (nle:run-chat-gateway (&rest args)
+                                (incf calls)
+                                "s-ended")
+      (is (signals-error error
+            (nle:start-client-organism
+             :store-path "/tmp/should-not-open/history.db"
+             :port 1)))
+      (is (zerop calls) "no gateway is started for a client given a store path"))))
 
 (deftest the-resume-line-names-the-session-the-shell-ended-on ()
   ;; A /sessions pick, a /fork or Left moves a shell off the id it launched
@@ -970,6 +985,86 @@ attach earns its replay."
           (is (equal nle::*workspace-directory* (opened-cwd)) "/clear opens in the shell's folder")
           (nle::switch-to-fresh-gateway-session model "far-parent")
           (is (equal "/parent/folder/" (opened-cwd)) "/fork opens in its parent's"))))))
+
+(deftest a-launch-settles-its-session-once-the-organism-answers (with-temp-gateway (port))
+  ;; #224. `nodecode -c' opens the newest session begun in the shell's folder:
+  ;; never a fork under one, nor one of another folder. `resume ID' keeps an
+  ;; id the organism holds; for one it holds no session under, the shell
+  ;; stands on a fresh id with the picker open and saying why, instead of
+  ;; making a session under the mistyped word. A folder with nothing to
+  ;; continue keeps the id the shell painted on.
+  (nlk:create-session :id "s-old" :cwd "/proj/a/" :occurred-at "2026-11-04T10:00:00.000Z")
+  (nlk:create-session :id "s-elsewhere" :cwd "/proj/b/" :occurred-at "2026-11-04T12:00:00.000Z")
+  (nlk:create-session :id "s-new" :cwd "/proj/a/" :occurred-at "2026-11-04T11:00:00.000Z")
+  (nlk:create-session :id "s-fork" :cwd "/proj/a/" :parent "s-new"
+                      :occurred-at "2026-11-04T13:00:00.000Z")
+  (flet ((settle (resume sid folder &key prompt)
+           (let ((model (gateway-shell port sid :ui t))
+                 (nle::*workspace-directory* folder))
+             (setf (nle::gateway-model-launch-resume model) resume)
+             (when prompt
+               (setf (nle::gateway-model-launch-prompt model) (list :session-id sid :composer prompt)))
+             (let ((settled (nle::resolve-launch-session model sid port "test-token")))
+               (list settled model)))))
+    (destructuring-bind (settled model) (settle :continue "s-painted" "/proj/a" :prompt "go on")
+      (is (equal "s-new" settled) "the newest session begun here, not its fork nor another folder's")
+      (is (equal "s-new" (nle::chat-model-session-id model)) "the shell stands on it before it subscribes")
+      ;; and the launch's first prompt goes with it
+      (is (equal "s-new" (getf (nle::gateway-model-launch-prompt model) :session-id)))
+      (is (null (nle::gateway-model-launch-resume model)) "settled once"))
+    (destructuring-bind (settled model) (settle :continue "s-painted" "/proj/c")
+      (is (equal "s-painted" settled) "a folder with nothing to continue keeps the fresh id")
+      (is (null (nle::chat-model-dialog model))))
+    (is (equal "s-old" (first (settle :named "s-old" "/proj/c"))) "an id the organism holds is kept")
+    (destructuring-bind (settled model) (settle :named "list" "/proj/a")
+      (is (not (equal "list" settled)) "no session is made under the mistyped word")
+      (is (equal settled (nle::chat-model-session-id model)))
+      (let ((dialog (nle::chat-model-dialog model)))
+        ;; the picker opens on what there is, its header saying why
+        (is (and (nle::picker-dialog-p dialog) (eq :sessions (nle::picker-dialog-kind dialog))))
+        (is (equal "No session list in this home" (nle::picker-dialog-title dialog)))))
+    ;; a bare resume is the first frame's to answer, not the attach's
+    (is (equal "s-painted" (first (settle :pick "s-painted" "/proj/a"))))))
+
+(deftest the-sessions-picker-opened-before-the-organism-answers-waits-for-it (with-temp-gateway (port))
+  ;; `nodecode resume' opens the picker on the first frame, and Ctrl+S can come
+  ;; just as early: with no gateway yet it waits on the reading copy instead
+  ;; of failing, and the read the attach makes fills it.
+  (nlk:create-session :id "s-here" :cwd "/proj/a/")
+  (let ((model (make-instance 'nle::gateway-chat-model :session-id "s-painted" :ws nil
+                                                       :http-port nil :http-token "test-token"))
+        (nle::*workspace-directory* "/proj/a"))
+    (nle::initialize-chat-model-ui model)
+    (nle::slash-sessions-op model)
+    (is (nle::sessions-picker-awaiting-p model) "open, on the reading copy")
+    (is (null (nle::chat-model-composer-status model)) "and nothing failed")
+    (setf (nle::gateway-model-http-port model) port)
+    (nle::refresh-session-directory model)
+    (is (not (nle::sessions-picker-awaiting-p model)) "the attach's read fills it")
+    (is (find "s-here" (nle::picker-visible-rows (nle::chat-model-dialog model))
+              :key #'nle::picker-row-value :test #'equal))))
+
+(deftest continue-skips-what-nobody-began-here ()
+  ;; A cron fire and a layer evaluation began on nobody's word; a session a
+  ;; shell, the page or rpc began says `gateway', and one imported or not yet
+  ;; run says nothing. The newest that is left wins, whatever the order.
+  (flet ((entry (id source updated &key (folder "/proj/a/") parent)
+           (nlk:json-object "id" id "source" (or source :null) "updated_at" updated
+                            "working_directory" folder "parent_id" (or parent :null))))
+    (is (equal "s-shell"
+               (nle::folder-continue-session
+                (list (entry "s-cron" "cron" "2026-11-04T12:00:00.000Z")
+                      (entry "s-layer" "layer" "2026-11-04T11:30:00.000Z")
+                      (entry "s-imported" nil "2026-11-04T09:00:00.000Z")
+                      (entry "s-shell" "gateway" "2026-11-04T11:00:00.000Z")
+                      (entry "s-lane" "channel" "2026-11-04T13:00:00.000Z" :parent "s-room"))
+                "/proj/a")))
+    (is (equal "s-imported" (nle::folder-continue-session
+                             (list (entry "s-imported" nil "2026-11-04T09:00:00.000Z"))
+                             "/proj/a")))
+    (is (null (nle::folder-continue-session (list (entry "s-b" "gateway" "2026-11-04T09:00:00.000Z"
+                                                         :folder "/proj/b"))
+                                            "/proj/a")))))
 
 (deftest gateway-session-create-refuses-non-not-found-errors (let ((calls 0)))
   (with-stubbed-fdefinition (nle::gateway-http-session-request (&rest args)
@@ -2377,6 +2472,55 @@ had time to send anything more: a row sent twice arrives after the match."
     (is-shape json ("action" "turn.start") ("command_id" "gw-sourced-cmd"))
     (is-shape (gethash "source" json) ("kind" "cron") ("id" "job-1"))
     (is (equal "in_process" (gethash "domain" (gethash "transport" json))))))
+
+(deftest a-submit-names-the-tools-its-turn-may-call (with-session-store ("gw-tools"))
+  ;; Given an image offering the tools probe and other, and a model that asks
+  ;; for one of them before it answers: a side question submitted with
+  ;; :TOOLS '() is asked with every schema still offered (the history's calls
+  ;; and the cached prefix stay valid) but tool_choice "none", and a call it
+  ;; makes anyway is refused, the tool never running; :TOOLS ("probe") runs
+  ;; probe and refuses other; a submit naming no limit runs either, as before.
+  (with-saved-globals ((nle::*tools* '()))
+   (let ((ran '())
+         (contexts '())
+         (replies '()))
+    (dolist (name '("probe" "other"))
+      (let ((name name))
+        (nle:register-tool name (list :description name
+                                      :parameters (nlk:json-object "type" "object"))
+                           (lambda (arguments) (declare (ignore arguments))
+                             (push name ran) "ran"))))
+    (with-provider-stub (context (push context contexts) (pop replies))
+      (flet ((ask (command-id tool &rest limit)
+               (setf replies (list (wire-message "assistant" :tool-calls
+                                                 (vector (wire-tool-call (format nil "~a-call" command-id)
+                                                                         tool "{}")))
+                                   (wire-message "assistant" :content "answered"))
+                     ran '()
+                     contexts '())
+               (apply #'nle:submit "gw-tools" "what is this?" :command-id command-id limit)
+               (await (:tries 100) (not (nlk:active-turn-p "gw-tools")))
+               (let ((first (car (last contexts))))
+                 (list :choice (nle::effective-provider-config-tool-choice
+                                (nle::compiled-turn-context-provider-config first))
+                       :offered (length (nle::compiled-turn-context-tools first))
+                       :ran ran
+                       :result (nle::encode-json-object
+                                (nlk:events :session-id "gw-tools" :kind nlk::+kind-tool-result+
+                                            :order :newest :as :payload))))))
+        (let ((none (ask "gw-tools-none" "probe" :tools '())))
+          (is (equal "none" (getf none :choice)) "a turn limited to no tools may call none")
+          (is (= 2 (getf none :offered)) "every schema is still offered")
+          (is (null (getf none :ran)) "the call it made anyway never ran")
+          (is (search "tool_not_offered" (getf none :result)) "and was refused as not offered"))
+        (let ((probe (ask "gw-tools-probe" "probe" :tools '("probe"))))
+          (is (equal '("probe") (getf probe :ran)) "a named tool runs")
+          (is (null (getf probe :choice)) "a turn that may call some tools chooses as configured"))
+        (let ((other (ask "gw-tools-other" "other" :tools '("probe"))))
+          (is (null (getf other :ran)) "a tool the limit leaves out never runs")
+          (is (search "tool_not_offered" (getf other :result))))
+        (let ((open (ask "gw-tools-open" "other")))
+          (is (equal '("other") (getf open :ran)) "no limit, as before: any tool runs")))))))
 
 (deftest a-sessions-first-prompt-names-it (with-temp-store ())
   ;; A session wears its first prompt's line until a model writes its title,
@@ -3795,7 +3939,8 @@ request."
       (is (= 200 status))
       (is (equal (mapcar (lambda (entry) (getf entry :name)) (nle:slash-catalog)) names) "SLASH-CATALOG, in its order")
       (is (plusp (length (gethash "description" (first commands)))) "each with what it does")
-      (is (eq t (gethash "autocomplete" models)) "/models completes its argument")))
+      (is (null (gethash "autocomplete" models)) "no command completes words after its name")
+      (is (null (gethash "usage" models)) "nor shows any")))
   (is-route (port :get "/api/gateway/slash" :token nil) 401 "the operator token is required")
   (with-gateway-http (port :post "/api/gateway/slash" :body "{\"line\":\"/help\"}")
     (is (equal (nle:slash "/help") (gethash "text" body)) "/help needs no session"))
@@ -3807,11 +3952,8 @@ request."
   (is-route (port :post "/api/gateway/slash" :body "{\"line\":\"/context\"}") 400
             "a session's command with none refuses" "invalid_request")
   (is-route (port :post "/api/gateway/slash" :body "{}") 400 "a line is required" "invalid_request")
-  (with-gateway-http (port :post "/api/gateway/slash/completions" :body "{\"name\":\"help\",\"text\":\"\"}")
-    (is (equalp #() (gethash "choices" body)) "a command that completes nothing offers nothing"))
   (with-gateway-http (port :post "/api/gateway/slash/completions" :body "{\"name\":\"models\",\"text\":\"\"}")
-    (is (= (length (nle:slash-completions "models" "")) (length (gethash "choices" body))) "/models offers the catalog"))
-  (is-route (port :post "/api/gateway/slash/completions" :body "{}") 400 "a name is required" "invalid_request"))
+    (is (= 404 status) "no route completes words after a name")))
 
 (deftest gateway-slash-route-names-sessionless-commands-and-carries-their-panel (with-temp-gateway (port))
   ;; The web page's opener runs a command that acts on no session as it is,
@@ -3908,8 +4050,8 @@ request."
   ;; the last line it wrote to the store's log -- MAIN's `nodecode: ' line --
   ;; and the shell's line is that reason, in the organism's own words.
   (let ((nle::*serve-program*
-          (list "sh" "-c" "echo 'nodecode: the store is not a database; move it aside' >&2; exit 1"
-                "front-stub"))
+          (append (nlk:shell-argv "echo 'nodecode: the store is not a database; move it aside' >&2; exit 1")
+                  (list "front-stub")))
         (nle::*front* nil))
     (let ((condition (signals-error nle::organism-exited
                        (nle::front-organism (merge-pathnames "history.db" dir)))))
@@ -3924,7 +4066,7 @@ request."
   (let* ((marker (merge-pathnames "why.txt" dir))
          (nle::*front* nil))
     (multiple-value-bind (pid out err process pipe)
-        (nlk::spawn-program (list "sh" "-c" (format nil "read why; echo \"$why\" > ~a" (namestring marker)))
+        (nlk::spawn-program (nlk:shell-argv (format nil "read why; echo \"$why\" > '~a'" (uiop:native-namestring marker)))
                             :output nil :error-output nil :input :stream)
       (declare (ignore out err))
       (setf nle::*front* (list :pipe pipe :waiter (nlk:spawn "front-test-waiter"
@@ -3944,6 +4086,47 @@ request."
       (is-eventually (eq :stop nle::*serve-next*) "the organism is told to let go")
       (is (equal "quit" nle::*stop-reason*) "keeping why, for the next boot's note")
       (is (eq t nle::*fronted*)))
+    (bt2:wait-on-semaphore nle::*serve-wake* :timeout 0)))
+
+(deftest a-shell-tells-its-organism-first-and-waits-after (with-temp-directory (dir "front-told"))
+  ;; TELL-FRONT says the reason the moment the shell knows it, before its
+  ;; own teardown; a STOP-FRONT after it only waits, the reason said once.
+  (let* ((marker (merge-pathnames "why.txt" dir))
+         (nle::*front* nil))
+    (multiple-value-bind (pid out err process pipe)
+        (nlk::spawn-program (nlk:shell-argv (format nil "cat > '~a'" (uiop:native-namestring marker)))
+                            :output nil :error-output nil :input :stream)
+      (declare (ignore out err))
+      (setf nle::*front* (list :pipe pipe :waiter (nlk:spawn "front-test-waiter"
+                                                    (nlk::wait-for-child pid process)))))
+    (nle::tell-front "quit")
+    (is nle::*front* "still fronted, for the wait")
+    (nle::stop-front :why "quit")
+    (is (null nle::*front*))
+    (is (equal (format nil "quit~%") (uiop:read-file-string marker)) "said once")))
+
+(deftest a-fronted-candidate-that-lost-is-no-boot-death (with-temp-directory (dir "front-lost"))
+  ;; A candidate ends 0 when it loses the election. The owner it lost to may
+  ;; have let go by the time the shell looks: a handover for the shell to wait
+  ;; out (RPC-MAIN), never the boot's death (#226).
+  (let ((nle::*serve-program* (append (nlk:shell-argv "exit 0") (list "front-stub")))
+        (nle::*front* nil))
+    (nle::front-organism (merge-pathnames "history.db" dir))
+    (is (null nle::*front*) "nothing is fronted")))
+
+(deftest an-owner-told-to-go-advertises-nothing-from-then (with-temp-directory (dir "owner-goes" :close-store t))
+  ;; The endpoint goes the moment the owner is told, not once its owner
+  ;; thread reaches STOP-GATEWAY: a shell launching in between attached to it
+  ;; and was dropped as it went (#226). The pid stays, so a shell waits for
+  ;; the lock. :RESTART, since a stop's deadline would end this process.
+  (let ((store-path (merge-pathnames "history.db" dir)))
+    (nlk:open-store :path store-path)
+    (nlk::publish-store-endpoint 45998)
+    (with-saved-globals ((nle::*serving* t) (nle::*serve-next* nil))
+      (nle::serve-next :restart)
+      (multiple-value-bind (pid port) (nlk::read-store-holder store-path)
+        (is (null port) "the endpoint is retracted")
+        (is (eql (sb-posix:getpid) pid) "the holder still names the owner")))
     (bt2:wait-on-semaphore nle::*serve-wake* :timeout 0)))
 
 (deftest resurrection-spawns-a-detached-candidate (with-temp-directory (dir "resurrect-spawn"))
@@ -3970,7 +4153,10 @@ request."
   (with-temp-directory (dir "resurrect-election")
     (let ((path (merge-pathnames "history.db" dir)))
       (with-lock-holder ((nlk::lock-path-for-store path))
-        (is (eq :lost (nle:serve-organism-candidate :store-path path)))
+        (let ((said (with-output-to-string (*standard-output*)
+                      (is (eq :lost (nle:serve-organism-candidate :store-path path))))))
+          ;; Quietly is no error, never no word: silent, it read as a hang (#226).
+          (is (search "election lost: pid" said) "the store's log says why it did not serve"))
         (is (not (probe-file (nlk::lease-path-for-store path))))
         (is (not (probe-file path)))))))
 
@@ -4004,6 +4190,26 @@ request."
   (let ((listener (usocket:socket-listen "127.0.0.1" 0)))
     (nlk:with-cleanup ((usocket:socket-close listener))
       (is (nle:await-port (usocket:get-local-port listener) :attempts 5)))))
+
+(deftest a-started-acceptor-is-awaited-by-its-latch ()
+  ;; A refused loopback connect is not answered in microseconds everywhere:
+  ;; Winsock retries the SYN for half a second, and a boot's first probe
+  ;; always landed before clackup's thread had bound -- 500 ms of every
+  ;; Windows boot (T-442). The acceptor says when it listens, and the probe
+  ;; connects only after.
+  (let ((connects '()))
+    (sb-int:encapsulate 'usocket:socket-connect 'latch-test
+                        (lambda (connect host port &rest keys)
+                          (push (cons port (gethash port nle::*listening-ports*)) connects)
+                          (apply connect host port keys)))
+    (nlk:with-cleanup ((sb-int:unencapsulate 'usocket:socket-connect 'latch-test))
+      (multiple-value-bind (handler port)
+          (nle::serve-local (lambda (env) (declare (ignore env)) '(200 (:content-type "text/plain") ("ok"))))
+        (let ((probes (remove port connects :key #'car :test-not #'eql)))
+          (is probes "the serve probed its port")
+          (is (every #'cdr probes) "and only once it listened"))
+        (nle::stop-clack-handler handler)
+        (is (null (gethash port nle::*listening-ports*)) "a stopped acceptor's latch is down")))))
 
 (deftest gateway-http-refuses-without-an-endpoint ()
   ;; Paint-first: the shell is on screen before any gateway exists, so a
@@ -5428,24 +5634,29 @@ default target is PROVIDER/MODEL-ID, restored after."
   (dialog-keys model :up :up :up :up :up :enter)
   (is (null (session-effort "think-dlg"))))
 
-(deftest slash-think-accepts-an-argument (with-gateway-frame (model "think-arg" "openai-completions"
-                                                                   "think-arg"))
-  (let ((entry (nle::find-slash-command "think")))
-    (is (equal "/think [rung]" entry.usage))
-    (is (equal '("high" "xhigh")
-                (mapcar (lambda (choice) (getf choice :value))
-                        (nle:slash-completions "think" "h")))))
+(deftest slash-think-offers-its-rungs (with-gateway-frame (model "think-arg" "openai-completions"
+                                                                "think-arg"))
+  ;; A rung's line, what a row runs, lands it from the next turn.
   (multiple-value-bind (notice cmd)
       (nle::execute-slash-command model "think" "high")
-    (is (null cmd) "an argument pick starts no turn")
+    (is (null cmd) "a rung's line starts no turn")
     (is (search "applies from the next turn" notice)))
   (is (equal "high" (session-effort "think-arg")))
+  ;; Typed alone: the shell's own picker, and a room's rows, the rung in use
+  ;; marked.
   (nle::execute-slash-command model "think" "")
   (is (nle::picker-dialog-p model.dialog))
+  (multiple-value-bind (text dialog) (nle:slash "/think" :session-id "think-arg")
+    (is (search "Reasoning effort" text))
+    (is-present (rows (and dialog (coerce (nle::json-array dialog "rows") 'list))) "the rungs ride the answer"
+      (is (equal "/think default" (nle::json-value (first rows) :text "run" "enter")) "Default leads")
+      (flet ((line (row) (nle::json-value row :text "run" "enter")))
+        (is-present (high (find "/think high" rows :key #'line :test #'equal)) "each rung is a row"
+          (is (equal "●" (nle::json-value high :text "mark")) "the rung in use is marked")))))
   (multiple-value-bind (notice cmd)
       (nle::execute-slash-command model "think" "high low")
-    (is (null cmd) "malformed arguments start no turn")
-    (is (equal "usage: /think [rung]" notice))))
+    (is (null cmd) "a line it offers no row for starts no turn")
+    (is (equal (nle::slash-unoffered "think") notice))))
 
 (deftest cell-commands-join-the-slash-surface (with-temp-gateway (port))
   ;; A cell's command runs where the cell runs: a shell reads it off GET
@@ -5469,10 +5680,10 @@ default target is PROVIDER/MODEL-ID, restored after."
       (let ((model (gateway-frame-model port "ext-slash")))
         ;; init read the gateway's commands.
         (is-present (entry (nle::find-slash-command "greet")) "the registration is a live slash entry"
-          (is (equal "/greet [name]" (nle::slash-command-usage entry))))
+          (is (equal "/greet" (nle::slash-command-label entry)) "its hint is shown nowhere"))
         (is (null (nle::find-gateway-command "help")) "a builtin's name stays the builtin's")
         (is (= 1 (length (nle::slash-suggestions "/gr"))))
-        (is (find "/greet [name]" (nle::help-dialog-rows model)
+        (is (find "/greet" (nle::help-dialog-rows model)
                   :key #'nle::picker-row-label :test #'equal))
         (type-string model "/gr")
         (is (equal "eet" (nle::composer-ghost-remainder model)))
@@ -5485,6 +5696,26 @@ default target is PROVIDER/MODEL-ID, restored after."
         ;; A command the cell took back since the shell read the catalog.
         (nle:unregister-commands "demo-pack")
         (is (search "unknown command /greet" (nle::execute-slash-command model "greet" "")))))))
+
+(deftest a-key-runs-a-cell-command-and-keeps-the-draft (with-temp-gateway (port))
+  ;; Given a cell command and keybinds.json binding a line of it to Ctrl+G,
+  ;; When the operator presses Ctrl+G with a draft in the composer,
+  ;; Then the command runs on the gateway with the line's tail and this
+  ;; shell's session, its answer is the notice, and the draft stands.
+  (let ((calls '()))
+    (with-saved-globals (nle::*registered-commands* nle::*gateway-commands*)
+      (nle:register-command "demo-pack" "greet"
+                            (lambda (args session-id)
+                              (push (list args session-id) calls)
+                              (format nil "hi ~a" args))
+                            :description "Say hello")
+      (let ((model (gateway-frame-model port "ext-key")))
+        (setf model.keymap (nle::resolve-keybinds '(("/greet World" . "ctrl+g"))))
+        (type-string model "a draft")
+        (press model #\g :mod nlt:+mod-ctrl+)
+        (is (equal '("World" "ext-key") (first calls)))
+        (is (equal "hi World" (nle::status-said model)))
+        (is (equal "a draft" (composer-value model)))))))
 
 (deftest cell-command-answer-opens-its-dialog (with-temp-gateway (port))
   (with-saved-globals (nle::*registered-commands* nle::*gateway-commands*)
@@ -5537,11 +5768,99 @@ default target is PROVIDER/MODEL-ID, restored after."
           (dialog-keys model :escape)
           (is (null (nle::chat-model-dialog model)) "Esc on the list it all opened from closes it"))))))
 
-(deftest cell-command-trigger-opens-its-dialog-at-a-word-start (with-temp-gateway (port))
-  ;; A command registered with a TRIGGER answers that character typed at a
-  ;; word's start -- the index's `$' opening /index, which this picker
-  ;; stands in for: the character stays in the draft, the dialog opens, and
-  ;; the pick takes its place. Mid-word it is text, and Esc leaves it as typed.
+(deftest cell-command-effects-land-in-the-shell-that-ran-it (with-temp-gateway (port))
+  ;; Given a cell's command that answers effects beside its text -- the
+  ;; clipboard, the composer's draft -- which only the shell can perform:
+  ;; the gateway may run on another desktop, and the draft lives in the shell.
+  (with-saved-globals (nle::*registered-commands* nle::*gateway-commands*)
+    (let ((performed '()))
+      (nle:register-command
+       "fx-pack" "fx"
+       (nlk:lambda-ignoring (args session-id)
+         (nlk:dispatch args equal
+           ;; what the caller said it performs, for a RUN to word its text by
+           ("seen" (push nle:*slash-effects* performed) "seen")
+           ("bad" (values "bad" nil '((:clipboard))))
+           ("set" (values "set it" nil '((:draft "fresh draft"))))
+           ("append" (values "appended" nil '((:draft " tail" :how :append))))
+           ("insert" (values "inserted" nil '((:draft "mid " :how :insert))))
+           ;; an effect this shell does not know is passed over
+           ("copy" (values "copied" nil '((:sparkle "x") (:clipboard "clip me"))))
+           ("" (values "pick" (nle:list-dialog :title "Fx" :rows '((:label "one" :run (:space "/fx copy"))
+                                                                  (:label "two" :run (:enter "/fx set"))))))))
+       :description "Answers effects")
+      ;; When the headless surface runs it, the effects are its third value, as
+      ;; the JSON the route carries; the text is what a surface with no clipboard
+      ;; or composer shows.
+      (multiple-value-bind (text dialog effects) (nle:slash "/fx copy")
+        (is (equal "copied" text))
+        (is (null dialog))
+        (is (equal '(nil "clip me") (map 'list (lambda (effect) (nlk:json-value effect :string "clipboard")) effects))))
+      (with-gateway-http (port :post "/api/gateway/slash" :body "{\"line\":\"/fx append\"}")
+        (is-present (effect (aref (nlk:json-value body :array "effects") 0)) "the route carries the effects"
+          (is (equal " tail" (gethash "draft" effect)))
+          (is (equal "append" (gethash "how" effect)))))
+      ;; A caller that says nothing of the effects it performs -- eval, a room,
+      ;; the web page -- is taken to perform none; one that names them is taken
+      ;; at its word, names it does not know dropped.
+      (nle:slash "/fx seen")
+      (is (null (first performed)) "no caller's word, no effects")
+      (nle:slash "/fx seen" :effects '(:clipboard))
+      (is (equal '(:clipboard) (first performed)))
+      (with-gateway-http (port :post "/api/gateway/slash"
+                               :body "{\"line\":\"/fx seen\",\"effects\":[\"draft\",\"sparkle\"]}")
+        (is (equal '(:draft) (first performed)) "the route reads the names it knows"))
+      ;; A malformed effect is the command's bug, said as one.
+      (is (signals-error error (nle:slash "/fx bad")) "an effect with no value refuses")
+      (let ((model (gateway-frame-model port "ext-effects")))
+        ;; Then the shell sets, appends to and inserts into its own draft
+        (type-string model "old draft")
+        (is (equal "set it" (nle::execute-slash-command model "fx" "set")) "the text is still the notice")
+        (is (equal "fresh draft" (composer-value model)) "set replaces the draft")
+        (nle::execute-slash-command model "fx" "append")
+        (is (equal "fresh draft tail" (composer-value model)) "append adds at the end")
+        (nle::editor-reset (nle::chat-model-editor model))
+        (type-string model "a b")
+        (nle::execute-slash-command model "fx" "insert")
+        (is (equal "a bmid " (composer-value model)) "insert lands at the caret")
+        ;; and copies with its own clipboard writer, from the command and from a
+        ;; row's key alike
+        (let ((program (nlt:make-program model)))
+          (setf (nlt:program-running program) t
+                (nle::chat-model-program model) program)
+          (with-saved-globals ((nlt:*clipboard-use-command* nil))
+            (flet ((copied-p ()
+                     ;; the OSC 52 write the writer posts, past the notice an
+                     ;; earlier write's report posted
+                     (loop for io = (sb-concurrency:receive-message (nlt::program-mailbox program) :timeout 5)
+                           while io
+                           when (nlt:terminal-io-msg-p io)
+                             return (search (cl-base64:string-to-base64-string "clip me")
+                                            (with-output-to-string (out)
+                                              (funcall (nlt:terminal-io-msg-thunk io) out))))))
+              (nle::execute-slash-command model "fx" "copy")
+              (is (copied-p) "the command's clipboard effect reached this shell's clipboard")
+              (with-slash-dialog (dialog model "fx" "") "the rows open"
+                (is (equal '("one" "two") (row-labels dialog))))
+              (dialog-keys model #\Space)
+              (is (copied-p) "a row's Space line copies too")
+              ;; A copy leaves the list open, to pick on; a line that sets the
+              ;; draft closes it, since the composer is where the person goes next.
+              (is (nle::picker-dialog-p (nle::chat-model-dialog model)) "a copy keeps the list")
+              (nle::editor-reset (nle::chat-model-editor model))
+              (dialog-keys model :down :enter)
+              (is (null (nle::chat-model-dialog model)) "a draft effect closes the list")
+              (is (equal "fresh draft" (composer-value model)) "and the draft is what the row set")
+              ;; The shell says it performs the clipboard and the draft.
+              (nle::execute-slash-command model "fx" "seen")
+              (is (equal '(:clipboard :draft) (first performed))))))))))
+
+(deftest cell-command-trigger-opens-its-dialog-only-as-the-first-character (with-temp-gateway (port))
+  ;; A command registered with a TRIGGER answers that character typed as the
+  ;; draft's first character -- the index's `$' opening /index, which this
+  ;; picker stands in for: the character stays in the draft, the dialog
+  ;; opens, and the pick takes its place. Anywhere later in the draft it is
+  ;; text: mid-word, after a space (`costs $5'), at a second line's start.
   (with-saved-globals (nle::*registered-commands* nle::*gateway-commands*)
     (nle:unregister-commands "index")
     (register-picker-command :trigger "$")
@@ -5551,14 +5870,21 @@ default target is PROVIDER/MODEL-ID, restored after."
       (type-string model "costs a" #\$)
       (is (null (nle::chat-model-dialog model)) "mid-word it is text")
       (type-string model " " #\$)
-      (is (nle::picker-dialog-p (nle::chat-model-dialog model)) "at a word's start it opens")
-      (is (equal "costs a$ $" (composer-value model)) "with the character in the draft")
+      (is (null (nle::chat-model-dialog model)) "after a space it is text too")
+      (type-string model (format nil "~%") #\$)
+      (is (null (nle::chat-model-dialog model)) "and at a second line's start")
+      (is (equal (format nil "costs a$ $~%$") (composer-value model)) "each one stays as typed")
+      (nle::editor-reset (nle::chat-model-editor model))
+      (press model #\$)
+      (is (nle::picker-dialog-p (nle::chat-model-dialog model)) "as the draft's first character it opens")
+      (is (equal "$" (composer-value model)) "with the character in the draft")
       (nle::picker-dialog-key model :enter)
-      (is (equal "costs a$ $alpha " (composer-value model)) "the pick takes its place")
+      (is (equal "$alpha " (composer-value model)) "the pick takes its place")
+      (nle::editor-reset (nle::chat-model-editor model))
       (press model #\$)
       (nle::picker-dialog-key model :escape)
       (is (null (nle::chat-model-dialog model)))
-      (is (equal "costs a$ $alpha $" (composer-value model)) "Esc leaves it as typed"))))
+      (is (equal "$" (composer-value model)) "Esc leaves it as typed"))))
 
 (deftest cell-command-without-a-dialog-answers-its-text (with-temp-gateway (port))
   ;; A command whose answer is its text alone opens nothing: the text is the
@@ -5758,7 +6084,7 @@ default target is PROVIDER/MODEL-ID, restored after."
       ;; the globals and not this thread's fixture bindings.
       (with-saved-globals ((nlk::*cells-directory* root) (nlk::*warm-cache-directory* cache)
                            (nlk::*image-stamp* "stamp-w")
-                           (nlk::*organism-command* (list "/bin/sh" prover)))
+                           (nlk::*organism-command* (shell-script-command prover)))
         (write-layer-folder root "nl-warm" '(("probe" . "(defun cells-probe-warm () :warm)")))
         (let ((exited '()))
           (is (eq :sealed (nlk:prove-self (nlk::folder-key))))

@@ -6,14 +6,26 @@
 ;;;; Every primitive here has a POSIX arm and a Windows arm behind one name;
 ;;;; these gates pin the contract the callers rely on, and run on whichever
 ;;;; arm the suite's host has. The cross-process cases use a python child the
-;;;; way the store lease tests do: a lock is a per-process fact, so only a
-;;;; second process can hold one against this image.
+;;;; way the store lease tests do, a PowerShell one on Windows: a lock is a
+;;;; per-process fact, so only a second process can hold one against this image.
 
 (in-package #:nodecode.test)
 
 (defun run-sh (command &rest keys)
   "RUN-BOUNDED over COMMAND through sh, KEYS ahead of a ten-second bound."
   (apply #'nlk:run-bounded (nlk:shell-argv command) (append keys '(:seconds 10))))
+
+(deftest errno-text-says-what-the-failed-call-meant ()
+  ;; The numbers Linux, macOS and the Windows C runtime agree on, in the words
+  ;; each runtime's strerror gives them. On Windows SB-INT:STRERROR read them
+  ;; from the GetLastError table instead: 28 was a printer out of paper.
+  (is (equal "no such file or directory" (string-downcase (nlk:errno-text 2))))
+  (is (equal "permission denied" (string-downcase (nlk:errno-text 13))))
+  (is (equal "no space left on device" (string-downcase (nlk:errno-text 28))))
+  (is (equal "read-only file system" (string-downcase (nlk:errno-text 30))))
+  (let ((errno (handler-case (progn (sb-posix:mkdir "/no-such-dir/x" #o700) nil)
+                 (sb-posix:syscall-error (e) (sb-posix:syscall-errno e)))))
+    (is (equal "no such file or directory" (string-downcase (nlk:errno-text errno))))))
 
 (deftest shell-argv-runs-a-command-string-through-sh ()
   (let ((argv (nlk:shell-argv "echo hi")))
@@ -24,6 +36,142 @@
   (is (equal "-lc" (second (nlk:shell-argv "true" :login t))))
   (let ((nlk:*shell* nil))
     (is (signals-error error (nlk:shell-argv "true")))))
+
+;;; Git for Windows past its redirectors (T-442). The layouts are scratch trees
+;;; of empty files: what is under test is which file a redirector would start
+;;; and the environment it would hand it, which a Linux suite reads as well as
+;;; a Windows one; the Windows release smokes start the real programs.
+
+(defun git-layout (root &key (toolchain "mingw64") (bash t))
+  "Make ROOT a Git for Windows tree of empty files: its redirectors and, BASH
+and TOOLCHAIN willing, the programs they start."
+  (dolist (file (append (list "bin/sh.exe" "bin/bash.exe" "bin/git.exe" "cmd/git.exe")
+                        (when toolchain (list (format nil "~a/bin/git.exe" toolchain)))
+                        (when bash (list "usr/bin/bash.exe" "usr/bin/sh.exe"))))
+    (write-temp-file (merge-pathnames file root)))
+  root)
+
+(defun environment-value (name environment) "NAME's value in ENVIRONMENT, \"NAME=value\" strings, or NIL."
+  (let ((entry (find name environment :key #'nlk::environment-entry-name :test #'string-equal)))
+    (and entry (subseq entry (1+ (length name))))))
+
+(deftest git-redirector-names-the-program-a-redirector-starts ()
+  (with-temp-workspace (dir)
+    (let* ((root (nlk::real-path (git-layout (merge-pathnames "Git/" dir))))
+           (bash (uiop:native-namestring (merge-pathnames "usr/bin/bash.exe" root)))
+           (git (uiop:native-namestring (merge-pathnames "mingw64/bin/git.exe" root))))
+      (dolist (shell '("bin/sh.exe" "bin/bash.exe"))
+        (let ((found (nlk::git-redirector (merge-pathnames shell root))))
+          (is (eq :shell (getf found :kind)) "bin's sh.exe and bash.exe are compat-bash")
+          (is (equal bash (getf found :program)) "compat-bash starts usr/bin/bash.exe, not sh.exe")
+          (is (equal "MINGW64" (getf found :msystem)))))
+      (dolist (wrapper '("cmd/git.exe" "bin/git.exe"))
+        (let ((found (nlk::git-redirector (merge-pathnames wrapper root))))
+          (is (eq :git (getf found :kind)))
+          (is (equal git (getf found :program)) "cmd/git.exe starts the toolchain's git.exe")))
+      (dolist (real '("usr/bin/sh.exe" "usr/bin/bash.exe" "mingw64/bin/git.exe"))
+        (is (null (nlk::git-redirector (merge-pathnames real root))) "a real program is no redirector: it starts as it is"))
+      (is (null (nlk::git-redirector (merge-pathnames "bin/nothing.exe" root))))
+      (is (null (nlk::git-redirector nil))))
+    (let ((arm (git-layout (merge-pathnames "Arm/" dir) :toolchain "clangarm64")))
+      (is (equal "CLANGARM64" (getf (nlk::git-redirector (merge-pathnames "cmd/git.exe" arm)) :msystem)) "an ARM64 Git names its own toolchain"))
+    (let ((bare (git-layout (merge-pathnames "Bare/" dir) :bash nil)))
+      (is (null (nlk::git-redirector (merge-pathnames "bin/sh.exe" bare))) "no usr/bin/bash.exe: the shell keeps its redirector")
+      (is (eq :git (getf (nlk::git-redirector (merge-pathnames "cmd/git.exe" bare)) :kind)) "git needs only its toolchain"))
+    (let ((none (git-layout (merge-pathnames "None/" dir) :toolchain nil)))
+      (is (null (nlk::git-redirector (merge-pathnames "bin/sh.exe" none))) "no toolchain git: not a Git for Windows layout"))))
+
+(deftest git-redirector-follows-a-scoop-shim ()
+  (with-temp-workspace (dir)
+    (let* ((root (git-layout (merge-pathnames "apps/git/current/" dir)))
+           (target (uiop:native-namestring (merge-pathnames "bin/sh.exe" root)))
+           (shim (merge-pathnames "shims/sh.exe" dir)))
+      (write-temp-file shim)
+      (write-temp-file (merge-pathnames "shims/sh.shim" dir)
+                       (format nil "path = \"~a\"~c~%args = --login~%" target #\Return))
+      (is (equal target (uiop:native-namestring (nlk::shim-target shim))) "the shim names its target on its path line")
+      (let ((found (nlk::git-redirector shim)))
+        (is (eq :shell (getf found :kind)))
+        (is (equal target (getf found :redirector)) "the redirector is the shim's target, the path it names")
+        (is (equal (uiop:native-namestring (merge-pathnames "usr/bin/bash.exe" (nlk::real-path root))) (getf found :program)) "three processes become one"))
+      (is (null (nlk::shim-target (merge-pathnames "bin/sh.exe" root))) "a program with no .shim beside it is no shim")
+      (write-temp-file (merge-pathnames "shims/gone.exe" dir))
+      (write-temp-file (merge-pathnames "shims/gone.shim" dir) "path = C:\\nowhere\\bin\\sh.exe")
+      (is (null (nlk::git-redirector (merge-pathnames "shims/gone.exe" dir))) "a shim whose target is missing changes nothing"))))
+
+#-win32
+(deftest git-redirector-reads-the-layout-where-it-really-lies ()
+  ;; scoop's `current' is a junction to the version folder; the redirector
+  ;; reads its own real path, so MSYS's / is the version folder, and the path
+  ;; the shim names is what outlives that folder.
+  (with-temp-workspace (dir)
+    (let* ((version (git-layout (merge-pathnames "apps/git/2.51.0/" dir)))
+           (current (merge-pathnames "apps/git/current" dir)))
+      (sb-posix:symlink (uiop:native-namestring (nlk::native-folder version)) (uiop:native-namestring current))
+      (let* ((named (merge-pathnames "apps/git/current/bin/sh.exe" dir))
+             (found (nlk::git-redirector named))
+             (real (nlk::real-path version)))
+        (is (equal (uiop:native-namestring (merge-pathnames "usr/bin/bash.exe" real)) (getf found :program)) "the program is under the real root")
+        (is (equal (uiop:native-namestring (merge-pathnames "bin/" real)) (uiop:native-namestring (getf found :folder))) "EXEPATH's folder is the real one")
+        (is (equal (uiop:native-namestring named) (getf found :redirector)) "the redirector is the path it was named by")))))
+
+(deftest git-redirector-environment-is-the-wrappers ()
+  ;; setup_environment and maybe_read_config in git-wrapper.c, entry by entry.
+  (with-temp-workspace (dir "Users/me/keep")
+    (let* ((root (git-layout (merge-pathnames "Git/" dir)))
+           (shell (nlk::git-redirector (merge-pathnames "bin/sh.exe" root)))
+           (git (nlk::git-redirector (merge-pathnames "cmd/git.exe" root)))
+           (top (nlk::native-folder (nlk::real-path root)))
+           (profile (nlk::native-folder (merge-pathnames "Users/me/" dir)))
+           (base (list "PATH=C:\\Windows" "MSYSTEM=MSYS" "USERPROFILE=C:\\Users\\me" "OTHER=1")))
+      (let ((env (nlk::git-redirector-environment shell base)))
+        (is (equal "MINGW64" (environment-value "MSYSTEM" env)) "MSYSTEM is set whatever was inherited")
+        (is (equal "ssh" (environment-value "PLINK_PROTOCOL" env)))
+        (is (equal "C:\\Users\\me" (environment-value "HOME" env)) "no HOMEPATH: HOME is USERPROFILE")
+        (is (equal (format nil "~a\\mingw64\\bin;~a\\usr\\bin;C:\\Users\\me\\bin;C:\\Windows" top top)
+                   (environment-value "PATH" env)) "PATH: the toolchain, usr/bin and HOME's bin lead what was there")
+        (is (equal (nlk::native-folder (merge-pathnames "bin/" (nlk::real-path root))) (environment-value "EXEPATH" env)) "compat-bash sets EXEPATH to its own folder")
+        (is (equal "1" (environment-value "OTHER" env)) "the rest rides along")
+        (is (= 1 (count "MSYSTEM" env :key #'nlk::environment-entry-name :test #'string-equal))))
+      (let ((env (nlk::git-redirector-environment git (list* "HOME=D:\\h\\" "PLINK_PROTOCOL=plink" base))))
+        (is (equal "D:\\h\\" (environment-value "HOME" env)) "a HOME already set stays")
+        (is (equal "plink" (environment-value "PLINK_PROTOCOL" env)))
+        (is (search ";D:\\h\\bin;" (environment-value "PATH" env)) "HOME's bin with no doubled separator")
+        (is (null (environment-value "EXEPATH" env)) "cmd/git.exe sets no EXEPATH"))
+      (let ((env (nlk::git-redirector-environment
+                  git (list* "HOMEDRIVE=" (format nil "HOMEPATH=~a" profile) base))))
+        (is (equal profile (environment-value "HOME" env)) "HOMEDRIVE and HOMEPATH, when they name a folder"))
+      (let ((env (nlk::git-redirector-environment
+                  git (list* "HOMEDRIVE=" "HOMEPATH=/no/such/folder" base))))
+        (is (equal "C:\\Users\\me" (environment-value "HOME" env)) "else USERPROFILE"))
+      (write-temp-file (merge-pathnames "etc/git-bash.config" root)
+                       (format nil "MSYS=winsymlinks:nativestrict~c~%OTHER=no~%" #\Return))
+      (let ((env (nlk::git-redirector-environment shell (list* "MSYS=enable_pcon" base))))
+        (is (equal "winsymlinks:nativestrict enable_pcon" (environment-value "MSYS" env)) "git-bash.config's MSYS leads the inherited one")))))
+
+(deftest past-git-redirector-starts-the-real-program ()
+  (with-temp-workspace (dir)
+    (let* ((root (git-layout (merge-pathnames "Git/" dir)))
+           (shell (nlk::git-redirector (merge-pathnames "bin/sh.exe" root)))
+           (git (nlk::git-redirector (merge-pathnames "cmd/git.exe" root)))
+           (base (list "PATH=C:\\Windows")))
+      (let ((nlk::*git-shell* shell) (nlk::*git-direct* git))
+        (multiple-value-bind (argv env) (nlk::past-git-redirector (list (getf shell :program) "-c" "true") base)
+          (is (equal (list (getf shell :program) "-c" "true") argv) "the shell's argv stands")
+          (is (equal "MINGW64" (environment-value "MSYSTEM" env)) "with the redirector's environment"))
+        (multiple-value-bind (argv env) (nlk::past-git-redirector (list "git" "status") base)
+          (is (equal (list (getf git :program) "status") argv) "a child named git is the toolchain's")
+          (is (equal "MINGW64" (environment-value "MSYSTEM" env))))
+        (multiple-value-bind (argv env) (nlk::past-git-redirector (list "powershell" "-c" "x") base)
+          (is (equal (list "powershell" "-c" "x") argv))
+          (is (eq base env) "anything else is untouched"))
+        (delete-file (merge-pathnames "usr/bin/bash.exe" root))
+        (delete-file (merge-pathnames "mingw64/bin/git.exe" root))
+        (is (equal (list (getf shell :redirector) "-c" "true")
+                   (nlk::past-git-redirector (list (getf shell :program) "-c" "true") base)) "a vanished bash: the redirector it was found by")
+        (is (equal (list "git" "status") (nlk::past-git-redirector (list "git" "status") base)) "a vanished git: PATH's own"))
+      (let ((nlk::*git-shell* nil) (nlk::*git-direct* nil))
+        (is (equal (list "git" "status") (nlk::past-git-redirector (list "git" "status") base)) "no Git for Windows found: nothing changes")))))
 
 (deftest session-argv-wraps-only-where-sessions-exist ()
   (let ((argv (nlk:session-argv (list "prog" "arg"))))
@@ -104,6 +252,32 @@
       (is (eql 0 (nlk:wait-for-child pid process)))
       (is (equal (format nil "out~%err~%") (uiop:read-file-string log)) "created, in order"))))
 
+#-win32
+(deftest a-descriptor-of-this-process-can-be-a-childs-stdout (with-temp-workspace (dir))
+  ;; A sandboxed shell hands its jailed serve a listening socket as stdout
+  ;; (the one descriptor besides stdin and stderr srt passes through): the
+  ;; child's stdout is the descriptor itself, its stderr the log alone.
+  (let ((log (merge-pathnames "child.log" dir))
+        (file (merge-pathnames "stdout.txt" dir)))
+    (let ((descriptor (sb-posix:open (uiop:native-namestring file)
+                                     (logior sb-posix:o-wronly sb-posix:o-creat) #o600)))
+      (unwind-protect
+           (multiple-value-bind (pid output errors process)
+               (nlk:spawn-program (nlk:shell-argv "echo out; echo err 1>&2")
+                                  :output descriptor :error-output log)
+             (is (and (null output) (null errors)) "no pipes")
+             (is (eql 0 (nlk:wait-for-child pid process))))
+        (sb-posix:close descriptor)))
+    (is (equal (format nil "out~%") (uiop:read-file-string file)) "stdout went down the descriptor")
+    (is (equal (format nil "err~%") (uiop:read-file-string log)) "stderr to the log")
+    (let ((descriptor (sb-posix:open (uiop:native-namestring file)
+                                     (logior sb-posix:o-wronly sb-posix:o-trunc) #o600)))
+      (unwind-protect
+           (is (nlk:spawn-detached (nlk:shell-argv "echo detached-out; echo detached-err 1>&2") log :stdout descriptor))
+        (sb-posix:close descriptor)))
+    (is (await (:rest 0.05) (search "detached-out" (or (ignore-errors (uiop:read-file-string file)) ""))) "a detached child's stdout goes down the descriptor too")
+    (is (search "detached-err" (uiop:read-file-string log)) "and its stderr to the log")))
+
 (deftest a-spawn-whose-log-folder-is-missing-names-the-log (with-temp-workspace (dir))
   ;; Opening the log fails with ENOENT, the errno a missing program gives:
   ;; `nodecode rpc' on a home never made said `spawning setsid: No such file
@@ -142,7 +316,7 @@
   ;; descriptor this image holds above stderr closed. A store handle or a
   ;; provider socket riding into a git call would hold the file open and
   ;; travel where it was never meant to.
-  (with-open-file (held "/dev/null" :direction :input)
+  (with-open-file (held (asdf:system-relative-pathname "nodecode" "nodecode.asd") :direction :input)
     (declare (ignorable held))
     #+linux
     (nlk:bind (((output _ status) (run-sh "ls /proc/self/fd | tr '\n' ' '; cat")))
@@ -156,7 +330,6 @@
       (is (eql 0 status) "the child ran")
       (is (search "ended" output) "and its stdin was the null device, not a wait"))))
 
-#-win32
 (deftest a-bound-that-falls-takes-the-shells-background-work-with-it ()
   ;; The child leads a process group of its own, so the kill at the bound
   ;; takes the tree with it. A backgrounded sleep outliving the shell would
@@ -178,7 +351,8 @@
     (is (> (length output) (length "laid over|")) "PATH still rides along")))
 
 (deftest run-bounded-runs-in-the-named-directory (with-temp-workspace (dir))
-  (nlk:bind (((output _ status) (run-sh "pwd" :directory dir)))
+  ;; `pwd -W' on Windows: MSYS's own `pwd' says /c/..., the folder as sh sees it.
+  (nlk:bind (((output _ status) (run-sh #-win32 "pwd" #+win32 "pwd -W" :directory dir)))
     (is (eql 0 status) "pwd ran")
     (is (equal (namestring (truename dir))
                (namestring (uiop:ensure-directory-pathname
@@ -191,22 +365,90 @@
     (is (member "NODECODE_OS_NEW=1" environment :test #'equal) "a new name is added")
     (is (find "HOME=" environment :test #'uiop:string-prefix-p))))
 
-(defmacro with-lock-holder ((path &optional (text "")) &body body
-                           &aux (holder (gensym "HOLDER")))
-  "Run BODY while a python3 child holds an exclusive lock on PATH — the
-foreign holder a per-process lock needs — after asserting it took the lock,
-and end the child on unwind."
-  ;; TEXT is written into the locked file first: what a holder says of itself.
-  `(let ((,holder (uiop:launch-program
-                   (list "python3" "-c"
-                         "import fcntl,sys,time
+(deftest environment-with-removes-a-bare-name ()
+  (let ((environment (nlk:environment-with (list "NODECODE_OS_GONE")
+                                           (list "PATH=/bin" "NODECODE_OS_GONE=1" "NODECODE_OS_GONE_NOT=2"))))
+    (is (equal '("PATH=/bin" "NODECODE_OS_GONE_NOT=2") environment) "the name goes, a longer one stays, the bare name is not added")))
+
+(defun child-read (name &rest keys)
+  "NAME's value as a child RUN-BOUNDED starts with KEYS reads it."
+  ;; On Windows as its UTF-16 code units, numbers no console code page can bend.
+  (let ((output (string-right-trim
+                 '(#\Return #\Newline)
+                 (apply #'nlk:run-bounded
+                        #-win32 (list "printenv" name)
+                        #+win32 (list "powershell" "-NoProfile" "-Command"
+                                      (format nil "[string]::Join(' ', [int[]][char[]]$env:~a)" name))
+                        :seconds 30 keys))))
+    #-win32 output
+    #+win32 (map 'string (lambda (unit) (code-char (parse-integer unit)))
+                 (uiop:split-string output :separator " "))))
+
+;; A value outside ASCII, and outside every Windows ANSI code page, crosses into
+;; a child exactly: inherited, or handed in the environment the child is given.
+(deftest a-child-reads-a-value-outside-ascii-exactly ()
+  (let ((value (map 'string #'code-char '(#x141 #x75 #x6B #x61 #x73 #x7A #x2D #x4A #xFC
+                                          #x72 #x67 #x65 #x6E #x2D #x65E5))))
+    (nlk::set-environment-variable "NODECODE_OS_WIDE_SET" value)
+    (let ((entry (format nil "NODECODE_OS_WIDE_SET=~a" value))
+          (handed (list (format nil "NODECODE_OS_WIDE=~a" value))))
+      (is (member entry (nlk:process-environment) :test #'equal) "this process reads back what it set")
+      (is (equal value (child-read "NODECODE_OS_WIDE_SET")) "a child that inherits it")
+      (is (equal value (child-read "NODECODE_OS_WIDE_SET" :environment handed)) "a child handed this process's environment")
+      (is (equal value (child-read "NODECODE_OS_WIDE" :environment handed)) "a child handed the value itself"))))
+
+(defun powershell-quoted (text)
+  "TEXT as a PowerShell single-quoted string."
+  (with-output-to-string (out)
+    (write-char #\' out)
+    (loop for char across text
+          do (when (char= char #\') (write-char char out))
+             (write-char char out))
+    (write-char #\' out)))
+
+(defun lock-holder-argv (path text)
+  "The argv of a child that takes the exclusive lock on PATH the way LOCK-FILE
+takes it, writes TEXT into the file, prints `locked' and holds it 30 s."
+  ;; The lock is fcntl's on POSIX; on Windows the file open with no sharing.
+  #-win32
+  (list "python3" "-c"
+        "import fcntl,sys,time
 f=open(sys.argv[1],'w')
 f.write(sys.argv[2]); f.flush()
 fcntl.lockf(f,fcntl.LOCK_EX|fcntl.LOCK_NB)
 print('locked',flush=True)
 time.sleep(30)"
-                         (namestring ,path) ,text)
-                   :output :stream)))
+        (namestring path) text)
+  #+win32
+  (list "powershell" "-NoProfile" "-Command"
+        (format nil "$f = [IO.File]::Open(~a, 'Create', 'ReadWrite', 'None'); $b = [Text.Encoding]::UTF8.GetBytes(~a); $f.Write($b, 0, $b.Length); $f.Flush(); [Console]::Out.Write('locked' + [char]10); [Console]::Out.Flush(); Start-Sleep 30"
+                (powershell-quoted (uiop:native-namestring path)) (powershell-quoted text))))
+
+(defun lock-try-argv (path)
+  "The argv of a child that tries to take the lock on PATH once and prints
+`took' or `refused'."
+  #-win32
+  (list "python3" "-c"
+        "import fcntl,sys
+f=open(sys.argv[1],'w')
+try:
+    fcntl.lockf(f,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    print('took',flush=True)
+except OSError:
+    print('refused',flush=True)"
+        (namestring path))
+  #+win32
+  (list "powershell" "-NoProfile" "-Command"
+        (format nil "try { [IO.File]::Open(~a, 'OpenOrCreate', 'ReadWrite', 'None').Close(); [Console]::Out.Write('took' + [char]10) } catch { [Console]::Out.Write('refused' + [char]10) }"
+                (powershell-quoted (uiop:native-namestring path)))))
+
+(defmacro with-lock-holder ((path &optional (text "")) &body body
+                           &aux (holder (gensym "HOLDER")))
+  "Run BODY while a child holds an exclusive lock on PATH — the foreign
+holder a per-process lock needs — after asserting it took the lock, and end
+the child on unwind."
+  ;; TEXT is written into the locked file first: what a holder says of itself.
+  `(let ((,holder (uiop:launch-program (lock-holder-argv ,path ,text) :output :stream)))
      (nlk:with-cleanup ((uiop:terminate-process ,holder) (uiop:wait-process ,holder))
        (is (equal "locked" (read-line (uiop:process-info-output ,holder) nil)))
        ,@body)))
@@ -258,16 +500,7 @@ time.sleep(30)"
     (is lock "the claim succeeds")
     (is (nlk:file-locked-p path) "the holder reads its own lock as held")
     (dotimes (i 5) (nlk:file-locked-p path))
-    (is (equal (format nil "refused~%")
-               (nlk:run-bounded (list "python3" "-c"
-                                      "import fcntl,sys
-f=open(sys.argv[1],'w')
-try:
-    fcntl.lockf(f,fcntl.LOCK_EX|fcntl.LOCK_NB)
-    print('took',flush=True)
-except OSError:
-    print('refused',flush=True)"
-                                      (namestring path)))))
+    (is (equal (format nil "refused~%") (nlk:run-bounded (lock-try-argv path))))
     (nlk:unlock-file lock)
     (is (not (nlk:file-locked-p path)) "the release forgets it too")))
 
@@ -301,6 +534,20 @@ except OSError:
       (nlk:unlock-folder folder)
       (is (not (nlk:file-locked-p path)) "and the release frees it"))))
 
+(deftest executable-on-path-finds-a-command-the-way-the-shell-does (with-temp-workspace (dir))
+  ;; Windows runs `npx' as npx.cmd and `git' as git.exe, by PATHEXT: a bare
+  ;; name probed alone named nothing there, and an import skipped the server.
+  (let ((saved (uiop:getenv "PATH"))
+        (file (merge-pathnames #-win32 "nl-tool" #+win32 "nl-tool.cmd" dir)))
+    (write-temp-file file "")
+    (unwind-protect
+         (progn
+           (nlk::set-environment-variable "PATH" (string-right-trim "/\\" (uiop:native-namestring dir)))
+           (is (equal (truename file) (nlk::executable-on-path "nl-tool")) "the name the shell runs")
+           #+win32 (is (equal (truename file) (nlk::executable-on-path "nl-tool.cmd")) "or the file it is")
+           (is (null (nlk::executable-on-path "nl-absent")) "and nothing for a name that is not there"))
+      (nlk::set-environment-variable "PATH" (or saved "")))))
+
 (deftest a-folder-lock-counts-its-reentrance-and-releases-on-unwind (with-temp-workspace (dir))
   ;; POSIX would let this process take the lock twice and CLOSE the second
   ;; descriptor over it, dropping the first lock with it; the count is what
@@ -315,6 +562,22 @@ except OSError:
     (is (not (nlk:file-locked-p path)) "the outer release frees it")
     (is (signals-error error (nlk:with-folder-lock (folder) (error "the body blew up"))) "and it rides out")
     (is (not (nlk:file-locked-p path)) "and the lock is not left behind")))
+
+(deftest a-folder-lock-taken-before-its-folder-exists-is-the-one-released (with-temp-workspace (dir))
+  ;; A knowledge cell's first keep takes the folder's lock, then makes the
+  ;; folder. Reached through a link -- on Windows, by a path naming no drive --
+  ;; the folder resolved one way before it existed and another after, so the
+  ;; release missed the lock it took and the next keep waited on this process.
+  (let* ((parent #-win32 (let ((link (merge-pathnames "link/" dir)))
+                           (nlk:make-symlink (ensure-directories-exist (merge-pathnames "real/" dir)) link)
+                           link)
+                 #+win32 (make-pathname :device nil :defaults dir))
+         (folder (merge-pathnames "memory/" parent))
+         (before (nlk:folder-lock-path folder)))
+    (nlk:with-folder-lock (folder) (ensure-directories-exist folder))
+    (is (equal (namestring before) (namestring (nlk:folder-lock-path folder))) "one lock file, made or not")
+    (is (null (nlk::held-lock before)) "the release lets go of the lock it took")
+    (is (nlk:with-folder-lock (folder :wait 0.2) t) "and the next claim takes it")))
 
 (deftest replace-file-renames-over-an-existing-target (with-temp-workspace (dir))
   (let ((from (merge-pathnames "from" dir))
@@ -336,7 +599,7 @@ except OSError:
 
 (deftest pid-live-p-tells-a-live-process-from-a-gone-one ()
   (is (nlk:pid-live-p (sb-posix:getpid)) "this process is alive")
-  (let* ((child (uiop:launch-program (list "true")))
+  (let* ((child (uiop:launch-program (nlk:shell-argv "exit 0")))
          (pid (uiop:process-info-pid child)))
     (uiop:wait-process child)
     (is (not (nlk:pid-live-p pid)) "a reaped child is gone")))
@@ -470,6 +733,17 @@ process's own, or NIL."
   #+win32 (is (nlk::path-within-p "C:\\proj\\src" "C:\\proj") "Windows steps with \\")
   #+win32 (is (nlk::path-within-p "C:\\proj" "C:\\") "a drive's root keeps its own")
   #+win32 (is (not (nlk::path-within-p "C:\\project" "C:\\proj")) "nor there a name that only starts like it"))
+
+(deftest lstat-kind-reads-a-folder-named-with-its-separator (with-temp-workspace (dir "inside/a.txt"))
+  ;; A folder's native namestring ends in its separator; Windows' stat finds
+  ;; no folder by such a name, so a folder named so read as absent there.
+  (let ((folder (uiop:native-namestring (merge-pathnames "inside/" dir))))
+    (is (eq :directory (nlk::lstat-kind folder)) "the folder, its separator at its end, is a folder")
+    (is (eq :directory (nlk::lstat-kind (string-right-trim "/\\" folder))) "and without it")
+    (is (eq :file (nlk::lstat-kind (uiop:native-namestring (merge-pathnames "inside/a.txt" dir)))) "a file a file")
+    (is (eq :absent (nlk::lstat-kind (uiop:native-namestring (merge-pathnames "none/" dir)))) "nothing is absent")
+    #+win32
+    (is (eq :directory (nlk::lstat-kind (subseq folder 0 3))) "and a drive's root a folder")))
 
 #-win32
 #-win32
@@ -640,10 +914,15 @@ every call takes its arena's lock."
 
 (defun every-arena-answers-p ()
   "Whether malloc_trim, which takes every arena's lock in turn, returns within
-five seconds on a thread of its own."
+five seconds on a thread of its own. Windows' C library has no malloc_trim:
+there a thousand mallocs and frees over the sizes the spinner asks return in
+that time, each size class's lock taken."
   (eq :ok (nlk::%join-bounded
            (bt2:make-thread (lambda ()
+                              #-win32
                               (sb-alien:alien-funcall (sb-alien:extern-alien "malloc_trim" (function sb-alien:int sb-alien:unsigned-long)) 0)
+                              #+win32
+                              (loop for size from 2048 below 62048 by 60 do (c-malloc-and-free size))
                               :ok)
                             :name "arena probe")
            5)))
@@ -703,11 +982,17 @@ five seconds on a thread of its own."
 (deftest a-parked-thread-still-takes-an-unwinding-interruption ()
   ;; A stop is for a thread parked on something outside it, so the safe
   ;; delivery must still land in a system call that waits: a sleep, a read
-  ;; on a pipe nobody writes, an accept nobody dials, a futex wait.
+  ;; on a pipe nobody writes, an accept nobody dials, a futex wait. Windows'
+  ;; SBCL runs an interruption only back in Lisp or inside its own waits (a
+  ;; sleep, a lock, a stream's read): accept() there is Winsock's, a foreign
+  ;; call no interruption reaches, and nodecode parks in none (the gateway
+  ;; waits in usocket's two-second slices, the jail's socat accepts).
   (dolist (park (list (lambda () (sleep 30))
+                      #-win32
                       (lambda () (multiple-value-bind (in out) (sb-posix:pipe)
                                    (declare (ignore out))
                                    (read-byte (sb-sys:make-fd-stream in :input t :element-type '(unsigned-byte 8)) nil)))
+                      #-win32
                       (lambda () (let ((socket (make-instance 'sb-bsd-sockets:inet-socket :type :stream :protocol :tcp)))
                                    (sb-bsd-sockets:socket-bind socket #(127 0 0 1) 0)
                                    (sb-bsd-sockets:socket-listen socket 1)

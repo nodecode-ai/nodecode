@@ -50,7 +50,7 @@ When the import brings a default model over and its provider answers, the walk e
 | --- | --- |
 | Instructions | Added to `~/.nodecode/AGENTS.md`, under the agent's name. |
 | Skills | Kept by name, with their description. |
-| MCP servers | Written to the config, off. `/mcp on NAME` starts one. |
+| MCP servers | Written to the config, off. `/mcp` starts one: the server's row. |
 | API keys | Copied to `auth.json`, then checked. |
 | Sign-ins | Stay with the other agent. |
 | Sessions | Left out. `nodecode import WORLD --only sessions` brings them. |
@@ -70,8 +70,8 @@ When the import brings a default model over and its provider answers, the walk e
 </Mistake>
 <Mistake>
 <What>Waiting for an imported MCP server to answer</What>
-<Why>Imported servers land off: `lands off: /mcp on filesystem starts it`.</Why>
-<Instead>`/mcp on NAME`, once you have read what it runs.</Instead>
+<Why>Imported servers land off: `lands off: its row in /mcp, filesystem, starts it`.</Why>
+<Instead>`/mcp`, then the server's row, once you have read what it runs.</Instead>
 </Mistake>
 </Mistakes>
 
@@ -185,7 +185,7 @@ Esc starts too. The footer gains the <Term screen="summary" spot="gateway">gatew
 {/* source: src/tui/account-login.lisp */}
 ## A nodecode.ai account
 
-A Founders plan or API credit from [nodecode.ai](https://nodecode.ai/pricing) needs no key pasted. Sign in instead:
+API credit from [nodecode.ai](https://nodecode.ai/pricing) needs no key pasted. Top up, then sign in:
 
 ```sh
 nodecode login
@@ -203,6 +203,7 @@ The footer shows the meter from then on. A click on it opens `/usage`.
 | --- | --- |
 | `nodecode login` | Signs in, in a browser. Asks which, or takes `--subscription` or `--api`. |
 | `/login` | The same, from the shell. |
+| `nodecode logout`, `/logout` | Signs this machine out again. |
 | `nodecode machine link [CODE]` | Links this machine with a code from [Machines](https://nodecode.ai/account/machines). |
 
 <Mistakes>
@@ -213,8 +214,8 @@ The footer shows the meter from then on. A click on it opens `/usage`.
 </Mistake>
 <Mistake>
 <What>Signing in for a subscription with no plan</What>
-<Why>`This account holds no plan yet: subscribe at https://nodecode.ai/pricing`. Calls answer 402.</Why>
-<Instead>Plans open soon. Until then, run on your own provider key.</Instead>
+<Why>`This account holds no plan, and plans are not sold now: it runs on API credit, added at https://nodecode.ai/account/top-up`. With no credit either, calls answer 402.</Why>
+<Instead>Plans are not sold now: [top up](https://nodecode.ai/account/top-up) and sign in with `nodecode login --api`.</Instead>
 </Mistake>
 </Mistakes>
 
@@ -245,7 +246,7 @@ The config names the file, never the value.
 <Mistake>
 <What>Typing `/setup discord`</What>
 <Why>`` `/setup` does not take arguments. ``</Why>
-<Instead>`nodecode gateway setup discord` in a terminal. See [Channels](/channels).</Instead>
+<Instead>`nodecode gateway setup discord` in a terminal. See [Channels](channels.mdx).</Instead>
 </Mistake>
 <Mistake>
 <What>Turning a cell off in `/cells` and expecting it gone</What>
@@ -259,4 +260,4 @@ The config names the file, never the value.
 </Mistake>
 </Mistakes>
 
-What it said, line by line: [Troubleshooting](/troubleshooting#setup-and-model-failures). Then type a prompt and press Enter. Keys: [Shell](/shell).
+What it said, line by line: [Troubleshooting](troubleshooting.mdx#setup-and-model-failures). Then type a prompt and press Enter. Keys: [Shell](shell.mdx).

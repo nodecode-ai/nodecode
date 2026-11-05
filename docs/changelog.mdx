@@ -3,16 +3,20 @@ title: Changelog
 summary: "The release each platform runs on the stable channel, how to see your own build, and what changed."
 ---
 
-{/* source: src/tools/publish.sh */}
+{/* source: tools/release/publish.sh */}
 ## Stable today
 
-| Platform | Pointer | Release | Published |
-| --- | --- | --- | --- |
-| Linux x86_64 | `stable-x86_64-linux` | `9608b582e` | 2026-10-22 |
-| Windows x86_64 | `stable-x86_64-windows` | `9608b582e` | 2026-10-22 |
-| macOS Apple Silicon | `stable-arm64-darwin` | `9608b582e` | 2026-10-22 |
+Linux x86_64, Windows x86_64 and macOS Apple Silicon run the same release: the newest one below. The installer and the updater read it from a pointer at `https://nodecode.ai/dl/`, one for each platform, and the pointer names the build it serves:
 
-A release label is the commit it was built from. The installer and the updater read the same pointer, at `https://nodecode.ai/dl/`. All three platforms run the same release.
+```sh
+curl -fsSL https://nodecode.ai/dl/stable-x86_64-linux
+```
+
+```output
+2629050e1
+```
+
+The other two are `stable-x86_64-windows` and `stable-arm64-darwin`. Every release is also a version on [GitHub's releases page](https://github.com/nodecode-ai/nodecode/releases), with its commits listed.
 
 {/* source: nodecode.asd */}
 ## Your build
@@ -22,12 +26,139 @@ nodecode --version
 ```
 
 ```output
-nodecode 0.0.1+9608b582e
+nodecode 0.1.7+2629050e1
 ```
 
-The release label follows the `+`. An installed build moves to a new release by itself. `nodecode update` moves it now. See [Updates](/updates).
+The version comes first and the build label, the commit the release was built from, follows the `+`. An installed build moves to a new release by itself, between turns. `nodecode update` moves it now. See [Updates](updates.mdx).
 
-{/* source: src/tools/publish.sh */}
+{/* source: tools/release/publish.sh */}
+## 0.1.9
+
+Linux, macOS and Windows. Changes since 0.1.8 (`c27e63333`).
+
+- `/snapshot` takes this organism's memory whole, under a dated name, and runs on from it. `/snapshots` lists them and switches to one in place.
+- `nodecode resume` picks a session to open, and `nodecode -c` continues the newest one in this folder.
+- `/logout`, and `nodecode logout` on the command line, sign this machine out of nodecode.ai.
+- `/setup` and `/models` offer the nodecode.ai sign-in again. Cyber v1 lists 128K of context and its per-token price, and an account with no plan is pointed to API credit top-ups.
+- `/import` links a skill where it lives instead of copying it.
+- An empty message box is the blinking cursor alone, with no status or tip lines.
+- A picture draws as sixel, octants, sextants or half blocks where the terminal speaks no kitty graphics, and stands under the call that looked at it.
+- `@` completes paths outside the workspace: `~/`, `../` and `/`.
+- A copy puts a wrapped line back together. The `/` menu opens under the text you typed, and a bare `/login` opens its choice again.
+- Windows: Shift+Enter inserts a newline, environment values outside ASCII work, `sh` and git start Git's own programs, a child inherits only its standard handles, `/backup` works, and a boot is faster.
+- `nodecode add`, `update`, `web` and `rollback` find the running organism again.
+- A Claude thinking block is never replayed to another provider.
+- SQLite 3.54 keeps the store's fast query plan.
+- Stopping or restarting the gateway from inside a session it serves is refused instead of cutting that session off.
+
+{/* source: tools/release/publish.sh */}
+## 0.1.8
+
+Linux, macOS and Windows. Changes since 0.1.7 (`2629050e1`).
+
+- Anthropic: a session whose history holds a tool result twice, or one that landed after a later message, no longer fails every turn with a 400. A repaired call id never reuses one already stored.
+- A stream that stops sending content is cut after three idle timeouts, however many keep-alives still arrive, and an attempt that sends no content at all is cut after fifteen. Either goes to the next attempt or the backup model.
+- A model that loops is cut and run again, never taken as its answer.
+- A full `/tmp` no longer fails every turn, and a write that fails names its file.
+- An image past 2000 px a side, or past a provider's 5 MiB, is shrunk to fit before it is sent. A JPEG shrinks through ImageMagick, ffmpeg or sips when the machine has one, and otherwise goes as it is when the provider takes it whole.
+- The settings sheet, the cells sheet and `/generations` keep one layout at every width: a narrow window gets a slimmer rail beside the pane. `/tree` no longer marks cron fires, re-asks or steers, and the home mark's Konami code is gone.
+- A turn can ask you a question at the web page or the desktop app and wait for your pick.
+- The web page has a Board of tasks: To do, Running, Needs you and Done. Ctrl+K opens a command palette and Ctrl+P quick open. Settings > Shortcuts rebinds any key.
+- The Files view edits and saves a text file, in syntax colours, and asks first over a file changed on disk. The message box records voice.
+- A session's page steers or stops its helpers, one by one or all at once. A helper you steer answers with what the steer asked.
+- The guard asks Allow once or Deny before it refuses a call, and the page draws the question.
+- MCP: a remote server signs in with OAuth. The MCP tab is one line a server, its tools folded out, with a find across them.
+- MCP: a server whose command signs in on its own, such as `npx mcp-remote URL`, fails in seconds and names the sign-in instead of waiting out its deadline. `(mcp:login NAME ADDRESS)` hands it a browser's landing address from another machine.
+- The cron cell wakes a session on its own when something outside changes, such as a red CI run or an answer waiting.
+- `/cells new`, or New cell in the Cells tab, makes a cell by talking.
+- `nodecode gateway setup` opens the shell on a step-by-step setup sheet. Discord sets up from the bot token alone, and `/channels` picks its channels, people and roles.
+- `nodecode --model M -- PROMPT` opens a fresh shell on that model with a first prompt; `--prompt-file FILE`, `@FILE` and piped stdin give it the prompt too. `nodecode web --print` prints the page's link and opens nothing.
+- Ctrl+Y selects transcript text from the keyboard. Behind tmux or screen the pane keeps its title, and the cursor no longer flickers while the screen paints. A long session opens faster.
+- `edit` and `write-file` keep a file's mode. A backgrounded or stopped `(sh ...)` answers what its command wrote, and a command's output that is not UTF-8 reads as `?` instead of failing. An eval runs on its turn's model.
+- `nodecode add` says what it waits on, and names it when it gives up.
+- A profile made from your settings carries the cells the hub installed and the folder a pinned provider needs. A models.dev address with a `${NAME}` blank asks for the value.
+- An update moves a definition that moved to another file, and an install removes the older releases nothing uses.
+
+{/* source: tools/release/publish.sh */}
+## 0.1.7
+
+Linux, macOS and Windows, 2026-11-01, build `2629050e1`.
+
+- Every folder from the session's up to `/` gives its `AGENTS.md` (or `CLAUDE.md`, `.cursorrules`), not only the nearest one inside the repository. The farthest rides first, so a monorepo's root rules reach a package and the nearest rules have the last word.
+- The shell follows the terminal between light and dark. On Termux the mouse wheel scrolls the transcript.
+- A release taken live starts the channels again once no turn runs.
+- A run shows its newest edit's diffs, not every edit's.
+- A boot still on its way says what it waits on.
+- Anthropic: a model that refuses thinking off is asked again, not failed.
+- Claude Code: no API-key prompt while its cell starts, and a cold launch starts the cells at once.
+- A vulnerability is reported privately, through a GitHub security advisory.
+
+{/* source: tools/release/publish.sh */}
+## 0.1.6
+
+Linux, macOS and Windows, 2026-10-31, build `30b22b096`.
+
+- A running 0.1.5 takes this release live, and no organism stays behind on the build before: one gateway serves a home.
+- A new session's first request no longer waits for a walk of its folder. `/tmp` and system folders are never taken as a workspace.
+- A write whose rollback fails no longer closes the store.
+- An answer that holds a tool call no longer names its session.
+- A call that kept a file is one teal line, its file named from home. A call line too wide for its row keeps its status. Every dialog's footer shows its keys as keycaps.
+
+{/* source: tools/release/publish.sh */}
+## 0.1.5
+
+Linux, macOS and Windows, 2026-10-30, build `73e2e99e9`.
+
+- Anthropic: thinking off is sent in each model's own spelling, so Sonnet 5.5 and Opus 5.5 no longer answer 400. Replayed thinking stays bound to the turn it came from.
+- An eval form can carry a file's body as raw text (`#>TAG`), with no escaping. `sh` takes a `:timeout`.
+- A settled run shows the diffs its workspace snapshots took. A `write-file` receipt says when the text ends without a newline.
+- Each shell writes which session it is on to `$XDG_RUNTIME_DIR/nodecode/shells/PID.json`.
+- Windows: the PATH names a launcher folder, so a window opened before an update runs the new release. A window whose PATH predates the update is told why it still runs the old one.
+- `nodecode rpc` makes a home that was never made, instead of failing.
+
+{/* source: tools/release/publish.sh */}
+## 0.1.4
+
+Linux, macOS and Windows, 2026-10-29, build `d99362e73`.
+
+- One failed request no longer leaves the rest of a turn blind to images.
+- `sh` runs bash.
+- A snippet with an escape the reader would drop is refused, not run with the escape gone.
+
+{/* source: tools/release/publish.sh */}
+## 0.1.3
+
+Linux, macOS and Windows, 2026-10-28, build `7a035bfaf`.
+
+- Windows: the installer unblocks only files that carry the Mark of the Web.
+
+{/* source: tools/release/publish.sh */}
+## 0.1.2
+
+Linux, macOS and Windows, 2026-10-28, build `e1d7ffd14`.
+
+- Releases build on Nodecode's own machines and publish from a version tag.
+- Windows: pasting an image attaches it.
+- A tool call a provider streams without an id gets one, and calls already stored without one are paired again.
+- The footer's model name is green for Nodecode's own endpoint or a local one, red where anyone else reads the prompt. `/privacy` is five lines.
+- Copying by drag says what took the text, and scrolls past the edge of the view.
+
+{/* source: tools/release/publish.sh */}
+## 0.1.1
+
+Linux, macOS and Windows, 2026-10-27, build `6d58aa70b`. From this release on, every publish is a numbered version on GitHub's releases page.
+
+- The footer says who can read a prompt sent to the chosen model, and `/privacy` lists what the check found.
+- A cell from the hub is fetched when you pick it, never at launch, as one archive from the edge. An install reads the index once and cannot hang.
+- A call's forks line up under it in the transcript.
+- A session follows its folder when the folder moves.
+- A connected provider keeps the name of the folder that serves it.
+- `config.jsonc` is yours alone: no tool reads a credential out of it.
+- A failover model is timed from its own request, not the first one's.
+- `/usage` answers any range in under half a second.
+- `nodecode rpc`: a fresh session's `start_turn` names the model it runs on.
+
+{/* source: tools/release/publish.sh */}
 ## 9608b582e
 
 Linux, macOS and Windows, 2026-10-22. Changes since `5d5868b3f`, across the releases `16fe8d3ea`, `0a3bd0b25`, `e9e976491`, `3eefcdb3a`, `ce5d03395`, `2af1ec8b5`, `6903f0459` and `797e402c9`. macOS gets every change since `dc14c36f5` with it, add-ons becoming cells among them.
@@ -45,7 +176,7 @@ Linux, macOS and Windows, 2026-10-22. Changes since `5d5868b3f`, across the rele
 - Slack ships beside Discord and Telegram. The goal cell ships: `/goal CONDITION` keeps a session taking turns until a check passes, a command that exits 0 or a judge that says it is met. The cyber-security cell ships: the latest breaches with the fix for each, and a check of a server or website.
 - In a chat room, `/generations` answers with one card instead of its whole listing.
 
-{/* source: src/tools/publish.sh */}
+{/* source: tools/release/publish.sh */}
 ## 5d5868b3f
 
 Linux and Windows, 2026-10-16. Changes since `8490b4803`.
@@ -57,7 +188,7 @@ Linux and Windows, 2026-10-16. Changes since `8490b4803`.
 - `/status` is a read-only overview of the serving organism.
 - `/models` shows or changes the main and auxiliary models, on two tabs, and connects a new provider. `/model-aux` and `/connect` are gone.
 
-{/* source: src/tools/publish.sh */}
+{/* source: tools/release/publish.sh */}
 ## 8490b4803
 
 Linux and Windows, 2026-10-06. Changes since `dc14c36f5`.

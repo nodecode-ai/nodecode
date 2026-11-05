@@ -194,7 +194,8 @@ that waits 1.5 s."
     ("0 of 2 turns failed.")
     ("m1" "the model table")
     ("costliest sessions" "the costliest session"))
-  (is (equal "Usage: /usage [today | 7d | 30d | all]" (nle:slash "/usage fortnight")))
+  (is (equal "usage: no range by that name; /usage alone offers today, 7 days, 30 days and all"
+             (nle:slash "/usage fortnight")))
   ;; On a shell, a dialog: a tab per range, each filled from the gateway's
   ;; read (in order here: a test drives no loop), the asked range showing.
   (let ((model (make-frame-model 100 40 :session-id "other" :http-port port :http-token "test-token")))
@@ -214,9 +215,14 @@ that waits 1.5 s."
       (is (equal '(:session "spent")
                  (nle::picker-row-value (find-if (lambda (row) (consp (nle::picker-row-value row)))
                                                  shown)))))
-    (is (equal "Usage: /usage [today | 7d | 30d | all]"
+    (is (equal "usage: no range by that name; /usage alone offers today, 7 days, 30 days and all"
                (nle::execute-slash-command model "usage" "fortnight"))))
-  (is (equal '("7d") (mapcar (lambda (choice) (getf choice :value)) (nle:slash-completions "usage" "7")))))
+  ;; Typed alone without a shell, the four ranges are its rows.
+  (multiple-value-bind (text dialog) (nle:slash "/usage")
+    (is (search "The last 7 days" text))
+    (is (equal '("/usage today" "/usage 7d" "/usage 30d" "/usage all")
+               (map 'list (lambda (row) (nlk:json-value row :text "run" "enter")) (nlk:json-array dialog "rows")))))
+  (is (null (nle:slash-completions "usage" "7")) "nothing completes words after a name"))
 
 (deftest activity-says-what-the-agent-did-and-what-went-wrong (with-temp-gateway (port))
   (seed-timeline-session "spent")

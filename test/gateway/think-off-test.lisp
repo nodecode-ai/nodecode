@@ -63,7 +63,10 @@
         (is (null command) "the supplied-argument form starts no turn")
         (is (search ": off; applies from the next turn" notice)))
       (is (equal "off" (session-effort "think-off")))
-      (is (search "ladder: off low high" (nle:slash "/think" :session-id "think-off")) "the headless surface reads the same ladder")
+      ;; The headless surface reads the same ladder, its rows the rungs' lines.
+      (is (equal '("/think default" "/think off" "/think low" "/think high")
+                 (map 'list (lambda (row) (nlk:json-value row :text "run" "enter"))
+                      (nle::json-array (nth-value 1 (nle:slash "/think" :session-id "think-off")) "rows"))))
       (nle:slash "/think default" :session-id "think-off")
       (is (null (session-effort "think-off")))
       (nle:slash "/think off" :session-id "think-off")

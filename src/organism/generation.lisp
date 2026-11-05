@@ -291,36 +291,49 @@ format."
 (defun manifest-number (manifest)
   (json-value manifest :integer "number"))
 
+(defun manifest-paths ()
+  "The file of every generation sealed in this home: the numbered manifests in
+the generations directory, none of them read."
+  (remove-if-not (lambda (path) (parse-integer (or (pathname-name path) "") :junk-allowed t))
+                 (directory (merge-pathnames "*.json" (generations-directory)))))
+
 (defun manifests ()
   "Every generation sealed in this home, newest first."
-  (sort (nreverse (loop for path in (directory (merge-pathnames "*.json" (generations-directory)))
-                        when (and (parse-integer (or (pathname-name path) "") :junk-allowed t)
-                                  (read-generation-manifest path))
+  (sort (nreverse (loop for path in (manifest-paths)
+                        when (read-generation-manifest path)
                           collect it))
         #'> :key #'manifest-number))
 
 (defvar *manifest-count* nil
-  "(STAMP . COUNT): how many manifests MANIFESTS read, and the generations
-directory's stat when it read them.")
+  "(STAMP . COUNT): how many manifest files MANIFEST-PATHS listed, and the
+generations directory's stat when it listed them.")
 
 (defun manifest-count ()
-  "How many generations this home has sealed, (length (manifests)), read
-again only when the generations directory's stat moves."
-  ;; A frame says this count (the home screen's fact block), and MANIFESTS
-  ;; decodes every manifest, paid per frame. A seal lands its manifest by
-  ;; rename (WRITE-FILE-ATOMICALLY), which moves the directory's mtime. The
+  "How many generations this home has sealed: its manifest files, counted
+without reading one, and listed again only when the generations directory's
+stat moves."
+  ;; A frame says this count (the home screen's fact block), and a new shell
+  ;; starts with no memo. Decoding every manifest to count them (MANIFESTS)
+  ;; cost a home with 1,660 generations about a second before its first
+  ;; frame; listing the directory costs tens of milliseconds. A seal writes
+  ;; its manifest whole, by one rename, so a numbered file there is a
+  ;; manifest. The listing is still too dear for every frame, so it is kept
+  ;; until the directory moves: a seal lands its manifest by rename
+  ;; (WRITE-FILE-ATOMICALLY), which moves the directory's mtime. The
   ;; mtime is second-granular, so a count read in the second the directory
   ;; last moved is not kept: a seal later in that second leaves the stat where
-  ;; the read found it.
+  ;; the read found it. The folder is named with no separator at its end
+  ;; (NATIVE-FOLDER): Windows' _stat finds no folder by such a name, and with
+  ;; no stat the count was never kept there, so every frame listed it again.
   (let* ((now (sb-ext:get-time-of-day))
          (directory (generations-directory))
-         (stat (ignore-errors (sb-posix:stat (sb-ext:native-namestring directory))))
+         (stat (ignore-errors (sb-posix:stat (native-folder directory))))
          (stamp (and stat (list (namestring directory) (sb-posix:stat-ino stat)
                                 (sb-posix:stat-mtime stat))))
          (memo *manifest-count*))
     (if (and stamp (equal stamp (car memo)))
         (cdr memo)
-        (let ((count (length (manifests))))
+        (let ((count (length (manifest-paths))))
           (when (and stamp (< (third stamp) now))
             (setf *manifest-count* (cons stamp count)))
           count))))

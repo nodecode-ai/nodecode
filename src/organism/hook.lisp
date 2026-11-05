@@ -109,8 +109,7 @@ every count from LOW up."
 
 (defun put-in-place (alist key value test &aux (entry (cons key value)))
   "ALIST, fresh, with (KEY . VALUE) where KEY's entry stands under TEST, else at its end."
-  (let ((present (assoc key alist :test test)))
-    (if present (substitute entry present alist) (append alist (list entry)))))
+  (if-let (present (assoc key alist :test test)) (substitute entry present alist) (append alist (list entry))))
 
 ;;; --- a hook's own error, kept inside it ------------------------------------
 ;;; At a point whose hooks only watch (:FRAME, :ROUND) one hook's bug is not

@@ -111,6 +111,15 @@ try {
   if ($LASTEXITCODE -ne 0) { throw "build-windows.ps1 failed ($LASTEXITCODE)" }
 } finally { Pop-Location }
 
+# --- a user's environment is not ASCII ---------------------------------------
+# Every smoke below runs with one variable a code page cannot hold whole: a
+# u-umlaut (in the ANSI page, where a UTF-8 decode of its byte signals) and a
+# CJK character (outside every ANSI page, so a narrow read turns it into `?').
+# One such value - a user named Juergen with the umlaut, say - once stopped a
+# shell from starting its organism, which it hands this environment through
+# ENVIRONMENT-WITH (#198); RUN-BOUNDED's :environment below takes that path.
+$env:NODECODE_SMOKE_WIDE = 'J' + [char]0xFC + 'rgen-' + [char]0x65E5
+
 # --- the platform seams, through the trial verb ------------------------------
 # The image answers, the bare launch path survives, and what it reopens at
 # start is the files beside it, not this machine's PATH: a user's Windows has
@@ -139,7 +148,34 @@ Set-Location $tree
   if ((Trial '(if (and nlk:*shell* (search "sh" (namestring nlk:*shell*))) 1 0)') -ne '1') { throw 'no shell resolved' }
   if ((Trial '(multiple-value-bind (out err status) (nlk:run-bounded (nlk:shell-argv "echo hi; echo bad 1>&2; exit 4") :seconds 20) (if (and (search "hi" out) (search "bad" err) (eql status 4)) 1 0))') -ne '1') { throw 'run-bounded' }
   if ((Trial '(if (eq :timeout (nth-value 2 (nlk:run-bounded (nlk:shell-argv "sleep 30") :seconds 1))) 1 0)') -ne '1') { throw 'run-bounded timeout' }
+  # Git for Windows past its redirectors (T-442): the shell is Git's
+  # usr\bin\bash.exe itself, and what a command sees there is byte for byte what
+  # it sees through the compat-bash redirector that would have started it --
+  # the environment, the tools on PATH, a wide value, the folder. A child named
+  # git is the toolchain's git.exe, and a pipeline past its bound ends whole.
+  if ((Trial '(if (and nlk::*git-shell* (search "usr\\bin\\bash.exe" (string-downcase (princ-to-string nlk:*shell*)))) 1 0)') -ne '1') { throw 'the shell is not Git''s bash itself' }
+  if ((Trial '(let* ((cmd "echo \"$MSYSTEM|$HOME|$EXEPATH|$PLINK_PROTOCOL\"; command -v grep sed awk find git; echo \"$PATH\" | cut -d: -f1-4; printf %s \"$NODECODE_SMOKE_WIDE\" | od -An -tx1; pwd; (echo a; echo b) | grep -c .") (direct (nlk:run-bounded (nlk:shell-argv cmd) :seconds 30)) (wrapped (nlk:run-bounded (cons (getf nlk::*git-shell* :redirector) (rest (nlk:shell-argv cmd))) :seconds 30))) (if (and (search "MINGW64|" direct) (search "/mingw64/bin/git" direct) (equal direct wrapped)) 1 0))') -ne '1') { throw 'the direct shell differs from the redirector''s' }
+  if ((Trial '(if (and nlk::*git-direct* (search "\\bin\\git.exe" (first (nlk::past-git-redirector (list "git" "--version") nil))) (search "git version" (nlk:run-bounded (list "git" "--version") :seconds 20))) 1 0)') -ne '1') { throw 'git is not the toolchain''s git.exe' }
+  if ((Trial '(let ((t0 (get-internal-real-time))) (if (and (eq :timeout (nth-value 2 (nlk:run-bounded (nlk:shell-argv "sleep 30 | cat | cat") :seconds 1))) (< (- (get-internal-real-time) t0) (* 15 internal-time-units-per-second))) 1 0))') -ne '1') { throw 'a pipeline past its bound' }
   if ((Trial '(if (nlk:pid-live-p (sb-posix:getpid)) 1 0)') -ne '1') { throw 'pid-live-p self' }
+  # The workspace journal (T-442): a capture trusts it to say nothing moved, so
+  # it must see a write the image makes, a write a child made before it
+  # exited, and leave a write under .git out.
+  if ((Trial '(let* ((dir (uiop:ensure-directory-pathname (merge-pathnames (format nil "nc-journal-~d" (random 1000000 (make-random-state t))) (uiop:temporary-directory)))) (root (namestring (ensure-directories-exist (merge-pathnames ".git/" dir))))) (setf root (namestring dir)) (flet ((epoch () (nlk::workspace-journal-epoch root)) (put (name) (with-open-file (o (merge-pathnames name dir) :direction :output :if-exists :supersede) (write-line "x" o)))) (let* ((e0 (epoch)) (e1 (epoch))) (put ".git/index") (let ((e2 (epoch))) (put "a.txt") (let ((e3 (epoch))) (nlk:run-bounded (nlk:shell-argv (format nil "echo y > ''~a''" (substitute #\/ #\\ (namestring (merge-pathnames "b.txt" dir))))) :seconds 20) (let ((e4 (epoch))) (ignore-errors (uiop:delete-directory-tree dir :validate t)) (if (and e0 (eql e0 e1) (eql e1 e2) (> e3 e2) (> e4 e3)) 1 0)))))))') -ne '1') { throw 'the workspace journal' }
+  # The image reads NODECODE_SMOKE_WIDE whole, and a child it hands the value to
+  # reads it whole too: printed as UTF-16 code units, numbers no console code
+  # page can bend.
+  if ((Trial '(let ((want (map (quote string) (function code-char) (list 74 252 114 103 101 110 45 26085)))) (if (and (member (format nil "NODECODE_SMOKE_WIDE=~a" want) (nlk:process-environment) :test (function equal)) (equal "74 252 114 103 101 110 45 26085" (string-trim (list #\Return #\Newline #\Space) (nlk:run-bounded (list "powershell" "-NoProfile" "-Command" "[string]::Join('' '', [int[]][char[]]$env:NODECODE_SMOKE_WIDE_CHILD)") :seconds 30 :environment (list (format nil "NODECODE_SMOKE_WIDE_CHILD=~a" want)))))) 1 0))') -ne '1') { throw 'a non-ASCII environment value, read or handed on' }
+  # A child inherits the three standard handles it is given and nothing else of
+  # the image's: here a pipe end left inheritable, as RUN-PROGRAM leaves one for
+  # a spawn running beside this one, is closed by the image, and the read end
+  # sees end of file at once. Before the handle list the child kept it open, so
+  # a drain waited on it for as long as the child lived (2026-11-05).
+  if ((Trial '(multiple-value-bind (r w) (sb-unix:unix-pipe) (setf (sb-win32::inheritable-handle-p w) t) (multiple-value-bind (pid out) (nlk:spawn-program (list "powershell" "-NoProfile" "-Command" "Start-Sleep 15") :output :stream :error-output nil) (declare (ignore out)) (sb-unix:unix-close w) (let* ((s (sb-sys:make-fd-stream r :input t)) (th (sb-thread:make-thread (lambda () (read-char s nil :eof)))) (v (sb-thread:join-thread th :default :blocked :timeout 5))) (nlk:kill-tree pid) (sb-thread:join-thread th :default nil :timeout 5) (if (eq v :eof) 1 0))))') -ne '1') { throw 'a child inherits only its standard handles' }
+  # A grandchild that keeps run-bounded's pipes past its parent's exit costs the
+  # bounded drain, never a close that waits on the grandchild: a Windows close
+  # under a parked read waits, and every other close in the image behind it.
+  if ((Trial '(let ((t0 (get-internal-real-time))) (nlk:run-bounded (list "cmd" "/c" "start /b powershell -NoProfile -Command Start-Sleep 40") :seconds 30) (if (< (- (get-internal-real-time) t0) (* 20 internal-time-units-per-second)) 1 0))') -ne '1') { throw 'run-bounded closes no pipe under a parked drain' }
   # The idle release on Windows is a working-set trim: the working set is read,
   # and the policy's release shrinks it.
   if ((Trial '(let ((before (nlk:resident-bytes))) (if (and (integerp before) (eq t (nlk::release-image-pages)) (< (nlk:resident-bytes) before)) 1 0))') -ne '1') { throw 'working-set trim' }

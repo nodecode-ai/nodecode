@@ -24,7 +24,7 @@ case \"$1\" in
   trial) form=$(cat); report=$(printf '%s' \"$form\" | sed -n 's/.*\"\\([^\"]*\\)\".*/\\1/p'); printf '%s' '~a' > \"$report\"; echo 'nodecode-trial-score ~d' ;;
 esac
 exit 0~%" ,report ,score))
-     (with-saved-globals ((nlk::*organism-command* (list "/bin/sh" ,var)))
+     (with-saved-globals ((nlk::*organism-command* (shell-script-command ,var)))
        (nlk:with-cleanup ((nlk:note-standing "generation" nil :warning))
          ,@body))))
 
@@ -72,7 +72,7 @@ exit 0~%" ,report ,score))
 (deftest a-trial-child-that-answers-nothing-is-a-red-verdict (with-warm-fixture (key root cache))
   ;; A folder that kills its loader proves nothing: the child's end, not a
   ;; report, is the verdict.
-  (let ((nlk::*organism-command* '("/bin/true")))
+  (let ((nlk::*organism-command* (nlk:shell-argv "exit 0")))
     (nlk:with-cleanup ((nlk:note-standing "generation" nil :warning))
       (multiple-value-bind (verdict lines) (nlk:prove-self key)
         (is (eq :red verdict))
@@ -329,7 +329,9 @@ exit 0~%" ,report ,score))
       (write-temp-file (merge-pathnames "alpha space/side file.lisp" layer) "side")
       (is (nlk:git-commit-all layer "alpha side"))
       (is (eql 0 (nth-value 1 (nlk::git-in-layer layer "switch" branch))))
-      (is (eql 0 (nth-value 1 (nlk::git-in-layer layer "merge" "--no-ff" "side" "-m" "merge side"))))
+      ;; a merge writes a commit: it takes the identity GIT-COMMIT-ALL takes, as a
+      ;; machine with no git user configured (the Windows runner) has none of its own
+      (is (eql 0 (nth-value 1 (apply #'nlk::git-in-layer layer (append (nlk::git-identity layer) '("merge" "--no-ff" "side" "-m" "merge side"))))))
       (let* ((merged (nlk::git-head-sha layer))
              (exact (nlk::folder-keeps layer pathspec base merged))
              (filtered (nlk::folder-keeps layer pathspec base merged (make-hash-table :test #'equal))))
@@ -526,7 +528,7 @@ exit 0~%" ,report ,score))
 
 (deftest the-sealed-count-reads-the-manifests-again-only-when-the-directory-moves ()
   ;; The home screen says the count every frame: one stat of the directory,
-  ;; and the manifests decoded again only once it moved. A count read in the
+  ;; and the manifests listed again only once it moved. A count read in the
   ;; second the directory last moved is never kept, since a seal later in that
   ;; second leaves the stat as it was.
   (labels ((seal (number)
@@ -534,11 +536,11 @@ exit 0~%" ,report ,score))
               (nlk::manifest-path number)
               (nlk::pretty-json (nlk:json-object "format" nlk::+manifest-format+ "number" number "rows" #()))))
            (stamp (seconds)
-             (sb-posix:utimes (sb-ext:native-namestring (nlk:generations-directory)) seconds seconds)))
+             (set-file-times (nlk:generations-directory) seconds)))
     (let ((reads 0)
           (past (- (sb-ext:get-time-of-day) 60))
           (ahead (+ (sb-ext:get-time-of-day) 60)))
-      (with-stubbed-fdefinition (nlk:manifests () (incf reads) (funcall original))
+      (with-stubbed-fdefinition (nlk::manifest-paths () (incf reads) (funcall original))
         (is (zerop (nlk:manifest-count)) "no directory, nothing sealed")
         (seal 1)
         (seal 2)
@@ -557,6 +559,20 @@ exit 0~%" ,report ,score))
         (stamp ahead)
         (is (= 4 (nlk:manifest-count)) "a stat not yet in the past is never kept")
         (is (= 5 reads))))))
+
+(deftest the-sealed-count-opens-no-manifest ()
+  ;; A new shell pays the count before its first frame: counting the files
+  ;; keeps that a directory listing, however many generations the home holds.
+  (let ((opened 0))
+    (dotimes (i 3)
+      (nlk::write-file-atomically
+       (nlk::manifest-path (1+ i))
+       (nlk::pretty-json (nlk:json-object "format" nlk::+manifest-format+ "number" (1+ i) "rows" #()))))
+    (setf nlk::*manifest-count* nil)
+    (with-stubbed-fdefinition (nlk::read-generation-manifest (path) (incf opened) (funcall original path))
+      (is (= 3 (nlk:manifest-count)))
+      (is (zerop opened) "no manifest was opened to count them")
+      (is (= 3 (length (nlk:manifests))) "the manifests themselves still read whole"))))
 
 ;;; --- the bytes a seal keeps, and a generation laid beside the folder ----------
 ;;; What no repository can put back is kept whole, so a generation can be laid
@@ -577,7 +593,8 @@ exit 0~%" ,report ,score))
           (nlk::lay-tree digest target)
           (is (equal digest (nlk::tree-digest target)) "the folder laid digests the same")
           (is (probe-file (merge-pathnames "deep/inner.lisp" target)) "a subfolder comes back")
-          (is (= #o755 (file-mode (merge-pathnames "run.sh" target))) "and a file's mode")
+          ;; a Windows file has no execute bit to keep: its mode is only read-only or not
+          #-win32 (is (= #o755 (file-mode (merge-pathnames "run.sh" target))) "and a file's mode")
           (is (signals-error error (nlk::lay-tree digest target)) "never over a folder that stands")
           (is (signals-error error (nlk::lay-tree (nlk::tree-digest elsewhere) (merge-pathnames "none/" elsewhere))) "a digest nothing was kept under refuses"))))))
 
@@ -648,12 +665,16 @@ exit 0~%" ,report ,score))
 
 (deftest a-trial-runs-under-a-throwaway-home ()
   (with-temp-trees ((home "throwaway"))
+    ;; Windows' sh is MSYS's, which hands what it runs HOME as a POSIX path
+    ;; (/c/Users/...); cygpath gives back the Windows one the child was given.
     (with-temp-file (child :type "sh" :contents (format nil "#!/bin/sh
 cat > /dev/null
-if [ -n \"$NODECODE_HOME\" ] && [ -d \"$NODECODE_HOME\" ]; then printf '%s|%s|%s\\n' \"$NODECODE_HOME\" \"$HOME\" \"$XDG_CACHE_HOME\" > \"$NODECODE_HOME/seen\"; fi
+home=$HOME
+if command -v cygpath > /dev/null 2>&1; then home=$(cygpath -w \"$HOME\"); fi
+if [ -n \"$NODECODE_HOME\" ] && [ -d \"$NODECODE_HOME\" ]; then printf '%s|%s|%s\\n' \"$NODECODE_HOME\" \"$home\" \"$XDG_CACHE_HOME\" > \"$NODECODE_HOME/seen\"; fi
 echo 'nodecode-trial-score 7'~%"))
-      (let ((nlk::*organism-command* (list "/bin/sh" child))
-            (root (string-right-trim "/" (namestring home))))
+      (let ((nlk::*organism-command* (shell-script-command child))
+            (root (string-right-trim "/\\" (sb-ext:native-namestring home))))
         (is (equal '(7 "scored") (multiple-value-list (nlk:trial "(+ 3 4)" :home home))) "the child's number")
         (is (equal (format nil "~a/|~a|~a/cache~%" root root root) (uiop:read-file-string (merge-pathnames "seen" home))) "its home, HOME and cache all the throwaway's")
         (is (search "\"off\"" (uiop:read-file-string (merge-pathnames "config.jsonc" home))) "a home with no config runs with updates off"))

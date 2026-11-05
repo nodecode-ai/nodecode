@@ -56,6 +56,18 @@
   #+arm64 :arm64
   #-(or x86-64 arm64) (error "no release is built for this CPU"))
 
+(defun errno-text (errno)
+  "The C runtime's words for ERRNO, the number a failed sb-posix call or a C
+library call carries: `No such file or directory', `Read-only file system'."
+  ;; SB-INT:STRERROR reads Windows' own message table there, numbered by
+  ;; GetLastError, not by errno: errno 28 read `The printer is out of paper.'
+  ;; and 13 `The data is invalid.'. The C runtime's strerror is the table the
+  ;; number came from.
+  #-win32 (sb-int:strerror errno)
+  #+win32 (sb-alien:alien-funcall
+           (sb-alien:extern-alien "strerror" (function sb-alien:c-string sb-alien:int))
+           errno))
+
 ;;; --- Windows bindings SBCL does not carry ---------------------------------
 
 (defmacro define-routines (&body routines)
@@ -77,17 +89,40 @@ and each TYPE are SB-ALIEN's, or SAP, INT or STR for the three most written."
      (disposition sb-win32::dword) (attributes sb-win32::dword) (template sb-win32::handle))
     ("FlushFileBuffers" %flush-file-buffers int (handle sb-win32::handle))
     ("GetFileType" %get-file-type sb-win32::dword (handle sb-win32::handle))
+    ("GetFileAttributesExW" %get-file-attributes-ex int (name sb-win32::system-string)
+     (level int) (data sap))
     ("SetStdHandle" %set-std-handle int (which sb-win32::dword) (handle sb-win32::handle))
-    ("SetEnvironmentVariableA" %set-environment-variable int (name str) (value str))
+    ("SetEnvironmentVariableW" %set-environment-variable int (name sb-win32::system-string)
+     (value sb-win32::system-string))
+    ("GetEnvironmentStringsW" %get-environment-strings sap)
+    ("FreeEnvironmentStringsW" %free-environment-strings int (block sap))
     ("SetProcessWorkingSetSize" %set-process-working-set-size int (process sb-win32::handle)
      (minimum (sb-alien:unsigned 64)) (maximum (sb-alien:unsigned 64)))
     ("K32GetProcessMemoryInfo" %get-process-memory-info int (process sb-win32::handle)
      (counters sap) (size sb-win32::dword))
     ("GetFinalPathNameByHandleW" %get-final-path-name sb-win32::dword
-     (handle sb-win32::handle) (buffer sap) (size sb-win32::dword) (flags sb-win32::dword)))
+     (handle sb-win32::handle) (buffer sap) (size sb-win32::dword) (flags sb-win32::dword))
+    ("GetFileInformationByHandle" %get-file-information-by-handle int
+     (handle sb-win32::handle) (information sap))
+    ("GetHandleInformation" %get-handle-information int (handle sb-win32::handle) (flags sap))
+    ("InitializeProcThreadAttributeList" %initialize-attribute-list int (attributes sap)
+     (count sb-win32::dword) (flags sb-win32::dword) (size sap))
+    ("UpdateProcThreadAttribute" %update-attribute int (attributes sap) (flags sb-win32::dword)
+     (attribute (sb-alien:unsigned 64)) (value sap) (size (sb-alien:unsigned 64))
+     (previous sap) (returned sap))
+    ("DeleteProcThreadAttributeList" %delete-attribute-list sb-alien:void (attributes sap))
+    ("CreateJobObjectW" %create-job-object sb-win32::handle (security (* t)) (name (* t)))
+    ("AssignProcessToJobObject" %assign-process-to-job-object int (job sb-win32::handle)
+     (process sb-win32::handle))
+    ("TerminateJobObject" %terminate-job-object int (job sb-win32::handle) (code sb-win32::dword)))
+  (defconstant +handle-flag-inherit+ 1)
+  (defconstant +proc-thread-attribute-handle-list+ #x20002)
+  (defconstant +extended-startupinfo-present+ #x80000)
   (defconstant +file-share-all+ 7)
   (defconstant +file-flag-backup-semantics+ #x02000000)
   (defconstant +process-query-limited-information+ #x1000)
+  (defconstant +process-terminate+ #x0001)
+  (defconstant +process-set-quota+ #x0100)
   (defconstant +still-active+ 259)
   (defconstant +error-access-denied+ 5)
   (defconstant +error-sharing-violation+ 32)
@@ -96,21 +131,246 @@ and each TYPE are SB-ALIEN's, or SAP, INT or STR for the three most written."
   (defconstant +open-always+ 4)
   (defconstant +file-attribute-normal+ #x80)
   (defconstant +detached-process+ #x8)
+  (defconstant +create-unicode-environment+ #x400)
   (defconstant +std-input-handle+ #xFFFFFFF6)
   (defconstant +std-output-handle+ #xFFFFFFF5)
   (defconstant +std-error-handle+ #xFFFFFFF4))
 
 ;;; --- the shell ---------------------------------------------------------------
 
+(defun executable-names (name)
+  "The file names the command NAME is found under in a PATH directory: NAME,
+or on Windows, where a command named with no extension the shell runs is
+looked for under each PATHEXT one in turn, those -- npx is npx.cmd."
+  #-win32 (list name)
+  #+win32
+  (let ((extensions (remove "" (uiop:split-string (or (uiop:getenv "PATHEXT") ".COM;.EXE;.BAT;.CMD")
+                                                  :separator ";")
+                            :test #'string=))
+        (dot (position #\. name :from-end t)))
+    (if (and dot (member (subseq name dot) extensions :test #'string-equal))
+        (list name)
+        (mapcar (lambda (extension) (concatenate 'string name extension)) extensions))))
+
 (defun executable-on-path (name)
-  "The first PATH directory holding NAME, as NAME's truename, or NIL."
-  (loop for directory in (uiop:split-string (or (uiop:getenv "PATH") "")
+  "NAME's truename in the first PATH directory holding it -- on Windows under
+the first PATHEXT extension it is there with (EXECUTABLE-NAMES) -- or NIL."
+  ;; Probed for NAME alone, every bare command on Windows read as absent: an
+  ;; import skipped each MCP server `npx' starts as not on this box's PATH.
+  (loop with files = (executable-names name)
+        for directory in (uiop:split-string (or (uiop:getenv "PATH") "")
                                             :separator #+win32 ";" #-win32 ":")
-        thereis (and (plusp (length directory))
-                     (ignore-errors
-                      (probe-file
-                       (merge-pathnames name (uiop:parse-native-namestring
-                                              directory :ensure-directory t)))))))
+        for folder = (and (plusp (length directory))
+                          (ignore-errors (uiop:parse-native-namestring directory :ensure-directory t)))
+        thereis (and folder
+                     (loop for file in files
+                           thereis (ignore-errors (probe-file (merge-pathnames file folder)))))))
+
+;;; --- Git for Windows, past its redirectors -----------------------------------
+;;; What Git for Windows puts on PATH are redirectors (git-wrapper.c in
+;;; git-for-windows/MINGW-packages): bin\sh.exe and bin\bash.exe are its
+;;; compat-bash, which runs usr\bin\bash.exe, and cmd\git.exe (bin\git.exe a
+;;; copy) runs mingw64\bin\git.exe. Each is a process of its own that lays
+;;; Git's environment over the one it inherited, starts the real program and
+;;; waits on it: a command string cost 31.5 ms through bin\sh.exe and 21 ms
+;;; through usr\bin\bash.exe, `git --version' 18 ms through cmd\git.exe and
+;;; 10 ms through mingw64\bin\git.exe (T-442), and a scoop shim in front is a
+;;; third process. So this image starts the real program itself, with the
+;;; environment the redirector would have handed it, and keeps today's program
+;;; wherever anything of that layout is missing.
+
+(defparameter +git-toolchains+
+  '(("mingw64" . "MINGW64") ("clangarm64" . "CLANGARM64") ("mingw32" . "MINGW32"))
+  "Git for Windows' toolchain folders, each with the MSYSTEM its redirectors set.")
+
+(defun shim-target (program)
+  "The program the scoop shim PROGRAM starts -- the `path =' line of the .shim
+file beside it -- or NIL when PROGRAM is no shim."
+  (with-handlers ((error () nil))
+    (with-open-file (in (make-pathname :type "shim" :defaults program) :if-does-not-exist nil)
+      (when in
+        (loop for line = (read-line in nil)
+              while line
+              for text = (string-trim '(#\Space #\Tab #\Return) line)
+              for equals = (position #\= text)
+              when (and equals (string-equal "path" (string-trim '(#\Space #\Tab) (subseq text 0 equals))))
+                return (let ((value (string-trim '(#\Space #\Tab #\") (subseq text (1+ equals)))))
+                         (and (plusp (length value)) (uiop:parse-native-namestring value))))))))
+
+(defun real-path (path)
+  "PATH with every link on the way to it followed, as a pathname, or NIL
+when nothing is there."
+  ;; TRUENAME follows a symbolic link, and on Windows leaves a junction -- the
+  ;; installer's `current' -- as-is: a binary started through one would take
+  ;; `current' for the release it is. The file's own handle says where it lies,
+  ;; as \\?\C:\... or \\?\UNC\host\share\...
+  #-win32 (ignore-errors (truename path))
+  #+win32
+  (let ((handle (%create-file (uiop:native-namestring path) 0 +file-share-all+ nil
+                              +open-existing+ +file-flag-backup-semantics+ 0)))
+    (unless (= handle sb-win32::invalid-handle)
+      (with-cleanup ((sb-win32::close-handle handle))
+        (let ((buffer (make-array 2048 :element-type '(unsigned-byte 8))))
+          (sb-sys:with-pinned-objects (buffer)
+            (let ((units (%get-final-path-name handle (sb-sys:vector-sap buffer) 1024 0)))
+              (when (< 0 units 1024)
+                (let ((name (sb-ext:octets-to-string buffer :external-format :utf-16le
+                                                            :end (* 2 units))))
+                  (uiop:parse-native-namestring
+                   (cond ((uiop:string-prefix-p "\\\\?\\UNC\\" name)
+                          (concatenate 'string "\\\\" (subseq name 8)))
+                         ((uiop:string-prefix-p "\\\\?\\" name) (subseq name 4))
+                         (t name))
+                   :ensure-directory (uiop:directory-pathname-p path)))))))))))
+
+#+win32
+(defun file-identity (path)
+  "Which file PATH, a native namestring, is -- links followed -- as one
+string, VOLUME:INDEX, what device:inode is on POSIX; NIL when it cannot be
+opened."
+  ;; Windows' stat answers 0 for every file's inode, so device:inode names
+  ;; one file for the whole volume. The file's own handle carries the volume's
+  ;; serial number and the file's 64-bit index on it
+  ;; (BY_HANDLE_FILE_INFORMATION: the serial at byte 28, the index's high and
+  ;; low halves at 44 and 48).
+  (let ((handle (%create-file path 0 +file-share-all+ nil
+                              +open-existing+ +file-flag-backup-semantics+ 0)))
+    (unless (= handle sb-win32::invalid-handle)
+      (with-cleanup ((sb-win32::close-handle handle))
+        (let ((information (make-array 52 :element-type '(unsigned-byte 8))))
+          (sb-sys:with-pinned-objects (information)
+            (let ((sap (sb-sys:vector-sap information)))
+              (when (/= 0 (%get-file-information-by-handle handle sap))
+                (format nil "~d:~d" (sb-sys:sap-ref-32 sap 28)
+                        (logior (ash (sb-sys:sap-ref-32 sap 44) 32)
+                                (sb-sys:sap-ref-32 sap 48)))))))))))
+
+(defun git-redirector (program)
+  "When PROGRAM is one of Git for Windows' redirectors, itself or behind a scoop
+shim: a plist -- :ROOT Git's top folder, :KIND :SHELL (bin\\sh.exe,
+bin\\bash.exe) or :GIT (cmd\\git.exe, bin\\git.exe), :FOLDER the redirector's
+own folder, :TOOLCHAIN and :MSYSTEM -- and its real program as :PROGRAM, a
+native namestring. NIL for anything else, and for a Git whose real programs are
+not where its redirectors would look."
+  ;; The layout is read where the redirector really lies, as it reads its own
+  ;; (find_exe_realpath): through scoop's `current' junction to the version
+  ;; folder, the root MSYS maps to /. :REDIRECTOR keeps the path the shim
+  ;; names, which an update re-points, for when that folder is retired.
+  (let* ((found (and program (ignore-errors (probe-file program)) (pathname program)))
+         (target (and found (shim-target found)))
+         (named (if target (and (ignore-errors (probe-file target)) target) found))
+         (program (and named (real-path named))))
+    (when program
+      (let* ((name (string-downcase (file-namestring program)))
+             (folder (uiop:pathname-directory-pathname program))
+             (folder-name (string-downcase (or (car (last (rest (pathname-directory folder)))) "")))
+             (root (uiop:pathname-parent-directory-pathname folder))
+             (kind (cond ((and (equal folder-name "bin") (member name '("sh.exe" "bash.exe") :test #'equal))
+                          :shell)
+                         ((and (member folder-name '("cmd" "bin") :test #'equal) (equal name "git.exe"))
+                          :git))))
+        (when kind
+          (loop for (toolchain . msystem) in +git-toolchains+
+                for git = (probe-file (merge-pathnames (format nil "~a/bin/git.exe" toolchain) root))
+                for bash = (probe-file (merge-pathnames "usr/bin/bash.exe" root))
+                when (and git (or bash (eq kind :git)))
+                  return (list :root root :kind kind :folder folder
+                               :toolchain toolchain :msystem msystem
+                               :redirector (uiop:native-namestring named)
+                               :program (uiop:native-namestring
+                                         (merge-pathnames (if (eq kind :shell)
+                                                              "usr/bin/bash.exe"
+                                                              (format nil "~a/bin/git.exe" toolchain))
+                                                          root)))))))))
+
+(defun native-folder (pathname)
+  "PATHNAME, a folder, as a native namestring with no separator at its end."
+  (string-right-trim "\\/" (uiop:native-namestring pathname)))
+
+(defun git-redirector-environment (redirector &optional (environment (process-environment)))
+  "ENVIRONMENT as REDIRECTOR (GIT-REDIRECTOR's plist) lays it over what it
+inherits before it starts its real program -- setup_environment and
+maybe_read_config in git-wrapper.c: MSYSTEM; PLINK_PROTOCOL=ssh unless set;
+HOME unless set, HOMEDRIVE and HOMEPATH when that names a folder other than
+System32, else USERPROFILE; PATH led by the toolchain's bin, usr\\bin and
+HOME's bin; for the shell's compat-bash, EXEPATH its own folder; and the MSYS=
+lines of etc\\git-bash.config ahead of any MSYS already set."
+  (flet ((value (name)
+           (let ((entry (find name environment :key #'environment-entry-name :test #'string-equal)))
+             (and entry (subseq entry (min (length entry) (1+ (length name))))))))
+    (let* ((root (native-folder (getf redirector :root)))
+           (home (or (value "HOME")
+                     (when-let (homepath (value "HOMEPATH"))
+                       (let ((candidate (concatenate 'string (or (value "HOMEDRIVE") "") homepath))
+                             (system32 (when-let (windows (value "SystemRoot"))
+                                         (concatenate 'string windows "\\system32"))))
+                         (and (not (and system32 (string-equal candidate system32)))
+                              (uiop:directory-exists-p
+                               (uiop:parse-native-namestring candidate :ensure-directory t))
+                              candidate)))
+                     (value "USERPROFILE")))
+           (path (format nil "~a\\~a\\bin;~a\\usr\\bin;~@[~a~]~:[~;bin;~]~a"
+                         root (getf redirector :toolchain) root
+                         (and home (if (or (zerop (length home)) (find (char home (1- (length home))) "\\"))
+                                       home
+                                       (concatenate 'string home "\\")))
+                         home (or (value "PATH") "")))
+           (msys (with-handlers ((error () nil))
+                   (with-open-file (in (merge-pathnames "etc/git-bash.config" (getf redirector :root))
+                                       :if-does-not-exist nil)
+                     (and in (loop for line = (read-line in nil)
+                                   while line
+                                   for text = (string-right-trim '(#\Return) line)
+                                   when (uiop:string-prefix-p "MSYS=" text)
+                                     collect (subseq text 5))))))
+           (msys-value (let ((old (value "MSYS")))
+                         (dolist (piece msys old)
+                           (setf old (if old (format nil "~a ~a" piece old) piece))))))
+      (environment-with
+       (append (list (format nil "MSYSTEM=~a" (getf redirector :msystem))
+                     (format nil "PATH=~a" path))
+               (unless (value "PLINK_PROTOCOL") (list "PLINK_PROTOCOL=ssh"))
+               (when (and home (not (value "HOME"))) (list (format nil "HOME=~a" home)))
+               (when (eq (getf redirector :kind) :shell)
+                 (list (format nil "EXEPATH=~a" (native-folder (getf redirector :folder)))))
+               (when msys (list (format nil "MSYS=~a" msys-value))))
+       environment))))
+
+(defun windows-shell-candidate ()
+  "The sh.exe a Windows image finds: on PATH, beside the git on PATH
+(cmd\\git.exe by bin\\sh.exe), or in Git's two homes; NIL when none."
+  (flet ((under (root &rest relative)
+           (and root
+                (some (lambda (piece)
+                        (ignore-errors
+                         (probe-file (merge-pathnames piece root))))
+                      relative))))
+    (or (executable-on-path "sh.exe")
+        (when-let (git (executable-on-path "git.exe"))
+          (under (uiop:pathname-parent-directory-pathname
+                  (uiop:pathname-directory-pathname git))
+                 "bin/sh.exe" "usr/bin/sh.exe"))
+        (some (lambda (variable &aux (root (uiop:getenv variable)))
+                (and (stringp root) (plusp (length root))
+                     (under (uiop:parse-native-namestring root :ensure-directory t)
+                            "Git/bin/sh.exe" "Programs/Git/bin/sh.exe")))
+              '("ProgramFiles" "LOCALAPPDATA")))))
+
+(define-startup-parameter *git-shell*
+    #-win32 nil
+    #+win32 (let ((redirector (git-redirector (windows-shell-candidate))))
+              (and redirector (eq (getf redirector :kind) :shell) redirector))
+  "On Windows, when the sh.exe found is Git for Windows' compat-bash: its
+GIT-REDIRECTOR plist, whose usr\\bin\\bash.exe *SHELL* then is, started with
+the environment the redirector would have laid down; else NIL.")
+
+(define-startup-parameter *git-direct*
+    #-win32 nil
+    #+win32 (let ((redirector (git-redirector (executable-on-path "git.exe"))))
+              (and redirector (eq (getf redirector :kind) :git) redirector))
+  "On Windows, when the git.exe on PATH is Git for Windows' cmd\\git.exe
+redirector: its GIT-REDIRECTOR plist, whose toolchain git.exe a child named
+`git' then is; else NIL.")
 
 (define-startup-parameter *shell*
     ;; Bash where the machine has it: the commands a model writes are bash --
@@ -118,30 +378,33 @@ and each TYPE are SB-ALIEN's, or SAP, INT or STR for the three most written."
     ;; /bin/sh is dash, where `time' alone is "not found" (three of four
     ;; benchmark runs lost a call to it). Every script this image runs through
     ;; the shell is POSIX sh, which bash runs as written.
-    ;; Windows: on PATH, beside the git on PATH (cmd/git.exe by bin/sh.exe), or Git's two homes.
+    ;; Windows: Git's bash past its compat-bash redirector, else the sh.exe found.
     #-win32 (or (and (probe-file "/bin/bash") "/bin/bash")
                 (executable-on-path "bash")
                 "/bin/sh")
-    #+win32
-    (flet ((under (root &rest relative)
-             (and root
-                  (some (lambda (piece)
-                          (ignore-errors
-                           (probe-file (merge-pathnames piece root))))
-                        relative))))
-      (or (executable-on-path "sh.exe")
-          (when-let (git (executable-on-path "git.exe"))
-            (under (uiop:pathname-parent-directory-pathname
-                    (uiop:pathname-directory-pathname git))
-                   "bin/sh.exe" "usr/bin/sh.exe"))
-          (some (lambda (variable &aux (root (uiop:getenv variable)))
-                  (and (stringp root) (plusp (length root))
-                       (under (uiop:parse-native-namestring root :ensure-directory t)
-                              "Git/bin/sh.exe" "Programs/Git/bin/sh.exe")))
-                '("ProgramFiles" "LOCALAPPDATA"))))
+    #+win32 (if *git-shell* (getf *git-shell* :program) (windows-shell-candidate))
   "The shell SHELL-ARGV runs command strings through, resolved when the
 process starts: bash (/bin/bash, else the first on PATH), else /bin/sh;
-Git for Windows' sh.exe; or NIL when the machine has none.")
+Git for Windows' usr\\bin\\bash.exe, which its bin\\sh.exe runs, else the
+sh.exe found; or NIL when the machine has none.")
+
+(defun past-git-redirector (argv environment)
+  "ARGV and ENVIRONMENT (NIL: this process's) as Git for Windows' redirector
+would have started its real program: the shell *GIT-SHELL* names, and a child
+named `git' when *GIT-DIRECT* names one, each with the redirector's
+environment; anything else unchanged."
+  ;; A Git uninstalled or moved under a running image: the redirector it was
+  ;; found by, or PATH's own `git', answers as it did before.
+  (let ((program (first argv)))
+    (cond ((and *git-shell* (stringp program) (string-equal program (getf *git-shell* :program)))
+           (if (probe-file program)
+               (values argv (git-redirector-environment *git-shell* (or environment (process-environment))))
+               (values (cons (getf *git-shell* :redirector) (rest argv)) environment)))
+          ((and *git-direct* (stringp program) (member program '("git" "git.exe") :test #'string-equal)
+                (probe-file (getf *git-direct* :program)))
+           (values (cons (getf *git-direct* :program) (rest argv))
+                   (git-redirector-environment *git-direct* (or environment (process-environment)))))
+          (t (values argv environment)))))
 
 (defun shell-argv (command &key login)
   "COMMAND, a string, as the argv that runs it through the shell: sh -c, or
@@ -232,9 +495,10 @@ file is gone. NIL where there is no /proc."
   ("mallopt" %mallopt int (param int) (value int))
   ("__nss_configure_lookup" %nss-configure-lookup int (database str) (service str)))
 
-(defun spawn-detached (command log)
+(defun spawn-detached (command log &key stdout)
   "Launch COMMAND fully detached, output appended to LOG: the child survives
-this process's exit and owns no terminal."
+this process's exit and owns no terminal. STDOUT, a descriptor of this
+process's, is the child's stdout instead, LOG then its stderr alone."
   ;; => COMMAND, or (values NIL
   ;; REASON). On POSIX the child is double-forked into a session of its own
   ;; (setsid -f, or macOS's wrapped shell), the wrapper started through
@@ -254,7 +518,7 @@ this process's exit and owns no terminal."
              #-linux (append *session-wrapper*
                              (list "/bin/sh" "-c" "exec \"$0\" \"$@\" &")
                              command)
-             :output log :error-output :output)))
+             :output (or stdout log) :error-output (if stdout log :output))))
       (wait-for-child pid process))
     #+win32
     (let* ((command-line
@@ -293,17 +557,68 @@ this process's exit and owns no terminal."
            (sb-alien:slot information 'sb-win32::process-handle)))))
     command))
 
+;;; --- a child's tree, on Windows ---------------------------------------------
+;;; Windows keeps no process group, and a parent's process id draws no tree:
+;;; MSYS's sh forks and execs through processes that exit, so the `sleep' a
+;;; shell ran names a parent no walk down from the shell reaches. `taskkill
+;;; /T' ended the shell and left that sleep holding the shell's pipes, so a
+;;; bounded run returned ten seconds past its bound and the child ran on. A
+;;; job object holds every process started from inside it, whatever became
+;;; of its parent: each child SPAWN-PROGRAM starts is put in a job of its
+;;; own, KILL-TREE ends the job, and the job is let go when the child is
+;;; reaped -- not ended, so a daemon a child leaves behind on purpose (a
+;;; clipboard owner) lives on.
+
+#+win32
+(defvar *child-jobs* (make-hash-table :test #'eql :synchronized t)
+  "PID -> the job object holding that child's tree, for each child
+SPAWN-PROGRAM started that is not reaped yet.")
+
+#+win32
+(defun enroll-child (pid)
+  "Put the child PID in a job object of its own, so KILL-TREE reaches all
+it starts. Never signals: a child it cannot enroll is ended through
+`taskkill /T' instead."
+  ;; The child runs from CreateProcess on, so what it starts in the moment
+  ;; before it is enrolled stays outside the job; a shell takes far longer
+  ;; than that to start its first command.
+  (let ((job (%create-job-object nil nil)))
+    (unless (zerop job)
+      (let ((process (%open-process (logior +process-set-quota+ +process-terminate+) 0 pid)))
+        (if (or (zerop process) (= process sb-win32::invalid-handle))
+            (sb-win32::close-handle job)
+            (unwind-protect
+                 (if (zerop (%assign-process-to-job-object job process))
+                     (sb-win32::close-handle job)
+                     (setf (gethash pid *child-jobs*) job))
+              (sb-win32::close-handle process)))))))
+
+#+win32
+(defun release-child-job (pid)
+  "Let go of the job object holding the reaped child PID's tree, leaving
+what still runs in it running."
+  ;; Under the table's lock, as KILL-TREE ends a job: a handle closed between
+  ;; its lookup and its use could by then name another process's job.
+  (sb-ext:with-locked-hash-table (*child-jobs*)
+    (let ((job (gethash pid *child-jobs*)))
+      (when job
+        (remhash pid *child-jobs*)
+        (sb-win32::close-handle job)))))
+
 (defun kill-tree (pid)
   "End PID and everything under it, now: SIGKILL to PID's process group
 (RUN-BOUNDED's and SPAWN-DETACHED's children lead their own groups) and to
-PID itself; on Windows `taskkill /T /F', which walks the tree the same
-way. Never signals."
+PID itself; on Windows the job object a child SPAWN-PROGRAM started runs
+in, else `taskkill /T /F', which walks the tree by parent. Never signals."
   #-win32 (ignore-errors (sb-posix:kill (- pid) sb-posix:sigkill))
   #-win32 (ignore-errors (sb-posix:kill pid sb-posix:sigkill))
   #+win32
-  (ignore-errors
-   (uiop:run-program (list "taskkill" "/PID" (princ-to-string pid) "/T" "/F")
-                     :output nil :error-output nil :ignore-error-status t))
+  (unless (sb-ext:with-locked-hash-table (*child-jobs*)
+            (let ((job (gethash pid *child-jobs*)))
+              (and job (/= 0 (%terminate-job-object job 1)))))
+    (ignore-errors
+     (uiop:run-program (list "taskkill" "/PID" (princ-to-string pid) "/T" "/F")
+                       :output nil :error-output nil :ignore-error-status t)))
   t)
 
 (defun %drain (in out)
@@ -417,17 +732,194 @@ spawned after this inherits, and what this process's own reads answer."
   #+win32 (%set-environment-variable name value)
   value)
 
-(defun environment-with (overrides)
-  "This process's environment with OVERRIDES — \"NAME=value\" strings — laid
-over it: a name in OVERRIDES replaces every inherited entry of that name
-(case-blind on Windows, as the OS reads them), the rest ride along."
-  (flet ((name (entry) (subseq entry 0 (or (position #\= entry) (length entry)))))
-    (let ((names (mapcar #'name overrides)))
-      (append overrides
-              (remove-if (lambda (entry)
-                           (member (name entry) names
-                                   :test #+win32 #'string-equal #-win32 #'string=))
-                         (sb-ext:posix-environ))))))
+(defun process-environment ()
+  "This process's environment, as \"NAME=value\" strings."
+  ;; SB-EXT:POSIX-ENVIRON on Windows decodes the ANSI block (GetEnvironmentStrings:
+  ;; the code page's bytes, a `?' for every character outside it) as UTF-8, so a
+  ;; single value holding a `ü' signals. The wide block is the environment itself.
+  #-win32 (sb-ext:posix-environ)
+  #+win32
+  (let ((block (%get-environment-strings)))
+    (unless (zerop (sb-sys:sap-int block))
+      (with-cleanup ((%free-environment-strings block))
+        (loop with start = 0
+              until (zerop (sb-sys:sap-ref-16 block start))
+              collect (let* ((end (loop for at from start by 2
+                                        until (zerop (sb-sys:sap-ref-16 block at))
+                                        finally (return at)))
+                             (octets (make-array (- end start) :element-type '(unsigned-byte 8))))
+                        (dotimes (i (length octets))
+                          (setf (aref octets i) (sb-sys:sap-ref-8 block (+ start i))))
+                        (setf start (+ end 2))
+                        (sb-ext:octets-to-string octets :external-format
+                                                 '(:utf-16le :replacement #\?))))))))
+
+(defun environment-entry-name (entry)
+  "The NAME of ENTRY, a \"NAME=value\" string or a bare NAME: up to its first `=',
+which a name may only begin with (Windows' hidden \"=C:=C:\\work\" entries)."
+  (subseq entry 0 (or (position #\= entry :start (min 1 (length entry))) (length entry))))
+
+(defun environment-with (overrides &optional (environment (process-environment)))
+  "ENVIRONMENT, this process's by default, with OVERRIDES laid over it: a
+\"NAME=value\" replaces every entry of that name (case-blind on Windows, as
+the OS reads them), a bare \"NAME\" removes them, the rest ride along."
+  (let ((names (mapcar #'environment-entry-name overrides)))
+    (append (remove-if (lambda (entry) (string= entry (environment-entry-name entry))) overrides)
+            (remove-if (lambda (entry)
+                         (member (environment-entry-name entry) names
+                                 :test #+win32 #'string-equal #-win32 #'string=))
+                       environment))))
+
+;;; --- a Windows child's environment, in Unicode ------------------------------
+;;; SBCL's RUN-PROGRAM hands CreateProcessW an explicit environment as bytes in
+;;; the C-string external format, UTF-8, with no CREATE_UNICODE_ENVIRONMENT, so
+;;; Windows reads them in the ANSI code page: a child given its parent's own
+;;; environment read C:\Users\JÃ¼rgen where an inheriting one reads
+;;; C:\Users\Jürgen, and a character outside the code page was lost outright.
+;;; SPAWN-PROGRAM gives RUN-PROGRAM no environment on Windows and binds the
+;;; wide block here instead; SBCL's one CreateProcessW call, wrapped, hands it
+;;; on flagged as Unicode, so the child reads every value as an heir would.
+
+#+win32
+(progn
+  (defvar *unicode-environment* nil
+    "The block SPAWN-PROGRAM is starting a child with on this thread, as
+UNICODE-ENVIRONMENT-BLOCK makes it, or NIL for a child that inherits.")
+
+  (defun unicode-environment-block (environment)
+    "ENVIRONMENT, \"NAME=value\" strings, as the block CreateProcessW takes under
+CREATE_UNICODE_ENVIRONMENT: each entry UTF-16LE and NUL-ended, sorted by
+name case-blind as Windows keeps its own, one more NUL closing it."
+    (sb-ext:string-to-octets
+     (with-output-to-string (out)
+       (dolist (entry (stable-sort (copy-list environment) #'string<
+                                   :key (lambda (entry)
+                                          (string-upcase (environment-entry-name entry)))))
+         (write-string entry out)
+         (write-char #\Nul out))
+       (write-char #\Nul out)
+       (unless environment (write-char #\Nul out)))
+     :external-format :utf-16le))
+
+  (defun %create-process-in-unicode (create-process application command-line
+                                     process-security thread-security inheritp
+                                     flags environment &rest more)
+    "SB-WIN32::CREATE-PROCESS, given *UNICODE-ENVIRONMENT* when one is bound."
+    (let ((block *unicode-environment*))
+      (if block
+          (sb-sys:with-pinned-objects (block)
+            (apply create-process application command-line process-security
+                   thread-security inheritp (logior flags +create-unicode-environment+)
+                   (sb-sys:vector-sap block) more))
+          (apply create-process application command-line process-security
+                 thread-security inheritp flags environment more))))
+
+  ;; By name, so a reload of the wrapper reaches the encapsulation already in place.
+  (sb-ext:without-package-locks
+    (sb-int:encapsulate 'sb-win32::create-process 'unicode-environment
+                        '%create-process-in-unicode)))
+
+;;; --- a Windows child inherits its three standard handles, no more ---------
+;;; CreateProcess told to inherit hands the child every handle of this process
+;;; marked inheritable, not only the three its STARTUPINFO names. SBCL's
+;;; RUN-PROGRAM marks a child's pipe ends inheritable before it takes its spawn
+;;; lock, and every Winsock socket is inheritable, so a child started while
+;;; another spawn's pipes were open took those pipes, and the gateway's sockets,
+;;; with it. On one gateway the WhatsApp driver, started beside a `git' run,
+;;; kept that run's stdout open for as long as it lived: the drain never saw end
+;;; of file, and the close RUN-BOUNDED made under it froze every close in the
+;;; image (2026-11-05). A PROC_THREAD_ATTRIBUTE_HANDLE_LIST names the three
+;;; standard handles as the only ones the child gets -- how Python's subprocess
+;;; has started every Windows child since 3.7.
+
+#+win32
+(progn
+  (defun inheritable-std-handles (startup)
+    "The standard handles STARTUP, a STARTUPINFOW's address, gives a child,
+each once and only those marked inheritable: the handle list refuses any
+other."
+    ;; GetHandleInformation reads the handle table, never the file object, so
+    ;; it does not wait behind a read another thread has pending on the handle.
+    (let ((info (sb-alien:deref (sb-alien:sap-alien startup (* sb-win32::startup-info))))
+          (handles '()))
+      (sb-alien:with-alien ((flags sb-win32::dword 0))
+        (dolist (handle (list (sb-alien:slot info 'sb-win32::stdin)
+                              (sb-alien:slot info 'sb-win32::stdout)
+                              (sb-alien:slot info 'sb-win32::stderr))
+                        (nreverse handles))
+          (when (and (plusp handle)
+                     ;; A console pseudo-handle ends in binary 11: no kernel handle.
+                     (/= 3 (logand handle 3))
+                     (not (member handle handles))
+                     (/= 0 (%get-handle-information
+                            handle (sb-alien:alien-sap (sb-alien:addr flags))))
+                     (logtest flags +handle-flag-inherit+))
+            (push handle handles))))))
+
+  (defun call-with-handle-list (startup handles function)
+    "FUNCTION called with the address of a STARTUPINFOEXW: STARTUP's fields and
+an attribute list naming HANDLES as the only handles a child inherits."
+    (let* ((size (sb-alien:alien-size sb-win32::startup-info :bytes))
+           (array (sb-alien:make-alien (sb-alien:unsigned 64) (length handles)))
+           (extended (sb-alien:make-alien (sb-alien:unsigned 8) (+ size 8)))
+           (needed (sb-alien:make-alien (sb-alien:unsigned 64)))
+           (attributes nil))
+      (with-cleanup ((when attributes (sb-alien:free-alien attributes))
+                     (sb-alien:free-alien needed)
+                     (sb-alien:free-alien extended)
+                     (sb-alien:free-alien array))
+        (loop for handle in handles
+              for index from 0
+              do (setf (sb-alien:deref array index) handle))
+        ;; Asked with no list, it answers the size one list of one attribute takes.
+        (setf (sb-alien:deref needed) 0)
+        (%initialize-attribute-list (sb-sys:int-sap 0) 1 0 (sb-alien:alien-sap needed))
+        (setf attributes (sb-alien:make-alien (sb-alien:unsigned 8) (sb-alien:deref needed)))
+        (when (zerop (%initialize-attribute-list (sb-alien:alien-sap attributes) 1 0
+                                                 (sb-alien:alien-sap needed)))
+          (error "InitializeProcThreadAttributeList: Windows error ~d"
+                 (sb-win32::get-last-error)))
+        (with-cleanup ((%delete-attribute-list (sb-alien:alien-sap attributes)))
+          (when (zerop (%update-attribute (sb-alien:alien-sap attributes) 0
+                                          +proc-thread-attribute-handle-list+
+                                          (sb-alien:alien-sap array) (* 8 (length handles))
+                                          (sb-sys:int-sap 0) (sb-sys:int-sap 0)))
+            (error "UpdateProcThreadAttribute: Windows error ~d" (sb-win32::get-last-error)))
+          (let ((sap (sb-alien:alien-sap extended)))
+            (sb-kernel:system-area-ub8-copy startup 0 sap 0 size)
+            (setf (sb-sys:sap-ref-32 sap 0) (+ size 8)
+                  (sb-sys:sap-ref-sap sap size) (sb-alien:alien-sap attributes))
+            (funcall function sap))))))
+
+  (defun %create-process-inheriting-std-handles (create-process application command-line
+                                                 process-security thread-security inheritp
+                                                 flags environment directory startup
+                                                 information)
+    "SB-WIN32::CREATE-PROCESS, its child inheriting only the standard handles its
+STARTUP names when it was to inherit at all."
+    (flet ((create (inheritp flags startup)
+             (funcall create-process application command-line process-security
+                      thread-security inheritp flags environment directory startup
+                      information)))
+      (if (not (and inheritp
+                    (sb-sys:system-area-pointer-p startup)
+                    (logtest (sb-alien:slot (sb-alien:deref (sb-alien:sap-alien
+                                                             startup (* sb-win32::startup-info)))
+                                            'sb-win32::flags)
+                             sb-win32::+startf-use-std-handles+)))
+          ;; No standard handles named (RUN-PROGRAM's :PRESERVE-FDS alone): as asked.
+          (create inheritp flags startup)
+          (let ((handles (inheritable-std-handles startup)))
+            (if handles
+                (call-with-handle-list
+                 startup handles
+                 (lambda (extended)
+                   (create t (logior flags +extended-startupinfo-present+) extended)))
+                (create nil flags startup))))))
+
+  (sb-ext:without-package-locks
+    (sb-int:encapsulate 'sb-win32::create-process 'inherit-std-handles-only
+                        '%create-process-inheriting-std-handles)))
 
 ;;; --- starting a child without copying this image --------------------------
 ;;; SB-EXT:RUN-PROGRAM forks, and a fork copies the page tables of the whole
@@ -600,8 +1092,9 @@ says: :STREAM, a pipe of its own; :OUTPUT, joined to stdout; a namestring.
   "Start ARGV — the program first, searched on PATH — as a child of this
 process: DIRECTORY its working directory when given, ENVIRONMENT
 (\"NAME=value\" strings) its whole environment, this process's own when NIL."
-  ;; OUTPUT is :STREAM for a stdout pipe, NIL for the null device, or a
-  ;; pathname the child's stdout is appended to, created when absent.
+  ;; OUTPUT is :STREAM for a stdout pipe, NIL for the null device, a
+  ;; pathname the child's stdout is appended to, created when absent, or a
+  ;; descriptor of this process's (an integer) the child's stdout is.
   ;; ERROR-OUTPUT takes the same three, or :OUTPUT to join stderr to stdout in
   ;; the child, so one stream carries both in the order the child wrote them.
   ;; A child that leaves a daemon behind -- a clipboard owner, a browser --
@@ -615,7 +1108,13 @@ process: DIRECTORY its working directory when given, ENVIRONMENT
   ;; the fork path started it and NIL when posix_spawn did. WAIT-FOR-CHILD takes PID and PROCESS and
   ;; the caller closes the streams.
   (flet ((target (value)
-           (if (or (null value) (keywordp value)) value (uiop:native-namestring value))))
+           (cond ((or (null value) (keywordp value)) value)
+                 ;; A descriptor: posix_spawn duplicates it into place; the
+                 ;; fork path's RUN-PROGRAM takes it as an fd-stream.
+                 ((integerp value) (if (eq *spawn-primitive* :posix)
+                                       value
+                                       (sb-sys:make-fd-stream value :output t :auto-close nil)))
+                 (t (uiop:native-namestring value)))))
     (let ((directory (and directory
                           (uiop:native-namestring
                            (uiop:ensure-directory-pathname directory))))
@@ -625,15 +1124,22 @@ process: DIRECTORY its working directory when given, ENVIRONMENT
           #-win32 (%spawn-posix argv directory environment (or output "/dev/null")
                                 (or errors "/dev/null") input)
           #+win32 (error "no posix_spawn on this platform")
-          (let ((process (apply #'sb-ext:run-program (first argv) (rest argv)
-                                :search t :wait nil
-                                :input (and (eq input :stream) :stream)
-                                :output output :if-output-exists :append
-                                :error errors :if-error-exists :append
-                                :external-format *child-external-format*
-                                :directory directory
-                                (when environment
-                                  (list :environment environment)))))
+          (let* (#+win32 (redirected (multiple-value-list (past-git-redirector argv environment)))
+                 #+win32 (argv (first redirected))
+                 #+win32 (environment (second redirected))
+                 #+win32 (*unicode-environment*
+                          (and environment (unicode-environment-block environment)))
+                 #+win32 (environment nil)
+                 (process (apply #'sb-ext:run-program (first argv) (rest argv)
+                                 :search t :wait nil
+                                 :input (and (eq input :stream) :stream)
+                                 :output output :if-output-exists :append
+                                 :error errors :if-error-exists :append
+                                 :external-format *child-external-format*
+                                 :directory directory
+                                 (when environment
+                                   (list :environment environment)))))
+            #+win32 (enroll-child (sb-ext:process-pid process))
             (values (sb-ext:process-pid process)
                     (and (eq output :stream) (sb-ext:process-output process))
                     (and (eq errors :stream) (sb-ext:process-error process))
@@ -675,6 +1181,7 @@ without the wait."
   ;; to have exited, so ask this, or WAIT-FOR-CHILD, never both after it has.
   (if process
       (unless (sb-ext:process-alive-p process)
+        #+win32 (release-child-job pid)
         (let ((code (sb-ext:process-exit-code process)))
           (if (eq (sb-ext:process-status process) :signaled) (+ 128 code) code)))
       #-win32
@@ -836,6 +1343,27 @@ the wait for the lock, when it is one, to the deadline (*WAIT-STEP*)."
   (unwind-protect (funcall function)
     (bt2:release-lock lock)))
 
+(defun %threads-released-p (threads)
+  "T once none of THREADS -- RUN-BOUNDED's drains and its feeder -- is left
+parked on a pipe, so closing the pipes cannot wait on one; NIL when one would
+not let go, and the pipes stay open rather than freeze the image."
+  ;; On Windows a close waits behind a read or a write another thread has
+  ;; pending on the same pipe, and while it waits every other close in the
+  ;; process waits behind it: a NUL close started 14 s in finished at 30 s, the
+  ;; moment the pipe's last writer exited (2026-11-05, winbox). A thread still
+  ;; parked when the bound fell -- a grandchild holds the pipe's other end -- is
+  ;; ended first; SBCL's interrupt cancels its pending I/O
+  ;; (CancelSynchronousIo). A POSIX close never waits, so there the pipes close
+  ;; as they are.
+  #-win32 (progn threads t)
+  #+win32
+  (dolist (thread threads t)
+    (when (bt2:thread-alive-p thread)
+      (ignore-errors (bt2:destroy-thread thread))
+      (%join-bounded thread 5)
+      (when (bt2:thread-alive-p thread)
+        (return nil)))))
+
 (defun run-bounded (argv &key (seconds 60) directory environment input
                              (output :string) (error-output :string) &aux clipped)
   "Run ARGV — the program first, searched on PATH — to completion or SECONDS,
@@ -876,10 +1404,12 @@ closed) and empty otherwise, in DIRECTORY when given, under ENVIRONMENT
            (feeder (and input-stream (spawn "run-bounded stdin" (%feed input-stream input))))
            (waiter (spawn "run-bounded wait" (wait-for-child pid process)))
            (status (%join-bounded waiter seconds)))
-      (with-cleanup ((when output-stream (ignore-errors (close output-stream)))
-                     (when error-stream (ignore-errors (close error-stream)))
-                     (when input-stream (ignore-errors (close input-stream :abort t)))
-                     (when process (ignore-errors (sb-ext:process-close process))))
+      (with-cleanup ((when (%threads-released-p (if feeder (cons feeder readers) readers))
+                       (when output-stream (ignore-errors (close output-stream)))
+                       (when error-stream (ignore-errors (close error-stream)))
+                       (when input-stream (ignore-errors (close input-stream :abort t)))
+                       ;; Closes the same streams once more: never under a parked thread.
+                       (when process (ignore-errors (sb-ext:process-close process)))))
         (when (eq status :timeout)
           (step-ran-out clipped)
           (kill-tree pid)
@@ -975,6 +1505,13 @@ the kernel will not lock the file at all (POSIX: Windows answers at once)."
           ((= (sb-win32::get-last-error) +error-sharing-violation+) nil)
           (t (error "cannot lock ~a: Windows error ~d"
                     path (sb-win32::get-last-error))))))
+
+(defun held-lock (path &aux (native (uiop:native-namestring path)))
+  "The lock this process holds on the file at PATH (a LOCK-FILE answer), or
+NIL when it holds none."
+  (sb-ext:with-locked-hash-table (*held-locks*)
+    (loop for lock being the hash-keys of *held-locks* using (hash-value held)
+          when (equal held native) return lock)))
 
 (defun file-locked-p (path &aux (native (uiop:native-namestring path)))
   "Whether a live process holds the lock on the file at PATH: a probe,
@@ -1090,8 +1627,11 @@ where the file system does not say."
   "What is at the native PATH, a last link not followed: :DIRECTORY, :FILE (a
 regular one), :LINK, :OTHER or :ABSENT, or :UNKNOWN when the question itself
 was refused. The stat is the second value."
+  ;; A folder's native namestring ends in its separator, and Windows' stat
+  ;; finds nothing by such a name: every folder read :ABSENT there.
+  ;; NATIVE-PATH drops it, but for a drive's root, which needs it.
   (handler-case
-      (let* ((stat (sb-posix:lstat path))
+      (let* ((stat (sb-posix:lstat #-win32 path #+win32 (native-path path)))
              (kind (logand (sb-posix:stat-mode stat) sb-posix:s-ifmt)))
         (values (cond ((= kind sb-posix:s-ifdir) :directory)
                       ((= kind sb-posix:s-ifreg) :file)
@@ -1102,6 +1642,26 @@ was refused. The stat is the second value."
       (if (member (sb-posix:syscall-errno condition) (list sb-posix:enoent sb-posix:enotdir))
           :absent
           :unknown))))
+
+(defun stat-write-time (stat native)
+  "When the file at the native path NATIVE, whose STAT this is, was last
+written: whole seconds since 1970, UTC."
+  ;; Not SB-POSIX:STAT-MTIME alone: on Windows that is msvcrt's _stat, which
+  ;; takes the file's UTC time to local time by today's offset and back by
+  ;; that date's -- an hour early or late for a time in the other daylight
+  ;; saving season, and -1 for one before 1970 local time (T-447). Windows
+  ;; keeps the time itself as a FILETIME, which has neither fault.
+  #-win32 (declare (ignore native))
+  #-win32 (sb-posix:stat-mtime stat)
+  #+win32
+  ;; GetFileExInfoStandard (0) fills a WIN32_FILE_ATTRIBUTE_DATA: the
+  ;; attributes, the creation, access and write FILETIMEs -- each two DWORDs,
+  ;; the low first, counting 100 ns from 1601 -- and the size.
+  (sb-alien:with-alien ((data (sb-alien:array (sb-alien:unsigned 32) 9)))
+    (if (zerop (%get-file-attributes-ex native 0 (sb-alien:alien-sap data)))
+        (sb-posix:stat-mtime stat)
+        (- (floor (logior (sb-alien:deref data 5) (ash (sb-alien:deref data 6) 32)) 10000000)
+           11644473600))))
 
 (defun claim-temp-beside (path claim)
   "Call CLAIM with fresh names beside PATH until one is not taken, CLAIM
@@ -1143,15 +1703,34 @@ holds. Re-entrancy lives here and nowhere else: POSIX takes a second record
 lock from this process without a word, and CLOSING that second descriptor
 releases the first lock with it.")
 
+(defun resolved-directory (directory &aux (directory (uiop:ensure-directory-pathname directory)))
+  "DIRECTORY with its symbolic links resolved as far as it exists: the
+truename of its deepest ancestor that does, the steps below it appended as
+spelled."
+  ;; One folder answers one path before it is made and after: a writer takes
+  ;; a folder's lock, makes the folder, and releases the lock by the same name.
+  ;; A truename alone answered the spelling until the folder existed and the
+  ;; resolved path after -- a link above it resolved, or on Windows the drive
+  ;; a `/tmp/...' path never named -- so the release missed the lock it took.
+  (or (ignore-errors (truename directory))
+      (let ((steps (pathname-directory directory)))
+        (if (and (consp steps) (rest steps) (stringp (car (last steps))))
+            (merge-pathnames (make-pathname :directory (list :relative (car (last steps))))
+                             (resolved-directory (make-pathname :directory (butlast steps)
+                                                                :name nil :type nil :version nil
+                                                                :defaults directory)))
+            directory))))
+
 (defun folder-lock-path (directory)
   "The file that stands for the folder DIRECTORY: in a `.locks' directory
 beside it, named after it -- ~/.nodecode/cells/you-memory/ and
-~/.nodecode/cells/.locks/you-memory.lock -- with DIRECTORY's symbolic links resolved
-first, so two homes sharing one folder contend for one lock rather than two.
-A dot-directory, so the folder's own repository never carries it:
-GIT-EXCLUDE-DOT-DIRECTORIES keeps those out of every commit."
-  (let* ((resolved (uiop:ensure-directory-pathname
-                    (or (ignore-errors (truename directory)) (pathname directory))))
+~/.nodecode/cells/.locks/you-memory.lock -- with DIRECTORY's symbolic links
+resolved first, as far as it exists (RESOLVED-DIRECTORY), so two homes sharing
+one folder contend for one lock rather than two, and a folder answers the same
+lock before it is made and after. A dot-directory, so the folder's own
+repository never carries it: GIT-EXCLUDE-DOT-DIRECTORIES keeps those out of
+every commit."
+  (let* ((resolved (resolved-directory directory))
          (name (car (last (pathname-directory resolved)))))
     (merge-pathnames (concatenate 'string ".locks/" name ".lock")
                      (uiop:pathname-parent-directory-pathname resolved))))
@@ -1232,31 +1811,13 @@ on Windows MoveFileEx with replacement."
              (or (ignore-errors (sb-int:strerror errno)) errno)))
     to))
 
-(defun real-path (path)
-  "PATH with every link on the way to it followed, as a pathname, or NIL
-when nothing is there."
-  ;; TRUENAME follows a symbolic link, and on Windows leaves a junction -- the
-  ;; installer's `current' -- as-is: a binary started through one would take
-  ;; `current' for the release it is. The file's own handle says where it lies,
-  ;; as \\?\C:\... or \\?\UNC\host\share\...
-  #-win32 (ignore-errors (truename path))
-  #+win32
-  (let ((handle (%create-file (uiop:native-namestring path) 0 +file-share-all+ nil
-                              +open-existing+ +file-flag-backup-semantics+ 0)))
-    (unless (= handle sb-win32::invalid-handle)
-      (with-cleanup ((sb-win32::close-handle handle))
-        (let ((buffer (make-array 2048 :element-type '(unsigned-byte 8))))
-          (sb-sys:with-pinned-objects (buffer)
-            (let ((units (%get-final-path-name handle (sb-sys:vector-sap buffer) 1024 0)))
-              (when (< 0 units 1024)
-                (let ((name (sb-ext:octets-to-string buffer :external-format :utf-16le
-                                                            :end (* 2 units))))
-                  (uiop:parse-native-namestring
-                   (cond ((uiop:string-prefix-p "\\\\?\\UNC\\" name)
-                          (concatenate 'string "\\\\" (subseq name 8)))
-                         ((uiop:string-prefix-p "\\\\?\\" name) (subseq name 4))
-                         (t name))
-                   :ensure-directory (uiop:directory-pathname-p path)))))))))))
+(defun gzip-file (from to)
+  "The file at FROM gzipped into the file at TO, TO replaced if it exists,
+in this process: Windows ships tar but no gzip program. => TO."
+  ;; salza2, the deflater FIT-IMAGE already carries. Its fixed Huffman codes
+  ;; run as fast as gzip -6 does and come out about a quarter larger.
+  (salza2:gzip-file from to)
+  to)
 
 (defun file-bytes (path)
   "The size of the file at PATH in bytes, or NIL when it cannot be opened."
@@ -1767,6 +2328,40 @@ call that waits (+WAITING-SYSCALLS+)."
   "How long INTERRUPT-THREAD-SAFELY waits before sending again an
 interruption that landed inside C code.")
 
+;;; Windows' SBCL wakes a thread for an interruption by flipping its safepoint
+;;; state, so that the thread traps at its next safepoint and runs what is
+;;; queued (wake_thread_impl, src/runtime/safepoint.c). A thread inside a
+;;; foreign call during the flip has no safepoint to trap at, and when it
+;;; comes back out after the flip nothing makes it look: the interruption
+;;; waits for the next GC. Sending again does not help, since a wake is not
+;;; made while the first one's mark (*THRUPTION-PENDING*) still stands.
+;;; Probed on the winbox: a thread calling malloc in a loop missed one stop in
+;;; fifteen, and fifty sends over ten seconds did not reach it.
+
+#+win32
+(defun rewake-thread (thread)
+  "Wake THREAD once more for the interruptions queued on it, as the runtime's
+first wake would have, had THREAD not been inside a foreign call."
+  ;; The mark is cleared so the wake is made, and a no-op carries it.
+  (ignore-errors
+   (setf (sb-thread::symbol-value-in-thread 'sb-sys:*thruption-pending* thread) nil)
+   (sb-thread:interrupt-thread thread (lambda ()))))
+
+(defun await-landing (landed thread seconds)
+  "Wait up to SECONDS on the semaphore LANDED, which an interruption sent to
+THREAD signals when it runs. => true once it ran."
+  #-win32 (progn thread (sb-thread:wait-on-semaphore landed :timeout seconds))
+  ;; On Windows the wait is cut in twentieths of a second, and the thread
+  ;; woken again after each (REWAKE-THREAD).
+  #+win32
+  (let ((deadline (+ (get-internal-real-time) (* seconds internal-time-units-per-second))))
+    (loop (let ((left (/ (- deadline (get-internal-real-time)) internal-time-units-per-second)))
+            (when (sb-thread:wait-on-semaphore landed :timeout (max 0.001 (min 0.05 left)))
+              (return t))
+            (when (<= left 0.05)
+              (return nil))
+            (rewake-thread thread)))))
+
 (defun interrupt-thread-safely (thread function &key (within 2))
   "Run FUNCTION in THREAD as BT2:INTERRUPT-THREAD does, but only where an
 unwind out of it strands nothing (INTERRUPTION-MAY-UNWIND-P): landed inside
@@ -1793,9 +2388,9 @@ THREAD stayed inside C code for WITHIN seconds and FUNCTION did not run."
                              (when safe (funcall function)))))
                  t)
           (return :gone))
-        (unless (sb-thread:wait-on-semaphore
-                 landed :timeout (max 0.05 (/ (- deadline (get-internal-real-time))
-                                              internal-time-units-per-second)))
+        (unless (await-landing
+                 landed native (max 0.05 (/ (- deadline (get-internal-real-time))
+                                            internal-time-units-per-second)))
           (return (if (sb-thread:thread-alive-p native) :queued :gone)))
         (when (eq (car where) :ran)
           (return :ran))

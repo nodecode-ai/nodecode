@@ -185,7 +185,7 @@
       ("/rename Pelican work" "renamed: Pelican work" "/rename is the same writer")
       ("/rename default" "renamed: Fix the reconnect backoff" "and default gives the line back"))
     (let ((bare (nle:slash "/rename" :session-id "s-name")))
-      (is (search "this session is named \"Fix the reconnect backoff\"" bare) "bare, it says the name")))
+      (is (search "Now: Fix the reconnect backoff" bare) "bare, it says the name")))
   (nlk:standby-session :id "s-fresh")
   (is (= 409 (post-title port "s-fresh" "Too soon")) "a session standing by has nothing to name")
   (is (search "nothing to name yet" (nle:slash "/rename Too soon" :session-id "s-fresh")))
@@ -244,9 +244,15 @@ checkout's words made plain. => (values TEXT STATUS HEADERS)."
           (nle::*workspace-directory* (string-right-trim "/" (namestring dir))))
       (is (search "nothing to export yet" (nle::execute-slash-command model "export" "")) "a fresh shell has nothing to save")
       (paint-model model (nle::ingest-message-fact "user" "first"))
+      ;; Typed alone it asks where; its first row's line saves here.
+      (is (null (nle::execute-slash-command model "export" "")) "typed alone, its dialog opens")
+      (is (nle::picker-dialog-p model.dialog))
+      (setf model.dialog nil)
       (is-table (args path) (equal (format nil "exported to ~a" (merge-pathnames path dir))
                                    (nle::execute-slash-command model "export" args))
-        ("" "first.md" "named after the session, in the shell's folder")
+        ((nth-value 1 (nle::parse-slash-input
+                       (getf (getf (first (getf (nle::bare-dialog "export" "s-a" model) :rows)) :run) :enter)))
+         "first.md" "named after the session, in the shell's folder")
         ("notes/" "notes/first.md" "in a folder named")
         ("out.md" "out.md" "at a path named"))
       (let ((file (uiop:read-file-string (merge-pathnames "notes/first.md" dir))))
@@ -330,6 +336,28 @@ answer decoded."
       (is (equal "(print 1)" (sb-ext:octets-to-string bytes :external-format :utf-8))))
     (nlk:standby-session :id "s-standing" :cwd (namestring proj))
     (is (equal "directory" (gethash "kind" (files-route port "" :session "s-standing"))) "a session standing by has its folder too")))
+
+(deftest files-route-says-when-a-file-was-written-whatever-the-season ()
+  ;; T-447: SB-POSIX:STAT on Windows is msvcrt's _stat, which reads a time in
+  ;; the other daylight saving season an hour off, and one before 1970 local
+  ;; time as -1 -- and the Files view showed both.
+  (with-temp-trees ((proj "files-times"))
+    (let ((times '(("january.txt" 1736942400 "2025-01-15T12:00:00Z")
+                   ("july.bin" 1751371200 "2025-07-01T12:00:00Z")
+                   ("early.txt" 1000 "1970-01-01T00:16:40Z"))))
+      (loop for (name time) in times
+            for path = (merge-pathnames name proj)
+            do (nlk:write-file-atomically path (if (search ".bin" name) (octets 1 0 2) name))
+               (set-file-times path time))
+      (with-gateway-session (port "s-files" :cwd (namestring proj))
+        (let ((rows (gethash "entries" (files-route port ""))))
+          (loop for (name nil written) in times
+                for row = (find name rows :key (lambda (row) (gethash "name" row)) :test #'equal)
+                do (is (equal written (and row (gethash "modified" row)))
+                       (format nil "~a's row says it was written at ~a" name written))))
+        (is-shape (files-route port "?path=july.bin")
+                  ("kind" "file")
+                  ("modified" "2025-07-01T12:00:00Z" "a file's own view says when it was written"))))))
 
 (deftest files-route-finds-every-file-under-a-folder-for-quick-open ()
   (with-files-route-folder (port proj away)

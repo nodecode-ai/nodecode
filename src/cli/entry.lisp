@@ -323,6 +323,8 @@ Zig launcher gives the same thing."
    (nlk:make-verb "login" "sign in to your nodecode.ai account: a subscription or API credits"
                   :arguments "[--subscription | --api]"
                   :detail "Asks which one unless a flag says it, opens nodecode.ai in your browser with this machine's code in the page, and waits there for you to sign in with your nodecode.ai account and allow the machine; over ssh, open the printed page on any device. The key is saved locally and the account's meter printed: the plan's requests left and when the plan ends, the API credit. No terminal UI or session is opened. /login does the same from inside the shell; /models is for other providers.")
+   (nlk:make-verb "logout" "sign this machine out of your nodecode.ai account"
+                  :detail "Takes the account's key out of this home's auth.json and forgets the machine link; the key stays on the account until you remove the machine at https://nodecode.ai/account/machines. No terminal UI or session is opened. /logout does the same from inside the shell; nodecode login signs in again.")
    (nlk:make-verb "machine" "link this machine to your nodecode.ai account with a code from its Machines page"
                   :label "machine link [CODE]"
                   :arguments "link [CODE]"
@@ -333,7 +335,7 @@ Zig launcher gives the same thing."
    (nlk:make-verb "import" "read another coding agent's home into this one; a preview until --yes"
                   :label "import [WORLD]" :terminal t
                   :arguments "[WORLD] [--source PATH] [--only KINDS] [--dry-run] [--overwrite] [--keep-running] [--yes]"
-                  :detail "Providers, standing instructions, memory, skills, MCP servers, channels, cron jobs, sessions and profiles, each through the cell that owns it, keys and tokens with them. WORLD names one harness to read; naming none reads every coding-agent home on this box and merges them, newest first, with an existing fact here always winning. --source reads a home at a path instead, or a repository's skills and MCP servers (OWNER/REPO, an https URL, #REF pinning a branch, tag or commit); --only names the kinds, comma-separated; --overwrite replaces what is already here. A foreign gateway polling the same bots is stopped and disabled so they answer from here (the report names the command that gives them back); --keep-running leaves it running, and its bots land off and come on by themselves once it stops. The preview opens in the setup walk; --yes applies it without asking.")
+                  :detail "Providers, standing instructions, memory, skills, MCP servers, channels, cron jobs, sessions and profiles, each through the cell that owns it, keys and tokens with them. WORLD names one harness to read; naming none reads every coding-agent home on this box and merges them, newest first, with an existing fact here always winning. --source reads a home at a path instead, or a repository's skills and MCP servers (OWNER/REPO, an https URL, #REF pinning a branch, tag or commit); --only names the kinds, comma-separated; --overwrite replaces what is already here. Skills are linked, each folder of them one link in the linked-skills cell, so each SKILL.md is read where it is and an edit in the other harness shows here at once. A foreign gateway polling the same bots is stopped and disabled so they answer from here (the report names the command that gives them back); --keep-running leaves it running, and its bots land off and come on by themselves once it stops. The preview opens in the setup walk; --yes applies it without asking.")
    (nlk:make-verb "add" "install a cell from the hub, or one this release ships, and turn it on"
                   :label "add nc://NAME"
                   :arguments "nc://NAME [--yes] [--wait SECONDS]"
@@ -342,6 +344,14 @@ Zig launcher gives the same thing."
                   :aliases '("profiles")
                   :label "profile [VERB]"
                   :arguments "[VERB] [ARGUMENTS]")
+   (nlk:make-verb "secrets" "keep each API key in a file of its own, out of auth.json"
+                  :label "secrets [split | list]"
+                  :arguments "split [--dry-run] | list"
+                  :detail "split moves every api_keys entry of auth.json into secrets/providers.<id>.api_key, one 0600 file per key, and leaves the rest of auth.json (sign-in tokens) where it is; --dry-run says what would move. list names the files, never a value. --sandbox needs it: a key in a file of its own is a stand-in inside the jail, and the real one is put back only on its way to that provider.")
+   (nlk:make-verb "sandbox" "review what a sandboxed organism wrote, or release the home"
+                  :label "sandbox [review | release]"
+                  :arguments "review | release [--yes]"
+                  :detail "A home that has run under --sandbox is marked: a launch that would load its folder outside the jail refuses, since the jail could have written code into the layer or cells. review lists what cells/ gained since the mark -- new folders, new commits and the files they touch; release --yes lifts the mark after you have read it.")
    (nlk:make-verb "gateway" "keep this home's organism running in the background, and at login"
                   :label "gateway [VERB]"
                   :arguments "[VERB]")
@@ -354,10 +364,20 @@ Zig launcher gives the same thing."
    (nlk:make-verb "rollback" "restore this home's organism to generation N"
                   :label "rollback N" :arguments "N"
                   :detail "Every folder goes back to what generation N recorded: the layer takes one commit whose tree is N's (its history kept, so forward is the same verb), a hub cell is cloned at N's pin, the binary and its shipped folders stay on the release that runs -- updates keep coming, forward, over the restored folder -- folders N had are installed and ones it never had are taken out where the installer put them; a plain folder whose content differs refuses the whole restore by name. With the organism running it converges and exits once no turn is in flight, and the next launch runs N; with none running, the next launch does. (rollback N) inside the shell does the same.")
+   (nlk:make-verb "snapshot" "take a snapshot: this home's running organism frozen whole, values and all"
+                  :label "snapshot [NAME]"
+                  :arguments "[NAME]"
+                  :detail "A snapshot is the running organism's heap frozen as it stands -- its values, closures and definitions no file holds -- kept under ~/.nodecode/snapshots/NAME/ beside the folder, which loads, keeps and shares as before. It stops the organism for a moment, keeps its heap under NAME or a dated name, and runs straight on from that snapshot in place: the same process, the shells attached reconnecting. A snapshot holds whatever the organism held, its secrets among them, so it never leaves this machine: no profile export, clone or backup carries it.")
+   (nlk:make-verb "snapshots" "list this home's snapshots, and switch between them"
+                  :label "snapshots [VERB]"
+                  :arguments "[restore NAME | delete NAME | rename NAME NEW]"
+                  :detail "Bare, in a terminal, it opens the shell on the list of snapshots -- Enter switches the organism to one, or back to fresh from files; F2 renames one; Delete removes one -- and prints the list where there is no terminal. restore NAME has the next launch that owns the organism boot that snapshot in place of the folder, once (with one running, it exits once no turn is in flight for it); delete removes one; rename gives one a new name. A snapshot boots only on the build that took it: one from another build is refused, naming it.")
    (nlk:make-verb "web" "open this home's organism in a browser tab"
                   :arguments "[--print]"
                   :detail "Prints the page's link and opens it where there is a display. The operator token rides after the link's #, which a browser never sends to a server: keep the link to yourself. Needs the organism running (nodecode, or nodecode gateway on) and the web cell: turn web on in /cells. --print prints the link alone and opens nothing: the line a program reads, the desktop app among them.")
-   (nlk:make-verb "resume" "open the shell on that session" :arguments "SESSION-ID" :terminal t)
+   (nlk:make-verb "resume" "open the shell on that session, or pick one"
+                  :label "resume [SESSION-ID]" :arguments "[SESSION-ID]" :terminal t
+                  :detail "With no SESSION-ID the shell opens on the session picker (/sessions): its This folder tab lists the sessions begun in this folder, All every one, and Enter opens the highlighted one. A SESSION-ID this home holds no session under opens the picker too, and says so. -c (--continue) opens the newest session begun in this folder without asking. The shell prints the resume line when it exits.")
    (nlk:make-verb "rpc" "drive this home's organism from a program: JSON lines in and out"
                   :label "rpc [SESSION-ID]"
                   :arguments "[SESSION-ID [--cursor N]] [--store PATH | --ephemeral]"
@@ -371,16 +391,38 @@ Zig launcher gives the same thing."
 resolves, what `nodecode --help' prints, what a mistyped command is matched
 against.")
 
+(defvar *sandbox-asked* nil
+  "Whether `--sandbox' was on the command line (PARSE-LAUNCH-ARGUMENTS):
+the organism runs in an OS jail and the shell stays outside (sandbox.lisp).")
+
+(defvar *sandbox-plan* nil
+  "In a sandboxed shell, what spawning its jailed organism takes:
+(:SRT PROGRAM :SETTINGS PATH :SOCKET PATH :PORT N :RUN DIRECTORY), written by
+SANDBOX-LAUNCH-PREFLIGHT; NIL everywhere else.")
+
+(defvar *sandboxed-shell* nil
+  "True in a shell whose organism runs jailed: it keeps the code it booted
+with and evaluates nothing the organism loads.")
+
+(defvar *sandbox-load-noted* nil
+  "Whether this sandboxed shell has said once that it skips the organism's
+loads.")
+
 (defparameter *launch-options*
   (list
    (nlk:make-verb "--profile" "run profile NAME: its own home and its own organism"
                   :aliases '("-p") :arguments "NAME" :label "-p, --profile NAME"
                   :detail "Read anywhere on the line. $NODECODE_HOME names a home the same way; with neither, the profile `nodecode profile use' chose boots, else ~/.nodecode/.")
+   (nlk:make-verb "--continue" "open the shell on the newest session begun in this folder"
+                  :aliases '("-c") :label "-c, --continue"
+                  :detail "The newest session a shell, the web page or a program began in this folder and spoke in -- never a fork, a helper or a room's lane under one, nor a cron fire. With none yet, the shell opens on a fresh session and says so. `nodecode resume' picks among them instead; -- PROMPT sends a prompt in the session it opens.")
    (nlk:make-verb "--store" "run on the store at PATH" :arguments "PATH")
    (nlk:make-verb "--ephemeral" "run on a throwaway store of this process's own"
                   :detail "The store only: config, the layer and the knowledge cells are still this profile's. HOME=$(mktemp -d) nodecode is a throwaway organism.")
    (nlk:make-verb "--pristine" "run generation 0: the binary alone, no folder loaded"
                   :detail "Nothing of the cell folder loads, no published image is followed, and keeps are refused while it runs: the floor to stand on when the folder itself is the problem. (generations) lists what was sealed and (rollback N) restores one, the next launch running it. A launch whose last self died before serving stands here by itself.")
+   (nlk:make-verb "--sandbox" "run the organism in an OS jail; the shell stays outside"
+                  :detail "Linux, with srt (npm install -g @anthropic-ai/sandbox-runtime), bubblewrap and socat. The organism's eval, sh and file verbs can write only this folder, the home and the caches, read nothing of ~/.ssh, cloud credentials or other agents' homes, and reach only the providers configured, nodecode.ai and GitHub; a key kept in secrets/ is a stand-in inside and the real one is put back only on its way to that provider. <home>/sandbox.jsonc adds allowed_domains, deny_read and allow_write. The shell runs the binary alone, outside, and loads nothing the organism writes; it refuses a home an unsandboxed organism or the background gateway already runs.")
    (nlk:make-verb "--provider" "open the shell's fresh session on provider P"
                   :arguments "P" :label "--provider P"
                   :detail "--model PROVIDER/MODEL says the same; this says it outright, for a model id whose own prefix names a provider.")
@@ -403,17 +445,41 @@ against.")
    (nlk:make-verb "--version" "the version, and the commit it was built from"))
   "The executable's options, in help's order.")
 
+(defparameter *offer-sandbox* nil
+  "Whether the launch offers `--sandbox' and the two commands that serve it,
+`sandbox' and `secrets' (WITHHELD-LAUNCH-VERB-P). Off until the jail ships:
+help and its suggestions name none of the three, and the parser refuses
+`--sandbox' and `secrets' as it does any word it does not hold. `sandbox'
+is still taken, so a home a jailed run marked on an earlier build can be
+reviewed and released. The code behind the three stays, run by its tests.")
+
+(defun withheld-launch-verb-p (verb)
+  "Whether VERB, a launch command or option, is held back from help and its
+suggestions: `--sandbox', `sandbox' or `secrets' while *OFFER-SANDBOX* is off."
+  (and (not *offer-sandbox*)
+       (member verb.name '("--sandbox" "sandbox" "secrets") :test #'string=)))
+
+(defun offered-launch-verbs (table)
+  "TABLE, a launch table, without the verbs held back (WITHHELD-LAUNCH-VERB-P):
+what help lists and a refusal suggests from."
+  (remove-if #'withheld-launch-verb-p table))
+
 (defun launch-name (word &rest tables)
   "The name of the launch command or option WORD spells in TABLES, its
-aliases resolved, or NIL."
-  (let ((verb (some (lambda (table) (nlk:find-verb word table)) tables))) (and verb verb.name)))
+aliases resolved, or NIL -- NIL too for a verb held back that the parser
+refuses (*OFFER-SANDBOX*): every word but `sandbox', which a marked home
+needs to lift its mark."
+  (let ((verb (some (lambda (table) (nlk:find-verb word table)) tables)))
+    (and verb
+         (not (and (withheld-launch-verb-p verb) (string/= verb.name "sandbox")))
+         verb.name)))
 
 (defun refuse-launch-word (word)
   "Refuse WORD, a command or an option the launch does not hold, naming the
 nearest one it does."
   (if (and (plusp (length word)) (char= (char word 0) #\-))
-      (launch-usage-error "~a" (nlk:unknown-word-text "option" word *launch-options*))
-      (launch-usage-error "~a" (nlk:unknown-word-text "command" word *launch-verbs*))))
+      (launch-usage-error "~a" (nlk:unknown-word-text "option" word (offered-launch-verbs *launch-options*)))
+      (launch-usage-error "~a" (nlk:unknown-word-text "command" word (offered-launch-verbs *launch-verbs*)))))
 
 (defun import-request (args)
   "The setup walk's import request the words ARGS after `import' ask for --
@@ -476,12 +542,11 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
   ;; behind the @FILE words' blocks (LAUNCH-FILES), and IMAGES the image
   ;; files among them as (MEDIA-TYPE . BASE64). Text piped into stdin is
   ;; MAIN's to add, once the line is known to open a shell (PIPED-LAUNCH).
-  (let ((cut (position "--" args :test #'string=)))
-    (when cut
-      (setf prompt (format nil "~{~a~^ ~}" (nthcdr (1+ cut) args))
-            args (subseq args 0 cut))
-      (when (zerop (length (string-trim '(#\Space #\Tab #\Newline) prompt)))
-        (launch-usage-error "-- needs the PROMPT after it: nodecode -- \"what the session should do\""))))
+  (when-let (cut (position "--" args :test #'string=))
+    (setf prompt (format nil "~{~a~^ ~}" (nthcdr (1+ cut) args))
+          args (subseq args 0 cut))
+    (when (zerop (length (string-trim '(#\Space #\Tab #\Newline) prompt)))
+      (launch-usage-error "-- needs the PROMPT after it: nodecode -- \"what the session should do\"")))
   (setf args (loop while args
                    for arg = (pop args)
                    if (member arg '("-p" "--profile") :test #'string=)
@@ -526,6 +591,11 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
                       (launch-usage-error "login signs in with a browser and takes no CODE; a code from the Machines page is nodecode machine link ~a"
                                           (first args)))
                     (setf child (list :login mode))))
+                 ;; (:logout): the sign-in's mirror, which takes no word.
+                 ((string= name "logout")
+                  (when (and args (not (uiop:string-prefix-p "-" (first args))))
+                    (launch-usage-error "logout takes no argument"))
+                  (setf child (list :logout)))
                  ;; (:machine-link CODE): the Machines page's link, NIL to be given a code.
                  ((string= name "machine")
                   (unless (equal (pop args) "link")
@@ -541,8 +611,23 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
                  ((string= name "warm") (setf child (list :warm)))
                  ((string= name "warm-dump")
                   (setf child (list :warm-dump (value-for "warm-dump needs a PATH"))))
-                 ((string= name "resume")
-                  (setf session-id (value-for "resume needs a SESSION-ID")))
+                 ;; SESSION-ID is the id the line names, :PICK for a bare
+                 ;; `resume' (the shell opens on the picker) and :CONTINUE for
+                 ;; -c (the newest session begun in this folder): the shell
+                 ;; resolves the two once its organism answers
+                 ;; (RESOLVE-LAUNCH-SESSION). A command word after `resume' is
+                 ;; never a session id.
+                 ((member name '("resume" "--continue") :test #'string=)
+                  (when session-id
+                    (launch-usage-error "a launch opens one session: nodecode resume [SESSION-ID], or nodecode -c"))
+                  (setf session-id
+                        (cond ((string= name "--continue") :continue)
+                              ((let ((word (first args)))
+                                 (and word (not (uiop:string-prefix-p "-" word))
+                                      (not (char= (char word 0) #\@))
+                                      (not (launch-name word *launch-verbs*))))
+                               (pop args))
+                              (t :pick))))
                  ;; (:rpc SESSION-ID CURSOR): the session a program's commands go
                  ;; to when they name none, NIL for a fresh one, and the log
                  ;; position it resumes past. A command word after it is never
@@ -572,6 +657,14 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
                                     (and args (not (uiop:string-prefix-p "-" (first args))) (pop args))))
                   (when (and args (not (uiop:string-prefix-p "-" (first args))))
                     (launch-usage-error "gateway setup takes one CHANNEL: nodecode gateway setup discord")))
+                 ;; Bare `snapshots', and `snapshots restore' with no NAME, is
+                 ;; the shell opened on the snapshots' list: a row to pick,
+                 ;; never a name to remember. With no terminal it prints the
+                 ;; list instead (MAIN).
+                 ((and (string= name "snapshots")
+                       (or (null args) (equal args '("restore"))))
+                  (setf args nil
+                        setup (list :image-picker)))
                  ;; `gateway run' is the gateway itself: the headless owner
                  ;; that waits for the store instead of losing it.
                  ((and (string= name "gateway") (equal (first args) "run"))
@@ -581,7 +674,7 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
                  ;; and the launch parser has no business reading them — the
                  ;; verbs the operating system answers, which run before any
                  ;; folder loads, print, and exit.
-                 ((member name '("add" "profile" "gateway" "update" "web" "generations" "rollback")
+                 ((member name '("add" "profile" "secrets" "sandbox" "gateway" "update" "web" "generations" "rollback" "snapshot" "snapshots")
                           :test #'string=)
                   (setf child (list (intern (string-upcase name) :keyword) args)
                         args nil))
@@ -598,6 +691,7 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
                   (setf store-path (value-for "--store needs a PATH")))
                  ((string= name "--ephemeral") (setf ephemeral t))
                  ((string= name "--pristine") (setf pristine t))
+                 ((string= name "--sandbox") (setf *sandbox-asked* t))
                  ((member name '("--provider" "--model" "--effort") :test #'string=)
                   (let* ((noun (string-upcase (subseq name 2)))
                          (key (intern noun :keyword))
@@ -629,7 +723,9 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
                                   (t "a first prompt"))))
       (when (and target session-id)
         (launch-usage-error "resume keeps the model ~a began on: /models in the shell picks another"
-                            session-id)))
+                            (if (stringp session-id) session-id "the session")))
+      (when (and (eq session-id :pick) (or prompt prompt-file files))
+        (launch-usage-error "a bare resume opens the picker, and a first prompt needs its session: nodecode resume SESSION-ID -- PROMPT, or nodecode -c -- PROMPT")))
     ;; Read now, before anything boots: a prompt that cannot be had stops
     ;; the launch here, with nothing started.
     (when prompt-file
@@ -646,15 +742,20 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
                                resume one with --store PATH"))
       (when store-path
         (launch-usage-error "--ephemeral chooses the store; --store PATH names one yourself")))
+    ;; v1 jails the organism a shell starts: a serve, rpc or one-shot verb
+    ;; under --sandbox would run unjailed while the line said otherwise.
+    (when (and *sandbox-asked* (or serve child))
+      (launch-usage-error "--sandbox is a shell's flag: nodecode [-p NAME] --sandbox [resume SESSION-ID]"))
     (when (and setup serve)
       (launch-usage-error "~a is a shell's verb: a headless owner has no wizard"
                           (cond ((and (consp setup) (eq (first setup) :channel-setup)) "gateway setup")
+                                ((and (consp setup) (eq (first setup) :image-picker)) "snapshots")
                                 ((consp setup) "import")
                                 (t "setup"))))
     (when (and child (eq (first child) :rpc) (or serve session-id setup))
       (launch-usage-error "rpc is a command of its own: nodecode [-p NAME] rpc ~a"
                           (nlk:verb-arguments (nlk:find-verb "rpc" *launch-verbs*))))
-    (when (and child (member (first child) '(:login :machine-link :add :profile :gateway :update :web :generations :rollback))
+    (when (and child (member (first child) '(:login :machine-link :add :profile :secrets :sandbox :gateway :update :web :generations :rollback :snapshot :snapshots))
                (or serve session-id store-path ephemeral setup))
       (launch-usage-error "~a is a command of its own: nodecode [-p NAME] ~:*~a ..."
                           (substitute #\Space #\- (string-downcase (first child)))))
@@ -860,8 +961,8 @@ TOPIC's own help, a command's or an option's."
     ((null topic)
      (format nil "usage: nodecode [-p NAME] [COMMAND] [OPTIONS] [@FILE...] [-- PROMPT]~%~%~a~%~%commands~%~a~%options~%~a~%Run \"nodecode help COMMAND\" to read one command.~%"
              "With no command, nodecode opens the shell on this home's organism, and starts the organism first when none is running. --model M -- PROMPT opens it on a fresh session running on M, its first prompt sent; @FILE adds a file to that prompt, and text piped in leads it."
-             (nlk:verbs-text *launch-verbs*)
-             (nlk:verbs-text *launch-options*)))
+             (nlk:verbs-text (offered-launch-verbs *launch-verbs*))
+             (nlk:verbs-text (offered-launch-verbs *launch-options*))))
     ((equal topic "profile")
      (nlk:profile-command (cons "help" more) :command "nodecode profile"))
     ((equal topic "gateway")
@@ -955,6 +1056,10 @@ condition's report, exit 1."
   ;; anything else is read. Errors print and exit nonzero instead of dropping
   ;; an operator into the SBCL debugger.
   (nlk:note-boot-phase "main")
+  ;; Before anything probes the store's lock: a heap's memory of the locks it
+  ;; held is another process's, and a lease an exec handed on is this one's
+  ;; (store.lisp, ADOPT-HANDED-LEASE).
+  (nlk::adopt-handed-lease)
   ;; The debugger-disabled runtime otherwise exits the whole process when
   ;; any background thread reaches its debugger, including layer workers.
   (install-worker-error-guard)
@@ -1027,6 +1132,9 @@ condition's report, exit 1."
       ;; A launch that opens the shell draws on the controlling terminal, and
       ;; a process with none (cron, ssh without -t, a shell tool) is refused
       ;; here, before the home, the store or the folder is touched.
+      ;; `nodecode snapshots' with no terminal to pick in is the list, printed.
+      (when (and (consp setup) (eq (first setup) :image-picker) (not (nlt:terminal-present-p)))
+        (setf child (list :snapshots '()) setup nil))
       (when-let (refusal (terminal-refusal child serve (uiop:command-line-arguments)))
         (write-line refusal *error-output*)
         (uiop:finish-outputs)
@@ -1071,6 +1179,25 @@ condition's report, exit 1."
       (when-let (refusal (and (or (null child) (eq (first child) :rpc))
                               (home-refusal store-path)))
         (print-answer-and-quit refusal 1 :error))
+      ;; A sandboxed shell: the jail's settings written and its port chosen
+      ;; before anything paints, or the reason it cannot run. The shell then
+      ;; stands on the binary alone -- pristine here, never published, so the
+      ;; jailed organism it starts still loads its folder.
+      (when *sandbox-asked*
+        (when-let (refusal (sandbox-launch-preflight store-path))
+          (print-answer-and-quit refusal 1 :error))
+        (setf nlk::*pristine* t
+              nlk::*pristine-reason* "a sandboxed shell stands on the binary alone; its organism loads the folder in the jail"))
+      ;; A home that has run sandboxed loads its folder in the jail only:
+      ;; what the jail wrote into its layer or cells would otherwise run here,
+      ;; outside it, at the next plain launch, serve or warm image.
+      (when-let (refusal (sandbox-jailed-refusal
+                          (nlk:home)
+                          :asked *sandbox-asked*
+                          :sandboxed (sandboxed-process-p)
+                          :loads (or (null child) serve
+                                     (member (first child) '(:rpc :trial :warm :warm-dump)))))
+        (print-answer-and-quit refusal 1 :error))
       ;; The launch-cache verbs run before any folder loads: the `warm`
       ;; supervisor loads nothing itself, and `warm-dump` must load the
       ;; folder directly — never through the cache it is building.
@@ -1080,12 +1207,17 @@ condition's report, exit 1."
           (:warm-dump (nlk::warm-dump-main (second child)))
           ;; The answer on stdout, a refusal on stderr, then its exit code.
           (:login (account-login-main (second child)))
+          (:logout (account-logout-main))
           (:machine-link (machine-link-main (second child)))
           (:profile (multiple-value-call #'print-answer-and-quit (profile-answer (second child))))
+          (:secrets (multiple-value-call #'print-answer-and-quit (secrets-answer (second child))))
+          (:sandbox (multiple-value-call #'print-answer-and-quit (sandbox-answer (second child))))
           (:gateway (gateway-main (second child)))
           (:update (answer-and-quit (values (update-text (second child)) 0 :output)))
           (:generations (generations-main (second child)))
           (:rollback (rollback-main (second child)))
+          (:snapshot (image-main (cons "save" (second child))))
+          (:snapshots (image-main (second child)))
           (:web (answer-and-quit (web-text (second child))))
           ;; what it waits on is said on stderr while it waits (CALL-SAYING-WAITS)
           (:add (answer-and-quit (call-saying-waits (lambda () (add-text (second child))))
@@ -1127,6 +1259,10 @@ condition's report, exit 1."
                         ;; image's own -- from the folder's code, not the
                         ;; launcher's, which the successor's frame would paint
                         ;; over -- and the exec no longer waits for one.
+                        ;; A restore asked by `nodecode snapshots restore' outranks
+                        ;; the published image: the saved heap is the organism
+                        ;; the operator chose to boot (images.lisp).
+                        (follow-restore-pointer)
                         (nlk::hand-over-to-published-image)
                         (attach-or-own-organism :session-id session-id
                                                 :store-path store-path
@@ -1137,6 +1273,8 @@ condition's report, exit 1."
                                                             store-path))))
                        (t
                         ;; a serve leaves its receipt before the load: a self that dies before serving is found by the launch after
+                        ;; a serve that will own the organism boots the saved heap a restore asked for, before any folder loads (images.lisp)
+                        (when serve (follow-restore-pointer))
                         (nlk:boot-cells :spawn (null child) :receipt (and serve t))
                         ;; A child prints its own report on stdout; the boot line
                         ;; would be noise the parent has to skip.

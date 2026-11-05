@@ -234,6 +234,12 @@ from the ones COLLECT-DURING-WAIT hid inside provider wait."
               (scroll-transcript model action)
               t))
 
+           ;; A chord keybinds.json binds to a slash line runs it, the draft
+           ;; left as it stands. It is read after every action above, so a
+           ;; built-in chord is never shadowed, and ahead of the editor.
+           ((when-let (line (keybind-slash-line (chat-model-keymap model) key mod))
+              (return-from update (values model (run-bound-slash-line model line)))))
+
            ;; Enter semantics belong to the keymap: the shell's own submit
            ;; arm (client.lisp) claims the submit chord before this update
            ;; runs, and an Enter chord matching neither submit nor
@@ -289,6 +295,30 @@ from the ones COLLECT-DURING-WAIT hid inside provider wait."
        (setf (chat-model-kitty-graphics model)
              (and (nlt:kitty-graphics-msg-ok-p msg) t))
        (render-state model))
+
+      ;; The terminal listed its attributes (DA1), which it answers after
+      ;; the kitty query: one that did not answer that draws a picture as
+      ;; sixel when it said so, else as half blocks (IMAGE-PROTOCOL).
+      ((nlt:device-attributes-msg-p msg)
+       (setf (chat-model-terminal-graphics model)
+             (if (and (member 4 (nlt:device-attributes-msg-attributes msg))
+                      (null (nlt:current-multiplexer)))
+                 :sixel
+                 :none))
+       (render-state model))
+
+      ;; The terminal said its name (XTVERSION), answered before DA1: a
+      ;; block picture takes the finest glyphs it draws (BLOCK-CELL).
+      ((nlt:terminal-version-msg-p msg)
+       (setf (chat-model-terminal-name model) (nlt:terminal-version-msg-name msg))
+       (render-state model))
+
+      ;; The terminal said how big a cell is: a sixel is scaled to it.
+      ((nlt:cell-size-msg-p msg)
+       (let ((width (nlt:cell-size-msg-width msg)) (height (nlt:cell-size-msg-height msg)))
+         (when (and (plusp width) (plusp height))
+           (setf (chat-model-cell-pixels model) (cons width height))
+           (render-state model))))
 
       ;; The terminal answered the truecolor probe: its SGR honors 24-bit
       ;; color whatever the environment claimed. Upgrade and repaint — the
@@ -799,6 +829,16 @@ the last two the box's right margin."
                                  :tone :key-chip)
                        (make-seg :text (format nil " ~a  " verb) :tone :muted))))
 
+(defun ask-key-segs (model ask &aux (keymap (chat-model-keymap model)))
+  "The keys that answer the ask MODEL's composer wears, each a filled cap
+before its verb: Enter runs its line with the text, Esc puts it away."
+  (append (when-let (chord (first (gethash :submit keymap)))
+            (list (make-seg :text (format nil " ~(~a~) " (key-chord-label chord)) :tone :key-chip)
+                  (make-seg :text (format nil " ~a  " (or (json-value (getf ask :verb) :text) "run"))
+                            :tone :muted)))
+          (list (make-seg :text " esc " :tone :key-chip)
+                (make-seg :text " cancel  " :tone :muted))))
+
 (defun composer-rows (model width height bg)
   "The composer band."
   ;; Tall windows get the box: a borderless filled rectangle over the
@@ -821,26 +861,19 @@ the last two the box's right margin."
                     (visual-style-bg (style-for-tone tone))))
          (ta-lines (editor-visible-lines ta))
          (columns (if (shell-footer-p height) (composer-text-width width) (max 1 (- width 2))))
-         ;; The placeholder lines while the composer is empty resolve in
-         ;; priority order (Zig composerPlaceholderView + the home swap):
-         ;; the composer status outranks the home prompt; the widget's own
-         ;; Ready placeholder is the floor.
+         ;; An empty composer is the caret alone: no Ready, no Type to
+         ;; steer, no invitation, no keys spelled out -- the blinking caret
+         ;; says it takes typing. Over the caret stands only what waits on
+         ;; the operator: the composer status (an answer, a failure), the
+         ;; field an ask waits for, a gateway that failed to sync.
          ;; Expire status even while typed text hides its placeholder.
          ((status-lines under status) (composer-status-lines model columns))
          (select (transcript-select model))
+         (ask (chat-model-composer-ask model))
          (hint (and (zerop (length (or value ""))) (not status)
-                    (or (and select (select-mode-hint select))
-                        (and (home-screen-p model) (home-prompt-text model))
-                        ;; The floor, the widget's own placeholder, reads
-                        ;; muted like every other placeholder line: it is
-                        ;; absence of input, not input. Taking it through
-                        ;; the hint lane is what gives it a tone at all —
-                        ;; a widget line paints in the box's fill style,
-                        ;; the composer's own bright foreground. Without this,
-                        ;; while a turn runs `Ready' would read as idle.
-                        (if (chat-model-turn-in-flight model)
-                            "Type to steer"
-                            (json-value ta.placeholder :text)))))
+                    (or (and ask (or (json-value (getf ask :placeholder) :text)
+                                     (format nil "Type the ~(~a~)" (getf ask :label))))
+                        (and (home-screen-p model) (home-prompt-text model)))))
          ;; A placeholder bypasses the editor's own wrapping, so it must
          ;; clip to the composer text columns itself or a long notice
          ;; spills past the box on narrow windows.
@@ -881,7 +914,7 @@ the last two the box's right margin."
                ;; A typed line, or the placeholder in its own tone, at the text
                ;; inset: the message column in the box, two in the single-line mode.
                (make-seg :text (concatenate 'string
-                                            (make-string (if (shell-footer-p height) (composer-text-inset) 2)
+                                            (make-string (composer-text-indent height)
                                                          :initial-element #\Space)
                                             line)
                          :tone run-tone)))
@@ -892,6 +925,7 @@ the last two the box's right margin."
                                         (blank-frame-row 1 bg))))
                  ;; While the keyboard selects, the pad row names its keys.
                  (keys (cond (select (select-key-segs select))
+                             (ask (ask-key-segs model ask))
                              (steering (steer-key-segs model))))
                  (right (blank-frame-row (- width 2 (composer-box-width width)) bg))
                  (visible-count (min (length ta-lines)
@@ -906,7 +940,7 @@ the last two the box's right margin."
                      (when (plusp count)
                        (list (run (format nil "+~d line~:p ~a" count where) :muted)))))
               (loop for (segs . more)
-                      on (append (list (pad above "above"))
+                      on (append (list (if (and ask (zerop above)) :ask (pad above "above")))
                                  (loop for line in (subseq ta-lines 0 visible-count)
                                        for index from 0
                                        collect (cond ((and status (not under)) (list (run line hint-tone)))
@@ -923,9 +957,18 @@ the last two the box's right margin."
                                  (mapcar (lambda (line) (list (run line hint-tone))) under)
                                  (list (pad below "below")))
                     collect (concatenate 'string side
-                                         (if (and keys (null more))
-                                             (keyed (composer-box-width width) segs keys)
-                                             (apply #'row (composer-box-width width) segs))
+                                         (cond ((eq segs :ask)
+                                                ;; the ask's label, a chip over its text
+                                                ;; on its own ground, which ROW would take
+                                                (let ((chip (list (run "")
+                                                                  (make-seg :text (format nil " ~a " (getf ask :label))
+                                                                            :tone :sheet-chip-on))))
+                                                  (if surface
+                                                      (render-row nil chip surface (composer-box-width width))
+                                                      (apply #'row (composer-box-width width) chip))))
+                                               ((and keys (null more))
+                                                (keyed (composer-box-width width) segs keys))
+                                               (t (apply #'row (composer-box-width width) segs)))
                                          right))))
           (list (row width (run (first ta-lines) (if hint hint-tone tone))))))))
 
@@ -1226,9 +1269,11 @@ footer, and the final blank; short windows end with two blank rows."
                                   ;; blank + header + blank, the band, the gap blank, and
                                   ;; the box's top pad row on tall windows.
                                   (row (+ 3 (length band) 1 (if tall 1 0) y))
-                                  ;; Tall windows inset the side gutter (2) plus the box's own
-                                  ;; text inset; the short single-line mode only its inset (2).
-                                  (col (+ (if tall (+ 2 (composer-text-inset)) 2) x)))
+                                  ;; The side gutter, then the text's own inset in the box
+                                  ;; (the single-line mode has no gutter).
+                                  (col (+ (composer-left-margin height)
+                                          (composer-text-indent height)
+                                          x)))
                              (when (< row height)
                                (cons (min col (1- width)) row)))))))
              (setf toast-floor (+ (length head) (length band)))

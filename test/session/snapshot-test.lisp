@@ -120,7 +120,10 @@ completed once BODY is done."
   ;; these gates are about is when the second of them, or both, is not made.
   `(let* ((,asked '())
           (,value (with-stubbed-fdefinition (nlk::run-snapshot-git (store arguments &rest keys)
-                                              (push (first arguments) ,asked)
+                                              (push (if (member "--dry-run" arguments :test #'equal)
+                                                        "add --dry-run"
+                                                        (first arguments))
+                                                    ,asked)
                                               (apply original store arguments keys))
                     ,form)))
      (values (reverse ,asked) ,value)))
@@ -139,20 +142,226 @@ completed once BODY is done."
   ;; turns over, and the pair runs while it does. Age the file and the
   ;; settled workspace — what a turn spends most of its calls in — is what
   ;; this gate reads.
-  (sb-posix:utimes (namestring (merge-pathnames "a.txt" dir)) 0 0)
+  (set-file-times (merge-pathnames "a.txt" dir) 0)
   (let ((first-sha (nlk:capture-workspace-tree store)))
     (is (= 40 (length first-sha)) "the first capture writes a tree")
+    ;; On Windows the workspace's journal stands unmoved, so the capture
+    ;; answers the last walk's tree and starts no git at all.
     (nlk:bind (((asked second-sha) (git-asked (nlk:capture-workspace-tree store))))
-      (is (equal '("ls-files" "add") asked)
-          (format nil "the census and the staging; no write-tree behind them: ~a" asked))
+      (is (equal #-win32 '("add --dry-run") #+win32 '() asked)
+          (format nil "the census alone; no staging and no write-tree behind it: ~a" asked))
       (is (equal first-sha second-sha) "and the tree it answers is that tree"))
     ;; Same length, same second, and the index git writes may land on the
     ;; inode the last one freed: only the content tells these apart.
     (%write-file dir "a.txt" "two")
     (nlk:bind (((asked changed) (git-asked (nlk:capture-workspace-tree store))))
-      (is (equal '("ls-files" "add" "write-tree") asked)
+      (is (equal '("add --dry-run" "add" "write-tree") asked)
           (format nil "a staged change writes its tree: ~a" asked))
       (is (not (equal first-sha changed)) "which is a tree of its own"))))
+
+(deftest a-large-staging-packs-its-blobs-and-a-small-one-stays-loose (with-git-workspace (store dir))
+  ;; A first walk writes a blob per file: as loose objects that is a file
+  ;; created per workspace file, 15.9 s for 5,000 files on Windows, and 0.6 s
+  ;; as one pack (T-442). Past the threshold the staging packs; an edit of a
+  ;; few files stays loose; the trees are the trees either way.
+  (let ((nlk::+snapshot-packed-staging-paths+ 3))
+    (flet ((loose-blobs ()
+             (count "blob" (%loose-objects store)
+                    :test #'equal
+                    :key (lambda (path)
+                           (nlk::git-line store (list "cat-file" "-t"
+                                                      (concatenate 'string (car (last (pathname-directory path)))
+                                                                   (file-namestring path))))))))
+    (dotimes (i 5) (%write-file dir (format nil "f~d.txt" i) (format nil "file ~d" i)))
+    (nlk:bind (((asked first-tree) (git-asked (nlk:capture-workspace-tree store))))
+      (is (member "add" asked :test #'equal))
+      (let ((packs (directory (merge-pathnames "objects/pack/*.pack"
+                                               (uiop:ensure-directory-pathname
+                                                (nlk::snapshot-store-git-dir store)))))
+            (blob (nlk::run-snapshot-git store (list "cat-file" "blob" (format nil "~a:f3.txt" first-tree)))))
+        (is (= 1 (length packs)) "the five blobs went into one pack")
+        (is (zerop (loose-blobs)) "and none of them loose")
+        (is (equal "file 3" blob) "a packed blob reads back"))
+      (%write-file dir "f1.txt" "edited")
+      (let ((second-tree (nlk:capture-workspace-tree store)))
+        (is (not (equal first-tree second-tree)))
+        (is (= 1 (loose-blobs)) "a one-file edit stays a loose object")
+        (let ((diff (nlk::run-snapshot-git store (list "diff-tree" "-p" first-tree second-tree))))
+          (is (search "+edited" diff) "and the diff between them is a text diff")))))))
+
+(defun %octets (string)
+  (sb-ext:string-to-octets string :external-format :utf-8))
+
+(defun %write-octets (dir name string)
+  "Write STRING's UTF-8 octets as NAME under DIR: no newline translation on any platform."
+  (alexandria:write-byte-vector-into-file (%octets string) (merge-pathnames name dir)
+                                          :if-exists :supersede :if-does-not-exist :create))
+
+(defun %read-octets (dir name)
+  (alexandria:read-file-into-byte-vector (merge-pathnames name dir)))
+
+(deftest a-restore-gives-back-the-bytes-an-attribute-would-convert (with-git-workspace (store dir))
+  ;; A checkpoint holds the workspace's bytes, whatever its .gitattributes ask
+  ;; of a checkout: under `text' a CRLF file was stored as LF and came back
+  ;; LF, `ident' came back expanded, and the restore guard hashed both
+  ;; through the same conversions, so it could not tell them apart (T-442).
+  (let ((crlf (format nil "one~c~%two~c~%" #\Return #\Return))
+        (ident (format nil "$Id$~c~%(defun f ())~c~%" #\Return #\Return)))
+    (%write-octets dir ".gitattributes" (format nil "*.txt text~%*.lisp text eol=lf ident~%"))
+    (%write-octets dir "a.txt" crlf)
+    (%write-octets dir "b.lisp" ident)
+    (let ((before (%anchored-capture store "before"))
+          (raw (nlk::git-line store (list "hash-object" "--no-filters" "--" (namestring (merge-pathnames "a.txt" dir))))))
+      (is (equal raw (nlk:hash-in-tree store before "a.txt")) "the tree holds the file's own bytes")
+      (%write-octets dir "a.txt" "changed")
+      (%write-octets dir "b.lisp" "changed")
+      (let* ((head (%anchored-capture store "head"))
+             (changes (nlk:changed-paths store before)))
+        (is (= 2 (length changes)) "both edits are changes")
+        (multiple-value-bind (restored conflicts)
+            (nlk:restore-paths store before changes (%claims-at store head changes))
+          (is (null conflicts) "the claimed state restores conflict-free")
+          (is (= 2 (length restored)) "both paths restored"))
+        (is (equalp (%octets crlf) (%read-octets dir "a.txt")) "CRLF comes back CRLF")
+        (is (equalp (%octets ident) (%read-octets dir "b.lisp")) "an ident line comes back unexpanded")))))
+
+(deftest a-first-walk-packs-its-blobs-whatever-the-attributes-say (with-git-workspace (store dir))
+  ;; A file the workspace's attributes convert skipped the pack and became a
+  ;; loose object of its own: a repository whose sources carry `text eol=lf'
+  ;; paid a created file per source on its first walk, 1.6 s of the 1.9 s
+  ;; first capture of 540 files on Windows (T-442).
+  (let ((nlk::+snapshot-packed-staging-paths+ 3))
+    (%write-octets dir ".gitattributes" (format nil "*.lisp text eol=lf~%"))
+    (dotimes (i 5) (%write-octets dir (format nil "f~d.lisp" i) (format nil "(defun f~d ())~%" i)))
+    (nlk:capture-workspace-tree store)
+    (let ((packs (directory (merge-pathnames "objects/pack/*.pack"
+                                             (uiop:ensure-directory-pathname
+                                              (nlk::snapshot-store-git-dir store))))))
+      (is (= 1 (length packs)) "the staging wrote one pack"))
+    (is (= 1 (length (%loose-objects store))) "and the root tree is its only loose object")))
+
+(deftest a-store-from-before-raw-captures-restages-once (with-temp-directory (dir "snap-raw"))
+  ;; A store an earlier version kept staged converted blobs, and its index
+  ;; still vouches for them: opening it rewrites the attributes and drops
+  ;; the indexes, so the next walk stages the files' own bytes.
+  (when (nlk:git-available-p)
+    (%write-octets dir ".gitattributes" (format nil "*.txt text~%"))
+    (%write-octets dir "a.txt" (format nil "one~c~%" #\Return))
+    (let* ((store (nlk:ensure-snapshot-store (namestring dir) "old"))
+           (attributes (%store-file store "info/attributes")))
+      (when (probe-file attributes) (delete-file attributes))
+      (let ((converted (nlk:capture-workspace-tree store))
+            (raw (nlk::git-line store (list "hash-object" "--no-filters" "--" (namestring (merge-pathnames "a.txt" dir))))))
+        (is (not (equal raw (nlk:hash-in-tree store converted "a.txt"))) "the old store converted")
+        (let* ((reopened (nlk:ensure-snapshot-store (namestring dir) "old"))
+               (tree (nlk:capture-workspace-tree reopened)))
+          (is (probe-file attributes) "opening wrote the attributes back")
+          (is (equal raw (nlk:hash-in-tree reopened tree "a.txt")) "and the next walk staged the raw bytes"))))))
+
+(deftest an-unchanged-workspace-is-captured-by-its-census-alone (with-git-workspace (store dir))
+  ;; A tool call that wrote nothing is most calls, and each is bracketed by
+  ;; two captures: when the census finds nothing to stage, the capture is
+  ;; those two listings and no `add -A' -- the walk a Windows step paid
+  ;; twice over (T-442). Whatever the census does find still stages: a
+  ;; deletion, a new file, an edit. A touch moves no content and so no tree.
+  (flet ((age (name) (set-file-times (merge-pathnames name dir) 0))
+         (tree-paths (sha)
+           (sort (remove "" (uiop:split-string (nlk::run-snapshot-git store (list "ls-tree" "-r" "--name-only" sha))
+                                                :separator '(#\Newline))
+                         :test #'equal)
+                 #'string<)))
+    (%write-file dir "a.txt" "one")
+    (%write-file dir "b.txt" "two")
+    (age "a.txt")
+    (age "b.txt")
+    (let ((settled (nlk:capture-workspace-tree store)))
+      (nlk:bind (((asked same) (git-asked (nlk:capture-workspace-tree store))))
+        (is (null (intersection '("add" "write-tree") asked :test #'equal))
+            (format nil "no staging for an unchanged workspace: ~a" asked))
+        (is (equal settled same) "and the tree it answers is the settled one"))
+      (delete-file (merge-pathnames "b.txt" dir))
+      (nlk:bind (((asked deleted) (git-asked (nlk:capture-workspace-tree store))))
+        (is (member "add" asked :test #'equal) "a deletion stages")
+        (is (not (equal settled deleted)))
+        (is (equal '("a.txt") (tree-paths deleted)) "and the deleted file leaves the tree"))
+      (%write-file dir "c.txt" "three")
+      (%write-file dir "it's 'quoted'.txt" "four")
+      (let ((added (nlk:capture-workspace-tree store)))
+        (is (equal '("a.txt" "c.txt" "it's 'quoted'.txt") (tree-paths added)) "new files stage, quotes in a name too")
+        (set-file-times (merge-pathnames "c.txt" dir) 1000)
+        (is (equal added (nlk:capture-workspace-tree store)) "a touch keeps the tree")
+        (%write-file dir "a.txt" "uno")
+        (is (not (equal added (nlk:capture-workspace-tree store))) "an edit of the same length stages")))))
+
+(deftest a-quiet-journal-answers-the-last-walk-without-git (with-git-workspace (store dir))
+  ;; Where the workspace keeps a journal (Windows), a capture it finds
+  ;; unmoved since this index's last walk answers that walk's tree and starts
+  ;; no git: the two git starts a tool step's bracket paid on Windows, 30 ms
+  ;; of a 50 ms step (T-442). A moved epoch walks; so does an index some
+  ;; other path changed under the same epoch.
+  (let ((epoch 7))
+    (with-stubbed-fdefinition (nlk::workspace-journal-epoch (root &key ignored)
+                                (declare (ignore root ignored))
+                                epoch)
+      (%write-file dir "a.txt" "one")
+      (let ((first (nlk:capture-workspace-tree store)))
+        (%write-file dir "b.txt" "two")
+        (nlk:bind (((asked quiet) (git-asked (nlk:capture-workspace-tree store))))
+          (is (null asked) (format nil "an unmoved journal starts no git: ~a" asked))
+          (is (equal first quiet) "and answers the last walk's tree"))
+        (setf epoch 8)
+        (nlk:bind (((asked moved) (git-asked (nlk:capture-workspace-tree store))))
+          (is (member "add" asked :test #'equal) "a moved journal walks")
+          (is (not (equal first moved)) "and the walk finds the new file")
+          (nlk::run-snapshot-git store (list "rm" "--cached" "-q" "--" "b.txt"))
+          (nlk:bind (((asked again) (git-asked (nlk:capture-workspace-tree store))))
+            (is (member "add" asked :test #'equal) "an index changed under the epoch walks")
+            (is (equal moved again) "and stages the file back")))))))
+
+(deftest without-a-journal-every-capture-walks (with-git-workspace (store dir))
+  ;; No journal (every platform but Windows, or one Windows would not give)
+  ;; is no shortcut: each capture asks git.
+  (with-stubbed-fdefinition (nlk::workspace-journal-epoch (root &key ignored)
+                              (declare (ignore root ignored))
+                              nil)
+    (%write-file dir "a.txt" "one")
+    (nlk:capture-workspace-tree store)
+    (nlk:bind (((asked) (git-asked (nlk:capture-workspace-tree store))))
+      (is (member "add --dry-run" asked :test #'equal) "the census runs"))))
+
+#-win32
+(deftest no-journal-off-windows ()
+  (with-temp-directory (dir "journal")
+    (is (null (nlk::workspace-journal-epoch (namestring dir))) "only Windows keeps one")))
+
+(deftest a-new-store-is-one-git-start (with-temp-directory (dir "snap-init"))
+  ;; Five `git config' calls beside `init' were 80 ms of a new store on
+  ;; Windows (T-442): the store's keys are written into the config init made,
+  ;; and git reads them as set.
+  (when (nlk:git-available-p)
+    (%write-file dir "a.txt" "one")
+    (nlk:bind (((asked store) (git-asked (nlk:ensure-snapshot-store (namestring dir) "init"))))
+      (is (equal '("init") asked) (format nil "one git start: ~a" asked))
+      (loop for (key value) in '(("core.bare" "false") ("gc.auto" "0") ("core.untrackedcache" "true")
+                                 ("index.version" "4") ("core.symlinks" "true"))
+            do (is (equal value (nlk::git-line store (list "config" "--get" key)))
+                   (format nil "~a reads ~a" key value)))
+      (is (nlk:capture-workspace-tree store) "and the store captures"))))
+
+(deftest an-open-store-leaves-an-unchanged-exclude-file-alone (with-temp-directory (dir "snap-exclude"))
+  ;; Every tool step opens its store: an open rewrote info/exclude each time,
+  ;; a file create on every step (T-442). The same content is left alone.
+  (when (nlk:git-available-p)
+    (let* ((store (nlk:ensure-snapshot-store (namestring dir) "exclude"))
+           (exclude (%store-file store "info/exclude")))
+      (set-file-times exclude 1000)
+      (nlk:ensure-snapshot-store (namestring dir) "exclude")
+      ;; FILE-WRITE-DATE, not SB-POSIX:STAT-MTIME: Windows' _stat answers -1 for
+      ;; a time before 1970 in local time, and 1000 is one west of Greenwich.
+      (is (= (+ 1000 2208988800) (file-write-date exclude)) "an unchanged exclude file is not written")
+      (with-open-file (o exclude :direction :output :if-exists :supersede) (write-line "stale" o))
+      (nlk:ensure-snapshot-store (namestring dir) "exclude")
+      (is (search "*.sqlite" (uiop:read-file-string exclude)) "a changed one is written back"))))
 
 (deftest workspace-diff-document-shapes-modified-added-deleted-binary ()
   ;; The complete diff document between two captured trees: per-file numstat
@@ -420,7 +629,7 @@ completed once BODY is done."
     (write-temp-file lock-path (format nil "99999~%"))
     (is (null (nlk::acquire-repack-lock store)))
     ;; A stale lock (older than the horizon) is broken and retaken.
-    (sb-posix:utimes (namestring lock-path) 0 0)
+    (set-file-times lock-path 0)
     (is (nlk::acquire-repack-lock store))
     (ignore-errors (delete-file lock-path))))
 
@@ -562,7 +771,7 @@ completed once BODY is done."
     (is (probe-file lock) "a young lock may be a running capture's: left alone")
     #-win32
     (let ((stale (- (nlk:unix-now) nlk::+snapshot-git-timeout-seconds+ 120)))
-      (sb-posix:utime lock stale stale)
+      (set-file-times lock stale)
       (nlk:ensure-snapshot-store (namestring dir) "locked")
       (is (null (probe-file lock)) "a lock older than the git bound is swept")
       (%write-file dir "a.txt" "one")

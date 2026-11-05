@@ -850,11 +850,10 @@ picker, under STUBS too."
   ;; turns in the order they ran on one rail per line, the head's line on the
   ;; left and a branch joined to the turn it left by a fork; each row its clock
   ;; time and, flush right, how it ended, its calls and its span; a
-  ;; reflection's recap folded under its turn behind a pen, the head with it.
-  ;; Every painted row is the panel's width, the right lane in one column, a
-  ;; selected row's files chrome and a narrow panel included. Enter's confirm
-  ;; stage draws the highlighted move on the same graph and says it in a
-  ;; sentence, every option still in view.
+  ;; reflection's recap folded into its turn, the head with it. Every painted
+  ;; row is the panel's width, the right lane in one column, a selected row's
+  ;; files chrome and a narrow panel included. Enter's confirm stage says the
+  ;; highlighted move in a sentence, every option still in view.
   (with-tree-listing (model "tree-metro")
     (flet ((at (minute &optional (second 0))
              (format nil "2026-10-16T12:~2,'0d:~2,'0d.000Z" minute second)))
@@ -891,12 +890,12 @@ picker, under STUBS too."
                      (nle::picker-dialog-context dialog)) "the tab says the graph's measure")
           (let* ((rows (painted))
                  (t1 (find-if (lambda (row) (search "prompt 1" row)) rows))
-                 (t2 (find-if (lambda (row) (search "re-asked" row)) rows))
+                 (t2 (find-if (lambda (row) (search "├─◦" row)) rows))
                  (t3 (find-if (lambda (row) (search "HEAD" row)) rows)))
             (is (every (lambda (row) (= 100 (nle::text-display-width row))) rows) "every painted row is the panel's width")
             (is (and t1 (search (format nil "~a  ●" (clock 0)) t1) (search "1 call" t1) (search "1m 05s" t1)) "t1 on the head's line: its clock, its call, its span")
-            (is (and t2 (search "├─◦" t2) (search "re-asked ↓" t2)) "t2 forks off t1's rail, cancelled and asked again as t3")
-            (is (and t3 (search "◉" t3) (search "+2 steers" t3) (search "✎" t3)) "t3 is the head, with its steers and its recap's pen")
+            (is t2 "t2 forks off t1's rail")
+            (is (and t3 (search "◉" t3)) "t3 is the head")
             (is (and t1 t3 (= (+ (search "1m 05s" t1) 6) (+ (search "2m 00s" t3) 6))) "the spans end in one column")
             ;; No span bar: blank between a turn's calls and its time, and no
             ;; eighth-block cell on any row but the selected row's edge.
@@ -909,26 +908,18 @@ picker, under STUBS too."
           (is (find-if (lambda (row) (search "2 file changes: a.lisp, b.lisp" row)) (painted 140)) "the selected row shows its files where they fit")
           (is (every (lambda (row) (= 140 (nle::text-display-width row))) (painted 140)) "and keeps its width")
           (is (every (lambda (row) (= 64 (nle::text-display-width row))) (painted 64)) "a narrow panel keeps every row its width")
-          ;; Right opens t3 over its recap: a heading the arrows pass over.
-          (dialog-keys model :right)
-          (let ((recap (fourth (nle::picker-dialog-rows dialog))))
-            (is (and recap (nle::picker-row-heading recap)) "the recap row is never selected")
-            (is (find-if (lambda (row) (search "✎ recap  Recap: all clear." row)) (painted)) "it says what the recap said"))
           ;; Right on t1 opens its call: how long it ran, flush right, no bar.
           (dialog-keys model :up :up :right)
           (let ((call (find-if (lambda (row) (search "┆ eval" row)) (painted))))
             (is (and call (search "2.0s" call) (notany (lambda (char) (find char "▏▎▍▋▊▉█")) call)) "a call row says how long it ran, with no bar")))
-        ;; Enter on t1: the confirm stage draws each move on the graph.
+        ;; Enter on t1: the confirm stage says each move in a sentence.
         (dialog-keys model :enter)
         (is-present (dialog (nle::chat-model-dialog model)) "the confirm stage opened"
           (flet ((summary () (mapcar #'nle::segs-text (nle::picker-dialog-summary-rows dialog))))
             (is (equal "Checkpoint" (nle::picker-dialog-title dialog)))
-            (is (find-if (lambda (row) (search " here  prompt 1" row)) (summary)) "continue lands the head here")
-            (is (find-if (lambda (row) (search "leaves head  prompt 2" row)) (summary)) "t3 leaves the head's line")
             (is (find-if (lambda (row) (search "Continue from turn 1: the head moves here; 1 turn (0 calls, 2m 00s) stays as a branch." row)) (summary)) "and the sentence says so")
             (let ((height (length (summary))))
               (dialog-keys model :down)
-              (is (find-if (lambda (row) (search " before this  prompt 1" row)) (summary)) "the rewind goes to before it")
               (is (find-if (lambda (row) (search "2 turns leave the head line" row)) (summary)) "taking both turns off the head's line")
               (dialog-keys model :down)
               (is (find-if (lambda (row) (search "2 files restored." row)) (summary)) "the files rewind restores them")

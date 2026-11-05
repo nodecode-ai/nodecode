@@ -142,6 +142,13 @@ for the many bars and rows that paint one run of text in one tone."
    ;; walk again rather than waiting on it.
    (file-catalog :initform nil :accessor chat-model-file-catalog)
    (file-catalog-loaded :initform nil :accessor chat-model-file-catalog-loaded)
+   ;; The @ lane's folder listings for path tokens (`@~/', `@../', `@/'),
+   ;; each (HEAD . ENTRIES), newest first and bounded, HEAD the token up to
+   ;; its last separator; and the HEAD last asked for, NIL while no path
+   ;; token is typed, so a folder typed again is listed fresh
+   ;; (PATH-TOKEN-SUGGESTIONS, ASK-PATH-LISTING).
+   (path-listings :initform nil :accessor chat-model-path-listings)
+   (path-listing-asked :initform nil :accessor chat-model-path-listing-asked)
    ;; Mouse state: the transcript line table (parallel painted/plain/row
    ;; vectors stamped by RENDER-STATE), hover row, drag-selection state,
    ;; the armed scrollbar drag, the armed tool-block press, and the armed   ;; link press (its URL).
@@ -172,6 +179,10 @@ for the many bars and rows that paint one run of text in one tone."
    ;; What the shell says about what the operator just did or asked, in the
    ;; composer's placeholder: a COMPOSER-STATUS, or NIL (SHOW-STATUS).
    (composer-status :initform nil :accessor chat-model-composer-status)
+   ;; The ask the composer wears (tui/commands/bare.lisp ASK-IN-COMPOSER):
+   ;; a plist of :LABEL, :LINE, :PLACEHOLDER and :VERB, the text typed under
+   ;; it running LINE on Enter, or NIL for the plain composer.
+   (composer-ask :initform nil :accessor chat-model-composer-ask)
    ;; The toasts up on the frame, newest first (TOAST); what each notice
    ;; key last said, so a keyed notice toasts once for its words; the toast
    ;; under the pointer; and where the last frame placed them (PLACE-TOASTS).
@@ -185,6 +196,18 @@ for the many bars and rows that paint one run of text in one tone."
    ;; fallback rendering), plus the transmitted-image cache — payload text
    ;; -> NLT:TERMINAL-IMAGE (or :FAILED), bounded like the Zig AssetCache.
    (kitty-graphics :initform nil :accessor chat-model-kitty-graphics)
+   ;; The terminal's DA1 answer: NIL until it came, then whether it listed
+   ;; sixel with no multiplexer between (:SIXEL) or not (:NONE). With the
+   ;; kitty answer before it, it picks a picture's protocol (IMAGE-PROTOCOL).
+   (terminal-graphics :initform nil :accessor chat-model-terminal-graphics)
+   ;; The cell's (WIDTH . HEIGHT) in pixels as the terminal said, or NIL.
+   (cell-pixels :initform nil :accessor chat-model-cell-pixels)
+   ;; The terminal's name and version as XTVERSION answered, `VTE(8401)',
+   ;; or NIL: which glyphs a block picture is drawn in (BLOCK-CELL).
+   (terminal-name :initform nil :accessor chat-model-terminal-name)
+   ;; Pictures this shell draws itself, sixel or half blocks, by the key
+   ;; the kitty cache uses: each one's decoded pixels and its renderings.
+   (raster-cache :initform (make-hash-table :test #'equal) :accessor chat-model-raster-cache)
    (kitty-image-cache :initform (make-hash-table :test #'equal)
                       :accessor chat-model-kitty-image-cache)
    ;; The open /term line-projection panel (exec.lisp TERMINAL-PANEL), or
@@ -217,6 +240,21 @@ gutter a sent prompt's words start on, so typed text stays put on Enter."
   ;; on the gutter rail. Without this, every sent prompt would jump right into
   ;; its band.
   (nth-value 2 (body-gutter :prose)))
+
+(defun composer-left-margin (height)
+  "Canvas columns left of the composer on a HEIGHT-row shell: the side
+gutter (a blank and the steering rail) beside the box on tall windows, none
+for the single-line composer short windows fall back to."
+  (if (shell-footer-p height) 2 0))
+
+(defun composer-text-indent (height)
+  "Columns from the composer's left edge to its typed text on a HEIGHT-row
+shell: the box's text inset on tall windows, two in the single-line mode."
+  ;; With COMPOSER-LEFT-MARGIN this is the one place the text's column is
+  ;; decided: the composer row, its parked caret and the dropdown under it
+  ;; all read it, so a completion target starts on the column its typed
+  ;; text does.
+  (if (shell-footer-p height) (composer-text-inset) 2))
 
 (defun composer-text-width (width)
   "Columns the composer's text wraps at — the one width authority for
@@ -645,13 +683,12 @@ news hides under what is typed while a failure or an answer stays in sight
   "Text rows the composer box currently shows: its text's, and the composer
 status's under it or in its place (COMPOSER-STATUS-LINES), to the growth cap."
   (if (shell-footer-p height)
-      (let ((text (max 1 (editor-height (chat-model-editor model))))
-            (cap (composer-max-rows height)))
-        (multiple-value-bind (lines under)
-            (composer-status-lines model (composer-text-width (chat-model-term-width model)))
-          (cond ((null lines) text)
-                (under (+ text (min (length lines) (max 1 (- cap text)))))
-                (t (max 1 (min cap (length lines)))))))
+      (bind ((text (max 1 (editor-height (chat-model-editor model))))
+             (cap (composer-max-rows height))
+             ((lines under) (composer-status-lines model (composer-text-width (chat-model-term-width model)))))
+        (cond ((null lines) text)
+              (under (+ text (min (length lines) (max 1 (- cap text)))))
+              (t (max 1 (min cap (length lines))))))
       1))
 
 (nlk:define-side-table status-blocks (:weakness :key)
@@ -683,8 +720,8 @@ an open dialog's docked panel."
   (multiple-value-bind (term-w term-h) (nlt:terminal-size)
     (setf (chat-model-term-width model) term-w (chat-model-term-height model) term-h)
     ;; The composer is the Zig box: text rows inside a filled rectangle,
-    ;; no prompt glyph, the "Ready" placeholder (render_plan.zig
-    ;; composer_ready_placeholder). The box grows with its content to the
+    ;; no prompt glyph and no placeholder -- empty, it is the blinking
+    ;; caret alone (COMPOSER-ROWS). The box grows with its content to the
     ;; pi-mono cap and then scrolls internally. The editor owns editing and
     ;; scrolling; COMPOSER-ROWS owns the paint; no painted caret — the
     ;; shell parks the terminal's hardware cursor at the caret cell (the
@@ -698,7 +735,6 @@ an open dialog's docked panel."
     (setf (chat-model-editor model)
           (make-editor :width (composer-text-width term-w)
                        :max-height (composer-max-rows term-h)
-                       :placeholder "Ready"
                        :char-limit 100000))
     ;; The band window holds rows the display policy has already wrapped
     ;; through BREAK-FRAGMENTS, the one line-break authority, at the
@@ -908,14 +944,87 @@ attach was for is on screen."
 (defun land-composer-catalog-walks (model)
   "Install the composer catalogs a walk landed since the last frame, on the
 loop thread, and put each failure up as an error toast (INSTALL-COMPOSER-
-CATALOGS owns what an answered lane and a failed one each take)."
-  (when-let (result (bt2:with-lock-held (*composer-catalog-walks-lock*)
-                      (prog1 (gethash model *composer-catalog-results*)
-                        (remhash model *composer-catalog-results*))))
-    (install-composer-catalogs model result)
-    (dolist (failure (getf result :failures))
-      (toast model failure :error-p t))
-    t))
+CATALOGS owns what an answered lane and a failed one each take); the folder
+listings @ path tokens asked for land with them (LAND-PATH-LISTINGS)."
+  (let ((listed (land-path-listings model)))
+    (or (when-let (result (bt2:with-lock-held (*composer-catalog-walks-lock*)
+                            (prog1 (gethash model *composer-catalog-results*)
+                              (remhash model *composer-catalog-results*))))
+          (install-composer-catalogs model result)
+          (dolist (failure (getf result :failures))
+            (toast model failure :error-p t))
+          t)
+        listed)))
+
+;;; An @ path token's folder is listed the same way: on a thread of its own,
+;;; landing on the tick. A model has one lister at most, and it lists
+;;; whichever folder the token named last, so typing through a long path
+;;; never queues a listing per keystroke.
+
+(defvar *path-listing-asks* (make-hash-table :test #'eq)
+  "MODEL -> (HEAD . FOLDER): the folder an @ path token asked for last, not
+yet taken by MODEL's lister.")
+
+(defvar *path-listers* (make-hash-table :test #'eq)
+  "The models whose path lister is running.")
+
+(defvar *path-listing-results* (make-hash-table :test #'eq)
+  "MODEL -> the listings its lister finished and the loop has not landed yet,
+newest first, each (HEAD . ENTRIES).")
+
+(defvar *path-listings-lock* (bt2:make-lock :name "composer-path-listings")
+  "One lock for the three tables: an ask, a lister's start and its stop are
+read and written together.")
+
+(defparameter *path-listings-kept* 8
+  "How many folders' listings a model keeps, so stepping back up a path
+paints at once.")
+
+(defun ask-path-listing (model head &aux (program (chat-model-program model)))
+  "List the folder HEAD, an @ path token's head, names on MODEL's lister
+thread, starting it when none runs, and tick the loop as each listing lands.
+NIL without a program: no loop means no frame to paint."
+  (when program
+    (let ((ask (cons head (ignore-errors (path-token-folder head)))) (start nil))
+      (bt2:with-lock-held (*path-listings-lock*)
+        (setf (gethash model *path-listing-asks*) ask)
+        (unless (gethash model *path-listers*)
+          (setf (gethash model *path-listers*) t start t)))
+      (when start
+        (spawn "nodecode-composer-paths"
+          ;; Taking the last ask and, finding none, marking the lister stopped
+          ;; is one step under the lock, so an ask made as it stops starts a
+          ;; lister of its own instead of waiting on this one.
+          (let ((stopped nil))
+            (with-cleanup ((unless stopped
+                             (bt2:with-lock-held (*path-listings-lock*)
+                               (remhash model *path-listers*))))
+              (loop for ask = (bt2:with-lock-held (*path-listings-lock*)
+                                (let ((ask (gethash model *path-listing-asks*)))
+                                  (if ask
+                                      (remhash model *path-listing-asks*)
+                                      (setf stopped (remhash model *path-listers*)))
+                                  ask))
+                    while ask
+                    do (let ((entries (and (cdr ask) (path-listing (cdr ask)))))
+                         (bt2:with-lock-held (*path-listings-lock*)
+                           (push (cons (car ask) entries)
+                                 (gethash model *path-listing-results*)))
+                         (nlt:send program (nlt:make-tick-msg))))))))
+      t)))
+
+(defun land-path-listings (model)
+  "Install the folder listings MODEL's lister finished since the last frame,
+on the loop thread, newest first and bounded by *PATH-LISTINGS-KEPT*.
+=> whether any landed."
+  (when-let (landed (bt2:with-lock-held (*path-listings-lock*)
+                      (prog1 (gethash model *path-listing-results*)
+                        (remhash model *path-listing-results*))))
+    (dolist (listing (reverse landed) t)
+      (let ((kept (cons listing (remove (car listing) (chat-model-path-listings model)
+                                        :key #'car :test #'string=))))
+        (setf (chat-model-path-listings model)
+              (subseq kept 0 (min (length kept) *path-listings-kept*)))))))
 
 ;;; A streaming turn's transcript is projected on this tick, so this is how
 ;;; often new text reaches the screen. 1/60 is three ticks per 50 ms, so the
@@ -981,5 +1090,7 @@ CATALOGS owns what an answered lane and a failed one each take)."
                 (nlt:terminal-io-cmd #'nlt:request-background))
           (when (color-profile-upgradable-p)
             (list (nlt:terminal-io-cmd #'nlt:request-truecolor)))
+          ;; Last: its DA1 answer comes after every one asked before it.
+          (list (nlt:terminal-io-cmd #'nlt:request-terminal-attributes))
           (list (read-command-catalog-cmd model))))
 

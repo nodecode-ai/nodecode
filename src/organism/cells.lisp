@@ -617,6 +617,93 @@ LOAD-SOURCE answers them."
               sent '()))
       (values live held sent))))
 
+;;; --- a cell's file is its record: the image follows it both ways ------------
+;;; A definition a write cuts from a cell's file leaves the image with it --
+;;; nothing else records a cell's code, so nothing else would take it away.
+;;; Shipped source and an override are not cells' own records: their
+;;; definitions go only through FORGET or a release.
+
+(defvar *source-texts* (make-hash-table :test 'equal :synchronized t)
+  "Truename namestring -> the text this image last made live from that file
+(LOAD-SOURCE): what RELOAD-CELL diffs a file edited outside this image
+against.")
+
+(defun cell-source-p (path)
+  "True when PATH -- as written or through its links -- is a file of a cell
+folder, under *CELLS-DIRECTORY* or the shipped cells beside the source:
+where a file is the only record of its definitions."
+  (let ((names (remove nil (list (ignore-errors (namestring (merge-pathnames path)))
+                                 (ignore-errors (namestring (truename path)))))))
+    (some (lambda (root)
+            (when-let (directory (ignore-errors (namestring (truename root))))
+              (some (lambda (name) (uiop:string-prefix-p directory name)) names)))
+          (list (ignore-errors (probe-file *cells-directory*))
+                (ignore-errors (shipped-cells-directory))))))
+
+(defun method-specializer (text package)
+  "The specializer TEXT, a DEFMETHOD key's specializer string, names under
+PACKAGE: a class, or an EQL specializer of a keyword, number or quoted form."
+  (let ((form (let ((*package* package) (*read-eval* nil)) (read-from-string text))))
+    (if (and (consp form) (eq (first form) 'eql))
+        (sb-mop:intern-eql-specializer
+         (let ((object (second form)))
+           (if (and (consp object) (eq (first object) 'quote)) (second object) object)))
+        (find-class form))))
+
+(defun take-definition-away (key package)
+  "Take the definition KEY -- a TOPLEVEL-DEFINITIONS key, read under PACKAGE
+-- out of this image. => NIL once it is gone, else why it stays."
+  ;; A function or variable whose name lives in a locked (shipped) package is
+  ;; an override, put back by FORGET, never unbound here.
+  (bind ((operator (getf key :operator))
+         (name (getf key :name))
+         (symbol (and (packagep package) (definition-name-symbol name package)))
+         (designator (and symbol (if (uiop:string-prefix-p "(SETF " name) (list 'setf symbol) symbol)))
+         (shipped (and symbol (symbol-package symbol)
+                       (sb-ext:package-locked-p (symbol-package symbol)))))
+    (handler-case
+        (cond ((null symbol) nil)
+              ((member operator '("DEFUN" "DEFMACRO" "DEFGENERIC") :test #'string=)
+               (cond (shipped "a shipped name: (forget ...) puts the release's back")
+                     (t (when (fboundp designator) (fmakunbound designator)) nil)))
+              ((member operator '("DEFVAR" "DEFPARAMETER") :test #'string=)
+               (cond (shipped "a shipped name: (forget ...) puts the release's back")
+                     (t (makunbound symbol) nil)))
+              ((string= operator "DEFMETHOD")
+               (let ((generic (and (fboundp designator) (fdefinition designator))))
+                 (when (typep generic 'generic-function)
+                   (when-let (method (find-method generic
+                                                  (mapcar (lambda (qualifier) (intern qualifier '#:keyword))
+                                                          (getf key :qualifiers))
+                                                  (mapcar (lambda (text) (method-specializer text package))
+                                                          (getf key :specializers))
+                                                  nil))
+                     (remove-method generic method)))
+                 nil))
+              ((string= operator "DEFINE-HOOK")
+               (unhook (if (uiop:string-prefix-p ":" name)
+                           (intern (subseq name 1) '#:keyword)
+                           designator)
+                       (first (getf key :qualifiers)))
+               nil)
+              (t (format nil "a ~(~a~) leaves at the next start" operator)))
+      (error (condition) (first-line condition)))))
+
+(defun take-definitions-away (entries text)
+  "Take ENTRIES -- TOPLEVEL-DEFINITIONS entries of TEXT, the file's text
+before a write -- out of this image. => (values GONE STAYED): the labels
+taken, and ((LABEL . WHY) ...) for those that stay."
+  ;; An override's file is FORGET's: the release's definition comes back
+  ;; through it, which an unbind here would not do.
+  (let ((gone '()) (stayed '()) (override (search +override-marker+ text)))
+    (dolist (entry entries)
+      (let* ((label (definition-key-label (first entry)))
+             (why (if override
+                      "an override: (forget ...) puts the release's back"
+                      (take-definition-away (first entry) (fourth entry)))))
+        (if why (push (cons label why) stayed) (push label gone))))
+    (values (nreverse gone) (nreverse stayed))))
+
 (defun load-source (path &key before only verify &aux (truename (ignore-errors (truename path))))
   "Make this image agree with the Lisp file at PATH: every definition the file
 gained, and every one whose text differs from BEFORE — the file's text before
@@ -632,8 +719,11 @@ names is defined here (MAKE-DEFINITIONS-LIVE)."
   ;; => (values LINE LIVE HELD GONE): LINE the clause a receipt carries, NIL when
   ;; there is nothing to say; LIVE the labels now live here; HELD ((LABEL . REASON)
   ;; ...), what was named instead of evaluated; GONE the definitions BEFORE carried
-  ;; and the file no longer does — still in the image, since taking a definition
-  ;; away is FORGET's act, not a write's.
+  ;; and the file no longer does that are still in the image. In a cell's folder
+  ;; (CELL-SOURCE-P) the file is the only record, so what it lost is taken out
+  ;; of the image with it (TAKE-DEFINITIONS-AWAY) and GONE names only what
+  ;; would not go; elsewhere -- shipped source -- taking a definition away is
+  ;; FORGET's act or a release's, not a write's.
   ;;
   ;; What went live here is announced through SOURCE-LOADED, and LINE counts
   ;; the shells told — unless ONLY named it: a shell evaluating what it was
@@ -651,7 +741,9 @@ names is defined here (MAKE-DEFINITIONS-LIVE)."
                      (list (ignore-errors *source-root*)
                            (ignore-errors (shipped-cells-directory))
                            *staged-source-root*
-                           (ignore-errors (probe-file *cells-directory*)))))
+                           (ignore-errors (probe-file *cells-directory*))
+                           ;; a made cell whose folder lives elsewhere, linked in
+                           (ignore-errors (linked-cell-folder truename)))))
       (bind ((text (uiop:read-file-string truename :external-format :utf-8))
              ;; a file written by hand into a folder of kept code joins its load order
              (joined (and (not only) (list-written-cell-file truename)))
@@ -660,7 +752,7 @@ names is defined here (MAKE-DEFINITIONS-LIVE)."
              ;; new or moved since BEFORE, GONE the ones the file lost, DIFFERS
              ;; whether anything outside a definition moved, AFTER every definition
              ;; the file holds — which is what :ONLY walks, changed or not.
-             ((changes gone differs after) (definition-changes before text))
+             ((changes gone differs after old) (definition-changes before text))
              ((live held sent)
               (make-definitions-live
                text after
@@ -677,10 +769,23 @@ names is defined here (MAKE-DEFINITIONS-LIVE)."
                ;; write knows its definition is new only when BEFORE lacks it.
                (lambda (entry)
                  (and (not only) (or (null before) (cdr (assoc entry changes :test #'eq)))))
-               verify)))
+               verify))
+             ;; in a cell's folder the file is the record: what it lost leaves the image too
+             ((taken stayed)
+              (if (and gone (not only) (cell-source-p path))
+                  (take-definitions-away (remove-if (lambda (entry) (assoc (first entry) after :test #'equal))
+                                                    old)
+                                         before)
+                  (values '() '())))
+             (gone (if (or taken stayed)
+                       (mapcar (lambda (entry) (format nil "~a (~a)" (car entry) (cdr entry))) stayed)
+                       gone)))
+        (setf (gethash (namestring truename) *source-texts*) text)
         (let ((told (if (or only (null sent))
                         0
                         (handler-case (source-loaded truename sent) (error () 0)))))
+          ;; a made cell's files are its record: each write is a commit
+          (unless only (ignore-errors (commit-written-cell-file truename live)))
           ;; the receipt's clause: each list shows eight labels, then a count (a receipt is a sentence)
           (values (flet ((listed (labels &aux (rest (- (length labels) 8)))
                            (format nil "~{~a~^, ~}~@[ +~a more~]"
@@ -699,6 +804,9 @@ names is defined here (MAKE-DEFINITIONS-LIVE)."
                                                                                (format nil "~a — ~a"
                                                                                        (car entry) (cdr entry)))
                                                                              held))))
+                                                   (when taken
+                                                     (format nil "taken out of the image with it: ~a"
+                                                             (listed taken)))
                                                    (when gone
                                                      (format nil "gone from the file, still in the image: ~a"
                                                              (listed gone)))
@@ -706,6 +814,70 @@ names is defined here (MAKE-DEFINITIONS-LIVE)."
                                                      "changes outside any definition are not live"))))
                       (format nil "~{~a~^; ~}" parts)))
                   live held gone))))))
+
+(defun cell-loaded-files (directory)
+  "The Lisp files the cell folder DIRECTORY loads that are there now: its
+systems' components in load order, else every .lisp directly in it."
+  (let ((files (ignore-errors
+                (loop for declared in (cell-folder-systems (make-cell-folder directory))
+                      for system = (asdf:find-system (declared-system-name declared) nil)
+                      append (if (declared-system-files declared)
+                                 (mapcar (lambda (file) (merge-pathnames (format nil "~a.lisp" file) directory))
+                                         (declared-system-files declared))
+                                 (and system
+                                      (mapcar #'asdf:component-pathname
+                                              (asdf:required-components
+                                               system :other-systems nil :component-type 'asdf:cl-source-file))))))))
+    (remove-duplicates (remove-if-not #'probe-file
+                                      (or files (directory (merge-pathnames "*.lisp" directory))))
+                       :test #'equal :key (lambda (path) (namestring (truename path))) :from-end t)))
+
+(defun reload-cell (name &aux (directory (or (and *cells-directory* (probe-file (folder-under name *cells-directory*)))
+                                             (error "no cell folder named ~a" name)))
+                              (root (namestring (truename directory))))
+  "Make this image agree with the cell folder NAME's files as they are now --
+an edit made outside it, by an editor or a git pull in the repository the
+folder links to: each file diffed against the text this image last made live
+from it (LOAD-SOURCE), what it gained or changed evaluated, what it lost taken
+out of the image, and every definition of a file the folder no longer loads
+taken out too. The cell restarts when its DEFINE-CELL changed. => the report."
+  ;; A file this image never loaded through LOAD-SOURCE has no earlier text
+  ;; here: it is evaluated whole, and nothing of it is taken away.
+  (let* ((files (cell-loaded-files directory))
+         (now (mapcar (lambda (path) (namestring (truename path))) files))
+         (lines '())
+         (restart nil))
+    ;; a file the folder loaded and loads no more: all it defined goes
+    (dolist (old (loop for key being the hash-keys of *source-texts*
+                       when (and (uiop:string-prefix-p root key) (not (member key now :test #'string=)))
+                         collect key))
+      (let ((text (gethash old *source-texts*)))
+        (remhash old *source-texts*)
+        (multiple-value-bind (gone stayed)
+            (take-definitions-away (ignore-errors (toplevel-definitions text :read-eval t)) text)
+          (push (format nil "~a: no longer loaded~@[; taken out of the image: ~{~a~^, ~}~]~@[; still in the image: ~{~a~^, ~}~]"
+                        (enough-namestring old root) gone
+                        (mapcar (lambda (entry) (format nil "~a (~a)" (car entry) (cdr entry))) stayed))
+                lines)
+          (when (search "(define-cell" text) (setf restart t)))))
+    (loop for path in files
+          for key in now
+          for before = (gethash key *source-texts*)
+          for text = (uiop:read-file-string path :external-format :utf-8)
+          unless (equal before text)
+            do (let ((line (load-source path :before before)))
+                 (when (search "(define-cell" text) (setf restart t))
+                 (push (format nil "~a: ~:[unchanged definitions~;~:*~a~]" (enough-namestring key root) line)
+                       lines)))
+    ;; RESTART-CELLS is the gateway's (EVOLVED), loaded after this file
+    (let ((restart-cells (find-symbol "RESTART-CELLS" '#:nodecode.evolved)))
+      (when (and restart (find-cell name) restart-cells (fboundp restart-cells))
+        (push (format nil "restarted: ~a"
+                      (handler-case (first-line (funcall restart-cells name))
+                        (error (condition) (format nil "refused: ~a" (first-line condition)))))
+              lines)))
+    (format nil "~a~{~%~a~}" (if lines (format nil "~a reloaded from its files" name) (format nil "~a: its files are what this image runs" name))
+            (reverse lines))))
 
 (defun report-unkept-changes (before form kept)
   "Name, on the eval's own output, what FORM changed in the image that the
@@ -729,7 +901,8 @@ layer will not carry to the next boot."
   (with-handlers ((error () nil))
     ;; a fork's eval is told nothing, and a fork's names are no other eval's
     ;; change (FORK-UNKEPT, fork.lisp)
-    (when (and before (not (fork-unkept before)))
+    ;; nor is a made cell's, which CELL-SESSION-RECORD told what stays live only
+    (when (and before (not (fork-unkept before)) (not (current-cell-directory)))
       (let* ((after (definition-snapshot))
              ;; every key new or changed since the window opened
              (delta (unless kept
@@ -821,6 +994,93 @@ layer will not carry to the next boot."
   (cache-path "nodecode/layers/")
   "Where a layer's files compile to: one directory per *IMAGE-STAMP*, one
 fasl per file named by the file's text.")
+
+(define-startup-parameter *layer-units-directory*
+  (cache-path "nodecode/layer-units/")
+  "Where a layer file of several definitions is cut into one file per
+definition, for the loader to judge each on its own (LAYER-FILE-UNITS):
+<folder>/<file>@<NN>-<name>.lisp. NIL cuts into a throwaway directory.")
+
+(defvar *layer-units* (make-hash-table :test 'equal :synchronized t)
+  "A unit's namestring -> (FILE . LABEL): the folder's own file it was cut
+from and the definition it holds.")
+
+(defun layer-unit-source (path)
+  "=> (values FILE LABEL): the file of its folder PATH's definitions are
+recorded under -- PATH's own name, or for a unit (LAYER-FILE-UNITS) the file
+it was cut from -- and the unit's definition, NIL for a whole file."
+  (let ((unit (gethash (namestring path) *layer-units*)))
+    (if unit
+        (values (car unit) (cdr unit))
+        (values (file-namestring path) nil))))
+
+(defun definition-leading-comment (text start)
+  "The override marker line among the comment lines right above position
+START of TEXT, the header LAYER-FILE-OVERRIDE judges a definition by, or NIL."
+  ;; nearest first, up to the first line that is not a comment
+  (loop for line in (reverse (ppcre:split "\\n" (subseq text 0 start)))
+        for trimmed = (string-trim +scribe-whitespace+ line)
+        while (and (plusp (length trimmed)) (char= (char trimmed 0) #\;))
+        when (uiop:string-prefix-p +override-marker+ trimmed) return trimmed))
+
+(defun file-only-definitions-p (path hits)
+  "Whether PATH's top-level forms are HITS, its definitions, and IN-PACKAGEs
+alone: a file that runs anything else at load is judged and folded whole."
+  ;; A package the image has not made is read in a scratch one, deleted
+  ;; after: reading a file must not intern its names elsewhere.
+  (let ((scratch '()))
+    (unwind-protect
+         (handler-case
+             (let ((*read-eval* nil) (*package* (find-package '#:nodecode.evolved)) (others 0))
+               (with-open-file (in path :external-format :utf-8)
+                 (loop for form = (read in nil in)
+                       until (eq form in)
+                       do (if (named-form-p form "IN-PACKAGE")
+                              (setf *package*
+                                    (or (find-package (second form))
+                                        (car (push (make-package (format nil "LAYER-SCRATCH-~a" (random 1000000000))
+                                                                 :use '(#:cl))
+                                                   scratch))))
+                              (incf others))))
+               (= others (length hits)))
+           (error () nil))
+      (mapc #'delete-package scratch))))
+
+(defun layer-file-units (path)
+  "PATH as the files the loader judges one at a time: PATH itself when it
+holds one definition, or anything but definitions; else one unit per
+definition, in its order -- the definition's own text under the package it
+reads in, its override marker above it -- cut into *LAYER-UNITS-DIRECTORY*
+and rewritten only when its text changed, so its fasl is reused."
+  ;; Without this a file is one unit: a form naming what this build lacks
+  ;; skips every form beside it, and a cell kept as one file (cell-fold.lisp)
+  ;; is gone at the next boot over one dead hook.
+  (let ((hits (ignore-errors (file-definitions path))))
+    (if (or (< (length hits) 2) (not (file-only-definitions-p path hits)))
+        (list path)
+        (let* ((text (read-text path))
+               (folder (folder-name (uiop:pathname-directory-pathname path)))
+               (directory (merge-pathnames (format nil "~a/" folder)
+                                           (or *layer-units-directory*
+                                               (merge-pathnames (format nil "nodecode-layer-units-~d/" (sb-posix:getpid))
+                                                                (uiop:temporary-directory))))))
+          (ensure-directories-exist directory)
+          (loop for (key start end home) in hits
+                for index from 1
+                collect (let ((unit (merge-pathnames (format nil "~a@~2,'0d-~a.lisp" (pathname-name path) index
+                                                             (definition-file-name key))
+                                                     directory))
+                              (content (format nil "~@[~a~%~](in-package ~s)~%~%~a~%"
+                                               (definition-leading-comment text start)
+                                               (cond ((packagep home) (package-name home))
+                                                     ((stringp home) home)
+                                                     (t "NODECODE.EVOLVED"))
+                                               (subseq text start end))))
+                          (unless (equal content (ignore-errors (read-text unit)))
+                            (write-file-atomically unit content))
+                          (setf (gethash (namestring unit) *layer-units*)
+                                (cons (file-namestring path) (definition-key-label key)))
+                          unit))))))
 
 (define-startup-parameter *peripheral-cache-directory*
   (cache-path "nodecode/peripherals/")
@@ -1106,14 +1366,41 @@ loading at boot must not paint notes about its own unused variables."
 (defun missing-names-path (fasl)
   (make-pathname :type "missing" :defaults fasl))
 
+(defparameter +stamp-in-use-seconds+ 3600
+  "How long a stamp directory a load marked in use (NOTE-STAMP-IN-USE) is
+spared by PRUNE-STAMP-CACHE: longer than any load reads it.")
+
+(defun stamp-in-use-marker (directory)
+  "The file in a stamp DIRECTORY whose write date says when a load last began
+reading it."
+  (merge-pathnames "in-use" directory))
+
+(defun note-stamp-in-use (cache &optional (stamp *image-stamp*))
+  "Mark STAMP's directory under CACHE in use by a load beginning now, so no
+other build's PRUNE-STAMP-CACHE deletes it under that load. Never signals."
+  (when (and cache stamp)
+    (ignore-errors
+     (write-file-atomically (stamp-in-use-marker (folder-under stamp cache)) ""))))
+
+(defun stamp-in-use-p (directory)
+  "Whether a load began reading the stamp DIRECTORY within
++STAMP-IN-USE-SECONDS+."
+  (when-let (marked (ignore-errors (file-write-date (stamp-in-use-marker directory))))
+    (< (- (get-universal-time) marked) +stamp-in-use-seconds+)))
+
 (defun prune-stamp-cache (&optional (stamp *image-stamp*) (cache *layer-cache-directory*))
   "Keep STAMP's compiled directory under CACHE — the layers', the
-peripherals' — and the newest one beside it; delete the rest."
+peripherals' — the newest one beside it, and every one a load marked in use
+within +STAMP-IN-USE-SECONDS+; delete the rest."
   ;; Two builds are alive at once on a machine that warmed an update — the one
   ;; running and the one its successor boots — and a compile under either would
   ;; delete the other's whole directory, so the next launch of whichever lost
   ;; would recompile the layer. The newest two are what PRUNE-WARM-CACHE keeps
-  ;; of the images, for the same reason.
+  ;; of the images, for the same reason. A third build alive on the machine — a
+  ;; shell left open on an older release — is no newer than the other two, and
+  ;; its directory went while it loaded from it: `Couldn't load ... file does
+  ;; not exist', the file's definitions never loaded. A load marks its stamp
+  ;; first (NOTE-STAMP-IN-USE), so whatever is reading is left alone.
   (when (and cache stamp)
     (let* ((directories (sort (ignore-errors (uiop:subdirectories cache))
                               #'> :key (lambda (path)
@@ -1122,7 +1409,8 @@ peripherals' — and the newest one beside it; delete the rest."
       (dolist (path (if (member stamp directories :key #'folder-name :test #'equal)
                         (cdr others)
                         (cddr others)))
-        (ignore-errors (uiop:delete-directory-tree path :validate t))))))
+        (unless (stamp-in-use-p path)
+          (ignore-errors (uiop:delete-directory-tree path :validate t)))))))
 
 (defvar *layer-compiled* nil
   "A table NAME -> the name of its fasl, of the layer files compiled while one
@@ -1611,8 +1899,26 @@ when it loaded, the reason it was skipped, as the boot line prints it, or
                      (format nil "names ~{~a~^, ~}, which this image does not define"
                              (mapcar #'missing-name-label orphans))
                      (values :wait absent)))
-                (t (load (or fasl path))
+                (t (if fasl (load-layer-fasl fasl path) (load path))
                    nil)))))))
+
+(defun load-layer-fasl (fasl path)
+  "LOAD FASL, PATH's compiled form. A FASL gone before it opens — the cache
+cleared under this load — is compiled again into place and loaded, or PATH
+loaded from source when that compile fails."
+  (when (block vanished
+          (handler-bind ((file-error
+                           (lambda (condition)
+                             ;; the open of FASL itself, never an error its own forms signal
+                             (when (and (not (probe-file fasl))
+                                        (ignore-errors
+                                         (uiop:pathname-equal (pathname (file-error-pathname condition))
+                                                              fasl)))
+                               (return-from vanished t)))))
+            (load fasl)
+            nil))
+    (load (or (ignore-errors (ensure-directories-exist fasl) (compile-layer-file path fasl))
+              path))))
 
 (defparameter +load-summary-line+ "^[ ;]*(?:$|compilation unit |caught (?:.* )?condition)"
   "A line of SBCL's load chatter that says nothing of the failure: blank, or a unit summary.")
@@ -1700,25 +2006,32 @@ LOAD-CELL-FOLDERS started it -- of FOLDER into CELL, one file at a time."
          ;; a file not loaded yet may define (LOAD-LAYER-FILE)
          (waiting '()))
     (flet ((settle (path later &optional promised
-                    &aux (started (get-internal-real-time)) (wait nil))
-             ;; load PATH, skip it or leave it waiting => whether it is settled
-             (call-recording-failure
-              cell (file-namestring path)
-              (lambda ()
-                (multiple-value-bind (reason names)
-                    (muffled-load
-                     (lambda ()
-                       ;; said while it loads, so a stall is named as it happens
-                       (setf *layer-file-loading* (list* cell.name (file-namestring path) started))
-                       (unwind-protect
-                            (load-layer-file path (append (remove path (mapcar #'car waiting)) later)
-                                             provides promised)
-                         (setf *layer-file-loading* nil))))
-                  (cond ((eq reason :wait) (setf wait (cons path names)))
-                        (reason
-                         (setf cell.skipped
-                               (append cell.skipped
-                                       (list (cons (file-namestring path) reason)))))))))
+                    &aux (started (get-internal-real-time)) (wait nil)
+                    (failed (length cell.failures)))
+             ;; load PATH, skip it or leave it waiting => whether it is settled;
+             ;; a unit cut from a file is recorded as that file, its definition named
+             (multiple-value-bind (file label) (layer-unit-source path)
+               (flet ((labelled (text) (if label (format nil "~a: ~a" label text) text)))
+                 (call-recording-failure
+                  cell file
+                  (lambda ()
+                    (multiple-value-bind (reason names)
+                        (muffled-load
+                         (lambda ()
+                           ;; said while it loads, so a stall is named as it happens
+                           (setf *layer-file-loading* (list* cell.name (file-namestring path) started))
+                           (unwind-protect
+                                (load-layer-file path (append (remove path (mapcar #'car waiting)) later)
+                                                 provides promised)
+                             (setf *layer-file-loading* nil))))
+                      (cond ((eq reason :wait) (setf wait (cons path names)))
+                            (reason
+                             (setf cell.skipped
+                                   (append cell.skipped
+                                           (list (cons file (labelled reason))))))))))
+                 (when (and label (> (length cell.failures) failed))
+                   (let ((last (last cell.failures)))
+                     (setf (cdr (first last)) (labelled (cdr (first last))))))))
              (setf waiting (append (remove path waiting :key #'car) (and wait (list wait))))
              (unless wait
                ;; what the file cost, so a stall is named
@@ -1758,6 +2071,7 @@ left (BEFORE for the first) against OWNERS. => the records, in load order."
   ;; is set at every load, not once at boot.
   (when-let (translations (cell-output-translations folders))
     (asdf:initialize-output-translations translations))
+  (note-stamp-in-use *peripheral-cache-directory*)
   (ignore-errors (prune-stamp-cache *image-stamp* *peripheral-cache-directory*))
   ;; Registered by where the code is read from, never by the entry: ASDF
   ;; searches these again at every LOAD-SYSTEM (OWN-CELL-DIRECTORY).
@@ -1792,7 +2106,10 @@ left (BEFORE for the first) against OWNERS. => the records, in load order."
     ;; A layer's missing fasls start compiling in children here, while the
     ;; folders before it load; its texts are read and digested once. It
     ;; compiles into a cache it can write, else into a throwaway one deleted
-    ;; after, without children.
+    ;; after, without children. Its stamp is marked in use first, so no other
+    ;; build's prune deletes the directory under the load.
+    (when (some (lambda (folder) (some #'declared-system-layer (cell-folder-systems folder))) ordered)
+      (note-stamp-in-use *layer-cache-directory*))
     (dolist (folder ordered)
       (dolist (declared folder.systems)
         (when declared.layer
@@ -1806,11 +2123,13 @@ left (BEFORE for the first) against OWNERS. => the records, in load order."
                                               (uiop:temporary-directory)))))
                  (*layer-fasl-paths* (make-hash-table :test 'equal))
                  (scan (lambda ()
-                         (remove-if-not
-                          #'probe-file
-                          (mapcar (lambda (file)
-                                    (merge-pathnames (format nil "~a.lisp" file) (cell-folder-source folder)))
-                                  declared.files)))))
+                         ;; a file of several definitions is judged one definition at a time
+                         (mapcan #'layer-file-units
+                                 (remove-if-not
+                                  #'probe-file
+                                  (mapcar (lambda (file)
+                                            (merge-pathnames (format nil "~a.lisp" file) (cell-folder-source folder)))
+                                          declared.files))))))
             (multiple-value-bind (handle paths)
                 (if (or scratch declared.problem)
                     (values nil (funcall scan))
@@ -2959,14 +3278,38 @@ image's own folder, and take out one of a folder this image no longer ships."
                          (push name retired))))))))))))
     (values (nreverse refreshed) (nreverse failed) (nreverse retired))))
 
+(defun build-folder-p (path)
+  "Whether PATH is a folder a tree of nodecode ships, a release's or a
+checkout's: under its cells/ directory, the organism's own system
+definition beside that."
+  (when-let (cells (nth-value 1 (shipped-relative path)))
+    (and (probe-file (merge-pathnames "../nodecode.asd" cells)) t)))
+
+(defun installer-link-p (link &optional (shipped-root (shipped-cells-directory)))
+  "Whether LINK is a link the installer made: one that leads to a folder a
+build ships -- this image's, under SHIPPED-ROOT, or another tree's
+(BUILD-FOLDER-P) -- or that resolves to nothing."
+  ;; INSTALL-CELL links only a shipped folder, and REFRESH-INSTALLED-CELLS
+  ;; points such a link at this image's own. A link to any other folder is
+  ;; the operator's own -- put there by hand, or by NEW-CELL :SOURCE -- and
+  ;; that folder may hold the only copy of its work: off parks it as it
+  ;; parks a folder (CELL-PARKABLE-P), never takes the link out, and on
+  ;; finds it again. A link to nothing has nothing left to lose.
+  (when (symlink-target link)
+    (let ((resolved (probe-file (uiop:ensure-directory-pathname link))))
+      (or (null resolved)
+          (and shipped-root
+               (uiop:string-prefix-p (namestring (truename shipped-root)) (namestring resolved)))
+          (build-folder-p resolved)))))
+
 (defun installer-put-p (name &optional (root *cells-directory*))
   "Whether the folder NAME under ROOT is one this installer put there — a
-link, a copy carrying its marker, a hub clone carrying its own — and so one
-UNINSTALL-CELL takes out."
+link to a folder a build ships (INSTALLER-LINK-P), a copy carrying its
+marker, a hub clone carrying its own — and so one UNINSTALL-CELL takes out."
   ;; a marker is only found inside a folder that is there
   (and root
        (let ((target (merge-pathnames (format nil "~a/" name) root)))
-         (or #-win32 (symlink-target (merge-pathnames name root))
+         (or #-win32 (installer-link-p (merge-pathnames name root))
              (probe-file (merge-pathnames +installed-marker+ target))
              (probe-file (merge-pathnames +hub-marker+ target))))))
 
@@ -2991,12 +3334,17 @@ named after SYSTEM exports it fbound. => it, or NIL."
     (and symbol (eq status :external) (fboundp symbol) (fdefinition symbol))))
 
 (defun note-cell-start (cell)
-  "CELL's start: its record's, else the START-CELL one of its systems'
-packages exports now -- a made cell's DEFINE-CELL evaluated after the folder
-loaded -- put on the record, so the next start runs it. => it, or NIL."
-  (or cell.start
-      (when-let (start (some #'exported-start-cell cell.systems))
-        (setf cell.start start))))
+  "CELL's start: the START-CELL its systems' packages export now -- the
+last system's that does, as the load takes it -- put on the record, else
+the record's. => it, or NIL."
+  ;; Read fresh at every start: a DEFINE-CELL evaluated since the record took
+  ;; its start up -- a made cell's written after the folder loaded, a clause
+  ;; added by a write or a RELOAD-CELL -- is the START-CELL a restart runs. The
+  ;; record's function object is the one its first evaluation made, and kept
+  ;; it would start that declaration forever.
+  (if-let (start (some #'exported-start-cell (reverse cell.systems)))
+    (setf cell.start start)
+    cell.start))
 
 (defun load-cell (&rest names)
   "Load the folders NAMES under *CELLS-DIRECTORY* into this image now — the

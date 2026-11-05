@@ -20,11 +20,20 @@
   "Base64 payload bytes per kitty graphics escape.")
 
 (nlk:define-record (terminal-image (:constructor make-terminal-image)
-                                   (:export :constructor :predicate id width height))
-  "An image the terminal holds under ID."
+                                   (:export :constructor :predicate id width height
+                                            protocol data columns rows))
+  "A picture a placement shows. Through PROTOCOL :KITTY the terminal holds it
+under ID, WIDTH x HEIGHT pixels; the other two this shell draws itself
+(raster.lisp), DATA a picture COLUMNS x ROWS cells big: :SIXEL's the DCS
+string written again at every placement, :BLOCKS' the half-block cells laid
+into the frame."
   (id 0 :type fixnum)
   (width nil :type (or null fixnum))
-  (height nil :type (or null fixnum)))
+  (height nil :type (or null fixnum))
+  (protocol :kitty :type (member :kitty :sixel :blocks))
+  (data nil)
+  (columns nil :type (or null fixnum))
+  (rows nil :type (or null fixnum)))
 
 (nlk:access (image terminal-image))
 
@@ -181,30 +190,48 @@ a TERMINAL-IMAGE carrying the pixel dimensions its PNG header declares."
 
 ;; Placement ids are namespaced per image: distinct ids show one image in several places.
 (nlk:define-record (image-placement (:constructor make-image-placement
-                                         (image &key (x 0) (y 0) rows (placement-id 1)))
-                                    (:export :constructor image placement-id x y rows))
-  "A transmitted image shown at a cell position."
+                                         (image &key (x 0) (y 0) rows (placement-id 1)
+                                                crop-y crop-height))
+                                    (:export :constructor image placement-id x y rows
+                                             crop-y crop-height))
+  "A transmitted image shown at a cell position. A kitty image cut at the
+screen's edge shows CROP-HEIGHT of its pixel rows from CROP-Y, in ROWS."
   (image nil :type (or null terminal-image))
   (placement-id 0 :type fixnum)
   (x 0 :type fixnum)
   (y 0 :type fixnum)
-  (rows nil :type (or null fixnum)))
+  (rows nil :type (or null fixnum))
+  (crop-y nil :type (or null fixnum))
+  (crop-height nil :type (or null fixnum)))
 
 (nlk:access (p image-placement))
 
-(defun place-image (image x y &key rows placement-id stream)
-  "Show IMAGE at cell X, Y: cursor there, then a=p with the geometry it was
-given — each key omitted rather than defaulted when its argument is NIL —
-and C=1 so the cursor does not move with the image."
-  (format stream
-          "~C[~D;~DH~C_Ga=p,i=~D~@[,p=~D~]~@[,r=~D~],C=1~C\\"
-          #\Escape (1+ y) (1+ x) #\Escape image.id placement-id rows #\Escape)
+(defun place-image (image x y &key rows placement-id crop-y crop-height stream)
+  "Show IMAGE at cell X, Y: cursor there, then a kitty image's a=p with the
+geometry it was given — each key omitted rather than defaulted when its
+argument is NIL, CROP-Y and CROP-HEIGHT the source rectangle's y and h —
+and C=1 so the cursor does not move with the image, or a sixel's own
+string. A half-block picture is cells of the frame, never a placement
+written here."
+  (ecase image.protocol
+    (:kitty
+     (format stream
+             "~C[~D;~DH~C_Ga=p,i=~D~@[,p=~D~]~@[,r=~D~]~@[,y=~D~]~@[,h=~D~],C=1~C\\"
+             #\Escape (1+ y) (1+ x) #\Escape image.id placement-id rows
+             (and crop-height crop-y) crop-height #\Escape))
+    (:sixel
+     (format stream "~C[~D;~DH" #\Escape (1+ y) (1+ x))
+     (write-string image.data stream))
+    (:blocks nil))
   (force-output stream))
 
 (defun delete-image-placements (image &key placement-id stream)
-  "Remove IMAGE's placements, or just PLACEMENT-ID, keeping the data."
-  (format stream "~C_Ga=d,d=i,i=~D~@[,p=~D~]~C\\" #\Escape image.id placement-id #\Escape)
-  (force-output stream))
+  "Remove IMAGE's placements, or just PLACEMENT-ID, keeping the data: a kitty
+image's alone, since a sixel goes when its cells are written over
+(FORGET-DEPARTED-SIXELS) and a half-block picture with the frame's cells."
+  (when (eq :kitty image.protocol)
+    (format stream "~C_Ga=d,d=i,i=~D~@[,p=~D~]~C\\" #\Escape image.id placement-id #\Escape)
+    (force-output stream)))
 
 (define-escape (clear-kitty-images :flush t) ("_Ga=d" "\\")
   "Delete every image and placement the terminal holds.")
@@ -239,16 +266,35 @@ take it as a title."
     (format stream "~C_Gi=1,s=1,v=1,a=q,t=d,f=24;AAAA~C\\" #\Escape #\Escape)
     (force-output stream)))
 
+(defun request-terminal-attributes (stream)
+  "Ask the terminal for its cell size in pixels (XTWINOPS 16), its name and
+version (XTVERSION), and then its primary device attributes (DA1), whose 4
+says it draws sixel."
+  ;; Every terminal answers DA1, and in the order it was asked, so its answer
+  ;; also says the kitty query sent before it went unanswered: the shell
+  ;; picks a picture's protocol once it arrives (FRAME's DEVICE-ATTRIBUTES-MSG).
+  ;; A multiplexer answers both itself, which is why its sixel bit is not
+  ;; taken (IMAGE-PROTOCOL). The name says which glyphs a terminal draws
+  ;; itself, finer than half blocks (BLOCK-CELL); one that keeps no name
+  ;; ignores the query, as it does every CSI it does not know.
+  (format stream "~C[16t~C[>q~C[c" #\Escape #\Escape #\Escape)
+  (force-output stream))
+
 ;;; --- the renderer seam ---------------------------------------------------
 
-(defun %render-image-placements (old new stream &key force)
+(defun %render-image-placements (old new stream &key force damaged)
   "Delete the placements in OLD that NEW dropped and place the ones NEW
-added; with FORCE, delete and re-place everything (after a full paint)."
+added, and the DAMAGED ones again; with FORCE, delete and re-place
+everything (after a full paint)."
   ;; Answers NEW, and as a second value whether it placed one, which moves
   ;; the cursor. A placement is its values: EQUALP reads through to the image.
+  ;; A half-block placement writes nothing here: the frame's cells carry it.
   (dolist (p (if force old (set-difference old new :test #'equalp)))
     (delete-image-placements p.image :placement-id p.placement-id :stream stream))
-  (let ((placed (if force new (set-difference new old :test #'equalp))))
+  (let ((placed (remove :blocks
+                        (if force new (union (set-difference new old :test #'equalp) damaged))
+                        :key (lambda (p) (terminal-image-protocol p.image)))))
     (dolist (p placed)
-      (place-image p.image p.x p.y :rows p.rows :placement-id p.placement-id :stream stream))
+      (place-image p.image p.x p.y :rows p.rows :placement-id p.placement-id
+                                   :crop-y p.crop-y :crop-height p.crop-height :stream stream))
     (values new (and placed t))))

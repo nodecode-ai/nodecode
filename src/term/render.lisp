@@ -81,8 +81,14 @@ DEADLINE-MS."
   (let ((new (parse-styled-string view.rows width height
                                   :buffer (reusable-screen-buffer
                                            *frame-scratch* width height))))
+    ;; A half-block picture is cells like any other, laid in under the
+    ;; overlay, so a toast or the selection's wash still draws over it.
+    (paint-block-images new view.images)
     (nlk:when-let (overlay view.overlay)
       (funcall overlay new))
+    ;; A sixel that moved or went is erased by writing its cells again, and
+    ;; one the diff is about to write over is drawn again after it.
+    (forget-departed-sixels renderer.last-buffer renderer.last-images view.images)
     ;; The cursor hides before the paint moves it and shows only once it is
     ;; parked, all inside the update. A terminal that holds the update shows
     ;; the frame whole either way; but ConPTY re-emits a console's output on
@@ -98,13 +104,17 @@ DEADLINE-MS."
     ;; reached from where the paint left off -- a typed key ends its paint
     ;; right at the caret, and costs no motion at all.
     (format stream "~C[?2026h~C[?25l" #\Escape #\Escape)
-    (multiple-value-bind (x y)
-        (render-diff renderer.last-buffer new stream :cursor-x nil :cursor-y nil)
+    (multiple-value-bind (x y damaged)
+        (let ((damaged (damaged-sixels renderer.last-buffer new renderer.last-images view.images)))
+          (multiple-value-bind (x y)
+              (render-diff renderer.last-buffer new stream :cursor-x nil :cursor-y nil)
+            (values x y damaged)))
       (multiple-value-bind (images placed)
           (%render-image-placements renderer.last-images
                                     view.images
                                     stream
-                                    :force (null renderer.last-buffer))
+                                    :force (null renderer.last-buffer)
+                                    :damaged damaged)
         (setf renderer.last-images images)
         (nlk:when-let (cursor view.cursor)
           (move-cursor stream (and (not placed) x) (and (not placed) y)

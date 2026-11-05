@@ -50,7 +50,7 @@ src/
                    release build's last load (nodecode/bin only)
   engine/          provider lanes, context engine, turn loop, background exec
     providers/     one file per provider wire
-    image/         decoders (WebP, JPEG, GIF) and FIT-IMAGE, an image as a
+    image/         decoders (WebP, GIF) and FIT-IMAGE, an image as a
                    provider takes it
   import/          bringing in another agent's home and sessions, and the
                    worlds it reads them as

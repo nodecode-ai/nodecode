@@ -14,20 +14,20 @@ summary: "What works today on each platform, and what is limited or unfinished."
 | Linux arm64 | No | | |
 | macOS Intel | No | | |
 
-Requirements: [Install](/install).
+Requirements: [Install](install.mdx).
 
 {/* source: src/cli/entry.lisp */}
 ## Works today
 
 - The shell (the terminal UI), the local gateway, durable sessions and profiles.
-- One-line install on the three platforms above. See [Install](/install).
-- Automatic updates on installed builds. See [Updates](/updates).
-- Four provider wire formats: `openai-completions`, `openai-responses`, `anthropic`, `google`. See [Models](/models).
-- A nodecode.ai account: `nodecode login` signs in in a browser, and the footer shows the plan's requests left. See [First run](/first-run#a-nodecodeai-account).
-- Backup models: `/models` has a Backup tab, the models a failing turn moves on to. See [Models](/models).
-- Bots in Discord, Telegram and Slack, from cells that ship with Nodecode. See [Channels](/channels).
-- Cells, Nodecode's and the community's, listed under <CellsTab />. See [Cells](/cells).
-- `/doctor` health check and `/backup` home archive. See [Troubleshooting](/troubleshooting).
+- One-line install on the three platforms above. See [Install](install.mdx).
+- Automatic updates on installed builds. See [Updates](updates.mdx).
+- Four provider wire formats: `openai-completions`, `openai-responses`, `anthropic`, `google`. See [Models](models.mdx).
+- A nodecode.ai account: `nodecode login` signs in in a browser, and the footer shows the plan's requests left. See [First run](first-run.mdx#a-nodecodeai-account).
+- Backup models: `/models` has a Backup tab, the models a failing turn moves on to. See [Models](models.mdx).
+- Bots in Discord, Telegram and Slack, from cells that ship with Nodecode. See [Channels](channels.mdx).
+- Cells, Nodecode's and the community's, listed under <CellsTab />. See [Cells](cells.mdx).
+- `/doctor` health check and `/backup` home archive. See [Troubleshooting](troubleshooting.mdx).
 
 {/* source: src/gateway/background.lisp */}
 ## Windows limits
@@ -39,7 +39,7 @@ Requirements: [Install](/install).
 | The terminal y/N prompt is not read | `nodecode add` for hub code and `nodecode profile delete` need `--yes`. |
 | No profile wrapper command | `nodecode profile create` writes no `NAME` command. Use `nodecode -p NAME`. |
 | No symlinks for shared folders | A new profile copies memory, skills and credentials. |
-| `/chrome onboard` has no opener | It cannot start Chrome. |
+| `/chrome`'s onboarding has no opener | It cannot start Chrome. |
 | No local speech or transcription engine | Downloads exist for Linux and macOS only. |
 | `/doctor` shows no disk fact | The check uses `df`. |
 
@@ -52,7 +52,7 @@ Requirements: [Install](/install).
 - Channel messages run with full host authority. Allowlists decide who may send them.
 - Nodecode ships no sandbox. The organism is as isolated as the account it runs under.
 
-Detail: [Security](/security).
+Detail: [Security](security.mdx).
 
 {/* source: src/organism/update.lisp */}
 ## Unfinished
@@ -60,7 +60,7 @@ Detail: [Security](/security).
 | Area | State |
 | --- | --- |
 | Cell hub | The index is `https://nodecode.ai/dl/cells/index.json`; the community's is `https://nodecode.ai/cells/community.json`. `NODECODE_HUB_INDEX` and `NODECODE_COMMUNITY_INDEX` name others. |
-| Update rollback | Not automatic. A build that fails to serve after a restart stays linked. See [Updates](/updates). |
+| Update rollback | Not automatic. A build that fails to serve after a restart stays linked. See [Updates](updates.mdx). |
 | Schema rollback | Rolling back after a store migration is manual. Copy the store first. |
 | `profile switch` | Refused in a build that was not started from an installed binary. |
 | `--ephemeral` | Channel adapters refuse to start. Definitions still go to the real layer. |

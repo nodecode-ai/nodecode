@@ -43,9 +43,10 @@
   (is (string= "" (knowledge-git "tester-weather" "status" "--porcelain")) "and so did the cell")
   (is (search "moved mv-reading" (knowledge-git "tester" "log" "--format=%s" "-1")))
   (is (eql 21 (funcall (find-symbol "MV-FORECAST" '#:nodecode.evolved))) "nothing live changed")
-  (is (search "[weather: kept mv-forecast]"
+  ;; a later redefinition, from any session, is the cell file's to edit: never a layer copy
+  (is (search "mv-forecast.lisp holds it, so edit it there"
               (keep-definition-text "(defun mv-forecast () (mv-reading-celsius (make-mv-reading :celsius 22)))"
-                                    :session "s-later")) "a later redefinition, from any session, lands in the cell")
+                                    :session "s-later")))
   (is (null (layer-file "mv-forecast"))))
 
 (deftest cell-move-leaves-a-shared-file-whole-and-names-what-it-did-not-find (with-made-cell-fixture ())

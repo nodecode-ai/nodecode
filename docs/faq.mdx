@@ -6,54 +6,54 @@ summary: "Short answers to what a newcomer asks first, each with the page that h
 {/* source: nodecode.asd */}
 ## What does it cost?
 
-Nodecode is free, under the MIT license. It runs on your own provider key and the provider bills you; `/usage` reports the spend. A hosted model is sold separately: see [Pricing](/pricing). With a plan, `nodecode login` signs this machine in and no key is pasted. Keys: [Models and providers](/models).
+Nodecode is free, under the MIT license. It runs on your own provider key and the provider bills you; `/usage` reports the spend. A hosted model is sold separately: see [Pricing](pricing.mdx). With API credit, `nodecode login --api` signs this machine in and no key is pasted. Keys: [Models and providers](models.mdx).
 
 {/* source: src/engine/provider.lisp */}
 ## Which models and providers work?
 
-Any provider that speaks one of four wire dialects: `openai-completions`, `openai-responses`, `anthropic` or `google`. `/models` saves a key for a provider from the models.dev catalog, and picks its model. A local server works through `base_url`. See [Models and providers](/models).
+Any provider that speaks one of four wire dialects: `openai-completions`, `openai-responses`, `anthropic` or `google`. `/models` saves a key for a provider from the models.dev catalog, and picks its model. A local server works through `base_url`. See [Models and providers](models.mdx).
 
 {/* source: src/tools/install.sh */}
 ## Which platforms?
 
-Linux x86_64 with glibc 2.34 or newer (Ubuntu 22.04, Debian 12 and later), macOS 15 or newer on Apple Silicon, and Windows x86_64. No build exists for arm64 Linux or Intel Macs. See [Current support](/support).
+Linux x86_64 with glibc 2.34 or newer (Ubuntu 22.04, Debian 12 and later), macOS 15 or newer on Apple Silicon, and Windows x86_64. No build exists for arm64 Linux or Intel Macs. See [Current support](support.mdx).
 
 {/* source: src/organism/profile.lisp */}
 ## Where does my data live?
 
-In the home, `~/.nodecode/`: the config, your keys, the store of every session, the cells and what the agent kept. What a turn sends goes to the provider you chose. See [Files](/files).
+In the home, `~/.nodecode/`: the config, your keys, the store of every session, the cells and what the agent kept. What a turn sends goes to the provider you chose. See [Files](files.mdx).
 
 {/* source: src/engine/exec.lisp */}
 ## What can the model touch on my machine?
 
-Everything your user account can. `eval` runs Lisp and shell commands with full host authority, and Nodecode ships no sandbox. Run it in a container before you leave it working alone. See [Safety and trust](/security).
+Everything your user account can. `eval` runs Lisp and shell commands with full host authority, and Nodecode ships no sandbox. Run it in a container before you leave it working alone. See [Safety and trust](security.mdx).
 
 {/* source: src/organism/scribe.lisp */}
 ## How is it different from other coding agents?
 
-The model has one tool, `eval`, which evaluates Lisp in the running Nodecode. What it defines runs at once and is kept: one file per definition, committed with git, loaded at every start. See [Eval and the layer](/eval).
+The model has one tool, `eval`, which evaluates Lisp in the running Nodecode. What it defines runs at once and is kept: one file per definition, committed with git, loaded at every start. See [Eval and the layer](eval.mdx).
 
 {/* source: src/organism/scribe.lisp */}
 ## How do I undo something it kept?
 
-A top-level `(fmakunbound 'name)` forgets a kept function. `git revert` in the layer's folder and a restart undo a whole change. `/undo` rewinds the last turn; in the shell it also restores the files it changed in the session's folder. See [Eval and the layer](/eval#inspect-and-undo).
+A top-level `(fmakunbound 'name)` forgets a kept function. `git revert` in the layer's folder and a restart undo a whole change. `/undo` rewinds the last turn; in the shell it also restores the files it changed in the session's folder. See [Eval and the layer](eval.mdx#inspect-and-undo).
 
 {/* source: src/organism/update.lisp */}
 ## How do I update?
 
-An installed build updates itself by default. `nodecode update` moves to the latest release now, and `nodecode --version` names the build you run. See [Updates](/updates).
+An installed build updates itself by default. `nodecode update` moves to the latest release now, and `nodecode --version` names the build you run. See [Updates](updates.mdx).
 
 {/* source: src/tools/install.sh */}
 ## How do I uninstall?
 
-No uninstall command exists. On Linux and macOS, run `nodecode gateway off`, then delete `~/.local/share/nodecode/` and `~/.local/bin/nodecode`. On Windows, delete `%LOCALAPPDATA%\Programs\nodecode\` and its user PATH entry. Delete `~/.nodecode/` only to remove your sessions, keys and definitions too. See [Install](/install#where-files-land).
+No uninstall command exists. On Linux and macOS, run `nodecode gateway off`, then delete `~/.local/share/nodecode/` and `~/.local/bin/nodecode`. On Windows, delete `%LOCALAPPDATA%\Programs\nodecode\` and its user PATH entry. Delete `~/.nodecode/` only to remove your sessions, keys and definitions too. See [Install](install.mdx#where-files-land).
 
 {/* source: src/gateway/background.lisp */}
 ## Can it run without a terminal?
 
-Yes. On Linux and macOS the gateway is on by default: it keeps the organism running in the background and at login. `nodecode gateway on` turns it back on after `nodecode gateway off`. On Windows, keep `nodecode serve` open in a terminal. See [The gateway](/gateway).
+Yes. On Linux and macOS the gateway is on by default: it keeps the organism running in the background and at login. `nodecode gateway on` turns it back on after `nodecode gateway off`. On Windows, keep `nodecode serve` open in a terminal. See [The gateway](gateway.mdx).
 
 {/* source: src/gateway/health.lisp */}
 ## Where do I get help?
 
-Run `/doctor`. It lists what is missing and prints a fix for each problem. To ask a person, join the [Nodecode Discord](https://discord.gg/cujGhaGCnS), where releases, help and the team are, or write to [hi@nodecode.ai](mailto:hi@nodecode.ai). See [Troubleshooting](/troubleshooting).
+Run `/doctor`. It lists what is missing and prints a fix for each problem. To ask a person, join the [Nodecode Discord](https://discord.gg/cujGhaGCnS), where releases, help and the team are, or write to [hi@nodecode.ai](mailto:hi@nodecode.ai). See [Troubleshooting](troubleshooting.mdx).

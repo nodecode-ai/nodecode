@@ -410,14 +410,13 @@ a root: its PARENT_ID, one the listing's own rows answer to and not the id itsel
   "The /sessions dialog's context label: how many sessions are running right
 now, under the live spinner, or nothing -- the tabs beside it already count
 the ones listed."
-  (let ((started (loop for entry in fold.entries
-                       for at = (and activity (gethash (gethash "id" entry) activity))
-                       when at collect at)))
-    (if started
-        (format nil "~a ~d running"
-                (status-mark (or (running-elapsed-ms (first started) (iso-8601-ms (nlk::iso-now))) 0))
-                (length started))
-        "")))
+  (if-let (started (loop for entry in fold.entries
+                         for at = (and activity (gethash (gethash "id" entry) activity))
+                         when at collect at))
+      (format nil "~a ~d running"
+              (status-mark (or (running-elapsed-ms (first started) (iso-8601-ms (nlk::iso-now))) 0))
+              (length started))
+      ""))
 
 (defun sessions-fold-directory (fold id &aux (seen (make-hash-table :test #'equal)))
   "The folder ID's tree was opened in: the working directory of the session
@@ -1115,11 +1114,16 @@ id, takes the highlight once its row is listed (Left's session just left)."
   ;; rather than as this op's answer. => NIL.
   (open-sessions-picker-now model :seat seat)
   ;; Closing or replacing this picker cancels its pending read's
-  ;; UI effect. An old completion never reopens or fills another.
+  ;; UI effect. An old completion never reopens or fills another. A shell
+  ;; whose organism has not answered yet has no gateway to read: its
+  ;; picker waits on the reading copy, unfailed, and the read every attach
+  ;; makes fills it (REFRESH-SESSION-DIRECTORY).
   (dialog-read model
                (lambda () (read-session-directory model))
                (lambda-ignoring (model dialog value)
-                 (install-session-directory model value :seat seat)))
+                 (if (and (off-loop-failure value) (null model.http-port))
+                     :quiet
+                     (install-session-directory model value :seat seat))))
   nil)
 
 ;;; --- the /sessions conversation search --------------------------------------
@@ -1468,10 +1472,17 @@ One read in flight per shell, preserving cached rows until the answer lands."
     (off-loop model
               (lambda () (read-session-directory model))
               (lambda (model value)
-                (when-let (failure (off-loop-failure value))
-                  (setf (getf (gethash model *session-directory*) :at) nil)
-                  (show-status model (format nil "Sessions failed: ~a" failure) :error-p t))
-                (if (off-loop-failure value) t :quiet)))))
+                (cond ((off-loop-failure value)
+                       (setf (getf (gethash model *session-directory*) :at) nil)
+                       (show-status model (format nil "Sessions failed: ~a" (off-loop-failure value))
+                                    :error-p t)
+                       t)
+                      ;; A picker opened before the organism answered waits
+                      ;; on this read (SLASH-SESSIONS-OP).
+                      ((sessions-picker-awaiting-p model)
+                       (install-session-directory model value)
+                       t)
+                      (t :quiet))))))
 
 (defun directory-title (model session-id)
   "SESSION-ID's name in MODEL's last directory read, or NIL."
@@ -1632,14 +1643,12 @@ floor."
     (nlk:engage-floor :session-id sid)
     (values sid token)))
 
-;;; Spelled the way FRESH-SESSION-ID spells the rest.
-(defparameter +gateway-session-id+ "s-GATEWAY"
-  "The session a gateway's boot names: one per home across every restart,
-so a unit that comes up at each login and after each crash leaves one
-session behind, not one a start.")
+;;; +GATEWAY-SESSION-ID+, the session a gateway's boot names, is spelled the
+;;; way FRESH-SESSION-ID spells the rest; engine/exec.lisp defines it, since a
+;;; shell child of that session is given no id to claim.
 
 ;; PAUSE bounds how long a shell's close leaves the store unowned, beside the boot.
-(defun await-free-store (path &key (held-p #'nlk::store-lease-held-p) (pause 1) tick)
+(defun await-free-store (path &key (held-p #'nlk::store-lease-held-elsewhere-p) (pause 1) tick)
   "Return once no live process holds PATH's ownership lock — at once when
 none does."
   ;; The gateway's patience: a shell that owns the store keeps it until it
@@ -1666,7 +1675,16 @@ runs, and brings back on `current' from any exit.")
 ;;; the store go through the same cleanup a kill runs first.
 (defvar *serve-next* nil
   "What the headless owner does once it lets the store go: NIL while it
-serves; :STOP to exit, :RESTART to run its own command line again.")
+serves; :STOP to exit, :RESTART to run its own command line again, :IMAGE to
+save its heap as *SERVE-IMAGE* and go on from it (heap-image.lisp), :SWITCH
+to run *SERVE-SWITCH* in its place.")
+
+(defvar *serve-switch* nil
+  "What the headless owner runs in its own place when *SERVE-NEXT* is
+:SWITCH: a saved heap's name, or :FOLDER for the installed binary.")
+
+(defvar *serve-image* nil
+  "The name the headless owner saves its heap as when *SERVE-NEXT* is :IMAGE.")
 
 (defvar *serve-wake* (bt2:make-semaphore :name "serve-wake")
   "What the headless owner parks on between watchdog beats.")
@@ -1695,8 +1713,43 @@ a stop that has not let it go within *STOP-SECONDS* is cut short (CUT-SHORT)."
   (when (and (eq what :stop) *serving* (not *stopping*))
     (setf *stopping* t)
     (spawn "stop-deadline" (sleep *stop-seconds*) (cut-short)))
-  (setf *serve-next* what)
+  ;; An owner on its way out advertises nothing from the moment it is told,
+  ;; not from when its owner thread reaches STOP-GATEWAY: a shell launching
+  ;; in between attached to it and was dropped as it went (#226). The
+  ;; sidecar keeps the pid, so that shell waits for the lock instead.
+  (when *serving*
+    (ignore-errors (nlk::publish-store-endpoint nil)))
+  ;; A save or a switch execs another heap in this pid: the store closes
+  ;; with its lease kept, for the exec to hand on (*KEEP-STORE-LEASE*).
+  (setf nlk::*keep-store-lease* (and (member what '(:image :switch)) t)
+        *serve-next* what)
   (bt2:signal-semaphore *serve-wake*))
+
+(defun serve-image (name)
+  "Have the headless owner save its heap as image NAME once it lets the store
+go, and go on from that image in place (SERVE-NEXT :IMAGE)."
+  (setf *serve-image* name)
+  (serve-next :image))
+
+(defun kept-store-lease (path)
+  "The store's lease for the exec that follows: the one CLOSE-STORE kept
+(*KEEP-STORE-LEASE*), else taken back now; NIL when another process took it."
+  (setf nlk::*keep-store-lease* nil)
+  (or (nlk::held-lock (nlk::lock-path-for-store (merge-pathnames path)))
+      (ignore-errors (nlk::hold-store-lease path))))
+
+(defun serve-switch (target)
+  "Have the headless owner run TARGET -- a saved heap's name, or :FOLDER --
+in its own place once it lets the store go, the store's lease held across
+the exec (SERVE-NEXT :SWITCH)."
+  (setf *serve-switch* target)
+  (serve-next :switch))
+
+(defun run-current-again (&optional (argv sb-ext:*posix-argv*))
+  "Exec this organism's installed binary on ARGV, every descriptor above
+stderr closed first. Answers only the kernel's refusal."
+  (nlk::close-inherited-descriptors)
+  (nlk::exec-program (nlk:organism-binary) argv))
 
 (defun stop-on-sigterm ()
   "SIGTERM stops this headless owner as a quit does (SERVE-NEXT :STOP), and
@@ -1745,7 +1798,13 @@ quietly."
         ;; and so leaves one.
         (if wait
             (await-free-store path :tick #'nlk:systemd-watchdog)
-            (when (nlk::store-lease-held-p path)
+            (when (nlk::store-lease-held-elsewhere-p path)
+              ;; Said, as the lock's refusal below is: a candidate that lost
+              ;; to an owner on its way out left no line, and the shell that
+              ;; started it looked hung (#226).
+              (format t "~&election lost: pid ~a holds ~a~%"
+                      (or (ignore-errors (nlk::read-store-holder path)) "?") (namestring path))
+              (finish-output)
               (nlk:take-self-receipt)
               (return :lost)))
         (with-handlers ((nlk::store-in-use (refusal)
@@ -1804,22 +1863,54 @@ quietly."
         (case *serve-next*
           (:stop (return :stopped))
           (:restart
-           (dolist (name (nlk::directory-names #+linux "/proc/self/fd" #-linux "/dev/fd"))
-             (let ((fd (parse-integer name :junk-allowed t)))
-               (when (and fd (> fd 2)) (ignore-errors (sb-posix:close fd)))))
-           (return (format t "~&restart refused: ~a~%"
-                           (nlk::exec-program (nlk:organism-binary) sb-ext:*posix-argv*)))))))))
+           (return (format t "~&restart refused: ~a~%" (run-current-again))))
+          ;; The heap is saved by a fork and this process becomes it: the
+          ;; flags that brought it here are cleared first, or the image would
+          ;; boot into the same save. Back here, nothing was saved or the
+          ;; image would not run -- and this process stopped its threads for
+          ;; the fork, so the binary runs the folder again, as a restart does.
+          (:image
+           (let ((name (shiftf *serve-image* nil))
+                 ;; The store's lease, kept when the store closed, is held
+                 ;; through the save into the image, which adopts it
+                 ;; (OPEN-STORE): a shell that saw the lock free would take
+                 ;; the organism.
+                 (lease (kept-store-lease path)))
+             (setf *serve-next* nil *stopping* nil)
+             (multiple-value-bind (heap why)
+                 (become-saved-image name :lease lease)
+               (declare (ignore heap))
+               (format t "~&snapshot ~a not taken: ~a; running `current' again~%" name why)
+               (finish-output)
+               (return (format t "~&restart refused: ~a~%" (run-current-again))))))
+          ;; A switch saves nothing: the heap chosen -- or the installed
+          ;; binary, which loads the folder -- runs in this process's place,
+          ;; the store's lease kept when the store closed and handed across
+          ;; the exec, so no shell finds the store free between the two. Back here the
+          ;; kernel refused it, and `current' runs again as a restart does.
+          (:switch
+           (let ((target (shiftf *serve-switch* nil))
+                 (lease (kept-store-lease path)))
+             (setf *serve-next* nil *stopping* nil)
+             (format t "~&snapshot: running ~a in place~%" (if (eq target :folder) "fresh from files" target))
+             (finish-output)
+             (format t "~&snapshot: the switch was refused: ~a; running `current' again~%"
+                     (nlk::exec-into-image (if (eq target :folder)
+                                               (nlk:organism-binary)
+                                               (saved-image-path target))
+                                           :lease lease))
+             (finish-output)
+             (return (format t "~&restart refused: ~a~%" (run-current-again))))))))))
 
 (defun seat-launch (model session-id launch)
   "Seat LAUNCH, what the command line asked of SESSION-ID (RUN-CHAT-GATEWAY),
 on MODEL before its first frame: the target held, and the prompt in the
 composer -- a large one collapsed to its [Paste #N] marker, as a paste is --
 waiting to be sent."
-  (let ((target (loop for (key value) on launch by #'cddr
-                      when (and value (member key '(:provider :model :effort)))
-                        append (list key value))))
-    (when target
-      (setf model.launch-target (list* :session-id session-id target))))
+  (when-let (target (loop for (key value) on launch by #'cddr
+                          when (and value (member key '(:provider :model :effort)))
+                            append (list key value)))
+    (setf model.launch-target (list* :session-id session-id target)))
   ;; The composer is made by the program's INIT, which runs after this: the
   ;; prompt waits for it there (the INIT method below).
   (when-let (prompt (getf launch :prompt))
@@ -1841,10 +1932,117 @@ SESSION-ID (SEND-LAUNCH-PROMPT), with IMAGES, its @FILE images as
   (show-status model "The prompt sends once the organism answers; edit it to keep it here"))
 
 (defmethod nlt:init :after ((model gateway-chat-model))
-  "Seat the launch's prompt in the composer INIT has just made (SEAT-LAUNCH)."
+  "Seat the launch's prompt in the composer INIT has just made (SEAT-LAUNCH),
+and open the session picker a bare `nodecode resume' asked for."
   (let ((launch model.launch-prompt))
     (when-let (prompt (getf launch :unseated))
-      (seat-launch-prompt model (getf launch :session-id) prompt (getf launch :images)))))
+      (seat-launch-prompt model (getf launch :session-id) prompt (getf launch :images))))
+  ;; The picker paints now, on the reading copy until the organism answers;
+  ;; a setup walk the first frame already opened goes first.
+  (when (eq model.launch-resume :pick)
+    (setf model.launch-resume nil)
+    (unless model.dialog
+      (slash-sessions-op model))))
+
+;;; --- the session a launch settles on ------------------------------------
+;;; `nodecode -c' and `nodecode resume ID' paint on an id like every launch
+;;; -- the first frame needs no gateway -- and settle which session the shell
+;;; stands on once the organism answers, before the subscribe that replays it.
+
+(defun folder-continue-session (entries &optional (here (workspace-directory)))
+  "The id of the newest session ENTRIES, the gateway's directory, hold that a
+shell, the web page or a program began in HERE and spoke in, or NIL: what
+`nodecode -c' opens."
+  ;; A fork, a helper and a room's lane hang under another session; a cron
+  ;; fire or a layer evaluation began on nobody's word here (SOURCE, the kind
+  ;; of request that began the session: `gateway' for a shell, the page and
+  ;; rpc, null for one imported or not yet run). The folder is spelled as
+  ;; SESSIONS-FOLD-DIRECTORY spells it.
+  (loop with best = nil
+        for entry in entries
+        for updated = (json-value entry :text "updated_at")
+        when (and (equal here (string-right-trim
+                               "/\\" (or (json-value entry :string "working_directory") "")))
+                  (null (json-value entry :string "parent_id"))
+                  (member (json-value entry :string "source") '(nil "gateway") :test #'equal)
+                  (json-value entry :string "id")
+                  (or (null best) (string> (or updated "") (or (cdr best) ""))))
+          do (setf best (cons (json-value entry :string "id") updated))
+        finally (return (car best))))
+
+(defun reseat-launch-session (model from to)
+  "Stand MODEL's shell on TO instead of FROM, the id it painted on, before
+anything subscribed FROM: the slot, and what the launch holds for FROM -- its
+target and its first prompt -- carried over."
+  (setf (slot-value model 'session-id) to)
+  (flet ((moved (launch)
+           (if (equal from (getf launch :session-id))
+               (list* :session-id to (alexandria:remove-from-plist launch :session-id))
+               launch)))
+    (setf model.launch-target (moved model.launch-target)
+          model.launch-prompt (moved model.launch-prompt)))
+  (note-shell-presence to))
+
+(defun call-on-shell-loop (model function &aux (program model.program)
+                                               (done (bt2:make-semaphore :name "shell-loop-call")))
+  "Call FUNCTION with MODEL on its shell's loop from another thread, and wait
+(10 s at most) until it has run there: how a thread changes what the loop
+reads without racing it. A model with no program, a test's, is called here."
+  ;; NLT:SEND drops a message while the program is not running yet, so the
+  ;; call waits for it as POST-SHELL-NOTICE does.
+  (if (null program)
+      (funcall function model)
+      (progn
+        (loop repeat 100 until program.running do (sleep 0.05))
+        (nlt:send program (make-instance 'off-loop-msg
+                                         :value nil
+                                         :continuation (lambda-ignoring (model value)
+                                                         (unwind-protect (funcall function model)
+                                                           (bt2:signal-semaphore done)))))
+        (bt2:wait-on-semaphore done :timeout 10))))
+
+(defun resolve-launch-session (model sid port token &aux (resume model.launch-resume))
+  "The session the shell stands on, settled once its organism answers at
+PORT, SID the id it painted on: what MODEL's launch asked for
+(LAUNCH-RESUME). => the id to ensure and subscribe."
+  ;; :CONTINUE takes the newest session begun in this folder; a folder with
+  ;; none keeps SID and says so. :NAMED keeps SID when the organism holds it,
+  ;; and one it holds no session under is no reason to make one under a
+  ;; mistyped word: the shell stands on a fresh id, and the picker opens on
+  ;; what there is. :PICK is the first frame's (the INIT method above). A
+  ;; read that fails signals, and the next lap asks again.
+  (unless (member resume '(:continue :named))
+    (return-from resolve-launch-session sid))
+  (let* ((found (if (eq resume :continue)
+                    (folder-continue-session
+                     (coerce (gateway-http-session-request port :get "/api/gateway/sessions" nil token)
+                             'list))
+                    (handler-case
+                        (progn (gateway-http-session-request
+                                port :get (format nil "/api/gateway/sessions/~a" sid) nil token)
+                               sid)
+                      (gateway-http-error (condition)
+                        (unless (and (eql 404 (gateway-http-error-status condition))
+                                     (equal "unknown_session" (gateway-http-error-code condition)))
+                          (error condition))
+                        nil))))
+         (target (or found (if (eq resume :named) (fresh-session-id) sid))))
+    (call-on-shell-loop
+     model
+     (lambda (model)
+       (setf model.launch-resume nil)
+       (unless (equal target sid)
+         (reseat-launch-session model sid target))
+       (cond (found)
+             ((eq resume :continue)
+              (show-status model "No session in this folder yet: this one is new. Ctrl+S lists every session"))
+             ;; The picker covers the composer's status: the header it
+             ;; opens with says why it opened, left of the tabs.
+             (t (slash-sessions-op model)
+                (when (picker-dialog-p model.dialog)
+                  (setf (picker-dialog-title model.dialog)
+                        (format nil "No session ~a in this home" sid)))))))
+    target))
 
 (defun attach-or-own-organism (&key session-id store-path setup prelude launch)
   "The binary's entry: paint the shell NOW, boot the organism BEHIND it."
@@ -1861,7 +2059,13 @@ SESSION-ID (SEND-LAUNCH-PROMPT), with IMAGES, its @FILE images as
     ;; with: a /sessions pick, a /fork or Left moves a shell off its first id.
     (let ((ended
             (run-chat-gateway
-             :session-id (or session-id (fresh-session-id)) :store-path path :setup setup
+             ;; SESSION-ID is the id `resume' named, or :PICK or :CONTINUE
+             ;; (PARSE-LAUNCH-ARGUMENTS): those two paint on a fresh id and
+             ;; settle once the organism answers, and so does a named one
+             ;; the organism turns out not to hold (RESOLVE-LAUNCH-SESSION).
+             :session-id (if (stringp session-id) session-id (fresh-session-id))
+             :resume (if (stringp session-id) :named session-id)
+             :store-path path :setup setup
              :launch launch
              ;; Start the organism when the store is free, else attach to the live owner.
              :boot

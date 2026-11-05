@@ -345,10 +345,11 @@ bounded at 8MB."
          (ppcre:scan "^[A-Za-z0-9+/=]{8,}\\z" body)
          body)))
 
-;;; RENDER-STATE binds it from the model's KITTY-GRAPHICS flag.
-(defvar *kitty-images-enabled* nil
-  "Render-scope switch: T reserves an inline preview band under image
-cards (the terminal answered the kitty graphics query).")
+;;; WITH-RENDER-SCOPE binds it from the model (IMAGE-PROTOCOL).
+(defvar *image-protocol* nil
+  "Render-scope switch: how the terminal is given a picture, :KITTY, :SIXEL
+or :BLOCKS, which reserves an inline preview band under image cards; NIL
+while it has not said.")
 
 (defparameter *image-preview-rows* 8
   "Rows the inline kitty preview band reserves under an image card whose
@@ -386,11 +387,11 @@ fact never measured the image (the Zig image_preview_rows viewport input).")
 
 (defun image-band-llines (image row width)
   "What stands under the line naming IMAGE, a fact of ROW's: the band a
-terminal that speaks the kitty graphics protocol draws it over, its first row
+terminal draws it over (IMAGE-PROTOCOL), its first row
 carrying the fact for the placement, then the caption -- alone where the
 terminal has no graphics or the fact names no PNG it could be given."
   (append
-   (when (and *kitty-images-enabled* (image-preview-payload image row))
+   (when (and *image-protocol* (image-preview-payload image row))
      (loop for fact = image then nil
            repeat (image-preview-rows image width)
            collect (make-lline :text "" :role :image-slot :image fact)))
@@ -775,7 +776,7 @@ block's padding included when its viewport policy owns any."
         (make-display-block :retention :live-only :kind :tool-call :row row
                             :lines lines :plain-lines plains :refs refs))))
   (memoized (row-display-cache row)
-    (width *palette* *color-profile* *kitty-images-enabled*
+    (width *palette* *color-profile* *image-protocol*
      *tool-detail* *expanded-tool-call*
      (eq row *hover-row*)
      row.kind row.role
@@ -842,7 +843,7 @@ the fact drawn there.")
 
 (defun row-body-llines (row width)
   "ROW's logical lines at WIDTH, EQ-stable across renders (the ROW-LLINES-CACHE),
-its inline image bands noted for the placement (IMAGE-BAND-AT)."
+its inline image bands noted for the placement (IMAGE-BAND-COVERING)."
   ;; Each fresh lline is replaced by ROW's previous content-identical lline at the
   ;; same position, so unchanged lines stay EQ across re-renders and hit the
   ;; LLINE-RENDER memo. The merged list becomes the new cache entry. Positional

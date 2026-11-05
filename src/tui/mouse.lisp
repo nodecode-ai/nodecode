@@ -284,55 +284,82 @@ gesture, over the frame rather than over the transcript alone."
               (cons row (1- (text-display-width (subseq text 0 end)))))))))
 
 (defun selection-rows-text (rows)
-  "ROWS -- (TEXT . EDGE) per marked row, TEXT the words cut at the mark and
-EDGE whether the row opens on the lane's edge -- as the copy's text: the
-gutter's indent the edge rows share taken off, and joined with newlines."
+  "ROWS -- (TEXT EDGE JOINT) per marked row, TEXT the words cut at the mark,
+EDGE whether the row opens on the lane's edge and JOINT, for a row that goes
+on the wrapped line of the row before it, the blanks the wrap took out
+between them (LINE-JOINT), else NIL -- as the copy's text: the gutter's
+indent the edge rows share taken off, each wrapped line put back together
+as the one line it was cut from, and the lines joined with newlines."
   ;; The rows that open on the lane's edge open on the gutter's indent too:
   ;; the fewest blanks any of them opens on go, so a code block keeps its own
   ;; indent under the prose around it. A row the mark opens inside keeps its
-  ;; words, never blanks.
-  (let ((indent (or (loop for (text . edge) in rows
-                          when (and edge (plusp (length text)))
+  ;; words, never blanks. A wrap's break is the screen's, not the words': a
+  ;; command a code block wrapped pastes into a shell as the one line it is,
+  ;; and a paragraph as its own line. The row it goes on in joins on its first
+  ;; word, the indent and the ↦ it opens on being the gutter's.
+  (let ((indent (or (loop for (text edge joint) in rows
+                          when (and edge (not joint) (plusp (length text)))
                             minimize (or (position #\Space text :test-not #'char=) 0))
                     0)))
     ;; The band's padding rows the mark crossed at either end are not
     ;; words; a blank row between paragraphs is.
     (string-trim '(#\Newline)
-                 (format nil "~{~a~^~%~}"
-                         (loop for (text . edge) in rows
-                               collect (if edge
-                                           (subseq text (min indent (length text)))
-                                           (string-left-trim " " text)))))))
+                 (with-output-to-string (out)
+                   (loop for (text edge joint) in rows
+                         for firstp = t then nil
+                         do (cond ((and joint (not firstp)) (write-string joint out))
+                                  ((not firstp) (terpri out)))
+                            (write-string (if (and edge (not joint))
+                                              (subseq text (min indent (length text)))
+                                              (string-left-trim " " text))
+                                          out))))))
+
+(defun line-joint (plains line above)
+  "The blanks a copy puts back between transcript LINE of PLAINS and ABOVE,
+the line it copied just before, when LINE goes on the wrapped line ABOVE is
+a row of (PLAIN-ROW-CONTINUES); NIL when LINE opens a line of its own."
+  (and (integerp above) (integerp line) (= line (1+ above)) (< 0 line (length plains))
+       (plain-row-continues (aref plains line))))
 
 (defun cut-marked-row (text from to)
   "TEXT, a plain row, cut to display columns FROM..TO (inclusive) and
-right-trimmed: the TEXT of a (TEXT . EDGE) row SELECTION-ROWS-TEXT takes."
+right-trimmed: the TEXT of a (TEXT EDGE JOINT) row SELECTION-ROWS-TEXT takes."
   ;; PLAIN-COLUMN-INDEX never answers past the text, so both cuts land in it.
   (let ((start (plain-column-index text from))
         (end (plain-column-index text (1+ to))))
     (string-right-trim " " (subseq text start (max start end)))))
 
-(defun frame-mark-rows (model selection &aux (plains (frame-plain-rows model)))
+(defun frame-mark-rows (model selection &aux (plains (frame-plain-rows model))
+                                             (lines (chat-model-line-plain model)))
   "SELECTION's rows of MODEL's last frame, from its plain lane, as
 SELECTION-ROWS-TEXT takes them: the mark's rows inside TRANSCRIPT-LANE, each
-cut to the lane's columns and at the mark's endpoints."
+cut to the lane's columns and at the mark's endpoints, and joined to the row
+above where the transcript line it shows goes on the one that row shows."
   (when plains
     (multiple-value-bind (top bottom left right) (transcript-lane model)
-      (loop for (row from to) in (mark-runs selection top (min bottom (1- (length plains))) left right)
-            collect (cons (cut-marked-row
-                           (without-message-clock model row (without-gutter-marks (aref plains row)))
-                           from to)
-                          (= from left))))))
+      (bind (((_ _ _ top-pad) (transcript-band-metrics model)))
+        (loop with above = nil
+              for (row from to) in (mark-runs selection top (min bottom (1- (length plains))) left right)
+              for line = (band-window-row-index (chat-model-band model) (- row top top-pad))
+              collect (list (cut-marked-row
+                             (without-message-clock model row (without-gutter-marks (aref plains row)))
+                             from to)
+                            (= from left)
+                            (line-joint lines line above))
+              do (setf above line))))))
 
 (defun span-mark-rows (model span &aux (plains (chat-model-line-plain model)))
   "SPAN's rows (MARK-SPAN) off the transcript's own lines, as
 SELECTION-ROWS-TEXT takes them: every line between its ends, shown or
 scrolled out of the window, cut at the ends' columns."
-  (loop for (line from to) in (mark-runs span 0 (1- (length plains)) 0 (select-lane-end model))
-        collect (cons (cut-marked-row
+  (loop with above = nil
+        for (line from to) in (mark-runs span 0 (1- (length plains)) 0 (select-lane-end model))
+        collect (list (cut-marked-row
                        (without-line-clock model line (without-gutter-marks (aref plains line)))
                        from to)
-                      (zerop from))))
+                      (zerop from)
+                      (line-joint plains line above))
+        do (setf above line)))
 
 (defun frame-selection-text (model &aux (selection (chat-model-selection model)))
   "The marked transcript words of MODEL: the mark's rows cut at its
@@ -426,24 +453,22 @@ last inclusive; NIL for a mark no drag laid over the transcript."
   "Lay the mark a drag from ANCHOR to CELL makes (LANE-MARK) with its
 transcript points, the anchor's taken where the drag left it, so a scroll
 since cannot move that end. => whether the marked words moved."
-  (let ((mark (lane-mark model anchor cell)))
-    (when mark
-      (let ((from (let ((entry (anchor-point model)))
-                    (if (and entry (eq anchor (car entry)))
-                        (cdr entry)
-                        (cdr (setf (anchor-point model)
-                                   (cons anchor (frame-cell-point model anchor))))))))
-        ;; The points run anchor to pointer, not first to last: LANE-MARK's
-        ;; order is the screen's, and the anchor may have scrolled off it.
-        (setf (chat-model-selection model) mark)
-        (let ((to (frame-cell-point model cell)))
-          (if (and from to)
-              (setf (mark-points model) (cons mark (cons from to)))
-              (forget-mark-points model)))
-        (let ((after (mark-span model)))
-          (if after
-              (not (equal before after))
-              (not (equal old mark))))))))
+  (when-let (mark (lane-mark model anchor cell))
+    (let ((from (let ((entry (anchor-point model)))
+                  (if (and entry (eq anchor (car entry)))
+                      (cdr entry)
+                      (cdr (setf (anchor-point model)
+                                 (cons anchor (frame-cell-point model anchor))))))))
+      ;; The points run anchor to pointer, not first to last: LANE-MARK's
+      ;; order is the screen's, and the anchor may have scrolled off it.
+      (setf (chat-model-selection model) mark)
+      (let ((to (frame-cell-point model cell)))
+        (if (and from to)
+            (setf (mark-points model) (cons mark (cons from to)))
+            (forget-mark-points model)))
+      (if-let (after (mark-span model))
+          (not (equal before after))
+          (not (equal old mark))))))
 
 (defparameter *drag-scroll-period-ms* 50
   "How often a drag held past the transcript band's edge scrolls it, in ms.")
@@ -873,29 +898,34 @@ on pure motion. => whether anything a frame shows moved."
                             ;; Only a painted rail shows the change.
                             (plusp (band-window-max-offset (chat-model-band model)))))))
       (or changed hover-changed rail-changed))))
-(defun copy-frame-selection (model &aux (text (frame-selection-text model))
-                                        (program (chat-model-program model)))
+(defun copy-frame-selection (model &aux (text (frame-selection-text model)))
   "Hand MODEL's marked text to the program's clipboard writer, which never
-waits behind the worker (a turn occupies it), and say in the hint lane what
-became of it once the writer knows (CLIPBOARD-OUTCOME-NOTICE): copied only
-when a clipboard tool took it. With nothing marked it says so, and with no
-live program that nothing was written. The release that ends a drag and the
+waits behind the worker (a turn occupies it). A copy says something only
+when it failed (CLIPBOARD-OUTCOME-NOTICE), and with no live program that
+nothing was written; one that lands, and one with nothing marked, leave the
+composer the caret alone. The release that ends a drag and the
 :COPY-SELECTION key both come here."
-  (cond ((zerop (length text)) (show-status model +selection-empty-hint+))
-        ((null program) (show-status model +selection-copy-failed-hint+ :error-p t))
-        (t (nlt:write-clipboard program text
-                                (lambda (outcome)
-                                  (nlt:send program (clipboard-outcome-notice outcome)))))))
+  (unless (zerop (length text))
+    (write-model-clipboard model text)))
+
+(defun write-model-clipboard (model text &aux (program (chat-model-program model)))
+  "Put TEXT on the clipboard through MODEL's program, saying in the hint lane
+only a failure (CLIPBOARD-OUTCOME-NOTICE) once the writer knows; with no live
+program, that nothing was written."
+  (if (null program)
+      (show-status model +selection-copy-failed-hint+ :error-p t)
+      (nlt:write-clipboard program text
+                           (lambda (outcome)
+                             (nlk:when-let (notice (clipboard-outcome-notice outcome))
+                               (nlt:send program notice))))))
 
 (defun clipboard-outcome-notice (outcome)
-  "The composer status a clipboard write's OUTCOME (NLT:WRITE-CLIPBOARD)
-says, as the SYSTEM-NOTICE-MSG that lands it on the loop thread: copied for
-a clipboard tool, sent for OSC 52 alone, failed for neither."
-  (multiple-value-bind (text error-p)
-      (cond ((and (consp outcome) (eq :command (first outcome))) +selection-copied-hint+)
-            ((eq :osc52 outcome) +selection-osc52-hint+)
-            (t (values +selection-copy-failed-hint+ t)))
-    (make-instance 'system-notice-msg :text text :error-p error-p :answer t)))
+  "The SYSTEM-NOTICE-MSG a clipboard write's OUTCOME (NLT:WRITE-CLIPBOARD)
+lands on the loop thread, or NIL: a clipboard tool or the terminal's OSC 52
+took the text and there is nothing to say; neither did, and the failure
+stands in the composer status."
+  (unless (or (and (consp outcome) (eq :command (first outcome))) (eq :osc52 outcome))
+    (make-instance 'system-notice-msg :text +selection-copy-failed-hint+ :error-p t :answer t)))
 
 (defun mark-frame-cells (model selection)
   "=> ((ROW FIRST LAST) ...): the frame rows SELECTION washes on MODEL's
@@ -1237,13 +1267,11 @@ what it took washed, as a drag's release does."
 
 (defun select-copy (model state &key leave)
   "y, Enter, Ctrl+C and the copy chord: copy the mark and leave, the mark
-kept; with nothing marked, LEAVE leaves and anything else says nothing is
-marked."
+kept; with nothing marked, LEAVE leaves and anything else does nothing."
   (cond ((select-state-anchor state)
          (copy-frame-selection model)
          (end-transcript-select model :keep-mark t))
-        (leave (end-transcript-select model))
-        (t (show-status model +selection-empty-hint+))))
+        (leave (end-transcript-select model))))
 
 (defun transcript-select-key (model key mod &aux (state (transcript-select model)))
   "One key pressed while MODEL's keyboard selection runs, KEY and MOD the
@@ -1316,13 +1344,6 @@ or NIL while the window does not show its line."
         (multiple-value-bind (top bottom left right) (transcript-lane model)
           (when (<= (+ top row) bottom)
             (cons (min right (+ left (third point))) (+ top row))))))))
-
-(defun select-mode-hint (state)
-  "The composer's line while the keyboard selects: what moves the cursor,
-or, with a mark standing, that moving carries it."
-  (if (select-state-anchor state)
-      "Selecting · move to extend the mark"
-      "Selecting · move with h j k l, w b e, 0 $, PgUp PgDn, g G"))
 
 (defun select-key-segs (state)
   "The keys the keyboard selection answers, each a filled cap before its

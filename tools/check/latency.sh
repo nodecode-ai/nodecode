@@ -43,21 +43,25 @@ build() { # TREE LABEL
 }
 
 # BASE, once per commit: its tree is kept beside its binary, which reads its
-# shipped cells from the tree it was built in.
+# shipped cells from the tree it was built in, by the path it was built at: a
+# binary of the flat layout has no src/src/ beside it, so its *SOURCE-ROOT*
+# is the ASDF tree it loaded (src/lib/paths.lisp). So the tree is built where
+# it stays -- one built elsewhere and renamed here finds no cells -- and its
+# marker names the folder it was built in, so a tree built anywhere else is
+# built again.
 tree="$cache/$sha"
 exec 9> "$cache/$sha.lock"
 flock 9
-if [ ! -x "$tree/nodecode" ] || [ ! -e "$tree/.latency-ok" ]; then
+if [ ! -x "$tree/nodecode" ] || [ "$(cat "$tree/.latency-ok" 2>/dev/null)" != "$tree" ]; then
   rm -rf "$tree" "$tree.tmp"
-  mkdir -p "$tree.tmp"
-  git -C "$repo" archive "$sha" | tar -x -C "$tree.tmp"
+  mkdir -p "$tree"
+  git -C "$repo" archive "$sha" | tar -x -C "$tree"
   # The cells this checkout already pulled, where BASE pins the same ones;
   # pull-cells fetches whatever BASE pins differently.
-  if [ -d "$repo/cells" ]; then cp -an "$repo/cells/." "$tree.tmp/$(layout "$tree.tmp")cells/"; fi
+  if [ -d "$repo/cells" ]; then cp -an "$repo/cells/." "$tree/$(layout "$tree")cells/"; fi
   echo "latency: building base ${sha:0:9}"
-  build "$tree.tmp" "${sha:0:9}" || exit 2
-  mv "$tree.tmp" "$tree"
-  touch "$tree/.latency-ok"
+  build "$tree" "${sha:0:9}" || exit 2
+  printf '%s' "$tree" > "$tree/.latency-ok"
 fi
 touch "$tree"
 flock -u 9

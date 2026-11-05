@@ -45,7 +45,7 @@ client_command frame's inner command object."
 
 (defun rpc-pipe ()
   "A pipe as (values READ-STREAM WRITE-STREAM), UTF-8 both ends."
-  (multiple-value-bind (in out) (sb-posix:pipe)
+  (multiple-value-bind (in out) (make-pipe)
     (values (sb-sys:make-fd-stream in :input t :external-format :utf-8 :buffering :full)
             (sb-sys:make-fd-stream out :output t :external-format :utf-8 :buffering :full))))
 
@@ -189,6 +189,51 @@ BODY's end closes its stdin."
     (is (eq :eof (funcall (with-rpc (port "rpc-eof" send frames outcome)
                             (await (:timeout 10) (frames))
                             #'outcome))))))
+
+;;; --- the organism a program's shell finds, across a handover (#226) ---------
+
+(deftest rpc-waits-out-an-owner-on-its-way-out-and-starts-the-next ()
+  ;; A store held with nothing published is an owner booting or stopping,
+  ;; never one that serves. It is waited out, and the moment it lets go the
+  ;; shell starts the next owner -- again after a candidate that lost the race.
+  (let* ((held (list t t t nil t nil))
+         (starts 0)
+         (port (nle::store-organism-port #p"/tmp/x/history.db" (nlk:deadline-after 5)
+                                         :held-p (lambda (path) (declare (ignore path)) (pop held))
+                                         :published (lambda (path) (declare (ignore path)) (and (= starts 2) 4242))
+                                         :start (lambda (path) (declare (ignore path)) (incf starts)))))
+    (is (eql 4242 port))
+    (is (= 2 starts) "a candidate that lost is followed by another once the store is free")
+    (is (null held) "each look while it was held was waited out")))
+
+(deftest rpc-never-contests-a-held-store-and-gives-up-at-its-deadline ()
+  (let ((starts 0))
+    (is (null (nle::store-organism-port #p"/tmp/x/history.db" (nlk:deadline-after 0.2)
+                                        :held-p (constantly t) :published (constantly nil)
+                                        :start (lambda (path) (declare (ignore path)) (incf starts)))))
+    (is (zerop starts))))
+
+(deftest rpc-hands-its-end-on-before-it-lets-go ()
+  ;; ON-END hears the outcome before the socket goes: RPC-MAIN tells the
+  ;; organism it fronts there, so the next program never attaches to it.
+  (with-gateway-session (port "rpc-told" :cwd (namestring (fixture-workspace)))
+    (let* ((seen nil)
+           (outcome (nle::run-rpc :port port :token "test-token" :session-id "rpc-told"
+                                  :input (make-string-input-stream "")
+                                  :output (make-broadcast-stream)
+                                  :on-end (lambda (why) (setf seen why)))))
+      (is (eq :eof outcome))
+      (is (eq :eof seen)))))
+
+(deftest rpc-names-a-gateway-gone-before-the-attach ()
+  ;; A dial that finds nobody is GATEWAY-UNREACHED naming the port, never a
+  ;; bare socket condition, so RPC-MAIN looks for the next owner.
+  (let* ((port (nle::local-port 0))
+         (condition (signals-error nle::gateway-unreached
+                      (nle::run-rpc :port port :token "test-token" :session-id "s-gone"
+                                    :input (make-string-input-stream "")
+                                    :output (make-broadcast-stream)))))
+    (is (search (format nil "port ~d" port) (princ-to-string condition)))))
 
 (deftest launch-rpc-verb-takes-a-session-and-a-store ()
   ;; `nodecode rpc [SESSION-ID]' is a command of its own that names its store

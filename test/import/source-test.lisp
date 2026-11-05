@@ -44,7 +44,7 @@ more. => (values URL V1 HEAD), URL its file:// address."
     (import-write repo "SKILL.md"
                   (format nil "---~%name: root-skill~%description: The second root skill.~%---~%Say where it sits.~%"))
     (fixture-git repo "commit" "--quiet" "--all" "--message" "v2")
-    (values (format nil "file://~a" (string-right-trim "/" (uiop:native-namestring repo)))
+    (values (format nil "file://~a" (string-right-trim "/\\" (uiop:native-namestring repo)))
             v1
             (fixture-git repo "rev-parse" "HEAD"))))
 
@@ -61,6 +61,10 @@ more. => (values URL V1 HEAD), URL its file:// address."
   (is (equal '(:url "https://github.com/o/r" :name "github.com/o/r" :ref "v1.2" :path "skills/x")
              (nik::parse-source "github:o/r/skills/x#v1.2")) "#REF pins a branch, a tag or a commit")
   (is (equal "https://gitlab.com/o/r" (getf (nik::parse-source "https://gitlab.com/o/r.git") :url)) "another host's URL, its .git dropped")
+  (is (equal '(:url "file:///C:/Users/me/repo" :name "local/me/repo" :ref nil :path nil)
+             (nik::parse-source "file:///C:/Users/me/repo")) "a folder here is a file:// URL")
+  #+win32
+  (is (equal "local/me/repo" (getf (nik::parse-source "file://C:\\Users\\me\\repo") :name)) "or a Windows path")
   (is (null (nik::parse-source "claude")) "a world's name is no repository")
   (is (null (nik::parse-source "/tmp")) "nor is a path")
   (is (null (nik::parse-source "./o/r")) "nor a relative one")
@@ -81,17 +85,15 @@ more. => (values URL V1 HEAD), URL its file:// address."
       (is (probe-file (merge-pathnames "skills/probe-audit/scripts/check.cjs" folder)) "the folder is kept at its commit, scripts and all")
       (is (null (probe-file (merge-pathnames ".git/" folder))) "without its .git")
       (nik:apply-plan plan)
-      (is-present (skill (kept-text "probe-audit")) "the skill is a prose define-skill"
-        (is (cl:search (format nil ":origin ~s" label) skill) "its origin is the source's label")
-        (is (cl:search "\"Audit a probe with a fresh verifier.\"" skill) "a folded block scalar is its description")
-        (is (cl:search "support files not carried: scripts/check.cjs" skill))
-        (is (cl:search (format nil "they sit in ~a/skills/probe-audit/" root) skill) "and it says where its script sits"))
-      (is (cl:search "The second root skill." (or (kept-text "root-skill") "")) "no ref is the default branch's head")
+      (is (null (kept-text "probe-audit")) "no skill is copied")
+      (is-present (skill (nlk:knowledge-entry-named "probe-audit" nil)) "the skill is linked"
+        (is (equal (truename (merge-pathnames "skills/probe-audit/SKILL.md" folder)) (nlk:knowledge-entry-path skill)) "read where the fetch keeps it, its script beside it")
+        (is (equal "Audit a probe with a fresh verifier." (nlk:knowledge-entry-description skill)) "a folded block scalar is its description"))
+      (is (equal "The second root skill." (nlk:knowledge-entry-description (nlk:knowledge-entry-named "root-skill" nil))) "no ref is the default branch's head")
       (let ((server (nlk:json-value (import-config) :object "mcp" "servers" "probe-srv")))
         (is (not (nlk:config-boolean server "enabled" t)) "its server lands off")
         (is (equalp (vector (format nil "~a/bin/serve.sh" root) "--quiet") (gethash "args" server)) "${CLAUDE_PLUGIN_ROOT} is the folder it sits in"))
-      (is (equal (format nil "~a: 2 skills (~{~a~^, ~}), 1 server (probe-srv)" label
-                         (nik::source-skills label))
+      (is (equal (format nil "~a: 2 skills (probe-audit, root-skill), 1 server (probe-srv)" label)
                  (nik:sources))))))
 
 (deftest import-source-ref-pins-a-commit (with-import-runtime (home box))
@@ -99,8 +101,10 @@ more. => (values URL V1 HEAD), URL its file:// address."
     (let ((plan (nik:make-plan :source (format nil "~a#v1" url) :only "skills")))
       (is (equal '("skills") (remove-duplicates (mapcar #'nik:item-kind (nik:plan-items plan)) :test #'string=)))
       (nik:apply-plan plan)
-      (is (cl:search "The first root skill." (or (kept-text "root-skill") "")) "the tag's commit, not the head")
-      (is (cl:search (format nil ":origin ~s" (source-label box v1)) (or (kept-text "root-skill") ""))))
+      (is-present (skill (nlk:knowledge-entry-named "root-skill" nil)) "the tag's root skill is imported"
+        (is (equal "The first root skill." (nlk:knowledge-entry-description skill)) "the tag's commit, not the head")
+        (is (uiop:subpathp (nlk:knowledge-entry-path skill)
+                           (truename (merge-pathnames (format nil "sources/~a/" (source-label box v1)) home))))))
     (signals-error nik:import-error (nik:make-plan :source url :only "instructions"))))
 
 (deftest import-source-removal-takes-back-what-it-brought (with-import-runtime (home box))
@@ -108,11 +112,11 @@ more. => (values URL V1 HEAD), URL its file:// address."
     (declare (ignore v1))
     (let ((label (source-label box head)))
       (nik:apply-plan (nik:make-plan :source url))
-      (is (equal (format nil "~a removed: 2 skills (~{~a~^, ~}), 1 server (probe-srv), and its folder" label
-                         (nik::source-skills label))
+      (is (equal (format nil "~a removed: 2 skills (probe-audit, root-skill), 1 server (probe-srv), and its folder" label)
                  (nik:remove-source label)))
-      (is (null (kept-text "probe-audit")) "its skills are forgotten")
-      (is (null (kept-text "root-skill")))
+      (is (null (nlk:knowledge-entry-named "probe-audit" nil)) "its skills are gone")
+      (is (null (nlk:knowledge-entry-named "root-skill" nil)))
+      (is (null (directory (merge-pathnames "cells/linked-skills/*/" home) :resolve-symlinks nil)) "and their links")
       (is (null (nlk:json-value (import-config) :object "mcp" "servers" "probe-srv")) "its server is gone")
       (is (null (probe-file (merge-pathnames (format nil "sources/~a/" label) home))) "and its folder")
       (is (cl:search "no repository source here" (nik:sources)))
@@ -122,3 +126,16 @@ more. => (values URL V1 HEAD), URL its file:// address."
       (is (cl:search "0 servers" (nik:remove-source label)))
       (is (equal "bash" (nlk:json-value (import-config) :string "mcp" "servers" "probe-srv" "command"))))
     (signals-error nik:import-error (nik:remove-source "github.com/no/such@000000000000"))))
+
+(deftest import-source-removal-forgets-an-older-builds-copies (with-import-runtime (home box))
+  ;; An older build converted a source's skills into definitions carrying its
+  ;; label as their :origin; taking the source back forgets them too.
+  (multiple-value-bind (url v1 head) (make-source-fixture box)
+    (declare (ignore v1))
+    (let ((label (source-label box head)))
+      (let ((nik::*link-skills* nil))
+        (nik:apply-plan (nik:make-plan :source url :only "skills")))
+      (is (kept-text "probe-audit") "an older build's copy")
+      (is (cl:search "2 skills" (nik:remove-source label)))
+      (is (null (kept-text "probe-audit")) "forgotten")
+      (is (null (kept-text "root-skill"))))))

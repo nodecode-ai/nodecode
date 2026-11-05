@@ -269,19 +269,6 @@ an edits call names, the number a rollback does."
         (press model :tab) (press model :tab) (press model :tab)
         (is (eq :all (nle::generations-sheet-filter history)) "round to All")))))
 
-(deftest the-days-rail-opens-a-day-and-esc-closes ()
-  (with-frame-model (model 120 40 :session-id "history-rail")
-    (with-history-gateway (calls)
-      (let ((history (history-sheet model)))
-        (press model :left)
-        (is (eq :rail (nle::generations-sheet-focus history)))
-        (press model :down) (press model :down)
-        (press model :right)
-        (is (eq :pane (nle::generations-sheet-focus history)))
-        (is (equal "Installed nodecode-lsp" (nle::history-change-title (history-on model))) "the day's newest change")
-        (press model :escape) (press model :escape)
-        (is (null model.dialog))))))
-
 (deftest generations-n-asks-about-n-in-place ()
   (with-frame-model (model 120 40 :session-id "history-n")
     (with-history-gateway (calls)
@@ -289,7 +276,7 @@ an edits call names, the number a rollback does."
       (is (equal "/api/gateway/generations/plan?to=7" (second (first calls))))
       (is (equal "Kept rt-time, sf-time +1" (nle::history-change-title (history-on model))) "on the change that holds 7")
       (is (sheet-row model "generation 7"))
-      (is (equal "generations takes a generation's number, or nothing: /generations [N]"
+      (is (equal "generations: no generation by that number; /generations alone lists them"
                  (nle::slash-generations-op model "x y")))))
   (with-frame-model (model 120 40 :session-id "history-n-missing")
     (with-history-gateway (calls)
@@ -297,10 +284,9 @@ an edits call names, the number a rollback does."
       (is (sheet-row model "There is no generation 70: 1 to 9 are sealed")))))
 
 (deftest the-sheet-folds-to-the-window-and-never-loses-the-change ()
-  ;; Wide from 84 columns, the days beside the changes; narrower, the days or
-  ;; the changes one view at a time; under 50 columns or 16 rows the whole
-  ;; frame. Every row is the window's width, and the chosen change shows at
-  ;; every size.
+  ;; One layout at every width, the changes under their day heads; under 50
+  ;; columns or 16 rows the whole frame. Every row is the window's width, and
+  ;; the chosen change shows at every size.
   (with-frame-model (model 120 40 :session-id "history-sizes")
     (with-history-gateway (calls)
       (history-sheet model)
@@ -317,10 +303,7 @@ an edits call names, the number a rollback does."
             (destructuring-bind (painted x y width) (nle::sheet-dialog-layout model.dialog)
               (declare (ignore x y))
               (is (every (lambda (row) (= width (nle::text-display-width (nle::plain-frame-row row)))) painted)
-                  (format nil "~{~ax~a~} rows are the window's width" size)))))
-        (is (row-carrying "Generations › " (size 70 20)) "narrow: the day it is on")
-        (press model :left)
-        (is (row-carrying "type to search" (size 70 20)) "narrow: the days alone")))))
+                  (format nil "~{~ax~a~} rows are the window's width" size)))))))))
 ;;; --- /generations without a shell: a room's card ------------------------------
 ;;; A room, the model's eval and the headless surface read the history the
 ;;; sheet does: one card of the changes to page and pick from, a pick that
@@ -384,7 +367,8 @@ an edits call names, the number a rollback does."
                     :key (lambda (row) (nlk:json-value row :string "label")) :test #'equal) "what the restore moves, a line a folder")
           (is (equal "Nothing of yours moves; nodecode stays as it is" (nlk:json-value dialog :string "summary")) "what going back undoes: the one change between moved nodecode alone, which a checkout keeps")
           (is (equal "warn" (nlk:json-value dialog :string "tone"))))
-        (is (search "/generations 8 keep" text) "the words name the line that goes"))
+        (is (search "Keep the edits first" text) "the words say what goes")
+        (is (not (search "/generations 8" text)) "and name no line to type"))
       (multiple-value-bind (text dialog) (nle::headless-generations "3" nil)
         (declare (ignore text))
         (is (uiop:string-prefix-p "Can't go back to " (nlk:json-value dialog :string "title")))
@@ -427,7 +411,7 @@ an edits call names, the number a rollback does."
       (nle::headless-generations "8 go" nil)
       (is (equal '((:rollback 8)) calls) "go touches no edits")
       (setf calls '())
-      (is (search "/generations [N [go|keep|discard]]" (nle::headless-generations "8 now" nil)) "anything else is the usage")
+      (is (search "no such change" (nle::headless-generations "8 now" nil)) "anything else is refused")
       (is (null calls) "and moves nothing"))
     (with-stubbed-fdefinitions ((nle::generations-answer () (history-answer))
                                 (nle::generation-plan-answer (to) (plan-answer to))

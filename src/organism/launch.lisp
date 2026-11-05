@@ -48,6 +48,12 @@
   "The folder key this image was dumped under, or NIL in the origin binary
 and every developer image.")
 
+;;; Non-NIL is what makes a process a SAVED image (heap-image.lisp): a heap
+;;; kept as it stood, which boots past the folder whatever it became since.
+(defvar *saved-image* nil
+  "What the saved image this process boots says of itself, a plist -- :NAME,
+:SAVED (a universal time), :BUILD, :FOLDER-KEY -- or NIL in every other image.")
+
 ;;; --- boot phases -----------------------------------------------------------
 ;;; One append-only line per landmark of a launch, epoch-stamped, into the
 ;;; same NODECODE_PHASE_LOG the provider writes its rounds to: the launch's
@@ -233,9 +239,14 @@ STAT is refilled for the next file, so FN reads it before it returns."
   ;; SB-EXT:MAP-DIRECTORY, a pathname per entry -- more than the idle collector
   ;; allows a quiet interval. A name string per entry and one STAT refilled is
   ;; the floor.
-  (labels ((walk (directory &aux (key (and (ignore-errors (sb-posix:stat directory stat))
-                                           (format nil "~d:~d" (sb-posix:stat-dev stat)
-                                                   (sb-posix:stat-ino stat)))))
+  ;; On Windows a folder's key is the one its handle carries (FILE-IDENTITY):
+  ;; stat there answers 0 for every inode, and fails outright on a path that
+  ;; ends in a separator, as every folder's here does -- keyed by stat, the
+  ;; walk visited no file at all.
+  (labels ((walk (directory &aux (key #+win32 (file-identity directory)
+                                      #-win32 (and (ignore-errors (sb-posix:stat directory stat))
+                                                   (format nil "~d:~d" (sb-posix:stat-dev stat)
+                                                           (sb-posix:stat-ino stat)))))
              (when (and key (not (gethash key seen)))
                (setf (gethash key seen) t)
                (let ((handle (sb-posix:opendir directory)))
@@ -499,7 +510,7 @@ pid, open fds and job control carry over."
                                                            sb-alien:system-area-pointer))
                           file vector)
                          (sb-alien::get-errno)))))))
-        (format nil "execv ~a: ~a" file (sb-int:strerror errno))))))
+        (format nil "execv ~a: ~a" file (errno-text errno))))))
 
 (defun warm-pointer-path ()
   "The file naming this build's published image: written when one is
@@ -888,6 +899,30 @@ release reads as in use. => the stream, or NIL when it will not open."
       (setf *origin-hold*
             (ignore-errors (open (origin-pathname) :element-type '(unsigned-byte 8))))))
 
+(defun saved-image-name-from-path (&optional (runtime sb-ext:*runtime-pathname*))
+  "The name the saved image this process boots from is kept under: the
+directory of its executable, snapshots/NAME/nodecode -- so a snapshot
+renamed since it was taken answers to its new name. NIL for any other
+executable."
+  (let* ((path (and runtime (ignore-errors (pathname runtime))))
+         (directory (and path (pathname-directory path))))
+    (and path (equal (pathname-name path) "nodecode") (null (pathname-type path))
+         (>= (length directory) 3)
+         (equal (car (last directory 2)) "snapshots")
+         (stringp (car (last directory)))
+         (car (last directory)))))
+
+(defun saved-image-drift ()
+  "How the folder moved since this saved image was dumped: NIL when it did
+not (or nothing can say), else one line."
+  (when *saved-image*
+    (let ((current (and *cells-directory* (ignore-errors (folder-key))))
+          (saved (getf *saved-image* :folder-key)))
+      (when (and current saved (not (equal current saved)))
+        (format nil "the cell folder moved since snapshot ~a was taken; ~
+                     this snapshot runs as it was taken, and a plain launch loads the folder as it is now"
+                (getf *saved-image* :name))))))
+
 (defun boot-cells (&key spawn hand-over receipt)
   "Load the folder — through the warm-image cache when a published image
 matches its current key — and answer the records. Under RECEIPT (a serve)
@@ -922,6 +957,21 @@ if this one dies before it serves."
      (setf *cells* '())
      (format *error-output* "~&pristine: generation 0, no folder loaded~@[ -- ~a~]~%"
              (ignore-errors (pristine-reason)))
+     *cells*)
+    ;; A SAVED IMAGE holds the folder as it was loaded when its heap was
+    ;; kept, and everything the session built on it: it loads nothing, and
+    ;; never hands the process back for a folder that moved since -- the
+    ;; heap is what was asked for. It only says how the folder moved.
+    (*saved-image*
+     ;; The heap remembers the name it was taken under; a rename since moved
+     ;; its directory, and the directory is what lists and switches it.
+     (when-let (named (saved-image-name-from-path))
+       (setf (getf *saved-image* :name) named))
+     (nlk:note-boot-phase "saved-image" (getf *saved-image* :name))
+     (hold-origin)
+     (spawn "saved-image-drift"
+       (let ((drift (saved-image-drift)))
+         (when drift (format *error-output* "~&snapshot: ~a~%" drift))))
      *cells*)
     (*image-folder-key*
      (nlk:note-boot-phase "warm-image")

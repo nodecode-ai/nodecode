@@ -18,7 +18,6 @@ SET-GATEWAY-COMMANDS takes."
                                        "commands")
         collect (list :name (json-value command :string "name")
                       :description (or (json-value command :string "description") "")
-                      :usage (or (json-value command :string "usage") "")
                       :session (json-value command :boolean "session")
                       :trigger (json-value command :text "trigger")
                       ;; The reads this shell knows; a newer gateway's others drop.
@@ -41,7 +40,10 @@ the draft; else NIL, so a command that did not ask is never sent it."
 run in MODEL's session, DRAFT the composer's text for a command that reads it."
   (gateway-model-http-call
    model :post "/api/gateway/slash"
+   ;; This shell performs both effects there are (PERFORM-ANSWER-EFFECTS), and
+   ;; says so, so a command words its text by what will happen here.
    (json-object "line" line :opt "session_id" (json-value model.session-id :text)
+                "effects" #("clipboard" "draft")
                 :opt "draft" draft)))
 
 (defun run-gateway-command (model entry args &key trigger)
@@ -53,9 +55,31 @@ it."
          (line (format nil "/~a~@[ ~a~]" name (json-value args :text))))
     (with-slash-notice ((format nil "/~a" name))
       (let ((answer (gateway-slash-answer model line :draft (command-draft model entry))))
+        (perform-answer-effects model answer)
         (if (json-value answer :object "dialog")
             (progn (open-answer-dialog model answer :line line :trigger trigger) nil)
             (json-value answer :string "text"))))))
+
+;;; --- the effects a command's answer carries -------------------------------
+;;; What only this shell can do for a cell (GATEWAY.LISP EFFECTS-JSON): copy
+;;; with its own clipboard writer, where the person sits, and set its own
+;;; draft. An effect this shell does not know is passed over; the answer's
+;;; text is the notice either way.
+
+(defun perform-answer-effects (model answer)
+  "Do in MODEL's shell what ANSWER's effects ask, in order."
+  (loop with editor = model.editor
+        for effect across (or (json-value answer :array "effects") #())
+        for draft = (json-value effect :string "draft")
+        do (cond ((json-value effect :string "clipboard")
+                  (write-model-clipboard model (json-value effect :string "clipboard")))
+                 (draft
+                  (nlk:dispatch (or (json-value effect :string "how") "set") equal
+                    ("set" (editor-reset editor) (editor-insert editor draft))
+                    ("insert" (editor-insert editor draft))
+                    ("append" (setf editor.row (1- (editor-line-count editor)))
+                              (editor-cursor-end editor)
+                              (editor-insert editor draft)))))))
 
 ;;; --- the dialog a command's answer carries --------------------------------
 ;;; A command's answer may carry a docked picker (GATEWAY.LISP LIST-DIALOG):
@@ -76,7 +100,9 @@ JSON its value: what Enter inserts and the lines its keys run are read off it."
                  :suffix (or (json-value row :string "suffix") "")
                  :value row
                  :mark (or (json-value row :string "mark") "")
-                 :mark-tone (if tone (intern (string-upcase tone) :keyword) :muted))))
+                 :mark-tone (if tone (intern (string-upcase tone) :keyword) :muted)
+                 ;; A table's column names: painted, never chosen.
+                 :heading (json-value row :boolean "heading"))))
 
 (defun dialog-tabs (dialog)
   "The tab strip DIALOG's JSON carries (LIST-DIALOG's TABS) as the plists
@@ -95,11 +121,13 @@ REGISTER-PICKER-PICTURE takes, or NIL for a dialog with none."
              (append (and palette (list :palette palette))
                      (and (json-value picture :boolean "beside") (list :beside t)))))))
 
-(defun open-answer-dialog (model answer &key line trigger under (selection 0) label)
+(defun open-answer-dialog (model answer &key line trigger under (selection 0) label here)
   "Open the dialog ANSWER -- the answer to the slash LINE -- carries as
 MODEL's picker, on the row LABEL names, else row SELECTION, over UNDER: the
 answer dialogs it was opened from, nearest first, as (LINE SELECTION LABEL).
-A command whose answer is its text alone opens nothing."
+HERE runs a row's line in this shell (a builtin's dialog, OPEN-BARE-DIALOG)
+instead of at the gateway. A command whose answer is its text alone opens
+nothing."
   ;; The row's VALUE is what Enter hands the composer: a command that answers
   ;; with a list of things to name picks one into the draft at the caret,
   ;; which is how /index lands a `$name'. Opened by its TRIGGER, the
@@ -119,7 +147,16 @@ A command whose answer is its text alone opens nothing."
                (gesture (model value key)
                  (when-let (run (json-value value :text "run" key))
                    (setf (chat-model-dialog model) nil)
-                   (answer-gesture model run (stack))
+                   (if here
+                       (submit-slash model run :dropdown nil)
+                       (answer-gesture model run (stack)))
+                   t))
+               (ask (model value)
+                 ;; A row that asks for text hands the composer its label
+                 ;; (tui/commands/bare.lisp ASK-IN-COMPOSER).
+                 (when-let (ask (json-value value :object "ask"))
+                   (setf (chat-model-dialog model) nil)
+                   (ask-in-composer model ask)
                    t)))
         (open-picker-dialog
          model
@@ -127,6 +164,7 @@ A command whose answer is its text alone opens nothing."
          rows
          (lambda (model value &aux (text (json-value value :text "value")))
            (cond ((gesture model value "enter"))
+                 ((ask model value))
                  (text
                   (when (and trigger (uiop:string-prefix-p trigger text)
                              (uiop:string-suffix-p (editor-value model.editor) trigger))
@@ -155,22 +193,34 @@ A command whose answer is its text alone opens nothing."
          :kind :answer)
         (setf picker model.dialog)
         (register-picker-tabs picker (dialog-tabs dialog))
-        (register-picker-picture picker (dialog-picture dialog))))))
+        (register-picker-picture picker (dialog-picture dialog))
+        ;; A heading is never chosen: the list opens on the first row that can be,
+        ;; in the tab the strip opened on.
+        (setf (picker-dialog-selection picker)
+              (past-headings (picker-visible-rows picker) (picker-dialog-selection picker) 1))))))
 
 (defun answer-gesture (model line stack)
   "Run LINE, the line a row's key names in the answer dialog atop STACK, where
 the command ran: a dialog it answers opens over STACK; else what it says is a
 toast, the one line the panel leaves in sight, and STACK is read again
-(REOPEN-ANSWER-DIALOG). A command that reads the draft is handed it, as
-when run from a key."
+(REOPEN-ANSWER-DIALOG) -- unless the answer set the draft: the composer is
+where the person goes next, so the stack stays closed. A command that reads
+the draft is handed it, as when run from a key."
   (multiple-value-bind (answer failed)
       (with-slash-notice (line)
         (gateway-slash-answer model line
                               :draft (command-draft model (find-slash-command (parse-slash-input line)))))
-    (if (and (not failed) (json-value answer :object "dialog"))
-        (open-answer-dialog model answer :line line :under stack)
-        (progn (show-status model (if failed answer (json-value answer :string "text")) :error-p failed)
-               (reopen-answer-dialog model stack)))))
+    (unless failed (perform-answer-effects model answer))
+    (cond ((and (not failed) (json-value answer :object "dialog"))
+           (open-answer-dialog model answer :line line :under stack))
+          (t (show-status model (if failed answer (json-value answer :string "text")) :error-p failed)
+             (unless (and (not failed) (answer-sets-draft-p answer))
+               (reopen-answer-dialog model stack))))))
+
+(defun answer-sets-draft-p (answer)
+  "Whether ANSWER's effects put anything in the composer."
+  (some (lambda (effect) (json-value effect :string "draft"))
+        (or (json-value answer :array "effects") #())))
 
 (defun reopen-answer-dialog (model stack)
   "Open the answer dialog atop STACK -- (LINE SELECTION LABEL) entries,

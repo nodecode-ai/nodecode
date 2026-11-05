@@ -56,6 +56,9 @@ renderer, the program loop.")
    #:truecolor-msg-p #:truecolor-msg-ok-p #:make-truecolor-msg
    #:background-msg-p #:background-msg-rgb #:make-background-msg
    #:color-scheme-msg-p #:color-scheme-msg-scheme #:make-color-scheme-msg
+   #:device-attributes-msg-p #:device-attributes-msg-attributes #:make-device-attributes-msg
+   #:cell-size-msg-p #:cell-size-msg-width #:cell-size-msg-height #:make-cell-size-msg
+   #:terminal-version-msg-p #:terminal-version-msg-name #:make-terminal-version-msg
    #:terminal-io-msg-p #:terminal-io-msg-thunk #:make-terminal-io-msg
    ;; --- the declarative view: CURSOR, its constructor, predicate and
    ;; readers are exported by DEFINE-RECORD at the declaration ---
@@ -77,7 +80,10 @@ renderer, the program loop.")
    ;; --- kitty graphics (image.lisp) ---
    #:image-media-type #:image-dimensions #:png-dimensions #:file-octets
    #:*png-transcoders* #:transcode-to-png #:transmit-image #:place-image
-   #:request-kitty-graphics
+   #:request-kitty-graphics #:request-terminal-attributes #:current-multiplexer
+   ;; --- sixel and half blocks (raster.lisp) ---
+   #:raster-colors #:unpack-rgb #:quantize-colors #:sixel-data #:half-block-grid #:mosaic-grid
+   #:*sixel-colors*
    ;; --- the renderer (render.lisp) ---
    #:make-renderer #:render #:renderer-width #:renderer-height
    #:renderer-output-stream #:renderer-last-view-state
@@ -137,23 +143,23 @@ renderer, the program loop.")
    #:gateway-log-path #:gateway-unit-text #:gateway-on #:gateway-off #:temporary-home-p
    #:gateway-off-p #:gateway-restart #:gateway-start #:gateway-start-argv
    #:gateway-installed-p #:gateway-by-default-p #:gateway-process-p #:gateway-log-argv
-   #:gateway-log-text #:gateway-report #:gateway-text
+   #:gateway-log-text #:gateway-report #:gateway-text #:inside-own-gateway-p
    ;; --- the operating system beneath the organism (os.lisp) ---
    #:platform #:architecture #:disable-huge-pages #:cap-malloc-arenas #:resident-bytes
    #:skip-openssl-exit-cleanup #:resolve-names-directly
    #:mapped-resident-bytes #:release-mapped-pages #:trim-working-set #:*shell* #:shell-argv
    #:*session-wrapper* #:session-argv #:pid-live-p #:kill-tree #:spawn-detached
-   #:exits-zero-p
-   #:environment-with #:spawn-program #:wait-for-child #:child-exit #:run-bounded #:lock-file
+   #:exits-zero-p #:errno-text
+   #:process-environment #:environment-with #:spawn-program #:wait-for-child #:child-exit #:run-bounded #:lock-file
    #:interruption-may-unwind-p #:interrupt-thread-safely #:terminate-thread-safely
    #:*wait-deadline* #:wait-seconds #:wait-deadline-passed-p #:wait-deadline-reason #:with-wait-deadline #:call-with-wait-deadline
    #:call-with-lock-in-time
    #:*wait-hook* #:with-named-wait
    #:file-locked-p #:unlock-file #:folder-lock-path #:lock-folder #:unlock-folder #:file-bytes
-   #:with-folder-lock #:replace-file #:random-bytes #:with-output-file
+   #:with-folder-lock #:replace-file #:gzip-file #:random-bytes #:with-output-file #:stat-write-time
    #:call-with-severed-stdio
    ;; --- reaching a peer by name (dial.lisp) ---
-   #:*dial-stagger-seconds* #:dial-order #:dial #:http #:body-text #:decode-octets #:read-events
+   #:*dial-stagger-seconds* #:dial-order #:dial #:http #:proxy-for #:body-text #:decode-octets #:read-events
    #:sever-websocket
    ;; --- wire-value waist, both directions (json.lisp) ---
    #:octets #:decode-json #:json-value #:json-array #:with-json
@@ -298,7 +304,7 @@ renderer, the program loop.")
    #:record-definitions #:*scribe-session-id* #:definition-location
    #:definition-text #:definition-prose #:definition-key
    #:forget-shipped-definitions #:layer-directory #:toplevel-definitions
-   #:load-source #:source-loaded #:*unit-operators*
+   #:load-source #:reload-cell #:source-loaded #:*unit-operators*
    ;; the file write and the git a folder's repository is kept with (scribe.lisp)
    #:write-file-atomically #:git #:git-exclude-dot-directories #:git-commit-all
    ;; --- knowledge: the cells nothing loads, the one index, the use ledger
@@ -309,8 +315,8 @@ renderer, the program loop.")
    #:knowledge-help-text #:note-knowledge-use #:knowledge-ledger-lines #:knowledge-stats #:import-session
    #:mark-index-refresh #:pin-index-section
    ;; --- made cells: a folder of kept code beside the layer (made-cells.lisp) ---
-   #:kept-folder-kind #:new-cell #:enter-cell #:leave-cell #:current-cell
-   #:cell-directory #:add-cell-component #:move-to-cell
+   #:kept-folder-kind #:new-cell #:fold-cell #:enter-cell #:leave-cell #:current-cell
+   #:cell-directory #:add-cell-component #:move-to-cell #:cell-drift
    ;; --- provisional definitions: the stack as evidence (provisional.lisp) ---
    ;; A redefinition of a name the caller is standing on is held until it
    ;; has run once; the boot snapshot is what a revert puts back.
@@ -343,7 +349,7 @@ renderer, the program loop.")
    ;; --- fork: a turn forks itself, each fork fenced to names of its own;
    ;; back through the generations to the step a check broke; a name's
    ;; versions raced on the image's own calls (fork.lisp) ---
-   #:fork #:fork-error #:fork-error-detail #:fork-session-p
+   #:fork #:fork-error #:fork-error-detail #:fork-session-p #:last-finished-turn-id
    #:fork-collect-progress #:fork-progress-snapshots
    #:*fork-task-input* #:*fork-earlier-input* #:*fork-keep-input* #:*fork-bisect-input*
    ;; --- history recall: the model-facing log read (recall.lisp) ---
@@ -387,6 +393,9 @@ renderer, the program loop.")
    #:define-memory #:define-skill #:index
    #:unregister-tool #:eval-string
    #:sh #:$ #:edit #:write-file #:look
+   ;; --- the agent's own prompt, rules and soul: each verb answers its
+   ;; file's path, a handle for edit and write-file (turn.lisp) ---
+   #:system-prompt #:agents-md #:soul-md
    ;; --- what a tool call did (turn.lisp): the record a verb stamps on the
    ;; result fact of the call it runs under — a cell's verb names itself
    ;; to the transcript this way (tool-summary.lisp) — and whether it failed,
@@ -471,7 +480,7 @@ renderer, the program loop.")
    ;; without a shell against a session, and the catalog it can run — what
    ;; a channel publishes as its menu, a cron job or an eval snippet calls --
    ;; and the one reading of a typed line as a command (slash.lisp) ---
-   #:slash #:slash-catalog #:slash-completions #:parse-slash-input
+   #:slash #:slash-catalog #:slash-completions #:parse-slash-input #:*slash-effects*
    ;; --- the auxiliary target (provider.lisp): the model side work runs
    ;; on, the pick that moves it, the binding a layer or a cell runs its
    ;; own side call under, and the call itself ---
@@ -516,6 +525,7 @@ renderer, the program loop.")
    #:await-port #:start-gateway #:stop-gateway #:serve-organism-candidate
    ;; --- a cell's slash commands (SLASH-CATALOG, SLASH) ---
    #:register-command #:unregister-commands #:list-dialog
+   #:run-row #:ask-row #:ask-line #:bare-args-p
    ;; --- gateway TUI client (G1) ---
    #:gateway-chat-model #:run-chat-gateway #:start-client-organism))
 

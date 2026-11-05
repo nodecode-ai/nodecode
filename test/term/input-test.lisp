@@ -129,7 +129,9 @@ it, the decoder looks once more and answers Escape."
     ;; The background report is one the shell asks for (NLT:REQUEST-BACKGROUND):
     ;; it arrives as the colour, never as a key.
     (is (equal '(0 0 0) (nlt:background-msg-rgb (nlt:read-key stream))) "a background report is its colour")
-    (is (null (nlt:read-key stream)) "a DCS version report is nothing")
+    ;; The version report is asked for too (NLT:REQUEST-TERMINAL-ATTRIBUTES):
+    ;; its name, never keys.
+    (is (equal "xterm(370)" (nlt:terminal-version-msg-name (nlt:read-key stream))) "a DCS version report is its name")
     (is (key-is (nlt:read-key stream) #\z) "and the key after them still decodes")))
 
 (deftest decoder-reads-the-colour-scheme-report ()
@@ -193,7 +195,7 @@ it, the decoder looks once more and answers Escape."
     ("~CP1$r0;38;2;1;2;3m~C\\" identity) ("~CP1$r0m~C\\" null)
     ("~CP1+r524742~C\\" identity) ("~CP1+r524742=38~C\\" identity))
   (is-table (control) (null (key-from-string (format nil control #\Escape #\Escape)))
-    ("~CP0+r524742~C\\") ("~CP0$r~C\\") ("~CP>|xterm(370)~C\\")))
+    ("~CP0+r524742~C\\") ("~CP0$r~C\\")))
 
 (deftest decoder-reads-the-kitty-graphics-reply ()
   (let ((msg (key-from-string (format nil "~C_Gi=1;OK~C\\" #\Escape #\Escape))))

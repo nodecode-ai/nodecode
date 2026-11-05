@@ -88,8 +88,10 @@ where it cannot be done from here."
       (nlk::protocol-refuse :refused "~a" text))
     (flet ((act ()
              (cond ((member mode '(:serve :shell)) (serve-next verb))
-                   ((eq verb :restart) (nlk:gateway-restart))
-                   (t (nlk:gateway-off)))))
+                   ;; the gateway's own page asks: the process asking is the
+                   ;; one going away, on purpose, its answer already out
+                   ((eq verb :restart) (nlk:gateway-restart :force t))
+                   (t (nlk:gateway-off :force t)))))
       ;; The process that answers is the one going away: the answer leaves
       ;; first, and the page waits for the gateway to come back. Held for
       ;; idle, the first poll is that wait, and one hold serves every ask.
@@ -264,7 +266,7 @@ with no key, what is wrong with it (PROVIDER-FIX)."
                                 (if (member source '(nil :public))
                                     "none"
                                     (substitute #\_ #\- (string-downcase source)))
-                                (and (member source '(:config :api-key :env))
+                                (and (member source '(:config :secret-file :api-key :env))
                                      (key-tail (credential-key credential))))))
                       (sort ids #'string-lessp))))
     (mapcar (lambda (row)
@@ -579,11 +581,13 @@ another folder stands on it or it is the operator's own."
     (unless (or parked (nlk:uninstall-cell name))
       (nlk::protocol-refuse :refused "~a is ~:[not in ~a~;your own folder in ~a: take it out yourself~]"
                             (cell-label name) (nlk:installed-cell-p name) nlk::*cells-directory*))
-    (when (nlk:find-cell name)
-      (stop-cells (list name)))
-    (format nil "~a is off~:[~;; its folder stays as it is and no boot loads it until you turn it on~]; ~
-                 its code stays loaded in this organism until a restart"
-            (cell-label name) parked)))
+    (let ((record (nlk:find-cell name)))
+      (when record
+        (stop-cells (list name)))
+      ;; a folder put there since the boot was never loaded: no code of it stays
+      (format nil "~a is off~:[~;; its folder stays as it is and no boot loads it until you turn it on~]~
+                   ~:[~;; its code stays loaded in this organism until a restart~]"
+              (cell-label name) parked (and record (eq record.state :loaded))))))
 
 (defun request-wait-seconds (request &aux (seconds (and (hash-table-p request) (gethash "seconds" request))))
   "The seconds a POST to /api/gateway/cells says its sender waits for the

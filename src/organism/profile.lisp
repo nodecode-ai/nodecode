@@ -102,6 +102,7 @@
     ("auth.json"          t       t      nil     :settings  "the provider credentials")
     ("link"               nil     nil    nil     :state     "this machine's name at its relay, and the browsers let in")
     ("backups"            nil     nil    nil     :state     "the backups, each this home whole, keys and all")
+    ("snapshots/"         nil     nil    nil     :state     "the snapshots, each this organism frozen with the secrets it held")
     ("profiles"           nil     nil    nil     :default   "the named homes, under the default one")
     ("active-profile"     nil     nil    nil     :default   "the sticky file, under the default one"))
   "Every entry a home holds, one row each, and it is the only place a
@@ -653,6 +654,8 @@ it goes. => PATH as written, and the entries it carries."
   ;; rows by content (`-h'), then gzip -- tar cannot follow one link and keep
   ;; another, nor add to what it has compressed. tar is GNU tar on Linux and
   ;; bsdtar on macOS and Windows; both read these flags and PROFILE-IMPORT's.
+  ;; The gzip runs in this process (GZIP-FILE): Windows ships tar.exe and no
+  ;; gzip, and Git for Windows keeps its own off PATH.
   ;; The tree is staged beside PATH, closed to everyone else (a whole one
   ;; holds the keys), so the archive lands whole by one rename.
   (let* ((home (uiop:ensure-directory-pathname home))
@@ -674,7 +677,8 @@ it goes. => PATH as written, and the entries it carries."
          (staging (uiop:merge-pathnames* (format nil ".~a.making/" (file-namestring path))
                                          (uiop:pathname-directory-pathname path)))
          (snapshot (merge-pathnames (format nil "~a/history.db" folder) staging))
-         (raw (uiop:native-namestring (merge-pathnames "home.tar" staging))))
+         (tar (merge-pathnames "home.tar" staging))
+         (raw (uiop:native-namestring tar)))
     (flet ((under (names) (mapcar (lambda (entry) (format nil "~a/~a" folder entry)) names)))
       (ensure-directories-exist snapshot)
       #-win32 (sb-posix:chmod (uiop:native-namestring staging) #o700)
@@ -696,9 +700,10 @@ it goes. => PATH as written, and the entries it carries."
                 for verb = "-cf" then "-rf"
                 do (run-checked (list* "tar" verb raw pass) (lambda (err) (profile-fail "tar failed: ~a" err))))
           (funcall step "compressing")
-          (run-checked (list "gzip" "-f" raw) (lambda (err) (profile-fail "gzip failed: ~a" err)))
-          (let ((packed (format nil "~a.gz" raw)))
-            #-win32 (when whole (sb-posix:chmod packed #o600))
+          (let ((packed (merge-pathnames "home.tar.gz" staging)))
+            (handler-case (gzip-file tar packed)
+              (error (condition) (profile-fail "compressing failed: ~a" condition)))
+            #-win32 (when whole (sb-posix:chmod (uiop:native-namestring packed) #o600))
             (replace-file packed path))
           (values path (if stored (cons "history.db" entries) entries)))))))
 

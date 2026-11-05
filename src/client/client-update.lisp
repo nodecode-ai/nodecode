@@ -176,6 +176,14 @@ thread reads it and clears this place.")
             (with-json ((text :string "text") (level :string "level") (key :string "key")) payload
               (unless (and model.setup-walk (equal "nodecode-shipped-cells" key))
                 (toast model text :error-p (equal "error" level) :key key))))
+           ((and *sandboxed-shell*
+                 (member kind '("organism.loaded" "organism.cells" "organism.upgraded")
+                         :test #'string=))
+            ;; A sandboxed shell runs outside the jail on the binary alone:
+            ;; code the jailed organism made live, turned on or moved to is
+            ;; never evaluated here, or the jail would end at this process.
+            (unless (shiftf *sandbox-load-noted* t)
+              (toast model "[sandbox] the shell keeps its own code; relaunch to take layer changes")))
            ((string= kind "organism.loaded")
             ;; The organism's image made definitions live from a file of
             ;; its trees (NLK:SOURCE-LOADED): this shell evaluates the same
@@ -430,7 +438,11 @@ thread reads it and clears this place.")
      (return-from update (values model (read-command-catalog-cmd model))))
     ((typep msg 'gw-transport-error-msg)
      (let ((verdict (gw-transport-error-msg-verdict msg)))
-       (show-status model (format nil "Gateway error: ~a" (gw-transport-error-msg-text msg)) :error-p t)
+       ;; An outage this shell asked for -- a heap save -- is said as what it
+       ;; waits on, not as a fault (EXPECTED-OUTAGE-TEXT, /image).
+       (let ((expected (and (not (eq verdict :permanent)) (expected-outage-text))))
+         (show-status model (or expected (format nil "Gateway error: ~a" (gw-transport-error-msg-text msg)))
+                      :error-p (not expected)))
        (setf model.sync-lifecycle
              (case verdict ((:permanent) :failed) ((nil) :reconnecting) (t verdict)))
        (refresh-status-dialog model)
@@ -496,6 +508,9 @@ thread reads it and clears this place.")
      (render-state model))
     ((eq (nlt:key-event-code msg) :escape)
      (cond
+       ;; Esc puts away the ask the composer wears first: it is what the
+       ;; operator is in the middle of (tui/commands/bare.lisp).
+       ((put-ask-away model) (render-state model))
        ;; Esc on a running turn stops it (Ctrl+C on an empty composer
        ;; calls the same INTERRUPT-TURN).
        ((interrupt-turn model))
@@ -557,6 +572,10 @@ thread reads it and clears this place.")
          (release-held-prompt model)
          (show-status model "Held prompt dropped")
          (return-from update (values model nil)))
+       ;; Under an ask the text is its answer, whatever it starts with: Enter
+       ;; runs the ask's line with it (tui/commands/bare.lisp SUBMIT-ASK).
+       (when (chat-model-composer-ask model)
+         (return-from update (values model (nth-value 1 (submit-ask model text)))))
        (when (slash-input-p text)
          ;; Slash commands dispatch through the shared submit seam (ui.lisp);
          ;; EXECUTE-SLASH-COMMAND below routes the gateway-backed ones over
@@ -816,7 +835,9 @@ else NIL."
          (integerp pid)
          (or (= pid (sb-posix:getpid))
              (and (not (nlk::store-lease-mine-p store-path))
-                  (pid-live-p pid)
+                  ;; A jailed owner names its pid in the jail's own pid
+                  ;; namespace, which means nothing here: its lock vouches.
+                  (or *sandboxed-shell* (pid-live-p pid))
                   (ignore-errors (nlk::store-lease-held-p store-path))))
          port)))
 
@@ -962,14 +983,18 @@ organism comes back under the unit `gateway off' stops, never beside it."
   ;; plus a reason string when nothing was launched. Candidates are disposable
   ;; by design — the fcntl lease elects, losers exit 0 — so spawning is safe
   ;; to race against other clients and against a supervisor respawn.
-  (if (gateway-supervises-p store-path)
+  (if (and (not *sandboxed-shell*) (gateway-supervises-p store-path))
       (if (nlk:gateway-start)
           (values (nlk:gateway-start-argv) :systemd)
           (values nil "the service manager would not start the gateway"))
-      (if-let (command (serve-command store-path))
-        ;; The candidate's log lands next to the database it fought for.
-        (nlk::spawn-detached
-         command
-         (pathname (format nil "~a.resurrect.log" (namestring store-path))))
+      (if-let (command (sandbox-wrap-command (serve-command store-path)))
+        ;; The candidate's log lands next to the database it fought for;
+        ;; a jailed one's stdout is the listener (CALL-WITH-SANDBOX-STDOUT).
+        (call-with-sandbox-stdout
+         (lambda (listener)
+           (nlk::spawn-detached
+            command
+            (pathname (format nil "~a.resurrect.log" (namestring store-path)))
+            :stdout listener)))
         (values nil "this image has no serve binary to exec"))))
 
