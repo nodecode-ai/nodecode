@@ -443,17 +443,41 @@ loads.")
    (nlk:make-verb "--version" "the version, and the commit it was built from"))
   "The executable's options, in help's order.")
 
+(defparameter *offer-sandbox* nil
+  "Whether the launch offers `--sandbox' and the two commands that serve it,
+`sandbox' and `secrets' (WITHHELD-LAUNCH-VERB-P). Off until the jail ships:
+help and its suggestions name none of the three, and the parser refuses
+`--sandbox' and `secrets' as it does any word it does not hold. `sandbox'
+is still taken, so a home a jailed run marked on an earlier build can be
+reviewed and released. The code behind the three stays, run by its tests.")
+
+(defun withheld-launch-verb-p (verb)
+  "Whether VERB, a launch command or option, is held back from help and its
+suggestions: `--sandbox', `sandbox' or `secrets' while *OFFER-SANDBOX* is off."
+  (and (not *offer-sandbox*)
+       (member verb.name '("--sandbox" "sandbox" "secrets") :test #'string=)))
+
+(defun offered-launch-verbs (table)
+  "TABLE, a launch table, without the verbs held back (WITHHELD-LAUNCH-VERB-P):
+what help lists and a refusal suggests from."
+  (remove-if #'withheld-launch-verb-p table))
+
 (defun launch-name (word &rest tables)
   "The name of the launch command or option WORD spells in TABLES, its
-aliases resolved, or NIL."
-  (let ((verb (some (lambda (table) (nlk:find-verb word table)) tables))) (and verb verb.name)))
+aliases resolved, or NIL -- NIL too for a verb held back that the parser
+refuses (*OFFER-SANDBOX*): every word but `sandbox', which a marked home
+needs to lift its mark."
+  (let ((verb (some (lambda (table) (nlk:find-verb word table)) tables)))
+    (and verb
+         (not (and (withheld-launch-verb-p verb) (string/= verb.name "sandbox")))
+         verb.name)))
 
 (defun refuse-launch-word (word)
   "Refuse WORD, a command or an option the launch does not hold, naming the
 nearest one it does."
   (if (and (plusp (length word)) (char= (char word 0) #\-))
-      (launch-usage-error "~a" (nlk:unknown-word-text "option" word *launch-options*))
-      (launch-usage-error "~a" (nlk:unknown-word-text "command" word *launch-verbs*))))
+      (launch-usage-error "~a" (nlk:unknown-word-text "option" word (offered-launch-verbs *launch-options*)))
+      (launch-usage-error "~a" (nlk:unknown-word-text "command" word (offered-launch-verbs *launch-verbs*)))))
 
 (defun import-request (args)
   "The setup walk's import request the words ARGS after `import' ask for --
@@ -930,8 +954,8 @@ TOPIC's own help, a command's or an option's."
     ((null topic)
      (format nil "usage: nodecode [-p NAME] [COMMAND] [OPTIONS] [@FILE...] [-- PROMPT]~%~%~a~%~%commands~%~a~%options~%~a~%Run \"nodecode help COMMAND\" to read one command.~%"
              "With no command, nodecode opens the shell on this home's organism, and starts the organism first when none is running. --model M -- PROMPT opens it on a fresh session running on M, its first prompt sent; @FILE adds a file to that prompt, and text piped in leads it."
-             (nlk:verbs-text *launch-verbs*)
-             (nlk:verbs-text *launch-options*)))
+             (nlk:verbs-text (offered-launch-verbs *launch-verbs*))
+             (nlk:verbs-text (offered-launch-verbs *launch-options*))))
     ((equal topic "profile")
      (nlk:profile-command (cons "help" more) :command "nodecode profile"))
     ((equal topic "gateway")

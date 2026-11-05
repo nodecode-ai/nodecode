@@ -34,9 +34,9 @@
   (let ((text (nle::launch-help-text)))
     (is (uiop:string-prefix-p "usage: nodecode [-p NAME] [COMMAND] [OPTIONS]" text))
     (dolist (verb nle::*launch-verbs*)
-      (if verb.internal
+      (if (or verb.internal (nle::withheld-launch-verb-p verb))
           (is (null (search (format nil "~%  ~a " verb.name) text))
-              (format nil "internal ~a is not listed" verb.name))
+              (format nil "internal or held back, ~a is not listed" verb.name))
           (is (search verb.summary text) (format nil "~a is listed with its summary" verb.name))))
     (is (search "-p, --profile NAME" text) "an option shows its short spelling")
     (is (search "profile [VERB]" text) "a label replaces the name and arguments"))
@@ -118,7 +118,7 @@
   (is (equal '("setup" "import" "resume") (loop for verb in nle::*launch-verbs* when verb.terminal collect verb.name)) "only the commands that open the shell")
   ;; The declaration and the parser cannot drift: a command's line launches
   ;; the shell exactly when its table entry says it draws on the terminal.
-  (dolist (verb nle::*launch-verbs*)
+  (dolist (verb (nle::offered-launch-verbs nle::*launch-verbs*))
     (let* ((extra (cdr (assoc verb.name '(("resume" "s-1") ("warm-dump" "/x") ("machine" "link")) :test #'string=)))
            (plan (apply #'launch-plan verb.name extra)))
       (if (string= verb.name "snapshots")
@@ -355,3 +355,21 @@
              (multiple-value-list
               (nle::plain-error-text (make-condition 'simple-error :format-control "the store is a lie"))))))
 
+;;; --- what the launch holds back -------------------------------------------
+
+(deftest launch-holds-the-sandbox-back ()
+  ;; Off by default (*OFFER-SANDBOX*): help names none of the three words,
+  ;; no refusal suggests one, and the parser refuses --sandbox and secrets.
+  (let ((nle::*offer-sandbox* nil))
+    (let ((text (nle::launch-help-text)))
+      (dolist (name '("--sandbox" "sandbox" "secrets"))
+        (is (null (search (format nil "~%  ~a " name) text)) (format nil "help lists no ~a" name))))
+    (is (search "no option \"--sandbox\"" (launch-refusal "--sandbox")) "--sandbox is refused")
+    (is (search "no command \"secrets\"" (launch-refusal "secrets" "list")) "secrets is refused")
+    (is (null (search "secrets" (launch-refusal "secret"))) "no refusal suggests secrets")
+    (is (equal '(:sandbox ("review")) (second (launch-plan "sandbox" "review"))) "sandbox is still taken: a marked home can lift its mark"))
+  ;; On, the three are the launch's like any other.
+  (let ((nle::*offer-sandbox* t))
+    (let ((text (nle::launch-help-text)))
+      (is (search "--sandbox" text) "help lists --sandbox when it is offered"))
+    (is (equal '(:secrets ("list")) (second (launch-plan "secrets" "list"))) "secrets is taken when offered")))
