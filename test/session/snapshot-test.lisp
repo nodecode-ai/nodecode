@@ -275,6 +275,39 @@ completed once BODY is done."
                    (nlk::lines (nlk::run-snapshot-git store (list "log" "--format=%T" nlk::+snapshot-anchor-ref+))))
             "the anchor chains both")))))
 
+(deftest a-first-walk-stages-in-parts-into-one-index (with-git-workspace (store dir))
+  ;; A first walk is shared out to several `add's, each into an index of its
+  ;; own, and their entries written as one index: the tree is the one a
+  ;; single `add' stages, and the stat data each part took holds -- the next
+  ;; census finds nothing to stage. An entry written in the second its part
+  ;; index was is smudged, and staged again (T-442).
+  (let ((nlk::+snapshot-packed-staging-paths+ 3)
+        (nlk::+snapshot-paths-per-part+ 2)
+        (nlk::+snapshot-staging-parts+ 3))
+    (dotimes (i 12) (%write-file dir (format nil "d~d/f~d.txt" (mod i 3) i) (format nil "file ~d" i)))
+    (%write-file dir "a b.txt" "spaced")
+    (dolist (path (directory (merge-pathnames "**/*.*" dir)))
+      (unless (search ".git" (namestring path))
+        (sb-posix:utimes (namestring path) 0 0)))
+    (nlk:bind (((asked tree) (git-asked (nlk:capture-workspace-tree store))))
+      (is (= 3 (count "--literal-pathspecs" asked :test #'equal)) "three parts staged it")
+      (is (not (member "add" asked :test #'equal)) "and no single add")
+      (let ((serial (nlk:ensure-snapshot-store (namestring dir) "serial")))
+        ;; Opened, its index was seeded from the merged one: a walk of its own.
+        (delete-file (nlk::snapshot-store-index-path serial))
+        (is (equal tree (let ((nlk::+snapshot-staging-parts+ 1))
+                          (nlk:capture-workspace-tree serial)))
+            "one add stages the same tree"))
+      ;; The census writes the untracked cache the merged index lacks, once.
+      (is (equal tree (nth-value 1 (git-asked (nlk:capture-workspace-tree store)))))
+      (is (equal '("add --dry-run") (git-asked (nlk:capture-workspace-tree store)))
+          "and the merged index's stat data holds: the census finds nothing")
+      (is (null (directory (merge-pathnames "index-*part*" (uiop:ensure-directory-pathname
+                                                            (nlk::snapshot-store-git-dir store)))))
+          "no part is left behind")
+      (%write-file dir "d0/f0.txt" "edited")
+      (is (not (equal tree (nlk:capture-workspace-tree store))) "an edit after it still stages"))))
+
 (deftest a-launch-walk-leaves-the-first-capture-its-census (with-git-workspace (store dir))
   ;; A shell walks its folder as it launches (PREWARM-WORKSPACE): the session
   ;; opened after it seeds its index from the launch walk's and takes the

@@ -438,9 +438,13 @@ workspace or another launch walk holds the claim."
       (unwind-protect
            (let ((*launch-walk-p* t))
              (when-let (store (ensure-snapshot-store directory +launch-session-id+))
-               (let ((tree (capture-anchored-tree store "launch walk"))
-                     (digest (index-digest store))
-                     (tip (anchor-tip-cache store)))
+               (let* ((tree (capture-anchored-tree store "launch walk"))
+                      ;; Settled: the census after a first walk writes the
+                      ;; untracked cache into its index, and the tree that
+                      ;; rides beside the index is for the index as it then is.
+                      (settled (and tree (capture-workspace-tree store)))
+                      (digest (and (equal settled tree) (index-digest store)))
+                      (tip (anchor-tip-cache store)))
                  (when (and tree digest)
                    (with-output-file (out (launch-tree-file store))
                      (format out "~a ~a~@[ ~a~]~%" digest tree
@@ -660,10 +664,11 @@ with no index yet, from `ls-files --others'."
           (when-let (path (census-path line))
             (push path paths))))))
 
-(defun check-walk-bound (store &aux (paths 0) (bytes 0))
+(defun check-walk-bound (store &aux (paths 0) (bytes 0) census)
   "Signal SNAPSHOT-WALK-TOO-LARGE when one walk of STORE would stage more than
 +SNAPSHOT-WALK-MAX-PATHS+ paths or +SNAPSHOT-WALK-MAX-BYTES+ bytes; else
-answer how many paths it would stage, 0 when the workspace matches the index."
+answer how many paths it would stage, 0 when the workspace matches the index,
+and the census that listed them."
   ;; What `add -A' writes a blob for: every untracked path and every tracked
   ;; one whose content moved, through the walk's own ignore rules and
   ;; exclusions. A warm index counts only what changed since its last walk; a
@@ -675,10 +680,11 @@ answer how many paths it would stage, 0 when the workspace matches the index."
                                        at most ~:d paths and ~:d bytes"
                                   (snapshot-store-workspace store) amount
                                   +snapshot-walk-max-paths+ +snapshot-walk-max-bytes+))))
-    (dolist (path (handler-case (walk-census store)
-                    (snapshot-output-too-large ()
-                      (too-large (format nil "~:d bytes of path names"
-                                         +snapshot-max-output-bytes+)))))
+    (setf census (handler-case (walk-census store)
+                   (snapshot-output-too-large ()
+                     (too-large (format nil "~:d bytes of path names"
+                                        +snapshot-max-output-bytes+)))))
+    (dolist (path census)
       (unless (zerop (length path))
         (incf paths)
         (incf bytes (entry-bytes (concatenate 'string (snapshot-store-workspace store) path)))
@@ -686,7 +692,7 @@ answer how many paths it would stage, 0 when the workspace matches the index."
           (too-large (format nil "~:d paths" +snapshot-walk-max-paths+)))
         (when (> bytes +snapshot-walk-max-bytes+)
           (too-large (format nil "~:d bytes" +snapshot-walk-max-bytes+)))))
-    paths))
+    (values paths census)))
 
 (defun stage-workspace (store)
   "Stage STORE's workspace into its session's index: one `add -A' past the
@@ -715,13 +721,163 @@ true value when it staged loose objects, NIL when it staged nothing."
   ;; deflated at level 1, the level git gives a loose object: 540 files,
   ;; 23 MB, took 0.70 s at the default and 0.50 s at 1 on Windows, the pack
   ;; 5% larger.
-  (let ((paths (check-walk-bound store)))
-    (when (or (plusp paths) (not (probe-file (snapshot-store-index-path store))))
-      (let ((packed (> paths +snapshot-packed-staging-paths+)))
-        (run-snapshot-git store (list* "add" "-A" "--ignore-errors" (staging-pathspec store))
-                          :config (when packed
-                                    '("core.bigFileThreshold=1" "pack.compression=1")))
-        (if packed :packed t)))))
+  (multiple-value-bind (paths census) (check-walk-bound store)
+    (let ((fresh (not (probe-file (snapshot-store-index-path store)))))
+      (when (or (plusp paths) fresh)
+        (let ((packed (> paths +snapshot-packed-staging-paths+)))
+          (unless (and packed fresh (stage-in-parallel store census))
+            (run-snapshot-git store (list* "add" "-A" "--ignore-errors" (staging-pathspec store))
+                              :config (when packed
+                                        '("core.bigFileThreshold=1" "pack.compression=1"))))
+          (if packed :packed t))))))
+
+;;; --- a first walk in parallel ---------------------------------------------
+;;; One `add' reads, hashes and deflates every file of a first walk on one
+;;; core: 520 ms for 540 files on Windows, where opening a file costs what
+;;; the file system filter makes it cost (T-442). The census already lists
+;;; every path, so the walk is shared out: each part an `add' of its own into
+;;; an index of its own, the parts' entries then written as one index here.
+;;; An entry is the part's own -- stat data, mode, blob -- and one the part
+;;; may have stat'ed in the second its index was written is smudged, the
+;;; size git compares zeroed, as git itself smudges an entry its index could
+;;; not tell from a later write: the merged index is written later than any
+;;; part's, and would otherwise vouch for it.
+
+(defparameter +snapshot-staging-parts+ 4
+  "The most `add' processes one first walk is shared out to.")
+
+(defparameter +snapshot-paths-per-part+ 128
+  "The fewest paths a part of a first walk is given: fewer, and starting
+another git costs more than it shares.")
+
+(sb-alien:define-alien-routine ("EVP_sha1" %evp-sha1) sb-sys:system-area-pointer)
+
+(defun sha1-octets (octets)
+  "The SHA-1 of OCTETS, 20 bytes: the checksum an index file ends with."
+  (let ((digest (make-array 20 :element-type '(unsigned-byte 8))))
+    (sb-sys:with-pinned-objects (octets digest)
+      (unless (= 1 (%evp-digest (sb-sys:vector-sap octets) (length octets)
+                                (sb-sys:vector-sap digest) (sb-sys:int-sap 0)
+                                (%evp-sha1) (sb-sys:int-sap 0)))
+        (error "OpenSSL could not digest ~d bytes" (length octets))))
+    digest))
+
+(defun octets-u32 (octets at)
+  "The big-endian 32-bit word of OCTETS at AT."
+  (logior (ash (aref octets at) 24) (ash (aref octets (+ at 1)) 16)
+          (ash (aref octets (+ at 2)) 8) (aref octets (+ at 3))))
+
+(defun index-entries (path)
+  "The entries of the version 2 index at PATH, each its own octets -- stat
+data, mode, object, flags, name and padding -- in the index's order; NIL when
+the file is no version 2 index."
+  (let ((octets (file-octets path)))
+    (when (and octets (> (length octets) 32)
+               (equalp (subseq octets 0 4) #(68 73 82 67))
+               (= 2 (octets-u32 octets 4)))
+      (loop with at = 12
+            repeat (octets-u32 octets 8)
+            for name-length = (logand #xFFF (logior (ash (aref octets (+ at 60)) 8)
+                                                   (aref octets (+ at 61))))
+            for name-end = (if (< name-length #xFFF)
+                               (+ at 62 name-length)
+                               (position 0 octets :start (+ at 62)))
+            ;; 62 bytes and the name, NUL-padded to a multiple of 8, at least one NUL
+            for size = (* 8 (ceiling (1+ (- name-end at)) 8))
+            collect (subseq octets at (+ at size))
+            do (incf at size)))))
+
+(defun entry-name (entry)
+  "The name octets of one index ENTRY."
+  (subseq entry 62 (position 0 entry :start 62)))
+
+(defun octets< (a b)
+  "Whether octet vector A sorts before B, byte by byte, as git sorts names."
+  (let ((at (mismatch a b)))
+    (and at (or (= at (length a))
+                (and (< at (length b)) (< (aref a at) (aref b at)))))))
+
+(defun write-merged-index (path parts)
+  "Write at PATH one version 2 index of the entries of the index files PARTS,
+by name, entries racy against their part smudged. => true when written."
+  (let ((entries '()))
+    (dolist (part parts)
+      (let ((written (- (file-write-date part) +unix-epoch+))
+            (own (index-entries part)))
+        (unless own (return-from write-merged-index nil))
+        (dolist (entry own)
+          ;; mtime seconds at 8; the size git compares at 36
+          (when (>= (octets-u32 entry 8) written)
+            (fill entry 0 :start 36 :end 40))
+          (push (cons (entry-name entry) entry) entries))))
+    (setf entries (sort entries #'octets< :key #'car))
+    (let* ((size (+ 12 (reduce #'+ entries :key (lambda (entry) (length (cdr entry)))) 20))
+           (octets (make-array size :element-type '(unsigned-byte 8)))
+           (at 12))
+      (replace octets #(68 73 82 67 0 0 0 2))
+      (loop for shift from 24 downto 0 by 8 for i from 8
+            do (setf (aref octets i) (ldb (byte 8 shift) (length entries))))
+      (dolist (entry entries)
+        (replace octets (cdr entry) :start1 at)
+        (incf at (length (cdr entry))))
+      (replace octets (sha1-octets (subseq octets 0 at)) :start1 at)
+      ;; No dot added: RENAME-FILE would carry a type the target lacks onto it.
+      (let ((staged (concatenate 'string path "-merged")))
+        (with-open-file (out staged :direction :output :element-type '(unsigned-byte 8)
+                                    :if-exists :supersede)
+          (write-sequence octets out))
+        (rename-file staged path))
+      t)))
+
+(defun stage-in-parallel (store census)
+  "Stage the paths of CENSUS, a first walk's, into STORE's new index through
+as many `add' processes as +SNAPSHOT-STAGING-PARTS+ allows, each a share of
+them into an index of its own, then those indexes as STORE's. => true when
+staged; NIL, and nothing left behind, when any part failed."
+  (let* ((index (snapshot-store-index-path store))
+         (count (min +snapshot-staging-parts+
+                     (max 1 (floor (length census) +snapshot-paths-per-part+))))
+         (shares (make-array count :initial-element '()))
+         (parts (loop for k below count collect (format nil "~a.part~d" index k)))
+         (failed nil))
+    (when (< count 2)
+      (return-from stage-in-parallel nil))
+    (loop for path in census for k from 0
+          do (push path (aref shares (mod k count))))
+    (unwind-protect
+         (let ((threads
+                 (loop for part in parts for k from 0
+                       collect (let ((part part)
+                                     (listing (concatenate 'string part ".paths"))
+                                     (share (aref shares k)))
+                                 (with-open-file (out listing :direction :output
+                                                              :external-format :utf-8
+                                                              :if-exists :supersede)
+                                   (dolist (path share)
+                                     (write-string path out) (write-char (code-char 0) out)))
+                                 (bt2:make-thread
+                                  (lambda ()
+                                    (handler-case
+                                        (run-snapshot-git
+                                         (make-snapshot-store
+                                          :workspace (snapshot-store-workspace store)
+                                          :git-dir (snapshot-store-git-dir store)
+                                          :index-path part)
+                                         (list "--literal-pathspecs" "add" "--ignore-errors"
+                                               (concatenate 'string "--pathspec-from-file=" listing)
+                                               "--pathspec-file-nul")
+                                         :config '("core.bigFileThreshold=1" "pack.compression=1"
+                                                   "index.version=2"))
+                                      (error () (setf failed t))))
+                                  :name "snapshot-staging-part")))))
+           (mapc #'bt2:join-thread threads)
+           (and (not failed)
+                (every #'probe-file parts)
+                (with-handlers ((error () nil))
+                  (write-merged-index index parts))))
+      (dolist (part parts)
+        (ignore-errors (delete-file part))
+        (ignore-errors (delete-file (concatenate 'string part ".paths")))))))
 
 (defun fast-import-path (path)
   "PATH as a `fast-import' file command names it: as it is, or C-quoted when
