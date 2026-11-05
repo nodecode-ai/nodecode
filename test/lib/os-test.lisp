@@ -983,3 +983,66 @@ five seconds on a thread of its own."
                       (ignore-errors (truename file))
                       (ignore-errors (nlk::real-path file))
                       (nlk:symlink-target junction))))))
+(deftest lane-b-frame-context ()
+  (let* ((out nil)
+         (thread (bt2:make-thread (lambda () (catch 'stopped
+                                               (labels ((deep (n) (if (> n 2000) (progn (sleep 30) 0) (+ 1 (deep (1+ n)))))) (deep 0)))))))
+    (sleep 1)
+    (nlk:interrupt-thread-safely thread
+                                 (lambda ()
+                                   (let* ((index sb-kernel:*free-interrupt-context-index*)
+                                          (context (ignore-errors (sb-di::nth-interrupt-context (max 0 (1- index)))))
+                                          (frame (and context (ignore-errors (sb-di::signal-context-frame (sb-alien:alien-sap context)))))
+                                          (names nil) (count 0))
+                                     (loop for f = frame then (ignore-errors (sb-di:frame-down f))
+                                           repeat 400 while f
+                                           do (incf count)
+                                              (when (< count 12)
+                                                (push (ignore-errors (princ-to-string (sb-di:debug-fun-name (sb-di:frame-debug-fun f)))) names)))
+                                     (setf out (format nil "index ~a context ~a error-context ~a frame ~a walked ~a: ~{~a~^ < ~}"
+                                                       index (and context t) (and sb-kernel:*current-internal-error-context* t)
+                                                       (and frame t) count (reverse names))))
+                                   (throw 'stopped :stopped)))
+    (nlk::%join-bounded thread 5)
+    (is nil out)))
+#+win32
+(sb-alien:define-alien-routine ("select" %ws-select) sb-alien:int
+  (nfds sb-alien:int) (read (* t)) (write (* t)) (except (* t)) (timeout (* t)))
+#+win32
+(defun probe-readable-p (fd seconds)
+  (sb-alien:with-alien ((set (sb-alien:array (sb-alien:unsigned 64) 2))
+                        (tv (sb-alien:array (sb-alien:signed 32) 2)))
+    (setf (sb-alien:deref set 0) 1 (sb-alien:deref set 1) fd
+          (sb-alien:deref tv 0) (floor seconds) (sb-alien:deref tv 1) (floor (* 1000000 (mod seconds 1))))
+    (%ws-select 0 (sb-alien:alien-sap (sb-alien:addr set)) nil nil (sb-alien:alien-sap (sb-alien:addr tv)))))
+(deftest lane-b-park-accept-select ()
+  (let ((probe nil))
+    (probe-park (lambda () (let ((socket (make-instance 'sb-bsd-sockets:inet-socket :type :stream :protocol :tcp)))
+                             (sb-bsd-sockets:socket-bind socket #(127 0 0 1) 0)
+                             (sb-bsd-sockets:socket-listen socket 1)
+                             (unwind-protect
+                                  (progn
+                                    #+win32 (setf probe (list :fd (sb-bsd-sockets:socket-file-descriptor socket)
+                                                              :first (probe-readable-p (sb-bsd-sockets:socket-file-descriptor socket) 0.05)))
+                                    (loop until #+win32 (plusp (probe-readable-p (sb-bsd-sockets:socket-file-descriptor socket) 0.05)) #-win32 t)
+                                    (sb-bsd-sockets:socket-accept socket))
+                               (sb-bsd-sockets:socket-close socket)))))
+    (is nil (format nil "select probe ~s" probe))))
+(deftest lane-b-park-wait-for-input ()
+  (probe-park (lambda () (let ((server (usocket:socket-listen "127.0.0.1" 0)))
+                           (unwind-protect (usocket:wait-for-input server :ready-only t)
+                             (usocket:socket-close server))))))
+(deftest lane-b-clack-stop ()
+  (let* ((port (nle::local-port 0))
+         (server (clack:clackup (lambda (env) (declare (ignore env)) '(200 nil ("ok"))) :server :hunchentoot :port port :silent t :use-thread t))
+         (start nil) (stopped nil))
+    (sleep 1)
+    (setf start (get-internal-real-time))
+    (setf stopped (nth-value 0 (ignore-errors (clack:stop server))))
+    (let ((took (probe-seconds start)))
+      (sleep 1)
+      (is nil (format nil "stop ~a took ~,2fs; port free after 1s: ~a; acceptor threads alive: ~a"
+                      stopped took
+                      (handler-case (progn (usocket:socket-close (usocket:socket-listen "127.0.0.1" port)) t)
+                        (error (e) (format nil "no: ~a" e)))
+                      (count-if (lambda (th) (search "hunchentoot" (bt2:thread-name th))) (bt2:all-threads)))))))
