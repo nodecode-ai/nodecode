@@ -950,8 +950,8 @@
       (is (equal "error" (nik:item-status item)))
       (is (search "allowFrom left out" (nik:item-reason item))))
     ;; A token file that does not read, a link among them, gives no token, and its path is named.
-    (sb-posix:symlink (namestring (merge-pathnames ".openclaw/credentials/telegram.token" box))
-                      (namestring (merge-pathnames ".openclaw/credentials/linked.token" box)))
+    (make-test-link (merge-pathnames ".openclaw/credentials/telegram.token" box)
+                    (uiop:native-namestring (merge-pathnames ".openclaw/credentials/linked.token" box)))
     (dolist (path '("~/.openclaw/credentials/missing.token" "~/.openclaw/credentials/linked.token"))
       (let ((item (plan-item (format nil "\"tokenFile\": \"~a\", \"allowFrom\": [\"9001\"]" path))))
         (is (equal "skipped" (nik:item-status item)) path)

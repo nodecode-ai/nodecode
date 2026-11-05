@@ -179,6 +179,36 @@ holding DEFINITION alone, and drop the index."
               (remove #\Newline (layer-file-text "tester.asd"))))
   (is (= 1 (layer-commits)) "one eval, one commit"))
 
+(deftest scribe-keeps-a-strings-reference-as-the-text-the-call-carried (with-scribe-fixture)
+  ;; ($ "name") reads the eval call's strings object, and the next boot has no
+  ;; call: a kept definition that read one there refused to load ("this eval
+  ;; call carried no strings object") and its text was gone. The kept file
+  ;; carries the text itself where the reader reads a reference; a reference
+  ;; in a comment or a string, or to an entry the call lacks, stays as written.
+  (let* ((text (format nil "line one~%he said \"hi\" \\ back"))
+         (strings (alexandria:alist-hash-table (list (cons "t" text)) :test #'equal)))
+    (let ((nle::*eval-strings* strings))
+      (nle:eval-string
+       (format nil "(progn~%  (defparameter *scribe-s1* ;; the post ($ \"t\")~%    ($ \"t\"))~%  (defun scribe-s2 () \"Answers ($ \\\"t\\\").\" (list ($ \"t\") ($ \"later\"))))")))
+    (is-present (file (layer-file-text "_scribe-s1_.lisp"))
+      "the defparameter has its own file"
+      (is (search (format nil "(defparameter *scribe-s1* ;; the post ($ \"t\")~%    ~s)" text) file)
+          (format nil "it holds the text, its comment as written: ~a" file)))
+    (is-present (file (layer-file-text "scribe-s2.lisp"))
+      "the defun has its own file"
+      (is (search (format nil "\"Answers ($ \\\"t\\\").\" (list ~s ($ \"later\")))" text) file)
+          (format nil "its body holds the text, its docstring and an absent entry as written: ~a" file)))
+    ;; the boot: each file loaded with no call around it
+    (let ((variable (find-symbol "*SCRIBE-S1*" '#:nodecode.evolved)))
+      (makunbound variable)
+      (let ((nle::*eval-strings* nil))
+        (dolist (name '("_scribe-s1_.lisp" "scribe-s2.lisp"))
+          (let ((refusal (handler-case (progn (load (merge-pathnames name (nlk:layer-directory))) nil)
+                           (error (condition) (princ-to-string condition)))))
+            (is (null refusal)
+                (format nil "~a loads at the next boot: ~a" name refusal)))))
+      (is (and (boundp variable) (equal text (symbol-value variable))) "and the variable holds the text the call carried"))))
+
 (deftest scribe-redefinition-rewrites-the-same-file-and-keeps-its-slot (with-scribe-fixture)
   (nle:eval-string "(defun scribe-r3 () :first)")
   (nle:eval-string "(defun scribe-r3-other () :other)")

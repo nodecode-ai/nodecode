@@ -266,7 +266,7 @@ it counts. True where there is no password entry to ask."
   ;; account's own gateway exited 143).
   (let ((account (account-home)))
     (or (null account)
-        (flet ((true (path) (namestring (or (ignore-errors (truename path))
+        (flet ((true (path) (namestring (or (ignore-errors (real-path path))
                                             (uiop:ensure-directory-pathname path)))))
           (equal (true (user-homedir-pathname)) (true account))))))
 
@@ -381,7 +381,7 @@ doubled too: ExecStart= expands variables, Environment= does not."
 when it exists, else as written."
   (let ((path (uiop:ensure-directory-pathname
                (if (pathnamep folder) folder (uiop:parse-native-namestring folder)))))
-    (namestring (or (ignore-errors (truename path)) path))))
+    (namestring (or (ignore-errors (real-path path)) path))))
 
 (defun unit-unquoted (word)
   "WORD as UNIT-QUOTED wrote it, read back: its quotes off, `\\X' as X and
@@ -639,7 +639,7 @@ of folders otherwise. A test binds its own.")
   ;; on starting a gateway on the binary `current' names, at every login,
   ;; in an empty folder. True names on both sides, so a link either way
   ;; counts.
-  (flet ((real (path) (namestring (or (ignore-errors (truename path)) path))))
+  (flet ((real (path) (namestring (or (ignore-errors (real-path path)) path))))
     (let ((home (real (uiop:ensure-directory-pathname home))))
       (some (lambda (root)
               (uiop:string-prefix-p (real (uiop:ensure-directory-pathname root)) home))

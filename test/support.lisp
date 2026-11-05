@@ -518,6 +518,34 @@ the prior value on unwind."
       (setf *fixture-workspace*
             (ensure-directories-exist (format nil "/tmp/nl-fixture-~a/" (sb-posix:getpid))))))
 
+(defun make-test-link (target link)
+  "A link at LINK, a native namestring with no trailing separator, to
+TARGET: a symbolic link on Unix. On Windows a folder's is a junction, which
+any account may make, and a file's a symbolic link, which takes the
+account's privilege or Developer Mode. TARGET is a folder when it is one,
+or when it is named as one (a directory pathname, or a native name ending
+in its separator) and is not there yet. => LINK."
+  #-win32 (sb-posix:symlink (uiop:native-namestring target) link)
+  #+win32
+  (let ((folder (or (uiop:directory-exists-p target)
+                    (uiop:directory-pathname-p
+                     (if (pathnamep target) target (uiop:parse-native-namestring target)))))
+        (target (string-right-trim "/\\" (uiop:native-namestring target))))
+    (if folder
+        (nlk:run-bounded (list "cmd" "/c" "mklink" "/J" link target))
+        ;; SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE: no privilege needed
+        ;; where Developer Mode is on
+        (when (zerop (sb-alien:alien-funcall
+                      (sb-alien:extern-alien "CreateSymbolicLinkW"
+                                             (function sb-alien:unsigned-char sb-win32::system-string
+                                                       sb-win32::system-string sb-win32::dword))
+                      link target 2))
+          (error "no symbolic link at ~a: Windows error ~d (1314: this account may not make one; Developer Mode lets it)"
+                 link (sb-win32:get-last-error))))
+    (unless (nlk::windows-link-p link)
+      (error "no link at ~a after making one" link)))
+  link)
+
 (defun temp-path (tag &optional type)
   "A fresh path under the system temp directory, unique to this process and
 this call."
@@ -536,6 +564,29 @@ this call."
   "PATH's permission bits: a POSIX stat's, and on Windows what the read-only
 attribute and the DACL say of them (NLK:FILE-MODE)."
   (logand #o777 (nlk:file-mode path)))
+
+#+win32
+(sb-alien:define-alien-routine ("SetFileTime" %set-file-time) sb-alien:int
+  (handle sb-win32::handle) (created (* t)) (accessed (* t)) (written (* t)))
+
+(defun set-file-times (path unix-seconds)
+  "PATH, a file or a folder, its access and modification times set to
+UNIX-SECONDS, seconds since 1970."
+  #-win32 (sb-posix:utimes (sb-ext:native-namestring path) unix-seconds unix-seconds)
+  #+win32
+  (let ((handle (nlk::%create-file (sb-ext:native-namestring path) #x100 ; FILE_WRITE_ATTRIBUTES
+                                   nlk::+file-share-all+ nil nlk::+open-existing+
+                                   nlk::+file-flag-backup-semantics+ 0)))
+    (when (= handle sb-win32::invalid-handle)
+      (error "~a does not open to set its times" path))
+    (unwind-protect
+         ;; A FILETIME counts 100 ns ticks from 1601.
+         (sb-alien:with-alien ((time (sb-alien:unsigned 64)
+                                     (* (+ unix-seconds 11644473600) 10000000)))
+           (when (zerop (%set-file-time handle nil (sb-alien:addr time) (sb-alien:addr time)))
+             (error "~a keeps its times: SetFileTime failed" path)))
+      (sb-win32::close-handle handle)))
+  path)
 
 (defun write-temp-file (path &optional (contents ""))
   "Create PATH, and any parent directory it needs, holding CONTENTS."

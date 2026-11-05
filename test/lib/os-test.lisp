@@ -318,7 +318,6 @@ and TOOLCHAIN willing, the programs they start."
       (is (eql 0 status) "the child ran")
       (is (search "ended" output) "and its stdin was the null device, not a wait"))))
 
-#-win32
 (deftest a-bound-that-falls-takes-the-shells-background-work-with-it ()
   ;; The child leads a process group of its own, so the kill at the bound
   ;; takes the tree with it. A backgrounded sleep outliving the shell would
@@ -665,6 +664,27 @@ process's own, or NIL."
   #+win32 (is (nlk::path-within-p "C:\\proj" "C:\\") "a drive's root keeps its own")
   #+win32 (is (not (nlk::path-within-p "C:\\project" "C:\\proj")) "nor there a name that only starts like it"))
 
+(deftest lstat-kind-takes-a-link-to-a-folder-as-a-link (with-temp-workspace (dir "inside/a.txt"))
+  ;; On Windows SB-POSIX:LSTAT is stat(2) and reads through a junction: the
+  ;; folder's listing and walk took one for the folder it leads to.
+  (let ((link (uiop:native-namestring (merge-pathnames "leads" dir))))
+    (make-test-link (merge-pathnames "inside/" dir) link)
+    (is (eq :link (nlk::lstat-kind link)) "the link is a link")
+    (is (eq :directory (nlk::lstat-kind (uiop:native-namestring (merge-pathnames "inside" dir)))) "the folder a folder")
+    (is (eq :file (nlk::lstat-kind (uiop:native-namestring (merge-pathnames "leads/a.txt" dir)))) "and a file through the link a file")
+    (is (eq :absent (nlk::lstat-kind (uiop:native-namestring (merge-pathnames "none" dir)))) "nothing is absent")))
+
+(deftest lstat-kind-reads-a-folder-named-with-its-separator (with-temp-workspace (dir "inside/a.txt"))
+  ;; A folder's native namestring ends in its separator; Windows' stat finds
+  ;; no folder by such a name, so a folder named so read as absent there.
+  (let ((folder (uiop:native-namestring (merge-pathnames "inside/" dir))))
+    (is (eq :directory (nlk::lstat-kind folder)) "the folder, its separator at its end, is a folder")
+    (is (eq :directory (nlk::lstat-kind (string-right-trim "/\\" folder))) "and without it")
+    (is (eq :file (nlk::lstat-kind (uiop:native-namestring (merge-pathnames "inside/a.txt" dir)))) "a file a file")
+    (is (eq :absent (nlk::lstat-kind (uiop:native-namestring (merge-pathnames "none/" dir)))) "nothing is absent")
+    #+win32
+    (is (eq :directory (nlk::lstat-kind (subseq folder 0 3))) "and a drive's root a folder")))
+
 (deftest remove-tree-takes-a-link-as-a-link-and-leaves-what-it-points-at
     (with-temp-workspace (dir "tree/sub/f.txt" "outside/keep.txt"))
   ;; The walk reads every entry without following it: a link to a folder,
@@ -840,10 +860,15 @@ every call takes its arena's lock."
 
 (defun every-arena-answers-p ()
   "Whether malloc_trim, which takes every arena's lock in turn, returns within
-five seconds on a thread of its own."
+five seconds on a thread of its own. Windows' C library has no malloc_trim:
+there a thousand mallocs and frees over the sizes the spinner asks return in
+that time, each size class's lock taken."
   (eq :ok (nlk::%join-bounded
            (bt2:make-thread (lambda ()
+                              #-win32
                               (sb-alien:alien-funcall (sb-alien:extern-alien "malloc_trim" (function sb-alien:int sb-alien:unsigned-long)) 0)
+                              #+win32
+                              (loop for size from 2048 below 62048 by 60 do (c-malloc-and-free size))
                               :ok)
                             :name "arena probe")
            5)))
