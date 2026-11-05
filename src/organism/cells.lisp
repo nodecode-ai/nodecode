@@ -3260,12 +3260,17 @@ named after SYSTEM exports it fbound. => it, or NIL."
     (and symbol (eq status :external) (fboundp symbol) (fdefinition symbol))))
 
 (defun note-cell-start (cell)
-  "CELL's start: its record's, else the START-CELL one of its systems'
-packages exports now -- a made cell's DEFINE-CELL evaluated after the folder
-loaded -- put on the record, so the next start runs it. => it, or NIL."
-  (or cell.start
-      (when-let (start (some #'exported-start-cell cell.systems))
-        (setf cell.start start))))
+  "CELL's start: the START-CELL its systems' packages export now -- the
+last system's that does, as the load takes it -- put on the record, else
+the record's. => it, or NIL."
+  ;; Read fresh at every start: a DEFINE-CELL evaluated since the record took
+  ;; its start up -- a made cell's written after the folder loaded, a clause
+  ;; added by a write or a RELOAD-CELL -- is the START-CELL a restart runs. The
+  ;; record's function object is the one its first evaluation made, and kept
+  ;; it would start that declaration forever.
+  (if-let (start (some #'exported-start-cell (reverse cell.systems)))
+    (setf cell.start start)
+    cell.start))
 
 (defun load-cell (&rest names)
   "Load the folders NAMES under *CELLS-DIRECTORY* into this image now — the

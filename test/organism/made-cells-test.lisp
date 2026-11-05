@@ -163,6 +163,33 @@ model uses. => its receipt."
           (is (equal "tester-clock" (nle::slash-command-owner entry)) "under the folder's name")
           (is (equal "noon" (funcall (nle::slash-command-headless entry) "" "s-cell"))))))))
 
+(defun chime-code (&rest commands)
+  "The made cell chime's code file: one DEFINE-CELL declaring COMMANDS."
+  (format nil "(in-package #:tester-chime)~%~%(defun chime (args session-id) (declare (ignore args session-id)) \"ding\")~%~%~
+               (define-cell chime (:section (\"tester-chime-section\"))~{ (:command ~s 'chime)~})~%"
+          commands))
+
+(deftest made-cell-a-changed-define-cell-starts-at-restart (with-made-cell-fixture ())
+  ;; the start a restart runs is the DEFINE-CELL as it stands now, never the
+  ;; one the record took up first: a clause added later is installed at the
+  ;; folder's restart, written through the write verb or edited outside and
+  ;; reloaded
+  (make-test-cell "chime")
+  (flet ((registered (name)
+           (find name nle::*registered-commands* :key #'nle::slash-command-name :test #'string-equal)))
+    (nlk:with-cleanup ((nle::stop-cells '("tester-chime")))
+      (write-cell-file "chime" "chime" (chime-code "tester-chime-a"))
+      (nle:restart-cells "tester-chime")
+      (is (registered "tester-chime-a") "the first declaration starts")
+      (write-cell-file "chime" "chime" (chime-code "tester-chime-a" "tester-chime-b"))
+      (nle:restart-cells "tester-chime")
+      (is (registered "tester-chime-b") "a clause added since is installed at restart-cells")
+      (is (registered "tester-chime-a") "beside the first")
+      (nlk:write-file-atomically (cell-file "chime" "chime") (chime-code "tester-chime-c"))
+      (nlk:reload-cell "tester-chime")
+      (is (registered "tester-chime-c") "a define-cell edited outside starts at reload-cell")
+      (is (null (registered "tester-chime-a")) "and what it no longer declares is off"))))
+
 (deftest layer-two-kinds-of-one-name-keep-two-files (with-made-cell-fixture ())
   ;; a DEFCLASS beside a DEFUN of its name keeps the DEFUN's file and takes
   ;; its own; a DEFMACRO of the DEFUN's name is the same function and takes
