@@ -211,7 +211,7 @@ generation it stood at, and which one the next launch boots."
              name (length pids) pids))
     (when (equal (restore-pointer) name)
       (ignore-errors (delete-file (restore-pointer-path))))
-    (uiop:delete-directory-tree (truename directory) :validate t)
+    (nlk:remove-tree (truename directory))
     (format nil "snapshot ~a deleted" name)))
 
 (defun rename-saved-image (name new)

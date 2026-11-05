@@ -1382,7 +1382,7 @@ peripherals' — and the newest one beside it; delete the rest."
       (dolist (path (if (member stamp directories :key #'folder-name :test #'equal)
                         (cdr others)
                         (cddr others)))
-        (ignore-errors (uiop:delete-directory-tree path :validate t))))))
+        (ignore-errors (remove-tree path))))))
 
 (defvar *layer-compiled* nil
   "A table NAME -> the name of its fasl, of the layer files compiled while one
@@ -3217,14 +3217,14 @@ image's own folder, and take out one of a folder this image no longer ships."
                      (if-let (own (and source (shipped-counterpart source shipped-root)))
                        (progn
                          (dolist (sub (uiop:subdirectories directory))
-                           (uiop:delete-directory-tree sub :validate t))
+                           (remove-tree sub))
                          (dolist (file (uiop:directory-files directory))
                            (unless (string= (file-namestring file) +installed-marker+)
                              (delete-file file)))
                          (copy-install own directory)
                          (push name refreshed))
                        (when (and source (probe-file source) (release-folder-p source))
-                         (uiop:delete-directory-tree directory :validate t)
+                         (remove-tree directory)
                          (push name retired))))))))))))
     (values (nreverse refreshed) (nreverse failed) (nreverse retired))))
 
@@ -3248,7 +3248,7 @@ there (INSTALLER-PUT-P)."
     (let ((link (merge-pathnames name root)))
       (cond #-win32
             ((symlink-target link) (sb-posix:unlink (sb-ext:native-namestring link)))
-            (t (uiop:delete-directory-tree (merge-pathnames (format nil "~a/" name) root) :validate t))))
+            (t (remove-tree (merge-pathnames (format nil "~a/" name) root)))))
     (refresh-shipped-cell-notice :root root)
     t))
 

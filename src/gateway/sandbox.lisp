@@ -388,9 +388,7 @@ jail."
                  ((not (equal (rest words) '("--yes")))
                   (values "release lets this home launch outside the jail again, running what the jail wrote: read `nodecode sandbox review' first, then `nodecode sandbox release --yes'" 2 :error))
                  (t (delete-file (sandbox-mark-path home))
-                    (ignore-errors (uiop:delete-directory-tree
-                                    (merge-pathnames "hub/" (uiop:ensure-directory-pathname home))
-                                    :validate t :if-does-not-exist :ignore))
+                    (ignore-errors (nlk:remove-tree (merge-pathnames "hub/" (uiop:ensure-directory-pathname home))))
                     (values "released: this home launches outside the jail again (the hub cache is dropped and fetched afresh)" 0 :output))))
           (t (values "nodecode sandbox review | release [--yes]" 2 :error)))))
 

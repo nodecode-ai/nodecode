@@ -94,7 +94,14 @@ and each TYPE are SB-ALIEN's, or SAP, INT or STR for the three most written."
     ("UpdateProcThreadAttribute" %update-attribute int (attributes sap) (flags sb-win32::dword)
      (attribute (sb-alien:unsigned 64)) (value sap) (size (sb-alien:unsigned 64))
      (previous sap) (returned sap))
-    ("DeleteProcThreadAttributeList" %delete-attribute-list sb-alien:void (attributes sap)))
+    ("DeleteProcThreadAttributeList" %delete-attribute-list sb-alien:void (attributes sap))
+    ("FindFirstFileW" %find-first-file sb-win32::handle (name sb-win32::system-string) (data sap))
+    ("FindNextFileW" %find-next-file int (handle sb-win32::handle) (data sap))
+    ("FindClose" %find-close int (handle sb-win32::handle))
+    ("SetFileAttributesW" %set-file-attributes int (name sb-win32::system-string)
+     (attributes sb-win32::dword))
+    ("RemoveDirectoryW" %remove-directory int (name sb-win32::system-string))
+    ("DeleteFileW" %delete-file int (name sb-win32::system-string)))
   (defconstant +handle-flag-inherit+ 1)
   (defconstant +proc-thread-attribute-handle-list+ #x20002)
   (defconstant +extended-startupinfo-present+ #x80000)
@@ -108,6 +115,10 @@ and each TYPE are SB-ALIEN's, or SAP, INT or STR for the three most written."
   (defconstant +open-existing+ 3)
   (defconstant +open-always+ 4)
   (defconstant +file-attribute-normal+ #x80)
+  (defconstant +file-attribute-readonly+ #x1)
+  (defconstant +file-attribute-directory+ #x10)
+  (defconstant +file-attribute-reparse-point+ #x400)
+  (defconstant +invalid-file-attributes+ #xFFFFFFFF)
   (defconstant +detached-process+ #x8)
   (defconstant +create-unicode-environment+ #x400)
   (defconstant +std-input-handle+ #xFFFFFFF6)
@@ -582,6 +593,42 @@ it: a link is never followed."
                                    ((= type sb-posix:s-iflnk) :link)
                                    (t :file))))))
 
+#+win32
+(defun extended-path (native)
+  "NATIVE, an absolute Windows path, in the \\\\?\\ form that reaches past
+MAX_PATH's 260 characters: a git clone's objects nest deep."
+  (let ((native (substitute #\\ #\/ native)))
+    (cond ((uiop:string-prefix-p "\\\\?\\" native) native)
+          ((uiop:string-prefix-p "\\\\" native) (concatenate 'string "\\\\?\\UNC\\" (subseq native 2)))
+          ((and (> (length native) 2) (char= #\: (char native 1))) (concatenate 'string "\\\\?\\" native))
+          (t native))))
+
+#+win32
+(defun directory-entries (native)
+  "The entries of the directory NATIVE, a path with no trailing separator,
+as (PATH . ATTRIBUTES), the attributes FindFirstFileW reads beside each
+name: nothing is followed, so a junction or a link is an entry carrying
+the reparse-point bit."
+  ;; WIN32_FIND_DATAW: the attributes are its first DWORD, the name the
+  ;; NUL-terminated UTF-16 at byte 44.
+  (let ((data (make-array 592 :element-type '(unsigned-byte 8)))
+        (entries '()))
+    (sb-sys:with-pinned-objects (data)
+      (let* ((sap (sb-sys:vector-sap data))
+             (handle (%find-first-file (concatenate 'string native "\\*") sap)))
+        (unless (= handle sb-win32:invalid-handle)
+          (with-cleanup ((%find-close handle))
+            (loop do (let* ((end (loop for at from 44 below 564 by 2
+                                       when (zerop (sb-sys:sap-ref-16 sap at)) return at
+                                       finally (return 564)))
+                            (name (sb-ext:octets-to-string data :external-format :utf-16le
+                                                                :start 44 :end end)))
+                       (unless (member name '("." "..") :test #'string=)
+                         (push (cons (concatenate 'string native "\\" name) (sb-sys:sap-ref-32 sap 0))
+                               entries)))
+                  while (/= 0 (%find-next-file handle sap)))))))
+    (nreverse entries)))
+
 (defun remove-tree (directory)
   "DIRECTORY and everything under it, gone — a symbolic link inside is
 removed as a link, never followed into what it points at."
@@ -589,8 +636,11 @@ removed as a link, never followed into what it points at."
   ;; holds links into the shipped tree would take the shipped cells with it.
   ;; On POSIX a walk that lstat(2)s every entry, in this process: an `rm -rf'
   ;; child cost ~120 ms of a hub install on macOS. `rm -rf' still takes what
-  ;; the walk cannot (a name that is not UTF-8); rmdir on Windows. Signals
-  ;; when anything is left.
+  ;; the walk cannot (a name that is not UTF-8). On Windows the walk reads
+  ;; each entry's attributes as it lists it: a junction or link is removed as
+  ;; itself, and a read-only file -- git keeps every object read-only, and
+  ;; DeleteFileW refuses one, which is where UIOP stops -- is made writable
+  ;; first. Signals when anything is left.
   (let ((native (string-right-trim "/\\" (uiop:native-namestring
                                             (uiop:ensure-directory-pathname directory)))))
     (when (uiop:directory-exists-p directory)
@@ -604,8 +654,26 @@ removed as a link, never followed into what it points at."
             (run-checked (list "rm" "-rf" native)
                          (lambda (err) (error "removing ~a failed: ~a" native err))))))
       #+win32
-      (run-checked (list "cmd" "/c" "rmdir" "/s" "/q" native)
-                   (lambda (err) (error "removing ~a failed: ~a" native err))))
+      (labels ((fail (path)
+                 (error "removing ~a failed at ~a: ~a" native path
+                        (string-trim '(#\Space #\Return #\Newline #\.)
+                                     (sb-win32:format-system-message (sb-win32:get-last-error)))))
+               (remove-entry (path attributes)
+                 (when (and (logtest attributes +file-attribute-readonly+)
+                            (zerop (%set-file-attributes path +file-attribute-normal+)))
+                   (fail path))
+                 (cond ((and (logtest attributes +file-attribute-directory+)
+                             (not (logtest attributes +file-attribute-reparse-point+)))
+                        (loop for (child . bits) in (directory-entries path)
+                              do (remove-entry child bits))
+                        (when (zerop (%remove-directory path)) (fail path)))
+                       ((logtest attributes +file-attribute-directory+)
+                        (when (zerop (%remove-directory path)) (fail path)))
+                       ((zerop (%delete-file path)) (fail path)))))
+        (let* ((path (extended-path native))
+               (attributes (sb-win32:get-file-attributes path)))
+          (unless (= attributes +invalid-file-attributes+)
+            (remove-entry path attributes)))))
     (when (uiop:directory-exists-p directory)
       (error "removing ~a left it in place" native))
     t))

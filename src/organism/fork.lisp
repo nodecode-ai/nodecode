@@ -664,7 +664,7 @@ with its own."
                     (home-path (format nil "tmp/fork-~36r/" (random (expt 36 10) (make-random-state t)))))))
     (ensure-directories-exist directory)
     (unwind-protect (funcall function directory)
-      (ignore-errors (uiop:delete-directory-tree directory :validate t :if-does-not-exist :ignore)))))
+      (ignore-errors (remove-tree directory)))))
 
 (defun fork-ask-at-once (jobs directory)
   "Each JOB, (GENERATION TEXT): GENERATION laid into a throwaway home of its own
@@ -700,7 +700,7 @@ answered, or NIL when it answered none."
                        (mapcar #'list (mapcar #'second jobs) homes laid)
                        :lanes (max 1 (length jobs)))
       (dolist (home homes)
-        (ignore-errors (uiop:delete-directory-tree home :validate t :if-does-not-exist :ignore))))))
+        (ignore-errors (remove-tree home))))))
 
 ;;; --- the way back ----------------------------------------------------------------
 

@@ -1129,10 +1129,8 @@ back for (ABANDONED-WARM-PART-P)."
   ;; DIRECTORY answers truenames, as the kernel's list does, so a cache
   ;; reached through a link is checked against where it really lies.
   (flet ((delete-part (directory)
-           (ignore-errors
-            (uiop:delete-directory-tree
-             directory
-             :validate (lambda (path) (uiop:string-prefix-p root (namestring path)))))))
+           (when (uiop:string-prefix-p root (namestring directory))
+             (ignore-errors (remove-tree directory)))))
     (let* ((images (sort (directory (merge-pathnames "*/*/nodecode" (warm-folder-directory)))
                          #'> :key (lambda (path)
                                     (or (ignore-errors (file-write-date path)) 0))))

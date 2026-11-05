@@ -238,7 +238,7 @@ operator file."
          ;; the host's; a gate that scripts the other arm
          ;; SETFs it, and it comes back.
          nodecode.kernel::*service-manager*)
-      (nlk:with-cleanup ((ignore-errors (uiop:delete-directory-tree scratch-home :validate t)))
+      (nlk:with-cleanup ((ignore-errors (nlk:remove-tree scratch-home)))
         (funcall thunk)))))
 
 (defmacro deftest (name fixture &body body)
@@ -588,7 +588,7 @@ last-named first."
   `(let ,(loop for (var tag) in specs collect `(,var (temp-path ,tag)))
      (unwind-protect (progn ,@body)
        ,@(loop for (var) in (reverse specs)
-               collect `(ignore-errors (uiop:delete-directory-tree ,var :validate t))))))
+               collect `(ignore-errors (nlk:remove-tree ,var))))))
 
 (defmacro with-temp-workspace ((dir &rest files) &body body)
   "Run BODY with DIR bound to a fresh temp directory holding FILES, deleting
