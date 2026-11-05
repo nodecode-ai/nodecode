@@ -3163,13 +3163,15 @@ line under the title of a dialog that does not search, in SUMMARY-TONE
 a surface that draws one wears (a room's card its edge), NIL for none."
   ;;
   ;; ROWS are plists in PICKER-ROW's own vocabulary --
-  ;; (:key :label :detail :suffix :value :mark :mark-tone :verb): LABEL the
+  ;; (:key :label :detail :suffix :value :mark :mark-tone :verb :heading): LABEL the
   ;; primary column, DETAIL the muted one after it, SUFFIX what the selected
   ;; row alone adds after DETAIL, VALUE what the shell's Enter hands back, VERB
   ;; the word a surface that gives the row its own button writes on it --
   ;; Leave, Change -- where the dialog's one Enter word will not do, KEY
   ;; a leading column -- or, in a tabbed dialog, the bucket the row belongs to --
-  ;; and MARK a one-glyph status column painted in the theme's TONE. OPTIONS,
+  ;; and MARK a one-glyph status column painted in the theme's TONE. HEADING
+  ;; makes the row a table's column names: the shell paints it muted and never
+  ;; chooses it, and the list opens on the first row that can be chosen. OPTIONS,
   ;; rows of their own (:label :detail :mark :run), are the picks the row's
   ;; line offers, the one in use marked: a surface that draws a menu draws
   ;; them as the row's, and one that does not runs the row's line. A row's
@@ -3255,6 +3257,7 @@ a surface that draws one wears (a room's card its edge), NIL for none."
                                               (:getf ask :opt "placeholder" "verb")))
                     "mark" (or (getf row :mark) "")
                     :opt "mark_tone" (tone (getf row :mark-tone))
+                    :opt "heading" (and (getf row :heading) t)
                     :opt "options" (when-let (options (getf row :options))
                                      (map 'vector
                                           (lambda (option)
@@ -3925,8 +3928,10 @@ default new sessions start on, and every attached shell's footer follows
 (SELECT-SESSION-MODEL)."
   ;; MODEL alone keeps the current lane; :PROVIDER names one. (select-model
   ;; nil) clears the pin so the session takes the default again at its next
-  ;; turn. An unknown lane refuses before anything moves. Other sessions that
-  ;; already ran keep their own model. => one line saying what landed.
+  ;; turn. An unknown lane, or a model its listing does not offer
+  ;; (CHECK-MODEL-OFFERED, which names the ids it does), refuses before
+  ;; anything moves. Other sessions that already ran keep their own model.
+  ;; => one line saying what landed.
   (check-type model (or null model-id))
   (check-type provider (or null provider-id))
   (unless (stringp session-id)

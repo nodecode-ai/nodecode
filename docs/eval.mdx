@@ -109,6 +109,8 @@ In a session working in a made cell, an eval keeps nothing: the cell's file is t
 
 A definition inside a top-level `progn` or `eval-when` is kept as its own file.
 
+A `($ "name")` in a kept definition is kept as the text that `strings` entry carried, so the file loads at the next boot, when no call carries `strings`. A `($ "name")` in a comment or a string, or naming an entry the call did not carry, is kept as written.
+
 | Fact | Value |
 | --- | --- |
 | Folder | `~/.nodecode/cells/<name>/` |
