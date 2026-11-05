@@ -120,7 +120,10 @@ completed once BODY is done."
   ;; these gates are about is when the second of them, or both, is not made.
   `(let* ((,asked '())
           (,value (with-stubbed-fdefinition (nlk::run-snapshot-git (store arguments &rest keys)
-                                              (push (first arguments) ,asked)
+                                              (push (if (member "--dry-run" arguments :test #'equal)
+                                                        "add --dry-run"
+                                                        (first arguments))
+                                                    ,asked)
                                               (apply original store arguments keys))
                     ,form)))
      (values (reverse ,asked) ,value)))
@@ -143,14 +146,14 @@ completed once BODY is done."
   (let ((first-sha (nlk:capture-workspace-tree store)))
     (is (= 40 (length first-sha)) "the first capture writes a tree")
     (nlk:bind (((asked second-sha) (git-asked (nlk:capture-workspace-tree store))))
-      (is (equal '("diff-files" "ls-files") asked)
+      (is (equal '("add --dry-run") asked)
           (format nil "the census alone; no staging and no write-tree behind it: ~a" asked))
       (is (equal first-sha second-sha) "and the tree it answers is that tree"))
     ;; Same length, same second, and the index git writes may land on the
     ;; inode the last one freed: only the content tells these apart.
     (%write-file dir "a.txt" "two")
     (nlk:bind (((asked changed) (git-asked (nlk:capture-workspace-tree store))))
-      (is (equal '("diff-files" "ls-files" "add" "write-tree") asked)
+      (is (equal '("add --dry-run" "add" "write-tree") asked)
           (format nil "a staged change writes its tree: ~a" asked))
       (is (not (equal first-sha changed)) "which is a tree of its own"))))
 
@@ -211,8 +214,9 @@ completed once BODY is done."
         (is (not (equal settled deleted)))
         (is (equal '("a.txt") (tree-paths deleted)) "and the deleted file leaves the tree"))
       (%write-file dir "c.txt" "three")
+      (%write-file dir "it's 'quoted'.txt" "four")
       (let ((added (nlk:capture-workspace-tree store)))
-        (is (equal '("a.txt" "c.txt") (tree-paths added)) "a new file stages")
+        (is (equal '("a.txt" "c.txt" "it's 'quoted'.txt") (tree-paths added)) "new files stage, quotes in a name too")
         (sb-posix:utimes (namestring (merge-pathnames "c.txt" dir)) 1000 1000)
         (is (equal added (nlk:capture-workspace-tree store)) "a touch keeps the tree")
         (%write-file dir "a.txt" "uno")

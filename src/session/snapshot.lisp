@@ -163,7 +163,9 @@ SAVE-LISP-AND-DIE or fork."
          "GIT_COMMITTER_NAME=nodecode" "GIT_COMMITTER_EMAIL=nodecode@localhost"
          "GIT_CONFIG_NOSYSTEM=1"
          #-win32 "GIT_CONFIG_GLOBAL=/dev/null" #+win32 "GIT_CONFIG_GLOBAL=NUL"
-         "GIT_TERMINAL_PROMPT=0")))
+         "GIT_TERMINAL_PROMPT=0"
+         ;; WALK-CENSUS reads the lines `add --dry-run' prints: untranslated
+         "LC_ALL=C")))
 
 (defun run-snapshot-git (store args &key (with-work-tree t) config)
   "Run one git plumbing call under the isolation prefix and a walltime bound;
@@ -449,22 +451,33 @@ snapshot storage when that sits inside it; NIL when nothing is left out."
        (sb-posix:stat-size (#-win32 sb-posix:lstat #+win32 sb-posix:stat path)))
       0))
 
+(defun census-path (line)
+  "The path of one line `add --dry-run' prints -- add 'PATH', remove 'PATH' --
+or NIL for a line that names none."
+  ;; Between the first quote and the last: the verb is a translatable word,
+  ;; the quotes are kept around the path in every translation, and git
+  ;; prints the path as it is.
+  (let ((open (position #\' line)) (close (position #\' line :from-end t)))
+    (and open close (< open close) (subseq line (1+ open) close))))
+
 (defun walk-census (store)
-  "The paths one `add -A' of STORE would change in its index: the tracked ones
-whose working copy departs from the index (content, mode, deleted) and the
-untracked ones the walk's ignore rules leave in, as two NUL-separated git
-listings run back to back."
-  ;; Two calls, not `ls-files --others --modified': that one lstat()s every
-  ;; index entry on its own, with neither the preloaded index nor Git for
-  ;; Windows' fscache, and at 20,000 files it took 281 ms on Windows where
-  ;; these two take 20 + 26 ms (T-442). DIFF-FILES reports an entry whose
-  ;; stat moved without comparing its content, so a touched file counts as
-  ;; changed and the staging behind it runs: the census may say too much,
-  ;; never too little.
-  (nconc (split-nul (run-snapshot-git store (list* "diff-files" "--name-only" "-z"
-                                                   (staging-pathspec store))))
-         (split-nul (run-snapshot-git store (list* "ls-files" "-z" "--others" "--exclude-standard"
-                                                   (staging-pathspec store))))))
+  "The paths one `add -A' of STORE would change in its index -- untracked
+paths the walk's ignore rules leave in, tracked ones whose content or mode
+moved, deletions -- from one `add -A --dry-run', which writes nothing."
+  ;; One git call: a step brackets its call with two captures, and on Windows
+  ;; starting git is most of what a capture of a small tree costs (T-442).
+  ;; `add --dry-run' is the staging's own walk with nothing written: Git for
+  ;; Windows' fscache and the preloaded index serve its stats (19 ms at
+  ;; 5,000 files, 34 ms at 20,000, where `ls-files --others --modified'
+  ;; took 81 and 281 ms), and it hashes a file whose stat moved before it
+  ;; names it, so a touch is not a change.
+  (let ((paths '()))
+    (dolist (line (uiop:split-string (run-snapshot-git store (list* "add" "-A" "--dry-run" "--ignore-errors"
+                                                                    (staging-pathspec store)))
+                                     :separator '(#\Newline))
+                  (nreverse paths))
+      (when-let (path (census-path line))
+        (push path paths)))))
 
 (defun check-walk-bound (store &aux (paths 0) (bytes 0))
   "Signal SNAPSHOT-WALK-TOO-LARGE when one walk of STORE would stage more than
