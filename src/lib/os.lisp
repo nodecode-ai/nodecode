@@ -77,6 +77,8 @@ and each TYPE are SB-ALIEN's, or SAP, INT or STR for the three most written."
      (disposition sb-win32::dword) (attributes sb-win32::dword) (template sb-win32::handle))
     ("FlushFileBuffers" %flush-file-buffers int (handle sb-win32::handle))
     ("GetFileType" %get-file-type sb-win32::dword (handle sb-win32::handle))
+    ("GetFileAttributesExW" %get-file-attributes-ex int (name sb-win32::system-string)
+     (level int) (data sap))
     ("SetStdHandle" %set-std-handle int (which sb-win32::dword) (handle sb-win32::handle))
     ("SetEnvironmentVariableW" %set-environment-variable int (name sb-win32::system-string)
      (value sb-win32::system-string))
@@ -1524,6 +1526,26 @@ was refused. The stat is the second value."
       (if (member (sb-posix:syscall-errno condition) (list sb-posix:enoent sb-posix:enotdir))
           :absent
           :unknown))))
+
+(defun stat-write-time (stat native)
+  "When the file at the native path NATIVE, whose STAT this is, was last
+written: whole seconds since 1970, UTC."
+  ;; Not SB-POSIX:STAT-MTIME alone: on Windows that is msvcrt's _stat, which
+  ;; takes the file's UTC time to local time by today's offset and back by
+  ;; that date's -- an hour early or late for a time in the other daylight
+  ;; saving season, and -1 for one before 1970 local time (T-447). Windows
+  ;; keeps the time itself as a FILETIME, which has neither fault.
+  #-win32 (declare (ignore native))
+  #-win32 (sb-posix:stat-mtime stat)
+  #+win32
+  ;; GetFileExInfoStandard (0) fills a WIN32_FILE_ATTRIBUTE_DATA: the
+  ;; attributes, the creation, access and write FILETIMEs -- each two DWORDs,
+  ;; the low first, counting 100 ns from 1601 -- and the size.
+  (sb-alien:with-alien ((data (sb-alien:array (sb-alien:unsigned 32) 9)))
+    (if (zerop (%get-file-attributes-ex native 0 (sb-alien:alien-sap data)))
+        (sb-posix:stat-mtime stat)
+        (- (floor (logior (sb-alien:deref data 5) (ash (sb-alien:deref data 6) 32)) 10000000)
+           11644473600))))
 
 (defun claim-temp-beside (path claim)
   "Call CLAIM with fresh names beside PATH until one is not taken, CLAIM
