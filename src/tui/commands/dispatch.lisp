@@ -1718,16 +1718,12 @@ dialog but the setup walk's."
        (or (null model.dialog) model.setup-walk)))
 
 (defun home-prompt-text (model)
-  "The composer placeholder while home is active (Zig screens.zig
-homePromptText): the connection narrative, the Zig table over the lifecycle
-states this transport inhabits."
-  ;; The Zig "Creating a Gateway session..." arm never arises: this client
-  ;; always attaches with a resolved session. Connected is only the
-  ;; invitation: the footer's Gateway, in its connected colour, says the rest.
-  (case model.sync-lifecycle
-    (:connected "Ask anything, or describe a task")
-    ((:connecting :reconnecting) "Connecting to Gateway...")
-    (:failed "Gateway sync failed - check the endpoint and retry")))
+  "The composer placeholder while home is active: only a gateway that failed
+to sync, which waits on the operator. Connecting and connected say nothing
+there -- the footer's Gateway, in its state's colour, says it -- so the
+empty composer is the caret alone."
+  (when (eq model.sync-lifecycle :failed)
+    "Gateway sync failed - check the endpoint and retry"))
 
 (defun checkpoint-listing-path (model)
   "The control path the tree picker fetches its rows from for MODEL's session,

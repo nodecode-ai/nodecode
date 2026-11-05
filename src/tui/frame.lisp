@@ -855,30 +855,19 @@ before its verb: Enter runs its line with the text, Esc puts it away."
                     (visual-style-bg (style-for-tone tone))))
          (ta-lines (editor-visible-lines ta))
          (columns (if (shell-footer-p height) (composer-text-width width) (max 1 (- width 2))))
-         ;; The placeholder lines while the composer is empty resolve in
-         ;; priority order (Zig composerPlaceholderView + the home swap):
-         ;; the composer status outranks the home prompt; the widget's own
-         ;; Ready placeholder is the floor.
+         ;; An empty composer is the caret alone: no Ready, no Type to
+         ;; steer, no invitation, no keys spelled out -- the blinking caret
+         ;; says it takes typing. Over the caret stands only what waits on
+         ;; the operator: the composer status (an answer, a failure), the
+         ;; field an ask waits for, a gateway that failed to sync.
          ;; Expire status even while typed text hides its placeholder.
          ((status-lines under status) (composer-status-lines model columns))
          (select (transcript-select model))
          (ask (chat-model-composer-ask model))
          (hint (and (zerop (length (or value ""))) (not status)
-                    (or (and select (select-mode-hint select))
-                        ;; under an ask, what its field waits for
-                        (and ask (or (json-value (getf ask :placeholder) :text)
+                    (or (and ask (or (json-value (getf ask :placeholder) :text)
                                      (format nil "Type the ~(~a~)" (getf ask :label))))
-                        (and (home-screen-p model) (home-prompt-text model))
-                        ;; The floor, the widget's own placeholder, reads
-                        ;; muted like every other placeholder line: it is
-                        ;; absence of input, not input. Taking it through
-                        ;; the hint lane is what gives it a tone at all —
-                        ;; a widget line paints in the box's fill style,
-                        ;; the composer's own bright foreground. Without this,
-                        ;; while a turn runs `Ready' would read as idle.
-                        (if (chat-model-turn-in-flight model)
-                            "Type to steer"
-                            (json-value ta.placeholder :text)))))
+                        (and (home-screen-p model) (home-prompt-text model)))))
          ;; A placeholder bypasses the editor's own wrapping, so it must
          ;; clip to the composer text columns itself or a long notice
          ;; spills past the box on narrow windows.
