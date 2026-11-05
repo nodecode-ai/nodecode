@@ -510,7 +510,7 @@ ended by CRLF, then closes. => (values PORT LISTENER)."
 (defmacro with-octet-pipe ((in out) &body body &aux (read-fd (gensym)) (write-fd (gensym)))
   "BODY with IN an octet fd-stream reading what OUT, a character stream,
 writes: a socket's shape, where only a deadline bounds a read."
-  `(multiple-value-bind (,read-fd ,write-fd) (sb-posix:pipe)
+  `(multiple-value-bind (,read-fd ,write-fd) (make-pipe)
      (let ((,in (sb-sys:make-fd-stream ,read-fd :input t :element-type '(unsigned-byte 8)))
            (,out (sb-sys:make-fd-stream ,write-fd :output t)))
        (nlk:with-cleanup ((ignore-errors (close ,out)) (ignore-errors (close ,in)))
