@@ -1485,15 +1485,18 @@ turn carrying that id."
 
 ;;; --- child liveness and the exit wake ------------------------------------
 
-(deftest sh-children-lead-their-own-sessions (let ((answer (nle:sh "echo $$ $(ps -o sid= -p $$)"))))
+(deftest sh-children-lead-their-own-sessions ()
   ;; setsid gives every sh child a session of its own, so there is no
   ;; controlling terminal to be stopped over: /dev/tty simply fails.
   ;; Without setsid, a sh child would inherit the serving TUI's controlling
   ;; terminal; a background write would stop the tree with SIGTTOU, and the
   ;; timeout cannot kill it.
-  (destructuring-bind (pid sid) (nlk:split-words answer)
-    (is (equal pid sid)
-        (format nil "the child is its own session leader: ~a" answer))))
+  #+win32 (is nil "cannot exist on Windows: no POSIX sessions or setsid there, and no SIGTTOU to stop a child over a terminal (*SESSION-WRAPPER* is NIL)")
+  #-win32
+  (let ((answer (nle:sh "echo $$ $(ps -o sid= -p $$)")))
+    (destructuring-bind (pid sid) (nlk:split-words answer)
+      (is (equal pid sid)
+          (format nil "the child is its own session leader: ~a" answer)))))
 
 (deftest stopped-child-tree-collapses-with-a-verdict (with-exec-registry (registry))
   ;; A job-control-stopped process can never finish here: nothing holds
@@ -1501,6 +1504,8 @@ turn carrying that id."
   ;; process. The liveness scan names the verdict on the output stream and
   ;; SIGKILLs the tree, so the evaluation exits instead of parking its
   ;; readers forever.
+  #+win32 (progn registry (is nil "cannot exist on Windows: no job-control stop there (no SIGSTOP), and the stall scan reads /proc's state T, which only Linux has"))
+  #-win32
   (let ((id (spawn-test-eval
              registry :form "(sh \"kill -STOP $$\")"
              :value (lambda ()
