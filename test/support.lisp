@@ -562,6 +562,13 @@ UNIX-SECONDS, seconds since 1970."
   (nlk::with-output-file (out path) (write-string contents out))
   path)
 
+(defun shell-script-command (script &rest arguments)
+  "The argv that runs SCRIPT, a shell script file, with ARGUMENTS through the
+shell this image runs command strings through (SHELL-ARGV's): the stand-in a
+fixture puts where a program goes. /bin/sh is no path on Windows, where the
+shell is Git's bash, started past its redirector with Git's PATH."
+  (list* (first (nlk:shell-argv ":")) (uiop:native-namestring script) arguments))
+
 (defmacro with-temp-file ((place &key contents (type "json") setf) &body body
                           &aux (path (gensym "PATH")) (text (gensym "CONTENTS")))
   "Run BODY with PLACE naming a fresh temp file of TYPE, deleted on unwind."
