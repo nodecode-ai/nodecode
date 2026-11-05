@@ -32,12 +32,10 @@ build-windows.ps1 builds the launcher with."
         (ignore-errors (delete-file source))
         (setf *release-stub-executable* exe))))
 
-(defun write-release-tarball (dist version files
-                              &key zip
-                              &aux (name (format nil "nodecode-~a-~a" version (nle::release-platform)))
-                                   (windows (eq (nlk:platform) :windows))
-                                   (work (temp-path "release-work"))
-                                   (tree (merge-pathnames (format nil "~a/" name) work)))
+(defun write-release-tarball (dist version files &key zip &aux (name (format nil "nodecode-~a-~a" version (nle::release-platform)))
+                                                               (windows (eq (nlk:platform) :windows))
+                                                               (work (temp-path "release-work"))
+                                                               (tree (merge-pathnames (format nil "~a/" name) work)))
   "The release archive of VERSION under DIST, in this platform's container,
 with its sha256 sidecar: an executable `nodecode' answering --help with the
 usage line, and FILES ((RELATIVE . TEXT) ...) under it. A tar.gz holding a
