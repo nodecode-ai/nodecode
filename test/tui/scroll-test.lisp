@@ -673,7 +673,7 @@ with 20 — and WINDOW its band."
           (nle::ingest-message-fact "assistant" (format nil "**Styled λ 界** ~a~%~{body ~d~^~%~}" "https://example.org/path" (loop for i below 80 collect i))))
         (dolist (offset '(0 40))
           (let ((window (nle::chat-model-band model)))
-            (rendering model (setf (nle::band-window-offset window) offset model.follow nil))
+            (rendering model (setf (nle::band-window-offset window) offset model.follow-bottom nil))
             (let* ((nle::*frame-guard-strict* t)
                    (screen (nlt:parse-styled-string (nle::compose-frame model) 80 30)))
               (multiple-value-bind (top height) (nle:scrollbar-thumb window.height window.height window.count (nle::band-window-offset window))

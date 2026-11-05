@@ -32,6 +32,26 @@ nodecode 0.1.7+2629050e1
 The version comes first and the build label, the commit the release was built from, follows the `+`. An installed build moves to a new release by itself, between turns. `nodecode update` moves it now. See [Updates](updates.mdx).
 
 {/* source: tools/release/publish.sh */}
+## 0.1.9
+
+Linux, macOS and Windows. Changes since 0.1.8 (`c27e63333`).
+
+- `/snapshot` takes this organism's memory whole, under a dated name, and runs on from it. `/snapshots` lists them and switches to one in place.
+- `nodecode resume` picks a session to open, and `nodecode -c` continues the newest one in this folder.
+- `/logout`, and `nodecode logout` on the command line, sign this machine out of nodecode.ai.
+- `/setup` and `/models` offer the nodecode.ai sign-in again. Cyber v1 lists 128K of context and its per-token price, and an account with no plan is pointed to API credit top-ups.
+- `/import` links a skill where it lives instead of copying it.
+- An empty message box is the blinking cursor alone, with no status or tip lines.
+- A picture draws as sixel, octants, sextants or half blocks where the terminal speaks no kitty graphics, and stands under the call that looked at it.
+- `@` completes paths outside the workspace: `~/`, `../` and `/`.
+- A copy puts a wrapped line back together. The `/` menu opens under the text you typed, and a bare `/login` opens its choice again.
+- Windows: Shift+Enter inserts a newline, environment values outside ASCII work, `sh` and git start Git's own programs, a child inherits only its standard handles, `/backup` works, and a boot is faster.
+- `nodecode add`, `update`, `web` and `rollback` find the running organism again.
+- A Claude thinking block is never replayed to another provider.
+- SQLite 3.54 keeps the store's fast query plan.
+- Stopping or restarting the gateway from inside a session it serves is refused instead of cutting that session off.
+
+{/* source: tools/release/publish.sh */}
 ## 0.1.8
 
 Linux, macOS and Windows. Changes since 0.1.7 (`2629050e1`).

@@ -45,7 +45,7 @@ client_command frame's inner command object."
 
 (defun rpc-pipe ()
   "A pipe as (values READ-STREAM WRITE-STREAM), UTF-8 both ends."
-  (multiple-value-bind (in out) (sb-posix:pipe)
+  (multiple-value-bind (in out) (make-pipe)
     (values (sb-sys:make-fd-stream in :input t :external-format :utf-8 :buffering :full)
             (sb-sys:make-fd-stream out :output t :external-format :utf-8 :buffering :full))))
 

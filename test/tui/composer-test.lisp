@@ -71,7 +71,7 @@ ABOVE, then expires into the placeholder with the band as it was."
     (expire-status-news model)
     (nlt:view model)
     (is (null model.composer-status))
-    (is (search "Ready" (nth 19 (nle::compose-frame model))))
+    (is (equal "" (string-trim " " (nth 19 (nle::compose-frame model)))) "the caret alone again")
     (is (equal lines (nle::band-window-lines model.band)))))
 
 (defun open-openai-connect (model)
