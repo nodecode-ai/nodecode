@@ -138,7 +138,7 @@
   (let ((nle::*sandbox-plan* nil))
     (is (equal '("nodecode" "serve") (nle::sandbox-wrap-command '("nodecode" "serve"))))))
 
-(deftest sandbox-flag-is-a-shells ()
+(deftest sandbox-flag-is-a-shells (let ((nle::*offer-sandbox* t)))
   (let ((nle::*sandbox-asked* nil))
     (nle::parse-launch-arguments '("--sandbox"))
     (is (eq t nle::*sandbox-asked*) "--sandbox is read"))
@@ -228,6 +228,15 @@
       (is (find path deny :test #'string=) (format nil "~a is the launcher's, not the jail's" path)))
     (is (notany (lambda (path) (search ".cache/nodecode" path)) allow) "the machine's shared cache is not the jail's to write")))
 
+(defun sandbox-commit (home message &key init)
+  "Commit everything in HOME's cells/vise/ as MESSAGE, a repository made first under INIT."
+  ;; git's own argv, no shell around it: the test runs where git does.
+  (let ((directory (merge-pathnames "cells/vise/" home)))
+    (when init (uiop:run-program (list "git" "init" "-q") :directory directory))
+    (uiop:run-program (list "git" "add" "-A") :directory directory)
+    (uiop:run-program (list "git" "-c" "user.email=t@t" "-c" "user.name=t" "commit" "-qm" message)
+                      :directory directory)))
+
 (defun sandbox-test-home ()
   "A scratch home with one cells/ folder under git, one commit in it."
   (let ((home (uiop:ensure-directory-pathname
@@ -235,8 +244,7 @@
     (ensure-directories-exist (merge-pathnames "cells/vise/" home))
     (with-open-file (o (merge-pathnames "cells/vise/a.lisp" home) :direction :output :if-exists :supersede)
       (write-line "(defun a () 1)" o))
-    (uiop:run-program (list "sh" "-c" "git init -q && git add -A && git -c user.email=t@t -c user.name=t commit -qm one")
-                      :directory (merge-pathnames "cells/vise/" home))
+    (sandbox-commit home "one" :init t)
     home))
 
 (deftest sandbox-mark-holds-its-first-snapshot ()
@@ -248,8 +256,7 @@
            (let ((first (uiop:read-file-string (nle::sandbox-mark-path home))))
              (with-open-file (o (merge-pathnames "cells/vise/b.lisp" home) :direction :output :if-exists :supersede)
                (write-line "(defparameter *b* (sb-ext:run-program \"/bin/true\" nil))" o))
-             (uiop:run-program (list "sh" "-c" "git add -A && git -c user.email=t@t -c user.name=t commit -qm escape")
-                               :directory (merge-pathnames "cells/vise/" home))
+             (sandbox-commit home "escape")
              (nle::sandbox-mark home)
              (is (equal first (uiop:read-file-string (nle::sandbox-mark-path home))) "a later sandboxed launch never moves the mark")))
       (uiop:delete-directory-tree home :validate t :if-does-not-exist :ignore))))
@@ -273,8 +280,7 @@
            (is (search "nothing: cells/ is as the mark found it" (nle::sandbox-review-text home)) "an untouched home has nothing to show")
            (with-open-file (o (merge-pathnames "cells/vise/b.lisp" home) :direction :output :if-exists :supersede)
              (write-line "(defun b () 2)" o))
-           (uiop:run-program (list "sh" "-c" "git add -A && git -c user.email=t@t -c user.name=t commit -qm escape-commit")
-                             :directory (merge-pathnames "cells/vise/" home))
+           (sandbox-commit home "escape-commit")
            (ensure-directories-exist (merge-pathnames "cells/planted/" home))
            (let ((text (nle::sandbox-review-text home)))
              (is (search "cells/vise: 1 commit since the mark" text) "a new commit in the layer is counted")

@@ -191,8 +191,8 @@ answers what the command answers."
         (when (nle::connect-dialog-p dialog)
           (is (equal "Step 1. Choose provider · step 1/3"
                      (nle::picker-dialog-context dialog)))
-          ;; Anthropic's key is the first row
-          (dialog-keys model :enter)
+          ;; nodecode.ai's sign-in leads; Anthropic's key is the row under it
+          (dialog-keys model :down :enter)
           (is (eq :api-key (nle::connect-dialog-step dialog)))
           (dialog-keys model #\s #\k #\- #\9 :enter)
           (is (eq :provider (nle::connect-dialog-step dialog))
@@ -294,8 +294,8 @@ answers what the command answers."
       (let ((dialog model.dialog))
         (is (nle::connect-dialog-p dialog) "the walk opens on the providers")
         (when (nle::connect-dialog-p dialog)
-          (is (equal "Anthropic" (first (row-labels dialog))) "no Suggested before a key: the providers lead")
-          (dialog-keys model :enter #\s #\k :enter)
+          (is (equal '("Sign in to nodecode.ai" "" "Or use a provider's key" "Anthropic") (subseq (row-labels dialog) 0 4)) "no Suggested before a key: nodecode.ai's sign-in leads")
+          (dialog-keys model :down :enter #\s #\k :enter)
           (is (eq dialog model.dialog) "a saved key returns to the list")
           (is (equal '("Suggested" "Anthropic" "Connect another")
                      (subseq (row-labels dialog) 0 3)))
@@ -354,8 +354,8 @@ decoded body: each model a turn can run on, and each connected provider."
             (let ((dialog model.dialog))
               (is (nle::connect-dialog-p dialog) "the walk opens on the providers")
               (when (nle::connect-dialog-p dialog)
-                (is (equal "Anthropic" (first (row-labels dialog))) "no Suggested before a key: the providers lead")
-                (dialog-keys model :enter #\s #\k :enter)
+                (is (equal '("Sign in to nodecode.ai" "" "Or use a provider's key" "Anthropic") (subseq (row-labels dialog) 0 4)) "no Suggested before a key: nodecode.ai's sign-in leads")
+                (dialog-keys model :down :enter #\s #\k :enter)
                 (is (eq dialog model.dialog) "a saved key returns to the list")
                 (is (plusp reads) "the save read the gateway's list again")
                 (is (equal '("Suggested" "Anthropic" "Connect another")
@@ -442,8 +442,8 @@ decoded body: each model a turn can run on, and each connected provider."
       (is (search "←→ steps" dialog.hint))
       (nle::picker-dialog-key model :left)
       (is (eq dialog model.dialog) "the first step has none before it")
-      ;; Anthropic's key, the first row
-      (dialog-keys model :enter)
+      ;; past nodecode.ai's sign-in, to Anthropic's key
+      (dialog-keys model :down :enter)
       (is (eq :api-key (nle::connect-dialog-step dialog)))
       (nle::picker-dialog-key model :left)
       (is (eq :api-key (nle::connect-dialog-step dialog)) "the key field keeps arrows")

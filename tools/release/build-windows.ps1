@@ -4,8 +4,9 @@
 
 .DESCRIPTION
   Run from anywhere on a Windows machine with SBCL (x86-64) on PATH and Git
-  for Windows installed. Installs quicklisp for the current user when it is
-  missing, fetches libsqlite3.dll beside the tree when it is missing, loads
+  for Windows installed. With SBCL 2.6.8 the image is dumped on that
+  release's runtime patched to map its core (sbcl-win\build-runtime.sh).
+  Installs quicklisp for the current user when it is missing, fetches libsqlite3.dll beside the tree when it is missing, loads
   tools/release/windows-release.lisp in a fresh SBCL with the release heap
   settings, then lays the three DLLs the image loads at run time beside the
   executable: libsqlite3.dll and the OpenSSL pair Git for Windows carries.
@@ -50,7 +51,7 @@ function Ensure-Quicklisp {
   Write-Host "installing quicklisp for $env:USERNAME"
   $bootstrap = Join-Path $env:TEMP 'quicklisp.lisp'
   Invoke-WebRequest -Uri 'https://beta.quicklisp.org/quicklisp.lisp' -OutFile $bootstrap
-  & $script:sbcl --noinform --non-interactive --load $bootstrap --eval '(quicklisp-quickstart:install)'
+  & $script:sbcl @script:sbclCore --noinform --non-interactive --load $bootstrap --eval '(quicklisp-quickstart:install)'
   if ($LASTEXITCODE -ne 0) { throw "quicklisp install failed ($LASTEXITCODE)" }
 }
 
@@ -88,7 +89,19 @@ function Find-OpenSsl {
   throw "libssl-3-x64.dll / libcrypto-3-x64.dll not found: install Git for Windows (its mingw64\bin carries them)"
 }
 
-$script:sbcl = Find-Sbcl
+# The runtime nodecode.exe is dumped on, and so the one every nodecode process
+# starts on: the installed SBCL's, or the same release's runtime that maps the
+# image into memory where the stock one reads all ~90 MB of it - about 30 ms
+# off every process start, the shell's, the organism's and each worker's
+# (sbcl-win\runtime.ps1). Either runs the installed SBCL's own core and contribs.
+$installed = Find-Sbcl
+$script:sbcl = & (Join-Path $PSScriptRoot 'sbcl-win\runtime.ps1') -Sbcl $installed
+$script:sbclCore = @()
+if ($script:sbcl -ne $installed) {
+  $sbclDir = Split-Path -Parent $installed
+  $env:SBCL_HOME = $sbclDir
+  $script:sbclCore = @('--core', (Join-Path $sbclDir 'sbcl.core'))
+}
 Write-Host "sbcl: $script:sbcl"
 Ensure-Quicklisp
 $sqlite = Ensure-Sqlite
@@ -101,7 +114,7 @@ $env:PATH = "$src;$env:PATH"
 
 Push-Location $src
 try {
-  & $script:sbcl --dynamic-space-size 8192 --control-stack-size 8MB --noinform --non-interactive `
+  & $script:sbcl @script:sbclCore --dynamic-space-size 8192 --control-stack-size 8MB --noinform --non-interactive `
     --load (Join-Path $src 'tools\release\windows-release.lisp')
   if ($LASTEXITCODE -ne 0) { throw "sbcl build failed ($LASTEXITCODE)" }
 } finally {

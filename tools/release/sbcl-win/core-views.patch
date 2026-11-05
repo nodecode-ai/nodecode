@@ -1,0 +1,236 @@
+diff -ru a/src/runtime/gc-common.c b/src/runtime/gc-common.c
+--- a/src/runtime/gc-common.c	2026-11-05 12:56:18.308680776 +0100
++++ b/src/runtime/gc-common.c	2026-11-05 12:56:18.310672901 +0100
+@@ -3090,8 +3090,7 @@
+             last_page++;
+ 
+ #ifdef LISP_FEATURE_WIN32
+-        gc_assert(VirtualFree(page_address(first_page), npage_bytes(last_page-first_page),
+-                              MEM_DECOMMIT));
++        os_decommit_memory(page_address(first_page), npage_bytes(last_page-first_page));
+ #elif defined LISP_FEATURE_DARWIN_JIT
+         remap_page_range(2, first_page, last_page-1); // change to non-executable noreserve
+ #else
+diff -ru a/src/runtime/os-common.c b/src/runtime/os-common.c
+--- a/src/runtime/os-common.c	2026-11-05 12:56:18.308680776 +0100
++++ b/src/runtime/os-common.c	2026-11-05 12:56:18.309672890 +0100
+@@ -120,6 +120,7 @@
+ os_deallocate(os_vm_address_t addr, os_vm_size_t len)
+ {
+ #ifdef LISP_FEATURE_WIN32
++    if (os_unmap_core_view(addr)) return;
+     gc_assert(VirtualFree(addr, 0, MEM_RELEASE));
+ #else
+     if (sbcl_munmap(addr, len) == -1) perror("munmap");
+diff -ru a/src/runtime/os.h b/src/runtime/os.h
+--- a/src/runtime/os.h	2026-11-05 12:56:18.308680776 +0100
++++ b/src/runtime/os.h	2026-11-05 12:56:18.310672901 +0100
+@@ -120,6 +120,10 @@
+ 
+ #ifdef LISP_FEATURE_WIN32
+ void os_commit_memory(os_vm_address_t addr, os_vm_size_t len);
++#ifdef LISP_FEATURE_WIN32
++void os_decommit_memory(os_vm_address_t addr, os_vm_size_t len);
++int os_unmap_core_view(os_vm_address_t addr);
++#endif
+ #endif
+ 
+ /* This maps a file into memory, or calls lose(..) for various
+diff -ru a/src/runtime/win32-os.c b/src/runtime/win32-os.c
+--- a/src/runtime/win32-os.c	2026-11-05 12:56:18.308680776 +0100
++++ b/src/runtime/win32-os.c	2026-11-05 12:56:18.309672890 +0100
+@@ -677,14 +677,142 @@
+     return actual;
+ }
+ 
++/* Core views: each large space of the core is mapped copy-on-write from the
++ * core file (load_core_bytes), as every POSIX runtime maps it, instead of
++ * committed and read. A view is not VirtualAlloc memory: it is always
++ * committed, cannot be decommitted, and is released by UnmapViewOfFile. So
++ * committing and decommitting skip the views, and os_deallocate unmaps one.
++ * Reading the whole core (88 MB for nodecode) cost each process start about
++ * 30 ms of demand-zero faults and copying; a view costs a fault per page the
++ * process actually touches, served from the file cache every process shares. */
++#define MAX_CORE_VIEWS 8
++static struct core_view {
++    char *start, *end;   /* the view */
++    char *tail_end;      /* the rest of the space's reservation, re-made at end */
++} core_views[MAX_CORE_VIEWS];
++static int n_core_views;
++
++/* The view with the lowest start that overlaps [start,end), or 0 */
++static struct core_view* core_view_overlapping(char* start, char* end)
++{
++    struct core_view* best = 0;
++    int i;
++    for (i = 0; i < n_core_views; ++i) {
++        struct core_view* v = &core_views[i];
++        if (v->start < end && v->end > start && (!best || v->start < best->start))
++            best = v;
++    }
++    return best;
++}
++
+ void os_commit_memory(os_vm_address_t addr, os_vm_size_t len)
+ {
+     if (len) {
+         gc_assert(addr);
+-        gc_assert(VirtualAlloc(addr, len, MEM_COMMIT, PAGE_EXECUTE_READWRITE));
++        char *start = addr, *end = addr + len;
++        while (start < end) {
++            struct core_view* v = core_view_overlapping(start, end);
++            char* stop = v ? (v->start > start ? v->start : start) : end;
++            if (stop > start)
++                gc_assert(VirtualAlloc(start, stop - start, MEM_COMMIT, PAGE_EXECUTE_READWRITE));
++            start = v ? v->end : end;
++        }
+     }
+ }
+ 
++/* Give back the storage of [addr,addr+len) but keep the reservation. A view's
++ * pages stay as they are: the GC still marks them need-to-zero, and zeroes them
++ * before it uses them again. */
++void os_decommit_memory(os_vm_address_t addr, os_vm_size_t len)
++{
++    char *start = addr, *end = addr + len;
++    while (start < end) {
++        struct core_view* v = core_view_overlapping(start, end);
++        char* stop = v ? (v->start > start ? v->start : start) : end;
++        if (stop > start)
++            gc_assert(VirtualFree(start, stop - start, MEM_DECOMMIT));
++        start = v ? v->end : end;
++    }
++}
++
++/* When ADDR starts a core view: unmap it, release the reservation made after
++ * it, and answer 1. Otherwise 0. */
++int os_unmap_core_view(os_vm_address_t addr)
++{
++    int i;
++    for (i = 0; i < n_core_views; ++i) {
++        struct core_view* v = &core_views[i];
++        if (v->start == (char*)addr) {
++            gc_assert(UnmapViewOfFile(v->start));
++            if (v->tail_end > v->end) gc_assert(VirtualFree(v->end, 0, MEM_RELEASE));
++            core_views[i] = core_views[--n_core_views];
++            return 1;
++        }
++    }
++    return 0;
++}
++
++/* Not declared below _WIN32_WINNT 0x0600, which this runtime is built for;
++ * every Windows that runs it has it (Vista and later) */
++WINBASEAPI HANDLE WINAPI ReOpenFile(HANDLE, DWORD, DWORD, DWORD);
++
++/* Map LEN bytes of the core at OFFSET of FD copy-on-write at ADDR, the start
++ * of the space's own reservation, in place of that reservation's first LEN
++ * bytes: answer 1, or 0 with the reservation as it was, to be read instead. */
++static int map_core_bytes(int fd, os_vm_offset_t offset, os_vm_address_t addr, os_vm_size_t len)
++{
++    static HANDLE mapping;
++    static int mapping_fd = -1;
++    SYSTEM_INFO si;
++    GetSystemInfo(&si);
++    uword_t gran = si.dwAllocationGranularity;
++    if (!addr || len < (1 << 20) || n_core_views == MAX_CORE_VIEWS
++        || (uword_t)addr % gran || (uword_t)offset % gran || len % gran
++        || getenv("SBCL_CORE_READ"))
++        return 0;
++    MEMORY_BASIC_INFORMATION mbi, next;
++    if (!VirtualQuery(addr, &mbi, sizeof mbi) || mbi.AllocationBase != addr
++        || mbi.RegionSize < len)
++        return 0;
++    char* alloc_end = (char*)addr + mbi.RegionSize;
++    /* The space must be one allocation all in one state: the region found
++     * must end where the allocation does */
++    if (VirtualQuery(alloc_end, &next, sizeof next) && next.AllocationBase == addr)
++        return 0;
++    DWORD state = mbi.State == MEM_COMMIT ? MEM_RESERVE|MEM_COMMIT : MEM_RESERVE;
++    if (mapping_fd != fd) {
++        if (mapping) CloseHandle(mapping), mapping = 0;
++        mapping_fd = -1;
++        /* The image's code runs from the view, so the mapping must allow
++         * execution, and that needs a handle opened for it */
++        HANDLE file = ReOpenFile((HANDLE)_get_osfhandle(fd), GENERIC_READ|GENERIC_EXECUTE,
++                                 FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE, 0);
++        if (file == INVALID_HANDLE_VALUE) return 0;
++        mapping = CreateFileMappingW(file, NULL, PAGE_EXECUTE_WRITECOPY, 0, 0, NULL);
++        CloseHandle(file);
++        if (!mapping) return 0;
++        mapping_fd = fd;
++    }
++    if (!VirtualFree(addr, 0, MEM_RELEASE)) return 0;
++    void* view = MapViewOfFileEx(mapping, FILE_MAP_COPY|FILE_MAP_EXECUTE,
++                                 (DWORD)((uint64_t)offset >> 32), (DWORD)offset, len, addr);
++    if (view != addr) {
++        if (view) UnmapViewOfFile(view);
++        if (VirtualAlloc(addr, alloc_end - (char*)addr, state, PAGE_EXECUTE_READWRITE) != addr)
++            lose("core view: could not reserve %p..%p again", addr, alloc_end);
++        return 0;
++    }
++    char* end = (char*)addr + len;
++    if (alloc_end > end
++        && VirtualAlloc(end, alloc_end - end, state, PAGE_EXECUTE_READWRITE) != end)
++        lose("core view: could not reserve %p..%p after the view", end, alloc_end);
++    struct core_view* v = &core_views[n_core_views++];
++    v->start = (char*)addr;
++    v->end = end;
++    v->tail_end = alloc_end;
++    return 1;
++}
++
+ /*
+  * load_core_bytes() is called to load a chunk of the core file into memory.
+  *
+@@ -701,6 +829,11 @@
+ void* load_core_bytes(int fd, os_vm_offset_t offset, os_vm_address_t addr, os_vm_size_t len,
+                       int is_readonly_space)
+ {
++    if (map_core_bytes(fd, offset, addr, len)) {
++        DWORD old;
++        if (is_readonly_space) VirtualProtect(addr, len, PAGE_READONLY, &old);
++        return addr;
++    }
+     if (addr) {
+         os_commit_memory(addr, len);
+     } else {
+@@ -744,14 +877,34 @@
+     PAGE_EXECUTE_READWRITE,
+ };
+ 
++/* A copy-on-write view takes no read-write protection: its writable pages
++ * are copy-on-write, and the first write makes the page private. */
++static DWORD view_protection(DWORD prot)
++{
++    return prot == PAGE_READWRITE ? PAGE_WRITECOPY
++        : prot == PAGE_EXECUTE_READWRITE ? PAGE_EXECUTE_WRITECOPY
++        : prot;
++}
++
+ void
+ os_protect(os_vm_address_t address, os_vm_size_t length, os_vm_prot_t prot)
+ {
+-    DWORD old_prot;
++    DWORD old_prot = 0;
+     DWORD new_prot = os_protect_modes[prot];
+-    gc_assert(VirtualProtect(address, length, new_prot, &old_prot)||
+-              (VirtualAlloc(address, length, MEM_COMMIT, new_prot) &&
+-               VirtualProtect(address, length, new_prot, &old_prot)));
++    char *start = address, *end = address + length;
++    while (start < end) {
++        struct core_view* v = core_view_overlapping(start, end);
++        char* stop = v ? (v->start > start ? v->start : start) : end;
++        if (stop > start)
++            gc_assert(VirtualProtect(start, stop - start, new_prot, &old_prot)||
++                      (VirtualAlloc(start, stop - start, MEM_COMMIT, new_prot) &&
++                       VirtualProtect(start, stop - start, new_prot, &old_prot)));
++        if (!v) break;
++        char* vend = v->end < end ? v->end : end;
++        if (vend > stop)
++            gc_assert(VirtualProtect(stop, vend - stop, view_protection(new_prot), &old_prot));
++        start = vend;
++    }
+     odxprint(misc,"Protecting %p + %p vmaccess %d "
+              "newprot %08x oldprot %08x",
+              address,length,prot,new_prot,old_prot);

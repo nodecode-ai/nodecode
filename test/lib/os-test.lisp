@@ -6,8 +6,8 @@
 ;;;; Every primitive here has a POSIX arm and a Windows arm behind one name;
 ;;;; these gates pin the contract the callers rely on, and run on whichever
 ;;;; arm the suite's host has. The cross-process cases use a python child the
-;;;; way the store lease tests do: a lock is a per-process fact, so only a
-;;;; second process can hold one against this image.
+;;;; way the store lease tests do, a PowerShell one on Windows: a lock is a
+;;;; per-process fact, so only a second process can hold one against this image.
 
 (in-package #:nodecode.test)
 
@@ -304,7 +304,7 @@ and TOOLCHAIN willing, the programs they start."
   ;; descriptor this image holds above stderr closed. A store handle or a
   ;; provider socket riding into a git call would hold the file open and
   ;; travel where it was never meant to.
-  (with-open-file (held "/dev/null" :direction :input)
+  (with-open-file (held (asdf:system-relative-pathname "nodecode" "nodecode.asd") :direction :input)
     (declare (ignorable held))
     #+linux
     (nlk:bind (((output _ status) (run-sh "ls /proc/self/fd | tr '\n' ' '; cat")))
@@ -318,7 +318,6 @@ and TOOLCHAIN willing, the programs they start."
       (is (eql 0 status) "the child ran")
       (is (search "ended" output) "and its stdin was the null device, not a wait"))))
 
-#-win32
 (deftest a-bound-that-falls-takes-the-shells-background-work-with-it ()
   ;; The child leads a process group of its own, so the kill at the bound
   ;; takes the tree with it. A backgrounded sleep outliving the shell would
@@ -386,22 +385,58 @@ and TOOLCHAIN willing, the programs they start."
       (is (equal value (child-read "NODECODE_OS_WIDE_SET" :environment handed)) "a child handed this process's environment")
       (is (equal value (child-read "NODECODE_OS_WIDE" :environment handed)) "a child handed the value itself"))))
 
-(defmacro with-lock-holder ((path &optional (text "")) &body body
-                           &aux (holder (gensym "HOLDER")))
-  "Run BODY while a python3 child holds an exclusive lock on PATH — the
-foreign holder a per-process lock needs — after asserting it took the lock,
-and end the child on unwind."
-  ;; TEXT is written into the locked file first: what a holder says of itself.
-  `(let ((,holder (uiop:launch-program
-                   (list "python3" "-c"
-                         "import fcntl,sys,time
+(defun powershell-quoted (text)
+  "TEXT as a PowerShell single-quoted string."
+  (with-output-to-string (out)
+    (write-char #\' out)
+    (loop for char across text
+          do (when (char= char #\') (write-char char out))
+             (write-char char out))
+    (write-char #\' out)))
+
+(defun lock-holder-argv (path text)
+  "The argv of a child that takes the exclusive lock on PATH the way LOCK-FILE
+takes it, writes TEXT into the file, prints `locked' and holds it 30 s."
+  ;; The lock is fcntl's on POSIX; on Windows the file open with no sharing.
+  #-win32
+  (list "python3" "-c"
+        "import fcntl,sys,time
 f=open(sys.argv[1],'w')
 f.write(sys.argv[2]); f.flush()
 fcntl.lockf(f,fcntl.LOCK_EX|fcntl.LOCK_NB)
 print('locked',flush=True)
 time.sleep(30)"
-                         (namestring ,path) ,text)
-                   :output :stream)))
+        (namestring path) text)
+  #+win32
+  (list "powershell" "-NoProfile" "-Command"
+        (format nil "$f = [IO.File]::Open(~a, 'Create', 'ReadWrite', 'None'); $b = [Text.Encoding]::UTF8.GetBytes(~a); $f.Write($b, 0, $b.Length); $f.Flush(); [Console]::Out.Write('locked' + [char]10); [Console]::Out.Flush(); Start-Sleep 30"
+                (powershell-quoted (uiop:native-namestring path)) (powershell-quoted text))))
+
+(defun lock-try-argv (path)
+  "The argv of a child that tries to take the lock on PATH once and prints
+`took' or `refused'."
+  #-win32
+  (list "python3" "-c"
+        "import fcntl,sys
+f=open(sys.argv[1],'w')
+try:
+    fcntl.lockf(f,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    print('took',flush=True)
+except OSError:
+    print('refused',flush=True)"
+        (namestring path))
+  #+win32
+  (list "powershell" "-NoProfile" "-Command"
+        (format nil "try { [IO.File]::Open(~a, 'OpenOrCreate', 'ReadWrite', 'None').Close(); [Console]::Out.Write('took' + [char]10) } catch { [Console]::Out.Write('refused' + [char]10) }"
+                (powershell-quoted (uiop:native-namestring path)))))
+
+(defmacro with-lock-holder ((path &optional (text "")) &body body
+                           &aux (holder (gensym "HOLDER")))
+  "Run BODY while a child holds an exclusive lock on PATH — the foreign
+holder a per-process lock needs — after asserting it took the lock, and end
+the child on unwind."
+  ;; TEXT is written into the locked file first: what a holder says of itself.
+  `(let ((,holder (uiop:launch-program (lock-holder-argv ,path ,text) :output :stream)))
      (nlk:with-cleanup ((uiop:terminate-process ,holder) (uiop:wait-process ,holder))
        (is (equal "locked" (read-line (uiop:process-info-output ,holder) nil)))
        ,@body)))
@@ -453,16 +488,7 @@ time.sleep(30)"
     (is lock "the claim succeeds")
     (is (nlk:file-locked-p path) "the holder reads its own lock as held")
     (dotimes (i 5) (nlk:file-locked-p path))
-    (is (equal (format nil "refused~%")
-               (nlk:run-bounded (list "python3" "-c"
-                                      "import fcntl,sys
-f=open(sys.argv[1],'w')
-try:
-    fcntl.lockf(f,fcntl.LOCK_EX|fcntl.LOCK_NB)
-    print('took',flush=True)
-except OSError:
-    print('refused',flush=True)"
-                                      (namestring path)))))
+    (is (equal (format nil "refused~%") (nlk:run-bounded (lock-try-argv path))))
     (nlk:unlock-file lock)
     (is (not (nlk:file-locked-p path)) "the release forgets it too")))
 
@@ -495,6 +521,20 @@ except OSError:
       (is lock "the holder gone, the claim succeeds")
       (nlk:unlock-folder folder)
       (is (not (nlk:file-locked-p path)) "and the release frees it"))))
+
+(deftest executable-on-path-finds-a-command-the-way-the-shell-does (with-temp-workspace (dir))
+  ;; Windows runs `npx' as npx.cmd and `git' as git.exe, by PATHEXT: a bare
+  ;; name probed alone named nothing there, and an import skipped the server.
+  (let ((saved (uiop:getenv "PATH"))
+        (file (merge-pathnames #-win32 "nl-tool" #+win32 "nl-tool.cmd" dir)))
+    (write-temp-file file "")
+    (unwind-protect
+         (progn
+           (nlk::set-environment-variable "PATH" (string-right-trim "/\\" (uiop:native-namestring dir)))
+           (is (equal (truename file) (nlk::executable-on-path "nl-tool")) "the name the shell runs")
+           #+win32 (is (equal (truename file) (nlk::executable-on-path "nl-tool.cmd")) "or the file it is")
+           (is (null (nlk::executable-on-path "nl-absent")) "and nothing for a name that is not there"))
+      (nlk::set-environment-variable "PATH" (or saved "")))))
 
 (deftest a-folder-lock-counts-its-reentrance-and-releases-on-unwind (with-temp-workspace (dir))
   ;; POSIX would let this process take the lock twice and CLOSE the second
@@ -531,7 +571,7 @@ except OSError:
 
 (deftest pid-live-p-tells-a-live-process-from-a-gone-one ()
   (is (nlk:pid-live-p (sb-posix:getpid)) "this process is alive")
-  (let* ((child (uiop:launch-program (list "true")))
+  (let* ((child (uiop:launch-program (nlk:shell-argv "exit 0")))
          (pid (uiop:process-info-pid child)))
     (uiop:wait-process child)
     (is (not (nlk:pid-live-p pid)) "a reaped child is gone")))
@@ -665,6 +705,17 @@ process's own, or NIL."
   #+win32 (is (nlk::path-within-p "C:\\proj\\src" "C:\\proj") "Windows steps with \\")
   #+win32 (is (nlk::path-within-p "C:\\proj" "C:\\") "a drive's root keeps its own")
   #+win32 (is (not (nlk::path-within-p "C:\\project" "C:\\proj")) "nor there a name that only starts like it"))
+
+(deftest lstat-kind-reads-a-folder-named-with-its-separator (with-temp-workspace (dir "inside/a.txt"))
+  ;; A folder's native namestring ends in its separator; Windows' stat finds
+  ;; no folder by such a name, so a folder named so read as absent there.
+  (let ((folder (uiop:native-namestring (merge-pathnames "inside/" dir))))
+    (is (eq :directory (nlk::lstat-kind folder)) "the folder, its separator at its end, is a folder")
+    (is (eq :directory (nlk::lstat-kind (string-right-trim "/\\" folder))) "and without it")
+    (is (eq :file (nlk::lstat-kind (uiop:native-namestring (merge-pathnames "inside/a.txt" dir)))) "a file a file")
+    (is (eq :absent (nlk::lstat-kind (uiop:native-namestring (merge-pathnames "none/" dir)))) "nothing is absent")
+    #+win32
+    (is (eq :directory (nlk::lstat-kind (subseq folder 0 3))) "and a drive's root a folder")))
 
 #-win32
 #-win32
@@ -835,10 +886,15 @@ every call takes its arena's lock."
 
 (defun every-arena-answers-p ()
   "Whether malloc_trim, which takes every arena's lock in turn, returns within
-five seconds on a thread of its own."
+five seconds on a thread of its own. Windows' C library has no malloc_trim:
+there a thousand mallocs and frees over the sizes the spinner asks return in
+that time, each size class's lock taken."
   (eq :ok (nlk::%join-bounded
            (bt2:make-thread (lambda ()
+                              #-win32
                               (sb-alien:alien-funcall (sb-alien:extern-alien "malloc_trim" (function sb-alien:int sb-alien:unsigned-long)) 0)
+                              #+win32
+                              (loop for size from 2048 below 62048 by 60 do (c-malloc-and-free size))
                               :ok)
                             :name "arena probe")
            5)))
