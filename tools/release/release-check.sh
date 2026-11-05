@@ -17,9 +17,14 @@
 #             already names, or with no green commit near main's head, is
 #             skipped: skip=true, and no build job runs.
 #
+# A publish also says whether the nightly follows it: nightly_follows=true when
+# the Linux nightly pointer names a commit the tag carries, so publish.sh will
+# move the nightly homes onto this release too, and the Linux job proves that
+# upgrade from the nightly they run.
+#
 # Prints the commit, its nine-digit label and its version, and writes them as
-# commit=, label=, version=, mode= and skip= to $GITHUB_OUTPUT when the
-# workflow sets it.
+# commit=, label=, version=, mode=, skip= and nightly_follows= to
+# $GITHUB_OUTPUT when the workflow sets it.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -104,11 +109,26 @@ if [ "$mode" = nightly ] && [ "$skip" = false ]; then
   fi
 fi
 
+# A publish past the nightly carries the nightly homes with it (publish.sh), so
+# the upgrade from the nightly they run is proved too. Read like the nightly's
+# own check: a cache-buster, and a pointer that does not answer follows nothing.
+nightly_follows=false
+if [ "$mode" = publish ]; then
+  base_url="${NODECODE_RELEASE_BASE_URL:-https://nodecode.ai}"
+  base_url="${base_url%/}"
+  nightly="$(curl -fsS -m 20 "$base_url/dl/nightly-x86_64-linux?cb=$(date +%s)" 2>/dev/null | tr -d '[:space:]')" || nightly=''
+  if [ -n "$nightly" ] && [ "$nightly" != "$label" ] && git merge-base --is-ancestor "$nightly" "$commit" 2>/dev/null; then
+    nightly_follows=true
+    echo "release: the nightly names $nightly, which $label carries: the nightly homes take this release too"
+  fi
+fi
+
 case "$mode" in
   publish) echo "release: $label is nodecode $version, tagged $tag" ;;
   rehearse) echo "release: $label is nodecode $version, a rehearsal" ;;
   nightly) [ "$skip" = true ] || echo "release: $label is nodecode $version, main's newest green commit, for the nightly channel" ;;
 esac
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
-  printf 'commit=%s\nlabel=%s\nversion=%s\nmode=%s\nskip=%s\n' "$commit" "$label" "$version" "$mode" "$skip" >> "$GITHUB_OUTPUT"
+  printf 'commit=%s\nlabel=%s\nversion=%s\nmode=%s\nskip=%s\nnightly_follows=%s\n' \
+    "$commit" "$label" "$version" "$mode" "$skip" "$nightly_follows" >> "$GITHUB_OUTPUT"
 fi

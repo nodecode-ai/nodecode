@@ -64,6 +64,10 @@
                        (error (condition) (princ-to-string condition)))))
         (is (search (moved-folder root "gone") message) "the refusal names the folder")
         (is (search "nlk:move-sessions" message) "and the move that fixes it"))
-      (is (search (moved-folder root "here") (nle::sh "pwd" :directory (moved-folder root "here"))) ":directory still runs a command elsewhere")
+      ;; where a command ran is the file it leaves: Git's sh on Windows spells
+      ;; its pwd as an MSYS path (/tmp, /c/...), never the folder's own name
+      (nle::sh "echo > ran-elsewhere" :directory (moved-folder root "here"))
+      (is (probe-file (merge-pathnames "here/ran-elsewhere" root)) ":directory still runs a command elsewhere")
       (nlk:move-sessions (moved-folder root "gone") (moved-folder root "here"))
-      (is (search (moved-folder root "here") (nle::sh "pwd")) "after the move the session runs in its folder"))))
+      (nle::sh "echo > ran-after-move")
+      (is (probe-file (merge-pathnames "here/ran-after-move" root)) "after the move the session runs in its folder"))))

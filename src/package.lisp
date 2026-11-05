@@ -149,14 +149,14 @@ renderer, the program loop.")
    #:skip-openssl-exit-cleanup #:resolve-names-directly
    #:mapped-resident-bytes #:release-mapped-pages #:trim-working-set #:*shell* #:shell-argv
    #:*session-wrapper* #:session-argv #:pid-live-p #:kill-tree #:spawn-detached
-   #:exits-zero-p
+   #:exits-zero-p #:errno-text
    #:process-environment #:environment-with #:spawn-program #:wait-for-child #:child-exit #:run-bounded #:lock-file
    #:interruption-may-unwind-p #:interrupt-thread-safely #:terminate-thread-safely
    #:*wait-deadline* #:wait-seconds #:wait-deadline-passed-p #:wait-deadline-reason #:with-wait-deadline #:call-with-wait-deadline
    #:call-with-lock-in-time
    #:*wait-hook* #:with-named-wait
    #:file-locked-p #:unlock-file #:folder-lock-path #:lock-folder #:unlock-folder #:file-bytes
-   #:with-folder-lock #:replace-file #:gzip-file #:random-bytes #:with-output-file
+   #:with-folder-lock #:replace-file #:gzip-file #:random-bytes #:with-output-file #:stat-write-time
    #:call-with-severed-stdio
    ;; --- reaching a peer by name (dial.lisp) ---
    #:*dial-stagger-seconds* #:dial-order #:dial #:http #:proxy-for #:body-text #:decode-octets #:read-events

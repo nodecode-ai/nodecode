@@ -35,6 +35,11 @@ name: Release
 # unless its config's `update.channel' does. A night whose newest green commit
 # the nightly pointers already name builds nothing (release-check.sh).
 #
+# The nightly is never behind stable: a tag's publish also moves each nightly
+# pointer that names a commit the tag carries (publish.sh), so the homes on
+# nightly take the release with everyone else, and the Linux job proves that
+# upgrade from the nightly they run.
+#
 # The publish job's credentials are the `release' environment's secrets,
 # which that environment hands only to a v* tag or to main: a pull request's
 # code runs the build jobs at most, and those hold no secret.
@@ -73,6 +78,7 @@ jobs:
       version: ${{ steps.check.outputs.version }}
       mode: ${{ steps.check.outputs.mode }}
       skip: ${{ steps.check.outputs.skip }}
+      nightly_follows: ${{ steps.check.outputs.nightly_follows }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -118,11 +124,11 @@ jobs:
       - name: Keep a Discord bot answering through the upgrade (upgrade-discord-proof.py)
         run: python3 tools/qa/upgrade-discord-proof.py release-out/nodecode-${{ needs.check.outputs.label }}-x86_64-linux.tar.gz
       # A nightly is taken by the homes on the nightly before it as well as by
-      # the ones that switch from stable. The read carries a cache-buster: the
-      # zone holds the plain pointer for hours. No nightly yet: stable's proof
-      # above is the one.
+      # the ones that switch from stable, and so is a tag the nightly follows.
+      # The read carries a cache-buster: the zone holds the plain pointer for
+      # hours. No nightly yet: stable's proof above is the one.
       - name: Upgrade a running gateway of the last nightly onto it (upgrade-proof.py)
-        if: needs.check.outputs.mode == 'nightly'
+        if: needs.check.outputs.mode == 'nightly' || needs.check.outputs.nightly_follows == 'true'
         run: |
           previous="$(curl -fsS -m 20 "https://nodecode.ai/dl/nightly-x86_64-linux?cb=$(date +%s)" | tr -d '[:space:]')" || previous=''
           if [ -z "$previous" ]; then echo 'upgrade-proof: no nightly is published yet; the proof from stable stands'; exit 0; fi
