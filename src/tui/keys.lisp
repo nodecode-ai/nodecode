@@ -368,6 +368,25 @@ entry bounded, sorted case-insensitively (Zig loadWorkspaceFileCatalog)."
     (walk (uiop:ensure-directory-pathname root) nil 0))
   (sort entries #'string-lessp))
 
+(defparameter *path-listing-max-entries* 4096
+  "The most entries one folder's listing keeps for an @ path token.")
+
+(defun path-listing (folder &aux (entries '()) (count 0))
+  "FOLDER's own entries for an @ path token (`@~/', `@../', `@/'), one level
+and no skip list, as (NAME . FOLDERP) sorted case-insensitively: hidden names
+are kept, since the typed name decides whether they show. Bounded by
+*PATH-LISTING-MAX-ENTRIES*; NIL when FOLDER cannot be read."
+  ;; A missing or unreadable folder is what a half-typed path names on most
+  ;; keystrokes, so it answers no rows rather than an error toast.
+  (flet ((take (paths folderp)
+           (dolist (path paths)
+             (when (>= count *path-listing-max-entries*) (return))
+             (push (cons (nlk:folder-name path) folderp) entries)
+             (incf count))))
+    (take (ignore-errors (uiop:subdirectories folder)) t)
+    (take (ignore-errors (uiop:directory-files folder)) nil))
+  (sort entries #'string-lessp :key #'car))
+
 ;;; --- SKILL.md frontmatter (skill_catalog.zig) ------------------------------
 ;;; The import cell reads another harness's SKILL.md name and description
 ;;; through this one parser.
