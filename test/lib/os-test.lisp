@@ -45,7 +45,7 @@ and TOOLCHAIN willing, the programs they start."
 
 (deftest git-redirector-names-the-program-a-redirector-starts ()
   (with-temp-workspace (dir)
-    (let* ((root (git-layout (merge-pathnames "Git/" dir)))
+    (let* ((root (nlk::real-path (git-layout (merge-pathnames "Git/" dir))))
            (bash (uiop:native-namestring (merge-pathnames "usr/bin/bash.exe" root)))
            (git (uiop:native-namestring (merge-pathnames "mingw64/bin/git.exe" root))))
       (dolist (shell '("bin/sh.exe" "bin/bash.exe"))
@@ -81,11 +81,27 @@ and TOOLCHAIN willing, the programs they start."
       (let ((found (nlk::git-redirector shim)))
         (is (eq :shell (getf found :kind)))
         (is (equal target (getf found :redirector)) "the redirector is the shim's target, the path it names")
-        (is (equal (uiop:native-namestring (merge-pathnames "usr/bin/bash.exe" root)) (getf found :program)) "three processes become one"))
+        (is (equal (uiop:native-namestring (merge-pathnames "usr/bin/bash.exe" (nlk::real-path root))) (getf found :program)) "three processes become one"))
       (is (null (nlk::shim-target (merge-pathnames "bin/sh.exe" root))) "a program with no .shim beside it is no shim")
       (write-temp-file (merge-pathnames "shims/gone.exe" dir))
       (write-temp-file (merge-pathnames "shims/gone.shim" dir) "path = C:\\nowhere\\bin\\sh.exe")
       (is (null (nlk::git-redirector (merge-pathnames "shims/gone.exe" dir))) "a shim whose target is missing changes nothing"))))
+
+#-win32
+(deftest git-redirector-reads-the-layout-where-it-really-lies ()
+  ;; scoop's `current' is a junction to the version folder; the redirector
+  ;; reads its own real path, so MSYS's / is the version folder, and the path
+  ;; the shim names is what outlives that folder.
+  (with-temp-workspace (dir)
+    (let* ((version (git-layout (merge-pathnames "apps/git/2.51.0/" dir)))
+           (current (merge-pathnames "apps/git/current" dir)))
+      (sb-posix:symlink (uiop:native-namestring (nlk::native-folder version)) (uiop:native-namestring current))
+      (let* ((named (merge-pathnames "apps/git/current/bin/sh.exe" dir))
+             (found (nlk::git-redirector named))
+             (real (nlk::real-path version)))
+        (is (equal (uiop:native-namestring (merge-pathnames "usr/bin/bash.exe" real)) (getf found :program)) "the program is under the real root")
+        (is (equal (uiop:native-namestring (merge-pathnames "bin/" real)) (uiop:native-namestring (getf found :folder))) "EXEPATH's folder is the real one")
+        (is (equal (uiop:native-namestring named) (getf found :redirector)) "the redirector is the path it was named by")))))
 
 (deftest git-redirector-environment-is-the-wrappers ()
   ;; setup_environment and maybe_read_config in git-wrapper.c, entry by entry.
@@ -93,7 +109,7 @@ and TOOLCHAIN willing, the programs they start."
     (let* ((root (git-layout (merge-pathnames "Git/" dir)))
            (shell (nlk::git-redirector (merge-pathnames "bin/sh.exe" root)))
            (git (nlk::git-redirector (merge-pathnames "cmd/git.exe" root)))
-           (top (nlk::native-folder root))
+           (top (nlk::native-folder (nlk::real-path root)))
            (profile (nlk::native-folder (merge-pathnames "Users/me/" dir)))
            (base (list "PATH=C:\\Windows" "MSYSTEM=MSYS" "USERPROFILE=C:\\Users\\me" "OTHER=1")))
       (let ((env (nlk::git-redirector-environment shell base)))
@@ -102,7 +118,7 @@ and TOOLCHAIN willing, the programs they start."
         (is (equal "C:\\Users\\me" (environment-value "HOME" env)) "no HOMEPATH: HOME is USERPROFILE")
         (is (equal (format nil "~a\\mingw64\\bin;~a\\usr\\bin;C:\\Users\\me\\bin;C:\\Windows" top top)
                    (environment-value "PATH" env)) "PATH: the toolchain, usr/bin and HOME's bin lead what was there")
-        (is (equal (nlk::native-folder (merge-pathnames "bin/" root)) (environment-value "EXEPATH" env)) "compat-bash sets EXEPATH to its own folder")
+        (is (equal (nlk::native-folder (merge-pathnames "bin/" (nlk::real-path root))) (environment-value "EXEPATH" env)) "compat-bash sets EXEPATH to its own folder")
         (is (equal "1" (environment-value "OTHER" env)) "the rest rides along")
         (is (= 1 (count "MSYSTEM" env :key #'nlk::environment-entry-name :test #'string-equal))))
       (let ((env (nlk::git-redirector-environment git (list* "HOME=D:\\h\\" "PLINK_PROTOCOL=plink" base))))

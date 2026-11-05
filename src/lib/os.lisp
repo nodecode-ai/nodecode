@@ -157,6 +157,32 @@ file beside it -- or NIL when PROGRAM is no shim."
                 return (let ((value (string-trim '(#\Space #\Tab #\") (subseq text (1+ equals)))))
                          (and (plusp (length value)) (uiop:parse-native-namestring value))))))))
 
+(defun real-path (path)
+  "PATH with every link on the way to it followed, as a pathname, or NIL
+when nothing is there."
+  ;; TRUENAME follows a symbolic link, and on Windows leaves a junction -- the
+  ;; installer's `current' -- as-is: a binary started through one would take
+  ;; `current' for the release it is. The file's own handle says where it lies,
+  ;; as \\?\C:\... or \\?\UNC\host\share\...
+  #-win32 (ignore-errors (truename path))
+  #+win32
+  (let ((handle (%create-file (uiop:native-namestring path) 0 +file-share-all+ nil
+                              +open-existing+ +file-flag-backup-semantics+ 0)))
+    (unless (= handle sb-win32::invalid-handle)
+      (with-cleanup ((sb-win32::close-handle handle))
+        (let ((buffer (make-array 2048 :element-type '(unsigned-byte 8))))
+          (sb-sys:with-pinned-objects (buffer)
+            (let ((units (%get-final-path-name handle (sb-sys:vector-sap buffer) 1024 0)))
+              (when (< 0 units 1024)
+                (let ((name (sb-ext:octets-to-string buffer :external-format :utf-16le
+                                                            :end (* 2 units))))
+                  (uiop:parse-native-namestring
+                   (cond ((uiop:string-prefix-p "\\\\?\\UNC\\" name)
+                          (concatenate 'string "\\\\" (subseq name 8)))
+                         ((uiop:string-prefix-p "\\\\?\\" name) (subseq name 4))
+                         (t name))
+                   :ensure-directory (uiop:directory-pathname-p path)))))))))))
+
 (defun git-redirector (program)
   "When PROGRAM is one of Git for Windows' redirectors, itself or behind a scoop
 shim: a plist -- :ROOT Git's top folder, :KIND :SHELL (bin\\sh.exe,
@@ -164,11 +190,14 @@ bin\\bash.exe) or :GIT (cmd\\git.exe, bin\\git.exe), :FOLDER the redirector's
 own folder, :TOOLCHAIN and :MSYSTEM -- and its real program as :PROGRAM, a
 native namestring. NIL for anything else, and for a Git whose real programs are
 not where its redirectors would look."
-  ;; A shim's target keeps the path the shim names -- scoop's `current'
-  ;; junction, never the version folder behind it, which an update retires.
-  (let* ((found (and program (ignore-errors (probe-file program))))
+  ;; The layout is read where the redirector really lies, as it reads its own
+  ;; (find_exe_realpath): through scoop's `current' junction to the version
+  ;; folder, the root MSYS maps to /. :REDIRECTOR keeps the path the shim
+  ;; names, which an update re-points, for when that folder is retired.
+  (let* ((found (and program (ignore-errors (probe-file program)) (pathname program)))
          (target (and found (shim-target found)))
-         (program (if target (and (ignore-errors (probe-file target)) target) found)))
+         (named (if target (and (ignore-errors (probe-file target)) target) found))
+         (program (and named (real-path named))))
     (when program
       (let* ((name (string-downcase (file-namestring program)))
              (folder (uiop:pathname-directory-pathname program))
@@ -185,7 +214,7 @@ not where its redirectors would look."
                 when (and git (or bash (eq kind :git)))
                   return (list :root root :kind kind :folder folder
                                :toolchain toolchain :msystem msystem
-                               :redirector (uiop:native-namestring program)
+                               :redirector (uiop:native-namestring named)
                                :program (uiop:native-namestring
                                          (merge-pathnames (if (eq kind :shell)
                                                               "usr/bin/bash.exe"
@@ -1624,32 +1653,6 @@ on Windows MoveFileEx with replacement."
       (error "cannot replace ~a with ~a: ~a" to from
              (or (ignore-errors (sb-int:strerror errno)) errno)))
     to))
-
-(defun real-path (path)
-  "PATH with every link on the way to it followed, as a pathname, or NIL
-when nothing is there."
-  ;; TRUENAME follows a symbolic link, and on Windows leaves a junction -- the
-  ;; installer's `current' -- as-is: a binary started through one would take
-  ;; `current' for the release it is. The file's own handle says where it lies,
-  ;; as \\?\C:\... or \\?\UNC\host\share\...
-  #-win32 (ignore-errors (truename path))
-  #+win32
-  (let ((handle (%create-file (uiop:native-namestring path) 0 +file-share-all+ nil
-                              +open-existing+ +file-flag-backup-semantics+ 0)))
-    (unless (= handle sb-win32::invalid-handle)
-      (with-cleanup ((sb-win32::close-handle handle))
-        (let ((buffer (make-array 2048 :element-type '(unsigned-byte 8))))
-          (sb-sys:with-pinned-objects (buffer)
-            (let ((units (%get-final-path-name handle (sb-sys:vector-sap buffer) 1024 0)))
-              (when (< 0 units 1024)
-                (let ((name (sb-ext:octets-to-string buffer :external-format :utf-16le
-                                                            :end (* 2 units))))
-                  (uiop:parse-native-namestring
-                   (cond ((uiop:string-prefix-p "\\\\?\\UNC\\" name)
-                          (concatenate 'string "\\\\" (subseq name 8)))
-                         ((uiop:string-prefix-p "\\\\?\\" name) (subseq name 4))
-                         (t name))
-                   :ensure-directory (uiop:directory-pathname-p path)))))))))))
 
 (defun file-bytes (path)
   "The size of the file at PATH in bytes, or NIL when it cannot be opened."
