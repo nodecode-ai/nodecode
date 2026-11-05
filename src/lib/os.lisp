@@ -98,13 +98,19 @@ and each TYPE are SB-ALIEN's, or SAP, INT or STR for the three most written."
     ("UpdateProcThreadAttribute" %update-attribute int (attributes sap) (flags sb-win32::dword)
      (attribute (sb-alien:unsigned 64)) (value sap) (size (sb-alien:unsigned 64))
      (previous sap) (returned sap))
-    ("DeleteProcThreadAttributeList" %delete-attribute-list sb-alien:void (attributes sap)))
+    ("DeleteProcThreadAttributeList" %delete-attribute-list sb-alien:void (attributes sap))
+    ("CreateJobObjectW" %create-job-object sb-win32::handle (security (* t)) (name (* t)))
+    ("AssignProcessToJobObject" %assign-process-to-job-object int (job sb-win32::handle)
+     (process sb-win32::handle))
+    ("TerminateJobObject" %terminate-job-object int (job sb-win32::handle) (code sb-win32::dword)))
   (defconstant +handle-flag-inherit+ 1)
   (defconstant +proc-thread-attribute-handle-list+ #x20002)
   (defconstant +extended-startupinfo-present+ #x80000)
   (defconstant +file-share-all+ 7)
   (defconstant +file-flag-backup-semantics+ #x02000000)
   (defconstant +process-query-limited-information+ #x1000)
+  (defconstant +process-terminate+ #x0001)
+  (defconstant +process-set-quota+ #x0100)
   (defconstant +still-active+ 259)
   (defconstant +error-access-denied+ 5)
   (defconstant +error-sharing-violation+ 32)
@@ -521,17 +527,68 @@ process's, is the child's stdout instead, LOG then its stderr alone."
            (sb-alien:slot information 'sb-win32::process-handle)))))
     command))
 
+;;; --- a child's tree, on Windows ---------------------------------------------
+;;; Windows keeps no process group, and a parent's process id draws no tree:
+;;; MSYS's sh forks and execs through processes that exit, so the `sleep' a
+;;; shell ran names a parent no walk down from the shell reaches. `taskkill
+;;; /T' ended the shell and left that sleep holding the shell's pipes, so a
+;;; bounded run returned ten seconds past its bound and the child ran on. A
+;;; job object holds every process started from inside it, whatever became
+;;; of its parent: each child SPAWN-PROGRAM starts is put in a job of its
+;;; own, KILL-TREE ends the job, and the job is let go when the child is
+;;; reaped -- not ended, so a daemon a child leaves behind on purpose (a
+;;; clipboard owner) lives on.
+
+#+win32
+(defvar *child-jobs* (make-hash-table :test #'eql :synchronized t)
+  "PID -> the job object holding that child's tree, for each child
+SPAWN-PROGRAM started that is not reaped yet.")
+
+#+win32
+(defun enroll-child (pid)
+  "Put the child PID in a job object of its own, so KILL-TREE reaches all
+it starts. Never signals: a child it cannot enroll is ended through
+`taskkill /T' instead."
+  ;; The child runs from CreateProcess on, so what it starts in the moment
+  ;; before it is enrolled stays outside the job; a shell takes far longer
+  ;; than that to start its first command.
+  (let ((job (%create-job-object nil nil)))
+    (unless (zerop job)
+      (let ((process (%open-process (logior +process-set-quota+ +process-terminate+) 0 pid)))
+        (if (or (zerop process) (= process sb-win32::invalid-handle))
+            (sb-win32::close-handle job)
+            (unwind-protect
+                 (if (zerop (%assign-process-to-job-object job process))
+                     (sb-win32::close-handle job)
+                     (setf (gethash pid *child-jobs*) job))
+              (sb-win32::close-handle process)))))))
+
+#+win32
+(defun release-child-job (pid)
+  "Let go of the job object holding the reaped child PID's tree, leaving
+what still runs in it running."
+  ;; Under the table's lock, as KILL-TREE ends a job: a handle closed between
+  ;; its lookup and its use could by then name another process's job.
+  (sb-ext:with-locked-hash-table (*child-jobs*)
+    (let ((job (gethash pid *child-jobs*)))
+      (when job
+        (remhash pid *child-jobs*)
+        (sb-win32::close-handle job)))))
+
 (defun kill-tree (pid)
   "End PID and everything under it, now: SIGKILL to PID's process group
 (RUN-BOUNDED's and SPAWN-DETACHED's children lead their own groups) and to
-PID itself; on Windows `taskkill /T /F', which walks the tree the same
-way. Never signals."
+PID itself; on Windows the job object a child SPAWN-PROGRAM started runs
+in, else `taskkill /T /F', which walks the tree by parent. Never signals."
   #-win32 (ignore-errors (sb-posix:kill (- pid) sb-posix:sigkill))
   #-win32 (ignore-errors (sb-posix:kill pid sb-posix:sigkill))
   #+win32
-  (ignore-errors
-   (uiop:run-program (list "taskkill" "/PID" (princ-to-string pid) "/T" "/F")
-                     :output nil :error-output nil :ignore-error-status t))
+  (unless (sb-ext:with-locked-hash-table (*child-jobs*)
+            (let ((job (gethash pid *child-jobs*)))
+              (and job (/= 0 (%terminate-job-object job 1)))))
+    (ignore-errors
+     (uiop:run-program (list "taskkill" "/PID" (princ-to-string pid) "/T" "/F")
+                       :output nil :error-output nil :ignore-error-status t)))
   t)
 
 (defun %drain (in out)
@@ -1052,6 +1109,7 @@ process: DIRECTORY its working directory when given, ENVIRONMENT
                                  :directory directory
                                  (when environment
                                    (list :environment environment)))))
+            #+win32 (enroll-child (sb-ext:process-pid process))
             (values (sb-ext:process-pid process)
                     (and (eq output :stream) (sb-ext:process-output process))
                     (and (eq errors :stream) (sb-ext:process-error process))
@@ -1093,6 +1151,7 @@ without the wait."
   ;; to have exited, so ask this, or WAIT-FOR-CHILD, never both after it has.
   (if process
       (unless (sb-ext:process-alive-p process)
+        #+win32 (release-child-job pid)
         (let ((code (sb-ext:process-exit-code process)))
           (if (eq (sb-ext:process-status process) :signaled) (+ 128 code) code)))
       #-win32

@@ -318,7 +318,6 @@ and TOOLCHAIN willing, the programs they start."
       (is (eql 0 status) "the child ran")
       (is (search "ended" output) "and its stdin was the null device, not a wait"))))
 
-#-win32
 (deftest a-bound-that-falls-takes-the-shells-background-work-with-it ()
   ;; The child leads a process group of its own, so the kill at the bound
   ;; takes the tree with it. A backgrounded sleep outliving the shell would
