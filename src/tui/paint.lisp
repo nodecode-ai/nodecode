@@ -156,10 +156,12 @@ they have stood this turn."
   ;; Without this, a round shorter than the one before would leave canvas
   ;; over the bar instead of pulling it up. Counted here, where the canvas
   ;; row over the bar is decided: a transcript ending on canvas takes that
-  ;; row's place. A run clicked open, or a call under its shut title, is
-  ;; read in full and counts nothing.
+  ;; row's place. A run clicked open, a call under its shut title, or a
+  ;; picture its round shows, is read in full and counts nothing: the canvas
+  ;; a picture left would stand over the bar for the rest of the turn.
   (let ((group (and block (display-block-row block))))
-    (if (or (null group) (tool-group-open-p group) (some #'run-member-open-p (tool-group-members group)))
+    (if (or (null group) (tool-group-open-p group) (some #'run-member-open-p (tool-group-members group))
+            (some #'row-image-plist (tool-group-tail group)))
         0
         (let* ((rows (+ over (length (display-block-lines block))))
                (most (max rows (live-run-rows group))))
