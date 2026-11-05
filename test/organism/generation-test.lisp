@@ -662,12 +662,16 @@ exit 0~%" ,report ,score))
 
 (deftest a-trial-runs-under-a-throwaway-home ()
   (with-temp-trees ((home "throwaway"))
+    ;; Windows' sh is MSYS's, which hands what it runs HOME as a POSIX path
+    ;; (/c/Users/...); cygpath gives back the Windows one the child was given.
     (with-temp-file (child :type "sh" :contents (format nil "#!/bin/sh
 cat > /dev/null
-if [ -n \"$NODECODE_HOME\" ] && [ -d \"$NODECODE_HOME\" ]; then printf '%s|%s|%s\\n' \"$NODECODE_HOME\" \"$HOME\" \"$XDG_CACHE_HOME\" > \"$NODECODE_HOME/seen\"; fi
+home=$HOME
+if command -v cygpath > /dev/null 2>&1; then home=$(cygpath -w \"$HOME\"); fi
+if [ -n \"$NODECODE_HOME\" ] && [ -d \"$NODECODE_HOME\" ]; then printf '%s|%s|%s\\n' \"$NODECODE_HOME\" \"$home\" \"$XDG_CACHE_HOME\" > \"$NODECODE_HOME/seen\"; fi
 echo 'nodecode-trial-score 7'~%"))
       (let ((nlk::*organism-command* (shell-script-command child))
-            (root (string-right-trim "/" (namestring home))))
+            (root (string-right-trim "/\\" (sb-ext:native-namestring home))))
         (is (equal '(7 "scored") (multiple-value-list (nlk:trial "(+ 3 4)" :home home))) "the child's number")
         (is (equal (format nil "~a/|~a|~a/cache~%" root root root) (uiop:read-file-string (merge-pathnames "seen" home))) "its home, HOME and cache all the throwaway's")
         (is (search "\"off\"" (uiop:read-file-string (merge-pathnames "config.jsonc" home))) "a home with no config runs with updates off"))
