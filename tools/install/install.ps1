@@ -176,17 +176,19 @@ function Save-Download([string]$url, [string]$path) {
   if ($live) { Write-Host ("`r" + $line.PadRight(60)) } else { Write-Host $line }
 }
 
-function Get-HttpStatus($errorRecord) {
-  # A failure in Save-Download reaches the caller wrapped: .GetResponse()
-  # throws a MethodInvocationException whose inner exception is the
-  # WebException that holds the answer. => the status, or 0 for a failure
-  # that never reached the server.
+function Test-NotPublished($errorRecord) {
+  # Whether a failed Save-Download says the archive is not there. The failure
+  # reaches the caller wrapped: .GetResponse() throws a
+  # MethodInvocationException whose inner exception is the WebException that
+  # holds the answer - a 404 from an https:// host. A folder (file://) has no
+  # status to give: its miss is the FileNotFoundException beneath.
   $e = $errorRecord.Exception
   while ($e) {
-    if ($e -is [Net.WebException] -and $e.Response) { return [int]$e.Response.StatusCode }
+    if ($e -is [Net.WebException] -and $e.Response) { return [int]$e.Response.StatusCode -eq 404 }
+    if ($e -is [IO.FileNotFoundException]) { return $true }
     $e = $e.InnerException
   }
-  return 0
+  return $false
 }
 
 function Get-Release {
@@ -211,8 +213,7 @@ function Get-Release {
     catch {
       # The one miss that moves on is a release published before tar.zst was:
       # it carries the zip alone. Said, never silent; any other failure stops.
-      $status = Get-HttpStatus $_
-      if ($status -eq 404 -and $i -lt $names.Count - 1) {
+      if ((Test-NotPublished $_) -and $i -lt $names.Count - 1) {
         Say "$name is not published for this release"
         continue
       }
