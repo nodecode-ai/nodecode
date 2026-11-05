@@ -212,6 +212,7 @@ LISTEN-HOST took, both closed on the way out."
     (is-present (bundle (find-if #'probe-file '("/etc/ssl/certs/ca-certificates.crt"
                                                 "/etc/pki/tls/certs/ca-bundle.crt"
                                                 "/etc/ssl/ca-bundle.pem" "/etc/ssl/cert.pem")))
+      "a CA bundle file to name"
       (let ((one (cl+ssl:make-context :verify-location bundle))
             (two (cl+ssl:make-context :verify-location bundle)))
         (is (not (cffi:pointer-eq one two)) "a named location is fresh: its file may change")))))

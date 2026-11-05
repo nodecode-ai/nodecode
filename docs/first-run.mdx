@@ -185,7 +185,7 @@ Esc starts too. The footer gains the <Term screen="summary" spot="gateway">gatew
 {/* source: src/tui/account-login.lisp */}
 ## A nodecode.ai account
 
-A Founders plan or API credit from [nodecode.ai](https://nodecode.ai/pricing) needs no key pasted. Sign in instead:
+API credit from [nodecode.ai](https://nodecode.ai/pricing) needs no key pasted. Top up, then sign in:
 
 ```sh
 nodecode login
@@ -203,6 +203,7 @@ The footer shows the meter from then on. A click on it opens `/usage`.
 | --- | --- |
 | `nodecode login` | Signs in, in a browser. Asks which, or takes `--subscription` or `--api`. |
 | `/login` | The same, from the shell. |
+| `nodecode logout`, `/logout` | Signs this machine out again. |
 | `nodecode machine link [CODE]` | Links this machine with a code from [Machines](https://nodecode.ai/account/machines). |
 
 <Mistakes>
@@ -213,8 +214,8 @@ The footer shows the meter from then on. A click on it opens `/usage`.
 </Mistake>
 <Mistake>
 <What>Signing in for a subscription with no plan</What>
-<Why>`This account holds no plan yet: subscribe at https://nodecode.ai/pricing`. Calls answer 402.</Why>
-<Instead>Plans open soon. Until then, run on your own provider key.</Instead>
+<Why>`This account holds no plan, and plans are not sold now: it runs on API credit, added at https://nodecode.ai/account/top-up`. With no credit either, calls answer 402.</Why>
+<Instead>Plans are not sold now: [top up](https://nodecode.ai/account/top-up) and sign in with `nodecode login --api`.</Instead>
 </Mistake>
 </Mistakes>
 
