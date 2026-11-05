@@ -394,6 +394,39 @@ it names none."
   "The launch walk claims this process holds, released before an exec: the
 pid in them is the successor's, whose walk thread is gone.")
 
+(define-side-table armed-workspace-journal (:test #'equal :synchronized t)
+  "Workspace root namestring -> (EPOCH . CLOCK): the epoch its journal stood
+at when ARM-WORKSPACE-JOURNAL opened it, and the JOURNAL-CLOCK read once it
+was armed. Live-only, as the journals are.")
+
+(defun drop-armed-workspace-journals ()
+  "Forget every arming: a dumped image holds none of this process's journals."
+  (clrhash *armed-workspace-journal*))
+
+(pushnew 'drop-armed-workspace-journals sb-ext:*save-hooks*)
+
+(defun arm-workspace-journal (directory)
+  "Open the journal of the workspace DIRECTORY now, ahead of its first
+capture, and keep the epoch and clock it was armed at: a launch walk another
+process settled after that clock is the workspace as it stands while the
+epoch holds (ADOPT-LAUNCH-TREE). => the epoch, or NIL where no journal can
+say. Never signals."
+  ;; The journal is the one every capture of DIRECTORY reads after (one per
+  ;; root namestring), its ignored paths read now: the home's snapshot
+  ;; storage when it sits in the workspace and already exists.
+  (with-handlers ((error () nil))
+    (when-let (canonical (canonical-workspace (uiop:ensure-directory-pathname directory)))
+      (let* ((root (namestring (uiop:ensure-directory-pathname directory)))
+             (probe (make-snapshot-store
+                     :workspace root
+                     :git-dir (string-right-trim "/" (namestring (snapshot-git-dir canonical)))))
+             (epoch (workspace-journal-epoch
+                     root :ignored (lambda () (ignore-errors (journal-ignored-paths probe)))))
+             (clock (and epoch (journal-clock))))
+        (when clock
+          (setf (armed-workspace-journal root) (cons epoch clock))
+          epoch)))))
+
 (defun release-launch-walk-claims ()
   "Delete every launch walk claim this process holds."
   (dolist (claim *held-launch-claims*)
@@ -445,6 +478,9 @@ workspace or another launch walk holds the claim."
                       ;; A census git runs, never the journal's word that
                       ;; nothing moved (Windows): that answers without one,
                       ;; and the session's first capture would write the cache.
+                      ;; Its clock is read before the census looks: a journal
+                      ;; armed earlier saw every change the census missed.
+                      (clock (journal-clock))
                       (settled (and tree
                                     (progn (setf (quiet-trees store) nil)
                                            (capture-workspace-tree store))))
@@ -452,8 +488,9 @@ workspace or another launch walk holds the claim."
                       (tip (anchor-tip-cache store)))
                  (when (and tree digest)
                    (with-output-file (out (launch-tree-file store))
-                     (format out "~a ~a~@[ ~a~]~%" digest tree
-                             (and (equal (cdr tip) tree) (car tip)))))
+                     (format out "~a ~a ~a ~a~%" digest tree
+                             (if (equal (cdr tip) tree) (car tip) "-")
+                             (or clock "-"))))
                  tree)))
         (setf *held-launch-claims* (remove claim *held-launch-claims* :test #'equal))
         (ignore-errors (delete-file claim))))))
@@ -515,7 +552,10 @@ newest index another session of the workspace left. => that index, or NIL."
 (defun adopt-launch-tree (store source)
   "Take the tree a walk wrote beside SOURCE, the index STORE's was copied
 from, as the answer for STORE's index while it holds the same bytes; and its
-anchor as the tip, when this process knows none."
+anchor as the tip, when this process knows none. Where this process armed
+the workspace's journal before that walk settled and nothing has moved since
+(ARM-WORKSPACE-JOURNAL), the tree is the workspace's as it stands: the
+session's first capture answers it with no git at all."
   ;; The copy's digest is the source's: the tree answers for it until a
   ;; staging moves it (CAPTURE-WORKSPACE-TREE), with no WRITE-TREE and no
   ;; anchor resolve between the session's census and its first capture.
@@ -524,11 +564,20 @@ anchor as the tip, when this process knows none."
                                                   (read-text (concatenate 'string (namestring source) ".tree")))
                                      :separator " "))
           (digest (index-digest store)))
-      (destructuring-bind (written tree &optional commit) fields
+      (destructuring-bind (written tree &optional commit settled) fields
         (when (and digest (equal written digest) (tree-sha-p tree))
           (setf (index-trees store) (cons digest tree))
           (when (and commit (tree-sha-p commit) (null (anchor-tip-cache store)))
-            (setf (anchor-tip-cache store) (cons commit tree))))))))
+            (setf (anchor-tip-cache store) (cons commit tree)))
+          ;; Armed before the walk's census looked, and quiet since: every
+          ;; change after the arming moved the epoch, and every one before it
+          ;; is in what the census saw.
+          (let ((armed (armed-workspace-journal (snapshot-store-workspace store)))
+                (settled (and settled (parse-integer settled :junk-allowed t))))
+            (when (and armed settled (< (cdr armed) settled))
+              (let ((epoch (workspace-journal-epoch (snapshot-store-workspace store))))
+                (when (and epoch (eql epoch (car armed)))
+                  (setf (quiet-trees store) (list* epoch digest tree)))))))))))
 
 (defun open-snapshot-store (root git-dir session-id)
   "The store over the workspace ROOT kept in GIT-DIR, with SESSION-ID's index,
