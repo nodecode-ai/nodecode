@@ -52,6 +52,7 @@
     (is (null (nlk::adopt-handed-lease)) "nothing handed, nothing adopted")
     (is (zerop (hash-table-count nlk::*held-locks*)) "the remembered lock is forgotten")))
 
+#-win32 ; no exec on Windows: HAND-LEASE-ACROSS-EXEC does nothing there
 (deftest a-lease-handed-across-an-exec-is-adopted-and-a-forged-one-is-not (with-temp-store (store))
   (let* ((path (nlk::store-path store))
          (variable nlk::+handed-lease-variable+))

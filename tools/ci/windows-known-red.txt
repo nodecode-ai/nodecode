@@ -16,8 +16,6 @@
 tests 3384
 
 file:lib/dial-test partial
-file:organism/heap-image-test partial
-file:term/terminal-test partial
 file:tui/scroll-test partial
 file:import/source-test partial
 
@@ -264,7 +262,6 @@ DIAL-HTTP-IS-CUT-AT-ITS-TIMEOUT-HOWEVER-SLOWLY-ITS-PEER-ANSWERS
 
 ## test/organism/heap-image-test.lisp (3)
 A-HEAPS-MEMORY-OF-ITS-LOCKS-IS-NO-LEASE-AT-BOOT
-A-LEASE-HANDED-ACROSS-AN-EXEC-IS-ADOPTED-AND-A-FORGED-ONE-IS-NOT
 A-SWITCH-SAYS-WHY-IT-CANNOT-RUN
 
 ## test/organism/images-test.lisp (3)
@@ -274,7 +271,6 @@ RENAMING-A-SNAPSHOT-MOVES-ITS-DIRECTORY-MANIFEST-AND-POINTER
 
 ## test/term/terminal-test.lisp (3)
 CLIPBOARD-HELPER-RUNNER-KEYS-OFF-THE-EXIT-STATUS
-TERMINAL-SIZE-READS-BOTH-DIMENSIONS-OFF-A-REAL-TERMINAL
 TERMINAL-STATE-IS-FORGOTTEN-BEFORE-A-DUMP
 
 ## test/tui/launch-test.lisp (3)

@@ -319,6 +319,7 @@ as a window title, the empty string included."
 
 (defconstant +tiocswinsz+ #+linux #x5414 #+darwin #x80087467 #-(or linux darwin) #x5414)
 
+#-win32 ; a pseudo-terminal is POSIX: Windows reads its console's size instead
 (deftest terminal-size-reads-both-dimensions-off-a-real-terminal ()
   ;; The live binary once died at boot setting the renderer's height to NIL:
   ;; OR over the ioctl form kept only its primary value. A pty with a size
