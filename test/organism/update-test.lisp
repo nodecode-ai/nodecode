@@ -94,12 +94,11 @@ repo's own installer, for BODY."
     (is (member "PSModulePath=" (child-environment :windows) :test #'string=) "the Windows installer's child gets no inherited PSModulePath")
     (is (notany (lambda (entry) (search "PSModulePath" entry)) (child-environment :linux)) "install.sh's child is handed nothing of PowerShell's")))
 
-(deftest update-polls-every-half-hour-where-no-feed-streams ()
-  ;; A box the feed cannot reach hears of a release only from the poller.
+(deftest update-polls-every-six-hours-where-the-feed-tells-of-a-release ()
+  ;; The feed says the moment a release lands, so the poller is only its
+  ;; backstop; a box with no feed polls every half hour (a folder's host).
   (with-saved-globals ((nle::*installed-build* t))
-    (is (= 360 (nth-value 2 (nle::update-settings))))
-    (let ((dex:*dexador-backend* :winhttp))
-      (is (= 30 (nth-value 2 (nle::update-settings)))))))
+    (is (= 360 (nth-value 2 (nle::update-settings))))))
 
 (deftest update-latest-release-reads-the-channel-pointer ()
   (with-saved-globals ((nle::*release-fetch* (lambda (url) (if (search "beta-" url) "  beta9
@@ -487,25 +486,26 @@ ended by CRLF, then closes. => (values PORT LISTENER)."
            (finish-output stream)))))
     (values (usocket:get-local-port listener) listener)))
 
-(deftest update-feed-socket-reads-a-chunked-stream-and-refuses-a-failure ()
-  ;; What carries the feed where dexador cannot stream (Windows): the status,
-  ;; the headers, then the chunked body undone into the octets READ-EVENTS
-  ;; reads.
+(deftest update-feed-reads-a-chunked-stream-and-refuses-a-failure ()
+  ;; The feed rides dexador's socket on every platform, Windows' too: the
+  ;; status, the headers, then the chunked body undone into the octets
+  ;; READ-EVENTS reads.
   (let* ((event (format nil "data: rel42~%~%"))
          (labels '()))
     (multiple-value-bind (port listener)
         (serve-one-answer "HTTP/1.1 200 OK" "Content-Type: text/event-stream"
                           "Transfer-Encoding: chunked" "" (format nil "~x" (length event)) event "0" "")
       (nlk:with-cleanup ((usocket:socket-close listener))
-        (let ((stream (nle::feed-open-socket (format nil "http://127.0.0.1:~d/api/release/feed?pointer=x" port))))
+        (is-present (stream (nle::feed-open (format nil "http://127.0.0.1:~d/api/release/feed?pointer=x" port))) "the feed opens"
           (nlk:with-cleanup ((ignore-errors (close stream)))
             (nlk:read-events stream (lambda (payload) (push (nlk:trimmed payload) labels) nil) :idle 10)))))
     (is (equal '("rel42") labels) "the label, through the chunking"))
   (multiple-value-bind (port listener)
       (serve-one-answer "HTTP/1.1 404 Not Found" "Content-Length: 0" "")
     (nlk:with-cleanup ((usocket:socket-close listener))
-      (is-carrying (text (refusal-text error (nle::feed-open-socket (format nil "http://127.0.0.1:~d/feed" port))))
-        ("404" "a failed answer is refused with its status")))))
+      (is-values (stream reason) (nle::feed-open (format nil "http://127.0.0.1:~d/feed" port))
+        (stream null "a failed answer opens no stream")
+        ((search "404" reason) is "and is refused with its status")))))
 
 (defmacro with-octet-pipe ((in out) &body body &aux (read-fd (gensym)) (write-fd (gensym)))
   "BODY with IN an octet fd-stream reading what OUT, a character stream,
