@@ -64,8 +64,8 @@
 (lg "SYSTEM-LOADED nodecode")
 
 ;;; A test file's reader dies on a symbol this SBCL does not export
-;;; (sb-posix:fork) or a package Windows' build of a library never makes
-;;; (dexador.backend.usocket: Windows' dexador is WinHTTP), and COMPILE-FILE
+;;; (sb-posix:fork) or a package Windows' build of a library never makes,
+;;; and COMPILE-FILE
 ;;; turns that into an abort of the whole file. Export a placeholder for each
 ;;; such SB-* symbol and make each such dotted package first: the file then
 ;;; loads, and only the tests that reach the missing function go red, at run
