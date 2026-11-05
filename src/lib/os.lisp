@@ -2171,6 +2171,40 @@ call that waits (+WAITING-SYSCALLS+)."
   "How long INTERRUPT-THREAD-SAFELY waits before sending again an
 interruption that landed inside C code.")
 
+;;; Windows' SBCL wakes a thread for an interruption by flipping its safepoint
+;;; state, so that the thread traps at its next safepoint and runs what is
+;;; queued (wake_thread_impl, src/runtime/safepoint.c). A thread inside a
+;;; foreign call during the flip has no safepoint to trap at, and when it
+;;; comes back out after the flip nothing makes it look: the interruption
+;;; waits for the next GC. Sending again does not help, since a wake is not
+;;; made while the first one's mark (*THRUPTION-PENDING*) still stands.
+;;; Probed on the winbox: a thread calling malloc in a loop missed one stop in
+;;; fifteen, and fifty sends over ten seconds did not reach it.
+
+#+win32
+(defun rewake-thread (thread)
+  "Wake THREAD once more for the interruptions queued on it, as the runtime's
+first wake would have, had THREAD not been inside a foreign call."
+  ;; The mark is cleared so the wake is made, and a no-op carries it.
+  (ignore-errors
+   (setf (sb-thread::symbol-value-in-thread 'sb-sys:*thruption-pending* thread) nil)
+   (sb-thread:interrupt-thread thread (lambda ()))))
+
+(defun await-landing (landed thread seconds)
+  "Wait up to SECONDS on the semaphore LANDED, which an interruption sent to
+THREAD signals when it runs. => true once it ran."
+  #-win32 (progn thread (sb-thread:wait-on-semaphore landed :timeout seconds))
+  ;; On Windows the wait is cut in twentieths of a second, and the thread
+  ;; woken again after each (REWAKE-THREAD).
+  #+win32
+  (let ((deadline (+ (get-internal-real-time) (* seconds internal-time-units-per-second))))
+    (loop (let ((left (/ (- deadline (get-internal-real-time)) internal-time-units-per-second)))
+            (when (sb-thread:wait-on-semaphore landed :timeout (max 0.001 (min 0.05 left)))
+              (return t))
+            (when (<= left 0.05)
+              (return nil))
+            (rewake-thread thread)))))
+
 (defun interrupt-thread-safely (thread function &key (within 2))
   "Run FUNCTION in THREAD as BT2:INTERRUPT-THREAD does, but only where an
 unwind out of it strands nothing (INTERRUPTION-MAY-UNWIND-P): landed inside
@@ -2197,9 +2231,9 @@ THREAD stayed inside C code for WITHIN seconds and FUNCTION did not run."
                              (when safe (funcall function)))))
                  t)
           (return :gone))
-        (unless (sb-thread:wait-on-semaphore
-                 landed :timeout (max 0.05 (/ (- deadline (get-internal-real-time))
-                                              internal-time-units-per-second)))
+        (unless (await-landing
+                 landed native (max 0.05 (/ (- deadline (get-internal-real-time))
+                                            internal-time-units-per-second)))
           (return (if (sb-thread:thread-alive-p native) :queued :gone)))
         (when (eq (car where) :ran)
           (return :ran))
