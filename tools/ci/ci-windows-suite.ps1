@@ -47,13 +47,16 @@ function Find-Sbcl {
   $s = Get-ChildItem "$env:ProgramFiles\Steel Bank Common Lisp" -Recurse -Filter sbcl.exe -ErrorAction SilentlyContinue |
     Select-Object -First 1
   if (-not $s) { throw 'SBCL is not installed on this runner' }
-  return $s.FullName
+  # The tests run on the runtime nodecode.exe is dumped on, with the installed
+  # SBCL's core (tools/release/sbcl-win/runtime.ps1)
+  $script:sbclCore = Join-Path (Split-Path -Parent $s.FullName) 'sbcl.core'
+  return (& (Join-Path $PSScriptRoot '..\release\sbcl-win\runtime.ps1') -Sbcl $s.FullName)
 }
 
 # One SBCL from the tree's root, its output to LOG (and LOG.err), waited on
 # by itself: a test's child left running must not hold the shard.
 function Start-Sbcl([string]$sbcl, [string]$log) {
-  $argv = @('--dynamic-space-size', '3072', '--control-stack-size', '64MB', '--noinform', '--non-interactive',
+  $argv = @('--core', "`"$script:sbclCore`"", '--dynamic-space-size', '3072', '--control-stack-size', '64MB', '--noinform', '--non-interactive',
             '--load', "`"$(Join-Path $tree 'tools\ci\windows-suite.lisp')`"")
   $p = Start-Process -FilePath $sbcl -ArgumentList $argv -WorkingDirectory $tree -NoNewWindow -PassThru `
     -RedirectStandardOutput $log -RedirectStandardError "$log.err"
@@ -139,7 +142,7 @@ if (-not $ssl) { throw 'libssl-3-x64.dll not found: install Git for Windows' }
 Copy-Item (Join-Path $ssl 'libssl-3-x64.dll'), (Join-Path $ssl 'libcrypto-3-x64.dll') $tree
 
 $sbcl = Find-Sbcl
-$sbclDir = Split-Path -Parent $sbcl
+$sbclDir = Split-Path -Parent $script:sbclCore
 $env:USERPROFILE = $h; $env:HOME = $h
 $env:HOMEDRIVE = Split-Path -Qualifier $h; $env:HOMEPATH = $h.Substring(2)
 $env:NODECODE_HOME = Join-Path $h '.nodecode'
@@ -147,6 +150,9 @@ $env:XDG_CACHE_HOME = $cache
 $env:TEMP = Join-Path $Root 'temp'; $env:TMP = $env:TEMP
 $env:SBCL_HOME = $sbclDir
 $env:PATH = "$tree;$sbclDir;$env:PATH"
+# The tree is a git archive with no .git to ask: the build names its commit by
+# the stamp, as release-windows.ps1 stamps a release (nodecode.asd's rule).
+$env:NODECODE_BUILD_COMMIT = $label
 $env:WINSUITE_OUT = $out
 $env:WINSUITE_FASL = Join-Path $Root 'fasl'
 $env:WINSUITE_TIMEOUT = "$Timeout"

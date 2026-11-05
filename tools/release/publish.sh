@@ -39,7 +39,9 @@ fi
 # and every home follows unless its config says otherwise: a version on
 # GitHub's releases page, the installers mirrored. nightly is main's newest
 # green build, for the homes whose `update.channel' names it: no tag, no
-# GitHub release, and the installers stay the stable release's.
+# GitHub release, and the installers stay the stable release's. A stable
+# publish also moves each nightly pointer naming a commit it carries, so the
+# nightly is never behind stable (the pointers, below).
 channel="${NODECODE_PUBLISH_CHANNEL:-stable}"
 case "$channel" in
   stable|nightly) ;;
@@ -415,18 +417,47 @@ fi
 # beside the archives. A running organism polls it (`update' in the config;
 # update.lisp) and stages what it names: stable unless its config names
 # another channel ($channel, from the top).
+#
+# The nightly is never behind stable. A home on the nightly channel reads the
+# nightly pointers alone, so a stable release of a commit past the nightly
+# would reach every home but those until the next nightly. A stable publish
+# therefore moves each nightly pointer that names a commit this release
+# carries, in the same write as stable's: one that names a newer commit, or
+# one this clone does not know, stays, and a platform with no nightly yet gets
+# none. The host is read, not the edge: the zone holds the plain pointer for
+# hours.
 pointers="$work/pointers"
 mkdir -p "$pointers"
+pointer_names=()
 for platform in $platforms; do
   printf '%s\n' "$label" > "$pointers/$channel-$platform"
+  pointer_names+=("$channel-$platform")
 done
+if [ "$channel" = stable ]; then
+  nightly_names=''
+  for platform in $platforms; do nightly_names="$nightly_names 'nightly-$platform'"; done
+  nightlies="$(ssh -o BatchMode=yes "$host" "cd '$remote_dir' && for n in $nightly_names; do
+      [ -f \"\$n\" ] && printf '%s %s\n' \"\$n\" \"\$(tr -d '[:space:]' < \"\$n\")\";
+    done; true")"
+  for platform in $platforms; do
+    nightly="$(awk -v n="nightly-$platform" '$1 == n { print $2 }' <<<"$nightlies")"
+    if [ -z "$nightly" ] || [ "$nightly" = "$label" ]; then
+      continue
+    elif git merge-base --is-ancestor "$nightly" "$commit" 2>/dev/null; then
+      echo "publish: nightly-$platform names $nightly, which $label carries: it moves with stable"
+      printf '%s\n' "$label" > "$pointers/nightly-$platform"
+      pointer_names+=("nightly-$platform")
+    else
+      echo "publish: nightly-$platform names $nightly, which $label does not carry: it stays"
+    fi
+  done
+fi
 # scp carries a file's mode to the host, and the web app reads the pointer it
 # serves as its own user, so each is made world-readable whatever the umask.
 chmod 0644 "$pointers"/*
 scp -q "$pointers"/* "$host:$remote_dir/"
 restart_web
-for platform in $platforms; do
-  pointer_name="$channel-$platform"
+for pointer_name in "${pointer_names[@]}"; do
   pointer_attempt=1
   while :; do
     if fetch "$probe/$pointer_name" "$base_url/dl/$pointer_name"; then

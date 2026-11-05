@@ -532,12 +532,42 @@ this call."
                          (format nil "~a/" name))
                      (uiop:temporary-directory))))
 
+#+win32
+(sb-alien:define-alien-routine ("SetFileTime" %set-file-time) sb-alien:int
+  (handle sb-win32::handle) (created (* t)) (accessed (* t)) (written (* t)))
+
+(defun set-file-times (path unix-seconds)
+  "PATH, a file or a folder, its access and modification times set to
+UNIX-SECONDS, seconds since 1970."
+  #-win32 (sb-posix:utimes (sb-ext:native-namestring path) unix-seconds unix-seconds)
+  #+win32
+  (let ((handle (nlk::%create-file (sb-ext:native-namestring path) #x100 ; FILE_WRITE_ATTRIBUTES
+                                   nlk::+file-share-all+ nil nlk::+open-existing+
+                                   nlk::+file-flag-backup-semantics+ 0)))
+    (when (= handle sb-win32::invalid-handle)
+      (error "~a does not open to set its times" path))
+    (unwind-protect
+         ;; A FILETIME counts 100 ns ticks from 1601.
+         (sb-alien:with-alien ((time (sb-alien:unsigned 64)
+                                     (* (+ unix-seconds 11644473600) 10000000)))
+           (when (zerop (%set-file-time handle nil (sb-alien:addr time) (sb-alien:addr time)))
+             (error "~a keeps its times: SetFileTime failed" path)))
+      (sb-win32::close-handle handle)))
+  path)
+
 (defun write-temp-file (path &optional (contents ""))
   "Create PATH, and any parent directory it needs, holding CONTENTS."
   ;; The contentless call is the `touch' a workspace fixture wants: the walks
   ;; under test key on the name existing, not on what is in it.
   (nlk::with-output-file (out path) (write-string contents out))
   path)
+
+(defun shell-script-command (script &rest arguments)
+  "The argv that runs SCRIPT, a shell script file, with ARGUMENTS through the
+shell this image runs command strings through (SHELL-ARGV's): the stand-in a
+fixture puts where a program goes. /bin/sh is no path on Windows, where the
+shell is Git's bash, started past its redirector with Git's PATH."
+  (list* (first (nlk:shell-argv ":")) (uiop:native-namestring script) arguments))
 
 (defmacro with-temp-file ((place &key contents (type "json") setf) &body body
                           &aux (path (gensym "PATH")) (text (gensym "CONTENTS")))
@@ -883,6 +913,14 @@ RESULT — IS-CARRYING's check shapes, so a bare form may read RESULT too."
 
 (defun octets (&rest bytes)
   (coerce bytes 'nlk:octets))
+
+(defun make-pipe ()
+  "A pipe, as (values READ-END WRITE-END): each what SB-SYS:MAKE-FD-STREAM
+takes -- a descriptor, or on Windows a handle."
+  (multiple-value-bind (read write) (sb-unix:unix-pipe)
+    (unless read
+      (error "no pipe: ~a" (sb-int:strerror write)))
+    (values read write)))
 
 (defun replace-once (text needle replacement &aux (at (search needle text)))
   "TEXT with the first NEEDLE replaced."

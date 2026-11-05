@@ -648,6 +648,7 @@ COMMAND-ID as a steer of EXPECTED-TURN-ID; KEYS reach the admission."
              (is (search "#<" (princ-to-string condition)) "SBCL's own message prints the stream object")
              (let ((detail (nlk::condition-detail condition)))
                (is (search (uiop:native-namestring path) detail) "the detail names the file")
+               (is (search (format nil "\"~a\"" (uiop:native-namestring path)) detail) "quoted as written, single backslashes")
                (is (search "Couldn't write to" detail) "and keeps what was being done")
                (is (search (sb-int:strerror 122) detail) "and why it failed")
                (is (not (search "#<" detail)) "and prints no stream object"))))
