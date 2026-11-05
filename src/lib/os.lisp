@@ -1508,12 +1508,24 @@ where the file system does not say."
   #-(or linux darwin)
   (progn entry nil))
 
+#+win32
+(defun windows-stat-name (native)
+  "The native name NATIVE as Windows' stat finds what it names: with no
+separator at its end, which names no folder there, except a drive's root,
+whose own separator stays (C: alone is that drive's working folder)."
+  (let ((name (string-right-trim "/\\" native)))
+    (cond ((zerop (length name)) native)
+          ((and (= 2 (length name)) (char= #\: (char name 1))) (concatenate 'string name "\\"))
+          (t name))))
+
 (defun lstat-kind (path)
   "What is at the native PATH, a last link not followed: :DIRECTORY, :FILE (a
 regular one), :LINK, :OTHER or :ABSENT, or :UNKNOWN when the question itself
 was refused. The stat is the second value."
+  ;; A folder's native namestring ends in its separator, and Windows' stat
+  ;; finds nothing by such a name: every folder read :ABSENT there.
   (handler-case
-      (let* ((stat (sb-posix:lstat path))
+      (let* ((stat (sb-posix:lstat #-win32 path #+win32 (windows-stat-name path)))
              (kind (logand (sb-posix:stat-mode stat) sb-posix:s-ifmt)))
         (values (cond ((= kind sb-posix:s-ifdir) :directory)
                       ((= kind sb-posix:s-ifreg) :file)
