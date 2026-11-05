@@ -329,7 +329,9 @@ exit 0~%" ,report ,score))
       (write-temp-file (merge-pathnames "alpha space/side file.lisp" layer) "side")
       (is (nlk:git-commit-all layer "alpha side"))
       (is (eql 0 (nth-value 1 (nlk::git-in-layer layer "switch" branch))))
-      (is (eql 0 (nth-value 1 (nlk::git-in-layer layer "merge" "--no-ff" "side" "-m" "merge side"))))
+      ;; a merge writes a commit: it takes the identity GIT-COMMIT-ALL takes, as a
+      ;; machine with no git user configured (the Windows runner) has none of its own
+      (is (eql 0 (nth-value 1 (apply #'nlk::git-in-layer layer (append (nlk::git-identity layer) '("merge" "--no-ff" "side" "-m" "merge side"))))))
       (let* ((merged (nlk::git-head-sha layer))
              (exact (nlk::folder-keeps layer pathspec base merged))
              (filtered (nlk::folder-keeps layer pathspec base merged (make-hash-table :test #'equal))))
