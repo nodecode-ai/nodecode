@@ -346,10 +346,10 @@ Zig launcher gives the same thing."
                   :label "secrets [split | list]"
                   :arguments "split [--dry-run] | list"
                   :detail "split moves every api_keys entry of auth.json into secrets/providers.<id>.api_key, one 0600 file per key, and leaves the rest of auth.json (sign-in tokens) where it is; --dry-run says what would move. list names the files, never a value. --sandbox needs it: a key in a file of its own is a stand-in inside the jail, and the real one is put back only on its way to that provider.")
-   (nlk:make-verb "sandbox" "review what a sandboxed organism wrote, or release the home"
-                  :label "sandbox [review | release]"
-                  :arguments "review | release [--yes]"
-                  :detail "A home that has run under --sandbox is marked: a launch that would load its folder outside the jail refuses, since the jail could have written code into the layer or cells. review lists what cells/ gained since the mark -- new folders, new commits and the files they touch; release --yes lifts the mark after you have read it.")
+   (nlk:make-verb "sandbox" "the jail this home's organism runs in: what it reaches, on or off, what it wrote"
+                  :label "sandbox [status | on | off | allow | revoke | review | release]"
+                  :arguments "[status] | on | off [--yes] | allow PATH [--write] | allow HOST | revoke PATH|HOST | review | release [--yes]"
+                  :detail "On Linux every launch that runs an organism -- nodecode, serve, gateway run, rpc -- runs it in the jail unless this home turned it off. status says whether it does and what the jail lets it reach: the folder it starts in and the home, the folders you allowed, and the sites -- the providers configured, nodecode.ai and GitHub, each configured channel's own, the ones you allowed. off asks first (--yes where there is no terminal), is kept in sandbox.jsonc and lifts the mark; on puts the jail back. allow PATH lets the jail read a file or folder, --write write it too; allow HOST lets it reach a site; revoke takes one back. Each counts from the organism's next launch. A home that has run jailed is marked: a launch that would load its folder outside the jail refuses, since the jail could have written code into the layer or cells. review lists what cells/ gained since the mark; release --yes lifts it. None of these runs from inside the jail.")
    (nlk:make-verb "gateway" "keep this home's organism running in the background, and at login"
                   :label "gateway [VERB]"
                   :arguments "[VERB]")
@@ -390,8 +390,14 @@ resolves, what `nodecode --help' prints, what a mistyped command is matched
 against.")
 
 (defvar *sandbox-asked* nil
-  "Whether `--sandbox' was on the command line (PARSE-LAUNCH-ARGUMENTS):
-the organism runs in an OS jail and the shell stays outside (sandbox.lisp).")
+  "Whether `--sandbox' was on the command line (PARSE-LAUNCH-ARGUMENTS), and
+once MAIN has decided (SANDBOX-DECISION), whether this launch runs its
+organism in the OS jail -- the default where the OS has one -- with the
+shell or launcher outside it (sandbox.lisp).")
+
+(defvar *sandbox-refused* nil
+  "Whether `--no-sandbox' was on the command line (PARSE-LAUNCH-ARGUMENTS):
+this launch asks to run the home's organism outside the jail.")
 
 (defvar *sandbox-plan* nil
   "In a sandboxed shell, what spawning its jailed organism takes:
@@ -419,7 +425,9 @@ loads.")
                   :detail "The store only: config, the layer and the knowledge cells are still this profile's. HOME=$(mktemp -d) nodecode is a throwaway organism.")
    (nlk:make-verb "--pristine" "run generation 0: the binary alone, no folder loaded"
                   :detail "Nothing of the cell folder loads, no published image is followed, and keeps are refused while it runs: the floor to stand on when the folder itself is the problem. (generations) lists what was sealed and (rollback N) restores one, the next launch running it. A launch whose last self died before serving stands here by itself.")
-   (nlk:make-verb "--sandbox" "run the organism in an OS jail; the shell stays outside"
+   (nlk:make-verb "--no-sandbox" "run this home's organism without the jail, asked first and kept"
+                  :detail "The jail is on by default on Linux. --no-sandbox asks once on the terminal and keeps a yes as this home's setting (the same as `nodecode sandbox off'); where there is no terminal to ask on it refuses: `nodecode sandbox off --yes' turns it off without asking. `nodecode sandbox on' puts it back.")
+   (nlk:make-verb "--sandbox" "run the organism in an OS jail, even where this home turned it off; the shell stays outside"
                   :detail "Linux, with srt (npm install -g @anthropic-ai/sandbox-runtime), bubblewrap and socat. The organism's eval, sh and file verbs can write only this folder, the home and the caches, read nothing of ~/.ssh, cloud credentials or other agents' homes, and reach only the providers configured, nodecode.ai and GitHub; a key kept in secrets/ is a stand-in inside and the real one is put back only on its way to that provider. <home>/sandbox.jsonc adds allowed_domains, deny_read and allow_write. The shell runs the binary alone, outside, and loads nothing the organism writes; it refuses a home an unsandboxed organism or the background gateway already runs.")
    (nlk:make-verb "--provider" "open the shell's fresh session on provider P"
                   :arguments "P" :label "--provider P"
@@ -661,6 +669,7 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
                  ((string= name "--ephemeral") (setf ephemeral t))
                  ((string= name "--pristine") (setf pristine t))
                  ((string= name "--sandbox") (setf *sandbox-asked* t))
+                 ((string= name "--no-sandbox") (setf *sandbox-refused* t))
                  ((member name '("--provider" "--model" "--effort") :test #'string=)
                   (let* ((noun (string-upcase (subseq name 2)))
                          (key (intern noun :keyword))
@@ -713,8 +722,13 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
         (launch-usage-error "--ephemeral chooses the store; --store PATH names one yourself")))
     ;; v1 jails the organism a shell starts: a serve, rpc or one-shot verb
     ;; under --sandbox would run unjailed while the line said otherwise.
-    (when (and *sandbox-asked* (or serve child))
-      (launch-usage-error "--sandbox is a shell's flag: nodecode [-p NAME] --sandbox [resume SESSION-ID]"))
+    (when (and *sandbox-asked* *sandbox-refused*)
+      (launch-usage-error "--sandbox and --no-sandbox ask for opposite things: name one"))
+    ;; The jail is a launch's that runs an organism: the shell's, a serve's,
+    ;; `gateway run''s, rpc's. A verb that only answers runs no organism.
+    (when (and (or *sandbox-asked* *sandbox-refused*) child (not (eq (first child) :rpc)))
+      (launch-usage-error "~:[--sandbox~;--no-sandbox~] is for a launch that runs an organism: nodecode, serve, gateway run or rpc"
+                          *sandbox-refused*))
     (when (and setup serve)
       (launch-usage-error "~a is a shell's verb: a headless owner has no wizard"
                           (cond ((and (consp setup) (eq (first setup) :channel-setup)) "gateway setup")
@@ -1152,11 +1166,25 @@ condition's report, exit 1."
       ;; before anything paints, or the reason it cannot run. The shell then
       ;; stands on the binary alone -- pristine here, never published, so the
       ;; jailed organism it starts still loads its folder.
-      (when *sandbox-asked*
-        (when-let (refusal (sandbox-launch-preflight store-path))
-          (print-answer-and-quit refusal 1 :error))
-        (setf nlk::*pristine* t
-              nlk::*pristine-reason* "a sandboxed shell stands on the binary alone; its organism loads the folder in the jail"))
+      ;; The jail is on by default: every launch that runs an organism takes
+      ;; it where this OS has one and the home has not turned it off
+      ;; (SANDBOX-DECISION); --no-sandbox asks, and keeps a yes. Only an
+      ;; explicit --sandbox refuses a home an unjailed organism already
+      ;; serves; a launch jailed by default attaches to it, as any launch does.
+      (let ((explicit *sandbox-asked*))
+        (when (or (null child) serve (eq (first child) :rpc))
+          (when (and *sandbox-refused* (not (sandboxed-process-p)) (sandbox-os-jail-p)
+                     (eq (sandbox-setting (nlk:home)) :on))
+            (multiple-value-bind (refusal code) (sandbox-refused-launch (nlk:home))
+              (when refusal (print-answer-and-quit refusal code :error))))
+          (setf *sandbox-asked* (values (sandbox-decision (nlk:home) :asked *sandbox-asked*
+                                                                     :refused *sandbox-refused*
+                                                                     :sandboxed (sandboxed-process-p)))))
+        (when *sandbox-asked*
+          (when-let (refusal (sandbox-launch-preflight store-path :explicit explicit :serve (and serve t)))
+            (print-answer-and-quit refusal 1 :error))
+          (setf nlk::*pristine* t
+                nlk::*pristine-reason* "a sandboxed launch stands on the binary alone; its organism loads the folder in the jail")))
       ;; A home that has run sandboxed loads its folder in the jail only:
       ;; what the jail wrote into its layer or cells would otherwise run here,
       ;; outside it, at the next plain launch, serve or warm image.
@@ -1242,6 +1270,10 @@ condition's report, exit 1."
                        (t
                         ;; a serve leaves its receipt before the load: a self that dies before serving is found by the launch after
                         ;; a serve that will own the organism boots the saved heap a restore asked for, before any folder loads (images.lisp)
+                        ;; A jailed serve stands outside its jail, loading
+                        ;; nothing of the folder, for as long as the jail runs.
+                        (when (and serve *sandbox-plan*)
+                          (uiop:quit (sandbox-serve-front store-path serve)))
                         (when serve (follow-restore-pointer))
                         (nlk:boot-cells :spawn (null child) :receipt (and serve t))
                         ;; A child prints its own report on stdout; the boot line

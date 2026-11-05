@@ -146,7 +146,7 @@ directory is read-denied and only the folder, HOME, the cache, the binary's
 and srt's trees and +SANDBOX-HOME-READ+ read back. EXISTS decides which
 entries are mounted (srt refuses a path that is not there)."
   (let* ((home-dir (uiop:native-namestring (uiop:ensure-directory-pathname home)))
-         (folder-dir (uiop:native-namestring (uiop:ensure-directory-pathname folder)))
+         (folder-dir (and folder (uiop:native-namestring (uiop:ensure-directory-pathname folder))))
          (binary-dir (and binary (uiop:native-namestring (uiop:pathname-directory-pathname binary))))
          (string-list (lambda (items) (coerce (remove-duplicates (remove nil items) :test #'string= :from-end t) 'vector)))
          (present (lambda (paths) (remove-if-not (lambda (path) (and path (ignore-errors (funcall exists path)))) paths)))
@@ -373,26 +373,327 @@ folder's commits past the HEAD the mark recorded, with the files they touch."
           (when (zerop changed) (push "- nothing: cells/ is as the mark found it" lines))
           (format nil "~{~a~^~%~}" (reverse (remove "" lines :test #'string=)))))))
 
+;;; --- on by default ------------------------------------------------------------
+;;;
+;;; Every launch that runs an organism -- the shell's, `serve', `gateway run',
+;;; `rpc' -- runs it in the jail where this OS has one, unless the home says
+;;; otherwise: `nodecode sandbox off' (asked, then kept in sandbox.jsonc as
+;;; "jail": false) or `--no-sandbox' (which asks the same and keeps the
+;;; answer). An OS with no jail yet runs the organism as before and says so.
+;;; What a jailed organism may reach fits the home's own work: the hosts of
+;;; each channel config.jsonc configures, from a table in the binary and the
+;;; servers the config names -- never from cells/, which the jail writes --
+;;; and the folders and sites `nodecode sandbox allow' kept. sandbox.jsonc
+;;; and config.jsonc are write-denied in the jail, so nothing in it widens
+;;; its own walls or turns them off.
+
+(defun sandbox-policy-path (home)
+  "HOME's sandbox.jsonc: the operator's additions and the jail's on or off."
+  (merge-pathnames "sandbox.jsonc" (uiop:ensure-directory-pathname home)))
+
+(defun sandbox-os-jail-p ()
+  "Whether this OS has a jail nodecode runs: Linux for now."
+  #+linux t #-linux nil)
+
+(defun sandbox-setting (home)
+  ":OFF when HOME's sandbox.jsonc says \"jail\": false, else :ON."
+  (let ((path (sandbox-policy-path home)))
+    (or (when (probe-file path)
+          (let ((object (ignore-errors (nlk:decode-json (nlk::normalize-jsonc (uiop:read-file-string path))))))
+            (when (hash-table-p object)
+              (multiple-value-bind (value present) (gethash "jail" object)
+                (and present (null value) :off)))))
+        :on)))
+
+(defun sandbox-decision (home &key asked refused sandboxed)
+  "Whether a launch of HOME that runs an organism runs it jailed, as (values
+JAILED WHY). WHY is :INSIDE (this process already runs in the jail), :ASKED
+(--sandbox), :REFUSED (--no-sandbox), :OFF (the home's setting), :NO-JAIL
+(this OS has none yet) or :DEFAULT."
+  (cond (sandboxed (values nil :inside))
+        (asked (values t :asked))
+        (refused (values nil :refused))
+        ((eq (sandbox-setting home) :off) (values nil :off))
+        ((not (sandbox-os-jail-p)) (values nil :no-jail))
+        (t (values t :default))))
+
+(defparameter +sandbox-channel-hosts+
+  '(("discord" "discord.com" "*.discord.com" "discord.gg" "*.discord.gg" "discordapp.com"
+     "cdn.discordapp.com" "media.discordapp.net")
+    ("telegram" "api.telegram.org")
+    ("slack" "slack.com" "*.slack.com" "*.slack-edge.com")
+    ("x" "x.com" "*.x.com" "twitter.com" "*.twitter.com" "*.twimg.com")
+    ("whatsapp" "whatsapp.com" "*.whatsapp.com" "whatsapp.net" "*.whatsapp.net"))
+  "The hosts each channel platform talks to, kept in the binary: a channel's
+own cell lives under cells/, which the jail can write, so the jail's walls
+never come from there. A `*.' entry is the domain's every subdomain.")
+
+(defparameter +sandbox-channel-server-keys+
+  '("homeserver" "url" "base_url" "server" "imap_host" "smtp_host")
+  "The members of a channel's config that name a server of the operator's
+own choosing: matrix's homeserver, the email servers, iMessage's bridge.")
+
+(defun sandbox-host-of (value)
+  "The host VALUE names -- a URL's, or a bare HOST[:PORT] -- lowercased, or
+NIL: for anything else, and for this machine's own loopback, which the jail
+must never be handed a way back to."
+  (when (and (stringp value) (plusp (length (nlk:trimmed value))))
+    (let* ((value (nlk:trimmed value))
+           (host (if (search "://" value)
+                     (ignore-errors (quri:uri-host (quri:uri value)))
+                     (let ((colon (position #\: value)))
+                       (subseq value 0 colon)))))
+      (when (and host (plusp (length host))
+                 (every (lambda (c) (or (alphanumericp c) (find c "-.*"))) host))
+        (let ((host (string-downcase host)))
+          (unless (or (string= host "localhost") (uiop:string-prefix-p "127." host)
+                      (string= host "0.0.0.0"))
+            host))))))
+
+(defun sandbox-channel-hosts (&optional (config (ignore-errors (read-shared-config))))
+  "An alist (CHANNEL . HOSTS), one entry for each channel CONFIG configures --
+a member of its \"channels\" that is an object and not \"enabled\": false --
+with the hosts it talks to: the platform's own (+SANDBOX-CHANNEL-HOSTS+) and
+the servers its section names (+SANDBOX-CHANNEL-SERVER-KEYS+)."
+  (let ((channels (and (hash-table-p config) (gethash "channels" config))))
+    (when (hash-table-p channels)
+      (loop for name in (sort (alexandria:hash-table-keys channels) #'string<)
+            for section = (gethash name channels)
+            when (and (hash-table-p section)
+                      (not (multiple-value-bind (value present) (gethash "enabled" section)
+                             (and present (null value)))))
+              collect (cons name
+                            (remove-duplicates
+                             (append (rest (assoc name +sandbox-channel-hosts+ :test #'string-equal))
+                                     (loop for key in +sandbox-channel-server-keys+
+                                           for host = (sandbox-host-of (gethash key section))
+                                           when host collect host))
+                             :test #'string-equal :from-end t))))))
+
+(defun sandbox-channel-host-list ()
+  "Every host the configured channels talk to, once each."
+  (remove-duplicates (loop for (nil . hosts) in (sandbox-channel-hosts) append hosts)
+                     :test #'string-equal :from-end t))
+
+(defun sandbox-operator-token ()
+  "The home's operator token, made and kept the way a gateway's first boot
+makes it when the home has none yet: the jail never writes it, so it is made
+here, outside."
+  (or (gateway-configured-operator-token)
+      (let ((token (format nil "~(~{~2,'0x~}~)" (coerce (nlk:random-bytes 32) 'list))))
+        (write-secret-file (nlk:home "operator-token") token)
+        token)))
+
+(defun sandbox-policy-write (home path value)
+  "Write VALUE at PATH -- member keys from the root -- into HOME's
+sandbox.jsonc, every comment and other byte kept; :REMOVE takes it out."
+  (let* ((file (sandbox-policy-path home))
+         (source (if (probe-file file) (uiop:read-file-string file) "")))
+    (nlk::write-file-atomically file (nlk::set-jsonc-path source path value)
+                                :mode #o600 :directory-mode #o700)))
+
+(defun sandbox-lift-mark (home)
+  "Take HOME's mark away, and the hub cache the jail could also write."
+  (when (probe-file (sandbox-mark-path home))
+    (delete-file (sandbox-mark-path home)))
+  (ignore-errors (uiop:delete-directory-tree
+                  (merge-pathnames "hub/" (uiop:ensure-directory-pathname home))
+                  :validate t :if-does-not-exist :ignore)))
+
+(defun sandbox-off-question (home)
+  "What turning HOME's jail off asks, ending in its [y/N]."
+  (let ((mark (sandbox-mark-object home)))
+    (format nil "Run this home without the jail? Its organism then reads and writes everything your user can, and reaches every site.~@[ The jail has run here since ~a: `nodecode sandbox review' shows what it wrote to cells/, which would then run outside it.~] `nodecode sandbox on' puts it back. [y/N] "
+            (and mark (or (ignore-errors (json-value mark :text "since")) "an unknown time")))))
+
+(defvar *sandbox-terminal* :probe
+  "Whether a question can be put to a person: :PROBE asks whether stdin is a
+terminal; T or NIL says so outright (a test's answer).")
+
+(defun sandbox-terminal-p ()
+  "Whether this process's stdin is a terminal a question can be put on."
+  (if (eq *sandbox-terminal* :probe)
+      #-win32 (= 1 (sb-unix:unix-isatty 0))
+      #+win32 (interactive-stream-p *standard-input*)
+      *sandbox-terminal*))
+
+(defun sandbox-ask (question)
+  "Put QUESTION to the person at this terminal: whether the answer is yes.
+NIL where there is no terminal to ask on."
+  (when (sandbox-terminal-p)
+    (format *error-output* "~a" question)
+    (finish-output *error-output*)
+    (let ((line (ignore-errors (read-line *standard-input* nil nil))))
+      (and line (member (nlk:trimmed line) '("y" "yes") :test #'string-equal) t))))
+
+(defun sandbox-turn-off (home)
+  "Keep HOME's jail off, and lift its mark: the operator chose to run what
+the jail wrote outside it."
+  (sandbox-policy-write home '("jail") :false)
+  (sandbox-lift-mark home))
+
+(defun sandbox-refused-launch (home)
+  "A launch with --no-sandbox, on a HOME whose jail is on: ask, keep a yes
+(SANDBOX-TURN-OFF) and answer NIL; else the refusal as (values TEXT CODE)."
+  (cond ((not (sandbox-terminal-p))
+         (values "--no-sandbox asks first, and there is no terminal to ask on: `nodecode sandbox off --yes' runs this home without the jail" 2))
+        ((sandbox-ask (sandbox-off-question home))
+         (sandbox-turn-off home)
+         (format *error-output* "the jail is off for this home; `nodecode sandbox on' puts it back~%")
+         (finish-output *error-output*)
+         nil)
+        (t (values "kept in the jail: nothing ran" 1))))
+
+(defun sandbox-grant-target (word &optional (directory (uiop:getcwd)))
+  "What `sandbox allow WORD' grants, as (values KIND VALUE): :PATH and the
+absolute name of a file or folder that exists, :HOST and a host name, or
+:REFUSED and why. A word with a / or a leading ~ or . is a path, read
+against DIRECTORY; a URL is its host; a bare word with a dot is a host."
+  (cond ((search "://" word)
+         (let ((host (sandbox-host-of word)))
+           (if host (values :host host) (values :refused (format nil "~a names no host" word)))))
+        ((or (find #\/ word) (uiop:string-prefix-p "~" word) (uiop:string-prefix-p "." word))
+         (let* ((expanded (cond ((string= word "~") (uiop:native-namestring (user-homedir-pathname)))
+                                (t (sandbox-expand word))))
+                (path (ignore-errors (probe-file (if (uiop:absolute-pathname-p expanded)
+                                                     expanded
+                                                     (merge-pathnames expanded (uiop:ensure-directory-pathname directory)))))))
+           (if path
+               (values :path (string-right-trim "/" (uiop:native-namestring path)))
+               (values :refused (format nil "~a: no such file or folder" word)))))
+        ((and (find #\. word) (sandbox-host-of word))
+         (values :host (sandbox-host-of word)))
+        (t (values :refused (format nil "~a is neither a path nor a host: say ./~a for a folder here" word word)))))
+
+(defun sandbox-grant (home kind value &key write)
+  "Keep a grant in HOME's sandbox.jsonc: a path read (or read and written,
+WRITE), or a host. => what was kept, as a line."
+  (let* ((policy (sandbox-policy home))
+         (keep (lambda (key entries) (sandbox-policy-write home (list key) (coerce entries 'vector)))))
+    (ecase kind
+      (:host
+       (funcall keep "allowed_domains" (append (remove value (getf policy :allowed-domains) :test #'string-equal)
+                                               (list value)))
+       (format nil "allowed: ~a, from the next launch of this home's organism" value))
+      (:path
+       (let ((drop (lambda (entries)
+                     (remove-if (lambda (entry) (string= (string-right-trim "/" (sandbox-expand entry)) value))
+                                entries))))
+         (funcall keep "allow_write" (append (funcall drop (getf policy :allow-write)) (and write (list value))))
+         (funcall keep "allow_read" (append (funcall drop (getf policy :allow-read)) (and (not write) (list value))))
+         (format nil "allowed: ~a (~:[read~;read and write~]), from the next launch of this home's organism" value write))))))
+
+(defun sandbox-revoke (home kind value)
+  "Take a grant back from HOME's sandbox.jsonc. => a line saying what went."
+  (let* ((policy (sandbox-policy home))
+         (match (lambda (entry) (if (eq kind :host)
+                                    (string-equal entry value)
+                                    (string= (string-right-trim "/" (sandbox-expand entry)) value))))
+         (gone nil))
+    (loop for (key field) in '(("allowed_domains" :allowed-domains) ("allow_read" :allow-read) ("allow_write" :allow-write))
+          for entries = (getf policy field)
+          when (some match entries)
+            do (setf gone t)
+               (sandbox-policy-write home (list key) (coerce (remove-if match entries) 'vector)))
+    (if gone
+        (format nil "revoked: ~a, from the next launch of this home's organism" value)
+        (format nil "~a was not allowed here: nothing changed" value))))
+
+(defun sandbox-status-text (home)
+  "What `nodecode sandbox status' prints: whether HOME's organism runs
+jailed and why, and what the jail lets it reach."
+  (multiple-value-bind (jailed why) (sandbox-decision home :sandboxed (sandboxed-process-p))
+    (let ((policy (ignore-errors (sandbox-policy home)))
+          (abbreviate (lambda (path) (let ((home-dir (uiop:native-namestring (user-homedir-pathname))))
+                                       (if (uiop:string-prefix-p home-dir path)
+                                           (format nil "~~/~a" (subseq path (length home-dir)))
+                                           path)))))
+      (with-output-to-string (out)
+        (format out "jail: ~a~%"
+                (ecase why
+                  (:default "on -- the default here: nodecode, serve and gateway run start this home's organism in it")
+                  (:inside "on -- this process runs inside it")
+                  (:off "off -- this home's setting: its organism runs with your user's full access (`nodecode sandbox on' puts it back)")
+                  (:no-jail "none -- this OS has no jail yet: the organism runs with your user's full access")))
+        (when (or jailed (eq why :inside) (eq why :off))
+          (let ((here (sandbox-work-folder (uiop:getcwd))))
+            (format out "writes: this home, the folders you allowed, and the folder a shell starts in -- ~:[not this one: ~a is your home folder or above it, so a shell started here holds none (cd into a project, or `nodecode sandbox allow PATH --write')~;here, ~a~]~%"
+                    here (if here (uiop:native-namestring here) (uiop:native-namestring (uiop:getcwd))))
+            (format out "  serve and gateway run hold no folder of their own: this home and the folders you allowed~%"))
+          (let ((grants (append (mapcar (lambda (path) (list path t)) (getf policy :allow-write))
+                                (mapcar (lambda (path) (list path nil)) (getf policy :allow-read)))))
+            (when grants
+              (format out "folders you allowed:~%")
+              (loop for (path write) in grants
+                    do (format out "  ~a (~:[read~;read and write~])~%" (sandbox-expand path) write))))
+          (format out "sites:~%")
+          (flet ((row (label hosts) (when hosts (format out "  ~a: ~{~a~^, ~}~%" label hosts))))
+            (row "providers" (ignore-errors (sandbox-provider-hosts)))
+            (row "nodecode" +sandbox-default-domains+)
+            (loop for (name . hosts) in (ignore-errors (sandbox-channel-hosts))
+                  do (row (format nil "channel ~a" name) hosts))
+            (row "you allowed" (getf policy :allowed-domains)))
+          (format out "never read: ~{~a~^, ~}, other homes on this machine, the host's /tmp~%"
+                  (mapcar abbreviate (mapcar #'sandbox-expand (remove-if (lambda (entry) (char= #\/ (char entry 0)))
+                                                                         +sandbox-default-deny-read+))))
+          (format out "`nodecode sandbox allow PATH [--write]' or `allow HOST' adds to it; `revoke' takes one back~%"))))))
+
 (defun sandbox-answer (words)
-  "The `sandbox' command line as (values TEXT EXIT-CODE STREAM): `review'
-prints what the jail wrote since the mark; `release --yes' lifts the mark
-(and drops the hub cache the jail could also write), never from inside the
-jail."
-  (let ((home (nlk:home)))
-    (cond ((equal words '("review")) (values (sandbox-review-text home) 0 :output))
-          ((equal (first words) "release")
-           (cond ((sandboxed-process-p)
-                  (values "the mark is lifted from outside the jail, never from inside it" 1 :error))
-                 ((null (sandbox-mark-object home))
-                  (values "this home has not run under --sandbox: nothing to release" 0 :output))
-                 ((not (equal (rest words) '("--yes")))
-                  (values "release lets this home launch outside the jail again, running what the jail wrote: read `nodecode sandbox review' first, then `nodecode sandbox release --yes'" 2 :error))
-                 (t (delete-file (sandbox-mark-path home))
-                    (ignore-errors (uiop:delete-directory-tree
-                                    (merge-pathnames "hub/" (uiop:ensure-directory-pathname home))
-                                    :validate t :if-does-not-exist :ignore))
-                    (values "released: this home launches outside the jail again (the hub cache is dropped and fetched afresh)" 0 :output))))
-          (t (values "nodecode sandbox review | release [--yes]" 2 :error)))))
+  "The `sandbox' command line as (values TEXT EXIT-CODE STREAM): `status'
+(and no words) says whether this home's organism runs jailed and what the
+jail lets it reach; `on' and `off [--yes]' keep the home's setting, off
+asked first; `allow PATH [--write]', `allow HOST' and `revoke PATH|HOST'
+keep the grants; `review' prints what the jail wrote since the mark;
+`release --yes' lifts the mark. Nothing that changes the jail runs from
+inside it."
+  (let ((home (nlk:home))
+        (verb (first words)))
+    (progn
+      (cond ((or (null words) (equal words '("status")))
+             (values (string-right-trim '(#\Newline) (sandbox-status-text home)) 0 :output))
+            ((equal words '("review")) (values (sandbox-review-text home) 0 :output))
+            ((and (member verb '("on" "off" "allow" "revoke" "release") :test #'equal)
+                  (sandboxed-process-p))
+             (values "this changes the jail, which is done from outside it, never from inside" 1 :error))
+            ((member verb '("on" "off" "allow" "revoke" "release") :test #'equal)
+             (progn
+                 (cond
+                   ((equal words '("on"))
+                    (if (eq (sandbox-setting home) :on)
+                        (values "the jail is already on for this home" 0 :output)
+                        (progn (sandbox-policy-write home '("jail") :remove)
+                               (values "on: this home's organism runs in the jail from its next launch (`nodecode gateway restart' moves a running gateway into it)" 0 :output))))
+                   ((and (equal verb "off") (subsetp (rest words) '("--yes") :test #'equal))
+                    (cond ((eq (sandbox-setting home) :off)
+                           (values "the jail is already off for this home" 0 :output))
+                          ((or (member "--yes" (rest words) :test #'equal)
+                               (sandbox-ask (sandbox-off-question home)))
+                           (sandbox-turn-off home)
+                           (values "off: this home's organism runs with your user's full access from its next launch; `nodecode sandbox on' puts it back" 0 :output))
+                          ((sandbox-terminal-p) (values "kept in the jail: nothing changed" 1 :error))
+                          (t (values "turning the jail off asks first, and there is no terminal to ask on: `nodecode sandbox off --yes'" 2 :error))))
+                   ((and (equal verb "allow") (<= 2 (length words) 3)
+                         (subsetp (cddr words) '("--write") :test #'equal))
+                    (multiple-value-bind (kind value) (sandbox-grant-target (second words))
+                      (cond ((eq kind :refused) (values value 2 :error))
+                            ((and (eq kind :host) (cddr words))
+                             (values "--write is a folder's: a host is reached or not" 2 :error))
+                            (t (values (sandbox-grant home kind value :write (and (cddr words) t)) 0 :output)))))
+                   ((and (equal verb "revoke") (= 2 (length words)))
+                    (multiple-value-bind (kind value) (sandbox-grant-target (second words))
+                      (if (eq kind :refused)
+                          ;; a path that no longer exists is still taken back by its name
+                          (values (sandbox-revoke home :path (string-right-trim "/" (sandbox-expand (second words)))) 0 :output)
+                          (values (sandbox-revoke home kind value) 0 :output))))
+                   ((equal verb "release")
+                    (cond ((null (sandbox-mark-object home))
+                           (values "this home has not run under --sandbox: nothing to release" 0 :output))
+                          ((not (equal (rest words) '("--yes")))
+                           (values "release lets this home launch outside the jail again, running what the jail wrote: read `nodecode sandbox review' first, then `nodecode sandbox release --yes'" 2 :error))
+                          (t (sandbox-lift-mark home)
+                             (values "released: this home launches outside the jail again (the hub cache is dropped and fetched afresh)" 0 :output))))
+                   (t (values "nodecode sandbox [status] | on | off [--yes] | allow PATH [--write] | allow HOST | revoke PATH|HOST | review | release [--yes]" 2 :error)))))
+            (t (values "nodecode sandbox [status] | on | off [--yes] | allow PATH [--write] | allow HOST | revoke PATH|HOST | review | release [--yes]" 2 :error))))))
 
 (defun sandbox-srt-tree (srt)
   "The installed srt package SRT runs from -- its bin link resolved and two
@@ -405,37 +706,60 @@ inside) and never writes; NIL when it cannot be named."
            when (probe-file (merge-pathnames "package.json" dir)) return dir
            finally (return (uiop:pathname-directory-pathname real))))))
 
-(defun sandbox-requirements (store-path)
-  "Why `--sandbox' cannot run here, as one sentence, or NIL when it can."
+(defun sandbox-requirements (store-path &key (explicit t))
+  "Why the jail cannot run here, as one sentence, or NIL when it can.
+EXPLICIT is a launch that asked for --sandbox: it alone refuses a home an
+organism already serves outside the jail. A launch jailed by default attaches
+to whatever serves the home, as every launch does, and jails the organism it
+starts itself."
   (cond #-linux
         (t "--sandbox runs on Linux for now; macOS and Windows jails are not yet wired")
         ((null (srt-program))
-         "--sandbox needs srt, Anthropic's sandbox runtime: npm install -g @anthropic-ai/sandbox-runtime (or set NODECODE_SRT to it)")
+         "the jail needs srt, Anthropic's sandbox runtime: npm install -g @anthropic-ai/sandbox-runtime (or set NODECODE_SRT to it)")
         ((null (nlk::executable-on-path "bwrap"))
-         "--sandbox needs bubblewrap: install bwrap")
+         "the jail needs bubblewrap: install bwrap")
         ((null (nlk::executable-on-path "socat"))
-         "--sandbox needs socat")
+         "the jail needs socat")
         ((not (socat-accepts-a-descriptor-p))
-         "--sandbox needs socat 1.7.4 or later: the jail takes its one way in as a listening socket (socat's ACCEPT-FD)")
+         "the jail needs socat 1.7.4 or later: the jail takes its one way in as a listening socket (socat's ACCEPT-FD)")
         ((> (length (uiop:native-namestring (sandbox-srt-temporary-directory (nlk:home))))
             +sandbox-socket-path-room+)
          (format nil "this home's path is too long for srt's sockets under it (~a): use -p NAME for a home with a shorter one"
                  (uiop:native-namestring (sandbox-srt-temporary-directory (nlk:home)))))
-        ((ignore-errors (gateway-supervises-p store-path))
+        ((and explicit (ignore-errors (gateway-supervises-p store-path)))
          "the background gateway serves this home unsandboxed: `nodecode gateway off' first, or use -p NAME for another home")
-        ((ignore-errors (nlk::store-lease-held-p store-path))
+        ((and explicit (ignore-errors (nlk::store-lease-held-p store-path)))
          "an organism already runs this home unsandboxed: quit its shells or `nodecode gateway off', or use -p NAME for another home")
         ((sandbox-unsplit-keys)
          (format nil "auth.json still holds the API key~p of ~{~a~^, ~}: `nodecode secrets split' moves each into a file of its own, which the jail sees only as a stand-in"
                  (length (sandbox-unsplit-keys)) (sandbox-unsplit-keys)))))
 
-(defun sandbox-launch-preflight (store-path)
+(defun sandbox-work-folder (directory &key serve)
+  "The folder a jail started in DIRECTORY reads and writes besides its home
+and the folders allowed, or NIL: none for a serve or a gateway (SERVE),
+whose sessions each keep a folder of their own, and none when DIRECTORY is
+the root, the user's home or a folder above it, which would put all of it
+-- ~/.ssh, the cloud keys, the other agents' homes -- in the jail."
+  (unless serve
+    (let ((name (uiop:native-namestring (uiop:ensure-directory-pathname directory))))
+      (unless (or (string= name "/")
+                  (some (lambda (home) (uiop:string-prefix-p name home)) (sandbox-user-homes)))
+        (uiop:ensure-directory-pathname directory)))))
+
+(defun sandbox-launch-preflight (store-path &key (explicit t) serve)
   "Prepare a sandboxed launch of STORE-PATH's home: refuse with a sentence
 when it cannot run (SANDBOX-REQUIREMENTS), else write the srt settings under
 <home>/sandbox/, pick the loopback port the jailed gateway binds, set
-*SANDBOX-PLAN* for FRONT-ORGANISM and answer NIL."
+*SANDBOX-PLAN* for FRONT-ORGANISM and answer NIL. EXPLICIT is a launch that
+asked for --sandbox; one jailed by default says, when the jail cannot run,
+how to run the home without it. SERVE is a serve's or a gateway's launch,
+whose jail holds no folder of the launch's (SANDBOX-WORK-FOLDER)."
   (let ((store (merge-pathnames (or store-path nlk::*default-store-path*))))
-    (or (sandbox-requirements store)
+    (or (when-let (reason (sandbox-requirements store :explicit explicit))
+          (if explicit
+              reason
+              (format nil "nodecode runs its organism in a jail on this machine by default, and the jail cannot start here: ~a. Install what it needs, or run `nodecode sandbox off' to run this home without the jail, with your user's full access"
+                      (string-right-trim "." reason))))
         (let* ((home (nlk:home))
                (srt (srt-program))
                (run (merge-pathnames "sandbox/run/" (uiop:ensure-directory-pathname home)))
@@ -453,18 +777,20 @@ when it cannot run (SANDBOX-REQUIREMENTS), else write the srt settings under
                (port (local-port 0))
                (secret-files (sandbox-secret-files))
                (object (sandbox-settings
-                        :home home :folder (uiop:getcwd)
+                        :home home :folder (sandbox-work-folder (uiop:getcwd) :serve serve)
                         :binary (ignore-errors (truename (nlk::origin-pathname)))
                         :srt-dir (sandbox-srt-tree srt)
                         :policy (sandbox-policy home)
                         :secret-files secret-files
                         :hidden (sandbox-hidden-files home (mapcar #'car secret-files))
-                        :provider-hosts (sandbox-provider-hosts))))
+                        :provider-hosts (append (sandbox-provider-hosts)
+                                                (sandbox-channel-host-list)))))
           (declare (ignore _))
-          ;; The jailed gateway and this shell share a token minted for this
-          ;; launch: the home's operator-token is read-denied in the jail.
-          (nlk::set-environment-variable "NODECODE_GATEWAY_OPERATOR_TOKEN"
-                                         (format nil "~(~{~2,'0x~}~)" (coerce (nlk:random-bytes 32) 'list)))
+          ;; The jailed gateway serves on the home's own operator token, made
+          ;; here when the home has none yet: every shell, `nodecode web' and
+          ;; `add' outside the jail reads it from the file, and the jail, where
+          ;; that file is read-denied, is handed it in its environment.
+          (nlk::set-environment-variable "NODECODE_GATEWAY_OPERATOR_TOKEN" (sandbox-operator-token))
           (dolist (directory (list run cache srt-temporary jail-temporary))
             (ensure-directories-exist directory)
             #-win32 (ignore-errors (sb-posix:chmod (uiop:native-namestring directory) #o700)))
@@ -526,6 +852,52 @@ the plan's listener as its stdout (CALL-WITH-SANDBOX-STDOUT)."
                               :srt-temporary (getf plan :srt-temporary)
                               :jail-temporary (getf plan :jail-temporary))
         command)))
+
+(defparameter +sandbox-stop-grace-seconds+ 10
+  "How long a jail has, once the signal that stops its launcher reached it,
+before what is left of it is ended.")
+
+(defun sandbox-serve-argv (store-path serve)
+  "This launch's serve as the argv its jail runs: `gateway run' for the
+gateway (SERVE :WAIT), which waits for the store instead of losing it, else
+`serve'; on STORE-PATH when the line named one. NIL when this image names
+no binary to run."
+  (when-let (command (serve-command (or store-path nlk::*default-store-path*)))
+    (let ((program (butlast command 3)))
+      (append program (if (eq serve :wait) '("gateway" "run") '("serve"))
+              (and store-path (list "--store" (namestring store-path)))))))
+
+(defun sandbox-serve-front (store-path serve)
+  "Run this serve -- `nodecode serve' or `gateway run' -- in the jail, and
+stand outside it until it ends: this process loads nothing of the folder,
+hands the jail its listener (CALL-WITH-SANDBOX-STDOUT) and its stderr, and
+passes on the signals that stop it. => the jail's exit status, which a
+gateway's unit reads as the gateway's own."
+  (let ((argv (or (sandbox-serve-argv store-path serve)
+                  (error "this image names no nodecode binary to run the organism with"))))
+    (call-with-sandbox-stdout
+     (lambda (listener)
+       ;; The jail leads its own process group (SPAWN-PROGRAM): a signal that
+       ;; stops this launcher goes to the whole group, and what is still there
+       ;; after the grace is ended (KILL-TREE), so a jail never outlives the
+       ;; launcher that stands for it -- a unit's stop, a Ctrl-C, a hang-up.
+       (bind (((pid _ _ process _)
+               (spawn-program (sandbox-wrap-command argv)
+                              :output listener :error-output 2 :input :null)))
+         #-win32
+         (dolist (signal (list sb-posix:sigterm sb-posix:sigint sb-posix:sighup))
+           (let ((signal signal))
+             (sb-sys:enable-interrupt signal (lambda (&rest _)
+                                               (declare (ignore _))
+                                               (ignore-errors (sb-posix:kill (- pid) signal))
+                                               (spawn "jail-stop"
+                                                 (sleep +sandbox-stop-grace-seconds+)
+                                                 (kill-tree pid))))))
+         (format *error-output* "nodecode: this home's organism runs in the jail; its launcher (pid ~d) stays outside it~%"
+                 (sb-posix:getpid))
+         (finish-output *error-output*)
+         (unwind-protect (wait-for-child pid process)
+           (kill-tree pid)))))))
 
 (defun sandbox-listener (port)
   "A socket listening on the host's loopback PORT: the jail's one way in,
