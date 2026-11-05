@@ -291,6 +291,74 @@ completed once BODY is done."
         (%write-file dir "a.txt" "uno")
         (is (not (equal added (nlk:capture-workspace-tree store))) "an edit of the same length stages")))))
 
+(deftest a-quiet-journal-answers-the-last-walk-without-git (with-git-workspace (store dir))
+  ;; Where the workspace keeps a journal (Windows), a capture it finds
+  ;; unmoved since this index's last walk answers that walk's tree and starts
+  ;; no git: the two git starts a tool step's bracket paid on Windows, 30 ms
+  ;; of a 50 ms step (T-442). A moved epoch walks; so does an index some
+  ;; other path changed under the same epoch.
+  (let ((epoch 7))
+    (with-stubbed-fdefinition (nlk::workspace-journal-epoch (root &key ignored)
+                                (declare (ignore root ignored))
+                                epoch)
+      (%write-file dir "a.txt" "one")
+      (let ((first (nlk:capture-workspace-tree store)))
+        (%write-file dir "b.txt" "two")
+        (nlk:bind (((asked quiet) (git-asked (nlk:capture-workspace-tree store))))
+          (is (null asked) (format nil "an unmoved journal starts no git: ~a" asked))
+          (is (equal first quiet) "and answers the last walk's tree"))
+        (setf epoch 8)
+        (nlk:bind (((asked moved) (git-asked (nlk:capture-workspace-tree store))))
+          (is (member "add" asked :test #'equal) "a moved journal walks")
+          (is (not (equal first moved)) "and the walk finds the new file")
+          (nlk::run-snapshot-git store (list "rm" "--cached" "-q" "--" "b.txt"))
+          (nlk:bind (((asked again) (git-asked (nlk:capture-workspace-tree store))))
+            (is (member "add" asked :test #'equal) "an index changed under the epoch walks")
+            (is (equal moved again) "and stages the file back")))))))
+
+(deftest without-a-journal-every-capture-walks (with-git-workspace (store dir))
+  ;; No journal (every platform but Windows, or one Windows would not give)
+  ;; is no shortcut: each capture asks git.
+  (with-stubbed-fdefinition (nlk::workspace-journal-epoch (root &key ignored)
+                              (declare (ignore root ignored))
+                              nil)
+    (%write-file dir "a.txt" "one")
+    (nlk:capture-workspace-tree store)
+    (nlk:bind (((asked) (git-asked (nlk:capture-workspace-tree store))))
+      (is (member "add --dry-run" asked :test #'equal) "the census runs"))))
+
+#-win32
+(deftest no-journal-off-windows ()
+  (with-temp-directory (dir "journal")
+    (is (null (nlk::workspace-journal-epoch (namestring dir))) "only Windows keeps one")))
+
+(deftest a-new-store-is-one-git-start (with-temp-directory (dir "snap-init"))
+  ;; Five `git config' calls beside `init' were 80 ms of a new store on
+  ;; Windows (T-442): the store's keys are written into the config init made,
+  ;; and git reads them as set.
+  (when (nlk:git-available-p)
+    (%write-file dir "a.txt" "one")
+    (nlk:bind (((asked store) (git-asked (nlk:ensure-snapshot-store (namestring dir) "init"))))
+      (is (equal '("init") asked) (format nil "one git start: ~a" asked))
+      (loop for (key value) in '(("core.bare" "false") ("gc.auto" "0") ("core.untrackedcache" "true")
+                                 ("index.version" "4") ("core.symlinks" "true"))
+            do (is (equal value (nlk::git-line store (list "config" "--get" key)))
+                   (format nil "~a reads ~a" key value)))
+      (is (nlk:capture-workspace-tree store) "and the store captures"))))
+
+(deftest an-open-store-leaves-an-unchanged-exclude-file-alone (with-temp-directory (dir "snap-exclude"))
+  ;; Every tool step opens its store: an open rewrote info/exclude each time,
+  ;; a file create on every step (T-442). The same content is left alone.
+  (when (nlk:git-available-p)
+    (let* ((store (nlk:ensure-snapshot-store (namestring dir) "exclude"))
+           (exclude (%store-file store "info/exclude")))
+      (sb-posix:utimes (namestring exclude) 1000 1000)
+      (nlk:ensure-snapshot-store (namestring dir) "exclude")
+      (is (= 1000 (sb-posix:stat-mtime (sb-posix:stat (namestring exclude)))) "an unchanged exclude file is not written")
+      (with-open-file (o exclude :direction :output :if-exists :supersede) (write-line "stale" o))
+      (nlk:ensure-snapshot-store (namestring dir) "exclude")
+      (is (search "*.sqlite" (uiop:read-file-string exclude)) "a changed one is written back"))))
+
 (deftest workspace-diff-document-shapes-modified-added-deleted-binary ()
   ;; The complete diff document between two captured trees: per-file numstat
   ;; plus git-owned unified patch text, binary files flagged and hunkless,

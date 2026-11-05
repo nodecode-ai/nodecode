@@ -4728,6 +4728,52 @@ organism's log (LOG-SOURCE), never to the *ERROR-OUTPUT* it was made under."
   ;; the gateway's unit.
   (setf (hunchentoot:acceptor-message-log-destination acceptor) sb-sys:*stderr*))
 
+;;; The listen latch. A clack acceptor says so the moment its socket
+;;; listens, and the caller that just started one waits for that word before
+;;; it connects at all. Probing with connects alone cost Windows half a
+;;; second a boot: clackup binds on a thread of its own, so the first probe
+;;; always lands before the listener, and a refused loopback connect on
+;;; Windows is not answered in microseconds -- Winsock retries the SYN for
+;;; 500 ms before it gives up (T-442).
+(defvar *listening-ports* (make-hash-table)
+  "Port -> T for each port a clack acceptor of this process listens on.")
+(defvar *listening-lock* (bt2:make-lock :name "listening-ports"))
+(defvar *listening-changed* (bt2:make-condition-variable :name "listening-ports"))
+
+(defun note-listening (port listening)
+  (bt2:with-lock-held (*listening-lock*)
+    (if listening
+        (setf (gethash port *listening-ports*) t)
+        (remhash port *listening-ports*))
+    (bt2:condition-broadcast *listening-changed*)))
+
+(defmethod hunchentoot:start-listening :after
+    ((acceptor clack.handler.hunchentoot::clack-acceptor))
+  (note-listening (hunchentoot:acceptor-port acceptor) t))
+
+(defmethod hunchentoot:stop :after
+    ((acceptor clack.handler.hunchentoot::clack-acceptor) &key &allow-other-keys)
+  (note-listening (hunchentoot:acceptor-port acceptor) nil))
+
+(defun await-listening (port &key (seconds 4))
+  "Block until a clack acceptor of this process listens on PORT; => T, or
+NIL after SECONDS."
+  (let ((deadline (+ (get-internal-real-time)
+                     (round (* seconds internal-time-units-per-second)))))
+    (bt2:with-lock-held (*listening-lock*)
+      (loop (when (gethash port *listening-ports*) (return t))
+            (let ((left (- deadline (get-internal-real-time))))
+              (when (<= left 0) (return nil))
+              (bt2:condition-wait *listening-changed* *listening-lock*
+                                  :timeout (/ left internal-time-units-per-second)))))))
+
+(defun clackup-listening (app port &rest arguments)
+  "CLACK:CLACKUP APP on PORT under ARGUMENTS, its listen latch armed first."
+  ;; A latch left from an earlier acceptor on the same port must not answer
+  ;; for this one.
+  (note-listening port nil)
+  (apply #'clack:clackup app :port port :silent t :debug nil arguments))
+
 (defun await-port (port &key (attempts 100) (pause 0.002))
   "Poll until 127.0.0.1:PORT completes a TCP connect; => T, or NIL after
 ATTEMPTS laps of PAUSE seconds."
@@ -4764,7 +4810,8 @@ start-confirmed latch."
   ;; HTTP round trip then completes on its first lap. ATTEMPTS keeps its
   ;; proportional meaning for callers that bound the wait small. The round
   ;; trip itself runs on its own thread, so the boot path never waits for it.
-  (unless (await-port port :attempts (* 20 attempts))
+  (unless (and (await-listening port :seconds (* attempts 0.04))
+               (await-port port :attempts (* 20 attempts)))
     (return-from await-gateway-acceptance nil))
   (nlk:note-boot-phase "gateway-accepted-raw" port)
   (setf *gateway-acceptance-probe*
@@ -4820,10 +4867,10 @@ USOCKET:ADDRESS-IN-USE-ERROR."
   ;; that one, or an interrupt while the probe waits -- leaves the acceptor
   ;; behind. STOP-CLACK-HANDLER takes it down.
   (let* ((bound (local-port port))
-         (handler (clack:clackup app :address "127.0.0.1" :port bound :silent t :debug nil))
+         (handler (clackup-listening app bound :address "127.0.0.1"))
          (live nil))
     (with-cleanup ((unless live (stop-clack-handler handler)))
-      (unless (and (await-port bound :attempts 2000) (http-answers-p bound))
+      (unless (and (await-listening bound) (await-port bound :attempts 2000) (http-answers-p bound))
         (error "nothing started accepting on 127.0.0.1:~d" bound))
       (setf live t)
       (values handler bound))))
@@ -4916,10 +4963,7 @@ SERVE-GATEWAY."
                    (or (gateway-port-from-environment) (remembered-port) (local-port 0))
                    port)))
     (setf *gateway-handler*
-          (clack:clackup (make-sync-app)
-                         :port bound
-                         :silent t
-                         :debug nil))
+          (clackup-listening (make-sync-app) bound))
     (nlk:note-boot-phase "gateway-clacked" bound)
     (unless (await-gateway-acceptance bound)
       ;; clackup binds on its own handler thread, so a bind failure never

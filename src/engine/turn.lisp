@@ -3799,6 +3799,7 @@ recovery closes those (RECOVER-INTERRUPTED-TURNS)."
                     :tool-call-id run.call-id
                     :pre-tree-sha baseline
                     :tree-sha post-tree
+                    :store store
                     :anchor-position anchor)))
                (message "tool" (tool-result-text text metadata :seq anchor)
                         :name run.name

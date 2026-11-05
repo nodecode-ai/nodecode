@@ -231,6 +231,18 @@ CONFIG, KEY=VALUE strings, rides this one call as -c options."
     (let ((path (uiop:unix-namestring relative)))
       (if (zerop (length path)) "." path))))
 
+(defparameter +store-config+
+  (format nil "[core]~%~cbare = false~%~cuntrackedCache = true~%~csymlinks = true~%~
+               [gc]~%~cauto = 0~%[index]~%~cversion = 4~%"
+          #\Tab #\Tab #\Tab #\Tab #\Tab)
+  "What a new store's config says past `git init's own lines.")
+;; gc.auto=0 is load-bearing: an auto-gc between capture and undo could prune
+;; a tree the undo needs.
+
+(defvar *store-init-lock* (bt2:make-lock :name "snapshot-store-init")
+  "Held while a store is initialized: a deferred capture and a tool step's
+bracket may open a new workspace's store at once.")
+
 (defparameter +store-attributes+ "* -text -eol -ident -filter -working-tree-encoding"
   "A snapshot store's info/attributes: every path's bytes as they are on disk.")
 
@@ -267,23 +279,28 @@ session is a first walk."
         (with-handlers ((error () nil))
           (delete-file path))))))
 
-(defun write-store-exclude (store)
-  (with-output-file (stream (snapshot-store-file store "info/exclude"))
-    ;; An undo must never roll back the event log that recorded it — hence
-    ;; the sqlite patterns (Zig parity) and the organism's own state dir.
-    (dolist (line (list "*.sqlite" "*.sqlite-wal" "*.sqlite-shm" "*.sqlite-journal"
-                        "/.nodecode/"))
-      (write-line line stream))
-    ;; The live sqlite store when its path resolves under the workspace (a
-    ;; workspace can be $HOME or contain a custom store path): the database
-    ;; plus every sidecar SQLite and the store lifecycle put beside it.
-    (let ((live *store*))
-      (when (and live (store-open-p live))
-        (let ((db (namestring live.path))
-              (root (snapshot-store-workspace store)))
-          (when (uiop:string-prefix-p root db)
-            (dolist (suffix '("" "-wal" "-shm" "-journal" ".lock" ".owner"))
-              (format stream "/~a~a~%" (subseq db (length root)) suffix))))))))
+(defun write-store-exclude (store &aux (path (snapshot-store-file store "info/exclude")))
+  ;; Written only when it would change: every tool step opens its store, and
+  ;; a file written each time is a create on every step (T-442).
+  (let ((text (with-output-to-string (stream)
+                ;; An undo must never roll back the event log that recorded it — hence
+                ;; the sqlite patterns (Zig parity) and the organism's own state dir.
+                (dolist (line (list "*.sqlite" "*.sqlite-wal" "*.sqlite-shm" "*.sqlite-journal"
+                                    "/.nodecode/"))
+                  (write-line line stream))
+                ;; The live sqlite store when its path resolves under the workspace (a
+                ;; workspace can be $HOME or contain a custom store path): the database
+                ;; plus every sidecar SQLite and the store lifecycle put beside it.
+                (let ((live *store*))
+                  (when (and live (store-open-p live))
+                    (let ((db (namestring live.path))
+                          (root (snapshot-store-workspace store)))
+                      (when (uiop:string-prefix-p root db)
+                        (dolist (suffix '("" "-wal" "-shm" "-journal" ".lock" ".owner"))
+                          (format stream "/~a~a~%" (subseq db (length root)) suffix)))))))))
+    (unless (equal text (with-handlers ((error () nil)) (uiop:read-file-string path)))
+      (with-output-file (stream path)
+        (write-string text stream)))))
 
 (defun snapshot-git-dir (workspace)
   "The shadow store's git directory for WORKSPACE, a canonical directory
@@ -410,18 +427,19 @@ refusals."
                      (ignore-errors (- (get-universal-time) (file-write-date lock))))))
       (when (and (integerp age) (> age +snapshot-git-timeout-seconds+))
         (ignore-errors (delete-file lock))))
-    (unless (uiop:directory-exists-p git-dir)
-      (ensure-directories-exist git-dir)
-      ;; git refuses init under GIT_WORK_TREE; config runs bare too.
-      (run-snapshot-git store (list "init" "--bare" "--quiet") :with-work-tree nil)
-      ;; gc.auto=0 is load-bearing: an auto-gc between capture and undo could
-      ;; prune a tree the undo needs.
-      (loop for (key value) in '(("core.bare" "false")
-                                 ("gc.auto" "0")
-                                 ("core.untrackedCache" "true")
-                                 ("index.version" "4")
-                                 ("core.symlinks" "true"))
-            do (run-snapshot-git store (list "config" key value) :with-work-tree nil)))
+    (bt2:with-lock-held (*store-init-lock*)
+      (unless (probe-file (snapshot-store-file store "config"))
+        (ensure-directories-exist git-dir)
+        ;; git refuses init under GIT_WORK_TREE. The probes init makes --
+        ;; ignorecase, filemode -- stand in the config it writes; the store's
+        ;; own keys follow them in one more section, where the last value of
+        ;; a key is the one git reads. Written, not set: five `git config'
+        ;; calls were 80 ms of a new store on Windows, where each git start
+        ;; costs some 16 ms (T-442).
+        (run-snapshot-git store (list "init" "--bare" "--quiet") :with-work-tree nil)
+        (with-open-file (stream (snapshot-store-file store "config")
+                                :direction :output :if-exists :append)
+          (write-string +store-config+ stream))))
     ;; An index staged before the store kept raw bytes vouches for converted
     ;; blobs, and a stat-clean file would keep its converted blob for good:
     ;; dropped, the next walk of each session stages the files again.
@@ -589,6 +607,18 @@ found nothing to stage. => true when it staged."
                                   '("core.bigFileThreshold=1" "pack.compression=1")))
       t)))
 
+(define-side-table quiet-trees (:test #'equal :synchronized t :key snapshot-store-index-path)
+  "index path -> (EPOCH DIGEST . TREE-SHA): the tree the walk of that index
+read when its workspace's journal stood at EPOCH, the index left at DIGEST.
+Strings and numbers only. Live-only.")
+
+(defun journal-ignored-paths (store)
+  "What STORE's workspace journal leaves out beside .git: the home's snapshot
+storage when it sits inside the workspace, as a relative Windows path."
+  (when-let (storage (snapshot-storage-path store))
+    (unless (equal storage ".")
+      (list (substitute #\\ #\/ (string-right-trim "/" storage))))))
+
 (defun capture-workspace-tree (store)
   "Stage the whole workspace and return its tree sha."
   ;; An unchanged workspace
@@ -600,21 +630,37 @@ found nothing to stage. => true when it staged."
   ;; (CAPTURE-LOCK): a deferred capture still reading the tree and a completion
   ;; capture arriving behind it wait, never collide on index.lock. A walk past
   ;; its bound signals SNAPSHOT-WALK-TOO-LARGE before anything is staged.
+  ;;
+  ;; Where the workspace keeps a journal (WORKSPACE-JOURNAL-EPOCH, Windows) a
+  ;; capture that finds it unmoved since this index's last walk -- the same
+  ;; epoch, the index as that walk left it -- answers that walk's tree and
+  ;; starts no git. The epoch is read before the walk, so a write landing
+  ;; while git reads the tree moves it for the next capture.
   (bt2:with-lock-held ((capture-lock store))
-    (stage-workspace store)
-    (let* ((digest (index-digest store))
-           (entry (and digest (index-trees store)))
-           (tree (or (and (equal (car entry) digest) (cdr entry))
-                     (let ((tree (validate-tree-sha (git-line store (list "write-tree")))))
-                       ;; Read the digest again: WRITE-TREE records the tree it
-                       ;; wrote in the index as its cache tree, so the content
-                       ;; that answers for this tree is the one the index
-                       ;; carries after the call, never the one it carried
-                       ;; going in.
-                       (when-let (settled (and digest (index-digest store)))
-                         (setf (index-trees store) (cons settled tree)))
-                       tree))))
-      tree)))
+    (let* ((epoch (workspace-journal-epoch (snapshot-store-workspace store)
+                                           :ignored (lambda () (journal-ignored-paths store))))
+           (quiet (quiet-trees store)))
+      (if (and epoch quiet (eql epoch (first quiet))
+               (equal (second quiet) (index-digest store)))
+          (cddr quiet)
+          (progn
+            (stage-workspace store)
+            (let* ((digest (index-digest store))
+                   (entry (and digest (index-trees store)))
+                   (tree (or (and (equal (car entry) digest) (cdr entry))
+                             (let ((tree (validate-tree-sha (git-line store (list "write-tree")))))
+                               ;; Read the digest again: WRITE-TREE records the tree it
+                               ;; wrote in the index as its cache tree, so the content
+                               ;; that answers for this tree is the one the index
+                               ;; carries after the call, never the one it carried
+                               ;; going in.
+                               (when-let (settled (and digest (index-digest store)))
+                                 (setf (index-trees store) (cons settled tree)))
+                               tree))))
+              (when-let (settled (and epoch (index-digest store)))
+                (setf (quiet-trees store) (list* epoch settled tree)))
+              tree))))))
+
 
 ;;; The anchor tip cache: the ref only ever moves through ANCHOR-TREE in
 ;;; this process, so its (commit . tree) tip is worth remembering per
@@ -1046,7 +1092,7 @@ off the provider path; a held repack lock skips this one."
 
 (defun checkpoint-capture-boundary (turn &key boundary-kind tool-call-id
                                          pre-tree-sha tree-sha
-                                         anchor-position defer)
+                                         anchor-position defer store)
   "Capture the workspace at a turn boundary and record the durable fact."
   ;; Runs entirely outside *STORE-LOCK*: git first, then the fact in its own
   ;; transaction. A checkpoint must NEVER fail the turn — every signal
@@ -1076,10 +1122,18 @@ off the provider path; a held repack lock skips this one."
       (let* ((session-id turn.session-id)
              (workspace (let ((session (find-session session-id))) (and session session.cwd))))
         (when workspace
-          (bind (((store unavailable) (ensure-snapshot-store workspace session-id))
-                 (label (format nil "checkpoint ~a ~a" boundary-kind
-                                turn.turn-id)) (captured-at (iso-now)))
-            (flet ((record (tree-sha unavailable)
+          (bind ((label (format nil "checkpoint ~a ~a" boundary-kind
+                                turn.turn-id))
+                 (captured-at (iso-now))
+                 ;; A deferred boundary opens the store on its walk's
+                 ;; thread: a workspace's first store is a git start or
+                 ;; more, and the round need not wait for it either.
+                 ;; A STORE the caller holds -- the tool step's bracket
+                 ;; opened it a moment ago -- is not opened again.
+                 ((store unavailable) (cond (defer (values nil nil))
+                                            (store (values store nil))
+                                            (t (ensure-snapshot-store workspace session-id)))))
+            (flet ((record (store tree-sha unavailable)
                      (let ((checkpoint-id
                              (nth-value 1 (record-workspace-capture
                                            session-id
@@ -1098,27 +1152,31 @@ off the provider path; a held repack lock skips this one."
                        (list :checkpoint-id checkpoint-id :tree-sha tree-sha
                              :unavailable unavailable))))
               (cond
-                ((null store) (record nil unavailable))
-                (tree-sha
-                 (with-handlers ((error () (record nil :capture-failed)))
-                   (anchor-tree store tree-sha label)
-                   (record tree-sha nil)))
                 (defer
                  (let ((walk (spawn "workspace-capture"
-                               (with-handlers ((error () (list nil :capture-failed)))
-                                 (multiple-value-list
-                                  (capture-anchored-tree store label))))))
+                               (with-handlers ((error () (list nil nil :capture-failed)))
+                                 (multiple-value-bind (store unavailable)
+                                     (ensure-snapshot-store workspace session-id)
+                                   (if store
+                                       (list* store (multiple-value-list
+                                                     (capture-anchored-tree store label)))
+                                       (list nil nil unavailable)))))))
                    (defer-turn-fact
                     turn
                     (lambda ()
-                      (destructuring-bind (tree-sha refusal)
+                      (destructuring-bind (store tree-sha refusal)
                           (handler-case (bt2:join-thread walk)
-                            (error () (list nil :capture-failed)))
-                        (record tree-sha refusal))))
+                            (error () (list nil nil :capture-failed)))
+                        (record store tree-sha refusal))))
                    :deferred))
+                ((null store) (record nil nil unavailable))
+                (tree-sha
+                 (with-handlers ((error () (record store nil :capture-failed)))
+                   (anchor-tree store tree-sha label)
+                   (record store tree-sha nil)))
                 (t (multiple-value-bind (tree-sha refusal)
                        (capture-anchored-tree store label)
-                     (record tree-sha refusal)))))))))))
+                     (record store tree-sha refusal)))))))))))
 
 ;;; --- restore orchestration -----------------------------------------------
 
