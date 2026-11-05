@@ -158,6 +158,10 @@ Set-Location $tree
   if ((Trial '(if (and nlk::*git-direct* (search "\\bin\\git.exe" (first (nlk::past-git-redirector (list "git" "--version") nil))) (search "git version" (nlk:run-bounded (list "git" "--version") :seconds 20))) 1 0)') -ne '1') { throw 'git is not the toolchain''s git.exe' }
   if ((Trial '(let ((t0 (get-internal-real-time))) (if (and (eq :timeout (nth-value 2 (nlk:run-bounded (nlk:shell-argv "sleep 30 | cat | cat") :seconds 1))) (< (- (get-internal-real-time) t0) (* 15 internal-time-units-per-second))) 1 0))') -ne '1') { throw 'a pipeline past its bound' }
   if ((Trial '(if (nlk:pid-live-p (sb-posix:getpid)) 1 0)') -ne '1') { throw 'pid-live-p self' }
+  # The workspace journal (T-442): a capture trusts it to say nothing moved, so
+  # it must see a write the image makes, a write a child made before it
+  # exited, and leave a write under .git out.
+  if ((Trial '(let* ((dir (uiop:ensure-directory-pathname (merge-pathnames (format nil "nc-journal-~d" (random 1000000 (make-random-state t))) (uiop:temporary-directory)))) (root (namestring (ensure-directories-exist (merge-pathnames ".git/" dir))))) (setf root (namestring dir)) (flet ((epoch () (nlk::workspace-journal-epoch root)) (put (name) (with-open-file (o (merge-pathnames name dir) :direction :output :if-exists :supersede) (write-line "x" o)))) (let* ((e0 (epoch)) (e1 (epoch))) (put ".git/index") (let ((e2 (epoch))) (put "a.txt") (let ((e3 (epoch))) (nlk:run-bounded (nlk:shell-argv (format nil "echo y > ''~a''" (substitute #\/ #\\ (namestring (merge-pathnames "b.txt" dir))))) :seconds 20) (let ((e4 (epoch))) (ignore-errors (uiop:delete-directory-tree dir :validate t)) (if (and e0 (eql e0 e1) (eql e1 e2) (> e3 e2) (> e4 e3)) 1 0)))))))') -ne '1') { throw 'the workspace journal' }
   # The image reads NODECODE_SMOKE_WIDE whole, and a child it hands the value to
   # reads it whole too: printed as UTF-16 code units, numbers no console code
   # page can bend.
