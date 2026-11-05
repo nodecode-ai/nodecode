@@ -665,15 +665,21 @@ process's own, or NIL."
   #+win32 (is (nlk::path-within-p "C:\\proj" "C:\\") "a drive's root keeps its own")
   #+win32 (is (not (nlk::path-within-p "C:\\project" "C:\\proj")) "nor there a name that only starts like it"))
 
-#-win32
-#-win32
 (deftest remove-tree-takes-a-link-as-a-link-and-leaves-what-it-points-at
     (with-temp-workspace (dir "tree/sub/f.txt" "outside/keep.txt"))
-  ;; The walk lstat(2)s every entry: a link to a folder, and one to nothing,
-  ;; go as links; a read-only file goes; what a link points at stays.
+  ;; The walk reads every entry without following it: a link to a folder,
+  ;; and one to nothing, go as links (junctions on Windows); a read-only
+  ;; file goes, as git keeps its objects and as Windows refuses to delete
+  ;; one; what a link points at stays.
   (let ((tree (merge-pathnames "tree/" dir)))
-    (nlk:make-symlink (merge-pathnames "outside/" dir) (merge-pathnames "sub/out" tree))
-    (nlk:make-symlink (merge-pathnames "nowhere/" dir) (merge-pathnames "dangling" tree))
+    (flet ((link (target name)
+             #-win32 (nlk:make-symlink (merge-pathnames target dir) (merge-pathnames name tree))
+             #+win32 (uiop:run-program (list "cmd" "/c" "mklink" "/J"
+                                             (uiop:native-namestring (merge-pathnames name tree))
+                                             (string-right-trim "\\" (uiop:native-namestring
+                                                                     (merge-pathnames target dir)))))))
+      (link "outside/" "sub/out")
+      (link "nowhere/" "dangling"))
     (sb-posix:chmod (uiop:native-namestring (merge-pathnames "sub/f.txt" tree)) #o444)
     (is (nlk:remove-tree tree))
     (is (null (uiop:directory-exists-p tree)) "the tree is gone")

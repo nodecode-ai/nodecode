@@ -27,7 +27,7 @@ echo 'usage: nodecode [-p NAME] [COMMAND] [OPTIONS]'
     (let ((digest (uiop:run-program (list "sha256sum" tarball) :output :string)))
       (write-temp-file (merge-pathnames (format nil "~a.tar.gz.sha256" name) dist)
                        (format nil "~a  ~a.tar.gz~%" (subseq digest 0 64) name))))
-  (ignore-errors (uiop:delete-directory-tree work :validate t))
+  (ignore-errors (nlk:remove-tree work))
   name)
 
 (defun upg-source (answer slots)
