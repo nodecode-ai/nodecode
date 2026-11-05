@@ -130,10 +130,10 @@ nodecode gateway                 # state, pid, port, uptime, build
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | `nodecode login asks what to sign in for and no terminal can answer` | It ran with no terminal. | `nodecode login --subscription` or `nodecode login --api`. |
-| `This account holds no plan yet: subscribe at https://nodecode.ai/pricing` | A subscription sign-in on an account with no plan. | Plans open soon. Until then, run on your own provider key (`/models`). |
-| `This account has no API credit yet: add some at https://nodecode.ai/account/top-up` | An API sign-in on an account with no balance. | Top-ups open soon. Until then, run on your own provider key (`/models`). |
+| `This account holds no plan yet: subscribe at https://nodecode.ai/pricing` | A subscription sign-in on an account with no plan. | Subscribe, or `nodecode login --api` with credit. |
+| `This account has no API credit yet: add some at https://nodecode.ai/account/top-up` | An API sign-in on an account with no balance. | Top up. |
 | `nodecode.ai refused this machine's key (HTTP 401) ... Sign in again with /login or nodecode login.` | The saved account key was revoked or replaced. | `/login` or `nodecode login`. |
-| A `nodecode` model answers `402` | The account has neither a plan nor a balance to pay from. | Plans and top-ups open soon. Until then, run on your own provider key (`/models`). |
+| A `nodecode` model answers `402` | The account has neither a plan nor a balance to pay from. | Subscribe on [Pricing](https://nodecode.ai/pricing), or top up the balance. |
 
 {/* source: src/client/client-boot.lisp */}
 ## Launch failures

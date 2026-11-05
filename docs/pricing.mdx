@@ -1,13 +1,13 @@
 ---
 title: Pricing
-summary: "How a plan's requests are counted: what one request is, how many a month each plan gives, how many run at once, and when the month starts again. Plans and prices are coming soon."
+summary: "How a plan's requests are counted: what one request is, how many a month each plan gives, how many run at once, and when the month starts again. Then the API per token, paid from a balance you top up."
 ---
 
 {/* One of the six pages that show the plans: change its prices, requests and threads together with the rest (web/AGENTS.md, "Pricing is one scheme on every page that shows it"). */}
 
-{/* Sales closed until the models launch (v1se.thom, 2026-10-23; web/src/lib/sales.ts): no prices, no top-up, no refill on this page. To put them back, revert this file's hunks of the commit that says "hide pricing until Monday", then replace its Cyber v1 off-peak and peak paragraph with the one in the comment above "The API per token" below, and drop the sentence it restores after the plans' table that says peak requests would cost twice as much: off-peak pricing is off since 2026-10-24 (`off_peak` in deploy/gate.toml) and no page states a plan's worth as a multiple. */}
+{/* Sales open with Cyber v1's machine (v1se.thom, 2026-11-05; web/src/lib/sales.ts `SALES_OPEN`). Closed from 2026-10-23 until then; to close them again, take the prices, the top-up and the refill off this page as nodecode-website's commit "hide pricing until Monday" did. Off-peak pricing is off (`off_peak` in deploy/gate.toml, since 2026-10-24): one price at every hour, and no page states a plan's worth as a multiple. */}
 
-Nodecode itself is free, under the MIT license, and runs on your own provider key. A plan from [nodecode.ai/pricing](https://nodecode.ai/pricing) adds the hosted models, and what it gives you is counted in requests. Plans and their prices are coming soon.
+Nodecode itself is free, under the MIT license, and runs on your own provider key. A plan from [nodecode.ai/pricing](https://nodecode.ai/pricing) adds the hosted models, and what it gives you is counted in requests.
 
 {/* source: crates/gate/src/meter.rs, and each model's `standard` and `requests` in deploy/gate.toml */}
 ## What one request is
@@ -43,16 +43,16 @@ The tokens are the model's own count, shown under [Usage](https://nodecode.ai/ac
 {/* source: crates/gate/src/plans.rs */}
 ## How many each plan gives
 
-| Plan | Requests a month | Or images a month | Requests at once |
-| --- | --- | --- | --- |
-| Founders Lite | 10,000 | 330 | 4 |
-| Founders Base | 42,000 | 1,386 | 8 |
-| Founders Pro | 126,000 | 4,158 | 16 |
-| Founders Max | 378,000 | 12,475 | 32 |
+| Plan | Price | Requests a month | Or images a month | Requests at once |
+| --- | --- | --- | --- | --- |
+| Founders Lite | €9 a month, or €90 a year | 10,000 | 330 | 4 |
+| Founders Base | €30 a month, or €300 a year | 42,000 | 1,386 | 8 |
+| Founders Pro | €90 a month, or €900 a year | 126,000 | 4,158 | 16 |
+| Founders Max | €270 a month, or €2,700 a year | 378,000 | 12,475 | 32 |
 
 "Or images" is the month spent on images alone, at 30.3 requests each; images and other calls come out of the same requests.
 
-Prices are coming soon. Every plan carries the same three models. Usage on your [account](https://nodecode.ai/account/usage) cuts the month into four weeks of a quarter each to pace against; nothing stops at the end of a week.
+2 months free on yearly plan. Prices are in euros in the EU and in dollars elsewhere, the same figures. Prices exclude taxes; checkout adds your tax on top. Every plan carries the same three models. Usage on your [account](https://nodecode.ai/account/usage) cuts the month into four weeks of a quarter each to pace against; nothing stops at the end of a week.
 
 {/* source: web/src/lib/lab-plans.ts (`estimate`, `TYPICAL_CALL`), the pricing page's Estimated requests */}
 ## Estimated requests
@@ -78,9 +78,19 @@ A plan runs that many requests at the same time across all your machines and key
 
 The month starts on the day you subscribed and runs to the same day next month. A yearly plan is cut into twelve such months, each with the full allowance. Unused requests do not carry over.
 
-When a month's requests are used up, a call is answered with `429`, saying when the month resets.
+When a month's requests are used up, a call is answered with `429`, saying when the month resets. To go on before then, Refill on [Billing](https://nodecode.ai/account/billing) buys the month again from today at the plan's price, and its count starts from zero. Refill is for monthly plans.
 
-{/* With sales open and off-peak pricing off (deploy/gate.toml `off_peak = false`, crates/gate/src/prices.rs), this section's price paragraph reads: "Cyber v1 costs 0.006 per million input tokens the model had cached, 0.30 for the rest of the input and 1.20 for output, DeepSeek's own price for the model it is built on, at every hour. Its context is 1M tokens; a call with more than 256K tokens of input pays four times the cached price for its cached input. Decide v1 costs 0.10 per million input tokens, its output free, and Image v1 0.04 an image. The cost is taken once the model has answered and shows beside the call under [Usage](https://nodecode.ai/account/usage). A refused call costs nothing. A balance held in both currencies is spent in euros first." */}
+{/* source: crates/gate/src/prices.rs, crates/gate/src/relay.rs, web/src/lib/topup.ts */}
 ## The API per token
 
-A balance will pay for calls per token, as on DeepSeek's platform, with a plan's requests coming first. Per-token prices and top-ups are coming soon.
+A balance pays for calls per token, as on DeepSeek's platform. Top it up on [Top up](https://nodecode.ai/account/top-up), in euros or dollars, from 5 to 10,000 at a time. Checkout adds your tax on top; the balance gets the amount you chose. A model with a per-token price on [the pricing page](https://nodecode.ai/pricing#api) is then paid from it:
+
+- With no plan, every call.
+- With a plan, the calls past the month's requests.
+
+A call costs its tokens at the model's price: input the model had cached, the rest of the input, and the output, each per million tokens; an image model by the image.
+
+{/* source: crates/gate/src/prices.rs (off-peak pricing off: deploy/gate.toml `off_peak = false`, so a model's `peak` price holds at every hour) */}
+Cyber v1 costs 0.006 per million input tokens the model had cached, 0.30 for the rest of the input and 1.20 for output, DeepSeek's own price for the model it is built on, at every hour. Its context is 1M tokens; a call with more than 256K tokens of input pays four times the cached price for its cached input. Decide v1 costs 0.10 per million input tokens, its output free, and Image v1 0.04 an image. The cost is taken once the model has answered and shows beside the call under [Usage](https://nodecode.ai/account/usage). A refused call costs nothing. A balance held in both currencies is spent in euros first.
+
+With the balance used up, a call is answered with `402` and `insufficient_balance`. Without a plan, 4 requests run at once.
