@@ -168,9 +168,9 @@ view's overlay over them."
   (with-frame-model (model 80 11 :session-id "toast-floor")
     (dotimes (i 3) (nle::toast model (format nil "notice ~d" i)))
     (let* ((rows (nle::compose-frame model))
-           (composer (position-if (lambda (row) (search "Connecting" row)) rows))
+           (composer (and rows (cdr (nle::chat-model-parked-cursor model))))
            (layout (nle::chat-model-toast-layout model)))
-      (is composer "the composer says the shell is connecting")
+      (is composer "the caret parks in the composer")
       (is (< (length layout) 3) "a short window holds fewer")
       ;; None reaches the composer's rows.
       (is (every (lambda (place) (< (+ place.y (length place.rows)) composer)) layout)))))

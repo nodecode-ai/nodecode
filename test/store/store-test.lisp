@@ -23,8 +23,13 @@
 ;;; TEMP-SOCKET-PATH: per-process, private, removed by the fixture.
 
 (defun temp-directory (&optional (tag "store"))
-  "Create and return a fresh private directory for one test."
-  (let ((dir (pathname (format nil "/tmp/nl-~a-~a-~a/" (sb-posix:getpid) tag (random 100000)))))
+  "Create and return a fresh private directory for one test: under /tmp, and
+on Windows under the system's temp directory."
+  ;; Windows reads `/tmp/...' as a folder on the current drive but spells it
+  ;; with no drive, and no path a home is ever given there is drive-less: its
+  ;; truename names the drive, a git file:// URL made of it reaches nothing.
+  (let ((dir (merge-pathnames (format nil "nl-~a-~a-~a/" (sb-posix:getpid) tag (random 100000))
+                              #-win32 #p"/tmp/" #+win32 (uiop:temporary-directory))))
     (ensure-directories-exist dir)
     (ignore-errors (sb-posix:chmod (namestring dir) #o700))
     dir))
