@@ -340,7 +340,8 @@ and TOOLCHAIN willing, the programs they start."
     (is (> (length output) (length "laid over|")) "PATH still rides along")))
 
 (deftest run-bounded-runs-in-the-named-directory (with-temp-workspace (dir))
-  (nlk:bind (((output _ status) (run-sh "pwd" :directory dir)))
+  ;; `pwd -W' on Windows: MSYS's own `pwd' says /c/..., the folder as sh sees it.
+  (nlk:bind (((output _ status) (run-sh #-win32 "pwd" #+win32 "pwd -W" :directory dir)))
     (is (eql 0 status) "pwd ran")
     (is (equal (namestring (truename dir))
                (namestring (uiop:ensure-directory-pathname

@@ -789,8 +789,12 @@ completed. BODY runs with SID bound."
   (is (equal "" (nle:sh "cat")) "cat sees EOF")
   (is (equal (format nil "fed~%") (nle:sh (format nil "cat <<'EOF'~%fed~%EOF")))))
 
-(deftest sh-runs-in-the-named-directory ()
-  (is (equal (format nil "/tmp~%") (nle:sh "pwd" :directory "/tmp"))))
+(deftest sh-runs-in-the-named-directory (with-temp-workspace (dir))
+  ;; `pwd -W' on Windows: MSYS's own `pwd' says /c/..., the folder as sh sees it.
+  (is (equal (namestring (truename dir))
+             (namestring (uiop:ensure-directory-pathname
+                          (string-right-trim '(#\Newline #\Return)
+                                             (nle:sh #-win32 "pwd" #+win32 "pwd -W" :directory dir)))))))
 
 ;; A shell child names the session that ran it -- a task claim, a log line --
 ;; from NODECODE_SESSION_ID, the id exactly as Nodecode prints it.
