@@ -2688,6 +2688,47 @@ listing/catalog display name. Exact ids win; unlisted private ids stay legal."
                              model provider (sort candidates #'string<)))))
   model)
 
+(defun offered-model-ids (provider &aux (entry (provider-models-cache-entry provider)))
+  "The ids PROVIDER's own model listing offers: the cached one while it is
+fresh, else asked now within *PROVIDER-MODELS-FETCH-TIMEOUT-SECONDS* -- or
+NIL when no listing answers (no address to ask, a failure, an empty list, no
+cache path)."
+  ;; A failed listing is no verdict: the rows it kept may be old. An answer
+  ;; asked here is not written to the cache; /models' refresh owns that file.
+  (mapcar (lambda (row) (getf row :id))
+          (if (and entry (getf entry :fresh-p) (null (getf entry :error)))
+              (getf entry :models)
+              (when (and *provider-models-cache-path*
+                         (find provider (listable-provider-ids) :test #'string-equal))
+                (handler-case (sb-sys:with-deadline (:seconds *provider-models-fetch-timeout-seconds*)
+                                (values (list-provider-models provider)))
+                  (sb-sys:deadline-timeout () nil)
+                  (error () nil))))))
+
+(defun check-model-offered (provider model)
+  "MODEL unchanged when PROVIDER can be asked for it -- an id its config entry
+declares, its own models.dev catalog entry holds or its listing offers, or
+any id when no listing answers -- else PROVIDER-CONFIG-ERROR naming the ids
+the listing offers."
+  ;; A pick is where an id is committed: a session pinned to one its lane does
+  ;; not serve spends every later turn on the provider's 404 (#335). The
+  ;; listing is the lane's own word, so an id another namespace's catalog
+  ;; holds does not pass here the way it passes CHECK-MODEL-ID. A provider
+  ;; that serves ids its listing leaves out has them declared under
+  ;; providers.<id>.models, which this takes on sight.
+  (unless (or (configured-model-entry provider model)
+              (when-let (catalog (models-catalog-table))
+                (json-value catalog :any provider "models" model)))
+    (let ((ids (offered-model-ids provider)))
+      (when (and ids (not (member model ids :test #'equal)))
+        (let ((shown (sort (copy-list ids) #'string<)))
+          (error 'provider-config-error :provider provider :model model
+                 :detail (format nil "~a lists no model ~s; pick one it lists: ~{~a~^, ~}~@[ and ~d more~] (or declare it under providers.~a.models if ~:*~a serves it unlisted)"
+                                 provider model (subseq shown 0 (min 12 (length shown)))
+                                 (and (> (length shown) 12) (- (length shown) 12))
+                                 provider))))))
+  model)
+
 (defun select-auxiliary-model (model &key provider (effort nil effort-p))
   "Make (PROVIDER MODEL) this image's auxiliary target and the shared
 config's general.auxiliary_model, in that order — the one place an
@@ -2711,6 +2752,7 @@ or with NIL the lightest it offers (AUXILIARY-MODEL)."
       (let ((next (or provider *provider*)))
         (check-model-id next model)
         (provider-endpoint next)
+        (check-model-offered next model)
         (when effort-p (check-effort next model effort))
         (setf *auxiliary-model*
               (list :provider next :model model
@@ -2898,6 +2940,8 @@ in that order; ENDPOINT, when given, is the address it rides."
       (if (or endpoint (and *endpoint* (equal next *provider*)))
           (find-provider-lane next)
           (provider-endpoint next))
+      ;; the lane's own listing, once the lane is known to resolve
+      (check-model-offered next (or model *model*))
       (unless (equal next *provider*)
         (setf *provider* next
               ;; A lane switch invalidates an override that named the old

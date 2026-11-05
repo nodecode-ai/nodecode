@@ -125,19 +125,22 @@ nothing is there and when it lies outside FOLDER."
 
 (defun folder-row (folder directory name &aux (path (nlk::path-under directory name)))
   "NAME in DIRECTORY, a native path under FOLDER, as the listing's row, or NIL
-when it went meanwhile. => (NAME KIND STAT LEADS): KIND :DIRECTORY, :FILE or
-:OTHER, or :LINK for a link that leads outside FOLDER or nowhere; LEADS is
-:INSIDE, :OUTSIDE or :NOWHERE for a link and NIL for anything else."
+when it went meanwhile. => (NAME KIND STAT LEADS WRITTEN): KIND :DIRECTORY,
+:FILE or :OTHER, or :LINK for a link that leads outside FOLDER or nowhere;
+LEADS is :INSIDE, :OUTSIDE or :NOWHERE for a link and NIL for anything else;
+WRITTEN is when what STAT was taken of was last written (NLK:STAT-WRITE-TIME),
+NIL with no STAT."
   (multiple-value-bind (kind stat) (nlk::lstat-kind path)
     (if (not (eq kind :link))
-        (and (member kind '(:directory :file :other)) (list name kind stat nil))
+        (and (member kind '(:directory :file :other))
+             (list name kind stat nil (nlk:stat-write-time stat path)))
         ;; A link to nothing resolves to itself (SBCL's TRUENAME stops at it).
         (let* ((target (nlk::real-path (sb-ext:parse-native-namestring path)))
                (inside (and target (nlk::path-within-p (nlk::native-path target) folder))))
           (multiple-value-bind (kind stat) (if inside (nlk::lstat-kind (nlk::native-path target)) :absent)
             (if (member kind '(:directory :file :other))
-                (list name kind stat :inside)
-                (list name :link nil (if (and target (not inside)) :outside :nowhere))))))))
+                (list name kind stat :inside (nlk:stat-write-time stat (nlk::native-path target)))
+                (list name :link nil (if (and target (not inside)) :outside :nowhere) nil)))))))
 
 (defun folder-listing (folder steps directory)
   "The listing of DIRECTORY, the native path STEPS name under FOLDER:
@@ -158,11 +161,11 @@ directories first, then by name, at most *FOLDER-ENTRIES-CAP* rows."
      "kind" "directory"
      "entries" (map 'vector
                     (lambda (row)
-                      (destructuring-bind (name kind stat leads) row
+                      (destructuring-bind (name kind stat leads written) row
                         (json-object "name" name
                                      "kind" (string-downcase kind)
                                      :when (eq kind :file) "size" (sb-posix:stat-size stat)
-                                     :when stat "modified" (nlk:iso-time (sb-posix:stat-mtime stat) :millis nil)
+                                     :when written "modified" (nlk:iso-time written :millis nil)
                                      :when (char= #\. (char name 0)) "hidden" t
                                      :opt "link" (and leads (string-downcase leads)))))
                     (subseq rows 0 (- (length rows) more)))
@@ -298,7 +301,7 @@ reads it (see the file's head); DOWNLOAD sends it to be saved."
                           "path" (steps-path steps)
                           "name" name
                           "size" size
-                          "modified" (nlk:iso-time (sb-posix:stat-mtime stat) :millis nil)
+                          "modified" (nlk:iso-time (nlk:stat-write-time stat path) :millis nil)
                           "why" (if (or sniffed (and (> size *folder-text-bytes*)
                                                      (not (find 0 (file-head path 4096)))))
                                     "too_large"

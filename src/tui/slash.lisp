@@ -148,6 +148,14 @@
                             :session nil
                             :help-detail
                             "It asks which one; either way nodecode.ai opens in your browser with this machine's code in the page, and you sign in with your nodecode.ai account and allow the machine. Over ssh, open the page the status line names on any device. The key is saved in this home's auth.json, and the footer shows the account's meter from then on: the plan's requests left, or the API credit; click it for /account")
+        ;; /login's mirror (tui/account-login.lisp SLASH-LOGOUT-OP). No headless arm either: a
+        ;; room or a page must not sign the owner's home out.
+        (make-slash-command "logout"
+                            "Sign out of your nodecode.ai account on this machine"
+                            :dispatch :args :op 'slash-logout-op
+                            :session nil
+                            :help-detail
+                            "Takes the account's key out of this home's auth.json and forgets the machine link, so nothing here reaches the account any more; the footer's meter goes. The key stays on the account until you remove the machine at https://nodecode.ai/account/machines. Same as nodecode logout; /login signs in again")
         (make-slash-command "details"
                             "Set the Developer or Standard viewport"
                             :dispatch :args
