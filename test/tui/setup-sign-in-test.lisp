@@ -13,10 +13,6 @@
 ;;;;   4. Once a key is saved the row heads what is left to connect, under
 ;;;;      Suggested, the saved provider still the selection; a home signed in
 ;;;;      is offered none.
-;;;;   5. While nodecode.ai's sign-in is not offered (the default), the walk
-;;;;      opens on the providers a key connects, with no row of ours.
-;;;;
-;;;; Claims 1-4 run with it offered (WITH-SIGN-IN-OFFERED).
 ;;;;
 ;;;; Loads after setup-test: reuses WITH-SETUP-BOX, RUN-SETUP and PAGE-SAID.
 
@@ -37,21 +33,7 @@ ACCOUNT-LOGIN-FROM-SHELL, nothing sent to a gateway."
                                  "login: asking nodecode.ai…")
        ,@body)))
 
-(defmacro with-sign-in-offered ((&optional config) &body body)
-  "WITH-SETUP-BOX on CONFIG with nodecode.ai's sign-in offered (*OFFER-NODECODE-SIGN-IN*)."
-  `(let ((nle::*offer-nodecode-sign-in* t))
-     (with-setup-box (,config) ,@body)))
-
-(deftest setup-walk-hides-nodecode-sign-in-by-default (with-setup-box ((format nil "{}~%")))
-  (is (null nle::*offer-nodecode-sign-in*) "nodecode.ai's sign-in is not offered by default")
-  (with-frame-model (model 100 30 :session-id "setup-sign-in-hidden")
-    (run-setup model)
-    (let ((labels (row-labels model.dialog)))
-      (is (equal "Anthropic" (first labels)) "the walk opens on the providers a key connects")
-      (is (notany (lambda (label) (member label '("Sign in to nodecode.ai" "Or use a provider's key") :test #'equal)) labels) "with no sign-in row and no heading for it"))
-    (loop repeat 8 while model.dialog do (nle::picker-dialog-key model :escape))))
-
-(deftest setup-walk-opens-on-nodecode-sign-in (with-sign-in-offered ((format nil "{}~%")))
+(deftest setup-walk-opens-on-nodecode-sign-in (with-setup-box ((format nil "{}~%")))
   (with-frame-model (model 100 30 :session-id "setup-sign-in")
     (with-held-sign-in (mode then)
       (run-setup model)
@@ -86,7 +68,7 @@ ACCOUNT-LOGIN-FROM-SHELL, nothing sent to a gateway."
         (is (equal "nodecode" (first (nle::setup-run-providers (nle::chat-model-setup-walk model)))) "the walk counts nodecode.ai as its provider")))
     (loop repeat 8 while model.dialog do (nle::picker-dialog-key model :escape))))
 
-(deftest setup-sign-in-failure-says-why-and-a-late-answer-moves-nothing (with-sign-in-offered ((format nil "{}~%")))
+(deftest setup-sign-in-failure-says-why-and-a-late-answer-moves-nothing (with-setup-box ((format nil "{}~%")))
   (with-frame-model (model 100 30 :session-id "setup-sign-in-fails")
     (with-held-sign-in (mode then)
       (run-setup model)
@@ -110,7 +92,7 @@ ACCOUNT-LOGIN-FROM-SHELL, nothing sent to a gateway."
     (loop repeat 8 while model.dialog do (nle::picker-dialog-key model :escape))))
 
 (deftest setup-sign-in-row-heads-connect-another-and-leaves-a-signed-in-home ()
-  (with-sign-in-offered ((format nil "{}~%"))
+  (with-setup-box ((format nil "{}~%"))
     (with-frame-model (model 100 30 :session-id "setup-sign-in-keyed")
       (run-setup model)
       (let ((dialog model.dialog))
@@ -118,7 +100,7 @@ ACCOUNT-LOGIN-FROM-SHELL, nothing sent to a gateway."
         (is (equal '("Suggested" "Anthropic" "Connect another" "Sign in to nodecode.ai") (subseq (row-labels dialog) 0 4)) "under Suggested, it heads what is left to connect")
         (is (= 1 (nle::connect-dialog-selection dialog)) "the provider just saved is still the selection"))
       (loop repeat 8 while model.dialog do (nle::picker-dialog-key model :escape))))
-  (with-sign-in-offered ((format nil "{\"providers\":{\"nodecode\":{\"sdk\":\"openai-completions\",\"base_url\":\"https://api.nodecode.example/v1\",\"api_key\":\"k\"}}}~%"))
+  (with-setup-box ((format nil "{\"providers\":{\"nodecode\":{\"sdk\":\"openai-completions\",\"base_url\":\"https://api.nodecode.example/v1\",\"api_key\":\"k\"}}}~%"))
     (with-frame-model (model 100 30 :session-id "setup-sign-in-signed")
       (run-setup model)
       (is (notany (lambda (label) (equal label "Sign in to nodecode.ai")) (row-labels model.dialog)) "a home signed in is offered no sign-in")

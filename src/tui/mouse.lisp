@@ -901,26 +901,25 @@ on pure motion. => whether anything a frame shows moved."
 (defun copy-frame-selection (model &aux (text (frame-selection-text model))
                                         (program (chat-model-program model)))
   "Hand MODEL's marked text to the program's clipboard writer, which never
-waits behind the worker (a turn occupies it), and say in the hint lane what
-became of it once the writer knows (CLIPBOARD-OUTCOME-NOTICE): copied only
-when a clipboard tool took it. With nothing marked it says so, and with no
-live program that nothing was written. The release that ends a drag and the
+waits behind the worker (a turn occupies it). A copy says something only
+when it failed (CLIPBOARD-OUTCOME-NOTICE), and with no live program that
+nothing was written; one that lands, and one with nothing marked, leave the
+composer the caret alone. The release that ends a drag and the
 :COPY-SELECTION key both come here."
-  (cond ((zerop (length text)) (show-status model +selection-empty-hint+))
+  (cond ((zerop (length text)) nil)
         ((null program) (show-status model +selection-copy-failed-hint+ :error-p t))
         (t (nlt:write-clipboard program text
                                 (lambda (outcome)
-                                  (nlt:send program (clipboard-outcome-notice outcome)))))))
+                                  (nlk:when-let (notice (clipboard-outcome-notice outcome))
+                                    (nlt:send program notice)))))))
 
 (defun clipboard-outcome-notice (outcome)
-  "The composer status a clipboard write's OUTCOME (NLT:WRITE-CLIPBOARD)
-says, as the SYSTEM-NOTICE-MSG that lands it on the loop thread: copied for
-a clipboard tool, sent for OSC 52 alone, failed for neither."
-  (multiple-value-bind (text error-p)
-      (cond ((and (consp outcome) (eq :command (first outcome))) +selection-copied-hint+)
-            ((eq :osc52 outcome) +selection-osc52-hint+)
-            (t (values +selection-copy-failed-hint+ t)))
-    (make-instance 'system-notice-msg :text text :error-p error-p :answer t)))
+  "The SYSTEM-NOTICE-MSG a clipboard write's OUTCOME (NLT:WRITE-CLIPBOARD)
+lands on the loop thread, or NIL: a clipboard tool or the terminal's OSC 52
+took the text and there is nothing to say; neither did, and the failure
+stands in the composer status."
+  (unless (or (and (consp outcome) (eq :command (first outcome))) (eq :osc52 outcome))
+    (make-instance 'system-notice-msg :text +selection-copy-failed-hint+ :error-p t :answer t)))
 
 (defun mark-frame-cells (model selection)
   "=> ((ROW FIRST LAST) ...): the frame rows SELECTION washes on MODEL's
@@ -1262,13 +1261,11 @@ what it took washed, as a drag's release does."
 
 (defun select-copy (model state &key leave)
   "y, Enter, Ctrl+C and the copy chord: copy the mark and leave, the mark
-kept; with nothing marked, LEAVE leaves and anything else says nothing is
-marked."
+kept; with nothing marked, LEAVE leaves and anything else does nothing."
   (cond ((select-state-anchor state)
          (copy-frame-selection model)
          (end-transcript-select model :keep-mark t))
-        (leave (end-transcript-select model))
-        (t (show-status model +selection-empty-hint+))))
+        (leave (end-transcript-select model))))
 
 (defun transcript-select-key (model key mod &aux (state (transcript-select model)))
   "One key pressed while MODEL's keyboard selection runs, KEY and MOD the
@@ -1341,13 +1338,6 @@ or NIL while the window does not show its line."
         (multiple-value-bind (top bottom left right) (transcript-lane model)
           (when (<= (+ top row) bottom)
             (cons (min right (+ left (third point))) (+ top row))))))))
-
-(defun select-mode-hint (state)
-  "The composer's line while the keyboard selects: what moves the cursor,
-or, with a mark standing, that moving carries it."
-  (if (select-state-anchor state)
-      "Selecting · move to extend the mark"
-      "Selecting · move with h j k l, w b e, 0 $, PgUp PgDn, g G"))
 
 (defun select-key-segs (state)
   "The keys the keyboard selection answers, each a filled cap before its
