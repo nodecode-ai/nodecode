@@ -32,15 +32,17 @@ build-windows.ps1 builds the launcher with."
         (ignore-errors (delete-file source))
         (setf *release-stub-executable* exe))))
 
-(defun write-release-tarball (dist version files &aux (name (format nil "nodecode-~a-~a" version (nle::release-platform)))
-                                                      (windows (eq (nlk:platform) :windows))
-                                                      (work (temp-path "release-work"))
-                                                      (tree (merge-pathnames (format nil "~a/" name) work)))
+(defun write-release-tarball (dist version files
+                              &key zip
+                              &aux (name (format nil "nodecode-~a-~a" version (nle::release-platform)))
+                                   (windows (eq (nlk:platform) :windows))
+                                   (work (temp-path "release-work"))
+                                   (tree (merge-pathnames (format nil "~a/" name) work)))
   "The release archive of VERSION under DIST, in this platform's container,
 with its sha256 sidecar: an executable `nodecode' answering --help with the
 usage line, and FILES ((RELATIVE . TEXT) ...) under it. A tar.gz holding a
 shell script on Linux and macOS; on Windows the tar.zst install.ps1 takes,
-its nodecode.exe at the top."
+its nodecode.exe at the top, or with ZIP the zip it falls back to."
   (write-upgrade-tree tree (if windows
                                files
                                (cons (cons "nodecode" "#!/bin/sh
@@ -50,13 +52,13 @@ echo 'usage: nodecode [-p NAME] [COMMAND] [OPTIONS]'
       (uiop:copy-file (release-stub-executable) (merge-pathnames "nodecode.exe" tree))
       (sb-posix:chmod (namestring (merge-pathnames "nodecode" tree)) #o755))
   (ensure-directories-exist dist)
-  (let* ((file (format nil "~a.~:[tar.gz~;tar.zst~]" name windows))
+  (let* ((file (format nil "~a.~a" name (cond (zip "zip") (windows "tar.zst") (t "tar.gz"))))
          (archive (uiop:native-namestring (merge-pathnames file dist))))
     ;; Windows' own bsdtar, not a GNU tar some PATH puts first: install.ps1
     ;; unpacks with it too.
     (uiop:run-program (if windows
                           (list (uiop:native-namestring (merge-pathnames "System32/tar.exe" (uiop:ensure-directory-pathname (uiop:getenv "SystemRoot"))))
-                                "--zstd" "-cf" archive "-C" (uiop:native-namestring tree) ".")
+                                (if zip "--format=zip" "--zstd") "-cf" archive "-C" (uiop:native-namestring tree) ".")
                           (list "tar" "-czf" archive "-C" (uiop:native-namestring work) name)))
     (write-temp-file (merge-pathnames (format nil "~a.sha256" file) dist)
                      (format nil "~a  ~a~%" (subseq (nlk::sha256-text (nlk::file-octets archive)) 7) file)))
@@ -118,6 +120,17 @@ repo's own installer, for BODY."
                (namestring (release-current))))
     (is-carrying (text (refusal-text nlk:upgrade-refusal (nle::stage-release "no-such")))
       ("no-such" "a release the host lacks is refused by name"))))
+
+#+win32
+(deftest update-a-folder-host-carrying-only-the-zip-installs-it ()
+  ;; A release published before tar.zst carries the zip alone. Over https://
+  ;; the tar.zst is a 404 and install.ps1 moves on to the zip; from a folder
+  ;; (file://), which answers no status, the same miss stopped the install.
+  (with-release-host (dist nil)
+    (write-release-tarball dist "tv1" (release-files *update-old-a*) :zip t)
+    (let ((directory (nle::stage-release "tv1")))
+      (is (probe-file (release-executable directory)) "the version is laid out from its zip")
+      (is (probe-file (merge-pathnames "src/src/a.lisp" directory)) "with its source tree"))))
 
 (deftest update-installer-failure-reads-its-last-line-past-crlf ()
   ;; install.ps1 ends its lines in CRLF: the reason is the last line's text,
