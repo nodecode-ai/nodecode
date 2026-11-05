@@ -60,7 +60,9 @@ JSON its value: what Enter inserts and the lines its keys run are read off it."
                  :suffix (or (json-value row :string "suffix") "")
                  :value row
                  :mark (or (json-value row :string "mark") "")
-                 :mark-tone (if tone (intern (string-upcase tone) :keyword) :muted))))
+                 :mark-tone (if tone (intern (string-upcase tone) :keyword) :muted)
+                 ;; A table's column names: painted, never chosen.
+                 :heading (json-value row :boolean "heading"))))
 
 (defun dialog-tabs (dialog)
   "The tab strip DIALOG's JSON carries (LIST-DIALOG's TABS) as the plists
@@ -151,7 +153,11 @@ nothing."
          :kind :answer)
         (setf picker model.dialog)
         (register-picker-tabs picker (dialog-tabs dialog))
-        (register-picker-picture picker (dialog-picture dialog))))))
+        (register-picker-picture picker (dialog-picture dialog))
+        ;; A heading is never chosen: the list opens on the first row that can be,
+        ;; in the tab the strip opened on.
+        (setf (picker-dialog-selection picker)
+              (past-headings (picker-visible-rows picker) (picker-dialog-selection picker) 1))))))
 
 (defun answer-gesture (model line stack)
   "Run LINE, the line a row's key names in the answer dialog atop STACK, where

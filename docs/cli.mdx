@@ -163,8 +163,9 @@ nodecode machine link [CODE]
 | `nodecode login --subscription` | A plan's requests. |
 | `nodecode login --api` | API credits. |
 | `nodecode machine link [CODE]` | The Machines page's link: bring the code from https://nodecode.ai/account/machines, or omit CODE to get one to type there, then approve the machine. |
+| `nodecode logout` | Signs this machine out: the key leaves this home's `auth.json` and the machine link is forgotten. The key stays on the account until you remove the machine at https://nodecode.ai/account/machines. |
 
-In the shell, `/login` does the same. From then on the footer shows the account's meter, and a click on it opens `/usage`.
+In the shell, `/login` does the same. From then on the footer shows the account's meter, and a click on it opens `/usage`. `/logout` signs out again.
 
 <Mistakes>
 <Mistake>
