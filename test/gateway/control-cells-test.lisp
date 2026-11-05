@@ -169,6 +169,48 @@
     (is (member "nl-sw-mine" (funcall booted) :test #'string=) "so the next boot loads it")
     (is (nlk:find-cell "nl-sw-mine") "and this image has it now")))
 
+#-win32
+(deftest control-cells-off-parks-a-link-to-the-operators-own-folder-and-on-loads-it-again
+    (with-switch-fixture (port base top))
+  ;; A link in the cell folder that leads to no folder a build ships is the
+  ;; operator's own -- put there by hand while the organism runs, never
+  ;; loaded, or by NEW-CELL :SOURCE -- and the folder it leads to may hold
+  ;; the only copy of its work. Off parks it as it parks a folder: the link
+  ;; stays, so on finds it again. A link to a shipped folder is still the
+  ;; installer's, and off takes it out.
+  (let* ((root nlk::*cells-directory*)
+         (source (merge-pathnames "own-source/nl-sw-linked/" (uiop:pathname-parent-directory-pathname root)))
+         (link (merge-pathnames "nl-sw-linked" root))
+         (marker (merge-pathnames ".off" source))
+         (booted (lambda () (mapcar #'nlk:folder-name (nlk::cell-folders root)))))
+    (write-temp-file (merge-pathnames "nl-sw-linked.asd" source) "(defsystem \"nl-sw-linked\")")
+    (nlk::make-symlink source link)
+    (is-route (port :post "/api/gateway/cells" :body (switch-body top t)) 200)
+    (is (nlk::installer-put-p top) "a link to a shipped folder is the installer's")
+    (is (not (nlk::installer-put-p "nl-sw-linked")) "a link to the operator's own folder is not")
+    (with-gateway-http (port :get "/api/gateway/cells")
+      (is-present (row (switch-row body "nl-sw-linked")) "the linked folder is listed"
+        (is (equal "own" (nlk:json-value row :string "source")))
+        (is (nlk:json-value row :boolean "parks") "and says off would park it")))
+    (with-gateway-http (port :post "/api/gateway/cells" :body (switch-body "nl-sw-linked" nil) :status 200)
+      (let ((text (nlk:json-value body :string "text")))
+        (is (search "its folder stays as it is" text) "off parks it")
+        (is (not (search "stays loaded" text)) "and claims no code of a folder this image never loaded"))
+      (is-present (row (switch-row body "nl-sw-linked")) "a parked link is still listed"
+        (is (not (nlk:json-value row :any "on")) "off")))
+    (is (nlk::symlink-target link) "the link is left")
+    (is (probe-file (merge-pathnames "nl-sw-linked.asd" source)) "and the folder it leads to whole")
+    (is (probe-file marker) "with the off marker in it")
+    (is (not (member "nl-sw-linked" (funcall booted) :test #'string=)) "which the next boot passes over")
+    (with-gateway-http (port :post "/api/gateway/cells" :body (switch-body "nl-sw-linked" t) :status 200)
+      (is-present (row (switch-row body "nl-sw-linked")) "on again"
+        (is (nlk:json-value row :any "on"))))
+    (is (not (probe-file marker)) "on takes the marker out")
+    (is (member "nl-sw-linked" (funcall booted) :test #'string=) "so the next boot loads it")
+    (is (nlk:find-cell "nl-sw-linked") "and this image has it now")
+    (is-route (port :post "/api/gateway/cells" :body (switch-body top nil)) 200)
+    (is (not (nlk:installed-cell-p top)) "off still takes a shipped folder's link out")))
+
 (deftest control-cells-off-refuses-the-organisms-layer-and-what-an-advice-keeps
     (with-switch-fixture (port base top))
   ;; The layer the organism writes to is never parked: it is what keeps.

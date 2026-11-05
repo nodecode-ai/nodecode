@@ -43,7 +43,9 @@ done < <(grep -o -E '(^|[ "])tools/[a-z0-9/-]+\.sh' "$repo/.github/workflows/rel
 say 'every script release.yml runs by path is executable in git'
 
 # --- release-check.sh -----------------------------------------------------------
-check() { (cd "$work" && env "$@" bash tools/release/release-check.sh) > "$root/check-out" 2>&1; }
+# No real host is ever read: a pointer read goes to the .invalid host, or to
+# the stub curl the later checks put on PATH.
+check() { (cd "$work" && env NODECODE_RELEASE_BASE_URL=https://release-test.invalid "$@" bash tools/release/release-check.sh) > "$root/check-out" 2>&1; }
 check GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v1.2.3 GITHUB_OUTPUT="$root/gh-output" \
   || fail "a matching tag on main was refused: $(cat "$root/check-out")"
 grep -qx 'version=1.2.3' "$root/gh-output" || fail 'the version was not written for the workflow'
@@ -267,3 +269,30 @@ nightly NODECODE_RELEASE_GREEN_TREES="$(tree_of "$second")" || fail 'the nightly
 grep -qx 'skip=false' "$root/gh-output" || fail 'a nightly one platform never got was skipped'
 if check NODECODE_RELEASE_MODE=weekly; then fail 'an unknown mode was taken'; fi
 say 'a night with no green commit, or nothing new on every platform, builds nothing'
+
+# --- release-check.sh publish: whether the nightly follows the tag ----------------
+# A tag past the nightly carries the nightly homes with it (publish.sh), and the
+# Linux job proves that upgrade too: nightly_follows=true only when the Linux
+# nightly pointer names a commit the tag carries and is not the tag itself.
+release() {
+  : > "$root/gh-output"
+  check PATH="$root/curl-bin:$PATH" RELEASE_TEST_POINTERS="$root/pointers" GITHUB_REF_TYPE=tag \
+    GITHUB_REF_NAME=v1.2.3 GITHUB_OUTPUT="$root/gh-output"
+}
+git -C "$work" rev-parse --short=9 "$first" > "$root/pointers/nightly-x86_64-linux"
+release || fail "the tag past the nightly was refused: $(cat "$root/check-out")"
+grep -qx 'nightly_follows=true' "$root/gh-output" || fail "a tag past the nightly does not carry it: $(cat "$root/gh-output")"
+grep -q "the nightly names $(git -C "$work" rev-parse --short=9 "$first"), which .* carries" "$root/check-out" \
+  || fail "the nightly the tag carries was not said: $(cat "$root/check-out")"
+git -C "$work" rev-parse --short=9 "$second" > "$root/pointers/nightly-x86_64-linux"
+release || fail 'the tag the nightly names was refused'
+grep -qx 'nightly_follows=false' "$root/gh-output" || fail 'a nightly already on the tag was proved again'
+rm "$root/pointers/nightly-x86_64-linux"
+release || fail 'the tag with no nightly was refused'
+grep -qx 'nightly_follows=false' "$root/gh-output" || fail 'a tag with no nightly to follow it says one follows'
+git -C "$work" rev-parse --short=9 "$second" > "$root/pointers/nightly-x86_64-linux"
+git -C "$work" checkout -q --detach "$first"
+release || fail "a tag behind the nightly was refused: $(cat "$root/check-out")"
+grep -qx 'nightly_follows=false' "$root/gh-output" || fail 'a tag behind the nightly would move it back'
+git -C "$work" checkout -q main
+say 'a tag carries the nightly only when the nightly is behind it'

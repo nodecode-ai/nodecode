@@ -337,6 +337,28 @@ answer decoded."
     (nlk:standby-session :id "s-standing" :cwd (namestring proj))
     (is (equal "directory" (gethash "kind" (files-route port "" :session "s-standing"))) "a session standing by has its folder too")))
 
+(deftest files-route-says-when-a-file-was-written-whatever-the-season ()
+  ;; T-447: SB-POSIX:STAT on Windows is msvcrt's _stat, which reads a time in
+  ;; the other daylight saving season an hour off, and one before 1970 local
+  ;; time as -1 -- and the Files view showed both.
+  (with-temp-trees ((proj "files-times"))
+    (let ((times '(("january.txt" 1736942400 "2025-01-15T12:00:00Z")
+                   ("july.bin" 1751371200 "2025-07-01T12:00:00Z")
+                   ("early.txt" 1000 "1970-01-01T00:16:40Z"))))
+      (loop for (name time) in times
+            for path = (merge-pathnames name proj)
+            do (nlk:write-file-atomically path (if (search ".bin" name) (octets 1 0 2) name))
+               (set-file-times path time))
+      (with-gateway-session (port "s-files" :cwd (namestring proj))
+        (let ((rows (gethash "entries" (files-route port ""))))
+          (loop for (name nil written) in times
+                for row = (find name rows :key (lambda (row) (gethash "name" row)) :test #'equal)
+                do (is (equal written (and row (gethash "modified" row)))
+                       (format nil "~a's row says it was written at ~a" name written))))
+        (is-shape (files-route port "?path=july.bin")
+                  ("kind" "file")
+                  ("modified" "2025-07-01T12:00:00Z" "a file's own view says when it was written"))))))
+
 (deftest files-route-finds-every-file-under-a-folder-for-quick-open ()
   (with-files-route-folder (port proj away)
     (flet ((found (query) (coerce (gethash "files" (files-route port query)) 'list)))
