@@ -518,6 +518,29 @@ the prior value on unwind."
       (setf *fixture-workspace*
             (ensure-directories-exist (format nil "/tmp/nl-fixture-~a/" (sb-posix:getpid))))))
 
+(defun make-test-link (target link)
+  "A link at LINK, a native namestring with no trailing separator, to
+TARGET, which exists: a symbolic link on Unix. On Windows a directory's is
+a junction, which any account may make, and a file's a symbolic link, which
+takes the account's privilege or Developer Mode. => LINK."
+  #-win32 (sb-posix:symlink (uiop:native-namestring target) link)
+  #+win32
+  (let ((target (string-right-trim "/\\" (uiop:native-namestring target))))
+    (if (uiop:directory-exists-p target)
+        (nlk:run-bounded (list "cmd" "/c" "mklink" "/J" link target))
+        ;; SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE: no privilege needed
+        ;; where Developer Mode is on
+        (when (zerop (sb-alien:alien-funcall
+                      (sb-alien:extern-alien "CreateSymbolicLinkW"
+                                             (function sb-alien:unsigned-char sb-win32::system-string
+                                                       sb-win32::system-string sb-win32::dword))
+                      link target 2))
+          (error "no symbolic link at ~a: Windows error ~d (1314: this account may not make one; Developer Mode lets it)"
+                 link (sb-win32:get-last-error))))
+    (unless (nlk::windows-link-p link)
+      (error "no link at ~a after making one" link)))
+  link)
+
 (defun temp-path (tag &optional type)
   "A fresh path under the system temp directory, unique to this process and
 this call."

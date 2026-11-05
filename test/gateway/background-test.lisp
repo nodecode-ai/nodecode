@@ -253,9 +253,9 @@ the unit folder: what another naming of the same home left there."
   ;; update's handoff raced between them. A home's unit is the one that names
   ;; the home, by true name, whatever the unit is called.
   (let* ((home (string-right-trim "/" (uiop:native-namestring nlk:*home*)))
-         (link (string-right-trim "/" (namestring (temp-path "home-link"))))
+         (link (string-right-trim "/\\" (uiop:native-namestring (temp-path "home-link"))))
          (own (nlk:gateway-unit-name)))
-    (sb-posix:symlink home link)
+    (make-test-link home link)
     (write-gateway-unit "nodecode-gateway-elsewhere" link)
     (is (equal "nodecode-gateway-elsewhere.service" (nlk:gateway-unit-name)) "the home's gateway is the unit that serves it, named through a link")
     (is (nlk:gateway-installed-p) "so the gateway reads as on")

@@ -1576,10 +1576,35 @@ where the file system does not say."
   #-(or linux darwin)
   (progn entry nil))
 
+#+win32
+(defun windows-link-p (native)
+  "Whether the native path NATIVE is itself a link, not followed: a symbolic
+link or a junction, the two reparse points Windows resolves as a path."
+  ;; SB-POSIX:LSTAT is stat(2) on Windows, so it reads through both. The
+  ;; reparse tag is WIN32_FIND_DATAW's dwReserved0 (byte 36) when its
+  ;; attributes carry the reparse-point bit: IO_REPARSE_TAG_SYMLINK and
+  ;; IO_REPARSE_TAG_MOUNT_POINT. Any other tag (a cloud file's placeholder, a
+  ;; deduplicated file) is the file itself.
+  (let ((name (string-right-trim "/\\" native))
+        (data (make-array 592 :element-type '(unsigned-byte 8))))
+    (and (plusp (length name))
+         (char/= #\: (char name (1- (length name)))) ; a drive is no link
+         (not (find-if (lambda (c) (find c "*?")) name))
+         (sb-sys:with-pinned-objects (data)
+           (let* ((sap (sb-sys:vector-sap data))
+                  (handle (%find-first-file (if (< (length name) 260) name (extended-path name)) sap)))
+             (unless (= handle sb-win32:invalid-handle)
+               (%find-close handle)
+               (and (logtest (sb-sys:sap-ref-32 sap 0) +file-attribute-reparse-point+)
+                    (member (sb-sys:sap-ref-32 sap 36) '(#xA000000C #xA0000003)))))))))
+
 (defun lstat-kind (path)
   "What is at the native PATH, a last link not followed: :DIRECTORY, :FILE (a
 regular one), :LINK, :OTHER or :ABSENT, or :UNKNOWN when the question itself
-was refused. The stat is the second value."
+was refused. The stat is the second value (none for a link on Windows)."
+  #+win32
+  (when (windows-link-p path)
+    (return-from lstat-kind :link))
   (handler-case
       (let* ((stat (sb-posix:lstat path))
              (kind (logand (sb-posix:stat-mode stat) sb-posix:s-ifmt)))
