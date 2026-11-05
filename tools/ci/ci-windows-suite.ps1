@@ -150,6 +150,9 @@ $env:XDG_CACHE_HOME = $cache
 $env:TEMP = Join-Path $Root 'temp'; $env:TMP = $env:TEMP
 $env:SBCL_HOME = $sbclDir
 $env:PATH = "$tree;$sbclDir;$env:PATH"
+# The tree is a git archive with no .git to ask: the build names its commit by
+# the stamp, as release-windows.ps1 stamps a release (nodecode.asd's rule).
+$env:NODECODE_BUILD_COMMIT = $label
 $env:WINSUITE_OUT = $out
 $env:WINSUITE_FASL = Join-Path $Root 'fasl'
 $env:WINSUITE_TIMEOUT = "$Timeout"
