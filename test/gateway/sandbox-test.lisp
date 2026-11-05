@@ -233,8 +233,8 @@
 (deftest sandbox-settings-deny-writing-what-the-launcher-reads ()
   (let ((deny (nlk:json-value (sandbox-test-settings) :array "filesystem" "denyWrite"))
         (allow (nlk:json-value (sandbox-test-settings) :array "filesystem" "allowWrite")))
-    (dolist (path '("/h/.nodecode/config.jsonc" "/h/.nodecode/sandbox.jsonc" "/h/.nodecode/sandbox/jailed.json" "/h/.nodecode/secrets/"
-                    "/h/.nodecode/sandbox/srt/"))
+    (dolist (path (mapcar #'sandbox-native '("/h/.nodecode/config.jsonc" "/h/.nodecode/sandbox.jsonc" "/h/.nodecode/sandbox/jailed.json"
+                                             "/h/.nodecode/secrets/" "/h/.nodecode/sandbox/srt/")))
       (is (find path deny :test #'string=) (format nil "~a is the launcher's, not the jail's" path)))
     (is (notany (lambda (path) (search ".cache/nodecode" path)) allow) "the machine's shared cache is not the jail's to write")))
 
