@@ -3417,7 +3417,8 @@ PROMPT is the first prompt's line that says something, null before one."
    "depth" (or (getf entry :depth) 0)
    "lanes" (map 'vector (lambda (open) (and open t)) (getf entry :lanes))
    "fork" (and (getf entry :fork) t)
-   "waits" (session-waits-json entry)))
+   "waits" (session-waits-json entry)
+   "pr" (session-pull-request-json (getf entry :working-directory))))
 
 (defun session-waits-json (entry &aux (waits (getf entry :waits)))
   "What the session of directory ENTRY waits on the person it answers for:
