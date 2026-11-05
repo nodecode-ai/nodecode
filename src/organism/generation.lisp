@@ -322,10 +322,12 @@ stat moves."
   ;; (WRITE-FILE-ATOMICALLY), which moves the directory's mtime. The
   ;; mtime is second-granular, so a count read in the second the directory
   ;; last moved is not kept: a seal later in that second leaves the stat where
-  ;; the read found it.
+  ;; the read found it. The folder is named with no separator at its end
+  ;; (NATIVE-FOLDER): Windows' _stat finds no folder by such a name, and with
+  ;; no stat the count was never kept there, so every frame listed it again.
   (let* ((now (sb-ext:get-time-of-day))
          (directory (generations-directory))
-         (stat (ignore-errors (sb-posix:stat (sb-ext:native-namestring directory))))
+         (stat (ignore-errors (sb-posix:stat (native-folder directory))))
          (stamp (and stat (list (namestring directory) (sb-posix:stat-ino stat)
                                 (sb-posix:stat-mtime stat))))
          (memo *manifest-count*))
