@@ -353,7 +353,11 @@ the plan runs low or a spent plan's credit pays, DANGER when nothing can pay."
 
 (defun account-credential ()
   "The saved nodecode.ai key and the API base it is for, as (values KEY BASE); NIL with none."
-  (let ((key (ignore-errors (credential-key (resolve-provider-credential "nodecode")))))
+  ;; The chain's last tier is the "public" stand-in: a providers.nodecode entry with no key, as
+  ;; a sign-out leaves it, is no account.
+  (let* ((credential (ignore-errors (resolve-provider-credential "nodecode")))
+         (key (and credential (not (eq :public (getf credential :source)))
+                   (ignore-errors (credential-key credential)))))
     (when (and (stringp key) (plusp (length key)))
       (values key (or (ignore-errors (provider-base-url "nodecode")) "https://api.nodecode.ai/v1")))))
 
@@ -462,6 +466,50 @@ api) on this organism's home, and answer ACCOUNT-JSON with the page and code in 
       (nlk::protocol-refuse :invalid_request "mode must be \"subscription\" or \"api\""))
     (account-login-start mode)
     (account-json)))
+
+;;; --- signing out: /logout and `nodecode logout' ---------------------------------
+;;; The sign-in's mirror: this home forgets the account's key and the link's secret, so no turn,
+;;; meter or machine report reaches the account from here. The key itself lives on the account
+;;; until the machine is removed on its Machines page; the words say so.
+
+(defun account-logout ()
+  "Sign this home out of nodecode.ai: take the account's key out of auth.json (and out of its own
+secrets file, and an inline providers.nodecode.api_key), forget the machine link, and drop the
+meter and any sign-in in flight. => the words that say what happened, and whether a key or a
+link went; signed out already, it says so and writes nothing."
+  (let ((key (account-credential))
+        (linked (json-value (read-auth-file *auth-file-path*) :object "machine_link")))
+    (setf *account-usage* nil *account-login* nil)
+    (if (not (or key linked))
+        (values "Not signed in to nodecode.ai: nothing to sign out of" nil)
+        (progn
+          (when key
+            (save-provider-api-key "nodecode" nil)
+            ;; An inline key outranks auth.json's (ACCOUNT-LOGIN-SAVE takes it out for the same reason).
+            (when (json-value (read-shared-config) :any "providers" "nodecode" "api_key")
+              (config-set (list "providers" "nodecode" "api_key") :remove)))
+          (when linked
+            (update-auth-file (lambda (auth) (remhash "machine_link" auth))))
+          (values
+           (if (account-credential)
+               "Signed out here, but a nodecode.ai key still reaches this home from the environment or a config command: remove it there"
+               (format nil "Signed out of nodecode.ai; remove this machine at https://nodecode.ai/account/machines to end its key there too~:[~; · the default model needs /login or /models~]"
+                       (equal "nodecode" (ignore-errors (shared-model-pin)))))
+           t)))))
+
+(define-gateway-route handle-gateway-account-logout-http (env)
+  "POST /api/gateway/account/logout -- sign this organism's home out of nodecode.ai
+(ACCOUNT-LOGOUT), and answer ACCOUNT-JSON with what happened in `logout'."
+  (:route :post "/api/gateway/account/logout" "account sign-out")
+  (let* ((text (account-logout)) (json (account-json)))
+    (setf (gethash "logout" json) text)
+    json))
+
+(defun account-logout-main ()
+  "`nodecode logout': ACCOUNT-LOGOUT's words on stdout, with no store or terminal UI."
+  (write-line (account-logout))
+  (uiop:finish-outputs)
+  (uiop:quit 0))
 
 ;;; --- the shell: /login and the footer's meter ---------------------------------
 
@@ -709,3 +757,20 @@ choice is (SETUP-STAGE-SIGN-IN): the prompt and /models leave the picker's label
                            :subtitle "Signs in with your nodecode.ai account in the browser; this machine's key is saved here."
                            :hint (if on-cancel "enter choose  esc back  ↑↓ navigate" "enter choose  esc cancel  ↑↓ navigate"))
        nil)))
+
+(defun slash-logout-op (model args)
+  "/logout on a shell: sign this home out of nodecode.ai on its gateway, then clear the footer's
+meter and say what happened. It takes no argument."
+  (if (plusp (length (string-trim '(#\Space #\Tab) (or args ""))))
+      "/logout takes no word: /logout alone signs this machine out of nodecode.ai"
+      (progn
+        (off-loop model
+                  (lambda () (gateway-model-http-call model :post "/api/gateway/account/logout" (json-object)))
+                  (lambda (model value)
+                    (let ((failure (off-loop-failure value)))
+                      (if failure
+                          (show-status model (format nil "logout: ~a" failure) :error-p t)
+                          (progn (setf *account-meter* (account-meter-of value))
+                                 (show-status model (json-value value :string "logout")))))
+                    (render-state model)))
+        "logout: signing out of nodecode.ai…")))
