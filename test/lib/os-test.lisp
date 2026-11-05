@@ -495,6 +495,20 @@ except OSError:
       (nlk:unlock-folder folder)
       (is (not (nlk:file-locked-p path)) "and the release frees it"))))
 
+(deftest executable-on-path-finds-a-command-the-way-the-shell-does (with-temp-workspace (dir))
+  ;; Windows runs `npx' as npx.cmd and `git' as git.exe, by PATHEXT: a bare
+  ;; name probed alone named nothing there, and an import skipped the server.
+  (let ((saved (uiop:getenv "PATH"))
+        (file (merge-pathnames #-win32 "nl-tool" #+win32 "nl-tool.cmd" dir)))
+    (write-temp-file file "")
+    (unwind-protect
+         (progn
+           (nlk::set-environment-variable "PATH" (string-right-trim "/\\" (uiop:native-namestring dir)))
+           (is (equal (truename file) (nlk::executable-on-path "nl-tool")) "the name the shell runs")
+           #+win32 (is (equal (truename file) (nlk::executable-on-path "nl-tool.cmd")) "or the file it is")
+           (is (null (nlk::executable-on-path "nl-absent")) "and nothing for a name that is not there"))
+      (nlk::set-environment-variable "PATH" (or saved "")))))
+
 (deftest a-folder-lock-counts-its-reentrance-and-releases-on-unwind (with-temp-workspace (dir))
   ;; POSIX would let this process take the lock twice and CLOSE the second
   ;; descriptor over it, dropping the first lock with it; the count is what
