@@ -2995,9 +2995,10 @@ installer's. => TARGET."
                                                           root))))
     (subseq (append (marker-lines marker) (list nil nil nil)) 0 3)))
 
-(defun refresh-hub-clones (&key (root *cells-directory*) (shipped (shipped-cells)) hub (apply t))
+(defun refresh-hub-clones (&key (root *cells-directory*) (shipped #'shipped-cells) hub (apply t))
   "Move each hub clone under ROOT on to what stands for it now: this image's
-own folder when this image ships one of its name (SHIPPED), else the commit
+own folder when this image ships one of its name (SHIPPED, the offers or a
+function answering them, called once and only when a clone is found), else the commit
 Nodecode's own index pins it at in HUB, the hub's entries as HUB-CELLS
 answers them -- or a function answering them, called once and only when a
 clone needs it -- when that entry still names the clone's repository and
@@ -3015,7 +3016,10 @@ folder and its pin moved. With APPLY NIL nothing moves.
   ;; carries no marker, so it is never touched. The clone is set aside under
   ;; the home's .cell-staging/ while its replacement goes in, and put back
   ;; when that fails, so a failed move leaves the box as it was and the next
-  ;; look tries again. Each clone is its own error boundary.
+  ;; look tries again. Each clone is its own error boundary. SHIPPED is read
+  ;; only once a clone turns up: it parses every .asd the release ships, a
+  ;; boot's 24 ms on Windows (2026-11-05), and a home with no hub clone -- most
+  ;; of them -- needs none of it.
   (let ((moved '())
         (failed '()))
     (when (and root (uiop:directory-exists-p root))
@@ -3026,7 +3030,7 @@ folder and its pin moved. With APPLY NIL nothing moves.
             (destructuring-bind (git commit path) pin
               (let* ((own (find-if (lambda (offer) (and (string= name (offer-name offer))
                                                         (null (offer-git offer))))
-                                   shipped))
+                                   (if (functionp shipped) (setf shipped (funcall shipped)) shipped)))
                      (entry (and (not own)
                                  (find-offer name (if (functionp hub) (setf hub (funcall hub)) hub))))
                      (next (and entry
