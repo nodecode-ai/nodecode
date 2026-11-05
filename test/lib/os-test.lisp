@@ -894,6 +894,39 @@ five seconds on a thread of its own."
     #+(and linux x86-64)
     (is (plusp in-c) "the spinning thread was found inside malloc")))
 
+(deftest a-deadline-cuts-a-read-a-quiet-socket-holds ()
+  ;; On Windows a socket's read went straight to ReadFile, which waits past
+  ;; any deadline: a peer that never answered held its reader for as long as
+  ;; it stayed. The deadline cuts it, a deferred one later, and what the peer
+  ;; writes in time is read.
+  (let ((listener (usocket:socket-listen "127.0.0.1" 0 :reuse-address t :element-type '(unsigned-byte 8))))
+    (nlk:with-cleanup ((usocket:socket-close listener))
+      (let* ((client (usocket:socket-connect "127.0.0.1" (usocket:get-local-port listener)
+                                             :element-type '(unsigned-byte 8)))
+             (peer (usocket:socket-accept listener))
+             (in (usocket:socket-stream client)))
+        (nlk:with-cleanup ((usocket:socket-close client) (usocket:socket-close peer))
+          (flet ((cut-after (defers &aux (deferred 0) (start (get-internal-real-time)))
+                   ;; => the milliseconds the read waited before its cut, or NIL when it read
+                   (handler-case
+                       (handler-bind ((sb-sys:deadline-timeout
+                                        (lambda (condition)
+                                          (when (<= (incf deferred) defers)
+                                            (sb-sys:defer-deadline 0.3 condition)))))
+                         (sb-sys:with-deadline (:seconds 0.3)
+                           (read-byte in nil))
+                         nil)
+                     (sb-sys:deadline-timeout () (nlk:elapsed-ms start)))))
+            (let ((waited (cut-after 0)))
+              (is (and waited (<= 250 waited 1500)) (format nil "cut at its deadline: ~a ms" waited)))
+            (let ((waited (cut-after 1)))
+              (is (and waited (<= 550 waited 1800)) (format nil "and at a deferred one: ~a ms" waited)))
+            (nlk:spawn "late-peer"
+              (sleep 0.2)
+              (write-byte 42 (usocket:socket-stream peer))
+              (finish-output (usocket:socket-stream peer)))
+            (is (eql 42 (sb-sys:with-deadline (:seconds 5) (read-byte in nil))) "a byte that comes in time is read")))))))
+
 (deftest a-parked-thread-still-takes-an-unwinding-interruption ()
   ;; A stop is for a thread parked on something outside it, so the safe
   ;; delivery must still land in a system call that waits: a sleep, a read
