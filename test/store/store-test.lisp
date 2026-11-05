@@ -218,7 +218,7 @@ carrying INPUT, then BINDINGS, LET* bindings that may name TURN."
         (is-carrying (text (refusal (make-array 8000 :element-type '(unsigned-byte 8) :initial-element 171)))
           (:= (format nil "~a is not a nodecode store (not an SQLite database); move it aside and run ~
                            nodecode again"
-                      (namestring path))))
+                      (uiop:native-namestring path))))
         (is (not (nlk::store-lease-held-p path)) "the lease is let go")
         (is (not (probe-file (nlk::lease-path-for-store path))) "and its holder sidecar")
         ;; a real store, then its first page past the header scribbled over

@@ -374,8 +374,11 @@ STORE-PATH is the store the launch named, NIL for the home's own."
                         "or name a store elsewhere with --store PATH")
         (cond ((uiop:directory-exists-p path)
                (if store-path
-                   (format nil "~a is a folder, not a store file; name a file, such as --store ~a/history.db"
-                           shown shown)
+                   ;; the file named the way the folder is, `\' and all on Windows
+                   (format nil "~a is a folder, not a store file; name a file, such as --store ~a"
+                           shown (home-abbreviated
+                                  (uiop:native-namestring
+                                   (merge-pathnames "history.db" (uiop:ensure-directory-pathname path)))))
                    (format nil "~a is a folder, not a store file; move it aside and run nodecode again" shown)))
               ;; Not there yet, or a link to a file not there yet: the boot
               ;; makes it. Stat follows the link; PROBE-FILE answers the link.
