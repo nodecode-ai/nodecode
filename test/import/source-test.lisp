@@ -44,7 +44,7 @@ more. => (values URL V1 HEAD), URL its file:// address."
     (import-write repo "SKILL.md"
                   (format nil "---~%name: root-skill~%description: The second root skill.~%---~%Say where it sits.~%"))
     (fixture-git repo "commit" "--quiet" "--all" "--message" "v2")
-    (values (format nil "file://~a" (string-right-trim "/" (uiop:native-namestring repo)))
+    (values (format nil "file://~a" (string-right-trim "/\\" (uiop:native-namestring repo)))
             v1
             (fixture-git repo "rev-parse" "HEAD"))))
 
@@ -61,6 +61,10 @@ more. => (values URL V1 HEAD), URL its file:// address."
   (is (equal '(:url "https://github.com/o/r" :name "github.com/o/r" :ref "v1.2" :path "skills/x")
              (nik::parse-source "github:o/r/skills/x#v1.2")) "#REF pins a branch, a tag or a commit")
   (is (equal "https://gitlab.com/o/r" (getf (nik::parse-source "https://gitlab.com/o/r.git") :url)) "another host's URL, its .git dropped")
+  (is (equal '(:url "file:///C:/Users/me/repo" :name "local/me/repo" :ref nil :path nil)
+             (nik::parse-source "file:///C:/Users/me/repo")) "a folder here is a file:// URL")
+  #+win32
+  (is (equal "local/me/repo" (getf (nik::parse-source "file://C:\\Users\\me\\repo") :name)) "or a Windows path")
   (is (null (nik::parse-source "claude")) "a world's name is no repository")
   (is (null (nik::parse-source "/tmp")) "nor is a path")
   (is (null (nik::parse-source "./o/r")) "nor a relative one")
