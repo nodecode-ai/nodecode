@@ -3925,8 +3925,10 @@ default new sessions start on, and every attached shell's footer follows
 (SELECT-SESSION-MODEL)."
   ;; MODEL alone keeps the current lane; :PROVIDER names one. (select-model
   ;; nil) clears the pin so the session takes the default again at its next
-  ;; turn. An unknown lane refuses before anything moves. Other sessions that
-  ;; already ran keep their own model. => one line saying what landed.
+  ;; turn. An unknown lane, or a model its listing does not offer
+  ;; (CHECK-MODEL-OFFERED, which names the ids it does), refuses before
+  ;; anything moves. Other sessions that already ran keep their own model.
+  ;; => one line saying what landed.
   (check-type model (or null model-id))
   (check-type provider (or null provider-id))
   (unless (stringp session-id)
