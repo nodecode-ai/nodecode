@@ -80,6 +80,27 @@ spawns pushed onto SPAWNS instead of run."
       (is (= 100 files) "every file is visited")
       (is (< (- (sb-ext:get-bytes-consed) before) (* 100 1024)) "under a kilobyte a file"))))
 
+(deftest the-folder-walk-follows-a-link-and-cuts-its-cycle (with-temp-trees ((root "walk-cycle")))
+  ;; A link back up the tree is followed and cut where it comes round: the
+  ;; walk knows a folder by what it is, not by the path it came in by -- on
+  ;; Windows by the volume and file index its handle carries, where stat's
+  ;; inode is 0 for every file. A junction there, a symbolic link elsewhere.
+  (write-temp-file (merge-pathnames "a/f.lisp" root) "x")
+  (write-temp-file (merge-pathnames "b/g.lisp" root) "x")
+  (let ((up (string-right-trim "/\\" (uiop:native-namestring (merge-pathnames "a/up/" root))))
+        (top (string-right-trim "/\\" (uiop:native-namestring root)))
+        (seen '()))
+    #-win32 (sb-posix:symlink top up)
+    #+win32 (uiop:run-program (list "cmd" "/c" "mklink" "/J" up top) :output nil)
+    ;; The link goes first: a tree removed through a link back up it is
+    ;; removed again under its own name.
+    (nlk:with-cleanup (#-win32 (sb-posix:unlink up)
+                       #+win32 (uiop:run-program (list "cmd" "/c" "rmdir" up) :output nil))
+      (is (probe-file (merge-pathnames "a/up/b/g.lisp" root)) "the link leads back up")
+      (nlk::map-visible-file-tree root (lambda (path stat) (declare (ignore stat))
+                                         (push (subseq path (length (namestring root))) seen)))
+      (is (equal '("a/f.lisp" "b/g.lisp") (sort seen #'string<)) "each file once, the cycle cut"))))
+
 (deftest cells-layer-cache-keeps-the-newest-two-stamps (with-cell-fixture (root))
   ;; A warm update runs two builds at once -- the one serving and the one its
   ;; successor boots -- and without this, a compile under either would delete
