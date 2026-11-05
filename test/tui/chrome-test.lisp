@@ -1170,16 +1170,27 @@ line 6~%line 7")
   (with-stubbed-fdefinition (nlk:manifest-count () 12)
     (with-frame-model (model 100 24 :session-id "home-tip-held")
       (let ((tip (nle::home-tip model)))
-        (is (member tip nle::+home-tips+ :test #'eq) "a launch past the first takes one of the tips")
+        (is (member tip (mapcan #'nle::home-tip-slot-tips (copy-list nle::+home-tips+)) :test #'eq) "a launch past the first takes one of the tips")
         (nle::compose-frame model)
         (is (eq tip (nle::home-tip model)) "and keeps it frame to frame")))))
 
-(deftest home-tips-name-commands-that-exist (dolist (tip nle::+home-tips+))
+(deftest home-tips-name-commands-that-exist
+    (dolist (tip (loop for slot in nle::+home-tips+ append (nle::home-tip-slot-tips slot))))
   ;; A tip that names a command teaches it; one renamed under it would teach
   ;; nothing.
   (let ((typed (second tip)))
     (when (and (> (length typed) 1) (char= #\/ (char typed 0)))
       (is (nle::find-slash-command (subseq typed 1)) typed))))
+
+(deftest home-tip-slot-of-cell-examples-weighs-one-tip ()
+  ;; The cell examples share one slot: the slot is drawn as often as any one
+  ;; tip, and one of its examples shows, so three examples do not crowd out
+  ;; the rest.
+  (let ((slots (remove-if (lambda (slot) (stringp (first slot))) nle::+home-tips+)))
+    (is (= 1 (length slots)) "one slot holds several tips")
+    (is (= 3 (length (nle::home-tip-slot-tips (first slots)))) "the three cell examples")
+    (is (every (lambda (tip) (search "make a cell that " (second tip))) (nle::home-tip-slot-tips (first slots))) "each one a cell asked for"))
+  (is (equal '(("" "/tree" " rewinds")) (nle::home-tip-slot-tips '("" "/tree" " rewinds"))) "a lone tip is a slot of one"))
 
 (deftest gateway-home-placeholder-narrates-the-lifecycle ()
   (with-frame-model (client 80 24 :session-id "home-gw" :http-port 4321)

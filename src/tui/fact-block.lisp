@@ -130,15 +130,25 @@ COMMAND), COMMAND the slash command a click on the row runs."
 ;;; all, so each launch picks its own. A home that has sealed no generation
 ;;; is on its first launch, and gets the first: what only a self that
 ;;; rewrites itself can do. The pick holds for the shell's life, /clear
-;;; included, so the line never changes under the operator's eye.
+;;; included, so the line never changes under the operator's eye. A slot of
+;;; several tips -- the examples of a cell made by asking -- is drawn as
+;;; often as any one tip, and one of its tips shows.
 (defparameter +home-tips+
   '(("Try \"" "you can't read PDFs. teach yourself." "\"")
     ("Type " "/" " to browse commands; /help shows shortcuts.")
     ("" "/generations" " restores any earlier self.")
     ("" "/tree" " rewinds to any turn, or continues from it.")
-    ("" "/think" " sets how hard the model reasons."))
-  "The landing screen's tips, each (BEFORE TYPED AFTER): the words around the
-one thing to type.")
+    ("" "/think" " sets how hard the model reasons.")
+    ("" "/snapshot" " before a risky change; /snapshots goes back.")
+    (("Try \"" "make a cell that watches my CI and tells me when it breaks." "\"")
+     ("Try \"" "make a cell that watches arXiv for papers on agents." "\"")
+     ("Try \"" "make a cell that pings me when my site goes down." "\"")))
+  "The landing screen's tip slots, each a tip (BEFORE TYPED AFTER) -- the words
+around the one thing to type -- or a list of tips that share one slot.")
+
+(defun home-tip-slot-tips (slot)
+  "The tips SLOT of +HOME-TIPS+ holds: itself when it is one tip."
+  (if (stringp (first slot)) (list slot) slot))
 
 (defun home-tip (model)
   "MODEL's tip from +HOME-TIPS+, picked at its first landing screen."
@@ -146,7 +156,10 @@ one thing to type.")
       (setf (chat-model-home-tip model)
             (if (zerop (nlk:manifest-count))
                 (first +home-tips+)
-                (nth (random (length +home-tips+) (make-random-state t)) +home-tips+)))))
+                (let* ((state (make-random-state t))
+                       (tips (home-tip-slot-tips
+                              (nth (random (length +home-tips+) state) +home-tips+))))
+                  (nth (random (length tips) state) tips))))))
 
 (defun home-band-lines (model width &aux (height (chat-model-term-height model)))
   "The home band as (values LINES PLAINS): painted rows sized to fill the
