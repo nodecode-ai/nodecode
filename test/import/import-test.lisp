@@ -863,6 +863,13 @@
   ;; left out, and an allowlist or an owner of one is never the other's.
   (make-openclaw-fixture box :token "FAKE-not-a-token-openclaw-987654"
                              :discord "FAKE-not-a-token-openclaw-discord")
+  ;; Newest is by the second a home's last-used file was written, and Openclaw's
+  ;; was written after Hermes's: write Hermes's again, so it is the newest
+  ;; however slowly the fixtures were laid down, never only when both fell in
+  ;; one second.
+  (let ((db (sqlite:connect (namestring (merge-pathnames ".hermes/state.db" (uiop:ensure-directory-pathname box))))))
+    (unwind-protect (sqlite:execute-non-query db "PRAGMA user_version = 1")
+      (sqlite:disconnect db)))
   (flet ((items (plan platform)
            (remove-if-not (lambda (item) (equal (format nil "channels.~a" platform) (nik:item-destination item)))
                           (import-items plan "channels"))))
