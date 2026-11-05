@@ -671,7 +671,7 @@ process's own, or NIL."
   (let ((link (uiop:native-namestring (merge-pathnames "leads" dir))))
     (make-test-link (merge-pathnames "inside/" dir) link)
     (is (eq :link (nlk::lstat-kind link)) "the link is a link")
-    (is (eq :directory (nlk::lstat-kind (uiop:native-namestring (merge-pathnames "inside/" dir)))) "the folder a folder")
+    (is (eq :directory (nlk::lstat-kind (uiop:native-namestring (merge-pathnames "inside" dir)))) "the folder a folder")
     (is (eq :file (nlk::lstat-kind (uiop:native-namestring (merge-pathnames "leads/a.txt" dir)))) "and a file through the link a file")
     (is (eq :absent (nlk::lstat-kind (uiop:native-namestring (merge-pathnames "none" dir)))) "nothing is absent")))
 
