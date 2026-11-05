@@ -303,7 +303,7 @@ come off in the reverse:
 | `(:section (PATH...) CLAUSE...)` | `nlk:define-section`, verbatim | — |
 | `(:settings FUNCTION)` | `(lambda (values table) ...)` | — |
 | `(:tool NAME SCHEMA FN)` | `nle:register-tool` | `nle:unregister-tool` |
-| `(:command NAME RUN &key description argument-hint trigger complete)` | `nle:register-command`: `/NAME` in the one slash catalog, wherever it is typed; RUN takes `(args session-id)` and answers `(values TEXT DIALOG)`; COMPLETE takes `(text session-id)`, the argument typed so far, and answers `(:name :value)` plists, the choices a menu offers while it is typed | `nle:unregister-commands` |
+| `(:command NAME RUN &key description argument-hint trigger complete)` | `nle:register-command`: `/NAME` in the one slash catalog, wherever it is typed; RUN takes `(args session-id)` and answers `(values TEXT DIALOG)`; COMPLETE takes `(text session-id)`, the argument typed so far, and answers `(:name :value)` plists, the choices a menu offers while it is typed; `:reads '(:draft)` hands RUN the shell's input box as `:draft`, `""` when the command was typed there, `nil` from a front end that does not send it | `nle:unregister-commands` |
 | `(:help TOPIC SUMMARY TEXT)` | `nle:set-help-topic`: `(help TOPIC)` answers TEXT, every request's `help` section carries SUMMARY, one line | `(nle:set-help-topic TOPIC nil)` |
 | `(:hook NAME FN)` | `nle:hook` on a point or a function name | `nle:unhook` |
 | `(:route PATH FN)` | `nle:route`: PATH answered on the gateway's own port | `(nle:route PATH nil)` |

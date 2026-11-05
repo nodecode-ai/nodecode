@@ -19,17 +19,32 @@ SET-GATEWAY-COMMANDS takes."
         collect (list :name (json-value command :string "name")
                       :description (or (json-value command :string "description") "")
                       :session (json-value command :boolean "session")
-                      :trigger (json-value command :text "trigger"))))
+                      :trigger (json-value command :text "trigger")
+                      ;; The reads this shell knows; a newer gateway's others drop.
+                      ;; Learnt from the catalog as fetched: a stale one sends nothing.
+                      :reads (and (find "draft" (json-array command "reads") :test #'equal)
+                                  '(:draft)))))
 
-(defun gateway-slash-answer (model line)
+(defun command-draft (model entry)
+  "The composer's text when ENTRY, a slash command or NIL, declares it reads
+the draft; else NIL, so a command that did not ask is never sent it."
+  ;; The draft is the composer as it stands: a key or a row runs the command
+  ;; beside what is being written, and the box keeps it; a line typed into
+  ;; the box was the box (SUBMIT-SLASH resets the editor first), so that
+  ;; command reads "".
+  (and entry (member :draft (slash-command-reads entry))
+       (editor-value model.editor)))
+
+(defun gateway-slash-answer (model line &key draft)
   "The answer MODEL's gateway gives the slash LINE (POST /api/gateway/slash),
-run in MODEL's session."
+run in MODEL's session, DRAFT the composer's text for a command that reads it."
   (gateway-model-http-call
    model :post "/api/gateway/slash"
    ;; This shell performs both effects there are (PERFORM-ANSWER-EFFECTS), and
    ;; says so, so a command words its text by what will happen here.
    (json-object "line" line :opt "session_id" (json-value model.session-id :text)
-                "effects" #("clipboard" "draft"))))
+                "effects" #("clipboard" "draft")
+                :opt "draft" draft)))
 
 (defun run-gateway-command (model entry args &key trigger)
   "Run ENTRY, a cell's command MODEL's gateway serves, with its verbatim
@@ -39,7 +54,7 @@ it."
   (let* ((name (slash-command-name entry))
          (line (format nil "/~a~@[ ~a~]" name (json-value args :text))))
     (with-slash-notice ((format nil "/~a" name))
-      (let ((answer (gateway-slash-answer model line)))
+      (let ((answer (gateway-slash-answer model line :draft (command-draft model entry))))
         (perform-answer-effects model answer)
         (if (json-value answer :object "dialog")
             (progn (open-answer-dialog model answer :line line :trigger trigger) nil)
@@ -189,8 +204,12 @@ nothing."
 the command ran: a dialog it answers opens over STACK; else what it says is a
 toast, the one line the panel leaves in sight, and STACK is read again
 (REOPEN-ANSWER-DIALOG) -- unless the answer set the draft: the composer is
-where the person goes next, so the stack stays closed."
-  (multiple-value-bind (answer failed) (with-slash-notice (line) (gateway-slash-answer model line))
+where the person goes next, so the stack stays closed. A command that reads
+the draft is handed it, as when run from a key."
+  (multiple-value-bind (answer failed)
+      (with-slash-notice (line)
+        (gateway-slash-answer model line
+                              :draft (command-draft model (find-slash-command (parse-slash-input line)))))
     (unless failed (perform-answer-effects model answer))
     (cond ((and (not failed) (json-value answer :object "dialog"))
            (open-answer-dialog model answer :line line :under stack))

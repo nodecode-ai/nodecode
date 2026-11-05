@@ -5898,6 +5898,88 @@ default target is PROVIDER/MODEL-ID, restored after."
       (is (equal "just a line" (nle::execute-slash-command model "line" "")))
       (is (null (nle::chat-model-dialog model)) "no dialog, no panel"))))
 
+(deftest cell-command-reads-the-draft-only-when-it-declares-it (with-temp-gateway (port))
+  ;; Given a command declared with :READS (:DRAFT) and one declared without,
+  ;; when a shell runs each, then only the first is handed the composer's
+  ;; text, as RUN's :DRAFT keyword, and the composer keeps it. A command run
+  ;; beside the box (a key, a picker row) reads what is being written; one
+  ;; typed into the box has spent the box on its own line, so it reads "".
+  ;; Without a box (a room, eval) the draft is NIL unless the caller passes one.
+  (with-saved-globals (nle::*registered-commands* nle::*gateway-commands*)
+    (let ((calls '()))
+      (nle:register-command "draft-pack" "stash"
+                            (lambda (args session-id &rest keys)
+                              (declare (ignore session-id))
+                              (push (list* "stash" args keys) calls)
+                              "stashed")
+                            :description "Reads the draft" :reads '(:draft))
+      (nle:register-command "draft-pack" "peek"
+                            (lambda (args session-id &rest keys)
+                              (declare (ignore session-id))
+                              (push (list* "peek" args keys) calls)
+                              "peeked")
+                            :description "Declares nothing")
+      (let ((model (gateway-frame-model port "ext-draft")))
+        ;; The declaration crosses the catalog.
+        (is (equal '(:draft) (nle::slash-command-reads (nle::find-gateway-command "stash"))))
+        (is (null (nle::slash-command-reads (nle::find-gateway-command "peek"))))
+        (type-string model "half a thought")
+        (is (equal "stashed" (nle::execute-slash-command model "stash" "")))
+        ;; Run beside the box, the command reads the box.
+        (is (equal '("stash" "" :draft "half a thought") (first calls)))
+        (is (equal "half a thought" (composer-value model)) "and the box keeps it")
+        (nle::execute-slash-command model "peek" "")
+        (is (equal '("peek" "") (first calls)) "an undeclared command is handed nothing")
+        (nle::editor-reset (nle::chat-model-editor model))
+        (type-string model "/stash now" :enter)
+        ;; Typed into the box, the line spent the box.
+        (is (equal '("stash" "now" :draft "") (first calls)))
+        (nle:slash "/stash" :session-id "ext-draft")
+        (is (equal '("stash" "" :draft nil) (first calls)) "no box, no draft")
+        (nle:slash "/stash" :session-id "ext-draft" :draft "from eval")
+        (is (equal '("stash" "" :draft "from eval") (first calls)))
+        (nle:slash "/peek" :session-id "ext-draft" :draft "from eval")
+        (is (equal '("peek" "") (first calls)) "a draft offered to an undeclared command is dropped")))))
+
+(deftest a-row-line-reads-the-draft-only-when-its-command-declares-it (with-temp-gateway (port))
+  ;; Given a composer holding "half a thought" and a dialog whose rows run
+  ;; "/stash pop 1" (declared :READS (:DRAFT)) and "/peek x" (declared
+  ;; nothing), when Enter runs each row's line, then the stash is handed the
+  ;; draft as a row run beside the box, the peek nothing, and the box keeps it.
+  (with-saved-globals (nle::*registered-commands* nle::*gateway-commands*)
+    (let ((calls '()))
+      (nle:register-command "draft-rows" "stash"
+                            (lambda (args session-id &rest keys)
+                              (declare (ignore session-id))
+                              (push (list* "stash" args keys) calls)
+                              "stashed")
+                            :description "Reads the draft" :reads '(:draft))
+      (nle:register-command "draft-rows" "peek"
+                            (lambda (args session-id &rest keys)
+                              (declare (ignore session-id))
+                              (push (list* "peek" args keys) calls)
+                              "peeked")
+                            :description "Declares nothing")
+      (nle:register-command "draft-rows" "menu"
+                            (lambda (args session-id)
+                              (declare (ignore args session-id))
+                              (values "menu"
+                                      (nle:list-dialog
+                                       :title "Menu"
+                                       :rows (list (list :key "1" :label "stash" :run (list :enter "/stash pop 1"))
+                                                   (list :key "2" :label "peek" :run (list :enter "/peek x"))))))
+                            :description "A dialog of row lines")
+      (let ((model (gateway-frame-model port "ext-draft-rows")))
+        (type-string model "half a thought")
+        (with-slash-dialog (dialog model "menu" "") "the menu opens"
+          (is (equal "Menu" (nle::picker-dialog-title dialog))))
+        (dialog-keys model :enter)
+        ;; A row's line reads the box when its command declares it.
+        (is (equal '("stash" "pop 1" :draft "half a thought") (first calls)))
+        (dialog-keys model :down :enter)
+        (is (equal '("peek" "x") (first calls)) "an undeclared command's row line is handed nothing")
+        (is (equal "half a thought" (composer-value model)) "and the box keeps it")))))
+
 (deftest cell-command-dialog-tabs-narrow-the-list (with-temp-gateway (port))
   (with-saved-globals (nle::*registered-commands* nle::*gateway-commands*)
     (register-tabs-command)

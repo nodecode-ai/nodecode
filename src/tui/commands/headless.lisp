@@ -16,10 +16,11 @@
 (defun slash-catalog ()
   "Every command a headless caller can run, in /help order: the builtins
 with a headless arm, then each cell's registered command, as plists (:name
-:description :session :aliases :trigger) -- :SESSION NIL for one that acts
-on no session, which a client with none open runs as it is, :ALIASES the
-other names SLASH answers it by, and :TRIGGER the character a shell's
-composer opens it on. A command is its name: nothing here says what to type
+:description :session :aliases :trigger :reads) -- :SESSION NIL for one that
+acts on no session, which a client with none open runs as it is, :ALIASES
+the other names SLASH answers it by, :TRIGGER the character a shell's
+composer opens it on, and :READS what of the shell a cell's command reads
+((:DRAFT), else NIL). A command is its name: nothing here says what to type
 after it, since typed alone it answers what it offers (bare.lisp)."
   ;; The menu a channel publishes to its platform is this list; a cell's
   ;; command that shadows a builtin name is left out, as SLASH never reaches
@@ -31,7 +32,8 @@ after it, since typed alone it answers what it offers (bare.lisp)."
                       :description (slash-command-description entry)
                       :session entry.session
                       :aliases entry.aliases
-                      :trigger entry.trigger)))
+                      :trigger entry.trigger
+                      :reads entry.reads)))
 
 (defun slash-completions (name text &key session-id)
   "NIL: no command completes words typed after its name, since a command is

@@ -180,8 +180,11 @@ A `:command` takes these keys:
 | `:label`, `:catches` | A `:catches` condition answers `LABEL: it`. Defaults: the command's name, and `error`. |
 | `:session` | `nil` for a command that acts on no session. |
 | `:trigger` | One character that opens it when typed as the draft's first character. |
+| `:reads` | `'(:draft)` hands RUN the text in the shell's input box as a `:draft` keyword, so RUN takes `(args session-id &key draft)`. A command that does not declare it is never sent the draft. |
 
 A command is its name: nobody types after it. Typed alone, RUN gets an empty ARGS, which `nle:bare-args-p` tells, and answers a `nle:list-dialog` of what it offers. A row is `(nle:run-row LABEL LINE)`, whose pick runs LINE, or `(nle:ask-row LABEL ASK LINE :placeholder TEXT :verb WORD)`, which asks for one line of text under ASK and then runs LINE with the text after it. The shell asks in its composer, a room in its own way. RUN reads those lines as it always read its ARGS. `:argument-hint` and `:complete` are still accepted, so an older cell loads, and nothing shows them.
+
+The draft is the input box as it is when the command runs. A command run from a key or a picker row gets what is being written, and the box keeps it. A command typed into the box used the box for its own line, so it gets `""`. A front end that does not send the draft (the web page today, a room, cron, `slash` from eval) gets `nil`, unless the caller passes `:draft`.
 
 ### Command effects
 

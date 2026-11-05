@@ -2865,24 +2865,28 @@ reads, since a cell's lanes and inventory hooks run here only."
 
 (define-gateway-route handle-gateway-slash-http (env)
   "GET /api/gateway/slash — the commands a client can run, in /help order
-(SLASH-CATALOG), each saying whether it acts on a session; POST {line,
-session_id?} runs one against that session and answers {text, dialog?}, what a
-shell would show: the line, and the panel a command answers with. A failure is
-the verb's own 400."
+(SLASH-CATALOG), each saying whether it acts on a session and what of the
+shell it reads (reads: [\"draft\"]); POST {line, session_id?, draft?} runs one
+against that session and answers {text, dialog?}, what a shell would show: the
+line, and the panel a command answers with. DRAFT, the shell's input box, is
+handed only to a command that reads it. A failure is the verb's own 400."
   (:route (:get :post) "/api/gateway/slash" "slash")
   (case (getf env :request-method)
     (:get (make-json-object
            "commands" (map 'vector
                            (lambda (entry)
                              (json-object (:getf entry "name" "description" "session")
-                                          (:getf entry :opt "trigger")))
+                                          (:getf entry :opt "trigger")
+                                          :opt "reads" (when-let (reads (getf entry :reads))
+                                                         (map 'vector #'string-downcase reads))))
                            (slash-catalog))))
     (:post (let* ((request (gateway-request-json env))
                   (line (gethash "line" request)))
              (require-non-empty (list line) "line must be a non-empty string" :required t)
              (multiple-value-bind (text dialog effects)
                  (slash line :session-id (json-value request :string "session_id")
-                             :effects (performed-effects (json-value request :array "effects")))
+                             :effects (performed-effects (json-value request :array "effects"))
+                             :draft (json-value request :string "draft"))
                (json-object "text" text :opt "dialog" dialog :opt "effects" effects))))))
 
 (define-gateway-route handle-gateway-model-http (env)
@@ -3322,16 +3326,23 @@ malformed effect signals, naming it."
                       collect (if (keywordp value) (string-downcase value) value))))
        effects))
 
+(defvar *slash-draft* nil
+  "The composer's text the shell sent with the slash line being run, \"\" for
+an empty box, NIL when the caller has no box (a room, cron, eval): what a
+command declared with :READS '(:DRAFT) is handed as RUN's :DRAFT.")
+
 (defun register-command (owner command run &key description argument-hint
                                                    (label command) (catches 'error)
-                                                   (session t) trigger complete)
+                                                   (session t) trigger complete reads)
   "Put the slash command COMMAND, which RUN answers, in the catalog under the
 key OWNER, replacing any command of that name; SESSION NIL says it acts on no
 session, so a client with none open runs it as it is, TRIGGER, a
 one-character string, is what the shell's composer opens it on when it is
 typed as the draft's first character (the index's `$'). A command is its
 name: RUN called with no argument answers what it offers as a LIST-DIALOG,
-whose rows run its lines or ask for text (tui/commands/bare.lisp).
+whose rows run its lines or ask for text (tui/commands/bare.lisp). READS
+lists what of the shell RUN reads: (:DRAFT) hands it the composer's text as
+a :DRAFT keyword (*SLASH-DRAFT*).
 => COMMAND's entry."
   ;; ARGUMENT-HINT and COMPLETE, the words a cell written before that
   ;; offered typed after the name, are taken and shown nowhere, so such a
@@ -3348,12 +3359,18 @@ whose rows run its lines or ask for text (tui/commands/bare.lisp).
   (check-type owner string)
   (unless (json-value command :text)
     (error "a registered command needs a non-empty name"))
+  ;; A read the shell does not know would be a promise nothing keeps.
+  (unless (and (listp reads) (subsetp reads '(:draft)))
+    (error "/~a: :reads takes a list of :draft, not ~s" command reads))
   (let ((entry (make-slash-command
                 command (or description "")
                 :dispatch nil :owner owner :session session :trigger trigger
+                :reads reads
                 :headless (lambda (args session-id)
                             (multiple-value-bind (text dialog effects)
-                                (handler-case (funcall run args session-id)
+                                (handler-case (if (member :draft reads)
+                                                  (funcall run args session-id :draft *slash-draft*)
+                                                  (funcall run args session-id))
                                   (error (it)
                                     (if (typep it catches)
                                         (format nil "~a: ~a" label it)

@@ -154,7 +154,7 @@ all of it comes back off."
   ;;       refuses, as the start does.
   ;;   (:tool NAME SCHEMA FUNCTION)   REGISTER-TOOL; stop
   ;;       unregisters it.
-  ;;   (:command COMMAND RUN &key description label catches session trigger)
+  ;;   (:command COMMAND RUN &key description label catches session trigger reads)
   ;;       REGISTER-COMMAND under the cell's key, LABEL and CATCHES naming
   ;;       the failure line the way it does (the command and ERROR by
   ;;       default), SESSION NIL for a command that acts on no session,
@@ -217,10 +217,15 @@ all of it comes back off."
             (:command
              (destructuring-bind (spelling run &rest keys
                                   &key description argument-hint label catches session
-                                  trigger complete)
+                                  trigger complete reads)
                  arguments
                (declare (ignore description argument-hint label catches session trigger
                                 complete))
+               ;; The keys are evaluated, so a bare (:draft) would load as a call
+               ;; to an undefined function :DRAFT; say what was meant here instead.
+               (when (and (consp reads) (keywordp (first reads)))
+                 (error "/~a: :reads ~s is evaluated; quote it: :reads '~(~s~)"
+                        spelling reads reads))
                (contribute '() `(register-command ,key ,spelling ,run ,@keys)
                            `(unregister-commands ,key))))
             (:help
