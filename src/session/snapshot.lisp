@@ -464,7 +464,8 @@ or NIL for a line that names none."
 (defun walk-census (store)
   "The paths one `add -A' of STORE would change in its index -- untracked
 paths the walk's ignore rules leave in, tracked ones whose content or mode
-moved, deletions -- from one `add -A --dry-run', which writes nothing."
+moved, deletions -- from one `add -A --dry-run', which writes nothing, or,
+with no index yet, from `ls-files --others'."
   ;; One git call: a step brackets its call with two captures, and on Windows
   ;; starting git is most of what a capture of a small tree costs (T-442).
   ;; `add --dry-run' is the staging's own walk with nothing written: Git for
@@ -472,13 +473,19 @@ moved, deletions -- from one `add -A --dry-run', which writes nothing."
   ;; 5,000 files, 34 ms at 20,000, where `ls-files --others --modified'
   ;; took 81 and 281 ms), and it hashes a file whose stat moved before it
   ;; names it, so a touch is not a change.
-  (let ((paths '()))
-    (dolist (line (uiop:split-string (run-snapshot-git store (list* "add" "-A" "--dry-run" "--ignore-errors"
-                                                                    (staging-pathspec store)))
-                                     :separator '(#\Newline))
-                  (nreverse paths))
-      (when-let (path (census-path line))
-        (push path paths)))))
+  ;; With no index yet every path is untracked, and listing them is all a
+  ;; census can say: `ls-files --others' names them without hashing each,
+  ;; which the staging behind it does once.
+  (if (not (probe-file (snapshot-store-index-path store)))
+      (split-nul (run-snapshot-git store (list* "ls-files" "-z" "--others" "--exclude-standard"
+                                                (staging-pathspec store))))
+      (let ((paths '()))
+        (dolist (line (uiop:split-string (run-snapshot-git store (list* "add" "-A" "--dry-run" "--ignore-errors"
+                                                                        (staging-pathspec store)))
+                                         :separator '(#\Newline))
+                      (nreverse paths))
+          (when-let (path (census-path line))
+            (push path paths))))))
 
 (defun check-walk-bound (store &aux (paths 0) (bytes 0))
   "Signal SNAPSHOT-WALK-TOO-LARGE when one walk of STORE would stage more than
