@@ -186,6 +186,9 @@ of stacking."
      ;; capture fact are the mechanism the turn-tree navigation restores
      ;; through. Both precede session/turn, which hook captures and fold
      ;; visibility.
+     ;; workspace-journal precedes snapshot: a capture asks it whether its
+     ;; workspace moved before it walks.
+     (:file "session/workspace-journal")
      (:file "session/snapshot")
      ;; scribe follows evolve and snapshot: the journal and the splice append
      ;; organism facts through heredity's owned path and ride snapshot's git

@@ -4138,6 +4138,26 @@ request."
     (nlk:with-cleanup ((usocket:socket-close listener))
       (is (nle:await-port (usocket:get-local-port listener) :attempts 5)))))
 
+(deftest a-started-acceptor-is-awaited-by-its-latch ()
+  ;; A refused loopback connect is not answered in microseconds everywhere:
+  ;; Winsock retries the SYN for half a second, and a boot's first probe
+  ;; always landed before clackup's thread had bound -- 500 ms of every
+  ;; Windows boot (T-442). The acceptor says when it listens, and the probe
+  ;; connects only after.
+  (let ((connects '()))
+    (sb-int:encapsulate 'usocket:socket-connect 'latch-test
+                        (lambda (connect host port &rest keys)
+                          (push (cons port (gethash port nle::*listening-ports*)) connects)
+                          (apply connect host port keys)))
+    (nlk:with-cleanup ((sb-int:unencapsulate 'usocket:socket-connect 'latch-test))
+      (multiple-value-bind (handler port)
+          (nle::serve-local (lambda (env) (declare (ignore env)) '(200 (:content-type "text/plain") ("ok"))))
+        (let ((probes (remove port connects :key #'car :test-not #'eql)))
+          (is probes "the serve probed its port")
+          (is (every #'cdr probes) "and only once it listened"))
+        (nle::stop-clack-handler handler)
+        (is (null (gethash port nle::*listening-ports*)) "a stopped acceptor's latch is down")))))
+
 (deftest gateway-http-refuses-without-an-endpoint ()
   ;; Paint-first: the shell is on screen before any gateway exists, so a
   ;; control call from that window must refuse structurally — the gateway
