@@ -3278,14 +3278,38 @@ image's own folder, and take out one of a folder this image no longer ships."
                          (push name retired))))))))))))
     (values (nreverse refreshed) (nreverse failed) (nreverse retired))))
 
+(defun build-folder-p (path)
+  "Whether PATH is a folder a tree of nodecode ships, a release's or a
+checkout's: under its cells/ directory, the organism's own system
+definition beside that."
+  (when-let (cells (nth-value 1 (shipped-relative path)))
+    (and (probe-file (merge-pathnames "../nodecode.asd" cells)) t)))
+
+(defun installer-link-p (link &optional (shipped-root (shipped-cells-directory)))
+  "Whether LINK is a link the installer made: one that leads to a folder a
+build ships -- this image's, under SHIPPED-ROOT, or another tree's
+(BUILD-FOLDER-P) -- or that resolves to nothing."
+  ;; INSTALL-CELL links only a shipped folder, and REFRESH-INSTALLED-CELLS
+  ;; points such a link at this image's own. A link to any other folder is
+  ;; the operator's own -- put there by hand, or by NEW-CELL :SOURCE -- and
+  ;; that folder may hold the only copy of its work: off parks it as it
+  ;; parks a folder (CELL-PARKABLE-P), never takes the link out, and on
+  ;; finds it again. A link to nothing has nothing left to lose.
+  (when (symlink-target link)
+    (let ((resolved (probe-file (uiop:ensure-directory-pathname link))))
+      (or (null resolved)
+          (and shipped-root
+               (uiop:string-prefix-p (namestring (truename shipped-root)) (namestring resolved)))
+          (build-folder-p resolved)))))
+
 (defun installer-put-p (name &optional (root *cells-directory*))
   "Whether the folder NAME under ROOT is one this installer put there — a
-link, a copy carrying its marker, a hub clone carrying its own — and so one
-UNINSTALL-CELL takes out."
+link to a folder a build ships (INSTALLER-LINK-P), a copy carrying its
+marker, a hub clone carrying its own — and so one UNINSTALL-CELL takes out."
   ;; a marker is only found inside a folder that is there
   (and root
        (let ((target (merge-pathnames (format nil "~a/" name) root)))
-         (or #-win32 (symlink-target (merge-pathnames name root))
+         (or #-win32 (installer-link-p (merge-pathnames name root))
              (probe-file (merge-pathnames +installed-marker+ target))
              (probe-file (merge-pathnames +hub-marker+ target))))))
 
