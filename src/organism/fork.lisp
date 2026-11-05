@@ -144,6 +144,19 @@ taken."
   "Whether SESSION is a fork FORK made: its id is fork-<turn>-<n> (FORK-NAME)."
   (and (stringp session) (uiop:string-prefix-p "fork-turn-" session) t))
 
+(defun last-finished-turn-id (session-id)
+  "The newest finished turn of SESSION-ID: its head when no turn runs there,
+else the running turn's parent; NIL at its root, or while its first turn runs."
+  ;; The anchor for a fork that must hold no unfinished turn: a fork at the
+  ;; head of a running session holds that turn as far as it has gone, perhaps
+  ;; a tool call with no result yet. Single-active-turn admission makes the
+  ;; running turn's parent finished; a head moved back by an undo is too.
+  (check-type session-id session-id)
+  (let ((running (first (active-turn-row session-id))))
+    (if running
+        (values (gethash running (session-composed-parents session-id)))
+        (session-head-turn-id session-id))))
+
 (defun fork-running-turn ()
   "The durable turn the calling eval runs in -- which the turn engine binds,
 above the kernel, as NLE::*CURRENT-DURABLE-TURN* -- or NIL."

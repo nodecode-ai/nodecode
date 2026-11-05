@@ -668,6 +668,38 @@ member it declares" refusal))))
                                        "parameters" (tool-parameters schema))))
             'vector)))
 
+(defvar *turn-tools* t
+  "The names of the tools the running turn may call, or T for every one it
+is offered: its submit's :TOOLS (TURN-TOOL-LIMIT).")
+
+(defun turn-tool-limit (turn-id)
+  "=> the tool names TURN-ID may call, or T when its input named no limit."
+  ;; The limit rides the input fact's metadata, the one record a started, a
+  ;; queued and a boot-resumed turn all read back. Only the calls are
+  ;; limited: the turn is offered every schema, so a forked history's calls
+  ;; keep the tools they name (a lane refuses a tool_use whose tool is not
+  ;; declared) and the request extends the parent's cached prefix; a turn
+  ;; limited to none asks with tool_choice none besides (RUN).
+  (let ((tools (gethash "tools" (or (json-value (nlk:events :turn-id turn-id
+                                                             :kind nlk::+kind-input-committed+
+                                                             :as :payload)
+                                                 :object "metadata")
+                                     (make-hash-table)))))
+    (if (vectorp tools)
+        (remove-if-not #'stringp (coerce tools 'list))
+        t)))
+
+(defun tool-not-offered (name)
+  "The refusal of a call to NAME, a tool this turn's limit leaves out."
+  (format nil "ERROR: tool preflight failed: ~a"
+          (encode-json-object
+           (make-json-object "code" "tool_not_offered" "tool" (or name "")
+                             "expected" (coerce *turn-tools* 'vector) "received" #()
+                             "repair" (if *turn-tools*
+                                          (format nil "this turn may call only: ~{~a~^, ~}" *turn-tools*)
+                                          "this turn may call no tool: answer from what you already have")
+                             "retryable" nil))))
+
 (defun snapshot-tool-bindings ()
   (loop for (name schema function) in *tools*
         collect (list (copy-seq name) (copy-json-value schema) function)))
@@ -3631,7 +3663,10 @@ call may run."
          (raw-arguments (and (hash-table-p function-spec)
                              (gethash "arguments" function-spec))) (call-id (gethash "id" call))
          (entry (and (stringp name) (find name context.tool-bindings :key #'first :test #'string=)))
-         ((arguments refusal) (tool-call-preflight name raw-arguments entry)))
+         ((arguments refusal) (if (or (eq *turn-tools* t)
+                                      (member name *turn-tools* :test #'equal))
+                                  (tool-call-preflight name raw-arguments entry)
+                                  (values nil (tool-not-offered name)))))
     (make-tool-run :call-id (if (stringp call-id) call-id "")
                    :name (if (stringp name) name "unknown")
                    :raw-arguments (if (stringp raw-arguments) raw-arguments "")
@@ -4511,7 +4546,10 @@ outranks the default effort the same way while the turn's effective
            (effective-effort session-effort *provider* *model*))
          ;; A pick made inside the turn still moves the image's default
          ;; (WITH-IMAGE-DEFAULT-TARGET), not these bindings.
-         (*default-target-shadowed* t))
+         (*default-target-shadowed* t)
+         ;; The turn's own tool limit, read once it is admitted.
+         (*turn-tools* t)
+         (*tool-choice* *tool-choice*))
     (with-cleanup ((when turn
                      (forget-turn-images turn-id)
                      ;; With the log open the working set is the next hydration's to
@@ -4524,7 +4562,10 @@ outranks the default effort the same way while the turn's effective
                      (nlk:admit-turn sid (or command-id (nlk::make-durable-id "command"))
                                      input :invocation invocation))
             turn-id (nlk:durable-turn-turn-id turn)
-            *current-durable-turn* turn)
+            *current-durable-turn* turn
+            *turn-tools* (turn-tool-limit turn-id))
+      (when (null *turn-tools*)
+        (setf *tool-choice* "none"))
       (attach-turn-images turn-id images)
       (setf *live-turn* (open-live-turn sid turn-id))
       (handler-case
