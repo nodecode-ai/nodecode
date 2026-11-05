@@ -88,6 +88,8 @@ and each TYPE are SB-ALIEN's, or SAP, INT or STR for the three most written."
      (counters sap) (size sb-win32::dword))
     ("GetFinalPathNameByHandleW" %get-final-path-name sb-win32::dword
      (handle sb-win32::handle) (buffer sap) (size sb-win32::dword) (flags sb-win32::dword))
+    ("GetFileInformationByHandle" %get-file-information-by-handle int
+     (handle sb-win32::handle) (information sap))
     ("GetHandleInformation" %get-handle-information int (handle sb-win32::handle) (flags sap))
     ("InitializeProcThreadAttributeList" %initialize-attribute-list int (attributes sap)
      (count sb-win32::dword) (flags sb-win32::dword) (size sap))
@@ -182,6 +184,28 @@ when nothing is there."
                          ((uiop:string-prefix-p "\\\\?\\" name) (subseq name 4))
                          (t name))
                    :ensure-directory (uiop:directory-pathname-p path)))))))))))
+
+#+win32
+(defun file-identity (path)
+  "Which file PATH, a native namestring, is -- links followed -- as one
+string, VOLUME:INDEX, what device:inode is on POSIX; NIL when it cannot be
+opened."
+  ;; Windows' stat answers 0 for every file's inode, so device:inode names
+  ;; one file for the whole volume. The file's own handle carries the volume's
+  ;; serial number and the file's 64-bit index on it
+  ;; (BY_HANDLE_FILE_INFORMATION: the serial at byte 28, the index's high and
+  ;; low halves at 44 and 48).
+  (let ((handle (%create-file path 0 +file-share-all+ nil
+                              +open-existing+ +file-flag-backup-semantics+ 0)))
+    (unless (= handle sb-win32::invalid-handle)
+      (with-cleanup ((sb-win32::close-handle handle))
+        (let ((information (make-array 52 :element-type '(unsigned-byte 8))))
+          (sb-sys:with-pinned-objects (information)
+            (let ((sap (sb-sys:vector-sap information)))
+              (when (/= 0 (%get-file-information-by-handle handle sap))
+                (format nil "~d:~d" (sb-sys:sap-ref-32 sap 28)
+                        (logior (ash (sb-sys:sap-ref-32 sap 44) 32)
+                                (sb-sys:sap-ref-32 sap 48)))))))))))
 
 (defun git-redirector (program)
   "When PROGRAM is one of Git for Windows' redirectors, itself or behind a scoop
@@ -1512,8 +1536,11 @@ where the file system does not say."
   "What is at the native PATH, a last link not followed: :DIRECTORY, :FILE (a
 regular one), :LINK, :OTHER or :ABSENT, or :UNKNOWN when the question itself
 was refused. The stat is the second value."
+  ;; A folder's native namestring ends in its separator, and Windows' stat
+  ;; finds nothing by such a name: every folder read :ABSENT there.
+  ;; NATIVE-PATH drops it, but for a drive's root, which needs it.
   (handler-case
-      (let* ((stat (sb-posix:lstat path))
+      (let* ((stat (sb-posix:lstat #-win32 path #+win32 (native-path path)))
              (kind (logand (sb-posix:stat-mode stat) sb-posix:s-ifmt)))
         (values (cond ((= kind sb-posix:s-ifdir) :directory)
                       ((= kind sb-posix:s-ifreg) :file)

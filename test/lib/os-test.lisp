@@ -665,6 +665,17 @@ process's own, or NIL."
   #+win32 (is (nlk::path-within-p "C:\\proj" "C:\\") "a drive's root keeps its own")
   #+win32 (is (not (nlk::path-within-p "C:\\project" "C:\\proj")) "nor there a name that only starts like it"))
 
+(deftest lstat-kind-reads-a-folder-named-with-its-separator (with-temp-workspace (dir "inside/a.txt"))
+  ;; A folder's native namestring ends in its separator; Windows' stat finds
+  ;; no folder by such a name, so a folder named so read as absent there.
+  (let ((folder (uiop:native-namestring (merge-pathnames "inside/" dir))))
+    (is (eq :directory (nlk::lstat-kind folder)) "the folder, its separator at its end, is a folder")
+    (is (eq :directory (nlk::lstat-kind (string-right-trim "/\\" folder))) "and without it")
+    (is (eq :file (nlk::lstat-kind (uiop:native-namestring (merge-pathnames "inside/a.txt" dir)))) "a file a file")
+    (is (eq :absent (nlk::lstat-kind (uiop:native-namestring (merge-pathnames "none/" dir)))) "nothing is absent")
+    #+win32
+    (is (eq :directory (nlk::lstat-kind (subseq folder 0 3))) "and a drive's root a folder")))
+
 #-win32
 #-win32
 (deftest remove-tree-takes-a-link-as-a-link-and-leaves-what-it-points-at
