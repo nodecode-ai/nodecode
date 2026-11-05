@@ -15,11 +15,8 @@
 
 tests 3384
 
-file:lib/dial-test partial
 file:organism/heap-image-test partial
 file:term/terminal-test partial
-file:tui/scroll-test partial
-file:import/source-test partial
 
 STORE-GUARD-SURVIVES-UNWINDING-A-BARE-HANDLE-LOOP flaky  # once ended its process: "Recursive lock attempt" in its worker
 CONTROL-INDEX-ROUTE-LISTS-OPENS-SAVES-AND-FORGETS flaky  # a gateway stop past 3 s ends the run (CUT-SHORT, exit 143)
