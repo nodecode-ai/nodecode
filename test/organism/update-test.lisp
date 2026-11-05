@@ -731,7 +731,9 @@ asks again after a pause -- and stops the moment the image has caught up."
     (is (nle::path-names-directory-p #p"/opt/nc/tv1/" (format nil "/usr/bin~a/opt/nc/tv1~a/bin" sep sep)))
     (is (nle::path-names-directory-p #p"/opt/nc/tv1/" (format nil "/opt/nc/tv1/~a/bin" sep)))
     (is (not (nle::path-names-directory-p #p"/opt/nc/tv1/" (format nil "/opt/nc/tv2~a/opt/nc/current" sep))))
-    (is (not (nle::path-names-directory-p #p"/opt/nc/tv1/" nil)))))
+    (is (not (nle::path-names-directory-p #p"/opt/nc/tv1/" nil)))
+    ;; Windows reads an entry in any case, with `/' or `\' alike
+    #+win32 (is (nle::path-names-directory-p #p"C:/Nodecode/tv1/" "C:\\Windows;c:/nodecode/TV1/"))))
 
 (deftest update-locally-takes-the-release-current-names-as-it-lies (with-organism-tree ("tv2" (upg-source 2 "a")))
   ;; A second `nodecode update' in a window that still runs the old release
