@@ -1073,8 +1073,7 @@ URL when it connects, is ended so that look starts it on the new channel."
           ;; here (on Windows, a tar child unpacking it): the release is
           ;; waiting from the moment the board says so.
           (is (await (:timeout 30)
-                (search "goes live the first moment no turn is running" (board-line "update")))
-              "the board says it waits")
+                (search "goes live the first moment no turn is running" (board-line "update"))))
           (sleep 0.3)
           (is (eql 1 (funcall 'nodecode.evolved::upg-route-f)) "not while a turn runs")
           (setf busy nil)
