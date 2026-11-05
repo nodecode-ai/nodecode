@@ -126,36 +126,223 @@ and each TYPE are SB-ALIEN's, or SAP, INT or STR for the three most written."
                        (merge-pathnames name (uiop:parse-native-namestring
                                               directory :ensure-directory t)))))))
 
+;;; --- Git for Windows, past its redirectors -----------------------------------
+;;; What Git for Windows puts on PATH are redirectors (git-wrapper.c in
+;;; git-for-windows/MINGW-packages): bin\sh.exe and bin\bash.exe are its
+;;; compat-bash, which runs usr\bin\bash.exe, and cmd\git.exe (bin\git.exe a
+;;; copy) runs mingw64\bin\git.exe. Each is a process of its own that lays
+;;; Git's environment over the one it inherited, starts the real program and
+;;; waits on it: a command string cost 31.5 ms through bin\sh.exe and 21 ms
+;;; through usr\bin\bash.exe, `git --version' 18 ms through cmd\git.exe and
+;;; 10 ms through mingw64\bin\git.exe (T-442), and a scoop shim in front is a
+;;; third process. So this image starts the real program itself, with the
+;;; environment the redirector would have handed it, and keeps today's program
+;;; wherever anything of that layout is missing.
+
+(defparameter +git-toolchains+
+  '(("mingw64" . "MINGW64") ("clangarm64" . "CLANGARM64") ("mingw32" . "MINGW32"))
+  "Git for Windows' toolchain folders, each with the MSYSTEM its redirectors set.")
+
+(defun shim-target (program)
+  "The program the scoop shim PROGRAM starts -- the `path =' line of the .shim
+file beside it -- or NIL when PROGRAM is no shim."
+  (with-handlers ((error () nil))
+    (with-open-file (in (make-pathname :type "shim" :defaults program) :if-does-not-exist nil)
+      (when in
+        (loop for line = (read-line in nil)
+              while line
+              for text = (string-trim '(#\Space #\Tab #\Return) line)
+              for equals = (position #\= text)
+              when (and equals (string-equal "path" (string-trim '(#\Space #\Tab) (subseq text 0 equals))))
+                return (let ((value (string-trim '(#\Space #\Tab #\") (subseq text (1+ equals)))))
+                         (and (plusp (length value)) (uiop:parse-native-namestring value))))))))
+
+(defun real-path (path)
+  "PATH with every link on the way to it followed, as a pathname, or NIL
+when nothing is there."
+  ;; TRUENAME follows a symbolic link, and on Windows leaves a junction -- the
+  ;; installer's `current' -- as-is: a binary started through one would take
+  ;; `current' for the release it is. The file's own handle says where it lies,
+  ;; as \\?\C:\... or \\?\UNC\host\share\...
+  #-win32 (ignore-errors (truename path))
+  #+win32
+  (let ((handle (%create-file (uiop:native-namestring path) 0 +file-share-all+ nil
+                              +open-existing+ +file-flag-backup-semantics+ 0)))
+    (unless (= handle sb-win32::invalid-handle)
+      (with-cleanup ((sb-win32::close-handle handle))
+        (let ((buffer (make-array 2048 :element-type '(unsigned-byte 8))))
+          (sb-sys:with-pinned-objects (buffer)
+            (let ((units (%get-final-path-name handle (sb-sys:vector-sap buffer) 1024 0)))
+              (when (< 0 units 1024)
+                (let ((name (sb-ext:octets-to-string buffer :external-format :utf-16le
+                                                            :end (* 2 units))))
+                  (uiop:parse-native-namestring
+                   (cond ((uiop:string-prefix-p "\\\\?\\UNC\\" name)
+                          (concatenate 'string "\\\\" (subseq name 8)))
+                         ((uiop:string-prefix-p "\\\\?\\" name) (subseq name 4))
+                         (t name))
+                   :ensure-directory (uiop:directory-pathname-p path)))))))))))
+
+(defun git-redirector (program)
+  "When PROGRAM is one of Git for Windows' redirectors, itself or behind a scoop
+shim: a plist -- :ROOT Git's top folder, :KIND :SHELL (bin\\sh.exe,
+bin\\bash.exe) or :GIT (cmd\\git.exe, bin\\git.exe), :FOLDER the redirector's
+own folder, :TOOLCHAIN and :MSYSTEM -- and its real program as :PROGRAM, a
+native namestring. NIL for anything else, and for a Git whose real programs are
+not where its redirectors would look."
+  ;; The layout is read where the redirector really lies, as it reads its own
+  ;; (find_exe_realpath): through scoop's `current' junction to the version
+  ;; folder, the root MSYS maps to /. :REDIRECTOR keeps the path the shim
+  ;; names, which an update re-points, for when that folder is retired.
+  (let* ((found (and program (ignore-errors (probe-file program)) (pathname program)))
+         (target (and found (shim-target found)))
+         (named (if target (and (ignore-errors (probe-file target)) target) found))
+         (program (and named (real-path named))))
+    (when program
+      (let* ((name (string-downcase (file-namestring program)))
+             (folder (uiop:pathname-directory-pathname program))
+             (folder-name (string-downcase (or (car (last (rest (pathname-directory folder)))) "")))
+             (root (uiop:pathname-parent-directory-pathname folder))
+             (kind (cond ((and (equal folder-name "bin") (member name '("sh.exe" "bash.exe") :test #'equal))
+                          :shell)
+                         ((and (member folder-name '("cmd" "bin") :test #'equal) (equal name "git.exe"))
+                          :git))))
+        (when kind
+          (loop for (toolchain . msystem) in +git-toolchains+
+                for git = (probe-file (merge-pathnames (format nil "~a/bin/git.exe" toolchain) root))
+                for bash = (probe-file (merge-pathnames "usr/bin/bash.exe" root))
+                when (and git (or bash (eq kind :git)))
+                  return (list :root root :kind kind :folder folder
+                               :toolchain toolchain :msystem msystem
+                               :redirector (uiop:native-namestring named)
+                               :program (uiop:native-namestring
+                                         (merge-pathnames (if (eq kind :shell)
+                                                              "usr/bin/bash.exe"
+                                                              (format nil "~a/bin/git.exe" toolchain))
+                                                          root)))))))))
+
+(defun native-folder (pathname)
+  "PATHNAME, a folder, as a native namestring with no separator at its end."
+  (string-right-trim "\\/" (uiop:native-namestring pathname)))
+
+(defun git-redirector-environment (redirector &optional (environment (process-environment)))
+  "ENVIRONMENT as REDIRECTOR (GIT-REDIRECTOR's plist) lays it over what it
+inherits before it starts its real program -- setup_environment and
+maybe_read_config in git-wrapper.c: MSYSTEM; PLINK_PROTOCOL=ssh unless set;
+HOME unless set, HOMEDRIVE and HOMEPATH when that names a folder other than
+System32, else USERPROFILE; PATH led by the toolchain's bin, usr\\bin and
+HOME's bin; for the shell's compat-bash, EXEPATH its own folder; and the MSYS=
+lines of etc\\git-bash.config ahead of any MSYS already set."
+  (flet ((value (name)
+           (let ((entry (find name environment :key #'environment-entry-name :test #'string-equal)))
+             (and entry (subseq entry (min (length entry) (1+ (length name))))))))
+    (let* ((root (native-folder (getf redirector :root)))
+           (home (or (value "HOME")
+                     (when-let (homepath (value "HOMEPATH"))
+                       (let ((candidate (concatenate 'string (or (value "HOMEDRIVE") "") homepath))
+                             (system32 (when-let (windows (value "SystemRoot"))
+                                         (concatenate 'string windows "\\system32"))))
+                         (and (not (and system32 (string-equal candidate system32)))
+                              (uiop:directory-exists-p
+                               (uiop:parse-native-namestring candidate :ensure-directory t))
+                              candidate)))
+                     (value "USERPROFILE")))
+           (path (format nil "~a\\~a\\bin;~a\\usr\\bin;~@[~a~]~:[~;bin;~]~a"
+                         root (getf redirector :toolchain) root
+                         (and home (if (or (zerop (length home)) (find (char home (1- (length home))) "\\"))
+                                       home
+                                       (concatenate 'string home "\\")))
+                         home (or (value "PATH") "")))
+           (msys (with-handlers ((error () nil))
+                   (with-open-file (in (merge-pathnames "etc/git-bash.config" (getf redirector :root))
+                                       :if-does-not-exist nil)
+                     (and in (loop for line = (read-line in nil)
+                                   while line
+                                   for text = (string-right-trim '(#\Return) line)
+                                   when (uiop:string-prefix-p "MSYS=" text)
+                                     collect (subseq text 5))))))
+           (msys-value (let ((old (value "MSYS")))
+                         (dolist (piece msys old)
+                           (setf old (if old (format nil "~a ~a" piece old) piece))))))
+      (environment-with
+       (append (list (format nil "MSYSTEM=~a" (getf redirector :msystem))
+                     (format nil "PATH=~a" path))
+               (unless (value "PLINK_PROTOCOL") (list "PLINK_PROTOCOL=ssh"))
+               (when (and home (not (value "HOME"))) (list (format nil "HOME=~a" home)))
+               (when (eq (getf redirector :kind) :shell)
+                 (list (format nil "EXEPATH=~a" (native-folder (getf redirector :folder)))))
+               (when msys (list (format nil "MSYS=~a" msys-value))))
+       environment))))
+
+(defun windows-shell-candidate ()
+  "The sh.exe a Windows image finds: on PATH, beside the git on PATH
+(cmd\\git.exe by bin\\sh.exe), or in Git's two homes; NIL when none."
+  (flet ((under (root &rest relative)
+           (and root
+                (some (lambda (piece)
+                        (ignore-errors
+                         (probe-file (merge-pathnames piece root))))
+                      relative))))
+    (or (executable-on-path "sh.exe")
+        (when-let (git (executable-on-path "git.exe"))
+          (under (uiop:pathname-parent-directory-pathname
+                  (uiop:pathname-directory-pathname git))
+                 "bin/sh.exe" "usr/bin/sh.exe"))
+        (some (lambda (variable &aux (root (uiop:getenv variable)))
+                (and (stringp root) (plusp (length root))
+                     (under (uiop:parse-native-namestring root :ensure-directory t)
+                            "Git/bin/sh.exe" "Programs/Git/bin/sh.exe")))
+              '("ProgramFiles" "LOCALAPPDATA")))))
+
+(define-startup-parameter *git-shell*
+    #-win32 nil
+    #+win32 (let ((redirector (git-redirector (windows-shell-candidate))))
+              (and redirector (eq (getf redirector :kind) :shell) redirector))
+  "On Windows, when the sh.exe found is Git for Windows' compat-bash: its
+GIT-REDIRECTOR plist, whose usr\\bin\\bash.exe *SHELL* then is, started with
+the environment the redirector would have laid down; else NIL.")
+
+(define-startup-parameter *git-direct*
+    #-win32 nil
+    #+win32 (let ((redirector (git-redirector (executable-on-path "git.exe"))))
+              (and redirector (eq (getf redirector :kind) :git) redirector))
+  "On Windows, when the git.exe on PATH is Git for Windows' cmd\\git.exe
+redirector: its GIT-REDIRECTOR plist, whose toolchain git.exe a child named
+`git' then is; else NIL.")
+
 (define-startup-parameter *shell*
     ;; Bash where the machine has it: the commands a model writes are bash --
     ;; `time', [[ ]], arrays, brace expansion -- and on Debian and Ubuntu
     ;; /bin/sh is dash, where `time' alone is "not found" (three of four
     ;; benchmark runs lost a call to it). Every script this image runs through
     ;; the shell is POSIX sh, which bash runs as written.
-    ;; Windows: on PATH, beside the git on PATH (cmd/git.exe by bin/sh.exe), or Git's two homes.
+    ;; Windows: Git's bash past its compat-bash redirector, else the sh.exe found.
     #-win32 (or (and (probe-file "/bin/bash") "/bin/bash")
                 (executable-on-path "bash")
                 "/bin/sh")
-    #+win32
-    (flet ((under (root &rest relative)
-             (and root
-                  (some (lambda (piece)
-                          (ignore-errors
-                           (probe-file (merge-pathnames piece root))))
-                        relative))))
-      (or (executable-on-path "sh.exe")
-          (when-let (git (executable-on-path "git.exe"))
-            (under (uiop:pathname-parent-directory-pathname
-                    (uiop:pathname-directory-pathname git))
-                   "bin/sh.exe" "usr/bin/sh.exe"))
-          (some (lambda (variable &aux (root (uiop:getenv variable)))
-                  (and (stringp root) (plusp (length root))
-                       (under (uiop:parse-native-namestring root :ensure-directory t)
-                              "Git/bin/sh.exe" "Programs/Git/bin/sh.exe")))
-                '("ProgramFiles" "LOCALAPPDATA"))))
+    #+win32 (if *git-shell* (getf *git-shell* :program) (windows-shell-candidate))
   "The shell SHELL-ARGV runs command strings through, resolved when the
 process starts: bash (/bin/bash, else the first on PATH), else /bin/sh;
-Git for Windows' sh.exe; or NIL when the machine has none.")
+Git for Windows' usr\\bin\\bash.exe, which its bin\\sh.exe runs, else the
+sh.exe found; or NIL when the machine has none.")
+
+(defun past-git-redirector (argv environment)
+  "ARGV and ENVIRONMENT (NIL: this process's) as Git for Windows' redirector
+would have started its real program: the shell *GIT-SHELL* names, and a child
+named `git' when *GIT-DIRECT* names one, each with the redirector's
+environment; anything else unchanged."
+  ;; A Git uninstalled or moved under a running image: the redirector it was
+  ;; found by, or PATH's own `git', answers as it did before.
+  (let ((program (first argv)))
+    (cond ((and *git-shell* (stringp program) (string-equal program (getf *git-shell* :program)))
+           (if (probe-file program)
+               (values argv (git-redirector-environment *git-shell* (or environment (process-environment))))
+               (values (cons (getf *git-shell* :redirector) (rest argv)) environment)))
+          ((and *git-direct* (stringp program) (member program '("git" "git.exe") :test #'string-equal)
+                (probe-file (getf *git-direct* :program)))
+           (values (cons (getf *git-direct* :program) (rest argv))
+                   (git-redirector-environment *git-direct* (or environment (process-environment)))))
+          (t (values argv environment)))))
 
 (defun shell-argv (command &key login)
   "COMMAND, a string, as the argv that runs it through the shell: sh -c, or
@@ -824,7 +1011,10 @@ process: DIRECTORY its working directory when given, ENVIRONMENT
           #-win32 (%spawn-posix argv directory environment (or output "/dev/null")
                                 (or errors "/dev/null") input)
           #+win32 (error "no posix_spawn on this platform")
-          (let* (#+win32 (*unicode-environment*
+          (let* (#+win32 (redirected (multiple-value-list (past-git-redirector argv environment)))
+                 #+win32 (argv (first redirected))
+                 #+win32 (environment (second redirected))
+                 #+win32 (*unicode-environment*
                           (and environment (unicode-environment-block environment)))
                  #+win32 (environment nil)
                  (process (apply #'sb-ext:run-program (first argv) (rest argv)
@@ -1463,32 +1653,6 @@ on Windows MoveFileEx with replacement."
       (error "cannot replace ~a with ~a: ~a" to from
              (or (ignore-errors (sb-int:strerror errno)) errno)))
     to))
-
-(defun real-path (path)
-  "PATH with every link on the way to it followed, as a pathname, or NIL
-when nothing is there."
-  ;; TRUENAME follows a symbolic link, and on Windows leaves a junction -- the
-  ;; installer's `current' -- as-is: a binary started through one would take
-  ;; `current' for the release it is. The file's own handle says where it lies,
-  ;; as \\?\C:\... or \\?\UNC\host\share\...
-  #-win32 (ignore-errors (truename path))
-  #+win32
-  (let ((handle (%create-file (uiop:native-namestring path) 0 +file-share-all+ nil
-                              +open-existing+ +file-flag-backup-semantics+ 0)))
-    (unless (= handle sb-win32::invalid-handle)
-      (with-cleanup ((sb-win32::close-handle handle))
-        (let ((buffer (make-array 2048 :element-type '(unsigned-byte 8))))
-          (sb-sys:with-pinned-objects (buffer)
-            (let ((units (%get-final-path-name handle (sb-sys:vector-sap buffer) 1024 0)))
-              (when (< 0 units 1024)
-                (let ((name (sb-ext:octets-to-string buffer :external-format :utf-16le
-                                                            :end (* 2 units))))
-                  (uiop:parse-native-namestring
-                   (cond ((uiop:string-prefix-p "\\\\?\\UNC\\" name)
-                          (concatenate 'string "\\\\" (subseq name 8)))
-                         ((uiop:string-prefix-p "\\\\?\\" name) (subseq name 4))
-                         (t name))
-                   :ensure-directory (uiop:directory-pathname-p path)))))))))))
 
 (defun file-bytes (path)
   "The size of the file at PATH in bytes, or NIL when it cannot be opened."
