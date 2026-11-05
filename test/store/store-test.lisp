@@ -23,8 +23,13 @@
 ;;; TEMP-SOCKET-PATH: per-process, private, removed by the fixture.
 
 (defun temp-directory (&optional (tag "store"))
-  "Create and return a fresh private directory for one test."
-  (let ((dir (pathname (format nil "/tmp/nl-~a-~a-~a/" (sb-posix:getpid) tag (random 100000)))))
+  "Create and return a fresh private directory for one test: under /tmp, and
+on Windows under the system's temp directory."
+  ;; Windows reads `/tmp/...' as a folder on the current drive but spells it
+  ;; with no drive, and no path a home is ever given there is drive-less: its
+  ;; truename names the drive, a git file:// URL made of it reaches nothing.
+  (let ((dir (merge-pathnames (format nil "nl-~a-~a-~a/" (sb-posix:getpid) tag (random 100000))
+                              #-win32 #p"/tmp/" #+win32 (uiop:temporary-directory))))
     (ensure-directories-exist dir)
     (ignore-errors (sb-posix:chmod (namestring dir) #o700))
     dir))
@@ -213,7 +218,7 @@ carrying INPUT, then BINDINGS, LET* bindings that may name TURN."
         (is-carrying (text (refusal (make-array 8000 :element-type '(unsigned-byte 8) :initial-element 171)))
           (:= (format nil "~a is not a nodecode store (not an SQLite database); move it aside and run ~
                            nodecode again"
-                      (namestring path))))
+                      (uiop:native-namestring path))))
         (is (not (nlk::store-lease-held-p path)) "the lease is let go")
         (is (not (probe-file (nlk::lease-path-for-store path))) "and its holder sidecar")
         ;; a real store, then its first page past the header scribbled over
@@ -512,6 +517,11 @@ nursery collections on. => that generation's size while they were live."
 (deftest an-idle-organism-collects-the-generation-that-outgrew-its-budget (with-saved-nursery)
   ;; Promote a soon-dead structure into generation 1 past its budget, stop
   ;; allocating, and the idle timer collects it within two intervals.
+  ;; Windows measures the image's pages as what the working set took back
+  ;; since its last trim, and a boot (the shell's, the gateway's) makes the
+  ;; first: this image never booted, so it trims here as one would, before
+  ;; the releases are counted.
+  #+win32 (nlk:trim-memory)
   (let ((count nlk::*idle-collections*)
         (releases nlk::*image-releases*)
         (promotion (sb-ext:generation-number-of-gcs-before-promotion 1)))
@@ -638,11 +648,12 @@ nursery collections on. => that generation's size while they were live."
   ;; image has read most of them, and the trim hands them back to the kernel.
   (let ((count nlk::*forced-collections*))
     (multiple-value-bind (before after) (nlk:trim-memory)
-      #+linux (progn
-                (is (integerp before) "resident bytes read before")
-                (is (integerp after) "resident bytes read after")
-                (is (< after before) "the process is smaller after the trim"))
-      #-linux (is (and (null before) (null after)) "no residency figure off Linux")
+      ;; Windows reads its working set, and the trim empties it whole
+      #+(or linux win32) (progn
+                           (is (integerp before) "resident bytes read before")
+                           (is (integerp after) "resident bytes read after")
+                           (is (< after before) "the process is smaller after the trim"))
+      #-(or linux win32) (is (and (null before) (null after)) "no residency figure here")
       (is (= count nlk::*forced-collections*))
       (is (equal (list :before before :after after) nlk::*last-trim*))
       (is (nth-value 1 (get-properties (nlk::collection-stats) '(:last-trim)))))))

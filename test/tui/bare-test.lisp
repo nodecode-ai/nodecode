@@ -110,6 +110,30 @@
                        '("label" "line" "placeholder" "verb"))))
     (is (equal "/rename my name" (nle::ask-line "/rename" (format nil "my~%name"))))))
 
+;;; --- claim 4b: a cell's heading row is painted, never chosen ----------------------
+
+(deftest a-cells-heading-row-is-painted-never-chosen ()
+  ;; A cell's table names its columns in a first row. It reaches the picker as a
+  ;; heading, and the list opens on the first row that can be chosen.
+  (with-frame-model (model 100 30 :session-id "bare-heading")
+    (let ((answer (nle::json-object
+                   "text" "2 side questions"
+                   "dialog" (nle::dialog-json
+                             (nle:list-dialog
+                              :title "Side questions"
+                              :rows (list (list :key "#" :label "QUESTION" :detail "STATUS" :heading t)
+                                          (list :key "1" :label "first" :detail "answered" :value "one")
+                                          (list :key "2" :label "second" :detail "answering")))))))
+      (let ((first-row (aref (nle::json-array (nle::json-value answer :object "dialog") "rows") 0)))
+        (is (nle::json-value first-row :boolean "heading") "the heading rides the answer's JSON"))
+      (nle::open-answer-dialog model answer :line "/btw")
+      (is-present (dialog (nle::chat-model-dialog model)) "the dialog opens"
+        (let ((rows (nle::picker-visible-rows dialog)))
+          (is (nle::picker-row-heading (first rows)) "the first row arrives as a heading")
+          (is (not (nle::picker-row-heading (second rows))) "the others as rows")
+          (let ((seated (nth (nle::picker-dialog-selection dialog) rows)))
+            (is (equal "first" (nle::picker-row-label seated)) "the list opens on the first row that can be chosen")))))))
+
 ;;; --- claim 5: /export saves here, or where it is told ------------------------------
 
 (deftest export-typed-alone-saves-here-or-asks-where ()

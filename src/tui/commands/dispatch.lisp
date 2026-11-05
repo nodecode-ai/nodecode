@@ -653,21 +653,14 @@ With PROVIDERS, the rest of the root is providers, never more model rows."
   "/models' provider list's search row: its query finds models too
 (SEARCH-MODELS-FROM-ROOT).")
 
-(defparameter *offer-nodecode-sign-in* nil
-  "Whether /setup and /models offer nodecode.ai's sign-in row (MODELS-SIGN-IN-ROWS).
-Off while nodecode.ai sells no models of its own: /login and `nodecode login' still
-sign in.")
-
 (defun models-sign-in-rows ()
-  "While nodecode.ai's sign-in is offered (*OFFER-NODECODE-SIGN-IN*) and this home is
-not signed in to it (+OWN-PROVIDER+ is not connected), the one row /models' search
-and /setup's provider step offer for it: Enter opens /login; NIL otherwise."
+  "While this home is not signed in to nodecode.ai (+OWN-PROVIDER+ is not
+connected), the one row /models' search offers for it: Enter opens /login;
+NIL once it is."
   ;; The provider is on no models.dev list, so a home not signed in met
   ;; nothing of ours: searching `nodecode' in /models found nothing
-  ;; (the operator, 2026-10-22). Until it has models to sell, the row
-  ;; leads nowhere, so neither list shows it (the operator, 2026-11-04).
-  (when (and *offer-nodecode-sign-in*
-             (not (member +own-provider+ (picker-connected-provider-ids) :test #'string-equal)))
+  ;; (the operator, 2026-10-22).
+  (unless (member +own-provider+ (picker-connected-provider-ids) :test #'string-equal)
     (list (make-picker-row :label "Sign in to nodecode.ai" :tone :own-model
                            :detail "nodecode's own models"
                            :value (list :model (list :login))))))
@@ -1718,16 +1711,12 @@ dialog but the setup walk's."
        (or (null model.dialog) model.setup-walk)))
 
 (defun home-prompt-text (model)
-  "The composer placeholder while home is active (Zig screens.zig
-homePromptText): the connection narrative, the Zig table over the lifecycle
-states this transport inhabits."
-  ;; The Zig "Creating a Gateway session..." arm never arises: this client
-  ;; always attaches with a resolved session. Connected is only the
-  ;; invitation: the footer's Gateway, in its connected colour, says the rest.
-  (case model.sync-lifecycle
-    (:connected "Ask anything, or describe a task")
-    ((:connecting :reconnecting) "Connecting to Gateway...")
-    (:failed "Gateway sync failed - check the endpoint and retry")))
+  "The composer placeholder while home is active: only a gateway that failed
+to sync, which waits on the operator. Connecting and connected say nothing
+there -- the footer's Gateway, in its state's colour, says it -- so the
+empty composer is the caret alone."
+  (when (eq model.sync-lifecycle :failed)
+    "Gateway sync failed - check the endpoint and retry"))
 
 (defun checkpoint-listing-path (model)
   "The control path the tree picker fetches its rows from for MODEL's session,

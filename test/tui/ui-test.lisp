@@ -1008,7 +1008,8 @@ its dispatch keeping each frame for LINK-COMMANDS."
   (with-frame-model (model 100 30 :session-id "paint-first")
     (let ((rows (nle::compose-frame model)))
       (is (= 30 (length rows)) "a full frame composes with no endpoint")
-      (is (row-carrying "Connecting to Gateway" rows))
+      (is (consp model.parked-cursor) "the caret stands in the composer")
+      (is (not (rows-carry-p "Connecting to Gateway" rows)) "which says nothing over it")
       (is (not (rows-carry-p "Gateway 127.0.0.1" rows))))))
 
 (deftest footer-facts-never-dial-on-the-frame-path ()
@@ -1038,35 +1039,25 @@ its dispatch keeping each frame for LINK-COMMANDS."
     (is (eql 3 (search "hello" (second rows))))
     ;; Standard's header is the title alone: the raw session id is Developer's.
     (is (not (search "frame-gate" (second rows))))
-    (is-table (needle row) (search needle (nth row rows))
-      ("Ready" 19 "the composer text row (height - 5) carries the Ready placeholder")
-      ("p m · ← sessions" 22 "the footer lane sits at height - 2 and carries the model and gesture"))))
+    (is (search "p m · ← sessions" (nth 22 rows)) "the footer lane sits at height - 2 and carries the model and gesture")
+    (is (equal "" (string-trim " " (nth 19 rows))) "the composer text row (height - 5) is empty")
+    (is (eql 19 (cdr model.parked-cursor)) "but for the caret")))
 
-(deftest ready-placeholder-paints-muted (let ((nle::*color-profile* :truecolor)))
-  ;; The floor placeholder is the absence of input, not input: it reads in
-  ;; the muted tone over the composer fill, never in the box's own
-  ;; foreground, the way every other placeholder line does. A committed
-  ;; prompt leaves home, whose own narrative the slot would carry.
-  (with-frame-model (model 80 24 :session-id "ready-tone")
+(deftest an-empty-composer-is-the-caret-alone ()
+  ;; No Ready, no Type to steer, no invitation: an empty box is its fill and
+  ;; the blinking caret, idle or with a turn running, and the keys wait until
+  ;; there is text they would send.
+  (with-frame-model (model 80 24 :session-id "caret-alone")
     (fold-model model (nle::ingest-message-fact "user" "hello"))
-    (let* ((row (nth 19 (nle::compose-frame model)))
-           (fill (nle::style-for-tone :composer)))
-      (is (search (nle:styled (format nil "~vaReady" (nle::composer-text-inset) "")
-                              (nle::style-with (nle::style-for-tone :muted) :bg fill.bg))
-                  row))
-      (is (not (search (nle:styled " Ready" fill) row))))))
-
-(deftest a-running-turn-asks-for-a-steer-not-ready ()
-  ;; Without this, `Ready' would read as idle while a turn runs: the empty box
-  ;; says what typing does, and the keys wait until they would do something.
-  (with-frame-model (model 80 24 :session-id "steer-placeholder")
-    (fold-model model (nle::ingest-message-fact "user" "hello"))
-    (is (search " Ready" (nth 19 (nle::compose-frame model))) "idle: the floor placeholder")
-    (mark-turn-in-flight model)
-    (let ((rows (nle::compose-frame model)))
-      (is (search " Type to steer" (nth 19 rows)) "a running turn: what typing does")
-      (is (not (search "Ready" (nth 19 rows))))
-      (is (not (search "steer " (nth 20 rows))) "no keys before there is text to send"))
+    (flet ((text-row () (string-trim " " (aref (nle::frame-plain-rows model) 19))))
+      (nle::compose-frame model)
+      (is (equal "" (text-row)) "idle: nothing over the caret")
+      (is (eql 19 (cdr model.parked-cursor)) "the caret parks on the text row")
+      (mark-turn-in-flight model)
+      (let ((rows (nle::compose-frame model)))
+        (is (equal "" (text-row)) "a running turn: nothing over the caret either")
+        (is (eql 19 (cdr model.parked-cursor)) "the caret still there to steer")
+        (is (not (search "steer " (nth 20 rows))) "no keys before there is text to send")))
     ;; Typed into, the box names Enter and the queue key under the text, at
     ;; its right edge, with the amber edge at its left.
     (nle::replace-composer-text model "use the other branch")
@@ -1171,7 +1162,7 @@ its dispatch keeping each frame for LINK-COMMANDS."
   (is-let* ((rows (nle::compose-frame model)))
     ((length rows) = 10 "short frames still cover every terminal row")
     ((every (lambda (row) (= 60 (nle::text-display-width row))) rows) is)
-    ((rows-carry-p "ctrl+c quits" rows) not) ((search "Connecting to Gateway" (nth 7 rows)) is)))
+    ((rows-carry-p "ctrl+c quits" rows) not) ((cdr model.parked-cursor) eql 7 "the caret keeps the composer row")))
 
 ;;; --- fence syntax highlighting + decoded tool headers -----------------------
 ;;; The tokenizer seams from theme.lisp wired into the display policy: fenced
@@ -3962,16 +3953,17 @@ and the DELIVERY its handler declares."
       (click-at model 9 y0)
       (is (null model.selection)))))
 
-(deftest copy-says-what-the-clipboard-took ()
+(deftest a-copy-speaks-only-when-it-failed ()
   ;; Issue #31: the hint said `copied' before any write, whether or not
-  ;; anything took the text. The status now waits for the writer and says
-  ;; what happened: copied for a clipboard tool, sent for OSC 52 alone,
-  ;; failed for neither, and nothing-to-copy for an empty mark.
+  ;; anything took the text. Now a copy that lands -- a clipboard tool, or
+  ;; OSC 52 alone -- says nothing and leaves the composer the caret alone;
+  ;; only one that neither took says so, once the writer knows. An empty
+  ;; mark copies nothing and says nothing.
   (with-frame-model (model 80 24 :session-id "copy-truth"
                      :paint ((nle::ingest-message-fact "assistant" "alpha one")))
     ;; The whole path through a program with no clipboard tool: the release
-    ;; says nothing yet, the OSC 52 request reaches the loop as terminal-io,
-    ;; and the status lands only after that write.
+    ;; says nothing, the OSC 52 request reaches the loop as terminal-io, and
+    ;; no notice follows that write.
     (let ((program (nlt:make-program model)))
       (setf (nlt:program-running program) t
             (nle::chat-model-program model) program)
@@ -3986,19 +3978,16 @@ and the DELIVERY its handler declares."
             (is (nlt:terminal-io-msg-p io))
             (is (search "]52;c;" (with-output-to-string (out)
                                    (funcall (nlt:terminal-io-msg-thunk io) out)))))
-          (let ((notice (sb-concurrency:receive-message mailbox :timeout 5)))
-            (nle:update model notice)
-            ;; What reached the terminal is said as OSC 52.
-            (is (equal nle::+selection-osc52-hint+ (nle::status-said model)))))))
-    (flet ((said (outcome)
-             (nle:update model (nle::clipboard-outcome-notice outcome))
-             (nle::status-said model)))
-      (is (equal nle::+selection-copied-hint+ (said '(:command "wl-copy"))))
-      (is (equal nle::+selection-osc52-hint+ (said :osc52)) "OSC 52 alone is never `copied'")
-      (is (equal nle::+selection-copy-failed-hint+ (said :failed))))
+          (is (null (sb-concurrency:receive-message mailbox :timeout 1)) "no notice after the OSC 52 write")
+          (is (null (nle::status-said model)) "and nothing said"))))
+    (is (null (nle::clipboard-outcome-notice '(:command "wl-copy"))) "a clipboard tool took it: nothing to say")
+    (is (null (nle::clipboard-outcome-notice :osc52)) "OSC 52 took it: nothing to say")
+    (nle:update model (nle::clipboard-outcome-notice :failed))
+    (is (equal nle::+selection-copy-failed-hint+ (nle::status-said model)) "neither took it: the failure stands")
+    (nle::show-status model nil)
     (setf (nle::chat-model-selection model) nil)
     (nle::copy-frame-selection model)
-    (is (equal nle::+selection-empty-hint+ (nle::status-said model)) "nothing marked says so")))
+    (is (null (nle::status-said model)) "nothing marked: nothing said")))
 
 (deftest a-drag-past-the-band-edge-scrolls-and-the-mark-keeps-its-rows ()
   ;; Issue #31: a drag held past the transcript's last row scrolled nothing,
@@ -5931,13 +5920,15 @@ and the DELIVERY its handler declares."
   ;; newest paragraph shows whole until the next one takes its place.
   (with-frame-model (model 100 30 :session-id "thought-under-bar")
     (flet ((rows () (nle::compose-frame model) (copy-seq (nle::frame-plain-rows model)))
+           (caret () (cdr (nle::chat-model-parked-cursor model)))
            (at (needle rows) (position-if (lambda (row) (search needle row)) rows))
            (column (row) (position #\Space row :test-not #'char=)))
       (fold-model model
         (nle::ingest-message-fact "user" "hello" :turn-id "t1")
         (tool-round "c1" "eval" (eval-args (format nil ";; Read the bar~%(+ 1 2)")) "3" :turn-id "t1"))
       (mark-turn-in-flight model :render t)
-      (let ((before (rows)))
+      (let* ((before (rows))
+             (box (caret)))
         (paint-model model (nle::ingest-message-fact "assistant" "" :reasoning "**Weighing** the next step" :turn-id "t1"))
         (let* ((rows (rows))
                (bar (at "waiting" rows))
@@ -5949,7 +5940,7 @@ and the DELIVERY its handler declares."
           (is (< (at "Ran 1 command" rows) bar) "the run stays above the bar")
           (is (equalp (subseq before 0 bar) (subseq rows 0 bar)) "nothing above the bar moves")
           (is (every (lambda (at) (equal "" (string-trim " " (aref rows at)))) (list (+ 1 thought) (+ 2 thought))) "two canvas rows off the composer")
-          (is (eql (at "Type to steer" before) (at "Type to steer" rows)) "and the composer stays put"))
+          (is (eql box (caret)) "and the composer stays put"))
         (paint-model model (nle::ingest-message-fact "assistant" "" :reasoning (format nil "**Weighing** the next step~%~%The sum is three.~%~%**Counting down**~%~%The label is built once, when the retry is announced, so every frame after that repaints the same words. Passing the due time down lets each frame count the seconds itself, and the tests can pin the clock.") :turn-id "t1"))
         (let* ((rows (rows))
                (bar (at "waiting" rows))
@@ -5961,7 +5952,7 @@ and the DELIVERY its handler declares."
                      (list (at "Counting down" rows) (at "The label is built once" rows) end)) "every row on the bar's words' column, the wrapped ones too")
           (is (not (at "Weighing" rows)) "the paragraph before it gone")
           (is (not (at "The sum is three" rows)) "every one before it")
-          (is (eql (at "Type to steer" before) (at "Type to steer" rows)) "the composer stays at the foot"))
+          (is (eql box (caret)) "the composer stays at the foot"))
         (nle::toggle-tool-detail model :developer)
         (nle::render-state model)
         (let ((rows (rows)))
@@ -6201,7 +6192,7 @@ and the DELIVERY its handler declares."
            (bar (position-if (lambda (row) (search "waiting" row)) rows))
            ;; The last `hello' above the bar: the header names the session too.
            (prompt (position-if (lambda (row) (search "hello" row)) rows :end bar :from-end t))
-           (box (position-if (lambda (row) (search "Type to steer" row)) rows)))
+           (box (cdr model.parked-cursor)))
       (is (and (< prompt bar (+ prompt 4))
                (loop for row from (1+ prompt) below bar always (equal "" (string-trim " " (aref rows row))))) "right under the prompt band: past its pad row, one canvas row")
       (is (= (- (length rows) 5) box) "the composer's text row stays at the foot of the frame")))
