@@ -111,6 +111,15 @@ try {
   if ($LASTEXITCODE -ne 0) { throw "build-windows.ps1 failed ($LASTEXITCODE)" }
 } finally { Pop-Location }
 
+# --- a user's environment is not ASCII ---------------------------------------
+# Every smoke below runs with one variable a code page cannot hold whole: a
+# u-umlaut (in the ANSI page, where a UTF-8 decode of its byte signals) and a
+# CJK character (outside every ANSI page, so a narrow read turns it into `?').
+# One such value - a user named Juergen with the umlaut, say - once stopped a
+# shell from starting its organism, which it hands this environment through
+# ENVIRONMENT-WITH (#198); RUN-BOUNDED's :environment below takes that path.
+$env:NODECODE_SMOKE_WIDE = 'J' + [char]0xFC + 'rgen-' + [char]0x65E5
+
 # --- the platform seams, through the trial verb ------------------------------
 # The image answers, the bare launch path survives, and what it reopens at
 # start is the files beside it, not this machine's PATH: a user's Windows has
@@ -140,6 +149,10 @@ Set-Location $tree
   if ((Trial '(multiple-value-bind (out err status) (nlk:run-bounded (nlk:shell-argv "echo hi; echo bad 1>&2; exit 4") :seconds 20) (if (and (search "hi" out) (search "bad" err) (eql status 4)) 1 0))') -ne '1') { throw 'run-bounded' }
   if ((Trial '(if (eq :timeout (nth-value 2 (nlk:run-bounded (nlk:shell-argv "sleep 30") :seconds 1))) 1 0)') -ne '1') { throw 'run-bounded timeout' }
   if ((Trial '(if (nlk:pid-live-p (sb-posix:getpid)) 1 0)') -ne '1') { throw 'pid-live-p self' }
+  # The image reads NODECODE_SMOKE_WIDE whole, and a child it hands the value to
+  # reads it whole too: printed as UTF-16 code units, numbers no console code
+  # page can bend.
+  if ((Trial '(let ((want (map (quote string) (function code-char) (list 74 252 114 103 101 110 45 26085)))) (if (and (member (format nil "NODECODE_SMOKE_WIDE=~a" want) (nlk:process-environment) :test (function equal)) (equal "74 252 114 103 101 110 45 26085" (string-trim (list #\Return #\Newline #\Space) (nlk:run-bounded (list "powershell" "-NoProfile" "-Command" "[string]::Join('' '', [int[]][char[]]$env:NODECODE_SMOKE_WIDE_CHILD)") :seconds 30 :environment (list (format nil "NODECODE_SMOKE_WIDE_CHILD=~a" want)))))) 1 0))') -ne '1') { throw 'a non-ASCII environment value, read or handed on' }
   # The idle release on Windows is a working-set trim: the working set is read,
   # and the policy's release shrinks it.
   if ((Trial '(let ((before (nlk:resident-bytes))) (if (and (integerp before) (eq t (nlk::release-image-pages)) (< (nlk:resident-bytes) before)) 1 0))') -ne '1') { throw 'working-set trim' }
