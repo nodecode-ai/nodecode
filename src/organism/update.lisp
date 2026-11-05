@@ -97,8 +97,11 @@ lives in the installer's layout -- <release-directory>/<label>/nodecode
 beside a `current' link, where the folder is the release's identity and the
 stamp inside the binary agrees with it for every published build -- else
 the build's own stamp."
+  ;; The layout is the one *INSTALLED-BUILD* found at start: every provider
+  ;; request's user agent asks, and a probe of the `current' link was a
+  ;; truename per request, some 140 us on Windows (T-442).
   (or nlk::*effective-version*
-      (and (installed-release-root) (car (last (pathname-directory (nlk:runtime-directory)))))
+      (and *installed-build* (car (last (pathname-directory (nlk:runtime-directory)))))
       (version-label *user-agent-version*)))
 
 (defun effective-version (&aux (label (effective-label)))
