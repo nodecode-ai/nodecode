@@ -354,7 +354,9 @@ completed once BODY is done."
            (exclude (%store-file store "info/exclude")))
       (set-file-times exclude 1000)
       (nlk:ensure-snapshot-store (namestring dir) "exclude")
-      (is (= 1000 (sb-posix:stat-mtime (sb-posix:stat (namestring exclude)))) "an unchanged exclude file is not written")
+      ;; FILE-WRITE-DATE, not SB-POSIX:STAT-MTIME: Windows' _stat answers -1 for
+      ;; a time before 1970 in local time, and 1000 is one west of Greenwich.
+      (is (= (+ 1000 2208988800) (file-write-date exclude)) "an unchanged exclude file is not written")
       (with-open-file (o exclude :direction :output :if-exists :supersede) (write-line "stale" o))
       (nlk:ensure-snapshot-store (namestring dir) "exclude")
       (is (search "*.sqlite" (uiop:read-file-string exclude)) "a changed one is written back"))))
