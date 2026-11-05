@@ -926,7 +926,7 @@ five seconds on a thread of its own."
       (with-open-file (o file :direction :output) (write-string "{\"a\":1}" o))
       (multiple-value-bind (size stamp) (nlk:file-identity file)
         (is (eql 7 size) "its length in bytes")
-        (is (integerp stamp) "and when it was written")
+        (is (< (abs (- stamp (get-universal-time))) 120) "and when it was written, a universal time")
         (with-open-file (o file :direction :output :if-exists :supersede) (write-string "{\"a\":12}" o))
         (is (eql 8 (nlk:file-identity file)) "a rewrite moves it")))))
 

@@ -1669,10 +1669,10 @@ in this process: Windows ships tar but no gzip program. => TO."
   (ignore-errors (with-open-file (in path :element-type '(unsigned-byte 8)) (file-length in))))
 
 (defun path-metadata (path)
-  "(values KIND SIZE STAMP) from one look at what is at PATH: KIND :FILE,
-:DIRECTORY or :OTHER, the length in bytes and when it was last written,
-finer than a second where the platform keeps it so; NIL when nothing is
-there."
+  "(values KIND SIZE WRITE-DATE) from one look at what is at PATH: KIND
+:FILE, :DIRECTORY or :OTHER, the length in bytes, and when it was last
+written as a universal time, the answer FILE-WRITE-DATE gives; NIL when
+nothing is there."
   ;; One metadata call where PROBE-FILE is a truename -- on Windows an open,
   ;; a final-path query and a close, some 140 us against 30 (T-442). A link
   ;; answers for what it points at, except on Windows, where it answers for
@@ -1687,14 +1687,17 @@ there."
                                    (ash (aref data (+ at 2)) 16) (ash (aref data (+ at 3)) 24))))
           (values (if (logtest (dword 0) #x10) :directory :file) ; FILE_ATTRIBUTE_DIRECTORY
                   (logior (ash (dword 28) 32) (dword 32))
-                  (logior (ash (dword 24) 32) (dword 20)))))))
+                  ;; FILETIME counts 100 ns from 1601; 1601 to 1900 is
+                  ;; 9435484800 seconds.
+                  (- (floor (logior (ash (dword 24) 32) (dword 20)) 10000000)
+                     9435484800))))))
   #-win32
   (multiple-value-bind (ok dev ino mode nlink uid gid rdev size atime mtime)
       (sb-unix:unix-stat (uiop:native-namestring path))
     (declare (ignore dev ino nlink uid gid rdev atime))
     (when ok
       (values (case (logand mode #o170000) (#o100000 :file) (#o040000 :directory) (t :other))
-              size mtime))))
+              size (+ mtime 2208988800)))))
 
 (defun path-kind (path)
   "What is at PATH -- :FILE, :DIRECTORY or :OTHER -- or NIL when nothing is,
@@ -1703,13 +1706,15 @@ path asked after on every step."
   (values (path-metadata path)))
 
 (defun file-identity (path)
-  "(values SIZE STAMP) of the regular file at PATH from one look at its
-metadata -- its length in bytes and when it was last written, finer than a
-second where the platform keeps it so -- or NIL when no file is there."
+  "(values SIZE WRITE-DATE) of the regular file at PATH from one look at its
+metadata -- its length in bytes and when it was last written, a universal
+time as FILE-WRITE-DATE answers it -- or NIL when no file is there."
   ;; One call: PROBE-FILE, an open for the length and FILE-WRITE-DATE were
   ;; three, some 400 us on Windows, for a config read every round (T-442).
-  (multiple-value-bind (kind size stamp) (path-metadata path)
-    (when (eq kind :file) (values size stamp))))
+  ;; The write date stays the universal time the callers compare ages in
+  ;; (MODELS-CATALOG-TABLE's TTL).
+  (multiple-value-bind (kind size written) (path-metadata path)
+    (when (eq kind :file) (values size written))))
 
 (defun claim-file (path stale-seconds)
   "Create the file at PATH exclusively, this process's pid in it, as a claim
