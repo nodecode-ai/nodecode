@@ -20,7 +20,7 @@ STORE-GUARD-SURVIVES-UNWINDING-A-BARE-HANDLE-LOOP flaky  # once ended its proces
 CONTROL-INDEX-ROUTE-LISTS-OPENS-SAVES-AND-FORGETS flaky  # a gateway stop past 3 s ends the run (CUT-SHORT, exit 143)
 
 ## test/organism/update-test.lisp (25)
-UPDATE-EXIT-FOR-RESTART-EXECS-IN-PLACE-WITH-NO-UNIT
+UPDATE-EXIT-FOR-RESTART-EXECS-IN-PLACE-WITH-NO-UNIT  # cannot exist on Windows: no exec
 UPDATE-PATH-NAMES-A-FOLDER-WHATEVER-ITS-TRAILING-SEPARATOR
 UPDATE-REFUSED-RELEASE-RESTARTS-A-HEADLESS-OWNER-WITH-NO-UNIT
 
@@ -85,12 +85,12 @@ CLOSING-IN-A-CHILD-DOES-NOT-CLOSE-THE-PARENTS-HANDLE  # red on Linux too: the ru
 STORE-DEATH-VERDICT-CLASSIFIES-OWNERSHIP-DEBRIS
 STORE-DIRECTORY-IS-PRIVATE-TO-ITS-OWNER
 
-## test/engine/turn-test.lisp (10)
-A-LONG-WATCHED-VALUE-NAMES-THE-PLACES-THAT-CHANGED
+## test/engine/turn-test.lisp (12)
+A-LONG-WATCHED-VALUE-NAMES-THE-PLACES-THAT-CHANGED  # cannot exist on Windows: a watch counts the thread's own I/O calls, /proc/thread-self/io
 A-PROVIDER-WITH-NO-ENDPOINT-OF-ITS-OWN-IS-REFUSED-AND-NEVER-REACHES-ZEN
-A-READ-SNIPPET-IS-WATCHED-AND-COMES-BACK-ONLY-WHEN-IT-CHANGES
-A-SNIPPET-THAT-REACHES-OUTSIDE-THE-IMAGE-IS-NOT-WATCHED
-AN-UNEXAMINED-READER-IS-ONE-SHOT-BUT-ITS-DATA-CAN-BE-WATCHED
+A-READ-SNIPPET-IS-WATCHED-AND-COMES-BACK-ONLY-WHEN-IT-CHANGES  # cannot exist on Windows: a watch counts the thread's own I/O calls, /proc/thread-self/io
+A-SNIPPET-THAT-REACHES-OUTSIDE-THE-IMAGE-IS-NOT-WATCHED  # cannot exist on Windows: a watch counts the thread's own I/O calls, /proc/thread-self/io
+AN-UNEXAMINED-READER-IS-ONE-SHOT-BUT-ITS-DATA-CAN-BE-WATCHED  # cannot exist on Windows: a watch counts the thread's own I/O calls, /proc/thread-self/io
 EVAL-TOOL-KEEPS-A-MISSING-PACKAGE-REPORT-BARE  # red on Linux too: the runner, not Windows
 PROVIDER-KEY-CHECK-READS-A-PORT-NOTHING-LISTENS-ON
 PROVIDER-LISTING-RETRIES-A-RESET-ONCE-AND-NAMES-IT
@@ -103,15 +103,13 @@ KNOWLEDGE-THE-LOADER-RECORDS-A-KNOWLEDGE-CELL-AND-NEVER-LOADS-IT
 A-PARKED-THREAD-STILL-TAKES-AN-UNWINDING-INTERRUPTION
 A-SPAWN-WHOSE-LOG-FOLDER-IS-MISSING-NAMES-THE-LOG
 
-## test/organism/warm-test.lisp (6)
+## test/organism/warm-test.lisp (9)
 ASK-CHILD-ANSWERS-THE-MARKED-NUMBER-AND-NOTHING-ELSE
 WARM-SUPERVISOR-PUBLISHES-A-VERIFIED-IMAGE
 
 ## test/engine/exec-test.lisp (8)
 AN-ANSWER-S-LOCAL-PICTURE-IS-AN-IMAGE-FACT
 EVAL-RUNAWAY-RECURSION-IS-A-TOOL-ERROR-NOT-AN-IMAGE-DEATH
-SH-CHILDREN-LEAD-THEIR-OWN-SESSIONS  # cannot exist on Windows: no POSIX sessions or setsid
-STOPPED-CHILD-TREE-COLLAPSES-WITH-A-VERDICT  # cannot exist on Windows: no job-control stop, and the scan reads Linux's /proc
 
 ## test/import/import-test.lisp (8)
 IMPORT-LEAVES-AN-MCP-SERVERS-SECRETS-WHERE-THEY-ARE
@@ -127,12 +125,12 @@ SLASH-EXPORT-WRITES-THE-MARKDOWN-WHERE-THE-SHELL-RUNS
 
 ## test/organism/cells-test.lisp (5)
 CELLS-A-LOAD-WAITS-WHILE-ANOTHER-PROCESS-COMPILES-INTO-ITS-CACHE
-CELLS-BROKEN-LINK-IS-REPORTED-INSTEAD-OF-VANISHING
+CELLS-BROKEN-LINK-IS-REPORTED-INSTEAD-OF-VANISHING  # Windows copies where Linux links (make-symlink): junctions are a product call
 CELLS-COMPILE-INTO-ONE-CACHE-ONE-PROCESS-AT-A-TIME
 CELLS-HUB-ENTRY-INSTALLS-AT-ITS-COMMIT-AND-UNINSTALLS
 CELLS-STARTUP-PARAMETERS-RESOLVE-FROM-THE-LIVE-HOME
 
-## test/organism/launch-keeper-test.lisp (4)
+## test/organism/launch-keeper-test.lisp (5)
 
 ## test/cli/rpc-test.lisp (4)
 RPC-NAMES-A-GATEWAY-GONE-BEFORE-THE-ATTACH
@@ -150,10 +148,10 @@ IMPORT-SOURCE-REMOVAL-FORGETS-AN-OLDER-BUILDS-COPIES
 IMPORT-SOURCE-REMOVAL-TAKES-BACK-WHAT-IT-BROUGHT
 
 ## test/organism/profile-test.lisp (3)
-A-SETTINGS-CLONE-CARRIES-THE-FOLDER-A-PINNED-PROVIDER-NEEDS
-PIN-WHAT-A-CLONE-CARRIES
+A-SETTINGS-CLONE-CARRIES-THE-FOLDER-A-PINNED-PROVIDER-NEEDS  # Windows copies where Linux links (make-symlink): junctions are a product call
+PIN-WHAT-A-CLONE-CARRIES  # Windows copies where Linux links (make-symlink): junctions are a product call
 
-## test/session/snapshot-test.lisp (2)
+## test/session/snapshot-test.lisp (4)
 
 ## test/lib/dial-test.lisp (3)
 DIAL-A-PORT-NOTHING-LISTENS-ON-IS-REFUSED-AT-ONCE-UNDER-A-TIMEOUT
@@ -180,7 +178,7 @@ A-CLICK-ON-A-PATH-THAT-IS-GONE-SAYS-SO-INSTEAD-OF-NOTHING
 A-PATH-BECOMES-ONE-URI-AND-COMES-BACK-WHOLE
 
 ## test/engine/context-test.lisp (2)
-HISTORY-EVICTION-STUB-CARRIES-WHAT-THE-WATCHED-SNIPPETS-SHOWED
+HISTORY-EVICTION-STUB-CARRIES-WHAT-THE-WATCHED-SNIPPETS-SHOWED  # cannot exist on Windows: a watch counts the thread's own I/O calls, /proc/thread-self/io
 
 ## test/engine/image/image-fit-test.lisp (2)
 FIT-IMAGE-SENDS-WHAT-IT-CANNOT-OPEN-WHOLE-OR-THROUGH-A-TRANSCODER
@@ -202,7 +200,7 @@ SETTINGS-SECRET-PASTE-KEEPS-IT-IN-A-0600-FILE-THE-SECTION-NAMES
 TRANSPORT-REFUSAL-DROPS-THE-PAINTED-PROMPT
 
 ## test/organism/made-cells-test.lisp (1)
-MADE-CELL-LIVES-IN-A-SOURCE-FOLDER-LINKED-IN
+MADE-CELL-LIVES-IN-A-SOURCE-FOLDER-LINKED-IN  # Windows links no folder (make-symlink), so a :source cell is refused: junctions are a product call
 
 ## test/organism/scribe-test.lisp (1)
 SCRIBE-ATOMIC-WRITE-KEEPS-A-PRIVATE-FILE-THE-OWNERS-ALONE
@@ -213,7 +211,7 @@ FAILED-TURN-DETAIL-NAMES-THE-FILE-A-STREAM-ERROR-IS-ABOUT
 ## test/session/move-test.lisp (1)
 
 ## test/store/events-test.lisp (1)
-TWO-THOUSAND-APPENDS-UNDER-250MS
+TWO-THOUSAND-APPENDS-UNDER-250MS  # the disk, not a Windows path: commit median 0.05 ms, WAL checkpoint flushes 11-16 ms on NTFS; Linux tmpfs 61 ms, btrfs 200 ms
 
 ## test/tui/bare-test.lisp (1)
 EXPORT-TYPED-ALONE-SAVES-HERE-OR-ASKS-WHERE
@@ -221,5 +219,7 @@ EXPORT-TYPED-ALONE-SAVES-HERE-OR-ASKS-WHERE
 ## test/tui/chrome-test.lisp (1)
 HOME-PROFILES-SUMMARY-PAINTS-AND-OPENS-THE-EXISTING-PICKER
 A-LEASE-HANDED-ACROSS-AN-EXEC-IS-ADOPTED-AND-A-FORGED-ONE-IS-NOT  # cannot exist on Windows: no exec
+SH-CHILDREN-LEAD-THEIR-OWN-SESSIONS  # cannot exist on Windows: no POSIX sessions or setsid
+STOPPED-CHILD-TREE-COLLAPSES-WITH-A-VERDICT  # cannot exist on Windows: no job-control stop, and the scan reads Linux's /proc
 TERMINAL-SIZE-READS-BOTH-DIMENSIONS-OFF-A-REAL-TERMINAL  # cannot exist on Windows: no pseudo-terminals
 UPDATE-FEED-SESSION-ENDS-WHEN-THE-CONNECTION-GOES-SILENT skip  # a deadline does not end a read on a Windows pipe: it waits out the test timeout
