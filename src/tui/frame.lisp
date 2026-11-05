@@ -301,6 +301,12 @@ from the ones COLLECT-DURING-WAIT hid inside provider wait."
                  :none))
        (render-state model))
 
+      ;; The terminal said its name (XTVERSION), answered before DA1: a
+      ;; block picture takes the finest glyphs it draws (BLOCK-CELL).
+      ((nlt:terminal-version-msg-p msg)
+       (setf (chat-model-terminal-name model) (nlt:terminal-version-msg-name msg))
+       (render-state model))
+
       ;; The terminal said how big a cell is: a sixel is scaled to it.
       ((nlt:cell-size-msg-p msg)
        (let ((width (nlt:cell-size-msg-width msg)) (height (nlt:cell-size-msg-height msg)))

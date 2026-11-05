@@ -53,6 +53,58 @@
     (is (equal (list #\UPPER_HALF_BLOCK '(:fg #x0a0b0c) :keep) (aref (aref grid 1) 0)) "a last odd row over the cell's own ground")
     (is (null (aref (aref grid 1) 1)) "both clear: the cell is left alone")))
 
+(deftest octants-and-sextants-are-unicode-s-own-patterns ()
+  ;; Every octant mask draws: the block elements, Unicode's run from
+  ;; U+1CD00 (BLOCK OCTANT-3 first, -2345678 last), and the eight kept in
+  ;; other blocks as their complement over swapped colours.
+  (let ((glyphs nlt::*octant-glyphs*))
+    (is (= 248 (count-if #'identity glyphs)))
+    (is (eql (code-char #x1CD00) (aref glyphs (nlt::%cells-mask "3"))) "BLOCK OCTANT-3")
+    (is (eql (code-char #x1CDE5) (aref glyphs (nlt::%cells-mask "2345678"))) "BLOCK OCTANT-2345678")
+    (is (eql #\LEFT_HALF_BLOCK (aref glyphs (nlt::%cells-mask "1357"))))
+    ;; Kept elsewhere: drawn as the complement.
+    (is (every (lambda (cells)
+                 (let ((mask (nlt::%cells-mask cells)))
+                   (and (null (aref glyphs mask)) (aref glyphs (logxor 255 mask)))))
+               '("1" "2" "7" "8" "12" "35" "46" "123456"))))
+  ;; Each sextant's name lists its own pixels.
+  (let ((glyphs nlt::*sextant-glyphs*))
+    (is (every #'identity glyphs))
+    (loop for mask below 64
+          for char = (aref glyphs mask)
+          when (> (char-code char) #x1FAFF)
+            do (is (string= (format nil "BLOCK_SEXTANT-~{~d~}"
+                                    (loop for i below 6 when (logbitp i mask) collect (1+ i)))
+                            (char-name char))))))
+
+(deftest octants-split-a-cell-between-two-colours ()
+  (let ((r #xff0000) (b #x0000ff))
+    (flet ((cell (pixels &optional (width 2) (height 4))
+             (nlt:mosaic-grid (coerce pixels '(simple-array fixnum (*))) width height
+                              (lambda (color foreground-p) (list (if foreground-p :fg :bg) color))
+                              '(2 . 4))))
+      ;; Pixels 1 2 3 red over blue.
+      (is (equal (list (aref nlt::*octant-glyphs* 7) (list :fg r) (list :bg b))
+                 (aref (aref (cell (list r r r b b b b b)) 0) 0)))
+      ;; Pixel 1 alone is kept elsewhere: its complement, blue over red.
+      (is (equal (list (code-char #x1CDE5) (list :fg b) (list :bg r))
+                 (aref (aref (cell (list r b b b b b b b)) 0) 0)))
+      ;; One colour: a full block.
+      (is (equal (list #\FULL_BLOCK (list :fg r) (list :bg r))
+                 (aref (aref (cell (list r r r r r r r r)) 0) 0)))
+      ;; Clear pixels show the cell's own ground.
+      (is (equal (list (code-char #x1CDE5) (list :fg r) :keep)
+                 (aref (aref (cell (list -1 r r r r r r r)) 0) 0)))
+      ;; A lone pixel no glyph draws over the ground takes the nearest
+      ;; pattern that keeps it.
+      (is (equal (list #\QUADRANT_UPPER_LEFT (list :fg r) :keep)
+                 (aref (aref (cell (list r -1 -1 -1 -1 -1 -1 -1)) 0) 0)))
+      (is (null (aref (aref (cell (list -1 -1 -1 -1 -1 -1 -1 -1)) 0) 0)) "all clear: left alone")
+      (let ((grid (cell (make-list 15 :initial-element r) 3 5)))
+        (is (and (= 2 (length grid)) (= 2 (length (aref grid 0)))) "3 x 5 pixels: two cells by two, the edge's clear")
+        (is (equal (list (aref nlt::*octant-glyphs* (nlt::%cells-mask "1357")) (list :fg r) :keep)
+                   (aref (aref grid 0) 1)))))))
+
 (deftest the-terminal-says-its-attributes-and-cell-size ()
   (let ((msg (key-from-string (csi "?61;4;6;7;14;21;22;23;24;28;32;42;52c"))))
     (is (nlt:device-attributes-msg-p msg) "Windows Terminal's DA1 answer")
@@ -62,7 +114,10 @@
     (is (nlt:cell-size-msg-p msg))
     (is (and (eql 10 (nlt:cell-size-msg-width msg)) (eql 20 (nlt:cell-size-msg-height msg)))))
   (is (nlt:color-scheme-msg-p (key-from-string (csi "?997;1n"))) "the colour-scheme report still reads")
-  (is (equal (esc-text "~E[16t~E[c") (with-output-to-string (out) (nlt:request-terminal-attributes out))) "the cell size asked first, DA1 last"))
+  (let ((msg (key-from-string (format nil "~CP>|VTE(8401)~C\\" #\Escape #\Escape))))
+    (is (nlt:terminal-version-msg-p msg) "XTVERSION's answer")
+    (is (equal "VTE(8401)" (nlt:terminal-version-msg-name msg))))
+  (is (equal (esc-text "~E[16t~E[>q~E[c") (with-output-to-string (out) (nlt:request-terminal-attributes out))) "the cell size asked first, then the name, DA1 last"))
 
 (defun frame-bytes (renderer rows images)
   "What RENDERER writes painting ROWS with IMAGES."

@@ -179,6 +179,11 @@ ATTRIBUTES, the numbers it listed, 4 among them when it draws sixel.")
   :documentation "The terminal's cell size in pixels (XTWINOPS 16's answer,
 CSI 6 ; height ; width t).")
 
+(defmessage terminal-version-msg
+  ((name :initarg :name :initform nil :reader terminal-version-msg-name))
+  :documentation "The terminal's name and version (XTVERSION's answer, DCS > |
+NAME ST): NAME as it wrote it, `VTE(8401)' or `kitty(0.47.1)'.")
+
 (defmessage color-scheme-msg
   ((scheme :initarg :scheme :initform nil :reader color-scheme-msg-scheme))
   :documentation "The terminal's report that its colour scheme turned (DEC
@@ -199,7 +204,7 @@ thread.")
   key-press-msg paste-msg window-size-msg
   mouse-click-msg mouse-release-msg mouse-motion-msg mouse-wheel-msg
   tick-msg quit-msg kitty-graphics-msg truecolor-msg background-msg color-scheme-msg
-  device-attributes-msg cell-size-msg terminal-io-msg)
+  device-attributes-msg cell-size-msg terminal-version-msg terminal-io-msg)
 
 ;;; --- the declarative view ------------------------------------------------
 

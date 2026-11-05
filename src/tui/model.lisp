@@ -202,6 +202,9 @@ for the many bars and rows that paint one run of text in one tone."
    (terminal-graphics :initform nil :accessor chat-model-terminal-graphics)
    ;; The cell's (WIDTH . HEIGHT) in pixels as the terminal said, or NIL.
    (cell-pixels :initform nil :accessor chat-model-cell-pixels)
+   ;; The terminal's name and version as XTVERSION answered, `VTE(8401)',
+   ;; or NIL: which glyphs a block picture is drawn in (BLOCK-CELL).
+   (terminal-name :initform nil :accessor chat-model-terminal-name)
    ;; Pictures this shell draws itself, sixel or half blocks, by the key
    ;; the kitty cache uses: each one's decoded pixels and its renderings.
    (raster-cache :initform (make-hash-table :test #'equal) :accessor chat-model-raster-cache)
