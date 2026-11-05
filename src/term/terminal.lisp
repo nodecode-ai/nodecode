@@ -685,9 +685,10 @@ that leaves the canvas to the terminal stands on.")
 colour-scheme report (DEC 2031): a terminal that follows the desktop between
 light and dark says when it turns, and the shell asks its background again.")
 
-(define-escape (exit-modes :flush t) ("[?2031l" "[?2004l" "[?25h")
+(define-escape (exit-modes :flush t) ("[?2031l" "[?2004l" "[0 q" "[?25h")
   "Undo ENTER-MODES in reverse: the colour-scheme report and bracketed paste
-off, the cursor shown last.")
+off, the terminal's own cursor shape back (DECSCUSR 0, over the blinking
+block the frames set), the cursor shown last.")
 
 (defun apply-terminal-transitions (previous current stream &aux (was (or previous (make-view '()))))
   "Write to STREAM the mode changes between view-states PREVIOUS (NIL for
@@ -711,8 +712,9 @@ they come and popped when they go away, the window title when it moved."
   (unless (eq was.mouse-mode current.mouse-mode)
     (when was.mouse-mode (disable-mouse stream))
     (enable-mouse stream current.mouse-mode))
-  ;; The steady block, the same cursor the Zig TUI shows.
-  (when (and current.cursor (not was.cursor)) (format stream "~C[2 q" #\Escape))
+  ;; The blinking block: the empty composer is the caret alone, and the
+  ;; blink is what says it takes typing.
+  (when (and current.cursor (not was.cursor)) (format stream "~C[1 q" #\Escape))
   (when (and current.keyboard-enhancements (not was.keyboard-enhancements))
     (push-kitty-keyboard stream))
   (when (and was.keyboard-enhancements (not current.keyboard-enhancements))

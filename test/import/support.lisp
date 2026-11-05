@@ -81,9 +81,25 @@ first by its MAKE-<WORLD>-FIXTURE."
                (*import-stopped* 0)
                ;; The scratch organism home, which is not $HOME here: the box is.
                (nik::*import* (list :home (uiop:ensure-directory-pathname ,home) :session-budget 200)))
-           ,@(loop for world in worlds
-                   collect `(,(intern (format nil "MAKE-~a-FIXTURE" world) '#:nodecode.test) ,box))
-           ,@body))))))
+           (call-with-npx ,home
+                          (lambda ()
+                            ,@(loop for world in worlds
+                                    collect `(,(intern (format nil "MAKE-~a-FIXTURE" world) '#:nodecode.test) ,box))
+                            ,@body))))))))
+
+(defun call-with-npx (home thunk)
+  "THUNK called with an npx first on PATH, from HOME/bin/: an empty stand-in,
+npx.cmd on Windows, so a fixture's server that npx starts is found on any box,
+Node or no Node. Nothing runs it: an import plans a server, never starts it."
+  (let ((saved (uiop:getenv "PATH"))
+        (bin (merge-pathnames "bin/" (uiop:ensure-directory-pathname home))))
+    (write-temp-file (merge-pathnames #-win32 "npx" #+win32 "npx.cmd" bin) "")
+    (unwind-protect
+         (progn (nlk::set-environment-variable
+                 "PATH" (format nil "~a~a~a" (string-right-trim "/\\" (uiop:native-namestring bin))
+                                #+win32 ";" #-win32 ":" (or saved "")))
+                (funcall thunk))
+      (nlk::set-environment-variable "PATH" (or saved "")))))
 
 (defun import-write (root relative text)
   "TEXT into ROOT/RELATIVE, directories made. => the path."

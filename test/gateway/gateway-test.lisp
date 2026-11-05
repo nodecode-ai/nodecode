@@ -273,7 +273,11 @@ registry however BODY leaves."
 (deftest gateway-notice-reaches-attached-peers-and-stands-for-late-ones ()
   (with-gateway-session (port "notice-s")
     (let ((frames
-            (frames-while (ws port :subscribe '("notice-s"))
+            ;; The notices are said in-process, so the body waits for the
+            ;; gateway to hold the peer: the connect ack goes out a moment
+            ;; before the peer is marked attached, and a transient notice
+            ;; said in that moment reaches no one.
+            (frames-while (ws port :subscribe '("notice-s") :await-subscription t)
               (is (equal "discord: refused — no token"
                          (nle:notice "discord: refused — no token"
                                      :level :error :key "channels.discord")))
@@ -3997,8 +4001,8 @@ request."
   ;; the last line it wrote to the store's log -- MAIN's `nodecode: ' line --
   ;; and the shell's line is that reason, in the organism's own words.
   (let ((nle::*serve-program*
-          (list "sh" "-c" "echo 'nodecode: the store is not a database; move it aside' >&2; exit 1"
-                "front-stub"))
+          (append (nlk:shell-argv "echo 'nodecode: the store is not a database; move it aside' >&2; exit 1")
+                  (list "front-stub")))
         (nle::*front* nil))
     (let ((condition (signals-error nle::organism-exited
                        (nle::front-organism (merge-pathnames "history.db" dir)))))
@@ -4013,7 +4017,7 @@ request."
   (let* ((marker (merge-pathnames "why.txt" dir))
          (nle::*front* nil))
     (multiple-value-bind (pid out err process pipe)
-        (nlk::spawn-program (list "sh" "-c" (format nil "read why; echo \"$why\" > ~a" (namestring marker)))
+        (nlk::spawn-program (nlk:shell-argv (format nil "read why; echo \"$why\" > '~a'" (uiop:native-namestring marker)))
                             :output nil :error-output nil :input :stream)
       (declare (ignore out err))
       (setf nle::*front* (list :pipe pipe :waiter (nlk:spawn "front-test-waiter"
@@ -4041,7 +4045,7 @@ request."
   (let* ((marker (merge-pathnames "why.txt" dir))
          (nle::*front* nil))
     (multiple-value-bind (pid out err process pipe)
-        (nlk::spawn-program (list "sh" "-c" (format nil "cat > ~a" (namestring marker)))
+        (nlk::spawn-program (nlk:shell-argv (format nil "cat > '~a'" (uiop:native-namestring marker)))
                             :output nil :error-output nil :input :stream)
       (declare (ignore out err))
       (setf nle::*front* (list :pipe pipe :waiter (nlk:spawn "front-test-waiter"
@@ -4056,7 +4060,7 @@ request."
   ;; A candidate ends 0 when it loses the election. The owner it lost to may
   ;; have let go by the time the shell looks: a handover for the shell to wait
   ;; out (RPC-MAIN), never the boot's death (#226).
-  (let ((nle::*serve-program* (list "sh" "-c" "exit 0" "front-stub"))
+  (let ((nle::*serve-program* (append (nlk:shell-argv "exit 0") (list "front-stub")))
         (nle::*front* nil))
     (nle::front-organism (merge-pathnames "history.db" dir))
     (is (null nle::*front*) "nothing is fronted")))
@@ -5842,7 +5846,7 @@ default target is PROVIDER/MODEL-ID, restored after."
       ;; the globals and not this thread's fixture bindings.
       (with-saved-globals ((nlk::*cells-directory* root) (nlk::*warm-cache-directory* cache)
                            (nlk::*image-stamp* "stamp-w")
-                           (nlk::*organism-command* (list "/bin/sh" prover)))
+                           (nlk::*organism-command* (shell-script-command prover)))
         (write-layer-folder root "nl-warm" '(("probe" . "(defun cells-probe-warm () :warm)")))
         (let ((exited '()))
           (is (eq :sealed (nlk:prove-self (nlk::folder-key))))

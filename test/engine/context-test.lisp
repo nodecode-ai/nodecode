@@ -1229,10 +1229,11 @@ answering `ok' => the compiled context of the turn's one request."
         ;; Said once per path, never on the board: a project's file is one
         ;; folder's, and a standing notice would ride every other session's
         ;; prompt until a restart.
-        (let ((said (rules-said "proj/AGENTS.md")))
+        ;; a rules file is named natively: `proj\AGENTS.md' on Windows
+        (let ((said (rules-said (uiop:native-namestring "proj/AGENTS.md"))))
           (is (= 1 (length said)) "said once, not at every build")
           (is (every (lambda (words) (search words (first said))) (rules-size-words 70000))))
-        (is (null (rules-notice "proj/AGENTS.md")) "and stands on no board")
+        (is (null (rules-notice (uiop:native-namestring "proj/AGENTS.md"))) "and stands on no board")
         ;; One budget for them all, the nearest served first: a farther file
         ;; that fits alone but not beside the nearer ones is the one left out.
         (write-temp-file (merge-pathnames "proj/AGENTS.md" dir) (make-string 40000 :initial-element #\p))
@@ -1241,7 +1242,7 @@ answering `ok' => the compiled context of the turn's one request."
           (is (search "pppp" text))
           (is (null (search "rrrr" text)) "the farther one is left out whole"))
         (is-present (said (first (rules-said "already take"))) "the farther file is said"
-          (is (search (namestring (merge-pathnames "AGENTS.md" dir)) said) "by its path"))
+          (is (search (uiop:native-namestring (merge-pathnames "AGENTS.md" dir)) said) "by its path"))
         (is (search "rrrr" (instructions "other")) "and another folder still reads it whole")
         (write-temp-file (merge-pathnames "AGENTS.md" dir) "root rules")
         (write-temp-file (merge-pathnames "proj/AGENTS.md" dir) (format nil "  ~%~%"))
