@@ -372,6 +372,7 @@ of stacking."
      (:file "tui/commands/models")
      (:file "tui/commands/accounts")
      (:file "tui/commands/cell-control")
+     (:file "tui/commands/open-effect")
      (:file "tui/commands/headless")
      (:file "tui/commands/context-view")
      (:file "tui/commands/tree")
@@ -657,6 +658,7 @@ of stacking."
      (:file "tui/timestamps-test")
      (:file "tui/history-lane-test")
      (:file "gateway/gateway-test")
+     (:file "tui/open-effect-test")
      ;; Uses gateway-test's silent peers.
      (:file "gateway/questions-test")
      (:file "gateway/follow-test")

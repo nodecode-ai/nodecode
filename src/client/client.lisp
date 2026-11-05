@@ -416,6 +416,11 @@ the same pid."
                                      :separator " ")))
      (parse-integer (nth 19 fields)))))
 
+(defun open-session-argv (session-id prompt)
+  "The command that opens a shell on SESSION-ID in this home, PROMPT, when
+given, its first prompt: `nodecode resume SESSION-ID -- PROMPT'."
+  (append (shell-resume-argv session-id) (and prompt (list "--" prompt))))
+
 (defun shell-resume-argv (session-id)
   "The command that opens a shell on SESSION-ID in this home again."
   (cond ((nlk:profile-named-p) (list "nodecode" "-p" (nlk:profile-name) "resume" session-id))

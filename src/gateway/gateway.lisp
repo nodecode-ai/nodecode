@@ -3298,10 +3298,10 @@ a surface that draws one wears (a room's card its edge), NIL for none."
 
 (defvar *slash-effects* nil
   "The effects the caller of the slash line being run performs, as keywords:
-(:CLIPBOARD :DRAFT) from a shell; NIL from a caller that names none -- eval,
+(:CLIPBOARD :DRAFT), and :OPEN where it can open a tab, from a shell; NIL from a caller that names none -- eval,
 a room, the web page -- so a RUN words its text by what will happen.")
 
-(defparameter +effect-names+ '("clipboard" "draft")
+(defparameter +effect-names+ '("clipboard" "draft" "open")
   "The effects there are, as a caller names them in POST /api/gateway/slash.")
 
 (defun performed-effects (names)
@@ -3319,7 +3319,9 @@ malformed effect signals, naming it."
   ;; only that shell can: (:clipboard TEXT) copies TEXT with the shell's own
   ;; clipboard writer, whatever desktop the gateway runs on; (:draft TEXT :how
   ;; HOW) puts TEXT in the shell's composer, HOW :set (the default) replacing
-  ;; the draft, :insert at the caret, :append at its end. Each plist crosses
+  ;; the draft, :insert at the caret, :append at its end; (:open SESSION-ID
+  ;; :prompt TEXT) opens that session in a new tab of the shell's own
+  ;; terminal, TEXT its first prompt (open-effect.lisp). Each plist crosses
   ;; as it is, keys and keyword values downcased, so a shell passes over an
   ;; effect it does not know, and a surface with neither a clipboard nor a
   ;; composer -- the web page, a room, rpc -- shows the command's text alone.
