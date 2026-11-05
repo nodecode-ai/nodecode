@@ -187,6 +187,75 @@ completed once BODY is done."
         (let ((diff (nlk::run-snapshot-git store (list "diff-tree" "-p" first-tree second-tree))))
           (is (search "+edited" diff) "and the diff between them is a text diff")))))))
 
+(defun %octets (string)
+  (sb-ext:string-to-octets string :external-format :utf-8))
+
+(defun %write-octets (dir name string)
+  "Write STRING's UTF-8 octets as NAME under DIR: no newline translation on any platform."
+  (alexandria:write-byte-vector-into-file (%octets string) (merge-pathnames name dir)
+                                          :if-exists :supersede :if-does-not-exist :create))
+
+(defun %read-octets (dir name)
+  (alexandria:read-file-into-byte-vector (merge-pathnames name dir)))
+
+(deftest a-restore-gives-back-the-bytes-an-attribute-would-convert (with-git-workspace (store dir))
+  ;; A checkpoint holds the workspace's bytes, whatever its .gitattributes ask
+  ;; of a checkout: under `text' a CRLF file was stored as LF and came back
+  ;; LF, `ident' came back expanded, and the restore guard hashed both
+  ;; through the same conversions, so it could not tell them apart (T-442).
+  (let ((crlf (format nil "one~c~%two~c~%" #\Return #\Return))
+        (ident (format nil "$Id$~c~%(defun f ())~c~%" #\Return #\Return)))
+    (%write-octets dir ".gitattributes" (format nil "*.txt text~%*.lisp text eol=lf ident~%"))
+    (%write-octets dir "a.txt" crlf)
+    (%write-octets dir "b.lisp" ident)
+    (let ((before (%anchored-capture store "before"))
+          (raw (nlk::git-line store (list "hash-object" "--no-filters" "--" (namestring (merge-pathnames "a.txt" dir))))))
+      (is (equal raw (nlk:hash-in-tree store before "a.txt")) "the tree holds the file's own bytes")
+      (%write-octets dir "a.txt" "changed")
+      (%write-octets dir "b.lisp" "changed")
+      (let* ((head (%anchored-capture store "head"))
+             (changes (nlk:changed-paths store before)))
+        (is (= 2 (length changes)) "both edits are changes")
+        (multiple-value-bind (restored conflicts)
+            (nlk:restore-paths store before changes (%claims-at store head changes))
+          (is (null conflicts) "the claimed state restores conflict-free")
+          (is (= 2 (length restored)) "both paths restored"))
+        (is (equalp (%octets crlf) (%read-octets dir "a.txt")) "CRLF comes back CRLF")
+        (is (equalp (%octets ident) (%read-octets dir "b.lisp")) "an ident line comes back unexpanded")))))
+
+(deftest a-first-walk-packs-its-blobs-whatever-the-attributes-say (with-git-workspace (store dir))
+  ;; A file the workspace's attributes convert skipped the pack and became a
+  ;; loose object of its own: a repository whose sources carry `text eol=lf'
+  ;; paid a created file per source on its first walk, 1.6 s of the 1.9 s
+  ;; first capture of 540 files on Windows (T-442).
+  (let ((nlk::+snapshot-packed-staging-paths+ 3))
+    (%write-octets dir ".gitattributes" (format nil "*.lisp text eol=lf~%"))
+    (dotimes (i 5) (%write-octets dir (format nil "f~d.lisp" i) (format nil "(defun f~d ())~%" i)))
+    (nlk:capture-workspace-tree store)
+    (let ((packs (directory (merge-pathnames "objects/pack/*.pack"
+                                             (uiop:ensure-directory-pathname
+                                              (nlk::snapshot-store-git-dir store))))))
+      (is (= 1 (length packs)) "the staging wrote one pack"))
+    (is (= 1 (length (%loose-objects store))) "and the root tree is its only loose object")))
+
+(deftest a-store-from-before-raw-captures-restages-once (with-temp-directory (dir "snap-raw"))
+  ;; A store an earlier version kept staged converted blobs, and its index
+  ;; still vouches for them: opening it rewrites the attributes and drops
+  ;; the indexes, so the next walk stages the files' own bytes.
+  (when (nlk:git-available-p)
+    (%write-octets dir ".gitattributes" (format nil "*.txt text~%"))
+    (%write-octets dir "a.txt" (format nil "one~c~%" #\Return))
+    (let* ((store (nlk:ensure-snapshot-store (namestring dir) "old"))
+           (attributes (%store-file store "info/attributes")))
+      (when (probe-file attributes) (delete-file attributes))
+      (let ((converted (nlk:capture-workspace-tree store))
+            (raw (nlk::git-line store (list "hash-object" "--no-filters" "--" (namestring (merge-pathnames "a.txt" dir))))))
+        (is (not (equal raw (nlk:hash-in-tree store converted "a.txt"))) "the old store converted")
+        (let* ((reopened (nlk:ensure-snapshot-store (namestring dir) "old"))
+               (tree (nlk:capture-workspace-tree reopened)))
+          (is (probe-file attributes) "opening wrote the attributes back")
+          (is (equal raw (nlk:hash-in-tree reopened tree "a.txt")) "and the next walk staged the raw bytes"))))))
+
 (deftest an-unchanged-workspace-is-captured-by-its-census-alone (with-git-workspace (store dir))
   ;; A tool call that wrote nothing is most calls, and each is bracketed by
   ;; two captures: when the census finds nothing to stage, the capture is

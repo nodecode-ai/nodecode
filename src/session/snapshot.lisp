@@ -231,6 +231,42 @@ CONFIG, KEY=VALUE strings, rides this one call as -c options."
     (let ((path (uiop:unix-namestring relative)))
       (if (zerop (length path)) "." path))))
 
+(defparameter +store-attributes+ "* -text -eol -ident -filter -working-tree-encoding"
+  "A snapshot store's info/attributes: every path's bytes as they are on disk.")
+
+(defun write-store-attributes (store &aux (path (snapshot-store-file store "info/attributes")))
+  "Keep STORE's info/attributes at +STORE-ATTRIBUTES+. => true when it had to
+be written."
+  ;; A checkpoint is the workspace's bytes. The workspace's own .gitattributes
+  ;; serve its repository: `text' and `eol' stored a CRLF file as LF and the
+  ;; checkout-index of a restore wrote it back in the store's line ending,
+  ;; `ident' and `filter' rewrote content, `working-tree-encoding' re-encoded
+  ;; it, and the restore guard hashed through the same conversions, blind to
+  ;; all of it. A converted file also skipped the bulk pack for a loose
+  ;; object of its own: the first walk of a 540-file repository whose sources
+  ;; carry `text eol=lf' spent 1.6 s writing them on Windows (T-442).
+  ;; info/attributes outranks every attributes file in the tree, so unsetting
+  ;; them all here stores, hashes and restores the bytes on disk.
+  (unless (equal +store-attributes+
+                 (with-handlers ((error () nil))
+                   (string-trim '(#\Return #\Newline #\Space) (uiop:read-file-string path))))
+    (with-output-file (stream path)
+      (write-line +store-attributes+ stream))
+    t))
+
+(defun drop-session-indexes (store)
+  "Delete every session index in STORE's git directory: the next walk of each
+session is a first walk."
+  (dolist (path (with-handlers ((error () nil))
+                  (uiop:directory-files (uiop:ensure-directory-pathname
+                                         (snapshot-store-git-dir store)))))
+    (let ((name (file-namestring path)))
+      (when (and (uiop:string-prefix-p "index-" name)
+                 (not (uiop:string-suffix-p name ".lock"))
+                 (git-index-file-p path))
+        (with-handlers ((error () nil))
+          (delete-file path))))))
+
 (defun write-store-exclude (store)
   (with-output-file (stream (snapshot-store-file store "info/exclude"))
     ;; An undo must never roll back the event log that recorded it — hence
@@ -386,6 +422,11 @@ refusals."
                                  ("index.version" "4")
                                  ("core.symlinks" "true"))
             do (run-snapshot-git store (list "config" key value) :with-work-tree nil)))
+    ;; An index staged before the store kept raw bytes vouches for converted
+    ;; blobs, and a stat-clean file would keep its converted blob for good:
+    ;; dropped, the next walk of each session stages the files again.
+    (when (write-store-attributes store)
+      (drop-session-indexes store))
     (seed-session-index store)
     (write-store-exclude store)
     ;; Ignore rules do not untrack storage captured by an earlier version.
@@ -537,12 +578,15 @@ found nothing to stage. => true when it staged."
   ;; blobs into one pack instead of a loose file each: the first walk of
   ;; 5,000 files took 15.9 s on Windows as loose objects and 0.6 s as one
   ;; pack, the same tree (T-442). The threshold rides `add' alone: a diff
-  ;; reading it would take every file past it for binary.
+  ;; reading it would take every file past it for binary. The pack is
+  ;; deflated at level 1, the level git gives a loose object: 540 files,
+  ;; 23 MB, took 0.70 s at the default and 0.50 s at 1 on Windows, the pack
+  ;; 5% larger.
   (let ((paths (check-walk-bound store)))
     (when (or (plusp paths) (not (probe-file (snapshot-store-index-path store))))
       (run-snapshot-git store (list* "add" "-A" "--ignore-errors" (staging-pathspec store))
                         :config (when (> paths +snapshot-packed-staging-paths+)
-                                  '("core.bigFileThreshold=1")))
+                                  '("core.bigFileThreshold=1" "pack.compression=1")))
       t)))
 
 (defun capture-workspace-tree (store)
