@@ -173,7 +173,13 @@ SAVE-LISP-AND-DIE or fork."
   ;; off on every git that reads it, as a bool or as a hook path.
   (multiple-value-bind (output error-output status)
       (handler-case
-          (run-bounded (list* *git-program* "-c" "core.fsmonitor=" args)
+          (run-bounded (list* *git-program* "-c" "core.fsmonitor="
+                              ;; GIT_CONFIG_NOSYSTEM drops the system config
+                              ;; where Git for Windows turns its fscache on:
+                              ;; DIFF-FILES and ADD -A walk a 20,000-file tree
+                              ;; in a third of the time with it (T-442).
+                              #+win32 "-c" #+win32 "core.fscache=true"
+                              args)
                        :seconds +snapshot-git-timeout-seconds+
                        :environment (snapshot-git-environment
                                      store :with-work-tree with-work-tree)
@@ -438,9 +444,27 @@ snapshot storage when that sits inside it; NIL when nothing is left out."
        (sb-posix:stat-size (#-win32 sb-posix:lstat #+win32 sb-posix:stat path)))
       0))
 
+(defun walk-census (store)
+  "The paths one `add -A' of STORE would change in its index: the tracked ones
+whose working copy departs from the index (content, mode, deleted) and the
+untracked ones the walk's ignore rules leave in, as two NUL-separated git
+listings run back to back."
+  ;; Two calls, not `ls-files --others --modified': that one lstat()s every
+  ;; index entry on its own, with neither the preloaded index nor Git for
+  ;; Windows' fscache, and at 20,000 files it took 281 ms on Windows where
+  ;; these two take 20 + 26 ms (T-442). DIFF-FILES reports an entry whose
+  ;; stat moved without comparing its content, so a touched file counts as
+  ;; changed and the staging behind it runs: the census may say too much,
+  ;; never too little.
+  (nconc (split-nul (run-snapshot-git store (list* "diff-files" "--name-only" "-z"
+                                                   (staging-pathspec store))))
+         (split-nul (run-snapshot-git store (list* "ls-files" "-z" "--others" "--exclude-standard"
+                                                   (staging-pathspec store))))))
+
 (defun check-walk-bound (store &aux (paths 0) (bytes 0))
   "Signal SNAPSHOT-WALK-TOO-LARGE when one walk of STORE would stage more than
-+SNAPSHOT-WALK-MAX-PATHS+ paths or +SNAPSHOT-WALK-MAX-BYTES+ bytes."
++SNAPSHOT-WALK-MAX-PATHS+ paths or +SNAPSHOT-WALK-MAX-BYTES+ bytes; else
+answer how many paths it would stage, 0 when the workspace matches the index."
   ;; What `add -A' writes a blob for: every untracked path and every tracked
   ;; one whose content moved, through the walk's own ignore rules and
   ;; exclusions. A warm index counts only what changed since its last walk; a
@@ -452,28 +476,39 @@ snapshot storage when that sits inside it; NIL when nothing is left out."
                                        at most ~:d paths and ~:d bytes"
                                   (snapshot-store-workspace store) amount
                                   +snapshot-walk-max-paths+ +snapshot-walk-max-bytes+))))
-    (dolist (path (split-nul
-                   (handler-case
-                       (run-snapshot-git store (list* "ls-files" "-z" "--others" "--modified"
-                                                      "--exclude-standard" (staging-pathspec store)))
-                     (snapshot-output-too-large ()
-                       (too-large (format nil "~:d bytes of path names"
-                                          +snapshot-max-output-bytes+))))))
+    (dolist (path (handler-case (walk-census store)
+                    (snapshot-output-too-large ()
+                      (too-large (format nil "~:d bytes of path names"
+                                         +snapshot-max-output-bytes+)))))
       (unless (zerop (length path))
         (incf paths)
         (incf bytes (entry-bytes (concatenate 'string (snapshot-store-workspace store) path)))
         (when (> paths +snapshot-walk-max-paths+)
           (too-large (format nil "~:d paths" +snapshot-walk-max-paths+)))
         (when (> bytes +snapshot-walk-max-bytes+)
-          (too-large (format nil "~:d bytes" +snapshot-walk-max-bytes+)))))))
+          (too-large (format nil "~:d bytes" +snapshot-walk-max-bytes+)))))
+    paths))
 
 (defun stage-workspace (store)
-  "Stage STORE's workspace into its session's index: every walk's one `add
--A', past the walk bound and without the home's snapshot storage."
+  "Stage STORE's workspace into its session's index: one `add -A' past the
+walk bound and without the home's snapshot storage, or none when the census
+found nothing to stage. => true when it staged."
+  ;; The census is the walk: WALK-CENSUS lists what `add -A' would change in
+  ;; the index under the same ignore rules and pathspec -- untracked paths,
+  ;; content and mode changes, deletions -- and more (a touched file), never
+  ;; less: a racy entry is compared by content. An empty census therefore
+  ;; leaves the index's tree as it stands, and the walk `add -A' would make
+  ;; is skipped: an unchanged workspace -- most tool calls, and every bracket
+  ;; of a call that wrote nothing -- costs one git spawn, not two or three.
+  ;; That spawn is the cost a step pays on Windows, where starting git and
+  ;; stat'ing a tree are an order slower than on Linux (T-442). With no index
+  ;; yet there is no tree to keep: the first walk always stages.
   ;; --ignore-errors: one unreadable path does not void the walk; a file the
   ;; process may not read was never going to be restored by it either.
-  (check-walk-bound store)
-  (run-snapshot-git store (list* "add" "-A" "--ignore-errors" (staging-pathspec store))))
+  (when (or (plusp (check-walk-bound store))
+            (not (probe-file (snapshot-store-index-path store))))
+    (run-snapshot-git store (list* "add" "-A" "--ignore-errors" (staging-pathspec store)))
+    t))
 
 (defun capture-workspace-tree (store)
   "Stage the whole workspace and return its tree sha."
