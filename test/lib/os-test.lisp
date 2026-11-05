@@ -954,12 +954,17 @@ that time, each size class's lock taken."
 (deftest a-parked-thread-still-takes-an-unwinding-interruption ()
   ;; A stop is for a thread parked on something outside it, so the safe
   ;; delivery must still land in a system call that waits: a sleep, a read
-  ;; on a pipe nobody writes, an accept nobody dials, a futex wait.
+  ;; on a pipe nobody writes, an accept nobody dials, a futex wait. Windows'
+  ;; SBCL runs an interruption only back in Lisp or inside its own waits (a
+  ;; sleep, a lock, a stream's read): accept() there is Winsock's, a foreign
+  ;; call no interruption reaches, and nodecode parks in none (the gateway
+  ;; waits in usocket's two-second slices, the jail's socat accepts).
   (dolist (park (list (lambda () (sleep 30))
                       #-win32
                       (lambda () (multiple-value-bind (in out) (sb-posix:pipe)
                                    (declare (ignore out))
                                    (read-byte (sb-sys:make-fd-stream in :input t :element-type '(unsigned-byte 8)) nil)))
+                      #-win32
                       (lambda () (let ((socket (make-instance 'sb-bsd-sockets:inet-socket :type :stream :protocol :tcp)))
                                    (sb-bsd-sockets:socket-bind socket #(127 0 0 1) 0)
                                    (sb-bsd-sockets:socket-listen socket 1)
