@@ -2119,9 +2119,12 @@ value — the caller prints it, briefly or in full by its place in the snippet."
     ;; Evaluating is not evidence for the one definition whose failure
     ;; would sever the ingress that would undo it, so the write
     ;; waits for a traversal and the hold owns the same call, replayed.
-    (let ((kept (or (nlk:hold-definitions escrow form text (length text))
-                    (mapcar (lambda (key) (getf key :name))
-                            (nlk:record-definitions form text (length text))))))
+    ;; Kept with the call's strings entries in place of the references that
+    ;; read them: the boot that loads the file has none (KEPT-SNIPPET-TEXT).
+    (let* ((text (kept-snippet-text text))
+           (kept (or (nlk:hold-definitions escrow form text (length text))
+                     (mapcar (lambda (key) (getf key :name))
+                             (nlk:record-definitions form text (length text))))))
       (when kept (setf *snippet-touched* t))
       (nlk:report-unkept-changes before form kept))
     value))
