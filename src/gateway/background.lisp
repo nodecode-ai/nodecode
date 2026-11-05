@@ -498,7 +498,8 @@ home by (GATEWAY-OWN-LABEL), else the first -- and EXTRA the rest."
                                              collect (cons name value))))
   "The unit that serves a home's gateway under MANAGER: a systemd user unit
 or a LaunchAgent -- whose LAUNCHER runs PROGRAM -- handed the rest of these
-keys, HOME as a folder."
+keys, HOME as a folder. Its paths are POSIX's on every box, as both
+managers read them, so each arm is proved anywhere."
   (let* ((home (uiop:ensure-directory-pathname home))
          (account (account-home))
          ;; USER-HOME is the gateway's HOME only when it is not the account's own
@@ -507,7 +508,7 @@ keys, HOME as a folder."
                             (not (equal (namestring (uiop:ensure-directory-pathname user-home))
                                         (namestring account))))))
          (variables (append (list (cons "NODECODE_HOME"
-                                        (string-right-trim "/\\" (uiop:native-namestring home))))
+                                        (string-right-trim "/\\" (uiop:unix-namestring home))))
                             (when own-home (list (cons "HOME" user-home)))
                             carried
                             (when (and path (plusp (length path))) (list (cons "PATH" path))))))
@@ -515,7 +516,7 @@ keys, HOME as a folder."
       ;; restarts 5 s after any exit, stops on SIGTERM; notify + watchdog show a stopped image
       (:systemd
        (with-output-to-string (out)
-         (format out "# ~a~a~%" +unit-marker+ (uiop:native-namestring home))
+         (format out "# ~a~a~%" +unit-marker+ (uiop:unix-namestring home))
          ;; No After=network-online.target: a user manager has no such unit, and
          ;; the line would order nothing. What talks out tries again.
          (format out "[Unit]~%Description=nodecode gateway (~a)~%" (profile-name home))
@@ -531,7 +532,7 @@ keys, HOME as a folder."
          ;; load (bad-setting).
          (format out "WorkingDirectory=~a~%"
                  (ppcre:regex-replace-all "%" (string-right-trim "/\\"
-                                                                 (uiop:native-namestring
+                                                                 (uiop:unix-namestring
                                                                   (uiop:ensure-directory-pathname working-directory)))
                                           "%%"))
          (loop for (name . value) in variables
@@ -542,9 +543,9 @@ keys, HOME as a folder."
          (format out "[Install]~%WantedBy=default.target~%")))
       ;; no journal under launchd: stdout and stderr go to GATEWAY-LOG-PATH; the marker is line two
       (:launchd
-       (let ((log (uiop:native-namestring (gateway-log-path home)))
+       (let ((log (uiop:unix-namestring (gateway-log-path home)))
              (working (string-right-trim
-                       "/" (uiop:native-namestring
+                       "/" (uiop:unix-namestring
                             (or (and own-home (uiop:ensure-directory-pathname user-home))
                                 account
                                 home)))))
@@ -552,13 +553,13 @@ keys, HOME as a folder."
            (format out "<?xml version=\"1.0\" encoding=\"UTF-8\"?>~%")
            ;; an XML comment may not hold two dashes in a row
            (format out "<!-- ~a~a -->~%" +unit-marker+
-                   (ppcre:regex-replace-all "-(?=-)" (uiop:native-namestring home) "- "))
+                   (ppcre:regex-replace-all "-(?=-)" (uiop:unix-namestring home) "- "))
            (format out "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" ~
                         \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">~%")
            (format out "<plist version=\"1.0\">~%<dict>~%")
            (format out "  <key>Label</key><string>~a</string>~%" (xml-escaped (gateway-label home)))
            (format out "  <key>ProgramArguments</key>~%  <array>~%")
-           (dolist (word (list (uiop:native-namestring launcher) program "gateway" "run"))
+           (dolist (word (list (uiop:unix-namestring launcher) program "gateway" "run"))
              (format out "    <string>~a</string>~%" (xml-escaped word)))
            (format out "  </array>~%")
            (format out "  <key>EnvironmentVariables</key>~%  <dict>~%")
