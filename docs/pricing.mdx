@@ -3,31 +3,31 @@ title: Pricing
 summary: "The hosted models are paid per token from a balance you top up: how much a top-up can be, what each model costs, how many calls run at once, and what a call answers when the balance is empty."
 ---
 
-{/* Plans are off since 2026-11-05 (v1se.thom: "API should be the only thing available, turn off all subscriptions"; nodecode-website web/src/lib/sales.ts `PLANS_OPEN`, foresight-labs web/lib/sales.ts): no plan is sold, the API per token is. A plan already held keeps working, so the gate still counts plans' requests (crates/gate/src/meter.rs, plans.rs). To sell plans again, bring back this page's plan sections with the switch: commit fb85833 ("docs: pricing reads open when sales open") has them with their prices. Off-peak pricing is off (`off_peak` in deploy/gate.toml, since 2026-10-24): one price at every hour. */}
+{/* Plans are off since 2026-11-05 (v1se.thom: "API should be the only thing available, turn off all subscriptions"; nodecode-website web/src/lib/sales.ts `PLANS_OPEN`, foresight-labs web/lib/sales.ts): no plan is sold, the API per token is. A plan already held keeps working, so the gate still counts plans' requests (crates/gate/src/meter.rs, plans.rs). To sell plans again, bring back this page's plan sections with the switch: commit fb85833 ("docs: pricing reads open when sales open") has them with their prices. Off-peak pricing is off (`off_peak` in deploy/gate.toml, since 2026-10-24): one price at every hour. The least top-up is 20 and Cyber v1 costs 1.5 times DeepSeek's peak price for DeepSeek-V4.1-Flash-1017 (https://api-docs.deepseek.com/quick_start/pricing: 0.006 / 0.3 / 1.2) since 2026-11-05 (v1se.thom: "minimum amount that people can buy is $20 for API requests. And the price should be 1.5x the deepseek API pricing for the first month"). */}
 
 Nodecode itself is free, under the MIT license, and runs on your own provider key. The hosted models at [nodecode.ai](https://nodecode.ai/pricing) are paid per token from a balance you top up, as on DeepSeek's platform. Plans are not sold now.
 
 {/* source: web/src/lib/topup.ts, web/src/lib/topup-rules.ts, web/src/lib/lab-plans.ts (`TOPUP_MIN`, `TOPUP_MAX`) */}
 ## Topping up
 
-Top up on [Top up](https://nodecode.ai/account/top-up), in euros or dollars, a whole amount from 5 to 10,000 at a time. The amount is before tax: a top-up in euros adds 21% Dutch VAT on top, one in dollars none. The balance gets the amount you chose.
+Top up on [Top up](https://nodecode.ai/account/top-up), in euros or dollars, a whole amount from 20 to 10,000 at a time. The amount is before tax: a top-up in euros adds 21% Dutch VAT on top, one in dollars none. The balance gets the amount you chose.
 
 A new account tops up at most 100 at a time and 200 a day, until its first top-up is 14 days old. Any account tops up at most 10,000 a day and opens at most five checkouts an hour.
 
 Then sign in with `nodecode login --api`: see [A nodecode.ai account](first-run.mdx).
 
-{/* source: crates/gate/src/prices.rs, deploy/gate.toml (off-peak pricing off: `off_peak = false`, so a model's `peak` price holds at every hour) */}
+{/* source: crates/gate/src/prices.rs, deploy/gate.toml (off-peak pricing off: `off_peak = false`, so a model's `peak` price holds at every hour). Context: deploy/gate.toml still says `context = 1048576` for Cyber v1, and the gate only advertises it (relay.rs `context_length`), it does not cap a call; the machine that serves Cyber v1 (2x B200, vLLM) runs a 131,072-token window, so that is what holds, and the 262,144 long-context line (`cache_over`) cannot be reached there. */}
 ## What a call costs
 
 A call costs its tokens at the model's price: input the model had cached, the rest of the input, and the output, each per million tokens; an image model by the image. The prices are the same number in euros or dollars, before tax, and are on [the pricing page](https://nodecode.ai/pricing#api).
 
 | Model | Cached input | Input | Output |
 | --- | --- | --- | --- |
-| Cyber v1 | 0.006 | 0.30 | 1.20 |
+| Cyber v1 | 0.009 | 0.45 | 1.80 |
 | Decide v1 | 0.10 | 0.10 | Free |
 | Image v1 | 0.04 an image | | |
 
-Cyber v1 costs DeepSeek's own price for the model it is built on, at every hour. Its context is 1M tokens; a call with more than 256K tokens of input pays four times the cached price for its cached input. A typical call of our own agent, 89K cached and 2.5K new input tokens and 1.3K output, costs about 0.0028 on Cyber v1, so a top-up of 5 pays for about 1,750 of them.
+Cyber v1 costs the same at every hour. Its context window is 131,072 tokens (128K); a longer prompt is refused by the model and costs nothing. A typical call of our own agent, 89K cached and 2.5K new input tokens and 1.3K output, costs about 0.0043 on Cyber v1, so a top-up of 20 pays for about 4,700 of them.
 
 The cost is taken once the model has answered and shows beside the call under [Usage](https://nodecode.ai/account/usage). The tokens are the model's own count; when the model reports none, they are estimated from the size of the call and its answer, about four bytes a token. A balance held in both currencies is spent in euros first.
 
