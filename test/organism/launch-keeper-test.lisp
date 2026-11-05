@@ -101,3 +101,25 @@ spawns pushed onto SPAWNS instead of run."
         (nlk::prune-stamp-cache "stamp-newest" cache)
         (is (probe-file middle) "the one behind the running stamp stays")
         (is (probe-file newest) "and the running stamp with it")))))
+
+(deftest cells-layer-cache-spares-a-stamp-a-load-marked-in-use (with-cell-fixture (root))
+  ;; A third build alive on the machine -- a shell left open on an older
+  ;; release -- loads from a directory two behind the pruning build's: a load
+  ;; marks its stamp in use, and the mark spares it for the hour; an older
+  ;; mark keeps nothing.
+  (with-temp-directory (cache "layer-cache-in-use")
+    (nlk::note-stamp-in-use cache "stamp-reading")
+    (nlk::note-stamp-in-use cache "stamp-left")
+    (backdate (nlk::stamp-in-use-marker (merge-pathnames "stamp-left/" cache)) -7200)
+    (flet ((stamp-dir (stamp age)
+             (backdate (ensure-directories-exist (merge-pathnames (format nil "~a/" stamp) cache))
+                       age)))
+      (let ((reading (stamp-dir "stamp-reading" -400))
+            (left (stamp-dir "stamp-left" -300))
+            (middle (stamp-dir "stamp-middle" -200))
+            (newest (stamp-dir "stamp-newest" -100)))
+        (nlk::prune-stamp-cache "stamp-middle" cache)
+        (is (probe-file reading) "a stamp a load marked within the hour stays")
+        (is (null (probe-file left)) "a mark two hours old spares nothing")
+        (is (probe-file middle) "the running stamp stays")
+        (is (probe-file newest) "and the newest beside it")))))
