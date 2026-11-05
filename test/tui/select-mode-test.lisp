@@ -60,13 +60,13 @@ row's padding left off."
     (nle::show-status model "Completed")
     (select-open model)
     (is (nle::transcript-select model) "Ctrl+Y opens the mode")
-    (is (null (nle::status-said model)) "a passing notice gives the mode's line its place")
+    (is (null (nle::status-said model)) "a passing notice leaves when the mode opens")
     (is (eql 0 (search "delta" (select-at model))) "the cursor stands on the first words of the last line shown")
     (let* ((rows (nle::compose-frame model))
            (cell (nle::chat-model-parked-cursor model)))
       (is (and cell (eql (car cell) (search "delta" (nle::plain-frame-row (nth (cdr cell) rows))))) "the hardware cursor parks on that cell, not on the composer")
-      (is (rows-carry-p "Selecting" rows) "the composer says the mode")
-      (is (rows-carry-p " mark " rows) "and names its keys"))))
+      (is (not (rows-carry-p "Selecting" rows)) "the composer spells out no mode line")
+      (is (rows-carry-p " mark " rows) "only the mode's keys, as chips"))))
 
 (deftest select-mode-moves-by-characters-words-lines-and-ends ()
   ;; w b e and h l cross lines; 0 and $ take the wrapped paragraph's ends,
