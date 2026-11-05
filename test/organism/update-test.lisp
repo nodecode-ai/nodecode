@@ -1058,9 +1058,14 @@ URL when it connects, is ended so that look starts it on the new channel."
         (let ((thread (bt2:make-thread
                        (lambda () (nle::upgrade-organism :version "tv3" :apply t :idle t))
                        :name "idle-update")))
+          ;; Staging comes first and takes what installing a release takes
+          ;; here (on Windows, a tar child unpacking it): the release is
+          ;; waiting from the moment the board says so.
+          (is (await (:timeout 30)
+                (search "goes live the first moment no turn is running" (board-line "update")))
+              "the board says it waits")
           (sleep 0.3)
           (is (eql 1 (funcall 'nodecode.evolved::upg-route-f)) "not while a turn runs")
-          (is (search "goes live the first moment no turn is running" (board-line "update")) "the board says it waits")
           (setf busy nil)
           (is (eq :hot (getf (bt2:join-thread thread) :applied)))
           (is (eql 2 (funcall 'nodecode.evolved::upg-route-f)) "then it is live"))))))
