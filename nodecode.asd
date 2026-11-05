@@ -130,6 +130,9 @@ of stacking."
      ;; os: the shell, processes, locks, files — one arm per platform,
      ;; behind names that say what is needed, never where.
      (:file "lib/os")
+     ;; http-backend: dexador's socket backend on every platform, Windows
+     ;; included, before dial advises it.
+     (:file "lib/http-backend")
      ;; dial: how a peer is reached by name -- every address, IPv6 first,
      ;; raced -- installed on usocket's connect before any file below dials.
      (:file "lib/dial")

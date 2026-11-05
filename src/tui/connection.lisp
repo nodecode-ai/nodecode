@@ -270,7 +270,7 @@ the exchange went through) or :ERROR."
           ((not (string-equal (quri:uri-scheme uri) "https")) (list* :plain t base))
           (t (handler-case (append (tls-handshake-facts host (or (quri:uri-port uri) 443) timeout) base)
                (serious-condition (condition)
-                 ;; Where this build reads no handshake (WinHTTP), the exchange itself still says
+                 ;; Where the handshake could not be read, the exchange itself still says
                  ;; it went over HTTPS and who answered.
                  (handler-case
                      (bind (((_ status headers) (http :head url :timeout timeout)))

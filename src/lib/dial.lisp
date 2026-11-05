@@ -154,9 +154,7 @@ when the handshake does not answer -- an error, a deadline, an interrupt."
     (unwind-protect (multiple-value-prog1 (apply next stream args) (setf secured t))
       (unless secured (ignore-errors (close stream :abort t))))))
 
-;; Windows' dexador speaks WinHTTP and opens no socket of its own.
-(when-let (backend (find-package "DEXADOR.BACKEND.USOCKET"))
-  (encapsulate-afresh (find-symbol "MAKE-SSL-STREAM" backend) 'close-unless-secured #'close-unless-secured))
+(encapsulate-afresh 'dexador.backend.usocket::make-ssl-stream 'close-unless-secured #'close-unless-secured)
 
 ;;; --- one client TLS context ---------------------------------------------------
 ;;; dexador makes a context for every HTTPS connection it opens, and a
@@ -172,22 +170,168 @@ when the handshake does not answer -- an error, a deadline, an interrupt."
 
 (defvar *client-contexts-lock* (bt2:make-lock :name "tls client contexts"))
 
-(defun shared-client-context (next &rest args &key (verify-location :default) &allow-other-keys)
+;;; --- Windows: the system's chain engine judges a peer -----------------------
+;;; OpenSSL on Windows has no store to verify a peer against (cl-plus-ssl#54,
+;;; https://github.com/cl-plus-ssl/cl-plus-ssl/issues/54): its default
+;;; location is a directory nothing installs. A context that verifies at that
+;;; default location hands the chain check to Windows instead: the chain the
+;;; handshake presented is built by CertGetCertificateChain and judged by the
+;;; SSL policy of CertVerifyCertificateChainPolicy -- the trust every other
+;;; program on the machine is held to, its enterprise roots included, and the
+;;; roots Windows fetches the first time a chain needs one (automatic root
+;;; update), which a copy of the system store would not hold yet. cl+ssl
+;;; still checks the host's name against the certificate after the handshake.
+
+#+win32
+(progn
+  (defun windows-entry (name)
+    "The address of crypt32's entry NAME, as a pointer to call."
+    (sb-sys:int-sap
+     (or (sb-sys:find-dynamic-foreign-symbol-address name)
+         (progn (sb-alien:load-shared-object "crypt32.dll" :dont-save t)
+                (sb-sys:find-dynamic-foreign-symbol-address name))
+         (error "crypt32.dll has no ~a" name))))
+
+  (defmacro windows-call (name &rest arguments-and-return)
+    `(cffi:foreign-funcall-pointer (windows-entry ,name) (:convention :stdcall) ,@arguments-and-return))
+
+  (defun zero-foreign (pointer size)
+    (dotimes (i size pointer) (setf (cffi:mem-aref pointer :uint8 i) 0)))
+
+  (defun x509-octets (x509)
+    "X509's DER encoding, as octets."
+    (let ((length (cffi:foreign-funcall "i2d_X509" :pointer x509 :pointer (cffi:null-pointer) :int)))
+      (unless (plusp length) (error "a presented certificate does not encode"))
+      (cffi:with-foreign-objects ((buffer :uint8 length) (cursor :pointer))
+        (setf (cffi:mem-ref cursor :pointer) buffer)
+        (cffi:foreign-funcall "i2d_X509" :pointer x509 :pointer cursor :int)
+        (let ((octets (make-array length :element-type '(unsigned-byte 8))))
+          (dotimes (i length octets) (setf (aref octets i) (cffi:mem-aref buffer :uint8 i)))))))
+
+  (defun presented-chain (store-context)
+    "What the handshake presented, as DER octets: the peer's certificate first."
+    (let ((leaf (cffi:foreign-funcall "X509_STORE_CTX_get0_cert" :pointer store-context :pointer))
+          (others (cffi:foreign-funcall "X509_STORE_CTX_get0_untrusted" :pointer store-context :pointer)))
+      (cons (x509-octets leaf)
+            (unless (cffi:null-pointer-p others)
+              (loop for i below (cffi:foreign-funcall "OPENSSL_sk_num" :pointer others :int)
+                    for x509 = (cffi:foreign-funcall "OPENSSL_sk_value" :pointer others :int i :pointer)
+                    unless (cffi:pointer-eq x509 leaf) collect (x509-octets x509))))))
+
+  (defun presented-server-name (store-context)
+    "The name the handshake asked the server for (SNI), or NIL."
+    (let ((ssl (cffi:foreign-funcall "X509_STORE_CTX_get_ex_data" :pointer store-context
+                                     :int (cffi:foreign-funcall "SSL_get_ex_data_X509_STORE_CTX_idx" :int)
+                                     :pointer)))
+      (unless (cffi:null-pointer-p ssl)
+        (let ((name (cffi:foreign-funcall "SSL_get_servername" :pointer ssl :int 0 :pointer)))
+          (unless (cffi:null-pointer-p name) (cffi:foreign-string-to-lisp name))))))
+
+  (defun chain-policy-verdict (leaf store server-name)
+    "Windows' verdict on the chain it builds from LEAF, with STORE's certificates
+to build through, for a TLS server named SERVER-NAME (any name when NIL): 0
+when it is trusted for server authentication, else the CERT_E_ code."
+    (cffi:with-foreign-objects ((parameters :uint8 32) (usages :pointer) (chain :pointer)
+                                (extra :uint8 24) (policy :uint8 16) (status :uint8 24))
+      (cffi:with-foreign-string (server-auth "1.3.6.1.5.5.7.3.1")
+        ;; CERT_CHAIN_PARA: server authentication is the usage asked for.
+        (zero-foreign parameters 32)
+        (setf (cffi:mem-ref parameters :uint32 0) 32
+              (cffi:mem-ref parameters :uint32 16) 1
+              (cffi:mem-ref parameters :pointer 24) usages
+              (cffi:mem-ref usages :pointer) server-auth)
+        (when (zerop (windows-call "CertGetCertificateChain" :pointer (cffi:null-pointer) :pointer leaf
+                                   :pointer (cffi:null-pointer) :pointer store :pointer parameters
+                                   :uint32 0 :pointer (cffi:null-pointer) :pointer chain :int32))
+          (return-from chain-policy-verdict (logior #x80000000 (sb-win32:get-last-error))))
+        (unwind-protect
+             (flet ((judge (name)
+                      ;; SSL_EXTRA_CERT_CHAIN_POLICY_PARA, CERT_CHAIN_POLICY_PARA, CERT_CHAIN_POLICY_STATUS
+                      (zero-foreign extra 24) (zero-foreign policy 16) (zero-foreign status 24)
+                      (setf (cffi:mem-ref extra :uint32 0) 24
+                            (cffi:mem-ref extra :uint32 4) 2 ; AUTHTYPE_SERVER
+                            (cffi:mem-ref extra :pointer 16) name
+                            (cffi:mem-ref policy :uint32 0) 16
+                            (cffi:mem-ref policy :pointer 8) extra
+                            (cffi:mem-ref status :uint32 0) 24)
+                      (if (zerop (windows-call "CertVerifyCertificateChainPolicy" :pointer (cffi:make-pointer 4) ; CERT_CHAIN_POLICY_SSL
+                                               :pointer (cffi:mem-ref chain :pointer) :pointer policy :pointer status :int32))
+                          (logior #x80000000 (sb-win32:get-last-error))
+                          (cffi:mem-ref status :uint32 4))))
+               (if server-name
+                   (cffi:with-foreign-string (name server-name :encoding :utf-16le) (judge name))
+                   (judge (cffi:null-pointer))))
+          (windows-call "CertFreeCertificateChain" :pointer (cffi:mem-ref chain :pointer) :void)))))
+
+  (defun windows-chain-verdict (chain server-name)
+    "Windows' verdict on CHAIN, DER octets with the peer's certificate first,
+for a TLS server named SERVER-NAME: 0 when trusted, else the CERT_E_ code."
+    (let ((store (windows-call "CertOpenStore" :pointer (cffi:make-pointer 2) ; CERT_STORE_PROV_MEMORY
+                               :uint32 0 :pointer (cffi:null-pointer) :uint32 0 :pointer (cffi:null-pointer) :pointer)))
+      (when (cffi:null-pointer-p store) (error "CertOpenStore refused a memory store"))
+      (unwind-protect
+           (let ((leaf (cffi:null-pointer)))
+             (cffi:with-foreign-object (added :pointer)
+               (loop for octets in chain
+                     for first = t then nil
+                     do (setf (cffi:mem-ref added :pointer) (cffi:null-pointer))
+                        (cffi:with-pointer-to-vector-data (data octets)
+                          ;; X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, CERT_STORE_ADD_ALWAYS
+                          (windows-call "CertAddEncodedCertificateToStore" :pointer store :uint32 #x10001
+                                        :pointer data :uint32 (length octets) :uint32 4
+                                        :pointer (if first added (cffi:null-pointer)) :int32))
+                        (when first (setf leaf (cffi:mem-ref added :pointer)))))
+             (when (cffi:null-pointer-p leaf) (error "the peer's certificate does not parse"))
+             (unwind-protect (chain-policy-verdict leaf store server-name)
+               (windows-call "CertFreeCertificateContext" :pointer leaf :int32)))
+        (windows-call "CertCloseStore" :pointer store :uint32 0 :int32))))
+
+  (defun x509-error-for (verdict)
+    "The X509_V_ERR_ code OpenSSL reports for Windows' VERDICT."
+    (case verdict
+      (0 0)
+      (#x800B0101 10)               ; CERT_E_EXPIRED: X509_V_ERR_CERT_HAS_EXPIRED
+      ((#x800B0109 #x800B010A) 20)  ; untrusted root, broken chain: unable to get local issuer
+      (#x800B010F 62)               ; CERT_E_CN_NO_MATCH: X509_V_ERR_HOSTNAME_MISMATCH
+      (#x80092010 23)               ; CRYPT_E_REVOKED: X509_V_ERR_CERT_REVOKED
+      (#x800B0110 26)               ; CERT_E_WRONG_USAGE: X509_V_ERR_INVALID_PURPOSE
+      (t 27)))                      ; X509_V_ERR_CERT_UNTRUSTED
+
+  (cffi:defcallback verify-through-windows :int ((store-context :pointer) (argument :pointer))
+    (declare (ignore argument))
+    (let ((verdict (handler-case (windows-chain-verdict (presented-chain store-context)
+                                                        (presented-server-name store-context))
+                     (error () #x800B0109))))
+      (cffi:foreign-funcall "X509_STORE_CTX_set_error" :pointer store-context :int (x509-error-for verdict) :void)
+      (if (zerop verdict) 1 0))))
+
+(defun platform-verified (context verify-mode)
+  "CONTEXT, which verifies its peers at the default location, made to verify
+them through the platform's own trust where OpenSSL has none (Windows)."
+  #+win32
+  (when (logtest (or verify-mode cl+ssl:+ssl-verify-peer+) cl+ssl:+ssl-verify-peer+)
+    (cffi:foreign-funcall "SSL_CTX_set_cert_verify_callback" :pointer context
+                          :pointer (cffi:callback verify-through-windows) :pointer (cffi:null-pointer) :void))
+  #-win32 (declare (ignore verify-mode))
+  context)
+
+(defun shared-client-context (next &rest args &key (verify-location :default) verify-mode &allow-other-keys)
   "CL+SSL:MAKE-CONTEXT's advice: a context asked for by verify mode and the
 system's default location alone is that mode's shared one, with a reference
-of its own for the caller to free; any other ask is NEXT's, a fresh context."
+of its own for the caller to free; any other ask is NEXT's, a fresh context.
+Every context at the default location verifies through the platform's trust."
   ;; A named location stays fresh: the file a caller names may be rewritten
   ;; between asks, and a cached store would keep the one before.
-  (if (or (not (eq verify-location :default))
-          (loop for key in args by #'cddr
-                thereis (not (member key '(:verify-mode :verify-location)))))
-      (apply next args)
-      (bt2:with-lock-held (*client-contexts-lock*)
-        (let* ((mode (getf args :verify-mode))
-               (context (or (cdr (assoc mode *client-contexts*))
-                            (cdar (push (cons mode (apply next args)) *client-contexts*)))))
-          (cffi:foreign-funcall "SSL_CTX_up_ref" :pointer context :int)
-          context))))
+  (cond ((not (eq verify-location :default)) (apply next args))
+        ((loop for key in args by #'cddr
+               thereis (not (member key '(:verify-mode :verify-location))))
+         (platform-verified (apply next args) verify-mode))
+        (t (bt2:with-lock-held (*client-contexts-lock*)
+             (let ((context (or (cdr (assoc verify-mode *client-contexts*))
+                                (cdar (push (cons verify-mode (platform-verified (apply next args) verify-mode))
+                                            *client-contexts*)))))
+               (cffi:foreign-funcall "SSL_CTX_up_ref" :pointer context :int)
+               context)))))
 
 (defun forget-client-contexts ()
   "Drop the shared contexts before a dump: a foreign pointer outlives nothing."
