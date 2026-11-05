@@ -131,7 +131,7 @@
           (is (equal "machine-key-fixture" (nlk:json-value (nle::read-auth-file nle::*auth-file-path*) :string "api_keys" "nodecode" "key"))))))))
 
 (deftest account-login-says-what-the-chosen-mode-still-lacks ()
-  (dolist (case `(("subscription" ,+account-usage-empty+ "subscribe at https://nodecode.ai/pricing")
+  (dolist (case `(("subscription" ,+account-usage-empty+ "plans are not sold now: it runs on API credit, added at https://nodecode.ai/account/top-up")
                   ("api" ,+account-usage-empty+ "add some at https://nodecode.ai/account/top-up")
                   ("api" ,+account-usage-credit+ nil)))
     (destructuring-bind (mode usage hint) case

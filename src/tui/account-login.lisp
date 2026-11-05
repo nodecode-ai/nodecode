@@ -174,7 +174,9 @@ step: LEAD, the default model the sign-in chose, or /models."
         (dolist (line (account-usage-lines usage)) (format output "~a~%" line))
         (cond
           ((and (equal mode "subscription") (not (json-value usage :object "plan")))
-           (format output "This account holds no plan yet: subscribe at https://nodecode.ai/pricing~%"))
+           ;; No plan is sold now (nodecode.ai/pricing is per token), so the plan
+           ;; a person lacks is not one to buy: the account runs on API credit.
+           (format output "This account holds no plan, and plans are not sold now: it runs on API credit, added at https://nodecode.ai/account/top-up~%"))
           ((and (equal mode "api") (not (account-balance-rows usage)))
            (format output "This account has no API credit yet: add some at https://nodecode.ai/account/top-up~%"))))
     (error (condition)
