@@ -323,6 +323,8 @@ Zig launcher gives the same thing."
    (nlk:make-verb "login" "sign in to your nodecode.ai account: a subscription or API credits"
                   :arguments "[--subscription | --api]"
                   :detail "Asks which one unless a flag says it, opens nodecode.ai in your browser with this machine's code in the page, and waits there for you to sign in with your nodecode.ai account and allow the machine; over ssh, open the printed page on any device. The key is saved locally and the account's meter printed: the plan's requests left and when the plan ends, the API credit. No terminal UI or session is opened. /login does the same from inside the shell; /models is for other providers.")
+   (nlk:make-verb "logout" "sign this machine out of your nodecode.ai account"
+                  :detail "Takes the account's key out of this home's auth.json and forgets the machine link; the key stays on the account until you remove the machine at https://nodecode.ai/account/machines. No terminal UI or session is opened. /logout does the same from inside the shell; nodecode login signs in again.")
    (nlk:make-verb "machine" "link this machine to your nodecode.ai account with a code from its Machines page"
                   :label "machine link [CODE]"
                   :arguments "link [CODE]"
@@ -589,6 +591,11 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
                       (launch-usage-error "login signs in with a browser and takes no CODE; a code from the Machines page is nodecode machine link ~a"
                                           (first args)))
                     (setf child (list :login mode))))
+                 ;; (:logout): the sign-in's mirror, which takes no word.
+                 ((string= name "logout")
+                  (when (and args (not (uiop:string-prefix-p "-" (first args))))
+                    (launch-usage-error "logout takes no argument"))
+                  (setf child (list :logout)))
                  ;; (:machine-link CODE): the Machines page's link, NIL to be given a code.
                  ((string= name "machine")
                   (unless (equal (pop args) "link")
@@ -1200,6 +1207,7 @@ condition's report, exit 1."
           (:warm-dump (nlk::warm-dump-main (second child)))
           ;; The answer on stdout, a refusal on stderr, then its exit code.
           (:login (account-login-main (second child)))
+          (:logout (account-logout-main))
           (:machine-link (machine-link-main (second child)))
           (:profile (multiple-value-call #'print-answer-and-quit (profile-answer (second child))))
           (:secrets (multiple-value-call #'print-answer-and-quit (secrets-answer (second child))))
