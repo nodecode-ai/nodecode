@@ -87,7 +87,17 @@ and each TYPE are SB-ALIEN's, or SAP, INT or STR for the three most written."
     ("K32GetProcessMemoryInfo" %get-process-memory-info int (process sb-win32::handle)
      (counters sap) (size sb-win32::dword))
     ("GetFinalPathNameByHandleW" %get-final-path-name sb-win32::dword
-     (handle sb-win32::handle) (buffer sap) (size sb-win32::dword) (flags sb-win32::dword)))
+     (handle sb-win32::handle) (buffer sap) (size sb-win32::dword) (flags sb-win32::dword))
+    ("GetHandleInformation" %get-handle-information int (handle sb-win32::handle) (flags sap))
+    ("InitializeProcThreadAttributeList" %initialize-attribute-list int (attributes sap)
+     (count sb-win32::dword) (flags sb-win32::dword) (size sap))
+    ("UpdateProcThreadAttribute" %update-attribute int (attributes sap) (flags sb-win32::dword)
+     (attribute (sb-alien:unsigned 64)) (value sap) (size (sb-alien:unsigned 64))
+     (previous sap) (returned sap))
+    ("DeleteProcThreadAttributeList" %delete-attribute-list sb-alien:void (attributes sap)))
+  (defconstant +handle-flag-inherit+ 1)
+  (defconstant +proc-thread-attribute-handle-list+ #x20002)
+  (defconstant +extended-startupinfo-present+ #x80000)
   (defconstant +file-share-all+ 7)
   (defconstant +file-flag-backup-semantics+ #x02000000)
   (defconstant +process-query-limited-information+ #x1000)
@@ -509,6 +519,108 @@ name case-blind as Windows keeps its own, one more NUL closing it."
     (sb-int:encapsulate 'sb-win32::create-process 'unicode-environment
                         '%create-process-in-unicode)))
 
+;;; --- a Windows child inherits its three standard handles, no more ---------
+;;; CreateProcess told to inherit hands the child every handle of this process
+;;; marked inheritable, not only the three its STARTUPINFO names. SBCL's
+;;; RUN-PROGRAM marks a child's pipe ends inheritable before it takes its spawn
+;;; lock, and every Winsock socket is inheritable, so a child started while
+;;; another spawn's pipes were open took those pipes, and the gateway's sockets,
+;;; with it. On one gateway the WhatsApp driver, started beside a `git' run,
+;;; kept that run's stdout open for as long as it lived: the drain never saw end
+;;; of file, and the close RUN-BOUNDED made under it froze every close in the
+;;; image (2026-11-05). A PROC_THREAD_ATTRIBUTE_HANDLE_LIST names the three
+;;; standard handles as the only ones the child gets -- how Python's subprocess
+;;; has started every Windows child since 3.7.
+
+#+win32
+(progn
+  (defun inheritable-std-handles (startup)
+    "The standard handles STARTUP, a STARTUPINFOW's address, gives a child,
+each once and only those marked inheritable: the handle list refuses any
+other."
+    ;; GetHandleInformation reads the handle table, never the file object, so
+    ;; it does not wait behind a read another thread has pending on the handle.
+    (let ((info (sb-alien:deref (sb-alien:sap-alien startup (* sb-win32::startup-info))))
+          (handles '()))
+      (sb-alien:with-alien ((flags sb-win32::dword 0))
+        (dolist (handle (list (sb-alien:slot info 'sb-win32::stdin)
+                              (sb-alien:slot info 'sb-win32::stdout)
+                              (sb-alien:slot info 'sb-win32::stderr))
+                        (nreverse handles))
+          (when (and (plusp handle)
+                     ;; A console pseudo-handle ends in binary 11: no kernel handle.
+                     (/= 3 (logand handle 3))
+                     (not (member handle handles))
+                     (/= 0 (%get-handle-information
+                            handle (sb-alien:alien-sap (sb-alien:addr flags))))
+                     (logtest flags +handle-flag-inherit+))
+            (push handle handles))))))
+
+  (defun call-with-handle-list (startup handles function)
+    "FUNCTION called with the address of a STARTUPINFOEXW: STARTUP's fields and
+an attribute list naming HANDLES as the only handles a child inherits."
+    (let* ((size (sb-alien:alien-size sb-win32::startup-info :bytes))
+           (array (sb-alien:make-alien (sb-alien:unsigned 64) (length handles)))
+           (extended (sb-alien:make-alien (sb-alien:unsigned 8) (+ size 8)))
+           (needed (sb-alien:make-alien (sb-alien:unsigned 64)))
+           (attributes nil))
+      (with-cleanup ((when attributes (sb-alien:free-alien attributes))
+                     (sb-alien:free-alien needed)
+                     (sb-alien:free-alien extended)
+                     (sb-alien:free-alien array))
+        (loop for handle in handles
+              for index from 0
+              do (setf (sb-alien:deref array index) handle))
+        ;; Asked with no list, it answers the size one list of one attribute takes.
+        (setf (sb-alien:deref needed) 0)
+        (%initialize-attribute-list (sb-sys:int-sap 0) 1 0 (sb-alien:alien-sap needed))
+        (setf attributes (sb-alien:make-alien (sb-alien:unsigned 8) (sb-alien:deref needed)))
+        (when (zerop (%initialize-attribute-list (sb-alien:alien-sap attributes) 1 0
+                                                 (sb-alien:alien-sap needed)))
+          (error "InitializeProcThreadAttributeList: Windows error ~d"
+                 (sb-win32::get-last-error)))
+        (with-cleanup ((%delete-attribute-list (sb-alien:alien-sap attributes)))
+          (when (zerop (%update-attribute (sb-alien:alien-sap attributes) 0
+                                          +proc-thread-attribute-handle-list+
+                                          (sb-alien:alien-sap array) (* 8 (length handles))
+                                          (sb-sys:int-sap 0) (sb-sys:int-sap 0)))
+            (error "UpdateProcThreadAttribute: Windows error ~d" (sb-win32::get-last-error)))
+          (let ((sap (sb-alien:alien-sap extended)))
+            (sb-kernel:system-area-ub8-copy startup 0 sap 0 size)
+            (setf (sb-sys:sap-ref-32 sap 0) (+ size 8)
+                  (sb-sys:sap-ref-sap sap size) (sb-alien:alien-sap attributes))
+            (funcall function sap))))))
+
+  (defun %create-process-inheriting-std-handles (create-process application command-line
+                                                 process-security thread-security inheritp
+                                                 flags environment directory startup
+                                                 information)
+    "SB-WIN32::CREATE-PROCESS, its child inheriting only the standard handles its
+STARTUP names when it was to inherit at all."
+    (flet ((create (inheritp flags startup)
+             (funcall create-process application command-line process-security
+                      thread-security inheritp flags environment directory startup
+                      information)))
+      (if (not (and inheritp
+                    (sb-sys:system-area-pointer-p startup)
+                    (logtest (sb-alien:slot (sb-alien:deref (sb-alien:sap-alien
+                                                             startup (* sb-win32::startup-info)))
+                                            'sb-win32::flags)
+                             sb-win32::+startf-use-std-handles+)))
+          ;; No standard handles named (RUN-PROGRAM's :PRESERVE-FDS alone): as asked.
+          (create inheritp flags startup)
+          (let ((handles (inheritable-std-handles startup)))
+            (if handles
+                (call-with-handle-list
+                 startup handles
+                 (lambda (extended)
+                   (create t (logior flags +extended-startupinfo-present+) extended)))
+                (create nil flags startup))))))
+
+  (sb-ext:without-package-locks
+    (sb-int:encapsulate 'sb-win32::create-process 'inherit-std-handles-only
+                        '%create-process-inheriting-std-handles)))
+
 ;;; --- starting a child without copying this image --------------------------
 ;;; SB-EXT:RUN-PROGRAM forks, and a fork copies the page tables of the whole
 ;;; address space before the exec throws them away. The cost is this image's,
@@ -926,6 +1038,27 @@ the wait for the lock, when it is one, to the deadline (*WAIT-STEP*)."
   (unwind-protect (funcall function)
     (bt2:release-lock lock)))
 
+(defun %threads-released-p (threads)
+  "T once none of THREADS -- RUN-BOUNDED's drains and its feeder -- is left
+parked on a pipe, so closing the pipes cannot wait on one; NIL when one would
+not let go, and the pipes stay open rather than freeze the image."
+  ;; On Windows a close waits behind a read or a write another thread has
+  ;; pending on the same pipe, and while it waits every other close in the
+  ;; process waits behind it: a NUL close started 14 s in finished at 30 s, the
+  ;; moment the pipe's last writer exited (2026-11-05, winbox). A thread still
+  ;; parked when the bound fell -- a grandchild holds the pipe's other end -- is
+  ;; ended first; SBCL's interrupt cancels its pending I/O
+  ;; (CancelSynchronousIo). A POSIX close never waits, so there the pipes close
+  ;; as they are.
+  #-win32 (progn threads t)
+  #+win32
+  (dolist (thread threads t)
+    (when (bt2:thread-alive-p thread)
+      (ignore-errors (bt2:destroy-thread thread))
+      (%join-bounded thread 5)
+      (when (bt2:thread-alive-p thread)
+        (return nil)))))
+
 (defun run-bounded (argv &key (seconds 60) directory environment input
                              (output :string) (error-output :string) &aux clipped)
   "Run ARGV — the program first, searched on PATH — to completion or SECONDS,
@@ -966,10 +1099,12 @@ closed) and empty otherwise, in DIRECTORY when given, under ENVIRONMENT
            (feeder (and input-stream (spawn "run-bounded stdin" (%feed input-stream input))))
            (waiter (spawn "run-bounded wait" (wait-for-child pid process)))
            (status (%join-bounded waiter seconds)))
-      (with-cleanup ((when output-stream (ignore-errors (close output-stream)))
-                     (when error-stream (ignore-errors (close error-stream)))
-                     (when input-stream (ignore-errors (close input-stream :abort t)))
-                     (when process (ignore-errors (sb-ext:process-close process))))
+      (with-cleanup ((when (%threads-released-p (if feeder (cons feeder readers) readers))
+                       (when output-stream (ignore-errors (close output-stream)))
+                       (when error-stream (ignore-errors (close error-stream)))
+                       (when input-stream (ignore-errors (close input-stream :abort t)))
+                       ;; Closes the same streams once more: never under a parked thread.
+                       (when process (ignore-errors (sb-ext:process-close process)))))
         (when (eq status :timeout)
           (step-ran-out clipped)
           (kill-tree pid)
