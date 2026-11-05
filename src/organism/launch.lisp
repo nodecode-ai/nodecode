@@ -488,6 +488,10 @@ pid, open fds and job control carry over."
   ;; from: the refusal is the answer.
   #+win32 (declare (ignore argv))
   (mapc #'finish-output (list *standard-output* *error-output*))
+  ;; A launch walk's claim names this pid, which the successor keeps
+  ;; without the walk's thread: left, it would hold every session of the
+  ;; folder waiting on a walk that no longer runs (snapshot.lisp).
+  #-win32 (release-launch-walk-claims)
   #+win32 (format nil "exec ~a: not on Windows" (namestring path))
   #-win32
   (let ((file (namestring path)))

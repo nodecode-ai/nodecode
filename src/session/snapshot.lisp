@@ -344,9 +344,7 @@ environment names (SystemRoot, ProgramFiles, ProgramData on Windows)."
   ;; => (values SNAPSHOT-STORE-or-NIL unavailable-keyword-or-NIL). Never signals.
   (with-handlers ((snapshot-git-unavailable () (values nil :git-missing))
                   (error () (values nil :store-init-failed)))
-    (flet ((canonical (path)
-             (ignore-errors
-              (namestring (uiop:ensure-directory-pathname (truename path))))))
+    (flet ((canonical (path) (canonical-workspace path)))
       (let* ((root (uiop:ensure-directory-pathname workspace))
              (canonical-root (canonical root)))
         (cond
@@ -366,6 +364,97 @@ environment names (SystemRoot, ProgramFiles, ProgramData on Windows)."
                (system-directory-p canonical-root))
            (values nil :workspace-too-large))
           (t (open-snapshot-store root (snapshot-git-dir canonical-root) session-id)))))))
+
+(defun canonical-workspace (path)
+  "PATH's directory as one namestring for every spelling of it, or NIL when
+it names none."
+  (ignore-errors
+   (namestring (uiop:ensure-directory-pathname (truename path)))))
+
+;;; --- the launch walk ------------------------------------------------------
+;;; A workspace's first walk stages every file: about 600 ms for 540 files on
+;;; Windows, where the first message of a session would otherwise wait on it
+;;; at its first tool call (T-442). A shell starting in a folder knows that
+;;; folder before anything else, so it walks it then, on a thread of its own,
+;;; into the store's launch index -- while the organism boots and the person
+;;; types. The session that follows seeds its index from that one
+;;; (SEED-SESSION-INDEX), and the tree it wrote rides beside it, so the
+;;; session's first capture is its census alone. The organism is another
+;;; process: the walk holds a claim file beside the store for as long as it
+;;; runs, and a store opened meanwhile waits for it rather than walk the same
+;;; tree a second time beside it.
+
+(defparameter +launch-session-id+ "launch"
+  "The session name of the launch walk's index: index-launch in the store.")
+
+(defvar *launch-walk-p* nil
+  "True on the thread of a launch walk, which never waits on its own claim.")
+
+(defvar *held-launch-claims* '()
+  "The launch walk claims this process holds, released before an exec: the
+pid in them is the successor's, whose walk thread is gone.")
+
+(defun release-launch-walk-claims ()
+  "Delete every launch walk claim this process holds."
+  (dolist (claim *held-launch-claims*)
+    (ignore-errors (delete-file claim)))
+  (setf *held-launch-claims* '()))
+
+(defun launch-walk-claim (git-dir)
+  "The claim file a launch walk of GIT-DIR's store holds: beside the store,
+which may not exist yet."
+  (concatenate 'string (string-right-trim "/\\" (namestring git-dir)) ".walking"))
+
+(defun launch-walk-live-p (claim)
+  "True while the launch walk holding CLAIM runs: the file stands, younger than
+the git bound, and names a live process."
+  (with-handlers ((error () nil))
+    (let ((date (file-write-date claim))
+          (pid (parse-integer (read-text claim) :junk-allowed t)))
+      (and date (< (- (get-universal-time) date) +snapshot-git-timeout-seconds+)
+           pid (pid-live-p pid)))))
+
+(defun await-launch-walk (git-dir)
+  "Return once no launch walk of GIT-DIR's store runs, within the git bound."
+  (let ((claim (launch-walk-claim git-dir))
+        (deadline (deadline-after +snapshot-git-timeout-seconds+)))
+    (loop while (and (probe-file claim) (launch-walk-live-p claim)
+                     (< (get-internal-real-time) deadline))
+          do (sleep 0.005))))
+
+(defun launch-tree-file (store)
+  "The file beside STORE's index naming the tree that index was walked to."
+  (concatenate 'string (snapshot-store-index-path store) ".tree"))
+
+(defun walk-at-launch (directory &aux claim)
+  "Walk DIRECTORY into its store's launch index and anchor the tree, under
+the store's launch claim. => the tree's sha, or NIL when DIRECTORY is no
+workspace or another launch walk holds the claim."
+  (when-let (root (canonical-workspace (uiop:ensure-directory-pathname directory)))
+    (setf claim (launch-walk-claim (snapshot-git-dir root)))
+    (ensure-directories-exist claim)
+    (when (claim-file claim +snapshot-git-timeout-seconds+)
+      (push claim *held-launch-claims*)
+      (unwind-protect
+           (let ((*launch-walk-p* t))
+             (when-let (store (ensure-snapshot-store directory +launch-session-id+))
+               (let ((tree (capture-anchored-tree store "launch walk"))
+                     (digest (index-digest store))
+                     (tip (anchor-tip-cache store)))
+                 (when (and tree digest)
+                   (with-output-file (out (launch-tree-file store))
+                     (format out "~a ~a~@[ ~a~]~%" digest tree
+                             (and (equal (cdr tip) tree) (car tip)))))
+                 tree)))
+        (setf *held-launch-claims* (remove claim *held-launch-claims* :test #'equal))
+        (ignore-errors (delete-file claim))))))
+
+(defun prewarm-workspace (directory)
+  "Start the launch walk of DIRECTORY on a thread of its own. Never signals."
+  (with-handlers ((error () nil))
+    (spawn "workspace-launch-walk"
+      (with-handlers ((error () nil))
+        (walk-at-launch directory)))))
 
 (defun git-index-file-p (path)
   "True when PATH begins with DIRC, the signature git writes at the head of
@@ -411,7 +500,26 @@ newest index another session of the workspace left. => that index, or NIL."
                             nil))
             (uiop:copy-file source seed)
             (rename-file seed index)
+            (adopt-launch-tree store source)
             source))))))
+
+(defun adopt-launch-tree (store source)
+  "Take the tree a walk wrote beside SOURCE, the index STORE's was copied
+from, as the answer for STORE's index while it holds the same bytes; and its
+anchor as the tip, when this process knows none."
+  ;; The copy's digest is the source's: the tree answers for it until a
+  ;; staging moves it (CAPTURE-WORKSPACE-TREE), with no WRITE-TREE and no
+  ;; anchor resolve between the session's census and its first capture.
+  (with-handlers ((error () nil))
+    (let ((fields (uiop:split-string (string-trim '(#\Newline #\Return #\Space)
+                                                  (read-text (concatenate 'string (namestring source) ".tree")))
+                                     :separator " "))
+          (digest (index-digest store)))
+      (destructuring-bind (written tree &optional commit) fields
+        (when (and digest (equal written digest) (tree-sha-p tree))
+          (setf (index-trees store) (cons digest tree))
+          (when (and commit (tree-sha-p commit) (null (anchor-tip-cache store)))
+            (setf (anchor-tip-cache store) (cons commit tree))))))))
 
 (defun open-snapshot-store (root git-dir session-id)
   "The store over the workspace ROOT kept in GIT-DIR, with SESSION-ID's index,
@@ -422,6 +530,10 @@ refusals."
                 :git-dir (string-right-trim "/" (namestring git-dir))
                 :index-path (namestring
                              (merge-pathnames (format nil "index-~a" session-id) git-dir)))))
+    ;; A session with no index yet seeds it from the newest of the store's,
+    ;; and a launch walk of the folder still running is writing that one.
+    (unless (or *launch-walk-p* (probe-file (snapshot-store-index-path store)))
+      (await-launch-walk git-dir))
     ;; An index lock older than RUN-SNAPSHOT-GIT's walltime bound was left by
     ;; a process that died mid-walk; a younger one may be a capture.
     (let* ((lock (concatenate 'string (snapshot-store-index-path store) ".lock"))
