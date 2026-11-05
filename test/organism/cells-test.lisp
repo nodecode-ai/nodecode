@@ -708,7 +708,8 @@ writer."
                    (nlk:offer-closure '("nl-ship-top") shipped)))
         (is (equal '("nl-ship-base" "nl-ship-top" "nl-ship-chan")
                    (nlk:offer-closure '("nl-ship-top" "nl-ship-chan") shipped)))
-        (with-saved-globals ((nlk::*cells-directory* folder))
+        ;; the image ships these, so the link an install makes leads into its own tree
+        (with-saved-globals ((nlk::*cells-directory* folder) (nlk::*source-root* source))
           (is (nlk:install-cell "nl-ship-top" :offers shipped))
           (is (nlk:installed-cell-p "nl-ship-top"))
           (is (equal '("nl-ship-top") (mapcar #'nlk::folder-name (nlk::cell-folders folder))))
