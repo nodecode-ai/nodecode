@@ -46,7 +46,9 @@
   (sb-alien:define-alien-routine ("GetQueuedCompletionStatus" %journal-dequeue) sb-alien:int
     (port sb-win32::handle) (bytes sb-sys:system-area-pointer) (key sb-sys:system-area-pointer)
     (overlapped sb-sys:system-area-pointer) (milliseconds sb-win32::dword))
-  (sb-alien:define-alien-routine ("GetCurrentProcessId" %journal-process-id) sb-win32::dword))
+  (sb-alien:define-alien-routine ("GetCurrentProcessId" %journal-process-id) sb-win32::dword)
+  (sb-alien:define-alien-routine ("QueryPerformanceCounter" %journal-counter) sb-alien:int
+    (count (* (sb-alien:unsigned 64)))))
 
 (defconstant +journal-buffer-bytes+ 65536
   "One read's buffer: 64 KB, the most a network share takes.")
@@ -177,6 +179,17 @@ and always off Windows."
             (progn (close-journal journal)
                    (setf (workspace-journals root) :none)
                    nil))))))
+
+(defun journal-clock ()
+  "A count every process on this machine reads on one scale, rising: what
+orders one process's arming of a journal against another's walk of the same
+workspace (ADOPT-LAUNCH-TREE). NIL where no journal keeps a workspace."
+  ;; QueryPerformanceCounter: one counter for every process since boot, never
+  ;; stepped the way the wall clock is.
+  #-win32 nil
+  #+win32
+  (sb-alien:with-alien ((count (sb-alien:unsigned 64)))
+    (and (/= 0 (%journal-counter (sb-alien:addr count))) count)))
 
 #+win32
 (defun root-journal (root ignored)

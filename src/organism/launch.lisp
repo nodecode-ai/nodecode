@@ -527,14 +527,18 @@ process costs CPU, dead time a key walk's remaining
 reads hide behind."
   (spawn "sha256-warm" (ignore-errors (sha256-text "warm"))))
 
-(defun warm-the-git-probes ()
-  "Answer on a thread the two git questions a first turn otherwise asks on
-its own path, each a git process the image remembers the answer of: whether
-git runs at all (GIT-AVAILABLE-P, the snapshot store's first check) and the
-layer's name (LAYER-NAME, git's user.name, read by the prompt's index)."
+(defun warm-the-boot-probes ()
+  "Settle on a thread what a first turn otherwise settles on its own path:
+the journal of the folder this process runs in, armed before its launch walk
+settles so the session's first capture can take that walk's tree with no git
+(ARM-WORKSPACE-JOURNAL), and the two git questions the image remembers the
+answer of -- whether git runs at all (GIT-AVAILABLE-P, the snapshot store's
+first check) and the layer's name (LAYER-NAME, git's user.name, read by the
+prompt's index)."
   ;; Some 40 ms apiece where a process start is dear (Windows, 2026-11-05):
   ;; asked behind the folder load, they are answered before a turn asks.
-  (spawn "git-probes"
+  (spawn "boot-probes"
+    (ignore-errors (arm-workspace-journal (uiop:getcwd)))
     (ignore-errors (git-available-p))
     (ignore-errors (layer-name))))
 
@@ -1029,7 +1033,7 @@ if this one dies before it serves."
      ;; digests and the load compiles the cells this core shipped with.
      (warm-the-digest)
      ;; Only where threads may start: a child forks after its boot.
-     (when spawn (warm-the-git-probes))
+     (when spawn (warm-the-boot-probes))
      (nlk:note-boot-phase "refresh-start")
      (multiple-value-bind (refreshed failed retired)
          (handler-case (refresh-installed-cells) (error () (values nil nil nil)))

@@ -350,6 +350,44 @@ completed once BODY is done."
             (is (equal '("add --dry-run") asked)
                 (format nil "and its census is all it asked of git: ~a" asked))))))))
 
+(deftest a-journal-armed-ahead-of-a-launch-walk-takes-its-tree-without-git (with-git-workspace (store dir))
+  ;; Windows: the organism arms its folder's journal as it boots, before the
+  ;; shell's launch walk settles. A session seeded from that walk, the
+  ;; journal quiet since the arming, takes the walk's tree at its first
+  ;; capture with no git at all -- the census a new session paid at its first
+  ;; turn (T-442). Armed after the walk settled, or moved since, it walks.
+  (let ((epoch 5) (clock 0))
+    (with-stubbed-fdefinitions ((nlk::workspace-journal-epoch (root &key ignored)
+                                  (declare (ignore root ignored))
+                                  epoch)
+                                (nlk::journal-clock () (incf clock)))
+      (dotimes (i 4) (%write-file dir (format nil "f~d.txt" i) (format nil "file ~d" i)))
+      (is (eql 5 (nlk::arm-workspace-journal dir)) "the arming answers the epoch")
+      (let ((launched (nlk::walk-at-launch dir))
+            (root (namestring (uiop:ensure-directory-pathname dir))))
+        (is (= 40 (length launched)))
+        (nlk::forget-anchor-tip-cache store)
+        (flet ((first-capture (session-id)
+                 (let ((session (nlk:ensure-snapshot-store (namestring dir) session-id)))
+                   (multiple-value-prog1 (git-asked (nlk::capture-anchored-tree session "user_message"))
+                     ;; the launch walk's index stays the newest for the next session to seed from
+                     (delete-file (nlk::snapshot-store-index-path session))))))
+          (nlk:bind (((asked tree) (first-capture "armed-ahead")))
+            (is (equal launched tree) "the session's first tree is the launch walk's")
+            (is (null asked) (format nil "and it asked nothing of git: ~a" asked)))
+          ;; armed after the walk's census looked
+          (setf (nlk::armed-workspace-journal root) (cons epoch (+ clock 100)))
+          (nlk::forget-anchor-tip-cache store)
+          (nlk:bind (((asked tree) (first-capture "armed-after")))
+            (is (equal launched tree))
+            (is (equal '("add --dry-run") asked) (format nil "armed after, it takes a census: ~a" asked)))
+          ;; armed ahead, but the journal moved since
+          (setf (nlk::armed-workspace-journal root) (cons (1- epoch) 0))
+          (nlk::forget-anchor-tip-cache store)
+          (nlk:bind (((asked tree) (first-capture "moved-since")))
+            (is (equal launched tree))
+            (is (equal '("add --dry-run") asked) (format nil "moved since, it takes a census: ~a" asked))))))))
+
 (deftest a-store-opened-during-a-launch-walk-waits-for-it (with-git-workspace (store dir))
   ;; A session opened while the launch walk still runs would walk the same
   ;; tree beside it: it waits for the walk, then seeds from it. A claim no
