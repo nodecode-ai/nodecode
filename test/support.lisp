@@ -520,13 +520,18 @@ the prior value on unwind."
 
 (defun make-test-link (target link)
   "A link at LINK, a native namestring with no trailing separator, to
-TARGET, which exists: a symbolic link on Unix. On Windows a directory's is
-a junction, which any account may make, and a file's a symbolic link, which
-takes the account's privilege or Developer Mode. => LINK."
+TARGET: a symbolic link on Unix. On Windows a folder's is a junction, which
+any account may make, and a file's a symbolic link, which takes the
+account's privilege or Developer Mode. TARGET is a folder when it is one,
+or when it is named as one (a directory pathname, or a native name ending
+in its separator) and is not there yet. => LINK."
   #-win32 (sb-posix:symlink (uiop:native-namestring target) link)
   #+win32
-  (let ((target (string-right-trim "/\\" (uiop:native-namestring target))))
-    (if (uiop:directory-exists-p target)
+  (let ((folder (or (uiop:directory-exists-p target)
+                    (uiop:directory-pathname-p
+                     (if (pathnamep target) target (uiop:parse-native-namestring target)))))
+        (target (string-right-trim "/\\" (uiop:native-namestring target))))
+    (if folder
         (nlk:run-bounded (list "cmd" "/c" "mklink" "/J" link target))
         ;; SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE: no privilege needed
         ;; where Developer Mode is on
