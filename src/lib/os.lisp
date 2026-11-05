@@ -1912,6 +1912,30 @@ to say."
   "What RAISE-FILE-LIMIT found and left: (:was SOFT :soft SOFT :hard HARD
 :cap CAP), NIL before it ran and on Windows.")
 
+(defun raise-timer-resolution ()
+  "Ask Windows to wake this process's waits to the millisecond. => T when
+it granted it, NIL where the platform needs no asking."
+  ;; Windows wakes a waiting thread on its timer tick, 15.6 ms unless a
+  ;; process asks for less: a (SLEEP 0.001) slept 15.8 ms on the Windows lane
+  ;; (2026-11-05), so every short poll here -- a launch waiting for its
+  ;; organism's endpoint, the shell's input loop, a store waiting out a launch
+  ;; walk -- and every short timeout ran at that tick. timeBeginPeriod(1)
+  ;; asks 1 ms, kept per process since Windows 10 2004 and let go at exit;
+  ;; the function is looked up, and winmm.dll loaded for it only when no
+  ;; library already in the process exports it. POSIX sleeps to the
+  ;; microsecond. Process-wide, which is why MAIN asks first.
+  #+win32
+  (with-handlers ((error () nil))
+    (let ((address (or (sb-sys:find-dynamic-foreign-symbol-address "timeBeginPeriod")
+                       (progn (sb-alien:load-shared-object "winmm.dll" :dont-save t)
+                              (sb-sys:find-dynamic-foreign-symbol-address "timeBeginPeriod")))))
+      (and address
+           (zerop (sb-alien:alien-funcall
+                   (sb-alien:sap-alien (sb-sys:int-sap address)
+                                       (function sb-alien:unsigned-int sb-alien:unsigned-int))
+                   1)))))
+  #-win32 nil)
+
 (defun raise-file-limit (&optional (cap +select-safe-descriptors+))
   "Raise this process's soft open-file limit toward its hard limit, to CAP at
 most, and never lower it. => (:was :soft :hard :cap), kept in *FILE-LIMIT*;
