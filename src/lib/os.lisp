@@ -56,6 +56,18 @@
   #+arm64 :arm64
   #-(or x86-64 arm64) (error "no release is built for this CPU"))
 
+(defun errno-text (errno)
+  "The C runtime's words for ERRNO, the number a failed sb-posix call or a C
+library call carries: `No such file or directory', `Read-only file system'."
+  ;; SB-INT:STRERROR reads Windows' own message table there, numbered by
+  ;; GetLastError, not by errno: errno 28 read `The printer is out of paper.'
+  ;; and 13 `The data is invalid.'. The C runtime's strerror is the table the
+  ;; number came from.
+  #-win32 (sb-int:strerror errno)
+  #+win32 (sb-alien:alien-funcall
+           (sb-alien:extern-alien "strerror" (function sb-alien:c-string sb-alien:int))
+           errno))
+
 ;;; --- Windows bindings SBCL does not carry ---------------------------------
 
 (defmacro define-routines (&body routines)
