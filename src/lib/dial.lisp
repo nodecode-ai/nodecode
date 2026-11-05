@@ -176,6 +176,25 @@ address asks Winsock for no SYN retransmission, so a refusal ends it at once."
 #+win32
 (encapsulate-afresh 'sb-bsd-sockets:socket-connect 'loopback #'refuse-loopback-at-once)
 
+;;; --- a listener's port is its own on Windows --------------------------------
+;;; Every listener here asks for SO_REUSEADDR -- hunchentoot's acceptor, the
+;;; gateway's, every fixture's. On Unix that rebinds a port its last run left
+;;; in TIME_WAIT; on Windows it binds a port another socket is listening on,
+;;; and the two then split its connections: a gateway that came back while
+;;; another process held its remembered port took the port as well. Windows
+;;; rebinds past TIME_WAIT without asking, so there no listener asks.
+
+#+win32
+(defun listen-alone (next host port &rest keys)
+  "USOCKET:SOCKET-LISTEN's advice on Windows: HOST and PORT listened on under
+KEYS, never with SO_REUSEADDR."
+  (apply next host port :reuse-address nil :reuseaddress nil
+         (alexandria:remove-from-plist keys :reuse-address :reuseaddress)))
+
+#+win32
+(encapsulate-afresh 'usocket:socket-listen 'alone #'listen-alone)
+
+
 ;;; --- a handshake that fails closes its socket ---------------------------------
 ;;; dexador connects the socket and then shakes hands over it (MAKE-SSL-STREAM)
 ;;; before its request's own cleanup holds either. A handshake that signals --
