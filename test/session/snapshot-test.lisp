@@ -120,7 +120,10 @@ completed once BODY is done."
   ;; these gates are about is when the second of them, or both, is not made.
   `(let* ((,asked '())
           (,value (with-stubbed-fdefinition (nlk::run-snapshot-git (store arguments &rest keys)
-                                              (push (first arguments) ,asked)
+                                              (push (if (member "--dry-run" arguments :test #'equal)
+                                                        "add --dry-run"
+                                                        (first arguments))
+                                                    ,asked)
                                               (apply original store arguments keys))
                     ,form)))
      (values (reverse ,asked) ,value)))
@@ -143,16 +146,81 @@ completed once BODY is done."
   (let ((first-sha (nlk:capture-workspace-tree store)))
     (is (= 40 (length first-sha)) "the first capture writes a tree")
     (nlk:bind (((asked second-sha) (git-asked (nlk:capture-workspace-tree store))))
-      (is (equal '("ls-files" "add") asked)
-          (format nil "the census and the staging; no write-tree behind them: ~a" asked))
+      (is (equal '("add --dry-run") asked)
+          (format nil "the census alone; no staging and no write-tree behind it: ~a" asked))
       (is (equal first-sha second-sha) "and the tree it answers is that tree"))
     ;; Same length, same second, and the index git writes may land on the
     ;; inode the last one freed: only the content tells these apart.
     (%write-file dir "a.txt" "two")
     (nlk:bind (((asked changed) (git-asked (nlk:capture-workspace-tree store))))
-      (is (equal '("ls-files" "add" "write-tree") asked)
+      (is (equal '("add --dry-run" "add" "write-tree") asked)
           (format nil "a staged change writes its tree: ~a" asked))
       (is (not (equal first-sha changed)) "which is a tree of its own"))))
+
+(deftest a-large-staging-packs-its-blobs-and-a-small-one-stays-loose (with-git-workspace (store dir))
+  ;; A first walk writes a blob per file: as loose objects that is a file
+  ;; created per workspace file, 15.9 s for 5,000 files on Windows, and 0.6 s
+  ;; as one pack (T-442). Past the threshold the staging packs; an edit of a
+  ;; few files stays loose; the trees are the trees either way.
+  (let ((nlk::+snapshot-packed-staging-paths+ 3))
+    (flet ((loose-blobs ()
+             (count "blob" (%loose-objects store)
+                    :test #'equal
+                    :key (lambda (path)
+                           (nlk::git-line store (list "cat-file" "-t"
+                                                      (concatenate 'string (car (last (pathname-directory path)))
+                                                                   (file-namestring path))))))))
+    (dotimes (i 5) (%write-file dir (format nil "f~d.txt" i) (format nil "file ~d" i)))
+    (nlk:bind (((asked first-tree) (git-asked (nlk:capture-workspace-tree store))))
+      (is (member "add" asked :test #'equal))
+      (let ((packs (directory (merge-pathnames "objects/pack/*.pack"
+                                               (uiop:ensure-directory-pathname
+                                                (nlk::snapshot-store-git-dir store)))))
+            (blob (nlk::run-snapshot-git store (list "cat-file" "blob" (format nil "~a:f3.txt" first-tree)))))
+        (is (= 1 (length packs)) "the five blobs went into one pack")
+        (is (zerop (loose-blobs)) "and none of them loose")
+        (is (equal "file 3" blob) "a packed blob reads back"))
+      (%write-file dir "f1.txt" "edited")
+      (let ((second-tree (nlk:capture-workspace-tree store)))
+        (is (not (equal first-tree second-tree)))
+        (is (= 1 (loose-blobs)) "a one-file edit stays a loose object")
+        (let ((diff (nlk::run-snapshot-git store (list "diff-tree" "-p" first-tree second-tree))))
+          (is (search "+edited" diff) "and the diff between them is a text diff")))))))
+
+(deftest an-unchanged-workspace-is-captured-by-its-census-alone (with-git-workspace (store dir))
+  ;; A tool call that wrote nothing is most calls, and each is bracketed by
+  ;; two captures: when the census finds nothing to stage, the capture is
+  ;; those two listings and no `add -A' -- the walk a Windows step paid
+  ;; twice over (T-442). Whatever the census does find still stages: a
+  ;; deletion, a new file, an edit. A touch moves no content and so no tree.
+  (flet ((age (name) (sb-posix:utimes (namestring (merge-pathnames name dir)) 0 0))
+         (tree-paths (sha)
+           (sort (remove "" (uiop:split-string (nlk::run-snapshot-git store (list "ls-tree" "-r" "--name-only" sha))
+                                                :separator '(#\Newline))
+                         :test #'equal)
+                 #'string<)))
+    (%write-file dir "a.txt" "one")
+    (%write-file dir "b.txt" "two")
+    (age "a.txt")
+    (age "b.txt")
+    (let ((settled (nlk:capture-workspace-tree store)))
+      (nlk:bind (((asked same) (git-asked (nlk:capture-workspace-tree store))))
+        (is (null (intersection '("add" "write-tree") asked :test #'equal))
+            (format nil "no staging for an unchanged workspace: ~a" asked))
+        (is (equal settled same) "and the tree it answers is the settled one"))
+      (delete-file (merge-pathnames "b.txt" dir))
+      (nlk:bind (((asked deleted) (git-asked (nlk:capture-workspace-tree store))))
+        (is (member "add" asked :test #'equal) "a deletion stages")
+        (is (not (equal settled deleted)))
+        (is (equal '("a.txt") (tree-paths deleted)) "and the deleted file leaves the tree"))
+      (%write-file dir "c.txt" "three")
+      (%write-file dir "it's 'quoted'.txt" "four")
+      (let ((added (nlk:capture-workspace-tree store)))
+        (is (equal '("a.txt" "c.txt" "it's 'quoted'.txt") (tree-paths added)) "new files stage, quotes in a name too")
+        (sb-posix:utimes (namestring (merge-pathnames "c.txt" dir)) 1000 1000)
+        (is (equal added (nlk:capture-workspace-tree store)) "a touch keeps the tree")
+        (%write-file dir "a.txt" "uno")
+        (is (not (equal added (nlk:capture-workspace-tree store))) "an edit of the same length stages")))))
 
 (deftest workspace-diff-document-shapes-modified-added-deleted-binary ()
   ;; The complete diff document between two captured trees: per-file numstat
