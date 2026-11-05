@@ -1049,6 +1049,9 @@ condition's report, exit 1."
   ;; Room for descriptors: macOS starts a process at 256 open files
   ;; (os.lisp, RAISE-FILE-LIMIT), inherited by every child spawned after.
   (nlk::raise-file-limit)
+  ;; And waits woken to the millisecond, not Windows' 15.6 ms tick
+  ;; (os.lisp, RAISE-TIMER-RESOLUTION).
+  (nlk::raise-timer-resolution)
   ;; The gc.lisp collection policy, here, not in the boot ladder, so every
   ;; entry gets it -- the nursery once the arguments say which process this
   ;; is, below. The heap as a whole: garbage past a slack earns a full walk
