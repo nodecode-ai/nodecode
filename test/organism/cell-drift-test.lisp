@@ -61,7 +61,7 @@ NAME.lisp (one function, one variable, one generic), both loaded from disk.
                (is (notany (lambda (l) (or (search "only-live" l) (search "kept-gf" l))) (drift-live-labels drift)) "once the file defines them, though they were made live from text, nothing is named")
                (is (null (getf drift :not-live)) "and everything the file defines is live")))
         (ignore-errors (delete-package package))
-        (uiop:delete-directory-tree (uiop:pathname-parent-directory-pathname directory) :validate t :if-does-not-exist :ignore)))))
+        (nlk:remove-tree (uiop:pathname-parent-directory-pathname directory))))))
 
 (deftest cell-drift-names-an-evaluated-hook-and-a-file-ahead ()
   (let* ((name (format nil "drift-b-~d" (random 1000000)))
@@ -78,4 +78,4 @@ NAME.lisp (one function, one variable, one generic), both loaded from disk.
                (is (member "ahead" (getf drift :not-live) :test #'string-equal) "a function the file defines and the image lacks is named under :not-live")))
         (ignore-errors (nlk::unhook point "k"))
         (ignore-errors (delete-package package))
-        (uiop:delete-directory-tree (uiop:pathname-parent-directory-pathname directory) :validate t :if-does-not-exist :ignore)))))
+        (nlk:remove-tree (uiop:pathname-parent-directory-pathname directory))))))

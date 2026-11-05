@@ -136,7 +136,7 @@ under *UNIT-DIRECTORY*, its enablement and its process FAKE's."
     (is (nlk::own-account-home-p) "the suite's $HOME stands for the account's own")
     (is (equal "nodecode-gateway" (nlk:gateway-label (nlk:default-home))) "which keeps its name")
     (nlk:with-cleanup ((sb-posix:setenv "HOME" real-home 1)
-                       (ignore-errors (uiop:delete-directory-tree (pathname scratch) :validate t)))
+                       (ignore-errors (nlk:remove-tree (pathname scratch))))
       (ensure-directories-exist scratch)
       (sb-posix:setenv "HOME" (string-right-trim "/" scratch) 1)
       (is (not (nlk::own-account-home-p)) "a scratch $HOME is not the account's")
@@ -235,10 +235,12 @@ the unit folder: what another naming of the same home left there."
                     <key>EnvironmentVariables</key>~%  <dict>~%    ~
                     <key>NODECODE_HOME</key><string>~a</string>~%  </dict>~%</dict>~%</plist>~%"
                home label home)
+       ;; Environment= quoted as nodecode writes it: a Windows home's
+       ;; backslashes escaped, as systemd's word reading wants them.
        (format nil "# nodecode gateway: ~a (moved here by hand)~%[Unit]~%Description=nodecode gateway~%~%~
                     [Service]~%ExecStart=\"/opt/nodecode/current/nodecode\" gateway run~%~
-                    Environment=\"NODECODE_HOME=~a\"~%"
-               home home))))
+                    Environment=~a~%"
+               home (nlk::unit-quoted (format nil "NODECODE_HOME=~a" home))))))
 
 (defun unit-files ()
   "The names of the unit files in the unit folder."
@@ -253,9 +255,9 @@ the unit folder: what another naming of the same home left there."
   ;; update's handoff raced between them. A home's unit is the one that names
   ;; the home, by true name, whatever the unit is called.
   (let* ((home (string-right-trim "/" (uiop:native-namestring nlk:*home*)))
-         (link (string-right-trim "/" (namestring (temp-path "home-link"))))
+         (link (string-right-trim "/\\" (uiop:native-namestring (temp-path "home-link"))))
          (own (nlk:gateway-unit-name)))
-    (sb-posix:symlink home link)
+    (make-test-link home link)
     (write-gateway-unit "nodecode-gateway-elsewhere" link)
     (is (equal "nodecode-gateway-elsewhere.service" (nlk:gateway-unit-name)) "the home's gateway is the unit that serves it, named through a link")
     (is (nlk:gateway-installed-p) "so the gateway reads as on")

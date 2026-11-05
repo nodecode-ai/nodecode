@@ -40,7 +40,7 @@ raw-directory fixtures share, so no test restates the unwind itself."
   ;; WITH-TEMP-STORE's refusal path exists to prevent.
   `(let ((,dir (temp-directory ,tag)))
      (nlk:with-cleanup (,@(when close-store '((ignore-errors (nlk:close-store))))
-                        (ignore-errors (uiop:delete-directory-tree ,dir :validate t)))
+                        (ignore-errors (nlk:remove-tree ,dir)))
        ,@body)))
 
 (defmacro with-temp-store ((&optional var) &body body &aux (dir (gensym "DIR"))

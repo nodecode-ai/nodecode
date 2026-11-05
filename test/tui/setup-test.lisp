@@ -668,7 +668,7 @@ holds CONFIG when one is given, and the import stage's worlds are Hermes alone."
   ;; leaves.
   `(let ((,box (temp-path ,(format nil "agent-box~@[-~a~]" tag)))
          (,marker (temp-path ,(format nil "import-marker~@[-~a~]" tag) "txt")))
-     (nlk:with-cleanup ((ignore-errors (uiop:delete-directory-tree ,box :validate t))
+     (nlk:with-cleanup ((ignore-errors (nlk:remove-tree ,box))
                         (ignore-errors (delete-file ,marker)))
        (write-temp-file (merge-pathnames ".hermes/config.yaml" ,box) "model: {}")
        (with-temp-file (nle::*shared-config-path* :setf t)

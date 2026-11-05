@@ -228,7 +228,7 @@ exist to prevent."
              #-win32 (is (null (nlk::executable-on-path "gzip")) "no gzip on PATH, as on Windows")
              (is (probe-file (nlk:profile-export "coder" archive)) "the export packs with tar alone"))
         (nlk::set-environment-variable "PATH" (or saved-path ""))
-        (uiop:delete-directory-tree dir :validate t :if-does-not-exist :ignore))
+        (nlk:remove-tree dir))
       (is (equal "restored" (nlk:profile-import archive :name "restored")) "the archive comes back")
       (is (probe-file (merge-pathnames "SOUL.md" (nlk:profile-home "restored"))) "with its rows"))))
 
