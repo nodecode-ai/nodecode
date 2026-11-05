@@ -49,6 +49,32 @@
     (is (null (probe-file (merge-pathnames "SOUL.md" home))))
     (is (null (uiop:directory-exists-p (nlk:knowledge-directory))) "no knowledge cell either")))
 
+(deftest import-without-credentials-keeps-keys-and-bot-tokens-home (with-import-runtime (home box :hermes))
+  ;; Setup's first offer: everything comes over but the keys and bot tokens.
+  ;; Each one left is a skipped item kept back by choice, named and never
+  ;; shown; nothing lands in auth.json or secrets/, and the provider's
+  ;; endpoint and the rest still land.
+  (with-temp-store ()
+    (let* ((plan (let ((nik::*link-skills* nil))
+                   (nik:apply-plan (hermes-plan home :without "cron" :credentials nil))))
+           (keys (remove-if-not (lambda (item) (search "auth.json api_keys." (or (nik:item-destination item) "")))
+                                (import-items plan "providers")))
+           (bots (import-items plan "channels")))
+      (is (equal '("auth.json api_keys.openrouter" "auth.json api_keys.subrouter-1")
+                 (sort (mapcar #'nik:item-destination keys) #'string<)))
+      (is (every (lambda (item) (equal "skipped" (nik:item-status item))) keys) "each key is skipped")
+      (is (every (lambda (item) (search "stays in" (nik:item-reason item))) keys) "and says where it stays")
+      (is (equal '("skipped" "skipped") (import-statuses plan "channels")) "both bots stay too")
+      (is (every (lambda (item) (eq t (gethash "kept_back" (nik::item-json item)))) (append keys bots)) "kept back by choice, on the wire")
+      (is (null (gethash "kept_back" (nik::item-json (first (import-items plan "instructions"))))) "and nothing else carries the mark")
+      (is (null (nth-value 1 (nlk:json-value (or (import-auth) (nlk:make-json-object)) :any "api_keys" "subrouter-1"))) "no key in auth.json")
+      (is (null (probe-file (merge-pathnames "secrets/channels.telegram.token_file" home))) "no bot token in secrets/")
+      (is (null (nth-value 1 (nlk:json-value (import-config) :any "channels"))) "no channel section")
+      (is (equal "https://ai.example.test/v1" (nlk:json-value (import-config) :text "providers" "subrouter-1" "base_url")) "the endpoint still lands")
+      (is (equal '("imported") (import-statuses plan "instructions")) "and the rest")
+      (let ((report (nik:report-text plan)))
+        (is-table (in) (not (search in report)) (+fixture-key+ "no key is printed") (+fixture-token+ "nor a token"))))))
+
 (deftest import-apply-lands-each-piece-through-its-own-seam (with-import-runtime (home box :hermes))
   ;; Every piece but the cron jobs, which land through the cron folder and
   ;; are its lane's to prove (CRON-CELL-LANDS-AN-IMPORTED-JOB).
@@ -1264,3 +1290,15 @@
     (is (<= 3 (count-if (lambda (text) (and (stringp text) (search ": working" text))) writes)) "pinged while it read")
     (is (search "\"type\":\"result\"" (car (last writes))) "the result closes it")
     (is (search "\"summary\":\"read\"" (car (last writes))))))
+
+(deftest import-method-preserves-credential-option ()
+  ;; Only option plumbing: no home is scanned, no plan applied, no key read.
+  (dolist (pair '((:absent t) (:false nil) (:null nil) (t t)))
+    (let ((params (nlk:json-object "source" "fixture"))
+          (seen :not-called))
+      (unless (eq :absent (first pair))
+        (setf (gethash "credentials" params) (first pair)))
+      (with-stubbed-fdefinition (nik::run-import (&rest options)
+                                 (setf seen (getf options :credentials :missing)))
+        (nik::run-method "plan" params))
+      (is (eql (second pair) seen) "absent keeps the CLI default; explicit JSON values retain their meaning"))))

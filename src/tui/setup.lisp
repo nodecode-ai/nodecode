@@ -499,6 +499,8 @@ an apply response, whose terminal result is the same plan JSON as a preview."
                  "without" (or (getf request :without) :null)
                  "overwrite" (if (getf request :overwrite) t :false)
                  "keep_running" (if takeover :false t)
+                 ;; a request that does not say -- `nodecode import' -- brings them
+                 "credentials" (if (getf request :credentials t) t :false)
                  "stream" (if stream t :false))
                 :stream stream)))
          (if (not stream)
@@ -636,25 +638,33 @@ of zero is left out, all but the first."
 
 (defun setup-import-offer (model run worlds)
   "The first frame's question over WORLDS, the detected homes nobody declined:
-Import brings them all over (SETUP-IMPORT-OFFERED), Choose which ticks them
-one by one (SETUP-IMPORT-CHOOSE); Skip or Esc reads and writes nothing but
+Import brings them all over, their API keys and bot tokens left in their
+homes, and Import with keys those too (SETUP-IMPORT-OFFERED); Choose which
+ticks them one by one (SETUP-IMPORT-CHOOSE); Skip or Esc reads and writes nothing but
 the Skip, and the walk goes on to the provider."
   ;; Asked before a plan, which would read every home to count it: the
   ;; question is whether to read them at all.
   (let ((names (mapcar #'setup-world-label worlds)))
     (open-picker-dialog
      model "Setup"
+     ;; Another agent's keys and bot tokens are the one thing an import
+     ;; copies that the agent here could spend: they come only when asked for.
      (option-rows
       (list (if (rest worlds)
                 (format nil "Import from all ~d" (length worlds))
                 (format nil "Import from ~a" (first names)))
-            "keys, instructions, memory, skills, MCP servers, bots and jobs" :import)
+            "instructions, memory, skills, MCP servers and jobs; keys stay behind" :import)
+      (list (if (rest worlds)
+                (format nil "Import from all ~d, with keys" (length worlds))
+                (format nil "Import from ~a, with keys" (first names)))
+            (format nil "~:[its~;their~] API keys and bot tokens too" (rest worlds)) :import-keys)
       ;; one agent is all or nothing already
       (and (rest worlds) '("Choose which…" "tick the agents to bring over" :choose))
       '("Skip" "nothing read or written; /import later" :skip))
      (lambda (model choice)
        (ecase choice
          (:import (setup-import-offered model run worlds))
+         (:import-keys (setup-import-offered model run worlds :credentials t))
          (:choose (setup-import-choose model run worlds))
          (:skip (setup-import-skip model run worlds)))
        nil)
@@ -675,19 +685,25 @@ the provider."
   (setup-stage-provider model run))
 
 (defun setup-import-choose (model run worlds)
-  "WORLDS as a checklist, every one ticked: Enter brings the ticked ones over
-and declines the rest, none ticked being a Skip; Esc goes back to the
-question (SETUP-IMPORT-OFFER)."
+  "WORLDS as a checklist, every one ticked, and an unticked row for their keys
+and bot tokens: Enter brings the ticked ones over -- the keys only when that
+row is ticked -- and declines the rest, none ticked being a Skip; Esc goes
+back to the question (SETUP-IMPORT-OFFER)."
   (open-picker-dialog
    model "Setup"
-   (loop for name in worlds
-         for world = (nlk:find-agent-world name)
-         collect (make-picker-row :label (setup-world-label name)
-                                  :detail (if-let (root (and world (first (nlk:agent-world-roots world))))
-                                            (format nil "~~/~a" root)
-                                            "")
-                                  :value name))
-   (lambda (model chosen)
+   (append
+    (loop for name in worlds
+          for world = (nlk:find-agent-world name)
+          collect (make-picker-row :label (setup-world-label name)
+                                   :detail (if-let (root (and world (first (nlk:agent-world-roots world))))
+                                             (format nil "~~/~a" root)
+                                             "")
+                                   :value name))
+    ;; unticked, as the offer's first row leaves them
+    (list (make-picker-row :label "Their keys too" :detail "API keys and bot tokens"
+                           :value :credentials)))
+   (lambda (model ticked &aux (credentials (and (member :credentials ticked) t))
+                              (chosen (remove :credentials ticked)))
      ;; in the order detection found them, whatever order they were ticked in
      (let ((taken (remove-if-not (lambda (name) (member name chosen :test #'string-equal)) worlds))
            (left (remove-if (lambda (name) (member name chosen :test #'string-equal)) worlds)))
@@ -697,7 +713,7 @@ question (SETUP-IMPORT-OFFER)."
                   (ignore-errors (note-import-declined (json-object "worlds" (coerce left 'vector))))
                   (setup-note run "left ~{~a~#[~; and ~:;, ~]~} out — /import brings ~:[it~;them~] over later"
                               (mapcar #'setup-world-label left) (rest left)))
-                (setup-import-offered model run taken))))
+                (setup-import-offered model run taken :credentials credentials))))
      nil)
    :context (setup-context run :import "Import")
    :subtitle "Tick the agents to bring over"
@@ -707,15 +723,16 @@ question (SETUP-IMPORT-OFFER)."
    :on-toggle (lambda (model value marked) (declare (ignore model value marked)) nil)
    :on-cancel (lambda (model) (setup-import-offer model run worlds))))
 
-(defun setup-import-offered (model run worlds)
-  "Bring WORLDS over once the operator said Import: the keys while the walk
-waits, the one thing its steps read, and the rest of the homes behind it
+(defun setup-import-offered (model run worlds &key credentials)
+  "Bring WORLDS over once the operator said Import: the providers while the
+walk waits, the one thing its steps read, and the rest of the homes behind it
 (SETUP-IMPORT-REST) -- waiting for a whole home would hold this panel for
-seconds on a large home."
+seconds on a large home. Their API keys and bot tokens come only with
+CREDENTIALS (Import with keys); without, each stays in its home."
   (setup-import-wait
    model run "Importing…"
    (lambda (progress)
-     (let ((request (list :import worlds :offered t :only "providers")))
+     (let ((request (list :import worlds :offered t :only "providers" :credentials credentials)))
        (setup-import-rest model run request)
        (list request (setup-import-call model "apply" request nil :progress progress))))
    (lambda (model result)
@@ -888,7 +905,9 @@ left behind; the worlds it read are declined no longer."
     (loop for item across (or (gethash "items" value) #())
           for kind = (json-value item :string "kind")
           when (and (member kind +import-watched-kinds+ :test #'equal)
-                    (member (json-value item :string "status") '("skipped" "error") :test #'equal))
+                    (member (json-value item :string "status") '("skipped" "error") :test #'equal)
+                    ;; a key or bot token the operator left behind is no kind still to bring
+                    (not (eq t (json-value item :any "kept_back"))))
             do (pushnew kind left :test #'equal))
     (let ((kept (remove-if (lambda (world) (member world worlds :test #'string-equal)) declined)))
       (when (and *import-marker* (or (plusp imported) (not (equal kept declined))))

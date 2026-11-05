@@ -39,10 +39,12 @@
 ;;;; and at every one of them a fact THIS organism already holds wins: an
 ;;;; import never clobbers what is here.
 ;;;;
-;;;; Secrets move with everything else: a key lands in auth.json, a bot
+;;;; Secrets move only when asked for: a key lands in auth.json, a bot
 ;;;; token in a 0600 file under this home's secrets/ — and the report never
-;;;; shows a value. A migration that leaves the keys behind leaves nothing
-;;;; working. Two things are never brought: an OAuth grant, which is the
+;;;; shows a value. The setup's first offer brings the rest and leaves them
+;;;; where they are (CREDENTIALS false, each one a skipped item kept back);
+;;;; Import with keys, or `nodecode import', brings them too. Two things are
+;;;; never brought: an OAuth grant, which is the
 ;;;; other harness's client's, and an MCP server's secret env or header,
 ;;;; which the mcp folder reads from config.jsonc alone; it stays in its
 ;;;; home and is named.
@@ -70,10 +72,11 @@ before the folders that read them — comes first.")
 
 (nlk:define-record (plan (:copier nil) (:constructor %make-plan) (:export items))
   "One import: the HOMES read newest first, the switches (OVERWRITE,
-TAKEOVER, ONLY, WITHOUT), the ITEMS (oldest first once built), what
+TAKEOVER, CREDENTIALS, ONLY, WITHOUT), the ITEMS (oldest first once built), what
 says a foreign gateway is RUNNING, whether the takeover STOPPED it, and where
-the report went."
-  (homes '()) settings overwrite (takeover t) only without (items '()) (running '())
+the report went. Without CREDENTIALS the homes' API keys and bot tokens
+stay where they are, each a skipped item kept back by choice."
+  (homes '()) settings overwrite (takeover t) (credentials t) only without (items '()) (running '())
   stopped applied report-path)
 
 (defun add-item (plan kind status &key fact reason (source (and fact fact.source))
@@ -279,7 +282,14 @@ world was moved off (PROVIDER-FACT) naming the id that endpoint landed under."
                                                   inferred (world-label (fact-world (first dialers)))
                                                   (fact-id (first dialers)) (or (getf fact.value :env) id)))
                                 :dialers (and (null inferred) (rest dialers) dialers)))
-         (when (and key (plusp (length key)))
+         ;; Kept back by choice: setup's Import leaves another agent's
+         ;; keys where they are unless the operator picks Import with keys.
+         (when (and key (plusp (length key)) (not plan.credentials))
+           (add-item plan "providers" "skipped" :fact fact
+                     :reason (format nil "its key stays in ~a: Import with keys, or /import, brings it" fact.world)
+                     :destination (format nil "auth.json api_keys.~a" id)
+                     :detail '(:kept-back t)))
+         (when (and key (plusp (length key)) plan.credentials)
            (push id landed)
            (if (and (auth-key-present-p id) (not plan.overwrite))
                (add-item plan "providers" "conflict" :fact fact
@@ -1216,11 +1226,17 @@ adapter restarted so it reads the section as written."
                                 (if token-file
                                     (format nil "its token file ~a cannot be read" token-file)
                                     (format nil "an allowlist but no ~a in the home" token-env))))
+                         ;; Kept back by choice, as a provider's key is.
+                         ((not plan.credentials)
+                          (list "skipped"
+                                (format nil "its bot token stays in ~a: Import with keys, or /import, brings the bot"
+                                        fact.world)
+                                '(:kept-back t)))
                          ((and (null users) (null chats))
                           (list "error" (format nil "no allowlist in the home: a channel never starts open to the world~{; ~a~}"
                                                 left)))))
         (add-item plan "channels" (first refusal) :fact fact :reason (second refusal)
-                  :destination destination)
+                  :destination destination :detail (third refusal))
         (let* ((file (merge-pathnames (format nil "channels.~a.~a" platform token-field)
                                       nle::*secrets-directory*))
                (section (nlk:make-json-object token-field (namestring file)))
@@ -1415,7 +1431,7 @@ another token is another, and a home with no token is its own."
 
 ;;; --- the plan ------------------------------------------------------------------------
 
-(defun make-plan (&key source overwrite (takeover t) only without
+(defun make-plan (&key source overwrite (takeover t) (credentials t) only without
                         (settings (import-settings)))
   "The plan for SOURCE — a world name, a path, a repository (its skills and
 MCP servers alone, +SOURCE-KINDS+), a list of world names, or every world on
@@ -1434,7 +1450,7 @@ skills are linked, each library of them read where it is (PLAN-SKILL-LINKS)."
                                  (nlk:agent-world-names))))
                     (mapcar #'open-home (if (consp source) source (list source)))))
          (plan (%make-plan :homes homes :settings settings
-                           :overwrite overwrite :takeover takeover
+                           :overwrite overwrite :takeover takeover :credentials credentials
                            :only (if repository (source-kinds only) (kind-list only))
                            :without (kind-list without))))
     (read-homes homes :sessions (kind-wanted-p plan "sessions")
@@ -1544,12 +1560,17 @@ report lands beside the markers."
     plan))
 
 (defun item-json (item)
-  (nlk:json-object "kind" item.kind
-                   "status" item.status
-                   "reason" (or item.reason "")
-                   "source" (or item.source "")
-                   "destination" (or item.destination "")
-                   "world" (or item.world "")))
+  (let ((object (nlk:json-object "kind" item.kind
+                                 "status" item.status
+                                 "reason" (or item.reason "")
+                                 "source" (or item.source "")
+                                 "destination" (or item.destination "")
+                                 "world" (or item.world ""))))
+    ;; A credential left behind by choice: the setup's marker does not count
+    ;; it as a kind still to bring (NOTE-IMPORT-DONE).
+    (when (getf item.detail :kept-back)
+      (setf (gethash "kept_back" object) t))
+    object))
 
 (defun plan-json (plan)
   "The plan as the entrypoint answers it: the summary counts, the items,
