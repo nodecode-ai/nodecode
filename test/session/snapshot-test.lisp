@@ -422,6 +422,8 @@ completed once BODY is done."
       (let ((converted (nlk:capture-workspace-tree store))
             (raw (nlk::git-line store (list "hash-object" "--no-filters" "--" (namestring (merge-pathnames "a.txt" dir))))))
         (is (not (equal raw (nlk:hash-in-tree store converted "a.txt"))) "the old store converted")
+        ;; the next process opens it: this one's opened stores are not its
+        (nlk::drop-opened-snapshot-stores)
         (let* ((reopened (nlk:ensure-snapshot-store (namestring dir) "old"))
                (tree (nlk:capture-workspace-tree reopened)))
           (is (probe-file attributes) "opening wrote the attributes back")
@@ -524,13 +526,34 @@ completed once BODY is done."
     (let* ((store (nlk:ensure-snapshot-store (namestring dir) "exclude"))
            (exclude (%store-file store "info/exclude")))
       (set-file-times exclude 1000)
+      ;; each open as another process's, which reads the file again
+      (nlk::drop-opened-snapshot-stores)
       (nlk:ensure-snapshot-store (namestring dir) "exclude")
       ;; FILE-WRITE-DATE, not SB-POSIX:STAT-MTIME: Windows' _stat answers -1 for
       ;; a time before 1970 in local time, and 1000 is one west of Greenwich.
       (is (= (+ 1000 2208988800) (file-write-date exclude)) "an unchanged exclude file is not written")
       (with-open-file (o exclude :direction :output :if-exists :supersede) (write-line "stale" o))
+      (nlk::drop-opened-snapshot-stores)
       (nlk:ensure-snapshot-store (namestring dir) "exclude")
       (is (search "*.sqlite" (uiop:read-file-string exclude)) "a changed one is written back"))))
+
+(deftest a-process-opens-a-store-once-and-again-only-when-it-is-gone (with-temp-directory (dir "snap-once"))
+  ;; Every tool step opens its store, and what an open sets up -- the init,
+  ;; the attributes and excludes, the seeded index -- was some twenty file
+  ;; system calls a step, 2 ms of each on Windows (T-442). A process does
+  ;; it once; a later open looks for the store, and a store that is gone is
+  ;; set up again.
+  (when (nlk:git-available-p)
+    (let* ((store (nlk:ensure-snapshot-store (namestring dir) "once"))
+           (exclude (%store-file store "info/exclude")))
+      (with-open-file (o exclude :direction :output :if-exists :supersede) (write-line "stale" o))
+      (is (eq store (nlk:ensure-snapshot-store (namestring dir) "once")) "the same store again")
+      (is (search "stale" (uiop:read-file-string exclude)) "and nothing of it set up again")
+      (uiop:delete-directory-tree (uiop:ensure-directory-pathname (nlk::snapshot-store-git-dir store)) :validate t)
+      (let ((again (nlk:ensure-snapshot-store (namestring dir) "once")))
+        (is (not (eq store again)) "a store that is gone is opened afresh")
+        (is (probe-file (%store-file again "config")) "and initialized")
+        (is (search "*.sqlite" (uiop:read-file-string (%store-file again "info/exclude"))) "its excludes written")))))
 
 (deftest workspace-diff-document-shapes-modified-added-deleted-binary ()
   ;; The complete diff document between two captured trees: per-file numstat
@@ -684,6 +707,7 @@ completed once BODY is done."
              (nlk::run-snapshot-git store (list "add" "-f" "--" captured-path))
              (let ((sha (%anchored-capture store "old index")))
                (is (stringp (nlk:hash-in-tree store sha captured-path)) "the fixture starts with snapshot storage already tracked"))
+             (nlk::drop-opened-snapshot-stores)
              (let* ((reopened (nlk:ensure-snapshot-store (namestring dir) "indexed"))
                     (sha (nlk:capture-workspace-tree reopened)))
                (is (null (nlk:hash-in-tree reopened sha captured-path)) "reopening clears captured storage from the existing index")

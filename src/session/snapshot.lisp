@@ -344,26 +344,52 @@ environment names (SystemRoot, ProgramFiles, ProgramData on Windows)."
   ;; => (values SNAPSHOT-STORE-or-NIL unavailable-keyword-or-NIL). Never signals.
   (with-handlers ((snapshot-git-unavailable () (values nil :git-missing))
                   (error () (values nil :store-init-failed)))
-    (flet ((canonical (path) (canonical-workspace path)))
-      (let* ((root (uiop:ensure-directory-pathname workspace))
-             (canonical-root (canonical root)))
-        (cond
-          ((not (git-available-p)) (values nil :git-missing))
-          ((not (uiop:directory-exists-p root)) (values nil :store-init-failed))
-          ;; $HOME and a filesystem root are never a workspace to stage:
-          ;; refused before any git runs, and recorded as the reason. The
-          ;; account's home too, whatever $HOME this image was handed: a
-          ;; scratch $HOME does not make the real one a workspace. Nor is
-          ;; /tmp or a system folder (SYSTEM-DIRECTORY-P).
-          ((or (null canonical-root)
-               (equal canonical-root (canonical (user-homedir-pathname)))
-               (let ((account (account-home)))
-                 (and account (equal canonical-root (canonical account))))
-               ;; no directory, or the filesystem root alone
-               (null (rest (pathname-directory canonical-root)))
-               (system-directory-p canonical-root))
-           (values nil :workspace-too-large))
-          (t (open-snapshot-store root (snapshot-git-dir canonical-root) session-id)))))))
+    (let ((root (uiop:ensure-directory-pathname workspace)))
+      (cond
+        ((not (git-available-p)) (values nil :git-missing))
+        ((not (uiop:directory-exists-p root)) (values nil :store-init-failed))
+        (t (multiple-value-bind (canonical-root refusal) (workspace-standing root)
+             (if refusal
+                 (values nil refusal)
+                 (open-snapshot-store root (snapshot-git-dir canonical-root) session-id))))))))
+
+;;; A workspace's standing -- the folder it canonically is, or why it can be
+;;; none -- rests on truenames: its own, $HOME's, the account's, the temporary
+;;; folder's and, on Windows, each system folder's, every one a CreateFile and
+;;; a path query there (~100 us apiece, T-442). Every tool call asks; the
+;;; folders it compares stand still for the life of a process, so it is
+;;; decided once for each folder and each set of the names it is compared by.
+(define-side-table workspace-standings (:test #'equal :synchronized t)
+  "(WORKSPACE HOME ACCOUNT-HOME TEMPORARY . SYSTEM-FOLDERS) -> (CANONICAL-ROOT . REFUSAL).")
+
+(defun workspace-standing (root)
+  "(values CANONICAL-ROOT REFUSAL) for the existing folder ROOT: the one
+namestring its spellings share, or the reason it is no workspace to stage."
+  (let* ((key (list* (namestring root) (namestring (user-homedir-pathname)) (account-home)
+                     (namestring (uiop:temporary-directory))
+                     (mapcar #'uiop:getenv '("SystemRoot" "ProgramFiles" "ProgramFiles(x86)" "ProgramData"))))
+         (known (workspace-standings key)))
+    (if known
+        (values (car known) (cdr known))
+        (flet ((canonical (path) (canonical-workspace path)))
+          (let* ((canonical-root (canonical root))
+                 ;; $HOME and a filesystem root are never a workspace to stage:
+                 ;; refused before any git runs, and recorded as the reason. The
+                 ;; account's home too, whatever $HOME this image was handed: a
+                 ;; scratch $HOME does not make the real one a workspace. Nor is
+                 ;; /tmp or a system folder (SYSTEM-DIRECTORY-P).
+                 (refusal (when (or (null canonical-root)
+                                    (equal canonical-root (canonical (user-homedir-pathname)))
+                                    (let ((account (account-home)))
+                                      (and account (equal canonical-root (canonical account))))
+                                    ;; no directory, or the filesystem root alone
+                                    (null (rest (pathname-directory canonical-root)))
+                                    (system-directory-p canonical-root))
+                            :workspace-too-large)))
+            ;; A folder that would not resolve may yet: only an answer is kept.
+            (when canonical-root
+              (setf (workspace-standings key) (cons canonical-root refusal)))
+            (values canonical-root refusal))))))
 
 (defun canonical-workspace (path)
   "PATH's directory as one namestring for every spelling of it, or NIL when
@@ -579,26 +605,49 @@ session's first capture answers it with no git at all."
                 (when (and epoch (eql epoch (car armed)))
                   (setf (quiet-trees store) (list* epoch digest tree)))))))))))
 
+(define-side-table opened-snapshot-stores (:test #'equal :synchronized t)
+  "(INDEX-PATH . WORKSPACE) -> the store OPEN-SNAPSHOT-STORE opened there in
+this process: what opening it set up -- the store's init, its attributes and
+excludes, the session's seeded index -- holds until the store is gone, so a
+later open of it looks for the store and its index's lock alone.")
+
+(defun drop-opened-snapshot-stores ()
+  "Forget every opened store and every decided workspace: a dumped image
+holds none of this process's folders."
+  (clrhash *opened-snapshot-stores*)
+  (clrhash *workspace-standings*))
+
+(pushnew 'drop-opened-snapshot-stores sb-ext:*save-hooks*)
+
+(defun clear-stale-index-lock (store)
+  "Delete STORE's index lock when it is older than RUN-SNAPSHOT-GIT's
+walltime bound: a process that died mid-walk left it; a younger one may be
+a capture."
+  (let* ((lock (concatenate 'string (snapshot-store-index-path store) ".lock"))
+         (age (and (probe-file lock)
+                   (ignore-errors (- (get-universal-time) (file-write-date lock))))))
+    (when (and (integerp age) (> age +snapshot-git-timeout-seconds+))
+      (ignore-errors (delete-file lock)))))
+
 (defun open-snapshot-store (root git-dir session-id)
   "The store over the workspace ROOT kept in GIT-DIR, with SESSION-ID's index,
 initializing GIT-DIR when absent: ENSURE-SNAPSHOT-STORE's last step, past its
 refusals."
-  (let ((store (make-snapshot-store
-                :workspace (namestring root)
-                :git-dir (string-right-trim "/" (namestring git-dir))
-                :index-path (namestring
-                             (merge-pathnames (format nil "index-~a" session-id) git-dir)))))
+  (let* ((store (make-snapshot-store
+                 :workspace (namestring root)
+                 :git-dir (string-right-trim "/" (namestring git-dir))
+                 :index-path (namestring
+                              (merge-pathnames (format nil "index-~a" session-id) git-dir))))
+         (key (cons (snapshot-store-index-path store) (snapshot-store-workspace store)))
+         (opened (opened-snapshot-stores key)))
+    (when (and opened (probe-file (snapshot-store-file opened "config")))
+      (clear-stale-index-lock opened)
+      (return-from open-snapshot-store (values opened nil)))
     ;; A session with no index yet seeds it from the newest of the store's,
     ;; and a launch walk of the folder still running is writing that one.
     (unless (or *launch-walk-p* (probe-file (snapshot-store-index-path store)))
       (await-launch-walk git-dir))
-    ;; An index lock older than RUN-SNAPSHOT-GIT's walltime bound was left by
-    ;; a process that died mid-walk; a younger one may be a capture.
-    (let* ((lock (concatenate 'string (snapshot-store-index-path store) ".lock"))
-           (age (and (probe-file lock)
-                     (ignore-errors (- (get-universal-time) (file-write-date lock))))))
-      (when (and (integerp age) (> age +snapshot-git-timeout-seconds+))
-        (ignore-errors (delete-file lock))))
+    (clear-stale-index-lock store)
     (bt2:with-lock-held (*store-init-lock*)
       (unless (probe-file (snapshot-store-file store "config"))
         (ensure-directories-exist git-dir)
@@ -624,6 +673,7 @@ refusals."
       (bt2:with-lock-held ((capture-lock store))
         (run-snapshot-git store (list "--literal-pathspecs" "rm" "-r" "-f" "--cached" "--quiet"
                                       "--ignore-unmatch" "--" storage))))
+    (setf (opened-snapshot-stores key) store)
     (values store nil)))
 
 ;;; --- capture and anchor --------------------------------------------------
@@ -1493,16 +1543,31 @@ guarded by the parallel EXPECTED sha list."
                                :occurred-at occurred-at)
           checkpoint-id))
 
+(define-side-table capture-counts (:test #'equal :synchronized t :key snapshot-store-git-dir)
+  "Git dir -> anchoring captures since the store's last repack, as this
+process counts them: read from the store's capture-count once, written back
+every +CAPTURE-COUNT-STRIDE+.")
+
+(defparameter +capture-count-stride+ 8
+  "How many captures pass between writes of a store's capture-count: a file
+read and written at every tool call was two opens and a directory check on
+its round, 0.5 ms of each on Windows (T-442); a process that dies loses at
+most this many toward the next repack.")
+
 (defun note-anchoring-capture (store)
   "Count one anchoring capture toward the repack cadence: a repack every 64,
 off the provider path; a held repack lock skips this one."
-  (let* ((count (1+ (or (ignore-errors
-                         (parse-integer
-                          (read-text (snapshot-store-file store "capture-count"))
-                          :junk-allowed t))
-                        0)))
+  (let* ((count (sb-ext:with-locked-hash-table (*capture-counts*)
+                  (setf (capture-counts store)
+                        (1+ (or (capture-counts store)
+                                (ignore-errors
+                                 (parse-integer
+                                  (read-text (snapshot-store-file store "capture-count"))
+                                  :junk-allowed t))
+                                0)))))
          (repack (and (>= count 64) (acquire-repack-lock store))))
-    (when (or repack (< count 64))
+    (when repack (setf (capture-counts store) 0))
+    (when (or repack (and (< count 64) (zerop (mod count +capture-count-stride+))))
       (ignore-errors
         (with-output-file (stream (snapshot-store-file store "capture-count"))
           (format stream "~a~%" (if repack 0 count)))))
