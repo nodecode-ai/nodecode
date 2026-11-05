@@ -1654,6 +1654,14 @@ on Windows MoveFileEx with replacement."
              (or (ignore-errors (sb-int:strerror errno)) errno)))
     to))
 
+(defun gzip-file (from to)
+  "The file at FROM gzipped into the file at TO, TO replaced if it exists,
+in this process: Windows ships tar but no gzip program. => TO."
+  ;; salza2, the deflater FIT-IMAGE already carries. Its fixed Huffman codes
+  ;; run as fast as gzip -6 does and come out about a quarter larger.
+  (salza2:gzip-file from to)
+  to)
+
 (defun file-bytes (path)
   "The size of the file at PATH in bytes, or NIL when it cannot be opened."
   (ignore-errors (with-open-file (in path :element-type '(unsigned-byte 8)) (file-length in))))
