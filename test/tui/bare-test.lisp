@@ -143,7 +143,9 @@
     (with-stubbed-fdefinition (nle::home-screen-p (model) nil)
       (is-present (rows (getf (nle::bare-dialog "export" "bare-export" model) :rows)) "the dialog opens"
         (destructuring-bind (here elsewhere) rows
-          (is (uiop:string-prefix-p "/export /" (getf (getf here :run) :enter)) "this folder, whole, in the line")
+          (is-carrying (line (getf (getf here :run) :enter))
+            (is (uiop:string-prefix-p "/export " line))
+            (is (uiop:absolute-pathname-p (uiop:parse-native-namestring (subseq line 8))) "this folder, whole"))
           (is (equal "/export" (getf (getf elsewhere :ask) :line)) "a path elsewhere is asked for"))))))
 
 ;;; --- claim 6: /evict offers its shares and a turn -----------------------------------

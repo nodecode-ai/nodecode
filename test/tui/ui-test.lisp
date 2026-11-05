@@ -2961,11 +2961,14 @@ colour paints, to the OSC8 cell."
   ;; or a name in another script has to survive the round trip: both parsers
   ;; would otherwise stop halfway through the name.
   (is (equal "file:///repo/src/a%20b.lisp" (nle::file-uri "src/a b.lisp")))
-  (is (equal "/repo/src/a b.lisp" (nle::file-uri-path (nle::file-uri "src/a b.lisp"))))
-  (is (equal "/tmp/ünïcode.png" (nle::file-uri-path (nle::file-uri "/tmp/ünïcode.png"))))
+  ;; The path comes back native: `\' on Windows, where a drive's leading `/'
+  ;; is dropped too.
+  (is (equal (uiop:native-namestring "/repo/src/a b.lisp") (nle::file-uri-path (nle::file-uri "src/a b.lisp"))))
+  (is (equal (uiop:native-namestring "/tmp/ünïcode.png") (nle::file-uri-path (nle::file-uri "/tmp/ünïcode.png"))))
   (is (equal "file:///tmp/x" (nle::file-uri "/tmp/x")) "an absolute path keeps its root")
   (is (null (nle::file-uri-path "https://example.com")) "a page is not a file")
-  (is (equal "/repo/src/x.lisp" (nle::file-uri-path "file:///repo/src/x.lisp#12")) "a fragment is a place in the file, not its name")
+  (is (equal (uiop:native-namestring "/repo/src/x.lisp") (nle::file-uri-path "file:///repo/src/x.lisp#12")) "a fragment is a place in the file, not its name")
+  #+win32 (is (equal "C:\\Users\\a b\\x.lisp" (nle::file-uri-path (nle::file-uri "C:\\Users\\a b\\x.lisp"))))
   (is (nle::openable-target-p "https://example.com"))
   (is (nle::openable-target-p "file:///tmp/x"))
   (is (not (nle::openable-target-p "mailto:someone@example.com"))))
@@ -3155,7 +3158,7 @@ colour paints, to the OSC8 cell."
            (column (search needle (aref model.line-plain index))))
       (click-at model (+ column 4) (mouse-y-for-line model index))
       (is-table (needle) (search needle (or (nle::status-said model) ""))
-        ("Not there any more") ("/tmp/nodecode-no-such-file.png"))))
+        ("Not there any more") ((uiop:native-namestring "/tmp/nodecode-no-such-file.png")))))
   ;; The two other refusals keep their own words.
   (is (equal "No browser to open links here — drag across one to copy it"
              (nle::open-refusal-hint "https://example.com" :no-opener)))
@@ -5359,11 +5362,15 @@ and the DELIVERY its handler declares."
      "cut from the middle, whole folders kept from the end")
     ("~/work/one/two/three/leaf" 16 "~/…/three/leaf" "the home's ~ stays at the head")
     ("/a/an-unusually-long-last-folder" 12 "/…ast-folder" "a last folder wider than the room shows its end"))
+  ;; a Windows path is cut at its own separator, its drive kept at the head
+  #+win32 (is (equal "C:\\…\\campaign\\markdown\\home\\nc"
+                     (nle::clipped-path "C:\\Users\\a-long-scratch-folder\\campaign\\markdown\\home\\nc" 30)))
   (let* ((row (with-saved-globals ((nodecode.kernel::*home* #p"/tmp/a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/p/q/r/s/t/u/v/w/x/y/profile-leaf/"))
                 (assoc "/profile" (nle::home-meta-rows 80) :test #'string=)))
          (value (second row)))
     (is (<= (nle::text-display-width value) (nle::home-meta-value-width 80)) "the row keeps to the value lane")
-    (is (search "profile-leaf · /" value) "the active home is named even when its path must clip")
+    ;; the home as the platform spells it, `\' on Windows
+    (is (search (format nil "profile-leaf · ~a" (char (uiop:native-namestring "/tmp/") 0)) value))
     (is (uiop:string-suffix-p value "le-leaf") "the path keeps its last folder's tail")))
 
 ;;; --- a reflection's recap is one quiet line ---------------------------------
