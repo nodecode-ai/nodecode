@@ -363,7 +363,7 @@ is not EQ to the one a later eval interns — names compare, symbols do not."
         (is (equal "writer" (nlk:sticky-profile)) "the sticky name reads back")))
     ;; Restored, the store is back where the run started: under
     ;; $NODECODE_HOME when the suite was given one, else under $HOME.
-    (is (search (or real-nodecode-home real-home) (namestring nlk::*default-store-path*)))
+    (is (search (or real-nodecode-home real-home) (uiop:native-namestring nlk::*default-store-path*)))
     (is (member 'nlk:resolve-startup-parameters sb-ext:*init-hooks*))))
 
 (deftest cells-source-root-is-the-shipped-tree ()
@@ -462,6 +462,77 @@ is not EQ to the one a later eval interns — names compare, symbols do not."
                          fasls))
           (format nil "what compiled is cached, what did not read is not: ~s"
                   fasls)))))
+
+(defun call-under-layer-load (name action thunk)
+  "Call THUNK with ACTION run once while a layer loads, just after the load
+reads the `.missing' list of its file NAME and before it opens that file's
+fasl: another process at the cache under the load."
+  (let ((done nil))
+    (sb-int:encapsulate 'uiop:safe-read-file-form 'cells-test-under-load
+                        (lambda (next path &rest arguments)
+                          (multiple-value-prog1 (apply next path arguments)
+                            (when (and (not done)
+                                       (equal "missing" (pathname-type path))
+                                       (uiop:string-prefix-p (format nil "~a-" name)
+                                                             (pathname-name path)))
+                              (setf done t)
+                              (funcall action)))))
+    (nlk:with-cleanup ((sb-int:unencapsulate 'uiop:safe-read-file-form 'cells-test-under-load))
+      (funcall thunk))))
+
+(deftest cells-layer-cache-keeps-a-stamp-another-build-prunes-under-the-load
+    (with-cell-fixture (root))
+  ;; Three releases alive on one machine share the cache, a shell left open on
+  ;; each. The oldest, loading its layer, is neither the pruning build's own
+  ;; stamp nor the newest beside it: its directory went between a file's probe
+  ;; and its load -- `Couldn't load ... file does not exist', the file's
+  ;; definition never loaded. A load marks its stamp in use, and the prune
+  ;; leaves it.
+  (with-layer-cache (cache "stamp-a")
+    (write-layer-folder root "nl-cached-shared"
+                        '(("first" . "(defun cells-probe-shared-first () :first)")
+                          ("second" . "(defun cells-probe-shared-second () :second)")))
+    (load-cell-fixture root)
+    (fmakunbound (uiop:find-symbol* '#:cells-probe-shared-second '#:nodecode.evolved))
+    (let* ((compiled (layer-cache-fasls cache "stamp-a" "nl-cached-shared"))
+           (records (call-under-layer-load
+                     "second"
+                     (lambda ()
+                       ;; two builds newer than this one, the second pruning
+                       (let ((now (- (get-universal-time) 2208988800)))
+                         (set-file-times (merge-pathnames "stamp-a/" cache) (- now 3600))
+                         (dolist (stamp '("stamp-b" "stamp-c"))
+                           (set-file-times (ensure-directories-exist
+                                            (merge-pathnames (format nil "~a/" stamp) cache))
+                                           now)))
+                       (nlk::prune-stamp-cache "stamp-c" cache))
+                     (lambda () (load-cell-fixture root)))))
+      (is-present (record (first records)) "the layer's record"
+        (is (eq :loaded (nlk:cell-state record))
+            (format nil "no file fails: ~s" (nlk:cell-failures record))))
+      (is (eq :second (evolved-fn "CELLS-PROBE-SHARED-SECOND")) "the definition is live")
+      (is (equal compiled (layer-cache-fasls cache "stamp-a" "nl-cached-shared")) "the directory it read from stays whole"))))
+
+(deftest cells-layer-load-compiles-again-a-fasl-cleared-under-it (with-cell-fixture (root))
+  ;; The cache holds what the organism can recompute: a fasl gone between its
+  ;; probe and its open -- the cache cleared under the load -- compiles again
+  ;; and loads, never a failed file.
+  (with-layer-cache (cache "stamp-v")
+    (write-layer-folder root "nl-cached-cleared"
+                        '(("first" . "(defun cells-probe-cleared-first () :first)")
+                          ("second" . "(defun cells-probe-cleared-second () :second)")))
+    (load-cell-fixture root)
+    (fmakunbound (uiop:find-symbol* '#:cells-probe-cleared-second '#:nodecode.evolved))
+    (let ((records (call-under-layer-load
+                    "second"
+                    (lambda ()
+                      (uiop:delete-directory-tree (merge-pathnames "stamp-v/" cache) :validate t))
+                    (lambda () (load-cell-fixture root)))))
+      (is-present (record (first records)) "the layer's record"
+        (is (eq :loaded (nlk:cell-state record))
+            (format nil "no file fails: ~s" (nlk:cell-failures record)))))
+    (is (eq :second (evolved-fn "CELLS-PROBE-CLEARED-SECOND")) "the definition is live")
+    (is (= 1 (length (layer-cache-fasls cache "stamp-v" "nl-cached-cleared"))) "its fasl compiled again into place")))
 
 ;;; --- skipped: a layer file that would not run against this image ------------
 
@@ -708,7 +779,8 @@ writer."
                    (nlk:offer-closure '("nl-ship-top") shipped)))
         (is (equal '("nl-ship-base" "nl-ship-top" "nl-ship-chan")
                    (nlk:offer-closure '("nl-ship-top" "nl-ship-chan") shipped)))
-        (with-saved-globals ((nlk::*cells-directory* folder))
+        ;; the image ships these, so the link an install makes leads into its own tree
+        (with-saved-globals ((nlk::*cells-directory* folder) (nlk::*source-root* source))
           (is (nlk:install-cell "nl-ship-top" :offers shipped))
           (is (nlk:installed-cell-p "nl-ship-top"))
           (is (equal '("nl-ship-top") (mapcar #'nlk::folder-name (nlk::cell-folders folder))))
@@ -1903,7 +1975,10 @@ BIN/pids/ first, and is the real git for anything else. => its native path."
                      (values (/ (- (get-internal-real-time) started) internal-time-units-per-second) text))))
             (with-saved-globals ((nlk::*git-program* (write-hanging-git bin)))
               (multiple-value-bind (took text) (late 2)
-                (is (<= 2 took 7/2) (format nil "the install ended at its deadline: ~,1f s" took))
+                ;; GET-INTERNAL-REAL-TIME steps a millisecond at a time (a
+                ;; jiffy on a coarse clock), so a timed join it measures can
+                ;; read a tick short of its bound: 50 ms read as 49.999 ms.
+                (is (<= 199/100 took 7/2) (format nil "the install ended at its deadline: ~,3f s" took))
                 (is (search "ran out while fetching nl-hub-l1 from" text) text))
               (is (null (hanging-git-alive bin)) "its hung runs are killed")
               (is (not (nlk:installed-cell-p "nl-hub-l1" root)))

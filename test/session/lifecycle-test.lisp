@@ -254,6 +254,23 @@ once parked — and cancel the turn once it is."
         when (equal "user" (gethash "role" message))
           collect (gethash "content" message)))
 
+(deftest last-finished-turn-id-leaves-a-running-turn-out (with-session-store ("anchor-at"))
+  ;; Given a session at its root, then with its first turn running, finished,
+  ;; and a second running, when a fork asks where to anchor so that it holds
+  ;; no unfinished turn, then the root and the running first turn answer NIL,
+  ;; an idle session its head, and a running turn its parent.
+  (is (null (nlk:last-finished-turn-id "anchor-at")) "a root has no finished turn")
+  (let ((first (%admitted-active-turn "anchor-at" "anchor-a" "first")))
+    (is (null (nlk:last-finished-turn-id "anchor-at")) "nor has a session whose first turn runs")
+    (nlk:complete-turn first nil)
+    ;; An idle session answers its head.
+    (is (equal (nlk:durable-turn-turn-id first) (nlk:last-finished-turn-id "anchor-at")))
+    (let ((second (%admitted-active-turn "anchor-at" "anchor-b" "second")))
+      ;; A running turn answers its parent.
+      (is (equal (nlk:durable-turn-turn-id first) (nlk:last-finished-turn-id "anchor-at")))
+      (nlk:complete-turn second nil)
+      (is (equal (nlk:durable-turn-turn-id second) (nlk:last-finished-turn-id "anchor-at"))))))
+
 (deftest queued-follow-up-folds-exactly-once-after-promotion (with-session-store ("queue-fold"))
   (let* ((turn (%admitted-active-turn "queue-fold" "fold-cmd-a" "first"))
          (queued (nlk:admit-active-turn-input "queue-fold" "fold-cmd-b" "second")))
@@ -648,6 +665,7 @@ COMMAND-ID as a steer of EXPECTED-TURN-ID; KEYS reach the admission."
              (is (search "#<" (princ-to-string condition)) "SBCL's own message prints the stream object")
              (let ((detail (nlk::condition-detail condition)))
                (is (search (uiop:native-namestring path) detail) "the detail names the file")
+               (is (search (format nil "\"~a\"" (uiop:native-namestring path)) detail) "quoted as written, single backslashes")
                (is (search "Couldn't write to" detail) "and keeps what was being done")
                (is (search (sb-int:strerror 122) detail) "and why it failed")
                (is (not (search "#<" detail)) "and prints no stream object"))))

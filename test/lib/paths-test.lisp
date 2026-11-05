@@ -48,6 +48,25 @@
   (is (equal "elsewhere" (nlk:profile-name #p"/tmp/elsewhere/")))
   (is (equal "elsewhere" (nlk:profile-name "/tmp/elsewhere"))))
 
+(deftest home-abbreviated-names-the-home-however-a-path-spells-it ()
+  ;; A hint names a file as the operator writes it: under their home, `~/'.
+  ;; On Windows a path arrives with `\' (a native namestring) as often as
+  ;; with `/' (a Lisp one): either spelling is under the home, and both come
+  ;; out as the one `~/' path EXPAND-HOME reads back.
+  (let* ((file (merge-pathnames ".nodecode/config.jsonc" (user-homedir-pathname)))
+         (native (uiop:native-namestring file))
+         (home (string-right-trim "/\\" (uiop:native-namestring (user-homedir-pathname)))))
+    (is (equal "~/.nodecode/config.jsonc" (nlk:home-abbreviated native)))
+    (is (equal "~/.nodecode/config.jsonc" (nlk:home-abbreviated (namestring file))))
+    (is (equal native (uiop:native-namestring (nlk:expand-home (nlk:home-abbreviated native)))))
+    (is (equal "~" (nlk:home-abbreviated home)) "the home itself")
+    ;; a folder whose name only starts like the home's is not under it
+    (is (equal (concatenate 'string home "-other")
+               (nlk:home-abbreviated (concatenate 'string home "-other"))))
+    ;; Windows reads a path in any case as the same file
+    #+win32 (is (equal "~/.NODECODE/CONFIG.JSONC" (nlk:home-abbreviated (string-upcase native)))))
+  (is (equal "/elsewhere/file" (nlk:home-abbreviated "/elsewhere/file")) "a path elsewhere is itself"))
+
 (deftest paths-profile-label-says-a-name-for-every-home ()
   ;; The display name is total where the layout question is not: the
   ;; default home is named `default', not left silent.

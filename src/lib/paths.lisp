@@ -63,15 +63,22 @@ the operator's home, as a pathname."
   "PATH with the operator's home written `~': `~/src/thing', bare `~' at
 home, the path itself anywhere else. EXPAND-HOME reads it back."
   ;; How a person reads their own paths, which is how a hint about one should
-  ;; name it.
-  (let ((path (string-right-trim "/" (or path "")))
-        (home (string-right-trim "/" (or (ignore-errors
-                                          (namestring (user-homedir-pathname)))
-                                         ""))))
-    (cond ((zerop (length path)) "/")
-          ((and (plusp (length home)) (path-within-p path home))
-           (concatenate 'string "~" (subseq path (length home))))
-          (t path))))
+  ;; name it. A Windows path comes spelled with `\' or `/' and in either case,
+  ;; so the home is found in it whatever its spelling, and the rest is written
+  ;; with `/', the spelling EXPAND-HOME reads.
+  (let* ((separators #+win32 "/\\" #-win32 "/")
+         (path (string-right-trim separators (or path "")))
+         (home (string-right-trim separators
+                                  (or (ignore-errors
+                                       (uiop:native-namestring (user-homedir-pathname)))
+                                      ""))))
+    (flet ((slashed (text) #+win32 (substitute #\/ #\\ text) #-win32 text))
+      (cond ((zerop (length path)) "/")
+            ((and (plusp (length home))
+                  (path-within-p #+win32 (string-downcase (slashed path)) #-win32 path
+                                 #+win32 (string-downcase (slashed home)) #-win32 home))
+             (concatenate 'string "~" (slashed (subseq path (length home)))))
+            (t path)))))
 
 (defun environment-directory (variable)
   "The directory VARIABLE names in this process's environment, or NIL when

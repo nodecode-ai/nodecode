@@ -33,14 +33,16 @@ the band can hold when the band is narrower than that."
   ;; happens to sit in.
   (max 12 (min (- width +home-meta-label-width+ 4) +home-meta-value-width+)))
 
-(defun clipped-path (path width &aux (head (subseq path 0 (1+ (or (position #\/ path) -1))))
+(defun clipped-path (path width &aux (separator-p (lambda (char) (find char nlk::+path-separators+)))
+                                     (head (subseq path 0 (1+ (or (position-if separator-p path) -1))))
                                      (room (- width (text-display-width head) 1)) (tail nil))
-  "PATH in at most WIDTH columns: whole when it fits, else its head (`~/' or
-`/'), an … and as many whole trailing folders as the room holds, so the last
-folder always shows — cut from its front only when it alone is wider."
+  "PATH in at most WIDTH columns: whole when it fits, else its head (`~/',
+`/', `C:\\' on Windows), an … and as many whole trailing folders as the room
+holds, so the last folder always shows — cut from its front only when it alone
+is wider."
   (cond ((<= (text-display-width path) width) path)
-        (t (loop for slash = (position #\/ path :from-end t)
-                   then (position #\/ path :from-end t :end slash)
+        (t (loop for slash = (position-if separator-p path :from-end t)
+                   then (position-if separator-p path :from-end t :end slash)
                  while (and slash (>= slash (length head))
                             (<= (text-display-width (subseq path slash)) room))
                  do (setf tail (subseq path slash)))
@@ -78,7 +80,7 @@ COMMAND), COMMAND the slash command a click on the row runs."
     (let ((name (clip-text-to-width (nlk:profile-label) (max 1 (- lane 3 8)))))
       (row "/profile"
            (format nil "~a · ~a" name
-                   (clipped-path (home-abbreviated (namestring (nlk:home)))
+                   (clipped-path (home-abbreviated (uiop:native-namestring (nlk:home)))
                                  (max 8 (- lane (text-display-width name) 3))))
            :chrome "profile"))
     (row "/cells" (format nil "~d installed" (length folders)) :chrome "cells")

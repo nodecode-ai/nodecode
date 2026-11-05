@@ -157,10 +157,15 @@ here carries its number, else LABEL."
 
 (defun path-names-directory-p (directory &optional (path (uiop:getenv "PATH")))
   "Whether the PATH this process started with names DIRECTORY."
-  (let ((want (string-right-trim "/\\" (uiop:native-namestring directory)))
-        (same (if (eq (nlk:platform) :windows) #'string-equal #'string=)))
-    (some (lambda (entry) (funcall same (string-right-trim "/\\" entry) want))
-          (uiop:split-string (or path "") :separator (if (eq (nlk:platform) :windows) ";" ":")))))
+  ;; Windows reads a PATH entry in any case and with `/' or `\' alike:
+  ;; `C:/nodecode/bin' names the folder `C:\Nodecode\bin' does.
+  (flet ((spelled (text)
+           (let ((text (string-right-trim "/\\" text)))
+             (if (eq (nlk:platform) :windows) (substitute #\\ #\/ text) text))))
+    (let ((want (spelled (uiop:native-namestring directory)))
+          (same (if (eq (nlk:platform) :windows) #'string-equal #'string=)))
+      (some (lambda (entry) (funcall same (spelled entry) want))
+            (uiop:split-string (or path "") :separator (if (eq (nlk:platform) :windows) ";" ":"))))))
 
 (defun window-release ()
   "The release this binary's folder is, when the PATH of the shell it was

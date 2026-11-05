@@ -1283,7 +1283,8 @@ worker ran or not, then promote SESSION-ID's next queued prompt."
 of its own, :INLINE inside the SUBMIT that admits it (a gate that covers
 naming), NIL never (the test posture).")
 
-(defun submit (session-id prompt &key steer images command-id invocation source source-id)
+(defun submit (session-id prompt &key steer images command-id invocation source source-id
+                                 (tools nil tools-p))
   "Put PROMPT into SESSION-ID: the one in-process ingress, which the
 WebSocket start_turn/steer_turn commands are shells over."
   ;; Returns the
@@ -1300,6 +1301,12 @@ WebSocket start_turn/steer_turn commands are shells over."
   ;; record, defaulting to the kernel's in-process one. An in-process submitter
   ;; with no record of its own names its SOURCE kind (`cron', `team') and
   ;; SOURCE-ID instead, and the record is built here, turn.start or turn.steer.
+  ;; TOOLS, when given, names the only tools the turn may call: '() none at
+  ;; all -- a side question answered from the context alone -- and every
+  ;; tool's schema is still offered (TURN-TOOL-LIMIT says why). The limit is
+  ;; recorded with the input, so a queued prompt and a turn resumed at boot
+  ;; keep it. A steer's limit is the one of the turn it starts (it parks and
+  ;; is promoted like a follow-up); the turn it cuts short keeps its own.
   ;;
   ;; Signals rather than returning a status: NLK:UNKNOWN-SESSION, the kernel's
   ;; NLK:TURN-LIFECYCLE-ERROR family for a steer that found no matching active
@@ -1311,6 +1318,8 @@ WebSocket start_turn/steer_turn commands are shells over."
   ;; spawned, not joined.
   (check-type session-id string)
   (check-type prompt string)
+  (unless (and (listp tools) (every #'stringp tools))
+    (error "submit :tools must be a list of tool names, got ~s" tools))
   ;; The input cap is read here, at the one ingress every submitter comes
   ;; through, before anything is admitted: ADMIT's own check runs on the
   ;; worker after the durable admission, and without this an input past the
@@ -1329,8 +1338,10 @@ WebSocket start_turn/steer_turn commands are shells over."
          (unnamed (and *session-naming* (string= "" (nlk::session-title session-id))))
          ;; The pictures the operator's message shows, read once here, at
          ;; the one ingress: the admission records them with the input.
-         (metadata (when-let (facts (prompt-images images))
-                     (json-object "images" facts)))
+         (metadata (let ((facts (prompt-images images)))
+                     (when (or facts tools-p)
+                       (json-object :opt "images" facts
+                                    :when tools-p "tools" (coerce tools 'vector)))))
          (admission (nlk:admit-active-turn-input
                      session-id command-id prompt
                      :disposition (if steer :steer :follow-up)
@@ -3163,13 +3174,15 @@ line under the title of a dialog that does not search, in SUMMARY-TONE
 a surface that draws one wears (a room's card its edge), NIL for none."
   ;;
   ;; ROWS are plists in PICKER-ROW's own vocabulary --
-  ;; (:key :label :detail :suffix :value :mark :mark-tone :verb): LABEL the
+  ;; (:key :label :detail :suffix :value :mark :mark-tone :verb :heading): LABEL the
   ;; primary column, DETAIL the muted one after it, SUFFIX what the selected
   ;; row alone adds after DETAIL, VALUE what the shell's Enter hands back, VERB
   ;; the word a surface that gives the row its own button writes on it --
   ;; Leave, Change -- where the dialog's one Enter word will not do, KEY
   ;; a leading column -- or, in a tabbed dialog, the bucket the row belongs to --
-  ;; and MARK a one-glyph status column painted in the theme's TONE. OPTIONS,
+  ;; and MARK a one-glyph status column painted in the theme's TONE. HEADING
+  ;; makes the row a table's column names: the shell paints it muted and never
+  ;; chooses it, and the list opens on the first row that can be chosen. OPTIONS,
   ;; rows of their own (:label :detail :mark :run), are the picks the row's
   ;; line offers, the one in use marked: a surface that draws a menu draws
   ;; them as the row's, and one that does not runs the row's line. A row's
@@ -3255,6 +3268,7 @@ a surface that draws one wears (a room's card its edge), NIL for none."
                                               (:getf ask :opt "placeholder" "verb")))
                     "mark" (or (getf row :mark) "")
                     :opt "mark_tone" (tone (getf row :mark-tone))
+                    :opt "heading" (and (getf row :heading) t)
                     :opt "options" (when-let (options (getf row :options))
                                      (map 'vector
                                           (lambda (option)
@@ -3925,8 +3939,10 @@ default new sessions start on, and every attached shell's footer follows
 (SELECT-SESSION-MODEL)."
   ;; MODEL alone keeps the current lane; :PROVIDER names one. (select-model
   ;; nil) clears the pin so the session takes the default again at its next
-  ;; turn. An unknown lane refuses before anything moves. Other sessions that
-  ;; already ran keep their own model. => one line saying what landed.
+  ;; turn. An unknown lane, or a model its listing does not offer
+  ;; (CHECK-MODEL-OFFERED, which names the ids it does), refuses before
+  ;; anything moves. Other sessions that already ran keep their own model.
+  ;; => one line saying what landed.
   (check-type model (or null model-id))
   (check-type provider (or null provider-id))
   (unless (stringp session-id)

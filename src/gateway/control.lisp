@@ -581,11 +581,13 @@ another folder stands on it or it is the operator's own."
     (unless (or parked (nlk:uninstall-cell name))
       (nlk::protocol-refuse :refused "~a is ~:[not in ~a~;your own folder in ~a: take it out yourself~]"
                             (cell-label name) (nlk:installed-cell-p name) nlk::*cells-directory*))
-    (when (nlk:find-cell name)
-      (stop-cells (list name)))
-    (format nil "~a is off~:[~;; its folder stays as it is and no boot loads it until you turn it on~]; ~
-                 its code stays loaded in this organism until a restart"
-            (cell-label name) parked)))
+    (let ((record (nlk:find-cell name)))
+      (when record
+        (stop-cells (list name)))
+      ;; a folder put there since the boot was never loaded: no code of it stays
+      (format nil "~a is off~:[~;; its folder stays as it is and no boot loads it until you turn it on~]~
+                   ~:[~;; its code stays loaded in this organism until a restart~]"
+              (cell-label name) parked (and record (eq record.state :loaded))))))
 
 (defun request-wait-seconds (request &aux (seconds (and (hash-table-p request) (gethash "seconds" request))))
   "The seconds a POST to /api/gateway/cells says its sender waits for the
