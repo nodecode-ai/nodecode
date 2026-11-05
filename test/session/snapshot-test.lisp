@@ -325,6 +325,31 @@ completed once BODY is done."
         (is (equal launched tree) "the session's first tree is the launch walk's")
         (is (equal '("add --dry-run") asked) "and its census is all it asked of git")))))
 
+(deftest a-launch-walk-settles-its-index-past-a-quiet-journal (with-git-workspace (store dir))
+  ;; Where a journal says nothing moved (Windows), the walk's settling
+  ;; capture still runs the census git does: answered by the journal, it left
+  ;; the untracked cache for the session's first census to write, and that
+  ;; capture wrote a tree again (T-442, 2026-11-05).
+  (with-stubbed-fdefinition (nlk::workspace-journal-epoch (root &key ignored)
+                              (declare (ignore root ignored))
+                              3)
+    ;; A walk in parts, packed: its merged index carries no untracked cache.
+    (let ((nlk::+snapshot-packed-staging-paths+ 3)
+          (nlk::+snapshot-paths-per-part+ 2)
+          (nlk::+snapshot-staging-parts+ 3))
+      (dotimes (i 12) (%write-file dir (format nil "d~d/f~d.txt" (mod i 3) i) (format nil "file ~d" i)))
+      (dolist (path (directory (merge-pathnames "**/*.*" dir)))
+        (unless (search ".git" (namestring path))
+          (sb-posix:utimes (namestring path) 0 0)))
+      (let ((launched (nlk::walk-at-launch dir)))
+        (is (= 40 (length launched)))
+        (nlk::forget-anchor-tip-cache store)
+        (let ((session (nlk:ensure-snapshot-store (namestring dir) "after-quiet-launch")))
+          (nlk:bind (((asked tree) (git-asked (nlk::capture-anchored-tree session "user_message"))))
+            (is (equal launched tree) "the session's first tree is the launch walk's")
+            (is (equal '("add --dry-run") asked)
+                (format nil "and its census is all it asked of git: ~a" asked))))))))
+
 (deftest a-store-opened-during-a-launch-walk-waits-for-it (with-git-workspace (store dir))
   ;; A session opened while the launch walk still runs would walk the same
   ;; tree beside it: it waits for the walk, then seeds from it. A claim no

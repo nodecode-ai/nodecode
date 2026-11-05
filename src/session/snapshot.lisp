@@ -442,7 +442,12 @@ workspace or another launch walk holds the claim."
                       ;; Settled: the census after a first walk writes the
                       ;; untracked cache into its index, and the tree that
                       ;; rides beside the index is for the index as it then is.
-                      (settled (and tree (capture-workspace-tree store)))
+                      ;; A census git runs, never the journal's word that
+                      ;; nothing moved (Windows): that answers without one,
+                      ;; and the session's first capture would write the cache.
+                      (settled (and tree
+                                    (progn (setf (quiet-trees store) nil)
+                                           (capture-workspace-tree store))))
                       (digest (and (equal settled tree) (index-digest store)))
                       (tip (anchor-tip-cache store)))
                  (when (and tree digest)
