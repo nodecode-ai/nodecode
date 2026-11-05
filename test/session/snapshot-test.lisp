@@ -145,8 +145,10 @@ completed once BODY is done."
   (set-file-times (merge-pathnames "a.txt" dir) 0)
   (let ((first-sha (nlk:capture-workspace-tree store)))
     (is (= 40 (length first-sha)) "the first capture writes a tree")
+    ;; On Windows the workspace's journal stands unmoved, so the capture
+    ;; answers the last walk's tree and starts no git at all.
     (nlk:bind (((asked second-sha) (git-asked (nlk:capture-workspace-tree store))))
-      (is (equal '("add --dry-run") asked)
+      (is (equal #-win32 '("add --dry-run") #+win32 '() asked)
           (format nil "the census alone; no staging and no write-tree behind it: ~a" asked))
       (is (equal first-sha second-sha) "and the tree it answers is that tree"))
     ;; Same length, same second, and the index git writes may land on the

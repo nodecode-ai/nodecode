@@ -147,8 +147,8 @@ This session's own model. The footer names it; (models), (select-model ...) and 
 
 A model of your own. A provider whose base_url is a machine you run - localhost, a private or tailnet address, a .local or .ts.net name - is listed under Local in /models' Main tab: providers.<id> = {\"sdk\": \"openai-completions\", \"base_url\": \"http://HOST:PORT/v1\"}, its models from GET <base_url>/models.
 
-nodecode.ai's API: Nodecode's own models, at https://api.nodecode.ai/v1, OpenAI's wire, provider id nodecode. `nodecode login` or /login (the operator's to run; signs in at nodecode.ai in a browser) saves the key at auth.json api_keys.nodecode.key and writes providers.nodecode {\"sdk\": \"openai-completions\", \"base_url\": \"https://api.nodecode.ai/v1\"}; a key made at https://nodecode.ai/account/keys works the same. (getf (resolve-provider-credential \"nodecode\") :key) reads it: never print it or put it in a shell command or a file. Keys start with sk-nc-; any other key answers 401 invalid_api_key, and the fix is a new `nodecode login`. Routes: POST /v1/chat/completions, POST /v1/images/generations, GET /v1/models (what the key may call), GET /v1/models/ID, GET /v1/usage (the plan's requests left, its end and quota reset, seats, the credit; the operator's footer and /usage draw it); there is no /v1/messages or /v1/responses. A call is taken from the account's plan month first, then its topped-up balance (https://nodecode.ai/pricing); with neither it answers 402.
-- Cyber v1, foresight-cyber-v1: the security model, a chat model (DeepSeek V4.1 Flash 1017 with Foresight Labs finetunes), 1M context, 16K output. A breach, a CVE, a patch or a server or website to check starts at (help :security), the cyber-security cell's manual, whatever model runs the session. Ask Cyber v1 one security question with the complete call above, or make it this session's model: (select-model \"foresight-cyber-v1\" :provider \"nodecode\"), or in a shell /models' Main tab: nodecode, then Cyber v1.
+nodecode.ai's API: Nodecode's own models, at https://api.nodecode.ai/v1, OpenAI's wire, provider id nodecode. `nodecode login` or /login (the operator's to run; signs in at nodecode.ai in a browser) saves the key at auth.json api_keys.nodecode.key and writes providers.nodecode {\"sdk\": \"openai-completions\", \"base_url\": \"https://api.nodecode.ai/v1\"}; a key made at https://nodecode.ai/account/keys works the same. (getf (resolve-provider-credential \"nodecode\") :key) reads it: never print it or put it in a shell command or a file. Keys start with sk-nc-; any other key answers 401 invalid_api_key, and the fix is a new `nodecode login`. Routes: POST /v1/chat/completions, POST /v1/images/generations, GET /v1/models (what the key may call), GET /v1/models/ID, GET /v1/usage (the plan's requests left, its end and quota reset, seats, the credit; the operator's footer and /usage draw it); there is no /v1/messages or /v1/responses. A call is paid per token from the account's topped-up balance (https://nodecode.ai/pricing; no plan is sold now), or from a plan's month where the account still holds one; with neither it answers 402.
+- Cyber v1, foresight-cyber-v1: the security model, a chat model (DeepSeek V4.1 Flash 1017 with Foresight Labs finetunes), 128K context (131,072 tokens, prompt and output together), 16K output unless a call asks for more. A breach, a CVE, a patch or a server or website to check starts at (help :security), the cyber-security cell's manual, whatever model runs the session. Ask Cyber v1 one security question with the complete call above, or make it this session's model: (select-model \"foresight-cyber-v1\" :provider \"nodecode\"), or in a shell /models' Main tab: nodecode, then Cyber v1.
 - Image v1, foresight-image-v1: the image model (Qwen-Image 2.1 Turbo with Foresight Labs finetunes). POST /v1/images/generations with {\"model\", \"prompt\", \"n\" 1-4, \"size\" \"WxH\" up to 2048x2048 or \"auto\", \"response_format\" \"b64_json\", \"seed\" optional} answers {\"data\": [{\"b64_json\": ...}], \"size\", \"usage\"}: the images come back in the body, never as URLs. nlk:http answers (values BODY STATUS HEADERS TRUNCATED); check STATUS is 200 before decoding BODY:
   (multiple-value-bind (body status)
       (nlk:http :post \"https://api.nodecode.ai/v1/images/generations\" :timeout 600
@@ -159,8 +159,8 @@ nodecode.ai's API: Nodecode's own models, at https://api.nodecode.ai/v1, OpenAI'
         (alexandria:write-byte-vector-into-file
          (cl-base64:base64-string-to-usb8-array (gethash \"b64_json\" (aref (gethash \"data\" (nlk:decode-json body)) 0)))
          PATH :if-exists :supersede)))
-  then (look PATH), and hand it to a room's answer with nck:answer-file. An image is 30.3 plan requests, or $0.04 from the balance.
-- Decide v1, foresight-decide-v1: the classifier (Perplexity Decider Flash 1.2 with Foresight Labs finetunes). It answers named questions about one state as probabilities, never prose. The request rides as JSON in the last user message of a chat completion: {\"state\": TEXT, \"questions\": {ID: QUESTION, ...}}, a QUESTION {\"type\": \"choice\" | \"noul\" (yes or no) | \"score\", \"instructions\": TEXT, \"criteria\": ...}, a choice's criteria {LABEL: RUBRIC or null, ...} with two labels at least. choices[0].message.content is the answer as JSON, {\"answers\": {ID: ...}, \"usage\": ...}: a choice its likeliest label and each label's probability, a noul the probability of yes, a score the probability-weighted level. Every question sees the same state on its own, so independent questions go in one call. 32K context; an image goes as an image_url part with a data: URL. A tenth of a plan request, $0.10 per 1M input tokens, output free:
+  then (look PATH), and hand it to a room's answer with nck:answer-file. An image is $0.04 from the balance.
+- Decide v1, foresight-decide-v1: the classifier (Perplexity Decider Flash 1.2 with Foresight Labs finetunes). It answers named questions about one state as probabilities, never prose. The request rides as JSON in the last user message of a chat completion: {\"state\": TEXT, \"questions\": {ID: QUESTION, ...}}, a QUESTION {\"type\": \"choice\" | \"noul\" (yes or no) | \"score\", \"instructions\": TEXT, \"criteria\": ...}, a choice's criteria {LABEL: RUBRIC or null, ...} with two labels at least. choices[0].message.content is the answer as JSON, {\"answers\": {ID: ...}, \"usage\": ...}: a choice its likeliest label and each label's probability, a noul the probability of yes, a score the probability-weighted level. Every question sees the same state on its own, so independent questions go in one call. 32K context; an image goes as an image_url part with a data: URL. $0.10 per 1M input tokens from the balance, output free:
   (let ((*auxiliary-model* (list :provider \"nodecode\" :model \"foresight-decide-v1\")))
     (nlk:decode-json (complete \"\" (shasht:write-json REQUEST nil) :max-tokens 1024 :fallback-p nil)))
 
@@ -173,7 +173,7 @@ Pages, in reading order, SLUG - what it answers:
 install - One line for Linux, macOS and Windows. What it prints, what it needs, where files land, and the mistakes people make.
 quickstart - Install, start, connect a provider, send a request, keep one definition, leave it running.
 first-run - The setup wizard: when it opens, what each stage shows, and the usual mistakes.
-pricing - How a plan's requests are counted: what one request is, how many a month each plan gives, how many run at once, and when the month starts again. Then the API per token, paid from a balance you top up.
+pricing - The hosted models are paid per token from a balance you top up: how much a top-up can be, what each model costs, how many calls run at once, and what a call answers when the balance is empty.
 support - What works today on each platform, and what is limited or unfinished.
 troubleshooting - The diagnostic commands, the log files, and common failures as symptom then fix.
 faq - Short answers to what a newcomer asks first, each with the page that has the detail.
@@ -667,6 +667,38 @@ member it declares" refusal))))
                                        "description" (tool-description schema)
                                        "parameters" (tool-parameters schema))))
             'vector)))
+
+(defvar *turn-tools* t
+  "The names of the tools the running turn may call, or T for every one it
+is offered: its submit's :TOOLS (TURN-TOOL-LIMIT).")
+
+(defun turn-tool-limit (turn-id)
+  "=> the tool names TURN-ID may call, or T when its input named no limit."
+  ;; The limit rides the input fact's metadata, the one record a started, a
+  ;; queued and a boot-resumed turn all read back. Only the calls are
+  ;; limited: the turn is offered every schema, so a forked history's calls
+  ;; keep the tools they name (a lane refuses a tool_use whose tool is not
+  ;; declared) and the request extends the parent's cached prefix; a turn
+  ;; limited to none asks with tool_choice none besides (RUN).
+  (let ((tools (gethash "tools" (or (json-value (nlk:events :turn-id turn-id
+                                                             :kind nlk::+kind-input-committed+
+                                                             :as :payload)
+                                                 :object "metadata")
+                                     (make-hash-table)))))
+    (if (vectorp tools)
+        (remove-if-not #'stringp (coerce tools 'list))
+        t)))
+
+(defun tool-not-offered (name)
+  "The refusal of a call to NAME, a tool this turn's limit leaves out."
+  (format nil "ERROR: tool preflight failed: ~a"
+          (encode-json-object
+           (make-json-object "code" "tool_not_offered" "tool" (or name "")
+                             "expected" (coerce *turn-tools* 'vector) "received" #()
+                             "repair" (if *turn-tools*
+                                          (format nil "this turn may call only: ~{~a~^, ~}" *turn-tools*)
+                                          "this turn may call no tool: answer from what you already have")
+                             "retryable" nil))))
 
 (defun snapshot-tool-bindings ()
   (loop for (name schema function) in *tools*
@@ -2119,9 +2151,12 @@ value — the caller prints it, briefly or in full by its place in the snippet."
     ;; Evaluating is not evidence for the one definition whose failure
     ;; would sever the ingress that would undo it, so the write
     ;; waits for a traversal and the hold owns the same call, replayed.
-    (let ((kept (or (nlk:hold-definitions escrow form text (length text))
-                    (mapcar (lambda (key) (getf key :name))
-                            (nlk:record-definitions form text (length text))))))
+    ;; Kept with the call's strings entries in place of the references that
+    ;; read them: the boot that loads the file has none (KEPT-SNIPPET-TEXT).
+    (let* ((text (kept-snippet-text text))
+           (kept (or (nlk:hold-definitions escrow form text (length text))
+                     (mapcar (lambda (key) (getf key :name))
+                             (nlk:record-definitions form text (length text))))))
       (when kept (setf *snippet-touched* t))
       (nlk:report-unkept-changes before form kept))
     value))
@@ -3628,7 +3663,10 @@ call may run."
          (raw-arguments (and (hash-table-p function-spec)
                              (gethash "arguments" function-spec))) (call-id (gethash "id" call))
          (entry (and (stringp name) (find name context.tool-bindings :key #'first :test #'string=)))
-         ((arguments refusal) (tool-call-preflight name raw-arguments entry)))
+         ((arguments refusal) (if (or (eq *turn-tools* t)
+                                      (member name *turn-tools* :test #'equal))
+                                  (tool-call-preflight name raw-arguments entry)
+                                  (values nil (tool-not-offered name)))))
     (make-tool-run :call-id (if (stringp call-id) call-id "")
                    :name (if (stringp name) name "unknown")
                    :raw-arguments (if (stringp raw-arguments) raw-arguments "")
@@ -4508,7 +4546,10 @@ outranks the default effort the same way while the turn's effective
            (effective-effort session-effort *provider* *model*))
          ;; A pick made inside the turn still moves the image's default
          ;; (WITH-IMAGE-DEFAULT-TARGET), not these bindings.
-         (*default-target-shadowed* t))
+         (*default-target-shadowed* t)
+         ;; The turn's own tool limit, read once it is admitted.
+         (*turn-tools* t)
+         (*tool-choice* *tool-choice*))
     (with-cleanup ((when turn
                      (forget-turn-images turn-id)
                      ;; With the log open the working set is the next hydration's to
@@ -4521,7 +4562,10 @@ outranks the default effort the same way while the turn's effective
                      (nlk:admit-turn sid (or command-id (nlk::make-durable-id "command"))
                                      input :invocation invocation))
             turn-id (nlk:durable-turn-turn-id turn)
-            *current-durable-turn* turn)
+            *current-durable-turn* turn
+            *turn-tools* (turn-tool-limit turn-id))
+      (when (null *turn-tools*)
+        (setf *tool-choice* "none"))
       (attach-turn-images turn-id images)
       (setf *live-turn* (open-live-turn sid turn-id))
       (handler-case

@@ -415,6 +415,33 @@ When the declaration does not fit, write `START-CELL` by hand from the same piec
 <Pair name="cell-hand-stop" />
 </Mistakes>
 
+{/* source: src/gateway/gateway.lisp */}
+## Ask a side question
+
+A cell can put a prompt to a session of its own with `nle:submit`, and limit the tools that turn may call. A fork of a session holds its context, so a side question asked there is answered from it, and nothing is written to the session it came from.
+
+```lisp
+(let* ((anchor (or (nlk:last-finished-turn-id session-id)
+                   (error "nothing has finished here to ask from")))
+       (child (nlk:durable-session-id
+               (nlk:create-session :parent session-id :anchor-turn-id anchor)))
+       (turn (nlk:active-input-admission-turn-id
+              (nle:submit child question :tools '() :source "btw" :source-id session-id))))
+  ;; poll on a thread of the cell's own, not in the command
+  (when (nlk:turn-terminal-kind turn)
+    (nlk:turn-answer child turn)))
+```
+
+| `nle:submit` key | Means |
+| --- | --- |
+| `:tools '()` | The turn may call no tool. The tools are still declared, so a fork's earlier calls stay valid and the request reuses the cached prefix, but the provider is asked with `tool_choice` `none`. A call made anyway is refused as `tool_not_offered` and never runs. |
+| `:tools ("NAME" ...)` | The turn may call only these. A call to any other is refused the same way. |
+| left out | Every tool, as before. |
+
+The limit is recorded with the prompt, so it holds for a prompt that waits in the queue and for a turn resumed after a restart. A steer carries its own limit to the turn it starts; the turn it cuts short keeps the one it began with.
+
+A session forks at its head even while a turn runs there, and the fork then holds that turn as far as it has gone, perhaps a tool call with no result yet. `nlk:last-finished-turn-id` names the anchor that leaves it out: the head of an idle session, else the running turn's parent. It answers `nil` at the root and while the first turn runs, when there is nothing finished to ask from.
+
 {/* source: src/organism/evolve.lisp */}
 ## What a folder may do
 

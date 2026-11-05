@@ -681,7 +681,7 @@ line 6~%line 7")
     ;; Expiry: stamp the hint five-plus seconds into the past.
     (decf (nle::composer-status-born model.composer-status) (* 6 internal-time-units-per-second))
     (is (null (nle::status-said model)))
-    (is (search "Connecting to Gateway" (nth 19 (nle::compose-frame model))))
+    (is (equal "" (string-trim " " (nth 19 (nle::compose-frame model)))) "gone, the composer is the caret alone")
     ;; Composer text outranks the hint.
     (nle::show-status model "noise")
     (type-string model "typing")
@@ -904,7 +904,8 @@ line 6~%line 7")
           (nlk:bind ((frame (nle::compose-frame model)) ((x y) (needle-cell "/profile  " frame))
                      (row (nth (1- y) frame)))
             (is (search (nlk:profile-label) row) "the active identity is retained")
-            (is (or (search " · ~/" row) (search " · /" row)) "the active home's path remains visible")
+            ;; the active home's path remains visible: from ~, the root, or a drive
+            (is (or (search " · ~/" row) (search " · /" row) #+win32 (ppcre:scan " · [A-Za-z]:\\\\" row)))
             (is (every (lambda (line) (<= (nle::text-display-width line) (first size))) frame))
             (click-at model x y)
             (is (eq :profiles (nle::picker-dialog-kind model.dialog)))
@@ -1181,25 +1182,27 @@ line 6~%line 7")
     (when (and (> (length typed) 1) (char= #\/ (char typed 0)))
       (is (nle::find-slash-command (subseq typed 1)) typed))))
 
-(deftest gateway-home-placeholder-narrates-the-lifecycle ()
+(deftest gateway-home-composer-speaks-only-for-a-failed-sync ()
+  ;; The empty composer is the caret alone: connecting and connected are the
+  ;; footer's Gateway to say, and only a sync that failed, which waits on the
+  ;; operator, stands over the caret.
   (with-frame-model (client 80 24 :session-id "home-gw" :http-port 4321)
-    (flet ((placeholder () (nth 19 (nle::compose-frame client))))
+    (flet ((placeholder () (string-trim " " (nth 19 (nle::compose-frame client)))))
       (is (nle::home-screen-p client) "an empty gateway attach is home")
       (let* ((rows (nle::compose-frame client))
              (logo (row-index-of "▄  ▄  ▄▄" rows :required t)))
         (is (search "Tip " (nth (+ logo 5) rows)) "the tip stands under the version")
         (is (search "v" (nth (+ logo 3) rows)) "gateway client Home carries the version tag"))
-      (is (search "Connecting to Gateway..." (placeholder)))
+      (is (equal "" (placeholder)) "connecting: the caret alone")
+      (is (eql 19 (cdr client.parked-cursor)) "and the caret parks on that row")
       (setf client.sync-lifecycle :connected)
-      (is (search "Ask anything, or describe a task"
-                  (placeholder)))
-      (is (not (search "gateway's warm" (placeholder))) "the footer's Gateway says the connection")
+      (is (equal "" (placeholder)) "connected: no invitation")
       (setf client.sync-lifecycle :failed)
       (is (search "Gateway sync failed - check the endpoint and retry" (placeholder)))
       ;; A pending submit suppresses home on the gateway shell.
       (setf client.sync-lifecycle :connected client.pending-command-id "cmd-1")
       (is (not (nle::home-screen-p client)))
-      (is (search "Ready" (placeholder))))))
+      (is (equal "" (placeholder)) "off home: no Ready"))))
 
 (deftest slash-clear-returns-to-the-home-screen (with-stubbed-fdefinitions)
   ;; /clear used to leave a blank transcript: SWITCH-GATEWAY-SESSION's

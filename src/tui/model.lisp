@@ -720,8 +720,8 @@ an open dialog's docked panel."
   (multiple-value-bind (term-w term-h) (nlt:terminal-size)
     (setf (chat-model-term-width model) term-w (chat-model-term-height model) term-h)
     ;; The composer is the Zig box: text rows inside a filled rectangle,
-    ;; no prompt glyph, the "Ready" placeholder (render_plan.zig
-    ;; composer_ready_placeholder). The box grows with its content to the
+    ;; no prompt glyph and no placeholder -- empty, it is the blinking
+    ;; caret alone (COMPOSER-ROWS). The box grows with its content to the
     ;; pi-mono cap and then scrolls internally. The editor owns editing and
     ;; scrolling; COMPOSER-ROWS owns the paint; no painted caret — the
     ;; shell parks the terminal's hardware cursor at the caret cell (the
@@ -735,7 +735,6 @@ an open dialog's docked panel."
     (setf (chat-model-editor model)
           (make-editor :width (composer-text-width term-w)
                        :max-height (composer-max-rows term-h)
-                       :placeholder "Ready"
                        :char-limit 100000))
     ;; The band window holds rows the display policy has already wrapped
     ;; through BREAK-FRAGMENTS, the one line-break authority, at the

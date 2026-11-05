@@ -273,7 +273,11 @@ registry however BODY leaves."
 (deftest gateway-notice-reaches-attached-peers-and-stands-for-late-ones ()
   (with-gateway-session (port "notice-s")
     (let ((frames
-            (frames-while (ws port :subscribe '("notice-s"))
+            ;; The notices are said in-process, so the body waits for the
+            ;; gateway to hold the peer: the connect ack goes out a moment
+            ;; before the peer is marked attached, and a transient notice
+            ;; said in that moment reaches no one.
+            (frames-while (ws port :subscribe '("notice-s") :await-subscription t)
               (is (equal "discord: refused — no token"
                          (nle:notice "discord: refused — no token"
                                      :level :error :key "channels.discord")))
@@ -2469,6 +2473,55 @@ had time to send anything more: a row sent twice arrives after the match."
     (is-shape (gethash "source" json) ("kind" "cron") ("id" "job-1"))
     (is (equal "in_process" (gethash "domain" (gethash "transport" json))))))
 
+(deftest a-submit-names-the-tools-its-turn-may-call (with-session-store ("gw-tools"))
+  ;; Given an image offering the tools probe and other, and a model that asks
+  ;; for one of them before it answers: a side question submitted with
+  ;; :TOOLS '() is asked with every schema still offered (the history's calls
+  ;; and the cached prefix stay valid) but tool_choice "none", and a call it
+  ;; makes anyway is refused, the tool never running; :TOOLS ("probe") runs
+  ;; probe and refuses other; a submit naming no limit runs either, as before.
+  (with-saved-globals ((nle::*tools* '()))
+   (let ((ran '())
+         (contexts '())
+         (replies '()))
+    (dolist (name '("probe" "other"))
+      (let ((name name))
+        (nle:register-tool name (list :description name
+                                      :parameters (nlk:json-object "type" "object"))
+                           (lambda (arguments) (declare (ignore arguments))
+                             (push name ran) "ran"))))
+    (with-provider-stub (context (push context contexts) (pop replies))
+      (flet ((ask (command-id tool &rest limit)
+               (setf replies (list (wire-message "assistant" :tool-calls
+                                                 (vector (wire-tool-call (format nil "~a-call" command-id)
+                                                                         tool "{}")))
+                                   (wire-message "assistant" :content "answered"))
+                     ran '()
+                     contexts '())
+               (apply #'nle:submit "gw-tools" "what is this?" :command-id command-id limit)
+               (await (:tries 100) (not (nlk:active-turn-p "gw-tools")))
+               (let ((first (car (last contexts))))
+                 (list :choice (nle::effective-provider-config-tool-choice
+                                (nle::compiled-turn-context-provider-config first))
+                       :offered (length (nle::compiled-turn-context-tools first))
+                       :ran ran
+                       :result (nle::encode-json-object
+                                (nlk:events :session-id "gw-tools" :kind nlk::+kind-tool-result+
+                                            :order :newest :as :payload))))))
+        (let ((none (ask "gw-tools-none" "probe" :tools '())))
+          (is (equal "none" (getf none :choice)) "a turn limited to no tools may call none")
+          (is (= 2 (getf none :offered)) "every schema is still offered")
+          (is (null (getf none :ran)) "the call it made anyway never ran")
+          (is (search "tool_not_offered" (getf none :result)) "and was refused as not offered"))
+        (let ((probe (ask "gw-tools-probe" "probe" :tools '("probe"))))
+          (is (equal '("probe") (getf probe :ran)) "a named tool runs")
+          (is (null (getf probe :choice)) "a turn that may call some tools chooses as configured"))
+        (let ((other (ask "gw-tools-other" "other" :tools '("probe"))))
+          (is (null (getf other :ran)) "a tool the limit leaves out never runs")
+          (is (search "tool_not_offered" (getf other :result))))
+        (let ((open (ask "gw-tools-open" "other")))
+          (is (equal '("other") (getf open :ran)) "no limit, as before: any tool runs")))))))
+
 (deftest a-sessions-first-prompt-names-it (with-temp-store ())
   ;; A session wears its first prompt's line until a model writes its title,
   ;; one side call on the auxiliary target, and is named once. A name given
@@ -3997,8 +4050,8 @@ request."
   ;; the last line it wrote to the store's log -- MAIN's `nodecode: ' line --
   ;; and the shell's line is that reason, in the organism's own words.
   (let ((nle::*serve-program*
-          (list "sh" "-c" "echo 'nodecode: the store is not a database; move it aside' >&2; exit 1"
-                "front-stub"))
+          (append (nlk:shell-argv "echo 'nodecode: the store is not a database; move it aside' >&2; exit 1")
+                  (list "front-stub")))
         (nle::*front* nil))
     (let ((condition (signals-error nle::organism-exited
                        (nle::front-organism (merge-pathnames "history.db" dir)))))
@@ -4013,7 +4066,7 @@ request."
   (let* ((marker (merge-pathnames "why.txt" dir))
          (nle::*front* nil))
     (multiple-value-bind (pid out err process pipe)
-        (nlk::spawn-program (list "sh" "-c" (format nil "read why; echo \"$why\" > ~a" (namestring marker)))
+        (nlk::spawn-program (nlk:shell-argv (format nil "read why; echo \"$why\" > '~a'" (uiop:native-namestring marker)))
                             :output nil :error-output nil :input :stream)
       (declare (ignore out err))
       (setf nle::*front* (list :pipe pipe :waiter (nlk:spawn "front-test-waiter"
@@ -4041,7 +4094,7 @@ request."
   (let* ((marker (merge-pathnames "why.txt" dir))
          (nle::*front* nil))
     (multiple-value-bind (pid out err process pipe)
-        (nlk::spawn-program (list "sh" "-c" (format nil "cat > ~a" (namestring marker)))
+        (nlk::spawn-program (nlk:shell-argv (format nil "cat > '~a'" (uiop:native-namestring marker)))
                             :output nil :error-output nil :input :stream)
       (declare (ignore out err))
       (setf nle::*front* (list :pipe pipe :waiter (nlk:spawn "front-test-waiter"
@@ -4056,7 +4109,7 @@ request."
   ;; A candidate ends 0 when it loses the election. The owner it lost to may
   ;; have let go by the time the shell looks: a handover for the shell to wait
   ;; out (RPC-MAIN), never the boot's death (#226).
-  (let ((nle::*serve-program* (list "sh" "-c" "exit 0" "front-stub"))
+  (let ((nle::*serve-program* (append (nlk:shell-argv "exit 0") (list "front-stub")))
         (nle::*front* nil))
     (nle::front-organism (merge-pathnames "history.db" dir))
     (is (null nle::*front*) "nothing is fronted")))
@@ -5644,6 +5697,26 @@ default target is PROVIDER/MODEL-ID, restored after."
         (nle:unregister-commands "demo-pack")
         (is (search "unknown command /greet" (nle::execute-slash-command model "greet" "")))))))
 
+(deftest a-key-runs-a-cell-command-and-keeps-the-draft (with-temp-gateway (port))
+  ;; Given a cell command and keybinds.json binding a line of it to Ctrl+G,
+  ;; When the operator presses Ctrl+G with a draft in the composer,
+  ;; Then the command runs on the gateway with the line's tail and this
+  ;; shell's session, its answer is the notice, and the draft stands.
+  (let ((calls '()))
+    (with-saved-globals (nle::*registered-commands* nle::*gateway-commands*)
+      (nle:register-command "demo-pack" "greet"
+                            (lambda (args session-id)
+                              (push (list args session-id) calls)
+                              (format nil "hi ~a" args))
+                            :description "Say hello")
+      (let ((model (gateway-frame-model port "ext-key")))
+        (setf model.keymap (nle::resolve-keybinds '(("/greet World" . "ctrl+g"))))
+        (type-string model "a draft")
+        (press model #\g :mod nlt:+mod-ctrl+)
+        (is (equal '("World" "ext-key") (first calls)))
+        (is (equal "hi World" (nle::status-said model)))
+        (is (equal "a draft" (composer-value model)))))))
+
 (deftest cell-command-answer-opens-its-dialog (with-temp-gateway (port))
   (with-saved-globals (nle::*registered-commands* nle::*gateway-commands*)
     (register-picker-command)
@@ -5842,7 +5915,7 @@ default target is PROVIDER/MODEL-ID, restored after."
       ;; the globals and not this thread's fixture bindings.
       (with-saved-globals ((nlk::*cells-directory* root) (nlk::*warm-cache-directory* cache)
                            (nlk::*image-stamp* "stamp-w")
-                           (nlk::*organism-command* (list "/bin/sh" prover)))
+                           (nlk::*organism-command* (shell-script-command prover)))
         (write-layer-folder root "nl-warm" '(("probe" . "(defun cells-probe-warm () :warm)")))
         (let ((exited '()))
           (is (eq :sealed (nlk:prove-self (nlk::folder-key))))

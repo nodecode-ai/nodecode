@@ -562,6 +562,13 @@ UNIX-SECONDS, seconds since 1970."
   (nlk::with-output-file (out path) (write-string contents out))
   path)
 
+(defun shell-script-command (script &rest arguments)
+  "The argv that runs SCRIPT, a shell script file, with ARGUMENTS through the
+shell this image runs command strings through (SHELL-ARGV's): the stand-in a
+fixture puts where a program goes. /bin/sh is no path on Windows, where the
+shell is Git's bash, started past its redirector with Git's PATH."
+  (list* (first (nlk:shell-argv ":")) (uiop:native-namestring script) arguments))
+
 (defmacro with-temp-file ((place &key contents (type "json") setf) &body body
                           &aux (path (gensym "PATH")) (text (gensym "CONTENTS")))
   "Run BODY with PLACE naming a fresh temp file of TYPE, deleted on unwind."
@@ -906,6 +913,14 @@ RESULT — IS-CARRYING's check shapes, so a bare form may read RESULT too."
 
 (defun octets (&rest bytes)
   (coerce bytes 'nlk:octets))
+
+(defun make-pipe ()
+  "A pipe, as (values READ-END WRITE-END): each what SB-SYS:MAKE-FD-STREAM
+takes -- a descriptor, or on Windows a handle."
+  (multiple-value-bind (read write) (sb-unix:unix-pipe)
+    (unless read
+      (error "no pipe: ~a" (sb-int:strerror write)))
+    (values read write)))
 
 (defun replace-once (text needle replacement &aux (at (search needle text)))
   "TEXT with the first NEEDLE replaced."
