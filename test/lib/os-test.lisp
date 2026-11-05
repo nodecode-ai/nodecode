@@ -929,3 +929,18 @@ five seconds on a thread of its own."
         (is (integerp stamp) "and when it was written")
         (with-open-file (o file :direction :output :if-exists :supersede) (write-string "{\"a\":12}" o))
         (is (eql 8 (nlk:file-identity file)) "a rewrite moves it")))))
+
+(deftest path-kind-tells-a-file-from-a-folder-from-nothing ()
+  ;; The existence probe of the paths a step asks after (an opened snapshot
+  ;; store's config, a workspace folder): one metadata look, where PROBE-FILE
+  ;; resolves a truename.
+  (let* ((dir (uiop:ensure-directory-pathname (merge-pathnames (format nil "kind-~d/" (random 1000000)) (uiop:temporary-directory))))
+         (file (merge-pathnames "a.txt" dir)))
+    (is (null (nlk:path-kind dir)) "nothing there yet")
+    (ensure-directories-exist dir)
+    (nlk:with-cleanup ((uiop:delete-directory-tree dir :validate t :if-does-not-exist :ignore))
+      (is (eq :directory (nlk:path-kind dir)) "a folder, named as one")
+      (is (eq :directory (nlk:path-kind (string-right-trim "/\\" (uiop:native-namestring dir)))) "or as a file name")
+      (is (null (nlk:path-kind file)) "no file")
+      (with-open-file (o file :direction :output) (write-string "x" o))
+      (is (eq :file (nlk:path-kind file)) "a file"))))

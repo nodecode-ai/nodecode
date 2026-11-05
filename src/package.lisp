@@ -155,7 +155,7 @@ renderer, the program loop.")
    #:*wait-deadline* #:wait-seconds #:wait-deadline-passed-p #:wait-deadline-reason #:with-wait-deadline #:call-with-wait-deadline
    #:call-with-lock-in-time
    #:*wait-hook* #:with-named-wait
-   #:file-locked-p #:unlock-file #:folder-lock-path #:lock-folder #:unlock-folder #:file-bytes #:file-identity
+   #:file-locked-p #:unlock-file #:folder-lock-path #:lock-folder #:unlock-folder #:file-bytes #:file-identity #:path-kind
    #:with-folder-lock #:replace-file #:gzip-file #:random-bytes #:with-output-file
    #:call-with-severed-stdio
    ;; --- reaching a peer by name (dial.lisp) ---

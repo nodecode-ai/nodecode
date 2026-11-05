@@ -347,7 +347,7 @@ environment names (SystemRoot, ProgramFiles, ProgramData on Windows)."
     (let ((root (uiop:ensure-directory-pathname workspace)))
       (cond
         ((not (git-available-p)) (values nil :git-missing))
-        ((not (uiop:directory-exists-p root)) (values nil :store-init-failed))
+        ((not (eq (path-kind root) :directory)) (values nil :store-init-failed))
         (t (multiple-value-bind (canonical-root refusal) (workspace-standing root)
              (if refusal
                  (values nil refusal)
@@ -624,7 +624,7 @@ holds none of this process's folders."
 walltime bound: a process that died mid-walk left it; a younger one may be
 a capture."
   (let* ((lock (concatenate 'string (snapshot-store-index-path store) ".lock"))
-         (age (and (probe-file lock)
+         (age (and (path-kind lock)
                    (ignore-errors (- (get-universal-time) (file-write-date lock))))))
     (when (and (integerp age) (> age +snapshot-git-timeout-seconds+))
       (ignore-errors (delete-file lock)))))
@@ -640,7 +640,7 @@ refusals."
                               (merge-pathnames (format nil "index-~a" session-id) git-dir))))
          (key (cons (snapshot-store-index-path store) (snapshot-store-workspace store)))
          (opened (opened-snapshot-stores key)))
-    (when (and opened (probe-file (snapshot-store-file opened "config")))
+    (when (and opened (path-kind (snapshot-store-file opened "config")))
       (clear-stale-index-lock opened)
       (return-from open-snapshot-store (values opened nil)))
     ;; A session with no index yet seeds it from the newest of the store's,
