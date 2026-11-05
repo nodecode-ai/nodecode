@@ -46,6 +46,21 @@ of stacking."
                                                :ignore-error-status t))))))
       (format nil "~a~@[+~a~]" base commit))))
 
+;;; --- a file another system ships and leaves out ------------------------------
+;;; dexador compiles its socket backend only off Windows and speaks WinHTTP
+;;; there (dexador.asd); lib/dial.lisp says why the organism takes the socket
+;;; backend everywhere. A BORROWED-FILE is such a file, compiled as one of
+;;; this system's where its own system leaves it out.
+
+(defclass borrowed-file (cl-source-file)
+  ((from :initarg :from :reader borrowed-from
+         :documentation "(SYSTEM PATH): the system the file ships in, and its path there."))
+  (:documentation "A source file of another system, compiled in this one."))
+
+(defmethod component-pathname ((file borrowed-file))
+  (destructuring-bind (system path) (borrowed-from file)
+    (system-relative-pathname system path)))
+
 (defsystem "nodecode"
   :description "A self-modifying agent organism in SBCL: gateway, session, turn loop, and heredity."
   :license "MIT"
@@ -130,6 +145,10 @@ of stacking."
      ;; os: the shell, processes, locks, files — one arm per platform,
      ;; behind names that say what is needed, never where.
      (:file "lib/os")
+     ;; dexador's socket backend, which its own system builds only off
+     ;; Windows; dial takes it as the backend on every platform.
+     (:borrowed-file "dexador-backend" :from ("dexador" "src/backend/usocket.lisp")
+                     :if-feature :win32)
      ;; dial: how a peer is reached by name -- every address, IPv6 first,
      ;; raced -- installed on usocket's connect before any file below dials.
      (:file "lib/dial")

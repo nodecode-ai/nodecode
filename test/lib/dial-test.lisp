@@ -209,9 +209,82 @@ LISTEN-HOST took, both closed on the way out."
         (let ((ssl (cl+ssl::ssl-new (ask cl+ssl:+ssl-verify-peer+))))
           (is (not (cffi:null-pointer-p ssl)) "both callers freed theirs and it still serves")
           (cl+ssl::ssl-free ssl))))
-    (is-present (bundle (find-if #'probe-file '("/etc/ssl/certs/ca-certificates.crt"
-                                                "/etc/pki/tls/certs/ca-bundle.crt"
-                                                "/etc/ssl/ca-bundle.pem" "/etc/ssl/cert.pem")))
-      (let ((one (cl+ssl:make-context :verify-location bundle))
-            (two (cl+ssl:make-context :verify-location bundle)))
-        (is (not (cffi:pointer-eq one two)) "a named location is fresh: its file may change")))))
+    (let* ((bundle (dial-ca-path "loopback-ca.pem"))
+           (one (cl+ssl:make-context :verify-location bundle))
+           (two (cl+ssl:make-context :verify-location bundle)))
+      (is (not (cffi:pointer-eq one two)) "a named location is fresh: its file may change")
+      (cl+ssl::ssl-ctx-free one)
+      (cl+ssl::ssl-ctx-free two))))
+
+(defun dial-ca-path (name)
+  "NAME, a file of the loopback CA the provider tests serve under, as a native path."
+  (uiop:native-namestring (asdf:system-relative-pathname :nodecode (format nil "test/engine/~a" name))))
+
+(defun dial-tls-status (bundle)
+  "The status dexador reads from a loopback server that serves the loopback
+CA's certificate and answers 200, trusting BUNDLE -- NIL for the system's
+default location -- or :REFUSED when the handshake fails."
+  (let ((listener (usocket:socket-listen "127.0.0.1" 0 :reuse-address t :element-type '(unsigned-byte 8))))
+    (nlk:with-cleanup ((usocket:socket-close listener))
+      (nlk:spawn "tls-fixture"
+        (nlk:with-handlers ((error () nil))
+          (let ((socket (usocket:socket-accept listener)))
+            (nlk:with-cleanup ((usocket:socket-close socket))
+              (let ((stream (cl+ssl:make-ssl-server-stream (usocket:socket-stream socket)
+                                                           :certificate (dial-ca-path "loopback-ca.pem")
+                                                           :key (dial-ca-path "loopback-ca-key.pem"))))
+                (loop with tail = 0
+                      for octet = (read-byte stream nil)
+                      while octet
+                      do (setf tail (logand #xFFFFFFFF (logior (ash tail 8) octet)))
+                      until (= tail #x0D0A0D0A))
+                (write-sequence (sb-ext:string-to-octets
+                                 (format nil "HTTP/1.1 200 OK~C~CContent-Length: 2~C~CConnection: close~C~C~C~Cok"
+                                         #\Return #\Newline #\Return #\Newline #\Return #\Newline #\Return #\Newline)
+                                 :external-format :latin-1)
+                                stream)
+                (finish-output stream))))))
+      (let ((dexador.backend.usocket:*ca-bundle* bundle))
+        (handler-case (nth-value 1 (dex:get (format nil "https://127.0.0.1:~d/" (usocket:get-local-port listener))
+                                            :use-connection-pool nil :connect-timeout 5 :read-timeout 5))
+          (error () :refused))))))
+
+(deftest dial-a-default-context-trusts-the-systems-roots-and-no-stranger ()
+  ;; Named no bundle, dexador verifies a server at the system's default
+  ;; location. A certificate no root of the system's signed is refused there;
+  ;; the same server is taken once its CA is the bundle named.
+  (is (eq :refused (dial-tls-status nil)) "a stranger at the default location is refused")
+  (is (eql 200 (dial-tls-status (dial-ca-path "loopback-ca.pem"))) "its CA named, the same server answers"))
+
+#+win32
+(defun dial-ca-certificate ()
+  "The loopback CA's certificate, an OpenSSL X509 decoded from its PEM."
+  (let* ((pem (uiop:read-file-string (dial-ca-path "loopback-ca.pem")))
+         (body (subseq pem (+ (search "-----BEGIN CERTIFICATE-----" pem) 27) (search "-----END CERTIFICATE-----" pem)))
+         (der (cl-base64:base64-string-to-usb8-array (remove-if (lambda (c) (member c '(#\Return #\Newline))) body)))
+         (bytes (cffi:make-shareable-byte-vector (length der))))
+    (replace bytes der)
+    (cl+ssl:decode-certificate :der bytes)))
+
+#+win32
+(deftest dial-a-default-context-on-windows-takes-the-systems-verdict ()
+  ;; Windows keeps no bundle: at the default location the server's chain goes
+  ;; to the system's chain engine (CertGetCertificateChain). An engine whose
+  ;; one root is the loopback CA takes the server the system's own refuses.
+  (let ((roots (cffi:foreign-funcall "CertOpenStore" :pointer (cffi:make-pointer 2) :uint32 0
+                                     :pointer (cffi:null-pointer) :uint32 0 :pointer (cffi:null-pointer) :pointer))
+        (ca (dial-ca-certificate)))
+    (nlk:with-cleanup ((cffi:foreign-funcall "CertCloseStore" :pointer roots :uint32 0 :int))
+      (nlk:with-cleanup ((cl+ssl:x509-free ca))
+        (is (nlk::store-certificate roots ca) "the loopback CA, the engine's one root")
+        ;; CERT_CHAIN_ENGINE_CONFIG, 88 bytes: its size first, hExclusiveRoot at 64
+        (cffi:with-foreign-objects ((config :uint8 88) (engine :pointer))
+          (dotimes (i 88) (setf (cffi:mem-aref config :uint8 i) 0))
+          (setf (cffi:mem-ref config :uint32 0) 88
+                (cffi:mem-ref config :pointer 64) roots)
+          (is (/= 0 (cffi:foreign-funcall "CertCreateCertificateChainEngine" :pointer config :pointer engine :int)) "an engine of the test's own")
+          (nlk:with-cleanup ((cffi:foreign-funcall "CertFreeCertificateChainEngine"
+                                                   :pointer (cffi:mem-ref engine :pointer) :void))
+            (let ((nlk::*chain-engine* (cffi:mem-ref engine :pointer)))
+              (is (eql 200 (dial-tls-status nil)) "its root is trusted at the default location"))
+            (is (eq :refused (dial-tls-status nil)) "and the system's engine refuses it")))))))
