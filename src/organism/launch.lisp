@@ -514,7 +514,7 @@ process's successor (START-SUCCESSOR) and this process gone. Answers only the
 refusal, as text."
   #-win32 (exec-program path argv)
   #+win32
-  (let ((path (namestring path)))
+  (let ((path (uiop:native-namestring path)))
     (mapc #'finish-output (list *standard-output* *error-output*))
     (multiple-value-bind (pid condition)
         (ignore-errors
