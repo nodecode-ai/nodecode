@@ -275,6 +275,44 @@ completed once BODY is done."
                    (nlk::lines (nlk::run-snapshot-git store (list "log" "--format=%T" nlk::+snapshot-anchor-ref+))))
             "the anchor chains both")))))
 
+(deftest a-launch-walk-leaves-the-first-capture-its-census (with-git-workspace (store dir))
+  ;; A shell walks its folder as it launches (PREWARM-WORKSPACE): the session
+  ;; opened after it seeds its index from the launch walk's and takes the
+  ;; tree and anchor written beside it, so its first capture is the census
+  ;; alone -- no staging, no tree, no anchor resolve (T-442).
+  (dotimes (i 4) (%write-file dir (format nil "f~d.txt" i) (format nil "file ~d" i)))
+  (let ((launched (nlk::walk-at-launch dir)))
+    (is (= 40 (length launched)))
+    (is (null (probe-file (nlk::launch-walk-claim (nlk::snapshot-git-dir (nlk::canonical-workspace dir)))))
+        "the walk let its claim go")
+    ;; The session's organism is another process: it knows no tip.
+    (nlk::forget-anchor-tip-cache store)
+    (let ((session (nlk:ensure-snapshot-store (namestring dir) "after-launch")))
+      (nlk:bind (((asked tree) (git-asked (nlk::capture-anchored-tree session "user_message"))))
+        (is (equal launched tree) "the session's first tree is the launch walk's")
+        (is (equal '("add --dry-run") asked) "and its census is all it asked of git")))))
+
+(deftest a-store-opened-during-a-launch-walk-waits-for-it (with-git-workspace (store dir))
+  ;; A session opened while the launch walk still runs would walk the same
+  ;; tree beside it: it waits for the walk, then seeds from it. A claim no
+  ;; live process holds holds nothing.
+  (let ((claim (nlk::launch-walk-claim (nlk::snapshot-git-dir (nlk::canonical-workspace dir))))
+        (start (get-internal-real-time)))
+    (is (nlk::claim-file claim 60))
+    (let ((releaser (bt2:make-thread (lambda () (sleep 0.3) (delete-file claim)))))
+      (let ((opened (nlk:ensure-snapshot-store (namestring dir) "during-launch")))
+        (bt2:join-thread releaser)
+        (is opened)
+        (is (>= (- (get-internal-real-time) start) (* 1/4 internal-time-units-per-second))
+            "it waited for the walk")))
+    (with-open-file (out claim :direction :output :if-exists :supersede)
+      (format out "~d~%" 2147483000))
+    (let ((start (get-internal-real-time)))
+      (is (nlk:ensure-snapshot-store (namestring dir) "dead-claim"))
+      (is (< (- (get-internal-real-time) start) (* 1/5 internal-time-units-per-second))
+          "a dead walker's claim is passed by"))
+    (delete-file claim)))
+
 (deftest a-store-from-before-raw-captures-restages-once (with-temp-directory (dir "snap-raw"))
   ;; A store an earlier version kept staged converted blobs, and its index
   ;; still vouches for them: opening it rewrites the attributes and drops

@@ -368,7 +368,7 @@ renderer, the program loop.")
    #:turn-chain-depth #:session-log-cursor
    #:defer-turn-fact #:settle-turn-facts
    ;; --- workspace snapshots (snapshot.lisp) ---
-   #:ensure-snapshot-store #:git-available-p #:capture-workspace-tree
+   #:ensure-snapshot-store #:git-available-p #:capture-workspace-tree #:prewarm-workspace
    #:open-workspace-bracket #:close-workspace-bracket #:workspace-diff-document
    #:anchor-tree #:changed-paths #:restore-paths #:hash-in-tree #:repack-store
    #:record-workspace-capture #:checkpoint-capture-boundary

@@ -1191,7 +1191,10 @@ condition's report, exit 1."
           (:add (answer-and-quit (call-saying-waits (lambda () (add-text (second child))))
                   (gateway-http-error (refusal)
                     (values (gateway-http-error-detail refusal) 1 :error))))
-          (:rpc (rpc-main (second child) (third child) store-path))
+          ;; The program's session works in this folder: its first walk
+          ;; starts now, beside the organism's boot (PREWARM-WORKSPACE).
+          (:rpc (nlk:prewarm-workspace (uiop:getcwd))
+                (rpc-main (second child) (third child) store-path))
           (:trial nil)))
       ;; The folder loads in EVERY process before anything else runs:
       ;; the owner, an attached TUI, a headless serve
@@ -1232,6 +1235,10 @@ condition's report, exit 1."
                         ;; the operator chose to boot (images.lisp).
                         (follow-restore-pointer)
                         (nlk::hand-over-to-published-image)
+                        ;; The shell's session works in this folder: its first
+                        ;; walk starts now, while the organism boots and the
+                        ;; operator types (PREWARM-WORKSPACE).
+                        (nlk:prewarm-workspace (uiop:getcwd))
                         (attach-or-own-organism :session-id session-id
                                                 :store-path store-path
                                                 :setup setup
