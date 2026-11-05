@@ -1362,13 +1362,17 @@ turn carrying that id."
     (is (equal '("a.png" "https://x.test/b.png" "file:///tmp/c.png" "/tmp/d e.png") (nle::markdown-image-targets prose)) "each target once, in order, a bracketed one without its brackets")
     (is (null (nle::markdown-image-targets code)) "a code span's, a fence's, a link and a target with a space are no image")))
 
+(defun file-url (path)
+  "PATH as a file: URL, its drive led by a slash on Windows: file:///C:/x."
+  (format nil "file://~a~a" #+win32 "/" #-win32 "" path))
+
 (deftest an-answer-s-local-picture-is-an-image-fact (with-temp-workspace (cache))
   (with-look-image (path "answer-image")
     (with-temp-file (prose :type "png" :contents "not a png at all")
       (with-stubbed-fdefinition (nlk:cache-path (relative) (merge-pathnames relative cache))
         (let* ((facts (nle::answer-images
-                       (format nil "![dot](~a) ![web](https://example.invalid/x.png) ![gone](~a) ![prose](~a) ![data](data:image/png;base64,AAAA) ![url](file://~a)"
-                               path (namestring (temp-path "answer-absent" "png")) prose path)))
+                       (format nil "![dot](~a) ![web](https://example.invalid/x.png) ![gone](~a) ![prose](~a) ![data](data:image/png;base64,AAAA) ![url](~a)"
+                               path (namestring (temp-path "answer-absent" "png")) prose (file-url path))))
                (fact (and facts (aref facts 0)))
                (copy (nlk:json-value fact :text "copy_path")))
           (is (= 2 (length facts)) "the file, and the file: URL of it: a remote, a missing, a non-image and a data: target are none")
@@ -1379,11 +1383,13 @@ turn carrying that id."
           (is (= 64 (length (gethash "id" fact))) "named by its bytes, for the route")
           (is (uiop:subpathp (pathname copy) cache) "the bytes are kept in the cache")
           (is (equalp *one-pixel-png* (alexandria:read-file-into-byte-vector copy)) "as the file held them")
-          (is-shape (aref facts 1) ("target" (format nil "file://~a" path) "a file: URL keeps its spelling")
+          (is-shape (aref facts 1) ("target" (file-url path) "a file: URL keeps its spelling")
             ("path" path "and names the same file") ("id" (gethash "id" fact) "the same bytes"))
           (is (null (nle::answer-images "No picture here, only [a link](x.png).")) "an answer naming none has no facts")
           (let ((nle::*answer-image-limit* 1))
-            (is (= 1 (length (nle::answer-images (format nil "![a](~a) ![b](file://~a)" path path)))) "one answer carries no more than the limit")))))))
+            (is (= 1 (length (nle::answer-images (format nil "![a](~a) ![b](~a)" path (file-url path))))) "one answer carries no more than the limit"))
+          #+win32
+          (is (= 1 (length (nle::answer-images (format nil "![c](file://~a)" path)))) "file://C:/x, the drive where a host would be, names the file too"))))))
 
 (deftest an-answer-naming-a-picture-keeps-its-fact-and-sends-the-model-nothing (with-temp-store ())
   ;; The whole loop: the round's message fact carries the picture's fact

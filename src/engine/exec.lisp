@@ -2674,8 +2674,12 @@ image. Never signals."
     (loop for target in targets
           ;; A file: URL is its path, a name with no scheme is itself, and
           ;; anything else is somewhere this never reaches.
+          ;; On Windows the URL's path leads its drive with a slash,
+          ;; file:///C:/x, and file://C:/x is how one is often written.
           for path = (cond ((ppcre:scan "^(?i)file:" target)
-                            (ppcre:regex-replace "^(?i)file:(?://(?:localhost)?(?=/))?" target ""))
+                            (let ((path (ppcre:regex-replace "^(?i)file:(?://(?:localhost)?(?=/))?" target "")))
+                              #+win32 (ppcre:regex-replace "^/{1,2}(?=[A-Za-z]:[/\\\\])" path "")
+                              #-win32 path))
                            ((not (ppcre:scan "^[A-Za-z][A-Za-z0-9+.-]+:" target)) target))
           for fact = (ignore-errors
                       (when path
