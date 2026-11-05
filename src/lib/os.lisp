@@ -974,6 +974,17 @@ says: :STREAM, a pipe of its own; :OUTPUT, joined to stdout; a namestring.
                   nil
                   (child-stream in-write :output "child stdin")))))))
 
+(defun file-error-reason (condition)
+  "What the system said of the file a FILE-ERROR names: SBCL's own reason
+without the pathname it prints first, or the whole condition when it holds
+none."
+  ;; SBCL's FILE-PERROR signals "~@<~?~@[: ~2I~_~A~]~:>" over (CONTROL ARGUMENTS REASON).
+  (let ((arguments (and (typep condition 'simple-condition)
+                        (simple-condition-format-arguments condition))))
+    (if (and (= 3 (length arguments)) (stringp (third arguments)))
+        (third arguments)
+        (princ-to-string condition))))
+
 (defun spawn-program (argv &key directory environment (output :stream) (error-output :stream)
                                 (input :null))
   "Start ARGV — the program first, searched on PATH — as a child of this
@@ -1017,15 +1028,24 @@ process: DIRECTORY its working directory when given, ENVIRONMENT
                  #+win32 (*unicode-environment*
                           (and environment (unicode-environment-block environment)))
                  #+win32 (environment nil)
-                 (process (apply #'sb-ext:run-program (first argv) (rest argv)
-                                 :search t :wait nil
-                                 :input (and (eq input :stream) :stream)
-                                 :output output :if-output-exists :append
-                                 :error errors :if-error-exists :append
-                                 :external-format *child-external-format*
-                                 :directory directory
-                                 (when environment
-                                   (list :environment environment)))))
+                 (process
+                   ;; An output file RUN-PROGRAM cannot open is named the way
+                   ;; the posix_spawn arm names it, natively: SBCL's own
+                   ;; error prints it as a Lisp pathname.
+                   (handler-case
+                       (apply #'sb-ext:run-program (first argv) (rest argv)
+                              :search t :wait nil
+                              :input (and (eq input :stream) :stream)
+                              :output output :if-output-exists :append
+                              :error errors :if-error-exists :append
+                              :external-format *child-external-format*
+                              :directory directory
+                              (when environment
+                                (list :environment environment)))
+                     (file-error (condition)
+                       (error "spawning ~a~@[ in ~a~], its output to ~a: ~a" (first argv) directory
+                              (uiop:native-namestring (file-error-pathname condition))
+                              (file-error-reason condition))))))
             (values (sb-ext:process-pid process)
                     (and (eq output :stream) (sb-ext:process-output process))
                     (and (eq errors :stream) (sb-ext:process-error process))
