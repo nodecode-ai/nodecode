@@ -52,8 +52,9 @@
     (is (null (nlk::adopt-handed-lease)) "nothing handed, nothing adopted")
     (is (zerop (hash-table-count nlk::*held-locks*)) "the remembered lock is forgotten")))
 
-#-win32 ; no exec on Windows: HAND-LEASE-ACROSS-EXEC does nothing there
 (deftest a-lease-handed-across-an-exec-is-adopted-and-a-forged-one-is-not (with-temp-store (store))
+  #+win32 (is nil "cannot exist on Windows: no exec there, so HAND-LEASE-ACROSS-EXEC hands nothing")
+  #-win32
   (let* ((path (nlk::store-path store))
          (variable nlk::+handed-lease-variable+))
     (nlk:close-store)
@@ -95,7 +96,9 @@
 
 (deftest a-switch-says-why-it-cannot-run ()
   (let ((nodecode.evolved::*serving* nil))
-    (is (search "only the organism that serves" (nodecode.evolved::switch-refusal nil)))
+    ;; Windows has no exec, so a switch there is refused before anything else.
+    (is (search #-win32 "only the organism that serves" #+win32 "Windows has no exec"
+                (nodecode.evolved::switch-refusal nil)))
     (is (search "no snapshot named nope" (nodecode.evolved::switch-refusal "nope")) "a missing heap is named first")))
 
 (deftest a-saved-heap-says-the-folder-moved-and-never-hands-back ()
