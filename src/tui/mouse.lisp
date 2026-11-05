@@ -898,20 +898,26 @@ on pure motion. => whether anything a frame shows moved."
                             ;; Only a painted rail shows the change.
                             (plusp (band-window-max-offset (chat-model-band model)))))))
       (or changed hover-changed rail-changed))))
-(defun copy-frame-selection (model &aux (text (frame-selection-text model))
-                                        (program (chat-model-program model)))
+(defun copy-frame-selection (model &aux (text (frame-selection-text model)))
   "Hand MODEL's marked text to the program's clipboard writer, which never
 waits behind the worker (a turn occupies it). A copy says something only
 when it failed (CLIPBOARD-OUTCOME-NOTICE), and with no live program that
 nothing was written; one that lands, and one with nothing marked, leave the
 composer the caret alone. The release that ends a drag and the
 :COPY-SELECTION key both come here."
-  (cond ((zerop (length text)) nil)
-        ((null program) (show-status model +selection-copy-failed-hint+ :error-p t))
-        (t (nlt:write-clipboard program text
-                                (lambda (outcome)
-                                  (nlk:when-let (notice (clipboard-outcome-notice outcome))
-                                    (nlt:send program notice)))))))
+  (unless (zerop (length text))
+    (write-model-clipboard model text)))
+
+(defun write-model-clipboard (model text &aux (program (chat-model-program model)))
+  "Put TEXT on the clipboard through MODEL's program, saying in the hint lane
+only a failure (CLIPBOARD-OUTCOME-NOTICE) once the writer knows; with no live
+program, that nothing was written."
+  (if (null program)
+      (show-status model +selection-copy-failed-hint+ :error-p t)
+      (nlt:write-clipboard program text
+                           (lambda (outcome)
+                             (nlk:when-let (notice (clipboard-outcome-notice outcome))
+                               (nlt:send program notice))))))
 
 (defun clipboard-outcome-notice (outcome)
   "The SYSTEM-NOTICE-MSG a clipboard write's OUTCOME (NLT:WRITE-CLIPBOARD)

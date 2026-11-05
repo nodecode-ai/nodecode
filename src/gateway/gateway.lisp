@@ -2880,9 +2880,10 @@ the verb's own 400."
     (:post (let* ((request (gateway-request-json env))
                   (line (gethash "line" request)))
              (require-non-empty (list line) "line must be a non-empty string" :required t)
-             (multiple-value-bind (text dialog)
-                 (slash line :session-id (json-value request :string "session_id"))
-               (json-object "text" text :opt "dialog" dialog))))))
+             (multiple-value-bind (text dialog effects)
+                 (slash line :session-id (json-value request :string "session_id")
+                             :effects (performed-effects (json-value request :array "effects")))
+               (json-object "text" text :opt "dialog" dialog :opt "effects" effects))))))
 
 (define-gateway-route handle-gateway-model-http (env)
   (:route (:get :post) "/api/gateway/model" "model")
@@ -3281,6 +3282,46 @@ a surface that draws one wears (a room's card its edge), NIL for none."
                                           options))))
                  (getf dialog :rows)))))
 
+(defvar *slash-effects* nil
+  "The effects the caller of the slash line being run performs, as keywords:
+(:CLIPBOARD :DRAFT) from a shell; NIL from a caller that names none -- eval,
+a room, the web page -- so a RUN words its text by what will happen.")
+
+(defparameter +effect-names+ '("clipboard" "draft")
+  "The effects there are, as a caller names them in POST /api/gateway/slash.")
+
+(defun performed-effects (names)
+  "NAMES, a request's \"effects\" array, as the keywords of those there are."
+  ;; A name this gateway does not know is a newer shell's: dropped, so a
+  ;; RUN only ever reads effects it can answer.
+  (loop for name in (coerce (if (vectorp names) names #()) 'list)
+        when (and (stringp name) (member name +effect-names+ :test #'string=))
+          collect (intern (string-upcase name) :keyword)))
+
+(defun effects-json (effects)
+  "EFFECTS, a command's third value, as the JSON array an answer carries; a
+malformed effect signals, naming it."
+  ;; An effect is what the shell that ran the command does with it, where
+  ;; only that shell can: (:clipboard TEXT) copies TEXT with the shell's own
+  ;; clipboard writer, whatever desktop the gateway runs on; (:draft TEXT :how
+  ;; HOW) puts TEXT in the shell's composer, HOW :set (the default) replacing
+  ;; the draft, :insert at the caret, :append at its end. Each plist crosses
+  ;; as it is, keys and keyword values downcased, so a shell passes over an
+  ;; effect it does not know, and a surface with neither a clipboard nor a
+  ;; composer -- the web page, a room, rpc -- shows the command's text alone.
+  (map 'vector
+       (lambda (effect)
+         ;; Checked here, where the cell's mistake can still be named: past
+         ;; this a NIL key would cross as "nil" and every shell drop it.
+         (unless (and (consp effect) (evenp (length effect))
+                      (loop for key in effect by #'cddr always (keywordp key)))
+           (error "a command's effect must be a plist with keyword keys, as (:clipboard TEXT): ~s" effect))
+         (apply #'make-json-object
+                (loop for (key value) on effect by #'cddr
+                      collect (substitute #\_ #\- (string-downcase key))
+                      collect (if (keywordp value) (string-downcase value) value))))
+       effects))
+
 (defun register-command (owner command run &key description argument-hint
                                                    (label command) (catches 'error)
                                                    (session t) trigger complete)
@@ -3299,10 +3340,11 @@ whose rows run its lines or ask for text (tui/commands/bare.lisp).
   ;; RUN is a function designator, so a command whose whole implementation is
   ;; one defun passes the symbol and a reload of that file reaches the command
   ;; without a re-install. RUN takes the command's argument string and the
-  ;; session id and answers (values TEXT DIALOG): TEXT what every caller shows,
-  ;; DIALOG a LIST-DIALOG the shell that ran the command opens as its docked
-  ;; picker. A CATCHES condition answers "LABEL: it"; any other keeps going up,
-  ;; to the caller's own refusal.
+  ;; session id and answers (values TEXT DIALOG EFFECTS): TEXT what every caller
+  ;; shows, DIALOG a LIST-DIALOG the shell that ran the command opens as its
+  ;; docked picker, EFFECTS what that shell does (EFFECTS-JSON). A CATCHES
+  ;; condition answers "LABEL: it"; any other keeps going up, to the caller's
+  ;; own refusal.
   (check-type owner string)
   (unless (json-value command :text)
     (error "a registered command needs a non-empty name"))
@@ -3310,14 +3352,15 @@ whose rows run its lines or ask for text (tui/commands/bare.lisp).
                 command (or description "")
                 :dispatch nil :owner owner :session session :trigger trigger
                 :headless (lambda (args session-id)
-                            (multiple-value-bind (text dialog)
+                            (multiple-value-bind (text dialog effects)
                                 (handler-case (funcall run args session-id)
                                   (error (it)
                                     (if (typep it catches)
                                         (format nil "~a: ~a" label it)
                                         (error it))))
                               (values (or text (format nil "/~a done" command))
-                                      (and dialog (dialog-json dialog))))))))
+                                      (and dialog (dialog-json dialog))
+                                      (and effects (effects-json effects))))))))
     (setf *registered-commands*
           (append (remove command *registered-commands*
                           :key #'slash-command-name :test #'string-equal)

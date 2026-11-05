@@ -428,12 +428,13 @@ or `time', each round's prompt from the log."
                          (multiple-value-call #'context-dialog breakdown window summary tone
                            (context-rounds session-id)))))))))))
 
-(defun slash (line &key (session-id nlk:*scribe-session-id*))
+(defun slash (line &key (session-id nlk:*scribe-session-id*) effects)
   "Run one slash command LINE — \"/models grok-4.6\", \"/think high\",
 \"/help\" — without a shell, against SESSION-ID (by default the session
 this eval is running for), and answer the text a shell would show; the
 second value is the panel a cell's command answered with (DIALOG-JSON),
-for a caller that draws one."
+for a caller that draws one, the third its effects. EFFECTS names those
+the caller performs (:CLIPBOARD, :DRAFT), bound as *SLASH-EFFECTS*."
   ;; The builtins with a headless arm (SLASH-COMMAND-HEADLESS) land on the
   ;; same canonical surfaces the shells' /models, /think, /undo, /redo,
   ;; /clear, /evict, /context, /cells and /gc do; a cell's command is an
@@ -455,7 +456,8 @@ for a caller that draws one."
         ((when-let (dialog (and entry.headless (bare-args-p args)
                                 (bare-dialog entry.name session-id)))
            (return-from slash (values (dialog-words dialog) (dialog-json dialog)))))
-        (entry.headless (funcall entry.headless args session-id))
+        (entry.headless (let ((*slash-effects* effects))
+                          (funcall entry.headless args session-id)))
         (t (format nil "/~a needs an interactive shell" entry.name))))))
 
 (defun model-pick-body (tokens)

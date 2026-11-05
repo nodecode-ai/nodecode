@@ -5768,6 +5768,93 @@ default target is PROVIDER/MODEL-ID, restored after."
           (dialog-keys model :escape)
           (is (null (nle::chat-model-dialog model)) "Esc on the list it all opened from closes it"))))))
 
+(deftest cell-command-effects-land-in-the-shell-that-ran-it (with-temp-gateway (port))
+  ;; Given a cell's command that answers effects beside its text -- the
+  ;; clipboard, the composer's draft -- which only the shell can perform:
+  ;; the gateway may run on another desktop, and the draft lives in the shell.
+  (with-saved-globals (nle::*registered-commands* nle::*gateway-commands*)
+    (let ((performed '()))
+      (nle:register-command
+       "fx-pack" "fx"
+       (nlk:lambda-ignoring (args session-id)
+         (nlk:dispatch args equal
+           ;; what the caller said it performs, for a RUN to word its text by
+           ("seen" (push nle:*slash-effects* performed) "seen")
+           ("bad" (values "bad" nil '((:clipboard))))
+           ("set" (values "set it" nil '((:draft "fresh draft"))))
+           ("append" (values "appended" nil '((:draft " tail" :how :append))))
+           ("insert" (values "inserted" nil '((:draft "mid " :how :insert))))
+           ;; an effect this shell does not know is passed over
+           ("copy" (values "copied" nil '((:sparkle "x") (:clipboard "clip me"))))
+           ("" (values "pick" (nle:list-dialog :title "Fx" :rows '((:label "one" :run (:space "/fx copy"))
+                                                                  (:label "two" :run (:enter "/fx set"))))))))
+       :description "Answers effects")
+      ;; When the headless surface runs it, the effects are its third value, as
+      ;; the JSON the route carries; the text is what a surface with no clipboard
+      ;; or composer shows.
+      (multiple-value-bind (text dialog effects) (nle:slash "/fx copy")
+        (is (equal "copied" text))
+        (is (null dialog))
+        (is (equal '(nil "clip me") (map 'list (lambda (effect) (nlk:json-value effect :string "clipboard")) effects))))
+      (with-gateway-http (port :post "/api/gateway/slash" :body "{\"line\":\"/fx append\"}")
+        (is-present (effect (aref (nlk:json-value body :array "effects") 0)) "the route carries the effects"
+          (is (equal " tail" (gethash "draft" effect)))
+          (is (equal "append" (gethash "how" effect)))))
+      ;; A caller that says nothing of the effects it performs -- eval, a room,
+      ;; the web page -- is taken to perform none; one that names them is taken
+      ;; at its word, names it does not know dropped.
+      (nle:slash "/fx seen")
+      (is (null (first performed)) "no caller's word, no effects")
+      (nle:slash "/fx seen" :effects '(:clipboard))
+      (is (equal '(:clipboard) (first performed)))
+      (with-gateway-http (port :post "/api/gateway/slash"
+                               :body "{\"line\":\"/fx seen\",\"effects\":[\"draft\",\"sparkle\"]}")
+        (is (equal '(:draft) (first performed)) "the route reads the names it knows"))
+      ;; A malformed effect is the command's bug, said as one.
+      (is (signals-error error (nle:slash "/fx bad")) "an effect with no value refuses")
+      (let ((model (gateway-frame-model port "ext-effects")))
+        ;; Then the shell sets, appends to and inserts into its own draft
+        (type-string model "old draft")
+        (is (equal "set it" (nle::execute-slash-command model "fx" "set")) "the text is still the notice")
+        (is (equal "fresh draft" (composer-value model)) "set replaces the draft")
+        (nle::execute-slash-command model "fx" "append")
+        (is (equal "fresh draft tail" (composer-value model)) "append adds at the end")
+        (nle::editor-reset (nle::chat-model-editor model))
+        (type-string model "a b")
+        (nle::execute-slash-command model "fx" "insert")
+        (is (equal "a bmid " (composer-value model)) "insert lands at the caret")
+        ;; and copies with its own clipboard writer, from the command and from a
+        ;; row's key alike
+        (let ((program (nlt:make-program model)))
+          (setf (nlt:program-running program) t
+                (nle::chat-model-program model) program)
+          (with-saved-globals ((nlt:*clipboard-use-command* nil))
+            (flet ((copied-p ()
+                     ;; the OSC 52 write the writer posts, past the notice an
+                     ;; earlier write's report posted
+                     (loop for io = (sb-concurrency:receive-message (nlt::program-mailbox program) :timeout 5)
+                           while io
+                           when (nlt:terminal-io-msg-p io)
+                             return (search (cl-base64:string-to-base64-string "clip me")
+                                            (with-output-to-string (out)
+                                              (funcall (nlt:terminal-io-msg-thunk io) out))))))
+              (nle::execute-slash-command model "fx" "copy")
+              (is (copied-p) "the command's clipboard effect reached this shell's clipboard")
+              (with-slash-dialog (dialog model "fx" "") "the rows open"
+                (is (equal '("one" "two") (row-labels dialog))))
+              (dialog-keys model #\Space)
+              (is (copied-p) "a row's Space line copies too")
+              ;; A copy leaves the list open, to pick on; a line that sets the
+              ;; draft closes it, since the composer is where the person goes next.
+              (is (nle::picker-dialog-p (nle::chat-model-dialog model)) "a copy keeps the list")
+              (nle::editor-reset (nle::chat-model-editor model))
+              (dialog-keys model :down :enter)
+              (is (null (nle::chat-model-dialog model)) "a draft effect closes the list")
+              (is (equal "fresh draft" (composer-value model)) "and the draft is what the row set")
+              ;; The shell says it performs the clipboard and the draft.
+              (nle::execute-slash-command model "fx" "seen")
+              (is (equal '(:clipboard :draft) (first performed))))))))))
+
 (deftest cell-command-trigger-opens-its-dialog-only-as-the-first-character (with-temp-gateway (port))
   ;; A command registered with a TRIGGER answers that character typed as the
   ;; draft's first character -- the index's `$' opening /index, which this
