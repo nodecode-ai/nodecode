@@ -32,7 +32,7 @@ folder's KEY bound; BODY may edit the folder and recompute."
   "PATH, its times set AGE seconds from now: a negative AGE is the past."
   ;; utime takes unix seconds; universal time is 1900-based.
   (let ((unix (- (get-universal-time) 2208988800 (- age))))
-    (sb-posix:utime (namestring path) unix unix))
+    (set-file-times path unix))
   path)
 
 (defun write-fake-image (image &key (length 64))
@@ -484,7 +484,7 @@ esac
 exit 0
 ")
     (flet ((ask (form deadline)
-             (nlk::ask-child (list "/bin/sh" (namestring child)) form deadline)))
+             (nlk::ask-child (shell-script-command child) form deadline)))
       (multiple-value-bind (score detail) (ask "answer" 10.0)
         (is (eql 42 score) detail))
       (is-values (score detail) (ask "silent" 10.0) (score null "no marked line, no score")

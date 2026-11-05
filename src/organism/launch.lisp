@@ -239,9 +239,14 @@ STAT is refilled for the next file, so FN reads it before it returns."
   ;; SB-EXT:MAP-DIRECTORY, a pathname per entry -- more than the idle collector
   ;; allows a quiet interval. A name string per entry and one STAT refilled is
   ;; the floor.
-  (labels ((walk (directory &aux (key (and (ignore-errors (sb-posix:stat directory stat))
-                                           (format nil "~d:~d" (sb-posix:stat-dev stat)
-                                                   (sb-posix:stat-ino stat)))))
+  ;; On Windows a folder's key is the one its handle carries (FILE-IDENTITY):
+  ;; stat there answers 0 for every inode, and fails outright on a path that
+  ;; ends in a separator, as every folder's here does -- keyed by stat, the
+  ;; walk visited no file at all.
+  (labels ((walk (directory &aux (key #+win32 (file-identity directory)
+                                      #-win32 (and (ignore-errors (sb-posix:stat directory stat))
+                                                   (format nil "~d:~d" (sb-posix:stat-dev stat)
+                                                           (sb-posix:stat-ino stat)))))
              (when (and key (not (gethash key seen)))
                (setf (gethash key seen) t)
                (let ((handle (sb-posix:opendir directory)))
@@ -505,7 +510,7 @@ pid, open fds and job control carry over."
                                                            sb-alien:system-area-pointer))
                           file vector)
                          (sb-alien::get-errno)))))))
-        (format nil "execv ~a: ~a" file (sb-int:strerror errno))))))
+        (format nil "execv ~a: ~a" file (errno-text errno))))))
 
 (defun warm-pointer-path ()
   "The file naming this build's published image: written when one is

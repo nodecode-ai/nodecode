@@ -112,3 +112,63 @@
           (is-model-pin "model-id-guard" nil nil "no session provider was pinned" "nor any model")
           (is (equal "kept" (config-pin path "default_model" "model")) "default on disk is unchanged")
           (is (equal "kept" nle::*model*) "default in memory is unchanged"))))))
+
+;;; An id the lane does not offer is refused at the pick, while its listing can
+;;; say so: the session never runs on it, so no turn spends a full provider
+;;; round on a 404 (#335).
+
+(defmacro with-a6api-listing ((&rest ids) &body body)
+  "Run BODY with a6api's cached listing fresh and offering IDS."
+  `(with-stubbed-fdefinition (nle::provider-models-cache-entry (provider)
+                              (and (equal provider "a6api")
+                                   (list :models (mapcar (lambda (id) (list :id id)) ',ids)
+                                         :fresh-p t)))
+     ,@body))
+
+(deftest model-id-selection-refuses-an-id-the-listing-does-not-offer (with-ids ())
+  (let ((nle::*provider* "openai-completions") (nle::*model* "kept") (nle::*endpoint* nil)
+        (nle::*auxiliary-model* nil))
+    (with-a6api-listing ("relay-id" "other-id")
+      (let ((before (uiop:read-file-string nle::*shared-config-path*)))
+        (is-carrying (refusal (model-id-refusal (lambda () (nle::select-default-model :provider "a6api" :model "vision"))))
+          "vision" "relay-id" "other-id")
+        (is (equal '("openai-completions" "kept") (list nle::*provider* nle::*model*)) "the default stayed put")
+        (is (model-id-refusal (lambda () (nle::select-auxiliary-model "vision" :provider "a6api"))) "an auxiliary pick is refused the same way")
+        (is (null nle::*auxiliary-model*) "the auxiliary seat stayed empty")
+        (is (equal before (uiop:read-file-string nle::*shared-config-path*)) "no refused id reached disk")
+        (dolist (id '("relay-id" "private alias"))
+          (is (equal id (nth-value 1 (nle::select-default-model :provider "a6api" :model id))) "a listed id, and one the config declares, are taken"))))))
+
+(deftest model-id-selection-asks-a-stale-listing-again ()
+  ;; A listing past its TTL is asked again before it refuses anything, so a
+  ;; model the provider added since is taken; a listing that does not answer
+  ;; is no verdict, and the id is taken as before.
+  (let ((answer '("fresh-id")) (asked 0))
+    (with-ids (:cache "{\"a6api\":{\"base_url\":\"http://127.0.0.1:1/v1\",\"fetched_at\":1,\"models\":[{\"id\":\"old-id\"}]}}")
+      (with-stubbed-fdefinition (nle::list-provider-models (provider &key key base)
+                                 (declare (ignore key base))
+                                 (incf asked)
+                                 (if (and (equal provider "a6api") answer)
+                                     (values (mapcar (lambda (id) (list :id id)) answer) nil)
+                                     (values nil "HTTP 500")))
+        (let ((nle::*provider* "a6api") (nle::*model* "kept") (nle::*endpoint* nil))
+          (is (equal "fresh-id" (nth-value 1 (nle::select-default-model :model "fresh-id"))) "an id the listing offers now is taken")
+          (is (plusp asked) "the stale listing was asked again")
+          (is-carrying (refusal (model-id-refusal (lambda () (nle::select-default-model :model "vision"))))
+            "vision" "fresh-id")
+          (setf answer nil)
+          (is (equal "vision" (nth-value 1 (nle::select-default-model :model "vision"))) "a listing that does not answer refuses nothing"))))))
+
+(deftest model-id-select-model-refuses-an-unoffered-id-without-a-pin ()
+  ;; The agent-facing verb: (select-model "vision") from a turn's own eval.
+  (with-saved-globals (nle::*auxiliary-model*)
+    (with-selection-gateway (path port "model-id-offer" :text +model-id-config+ :model "kept")
+      (with-a6api-listing ("relay-id" "other-id")
+        (is-carrying (refusal (model-id-refusal (lambda () (nle:select-model "vision" :provider "a6api" :session-id "model-id-offer"))))
+          "a6api" "vision" "relay-id" "other-id")
+        (with-gateway-http (port :post "/api/gateway/sessions/model-id-offer/model" :body "{\"provider\":\"a6api\",\"model\":\"vision\"}")
+          (is (= 400 status) "the session route refuses it too")
+          (is (search "relay-id" (nlk:encode-json-object body)) "and names what the lane offers"))
+        (is-model-pin "model-id-offer" nil nil "no session provider was pinned" "nor any model")
+        (is (equal "kept" (config-pin path "default_model" "model")) "default on disk is unchanged")
+        (is (equal "kept" nle::*model*) "default in memory is unchanged")))))

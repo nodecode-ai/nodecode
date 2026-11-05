@@ -1366,14 +1366,41 @@ loading at boot must not paint notes about its own unused variables."
 (defun missing-names-path (fasl)
   (make-pathname :type "missing" :defaults fasl))
 
+(defparameter +stamp-in-use-seconds+ 3600
+  "How long a stamp directory a load marked in use (NOTE-STAMP-IN-USE) is
+spared by PRUNE-STAMP-CACHE: longer than any load reads it.")
+
+(defun stamp-in-use-marker (directory)
+  "The file in a stamp DIRECTORY whose write date says when a load last began
+reading it."
+  (merge-pathnames "in-use" directory))
+
+(defun note-stamp-in-use (cache &optional (stamp *image-stamp*))
+  "Mark STAMP's directory under CACHE in use by a load beginning now, so no
+other build's PRUNE-STAMP-CACHE deletes it under that load. Never signals."
+  (when (and cache stamp)
+    (ignore-errors
+     (write-file-atomically (stamp-in-use-marker (folder-under stamp cache)) ""))))
+
+(defun stamp-in-use-p (directory)
+  "Whether a load began reading the stamp DIRECTORY within
++STAMP-IN-USE-SECONDS+."
+  (when-let (marked (ignore-errors (file-write-date (stamp-in-use-marker directory))))
+    (< (- (get-universal-time) marked) +stamp-in-use-seconds+)))
+
 (defun prune-stamp-cache (&optional (stamp *image-stamp*) (cache *layer-cache-directory*))
   "Keep STAMP's compiled directory under CACHE — the layers', the
-peripherals' — and the newest one beside it; delete the rest."
+peripherals' — the newest one beside it, and every one a load marked in use
+within +STAMP-IN-USE-SECONDS+; delete the rest."
   ;; Two builds are alive at once on a machine that warmed an update — the one
   ;; running and the one its successor boots — and a compile under either would
   ;; delete the other's whole directory, so the next launch of whichever lost
   ;; would recompile the layer. The newest two are what PRUNE-WARM-CACHE keeps
-  ;; of the images, for the same reason.
+  ;; of the images, for the same reason. A third build alive on the machine — a
+  ;; shell left open on an older release — is no newer than the other two, and
+  ;; its directory went while it loaded from it: `Couldn't load ... file does
+  ;; not exist', the file's definitions never loaded. A load marks its stamp
+  ;; first (NOTE-STAMP-IN-USE), so whatever is reading is left alone.
   (when (and cache stamp)
     (let* ((directories (sort (ignore-errors (uiop:subdirectories cache))
                               #'> :key (lambda (path)
@@ -1382,7 +1409,8 @@ peripherals' — and the newest one beside it; delete the rest."
       (dolist (path (if (member stamp directories :key #'folder-name :test #'equal)
                         (cdr others)
                         (cddr others)))
-        (ignore-errors (uiop:delete-directory-tree path :validate t))))))
+        (unless (stamp-in-use-p path)
+          (ignore-errors (uiop:delete-directory-tree path :validate t)))))))
 
 (defvar *layer-compiled* nil
   "A table NAME -> the name of its fasl, of the layer files compiled while one
@@ -1871,8 +1899,26 @@ when it loaded, the reason it was skipped, as the boot line prints it, or
                      (format nil "names ~{~a~^, ~}, which this image does not define"
                              (mapcar #'missing-name-label orphans))
                      (values :wait absent)))
-                (t (load (or fasl path))
+                (t (if fasl (load-layer-fasl fasl path) (load path))
                    nil)))))))
+
+(defun load-layer-fasl (fasl path)
+  "LOAD FASL, PATH's compiled form. A FASL gone before it opens — the cache
+cleared under this load — is compiled again into place and loaded, or PATH
+loaded from source when that compile fails."
+  (when (block vanished
+          (handler-bind ((file-error
+                           (lambda (condition)
+                             ;; the open of FASL itself, never an error its own forms signal
+                             (when (and (not (probe-file fasl))
+                                        (ignore-errors
+                                         (uiop:pathname-equal (pathname (file-error-pathname condition))
+                                                              fasl)))
+                               (return-from vanished t)))))
+            (load fasl)
+            nil))
+    (load (or (ignore-errors (ensure-directories-exist fasl) (compile-layer-file path fasl))
+              path))))
 
 (defparameter +load-summary-line+ "^[ ;]*(?:$|compilation unit |caught (?:.* )?condition)"
   "A line of SBCL's load chatter that says nothing of the failure: blank, or a unit summary.")
@@ -2025,6 +2071,7 @@ left (BEFORE for the first) against OWNERS. => the records, in load order."
   ;; is set at every load, not once at boot.
   (when-let (translations (cell-output-translations folders))
     (asdf:initialize-output-translations translations))
+  (note-stamp-in-use *peripheral-cache-directory*)
   (ignore-errors (prune-stamp-cache *image-stamp* *peripheral-cache-directory*))
   ;; Registered by where the code is read from, never by the entry: ASDF
   ;; searches these again at every LOAD-SYSTEM (OWN-CELL-DIRECTORY).
@@ -2059,7 +2106,10 @@ left (BEFORE for the first) against OWNERS. => the records, in load order."
     ;; A layer's missing fasls start compiling in children here, while the
     ;; folders before it load; its texts are read and digested once. It
     ;; compiles into a cache it can write, else into a throwaway one deleted
-    ;; after, without children.
+    ;; after, without children. Its stamp is marked in use first, so no other
+    ;; build's prune deletes the directory under the load.
+    (when (some (lambda (folder) (some #'declared-system-layer (cell-folder-systems folder))) ordered)
+      (note-stamp-in-use *layer-cache-directory*))
     (dolist (folder ordered)
       (dolist (declared folder.systems)
         (when declared.layer
@@ -3228,14 +3278,38 @@ image's own folder, and take out one of a folder this image no longer ships."
                          (push name retired))))))))))))
     (values (nreverse refreshed) (nreverse failed) (nreverse retired))))
 
+(defun build-folder-p (path)
+  "Whether PATH is a folder a tree of nodecode ships, a release's or a
+checkout's: under its cells/ directory, the organism's own system
+definition beside that."
+  (when-let (cells (nth-value 1 (shipped-relative path)))
+    (and (probe-file (merge-pathnames "../nodecode.asd" cells)) t)))
+
+(defun installer-link-p (link &optional (shipped-root (shipped-cells-directory)))
+  "Whether LINK is a link the installer made: one that leads to a folder a
+build ships -- this image's, under SHIPPED-ROOT, or another tree's
+(BUILD-FOLDER-P) -- or that resolves to nothing."
+  ;; INSTALL-CELL links only a shipped folder, and REFRESH-INSTALLED-CELLS
+  ;; points such a link at this image's own. A link to any other folder is
+  ;; the operator's own -- put there by hand, or by NEW-CELL :SOURCE -- and
+  ;; that folder may hold the only copy of its work: off parks it as it
+  ;; parks a folder (CELL-PARKABLE-P), never takes the link out, and on
+  ;; finds it again. A link to nothing has nothing left to lose.
+  (when (symlink-target link)
+    (let ((resolved (probe-file (uiop:ensure-directory-pathname link))))
+      (or (null resolved)
+          (and shipped-root
+               (uiop:string-prefix-p (namestring (truename shipped-root)) (namestring resolved)))
+          (build-folder-p resolved)))))
+
 (defun installer-put-p (name &optional (root *cells-directory*))
   "Whether the folder NAME under ROOT is one this installer put there — a
-link, a copy carrying its marker, a hub clone carrying its own — and so one
-UNINSTALL-CELL takes out."
+link to a folder a build ships (INSTALLER-LINK-P), a copy carrying its
+marker, a hub clone carrying its own — and so one UNINSTALL-CELL takes out."
   ;; a marker is only found inside a folder that is there
   (and root
        (let ((target (merge-pathnames (format nil "~a/" name) root)))
-         (or #-win32 (symlink-target (merge-pathnames name root))
+         (or #-win32 (installer-link-p (merge-pathnames name root))
              (probe-file (merge-pathnames +installed-marker+ target))
              (probe-file (merge-pathnames +hub-marker+ target))))))
 

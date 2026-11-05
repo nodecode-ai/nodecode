@@ -3408,7 +3408,7 @@ look at the fetch while it is still in flight. => (values URL THREAD)."
 (defun age-file (path seconds)
   "Set PATH's mtime SECONDS into the past."
   (let ((then (- (get-universal-time) (encode-universal-time 0 0 0 1 1 1970 0) seconds)))
-    (sb-posix:utimes path then then)))
+    (set-file-times path then)))
 
 (defvar *memo-raced* nil
   "The memo READERS-THAT-MISS-A-JSON-MEMO-TOGETHER-PARSE-IT-ONCE races on: a
@@ -3738,6 +3738,14 @@ ATTACH-VISIBLE-IMAGES puts in front of the round."
   "USER-CONTEXT's Messages-lane twin: one user message, compiled against the
 anthropic lane."
   (anthropic-context (list (nle::message "user" text))))
+
+(deftest anthropic-asks-with-tool-choice-none ()
+  ;; A turn limited to no tools (SUBMIT :TOOLS '()) asks with tool_choice
+  ;; none and its tools still declared, which Anthropic spells {"type": "none"}.
+  (let* ((nle::*tool-choice* "none")
+         (body (nle::anthropic-request-body (anthropic-context (list (nle::message "user" "why?"))))))
+    (is (equal "none" (gethash "type" (gethash "tool_choice" body))))
+    (is (vectorp (gethash "tools" body)) "the tools are still declared")))
 
 (deftest anthropic-request-hoists-system-and-converts-history ()
   (let* ((assistant (wire-message "assistant" :content "let me check"

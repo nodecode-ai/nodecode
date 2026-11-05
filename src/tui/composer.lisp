@@ -101,21 +101,11 @@ whether it stands until the composer moves, and DRAFT, the composer's text
 when it was said, which an edit moves off; BORN, when it was said."
   text error-p held draft (born (get-internal-real-time)))
 
-(defparameter +selection-copied-hint+ "Copied selection to clipboard"
-  "Zig selection_copied_notice, verbatim: said only once a clipboard tool took
-the text (NLT:WRITE-CLIPBOARD's (:COMMAND NAME)).")
-
-(defparameter +selection-osc52-hint+
-  "Sent to the terminal as OSC 52: no clipboard tool here took it. Paste empty? Turn on OSC 52 in the terminal, or Shift+drag"
-  "What a copy says when only the terminal's OSC 52 was left: the sequence was
-written, and the terminal may have it off, so it never says `copied'.")
-
 (defparameter +selection-copy-failed-hint+
   "Copy failed: no clipboard path worked here. Shift+drag selects with the terminal's own selection"
-  "What a copy says when neither a clipboard tool nor the terminal took it.")
-
-(defparameter +selection-empty-hint+ "Nothing selected to copy"
-  "What a copy says with no marked words.")
+  "The one thing a copy says: that neither a clipboard tool nor the
+terminal's OSC 52 took the text. A copy that lands says nothing, and nor
+does one with nothing marked: the empty composer is the caret alone.")
 
 (defun status-text-lines (text width)
   "TEXT as the composer status shows it at WIDTH columns: its lines, each
@@ -230,21 +220,41 @@ stands, whatever the composer's dropdown highlights."
       (setf (chat-model-slash-selection model) 0)
       (cond (entry
              (editor-reset (chat-model-editor model))
-             ;; What stood there before is over; an op that says its own status
-             ;; (/fork, /themes NAME) answers NIL, and its line stands.
-             (show-status model nil)
-             (multiple-value-bind (notice cmd)
-                 (execute-slash-command model (slash-command-name entry) args)
-               ;; The answer stands in the composer status.
-               (when notice
-                 (show-status model notice :title (format nil "/~a~@[ ~a~]" (slash-command-name entry)
-                                                          (json-value args :text))))
-               (render-state model)
-               (values t cmd)))
-            (t (show-status model (format nil "unknown command /~a — /help lists commands" name)
-                            :error-p t)
-               (render-state model)
-               (values t nil))))))
+             (run-slash-entry model entry args))
+            (t (show-unknown-slash model name))))))
+
+(defun run-slash-entry (model entry args)
+  "Run the catalog ENTRY with ARGS and say its answer in the composer status.
+Returns (values t cmd), SUBMIT-SLASH's."
+  ;; What stood there before is over; an op that says its own status
+  ;; (/fork, /themes NAME) answers NIL, and its line stands.
+  (show-status model nil)
+  (multiple-value-bind (notice cmd)
+      (execute-slash-command model (slash-command-name entry) args)
+    ;; The answer stands in the composer status.
+    (when notice
+      (show-status model notice :title (format nil "/~a~@[ ~a~]" (slash-command-name entry)
+                                               (json-value args :text))))
+    (render-state model)
+    (values t cmd)))
+
+(defun show-unknown-slash (model name)
+  "Say that no command is named NAME. Returns (values t nil)."
+  (show-status model (format nil "unknown command /~a — /help lists commands" name)
+               :error-p t)
+  (render-state model)
+  (values t nil))
+
+(defun run-bound-slash-line (model line)
+  "Run LINE, a slash line keybinds.json binds to a chord, as if typed and
+entered -- but around the composer: its draft and the dropdown stay as they
+stand. Returns the command to run after the update, or NIL."
+  ;; The draft is left alone because a bound line is a gesture over it, not
+  ;; its replacement: a command that sets the draft aside reads it as it was.
+  (multiple-value-bind (name args) (parse-slash-input line)
+    (nth-value 1 (if-let (entry (find-slash-command name))
+                   (run-slash-entry model entry args)
+                   (show-unknown-slash model name)))))
 
 (defun composer-token-filter (text trigger)
   "The bare token after the last TRIGGER character, or NIL once whitespace
