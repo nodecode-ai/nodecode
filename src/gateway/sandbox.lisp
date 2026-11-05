@@ -124,11 +124,13 @@ names, and the account's own (its passwd entry) when $HOME names another."
   ;; otherwise leave the account's real home, ~/.ssh with it, readable.
   (remove-duplicates
    (remove nil (list (uiop:native-namestring (user-homedir-pathname))
-                     #-win32
                      (ignore-errors
                       (uiop:native-namestring
                        (uiop:ensure-directory-pathname
-                        (sb-posix:passwd-dir (sb-posix:getpwuid (sb-posix:getuid))))))))
+                        ;; Windows has no passwd: the account's own home is
+                        ;; its profile folder, which $HOME does not move
+                        #+win32 (sb-win32::get-folder-namestring sb-win32::csidl_profile)
+                        #-win32 (sb-posix:passwd-dir (sb-posix:getpwuid (sb-posix:getuid))))))))
    :test #'string= :from-end t))
 
 (defun sandbox-settings (&key home folder binary srt-dir policy secret-files provider-hosts
@@ -503,7 +505,7 @@ must be the host-side listener on PORT (CALL-WITH-SANDBOX-STDOUT)."
   ;; store path) stays one word. srt's `--' is what keeps the words apart:
   ;; without it srt joins them into one string for bash.
   (flet ((directory-word (name directory)
-           (format nil "~a=~a" name (string-right-trim "/" (uiop:native-namestring directory)))))
+           (format nil "~a=~a" name (string-right-trim #-win32 "/" #+win32 "/\\" (uiop:native-namestring directory)))))
     (append (list* "env" "-u" "NODECODE_PRISTINE" "NODECODE_SANDBOXED=1"
                    (format nil "NODECODE_GATEWAY_PORT=~d" port)
                    (directory-word "XDG_RUNTIME_DIR" run)

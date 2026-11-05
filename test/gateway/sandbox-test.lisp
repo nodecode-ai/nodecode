@@ -5,6 +5,10 @@
 
 (in-package #:nodecode.test)
 
+(defun sandbox-native (path)
+  "PATH as the settings and the wrap carry it: this platform's native namestring."
+  (uiop:native-namestring path))
+
 (defun sandbox-test-settings (&key secret-files policy (exists (constantly t))) "The settings for a fixed home, folder and binary."
   (nle::sandbox-settings :home "/h/.nodecode/" :folder "/w/proj/" :binary "/opt/nc/nodecode"
                          :srt-dir "/opt/srt/" :policy policy :secret-files secret-files
@@ -19,13 +23,13 @@
       (is (vectorp (apply #'nlk:json-value settings :array path)) (format nil "~{~a~^.~} is an array" path)))
     (is (find "openrouter.ai" (nlk:json-value settings :array "network" "allowedDomains") :test #'string=) "a configured provider's host is reachable")
     (is (find "github.com" (nlk:json-value settings :array "network" "allowedDomains") :test #'string=) "the cells repository is reachable")
-    (is (find "/w/proj/" (nlk:json-value settings :array "filesystem" "allowWrite") :test #'string=) "the folder is writable")
-    (is (find "/opt/nc/nodecode" (nlk:json-value settings :array "filesystem" "denyWrite") :test #'string=) "the binary that runs the jail is not")
-    (is (find "/h/.nodecode/secrets/" (nlk:json-value settings :array "filesystem" "denyWrite") :test #'string=) "nor the secrets")
+    (is (find (sandbox-native "/w/proj/") (nlk:json-value settings :array "filesystem" "allowWrite") :test #'string=) "the folder is writable")
+    (is (find (sandbox-native "/opt/nc/nodecode") (nlk:json-value settings :array "filesystem" "denyWrite") :test #'string=) "the binary that runs the jail is not")
+    (is (find (sandbox-native "/h/.nodecode/secrets/") (nlk:json-value settings :array "filesystem" "denyWrite") :test #'string=) "nor the secrets")
     (is (find "/run/user/1000" (nlk:json-value settings :array "filesystem" "denyRead") :test #'string=) "the runtime directory's sockets are out of reach")
     (is (find "/tmp" (nlk:json-value settings :array "filesystem" "denyRead") :test #'string=) "so is the host's /tmp: the jail gets an empty one of its own")
     (is (not (find "/tmp" (nlk:json-value settings :array "filesystem" "allowWrite") :test #'string=)) "and never the host's to write")
-    (is (find "/h/.nodecode/sandbox/srt/" (nlk:json-value settings :array "filesystem" "denyWrite") :test #'string=) "srt's sockets and stand-ins are not the jail's to write")
+    (is (find (sandbox-native "/h/.nodecode/sandbox/srt/") (nlk:json-value settings :array "filesystem" "denyWrite") :test #'string=) "srt's sockets and stand-ins are not the jail's to write")
     (is (null (nth-value 1 (nlk:json-value settings :any "network" "tlsTerminate"))) "no masked secret, no TLS termination")))
 
 (deftest sandbox-settings-mount-only-what-exists ()
@@ -58,10 +62,12 @@
                                  :port 41234 :run "/h/.nodecode/sandbox/run/"
                                  :srt-temporary "/h/.nodecode/sandbox/srt/"
                                  :jail-temporary "/h/.nodecode/sandbox/tmp/")))
-    (is (equal '("env" "-u" "NODECODE_PRISTINE" "NODECODE_SANDBOXED=1" "NODECODE_GATEWAY_PORT=41234"
-                 "XDG_RUNTIME_DIR=/h/.nodecode/sandbox/run" "XDG_CACHE_HOME=/h/.nodecode/sandbox/cache"
-                 "TMPDIR=/h/.nodecode/sandbox/srt" "CLAUDE_CODE_TMPDIR=/h/.nodecode/sandbox/tmp"
-                 "/opt/srt/srt" "--settings" "/h/.nodecode/sandbox/srt-settings.json" "--" "sh" "-c")
+    (is (equal (list "env" "-u" "NODECODE_PRISTINE" "NODECODE_SANDBOXED=1" "NODECODE_GATEWAY_PORT=41234"
+                     (format nil "XDG_RUNTIME_DIR=~a" (sandbox-native "/h/.nodecode/sandbox/run"))
+                     (format nil "XDG_CACHE_HOME=~a" (sandbox-native "/h/.nodecode/sandbox/cache"))
+                     (format nil "TMPDIR=~a" (sandbox-native "/h/.nodecode/sandbox/srt"))
+                     (format nil "CLAUDE_CODE_TMPDIR=~a" (sandbox-native "/h/.nodecode/sandbox/tmp"))
+                     "/opt/srt/srt" "--settings" (sandbox-native "/h/.nodecode/sandbox/srt-settings.json") "--" "sh" "-c")
                (subseq argv 0 15)) "env (srt's temporary directory out of /tmp, the jail's own), srt, its settings and the -- that keeps the words apart")
     (is (equal '("41234" "/opt/nc/nodecode" "serve" "--store" "/h/a b/store.db")
                (subseq argv 16)) "the port as $0, then the serve argv word for word")
@@ -152,6 +158,7 @@
 (deftest sandbox-srt-on-path-reaches-the-argv-as-a-string ()
   ;; npm installs srt as a link to its dist/cli.js; the PATH lookup answers
   ;; the link's truename, a pathname, which the spawn refused as an argv word.
+  ;; On Windows npm writes shims instead of a link, `srt' (for sh) among them.
   (let* ((dir (uiop:ensure-directory-pathname
                (merge-pathnames (format nil "nodecode-srt-~36r/" (random (expt 36 8)))
                                 (uiop:temporary-directory))))
@@ -162,9 +169,10 @@
          (progn
            (ensure-directories-exist dir)
            (with-open-file (s target :direction :output) (write-line "#!/bin/sh" s))
-           (sb-posix:chmod (uiop:native-namestring target) #o755)
-           (sb-posix:symlink (uiop:native-namestring target)
-                             (uiop:native-namestring (merge-pathnames "srt" dir)))
+           #-win32 (sb-posix:chmod (uiop:native-namestring target) #o755)
+           #-win32 (sb-posix:symlink (uiop:native-namestring target)
+                                     (uiop:native-namestring (merge-pathnames "srt" dir)))
+           #+win32 (uiop:copy-file target (merge-pathnames "srt" dir))
            (nlk::set-environment-variable "NODECODE_SRT" "")
            (nlk::set-environment-variable "PATH" (string-right-trim "/" (uiop:native-namestring dir)))
            (let ((srt (nle::srt-program)))
@@ -192,7 +200,7 @@
          (deny (nlk:json-value settings :array "filesystem" "denyRead"))
          (allow (nlk:json-value settings :array "filesystem" "allowRead")))
     (is (find (uiop:native-namestring (user-homedir-pathname)) deny :test #'string=) "the user's home is read-denied whole")
-    (dolist (path '("/w/proj/" "/h/.nodecode/" "/opt/nc/" "/opt/srt/"))
+    (dolist (path (mapcar #'sandbox-native '("/w/proj/" "/h/.nodecode/" "/opt/nc/" "/opt/srt/")))
       (is (find path allow :test #'string=) (format nil "~a reads back" path)))
     (is (not (find (nle::sandbox-expand "~/.ssh") allow :test #'string=)) "and nothing of the credentials does")))
 
@@ -202,12 +210,14 @@
   (let ((saved (uiop:getenv "HOME"))
         (own (uiop:native-namestring
               (uiop:ensure-directory-pathname
-               (sb-posix:passwd-dir (sb-posix:getpwuid (sb-posix:getuid)))))))
+               ;; the account's own: its passwd entry, on Windows its profile
+               #+win32 (sb-win32::get-folder-namestring sb-win32::csidl_profile)
+               #-win32 (sb-posix:passwd-dir (sb-posix:getpwuid (sb-posix:getuid)))))))
     (unwind-protect
          (progn
            (nlk::set-environment-variable "HOME" "/nonexistent-home-for-test/")
            (let ((deny (nlk:json-value (sandbox-test-settings) :array "filesystem" "denyRead")))
-             (is (find "/nonexistent-home-for-test/" deny :test #'string=) "the home $HOME names is read-denied")
+             (is (find (sandbox-native "/nonexistent-home-for-test/") deny :test #'string=) "the home $HOME names is read-denied")
              (is (find own deny :test #'string=) "the account's own home is read-denied too")))
       (nlk::set-environment-variable "HOME" (or saved "")))))
 
@@ -223,8 +233,8 @@
 (deftest sandbox-settings-deny-writing-what-the-launcher-reads ()
   (let ((deny (nlk:json-value (sandbox-test-settings) :array "filesystem" "denyWrite"))
         (allow (nlk:json-value (sandbox-test-settings) :array "filesystem" "allowWrite")))
-    (dolist (path '("/h/.nodecode/config.jsonc" "/h/.nodecode/sandbox.jsonc" "/h/.nodecode/sandbox/jailed.json" "/h/.nodecode/secrets/"
-                    "/h/.nodecode/sandbox/srt/"))
+    (dolist (path (mapcar #'sandbox-native '("/h/.nodecode/config.jsonc" "/h/.nodecode/sandbox.jsonc" "/h/.nodecode/sandbox/jailed.json"
+                                             "/h/.nodecode/secrets/" "/h/.nodecode/sandbox/srt/")))
       (is (find path deny :test #'string=) (format nil "~a is the launcher's, not the jail's" path)))
     (is (notany (lambda (path) (search ".cache/nodecode" path)) allow) "the machine's shared cache is not the jail's to write")))
 
