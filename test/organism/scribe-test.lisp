@@ -120,13 +120,13 @@ holding DEFINITION alone, and drop the index."
   ;; when the write creates it, narrowed to its owner's bits when another
   ;; writer left it readable by the group or by others.
   (let ((path (merge-pathnames "secrets.jsonc" *scribe-dir*)))
-    (flet ((mode () (logand #o777 (sb-posix:stat-mode (sb-posix:stat (namestring path))))))
+    (flet ((mode () (file-mode path)))
       (nlk:write-file-atomically path "{}" :mode :private)
       (is (= #o600 (mode)) "created 0600")
-      (sb-posix:chmod (namestring path) #o644)
+      (nlk:set-file-mode path #o644)
       (nlk:write-file-atomically path "{}" :mode :private)
       (is (= #o600 (mode)) "0644 narrowed to 0600")
-      (sb-posix:chmod (namestring path) #o400)
+      (nlk:set-file-mode path #o400)
       (nlk:write-file-atomically path "{}" :mode :private)
       (is (= #o400 (mode)) "an owner's own narrower bits kept"))))
 

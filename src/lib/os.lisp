@@ -101,7 +101,21 @@ and each TYPE are SB-ALIEN's, or SAP, INT or STR for the three most written."
     ("SetFileAttributesW" %set-file-attributes int (name sb-win32::system-string)
      (attributes sb-win32::dword))
     ("RemoveDirectoryW" %remove-directory int (name sb-win32::system-string))
-    ("DeleteFileW" %delete-file int (name sb-win32::system-string)))
+    ("DeleteFileW" %delete-file int (name sb-win32::system-string))
+    ("OpenProcessToken" %open-process-token int (process sb-win32::handle) (access sb-win32::dword)
+     (token sap))
+    ("GetTokenInformation" %get-token-information int (token sb-win32::handle) (class int)
+     (buffer sap) (size sb-win32::dword) (returned sap))
+    ("ConvertSidToStringSidW" %sid-to-string int (sid sap) (text sap))
+    ("ConvertStringSecurityDescriptorToSecurityDescriptorW" %sddl-to-descriptor int
+     (sddl sb-win32::system-string) (revision sb-win32::dword) (descriptor sap) (size sap))
+    ("GetSecurityDescriptorDacl" %descriptor-dacl int (descriptor sap) (present sap) (dacl sap)
+     (defaulted sap))
+    ("GetNamedSecurityInfoW" %get-named-security-info sb-win32::dword (name sb-win32::system-string)
+     (type int) (information sb-win32::dword) (owner sap) (group sap) (dacl sap) (sacl sap)
+     (descriptor sap))
+    ("SetNamedSecurityInfoW" %set-named-security-info sb-win32::dword (name sb-win32::system-string)
+     (type int) (information sb-win32::dword) (owner sap) (group sap) (dacl sap) (sacl sap)))
   (defconstant +handle-flag-inherit+ 1)
   (defconstant +proc-thread-attribute-handle-list+ #x20002)
   (defconstant +extended-startupinfo-present+ #x80000)
@@ -119,6 +133,15 @@ and each TYPE are SB-ALIEN's, or SAP, INT or STR for the three most written."
   (defconstant +file-attribute-directory+ #x10)
   (defconstant +file-attribute-reparse-point+ #x400)
   (defconstant +invalid-file-attributes+ #xFFFFFFFF)
+  (defconstant +se-file-object+ 1)
+  (defconstant +owner-security-information+ 1)
+  (defconstant +dacl-security-information+ 4)
+  (defconstant +protected-dacl-security-information+ #x80000000)
+  (defconstant +unprotected-dacl-security-information+ #x20000000)
+  (defconstant +token-query+ 8)
+  (defconstant +token-user+ 1)
+  (defconstant +access-allowed-ace-type+ 0)
+  (defconstant +inherit-only-ace+ 8)
   (defconstant +detached-process+ #x8)
   (defconstant +create-unicode-environment+ #x400)
   (defconstant +std-input-handle+ #xFFFFFFF6)
@@ -677,6 +700,186 @@ removed as a link, never followed into what it points at."
     (when (uiop:directory-exists-p directory)
       (error "removing ~a left it in place" native))
     t))
+
+;;; --- a file's mode -------------------------------------------------------------
+;;;
+;;; Windows keeps no mode bits, so a mode is read and set there in two parts.
+;;; The owner's bits are the C runtime's stat -- write unless the file is
+;;; read-only. The group's and others' bits are whom the file's DACL admits
+;;; beside its owner, this process's user, SYSTEM and the Administrators -- the
+;;; principals that read anything on the machine, as root does on POSIX -- and
+;;; Windows tells the group from others no more than it names one: both read
+;;; the same. A mode granting the group and others nothing makes the DACL the
+;;; owner's alone and protected from what the folder hands down -- one
+;;; granting them anything gives the file back to the folder's DACL -- and a
+;;; directory's own hands that to everything made inside it: Windows lets
+;;; anyone walk through a folder they cannot list, so a private directory
+;;; keeps nothing by its own DACL alone.
+
+#+win32
+(defun windows-failure (what &optional (code (sb-win32:get-last-error)))
+  (error "~a: ~a" what (string-trim '(#\Space #\Return #\Newline #\.)
+                                    (sb-win32:format-system-message code))))
+
+#+win32
+(defun local-wide-text (cell)
+  "The NUL-terminated UTF-16 text whose LocalAlloc'd address a Win32 call
+left at the SAP CELL, the block freed."
+  (let ((text (sb-sys:sap-ref-sap cell 0)))
+    (with-cleanup ((sb-win32::local-free text))
+      (let* ((end (loop for at from 0 by 2 when (zerop (sb-sys:sap-ref-16 text at)) return at))
+             (octets (make-array end :element-type '(unsigned-byte 8))))
+        (dotimes (at end) (setf (aref octets at) (sb-sys:sap-ref-8 text at)))
+        (sb-ext:octets-to-string octets :external-format :utf-16le)))))
+
+#+win32
+(defun sid-text (sid)
+  "The SID at the SAP SID, spelled S-1-5-..."
+  (let ((cell (make-array 8 :element-type '(unsigned-byte 8))))
+    (sb-sys:with-pinned-objects (cell)
+      (when (zerop (%sid-to-string sid (sb-sys:vector-sap cell)))
+        (windows-failure "ConvertSidToStringSidW"))
+      (local-wide-text (sb-sys:vector-sap cell)))))
+
+#+win32
+(defun process-user-sid ()
+  "The user this process runs as, spelled S-1-5-..."
+  ;; TOKEN_USER is a SID_AND_ATTRIBUTES whose first word points at the SID
+  ;; laid after it in the same buffer.
+  (let ((buffer (make-array 256 :element-type '(unsigned-byte 8)))
+        (cell (make-array 8 :element-type '(unsigned-byte 8))))
+    (sb-sys:with-pinned-objects (buffer cell)
+      (let ((at (sb-sys:vector-sap cell)))
+        (when (zerop (%open-process-token (sb-win32::get-current-process) +token-query+ at))
+          (windows-failure "OpenProcessToken"))
+        (let ((token (sb-sys:sap-int (sb-sys:sap-ref-sap at 0))))
+          (with-cleanup ((sb-win32:close-handle token))
+            (when (zerop (%get-token-information token +token-user+ (sb-sys:vector-sap buffer)
+                                                 (length buffer) at))
+              (windows-failure "GetTokenInformation"))
+            (sid-text (sb-sys:sap-ref-sap (sb-sys:vector-sap buffer) 0))))))))
+
+#+win32
+(defun shared-access-bits (native)
+  "The rwx bits, as one octal digit, NATIVE's DACL grants anyone beside its
+owner, this process's user, SYSTEM and the Administrators."
+  ;; An ACL is an 8-byte header, its ACE count the word at 4, and then each
+  ;; ACE: type, flags, its size as a word, the access mask, the SID. An
+  ;; inherit-only ACE grants the file itself nothing; a denying one is not
+  ;; subtracted, so what is read is never narrower than what is granted.
+  (let ((cell (make-array 24 :element-type '(unsigned-byte 8))))
+    (sb-sys:with-pinned-objects (cell)
+      (let* ((at (sb-sys:vector-sap cell))
+             (code (%get-named-security-info
+                    native +se-file-object+
+                    (logior +owner-security-information+ +dacl-security-information+)
+                    at (sb-sys:int-sap 0) (sb-sys:sap+ at 8) (sb-sys:int-sap 0) (sb-sys:sap+ at 16))))
+        (unless (zerop code) (windows-failure (format nil "reading who may open ~a" native) code))
+        (with-cleanup ((sb-win32::local-free (sb-sys:sap-ref-sap at 16)))
+          (let ((dacl (sb-sys:sap-ref-sap at 8))
+                (trusted (list (sid-text (sb-sys:sap-ref-sap at 0)) (process-user-sid)
+                               "S-1-5-18" "S-1-5-32-544"))
+                (bits 0))
+            ;; A null DACL admits everyone to everything.
+            (when (zerop (sb-sys:sap-int dacl)) (return-from shared-access-bits 7))
+            (let ((ace (sb-sys:sap+ dacl 8)))
+              (dotimes (index (sb-sys:sap-ref-16 dacl 4) bits)
+                (let ((mask (sb-sys:sap-ref-32 ace 4)))
+                  ;; FILE_READ_DATA, FILE_WRITE_DATA or FILE_APPEND_DATA,
+                  ;; FILE_EXECUTE, and the generic rights that spell them.
+                  (when (and (= +access-allowed-ace-type+ (sb-sys:sap-ref-8 ace 0))
+                             (not (logtest +inherit-only-ace+ (sb-sys:sap-ref-8 ace 1)))
+                             (not (member (sid-text (sb-sys:sap+ ace 8)) trusted :test #'string=)))
+                    (setf bits (logior bits
+                                       (if (logtest mask #x90000001) 4 0)
+                                       (if (logtest mask #x50000006) 2 0)
+                                       (if (logtest mask #x30000020) 1 0)))))
+                (setf ace (sb-sys:sap+ ace (sb-sys:sap-ref-16 ace 2)))))))))))
+
+#+win32
+(defun set-dacl (native sddl protect)
+  "NATIVE's DACL the one SDDL spells, PROTECT'd from what its folder hands
+down or merged with it."
+  (let ((cell (make-array 32 :element-type '(unsigned-byte 8))))
+    (sb-sys:with-pinned-objects (cell)
+      (let ((at (sb-sys:vector-sap cell)))
+        (when (zerop (%sddl-to-descriptor sddl 1 at (sb-sys:int-sap 0)))
+          (windows-failure (format nil "reading ~a" sddl)))
+        (let ((descriptor (sb-sys:sap-ref-sap at 0)))
+          (with-cleanup ((sb-win32::local-free descriptor))
+            (when (zerop (%descriptor-dacl descriptor (sb-sys:sap+ at 8) (sb-sys:sap+ at 16)
+                                           (sb-sys:sap+ at 24)))
+              (windows-failure "GetSecurityDescriptorDacl"))
+            (let ((code (%set-named-security-info
+                         native +se-file-object+
+                         (logior +dacl-security-information+
+                                 (if protect
+                                     +protected-dacl-security-information+
+                                     +unprotected-dacl-security-information+))
+                         (sb-sys:int-sap 0) (sb-sys:int-sap 0) (sb-sys:sap-ref-sap at 16)
+                         (sb-sys:int-sap 0))))
+              (unless (zerop code)
+                (windows-failure (format nil "setting who may open ~a" native) code)))))))))
+
+#+win32
+(defun set-read-only (path read-only)
+  "PATH's read-only attribute set, or cleared when READ-ONLY is NIL."
+  (let* ((native (windows-file-path path))
+         (attributes (sb-win32:get-file-attributes native)))
+    (unless (or (= attributes +invalid-file-attributes+)
+                (eq (not read-only) (not (logtest attributes +file-attribute-readonly+))))
+      (when (zerop (%set-file-attributes native (if read-only
+                                                    (logior attributes +file-attribute-readonly+)
+                                                    (logandc2 attributes +file-attribute-readonly+))))
+        (windows-failure (format nil "setting the mode of ~a" native))))
+    path))
+
+#+win32
+(defun windows-file-path (path)
+  "PATH, a pathname or a native name, as Windows names it: `\\' between
+components, none trailing."
+  (let ((native (substitute #\\ #\/ (if (pathnamep path) (sb-ext:native-namestring path) path))))
+    (if (and (> (length native) 3) (find (char native (1- (length native))) "\\"))
+        (string-right-trim "\\" native)
+        native)))
+
+(defun file-mode (path)
+  "The mode bits of PATH, a pathname or a native name -- a file or a
+directory, a trailing separator or none -- its type bits aside. On Windows
+the owner's bits are the C runtime's and the group's and others' both whom
+the DACL admits beside the owner (see above)."
+  #-win32 (logand #o7777 (sb-posix:stat-mode (sb-posix:stat (if (pathnamep path)
+                                                                 (sb-ext:native-namestring path)
+                                                                 path))))
+  #+win32
+  (let* ((native (windows-file-path path))
+         (shared (shared-access-bits native)))
+    (logior (logand #o700 (sb-posix:stat-mode (sb-posix:stat native)))
+            (ash shared 3) shared)))
+
+(defun set-file-mode (path mode)
+  "PATH, a pathname or a native name, given MODE's bits; PATH. On Windows the
+owner's write bit is the read-only attribute of a file, and a MODE granting
+the group and others nothing a DACL its owner's alone, the Administrators'
+and SYSTEM's; one granting them anything is the DACL PATH's folder hands
+down and never wider: the C runtime's stat reads every file as #o666, so a
+mode carried from one grants nobody anything."
+  #-win32 (sb-posix:chmod (if (pathnamep path) (sb-ext:native-namestring path) path) mode)
+  #+win32
+  (let* ((native (windows-file-path path))
+         (attributes (sb-win32:get-file-attributes native))
+         (directory (logtest attributes +file-attribute-directory+))
+         (shared (logior (ldb (byte 3 3) mode) (ldb (byte 3 0) mode))))
+    (when (= attributes +invalid-file-attributes+)
+      (windows-failure (format nil "setting the mode of ~a" native)))
+    (cond ((zerop shared)
+           (let ((inherit (if directory "OICI" "")))
+             (set-dacl native (format nil "D:P(A;~a;FA;;;~a)(A;~a;FA;;;SY)(A;~a;FA;;;BA)"
+                                      inherit (process-user-sid) inherit inherit)
+                       t)))
+          (t (set-dacl native "D:" nil)))
+    (unless directory (set-read-only native (not (logtest mode #o200)))))
+  path)
 
 (defun set-environment-variable (name value)
   "NAME=VALUE in this process's environment from now on: what every child

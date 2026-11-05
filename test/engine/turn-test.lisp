@@ -6488,11 +6488,11 @@ cloudflare-workers-ai's and databricks' do: one in the path, one the host.")
   ;; to its owner (2026-10-26: the operator's own file read 0644).
   (let* ((directory (temp-path "cfgmode"))
          (path (merge-pathnames "config.jsonc" directory)))
-    (flet ((mode () (logand #o777 (sb-posix:stat-mode (sb-posix:stat (namestring path))))))
+    (flet ((mode () (file-mode path)))
       (nlk:with-cleanup ((ignore-errors (nlk:remove-tree directory)))
         (is (eq :written (nle::persist-shared-config '("general") '(:theme "T") :file path)))
         (is (= #o600 (mode)) "the file the write creates is the operator's alone")
-        (sb-posix:chmod (namestring path) #o644)
+        (nlk:set-file-mode path #o644)
         (is (eq :written (nle::persist-shared-config '("general" "theme") "U" :file path)))
         (is (= #o600 (mode)) "and a file left 0644 is narrowed to 0600")))))
 

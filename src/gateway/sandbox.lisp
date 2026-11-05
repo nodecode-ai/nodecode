@@ -465,7 +465,7 @@ when it cannot run (SANDBOX-REQUIREMENTS), else write the srt settings under
                                          (format nil "~(~{~2,'0x~}~)" (coerce (nlk:random-bytes 32) 'list)))
           (dolist (directory (list run cache srt-temporary jail-temporary))
             (ensure-directories-exist directory)
-            #-win32 (ignore-errors (sb-posix:chmod (uiop:native-namestring directory) #o700)))
+            (ignore-errors (nlk:set-file-mode directory #o700)))
           (nlk::write-file-atomically settings (nlk:encode-json-object object) :mode #o600 :directory-mode #o700)
           (setf *sandbox-plan* (list :srt srt :settings settings :port port :run run :cache cache
                                      :srt-temporary srt-temporary :jail-temporary jail-temporary)

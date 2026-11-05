@@ -532,6 +532,11 @@ this call."
                          (format nil "~a/" name))
                      (uiop:temporary-directory))))
 
+(defun file-mode (path)
+  "PATH's permission bits: a POSIX stat's, and on Windows what the read-only
+attribute and the DACL say of them (NLK:FILE-MODE)."
+  (logand #o777 (nlk:file-mode path)))
+
 (defun write-temp-file (path &optional (contents ""))
   "Create PATH, and any parent directory it needs, holding CONTENTS."
   ;; The contentless call is the `touch' a workspace fixture wants: the walks

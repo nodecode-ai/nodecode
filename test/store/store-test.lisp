@@ -134,7 +134,7 @@ carrying INPUT, then BINDINGS, LET* bindings that may name TURN."
 
 (deftest store-directory-is-private-to-its-owner (with-temp-store (store))
   (let* ((dir (make-pathname :directory (pathname-directory store.path)))
-         (mode (logand (sb-posix:stat-mode (sb-posix:stat (namestring dir))) #o777)))
+         (mode (file-mode dir)))
     ;; The transcript is the organism's memory, and the turn loop's only tool
     ;; is EVAL, so anything that reads it reads the whole history.
     ;; ENSURE-DIRECTORIES-EXIST honours umask, so the mode is set explicitly

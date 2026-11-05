@@ -124,7 +124,7 @@ renderer, the program loop.")
    #:default-home #:sticky-profile #:locate-home
    #:publish-home #:adopt-profile #:+reserved-profile-names+
    #:*profiles-directory* #:*active-profile-path* #:symlink-target
-   #:make-symlink #:copy-tree-preserving #:remove-tree
+   #:make-symlink #:copy-tree-preserving #:remove-tree #:file-mode #:set-file-mode
    ;; --- a command line's words (verbs.lisp) ---
    #:find-verb #:help-flag-p #:edit-distance #:nearest-words #:unknown-word-text
    #:verbs-text #:verb-help-text

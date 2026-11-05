@@ -681,7 +681,7 @@ it goes. => PATH as written, and the entries it carries."
          (raw (uiop:native-namestring tar)))
     (flet ((under (names) (mapcar (lambda (entry) (format nil "~a/~a" folder entry)) names)))
       (ensure-directories-exist snapshot)
-      #-win32 (sb-posix:chmod (uiop:native-namestring staging) #o700)
+      (set-file-mode staging #o700)
       (with-cleanup ((ignore-errors (remove-tree staging)))
         (when (and whole (probe-file store))
           (funcall step "copying the store")
@@ -703,7 +703,7 @@ it goes. => PATH as written, and the entries it carries."
           (let ((packed (merge-pathnames "home.tar.gz" staging)))
             (handler-case (gzip-file tar packed)
               (error (condition) (profile-fail "compressing failed: ~a" condition)))
-            #-win32 (when whole (sb-posix:chmod (uiop:native-namestring packed) #o600))
+            (when whole (set-file-mode packed #o600))
             (replace-file packed path))
           (values path (if stored (cons "history.db" entries) entries)))))))
 
