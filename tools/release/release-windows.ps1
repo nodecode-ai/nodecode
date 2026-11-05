@@ -148,6 +148,15 @@ Set-Location $tree
   if ((Trial '(if (and nlk:*shell* (search "sh" (namestring nlk:*shell*))) 1 0)') -ne '1') { throw 'no shell resolved' }
   if ((Trial '(multiple-value-bind (out err status) (nlk:run-bounded (nlk:shell-argv "echo hi; echo bad 1>&2; exit 4") :seconds 20) (if (and (search "hi" out) (search "bad" err) (eql status 4)) 1 0))') -ne '1') { throw 'run-bounded' }
   if ((Trial '(if (eq :timeout (nth-value 2 (nlk:run-bounded (nlk:shell-argv "sleep 30") :seconds 1))) 1 0)') -ne '1') { throw 'run-bounded timeout' }
+  # Git for Windows past its redirectors (T-442): the shell is Git's
+  # usr\bin\bash.exe itself, and what a command sees there is byte for byte what
+  # it sees through the compat-bash redirector that would have started it --
+  # the environment, the tools on PATH, a wide value, the folder. A child named
+  # git is the toolchain's git.exe, and a pipeline past its bound ends whole.
+  if ((Trial '(if (and nlk::*git-shell* (search "usr\\bin\\bash.exe" (string-downcase (princ-to-string nlk:*shell*)))) 1 0)') -ne '1') { throw 'the shell is not Git''s bash itself' }
+  if ((Trial '(let* ((cmd "echo \"$MSYSTEM|$HOME|$EXEPATH|$PLINK_PROTOCOL\"; command -v grep sed awk find git; echo \"$PATH\" | cut -d: -f1-4; printf %s \"$NODECODE_SMOKE_WIDE\" | od -An -tx1; pwd; (echo a; echo b) | grep -c .") (direct (nlk:run-bounded (nlk:shell-argv cmd) :seconds 30)) (wrapped (nlk:run-bounded (cons (getf nlk::*git-shell* :redirector) (rest (nlk:shell-argv cmd))) :seconds 30))) (if (and (search "MINGW64|" direct) (search "/mingw64/bin/git" direct) (equal direct wrapped)) 1 0))') -ne '1') { throw 'the direct shell differs from the redirector''s' }
+  if ((Trial '(if (and nlk::*git-direct* (search "\\bin\\git.exe" (first (nlk::past-git-redirector (list "git" "--version") nil))) (search "git version" (nlk:run-bounded (list "git" "--version") :seconds 20))) 1 0)') -ne '1') { throw 'git is not the toolchain''s git.exe' }
+  if ((Trial '(let ((t0 (get-internal-real-time))) (if (and (eq :timeout (nth-value 2 (nlk:run-bounded (nlk:shell-argv "sleep 30 | cat | cat") :seconds 1))) (< (- (get-internal-real-time) t0) (* 15 internal-time-units-per-second))) 1 0))') -ne '1') { throw 'a pipeline past its bound' }
   if ((Trial '(if (nlk:pid-live-p (sb-posix:getpid)) 1 0)') -ne '1') { throw 'pid-live-p self' }
   # The image reads NODECODE_SMOKE_WIDE whole, and a child it hands the value to
   # reads it whole too: printed as UTF-16 code units, numbers no console code
