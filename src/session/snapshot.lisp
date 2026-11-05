@@ -167,9 +167,10 @@ SAVE-LISP-AND-DIE or fork."
          ;; WALK-CENSUS reads the lines `add --dry-run' prints: untranslated
          "LC_ALL=C")))
 
-(defun run-snapshot-git (store args &key (with-work-tree t) config)
+(defun run-snapshot-git (store args &key (with-work-tree t) config input)
   "Run one git plumbing call under the isolation prefix and a walltime bound;
-CONFIG, KEY=VALUE strings, rides this one call as -c options."
+CONFIG, KEY=VALUE strings, rides this one call as -c options, and INPUT, a
+string, is its stdin."
   ;; Returns stdout as a string; any exit but 0 signals the snapshot condition
   ;; taxonomy.
   ;;
@@ -188,6 +189,7 @@ CONFIG, KEY=VALUE strings, rides this one call as -c options."
                               (append (loop for setting in config collect "-c" collect setting)
                                       args))
                        :seconds +snapshot-git-timeout-seconds+
+                       :input input
                        :environment (snapshot-git-environment
                                      store :with-work-tree with-work-tree)
                        :directory (snapshot-store-workspace store))
@@ -577,7 +579,8 @@ answer how many paths it would stage, 0 when the workspace matches the index."
 (defun stage-workspace (store)
   "Stage STORE's workspace into its session's index: one `add -A' past the
 walk bound and without the home's snapshot storage, or none when the census
-found nothing to stage. => true when it staged."
+found nothing to stage. => :PACKED when it staged into one pack, another
+true value when it staged loose objects, NIL when it staged nothing."
   ;; The census is the walk: WALK-CENSUS lists what `add -A' would change in
   ;; the index under the same ignore rules and pathspec -- untracked paths,
   ;; content and mode changes, deletions -- and more (a touched file), never
@@ -602,10 +605,93 @@ found nothing to stage. => true when it staged."
   ;; 5% larger.
   (let ((paths (check-walk-bound store)))
     (when (or (plusp paths) (not (probe-file (snapshot-store-index-path store))))
-      (run-snapshot-git store (list* "add" "-A" "--ignore-errors" (staging-pathspec store))
-                        :config (when (> paths +snapshot-packed-staging-paths+)
-                                  '("core.bigFileThreshold=1" "pack.compression=1")))
-      t)))
+      (let ((packed (> paths +snapshot-packed-staging-paths+)))
+        (run-snapshot-git store (list* "add" "-A" "--ignore-errors" (staging-pathspec store))
+                          :config (when packed
+                                    '("core.bigFileThreshold=1" "pack.compression=1")))
+        (if packed :packed t)))))
+
+(defun fast-import-path (path)
+  "PATH as a `fast-import' file command names it: as it is, or C-quoted when
+it holds a newline or opens with a double quote."
+  (if (or (find #\Newline path) (find #\Return path)
+          (and (plusp (length path)) (char= (char path 0) #\")))
+      (with-output-to-string (out)
+        (write-char #\" out)
+        (loop for char across path
+              do (case char
+                   (#\" (write-string "\\\"" out))
+                   (#\\ (write-string "\\\\" out))
+                   (#\Newline (write-string "\\n" out))
+                   (#\Return (write-string "\\r" out))
+                   (t (write-char char out))))
+        (write-char #\" out))
+      path))
+
+(defun anchor-ref-present-p (store)
+  "True when STORE's git directory holds the anchor ref, loose or packed:
+read from the files, no git started."
+  (or (probe-file (snapshot-store-file store +snapshot-anchor-ref+))
+      (with-handlers ((error () nil))
+        (let ((packed (snapshot-store-file store "packed-refs")))
+          (and (probe-file packed)
+               (search (concatenate 'string " " +snapshot-anchor-ref+ (string #\Newline))
+                       (read-text packed)))))))
+
+(defun write-packed-tree (store message)
+  "Write the trees of STORE's index and an anchor commit of its root under
+MESSAGE into one pack, through one `fast-import'. => the root tree's sha, or
+NIL when the index holds what this writer leaves to WRITE-TREE or the import
+failed."
+  ;; WRITE-TREE writes each tree as a loose object, and on Windows a loose
+  ;; object costs some 3.5 ms (its temporary file, the rename, the scan the
+  ;; file system filter gives every new file): the 54 trees of a 540-file
+  ;; workspace's first walk took 200 ms there, the anchor's COMMIT-TREE and
+  ;; UPDATE-REF 75 ms more, where one import of the index's listing writes
+  ;; trees and commit into one pack and moves the ref in 50 ms (T-442).
+  ;; unpackLimit=0 keeps the pack: under 100 objects the import would
+  ;; explode it into loose objects again. The ref's tip as the import reads
+  ;; it (FROM REF^0, which an absent ref has none of) is the commit's parent,
+  ;; and an import that finds the ref moved past that tip by its end leaves
+  ;; it -- the compare-and-swap ANCHOR-TREE makes -- and fails, which the
+  ;; caller answers by WRITE-TREE over trees this import already packed.
+  ;; DELETEALL: the tree is the index's alone, never the tip's with the index
+  ;; laid over it.
+  (with-handlers ((snapshot-git-failed () (forget-anchor-tip-cache store) nil))
+    (let ((listing (run-snapshot-git store (list "ls-files" "-s" "-z"))))
+      (when (find (code-char #xFFFD) listing)
+        ;; A path git printed in bytes this image could not decode: the
+        ;; import would name another path.
+        (return-from write-packed-tree nil))
+      (let ((input
+              (with-output-to-string (out)
+                (format out "commit ~a~%mark :1~%committer nodecode <nodecode@localhost> ~d +0000~%data ~d~%~a~%~@[from ~a^0~%~]deleteall~%"
+                        +snapshot-anchor-ref+ (unix-now)
+                        (length (sb-ext:string-to-octets message :external-format :utf-8))
+                        message (and (anchor-ref-present-p store) +snapshot-anchor-ref+))
+                (dolist (record (uiop:split-string listing :separator (string (code-char 0))))
+                  (unless (zerop (length record))
+                    (let* ((tab (position #\Tab record))
+                           (head (and tab (uiop:split-string (subseq record 0 tab) :separator " "))))
+                      ;; MODE SHA STAGE: a conflicted entry (stage past 0) has
+                      ;; no tree of its own to write.
+                      (unless (and head (= 3 (length head)) (equal (third head) "0"))
+                        (return-from write-packed-tree nil))
+                      (format out "M ~a ~a ~a~%" (first head) (second head)
+                              (fast-import-path (subseq record (1+ tab)))))))
+                (format out "~%ls :1 \"\"~%get-mark :1~%done~%"))))
+        (let* ((answer (lines (run-snapshot-git store (list "fast-import" "--quiet" "--done"
+                                                            "--cat-blob-fd=1")
+                                                :config '("fastimport.unpackLimit=0")
+                                                :input input)))
+               (root (first answer))
+               (tab (and root (position #\Tab root)))
+               (fields (and tab (uiop:split-string (subseq root 0 tab) :separator " ")))
+               (tree (third fields))
+               (commit (second answer)))
+          (when (and (equal (second fields) "tree") (tree-sha-p tree) (tree-sha-p commit))
+            (setf (anchor-tip-cache store) (cons commit tree))
+            tree))))))
 
 (define-side-table quiet-trees (:test #'equal :synchronized t :key snapshot-store-index-path)
   "index path -> (EPOCH DIGEST . TREE-SHA): the tree the walk of that index
@@ -619,8 +705,13 @@ storage when it sits inside the workspace, as a relative Windows path."
     (unless (equal storage ".")
       (list (substitute #\\ #\/ (string-right-trim "/" storage))))))
 
+(defvar *walk-anchor-message* "workspace walk"
+  "The message a walk that packs its trees anchors them under: the label of
+the CAPTURE-ANCHORED-TREE it runs for.")
+
 (defun capture-workspace-tree (store)
-  "Stage the whole workspace and return its tree sha."
+  "Stage the whole workspace and return its tree sha. A staging that packs its
+objects anchors the tree as it writes it, under *WALK-ANCHOR-MESSAGE*."
   ;; An unchanged workspace
   ;; yields the previous sha, so no-op captures allocate nothing — and an index
   ;; the staging left untouched answers from the written-tree cache, without the
@@ -643,11 +734,18 @@ storage when it sits inside the workspace, as a relative Windows path."
       (if (and epoch quiet (eql epoch (first quiet))
                (equal (second quiet) (index-digest store)))
           (cddr quiet)
-          (progn
-            (stage-workspace store)
+          (let ((staged (stage-workspace store)))
             (let* ((digest (index-digest store))
                    (entry (and digest (index-trees store)))
                    (tree (or (and (equal (car entry) digest) (cdr entry))
+                             ;; A staging past +SNAPSHOT-PACKED-STAGING-PATHS+
+                             ;; packs its trees too, and anchors them: the
+                             ;; import leaves the index without a cache tree,
+                             ;; so DIGEST, the index as staged, answers for it.
+                             (when-let (tree (and digest (eq staged :packed)
+                                                  (write-packed-tree store *walk-anchor-message*)))
+                               (setf (index-trees store) (cons digest tree))
+                               tree)
                              (let ((tree (validate-tree-sha (git-line store (list "write-tree")))))
                                ;; Read the digest again: WRITE-TREE records the tree it
                                ;; wrote in the index as its cache tree, so the content
@@ -722,7 +820,8 @@ ref did not exist at resolve time.")
   (if-let (refusal (capture-refusal store))
     (values nil refusal)
     (handler-case
-        (let ((tree-sha (capture-workspace-tree store)))
+        (let ((tree-sha (let ((*walk-anchor-message* message))
+                          (capture-workspace-tree store))))
           (anchor-tree store tree-sha message)
           (values tree-sha nil))
       (snapshot-walk-too-large (condition)

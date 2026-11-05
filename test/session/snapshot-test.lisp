@@ -177,8 +177,9 @@ completed once BODY is done."
                                                (uiop:ensure-directory-pathname
                                                 (nlk::snapshot-store-git-dir store)))))
             (blob (nlk::run-snapshot-git store (list "cat-file" "blob" (format nil "~a:f3.txt" first-tree)))))
-        (is (= 1 (length packs)) "the five blobs went into one pack")
+        (is (= 2 (length packs)) "the five blobs went into one pack, their trees into a second")
         (is (zerop (loose-blobs)) "and none of them loose")
+        (is (null (%loose-objects store)) "nor a tree")
         (is (equal "file 3" blob) "a packed blob reads back"))
       (%write-file dir "f1.txt" "edited")
       (let ((second-tree (nlk:capture-workspace-tree store)))
@@ -235,8 +236,44 @@ completed once BODY is done."
     (let ((packs (directory (merge-pathnames "objects/pack/*.pack"
                                              (uiop:ensure-directory-pathname
                                               (nlk::snapshot-store-git-dir store))))))
-      (is (= 1 (length packs)) "the staging wrote one pack"))
-    (is (= 1 (length (%loose-objects store))) "and the root tree is its only loose object")))
+      (is (= 2 (length packs)) "the staging wrote one pack, its trees a second"))
+    (is (null (%loose-objects store)) "and nothing is loose")))
+
+(deftest a-packed-walk-writes-its-trees-and-anchor-in-one-import (with-git-workspace (store dir))
+  ;; Each loose object is some 3.5 ms on Windows: the 54 trees of a 540-file
+  ;; first walk were 200 ms there through WRITE-TREE, the anchor 75 ms more,
+  ;; and one `fast-import' writes both into a pack and moves the ref (T-442).
+  ;; Its tree is WRITE-TREE's, a deleted file leaves it, the ref is a chain,
+  ;; and the anchor that follows is the one the import made.
+  (let ((nlk::+snapshot-packed-staging-paths+ 3))
+    (dotimes (i 5) (%write-file dir (format nil "d~d/f~d.txt" (mod i 2) i) (format nil "file ~d" i)))
+    (%write-file dir "name with space.txt" "spaced")
+    ;; A name opening with a double quote is C-quoted for the import; Windows
+    ;; names hold no double quote.
+    #-win32 (%write-file dir (format nil "~cquoted.txt" #\") "quoted")
+    (nlk:bind (((asked tree) (git-asked (let ((nlk::*walk-anchor-message* "first walk"))
+                                          (nlk:capture-workspace-tree store)))))
+      (is (member "fast-import" asked :test #'equal))
+      (is (not (member "write-tree" asked :test #'equal)) "no tree went through WRITE-TREE")
+      (is (equal tree (nlk::git-line store (list "write-tree"))) "the imported tree is the index's")
+      (is (equal tree (nlk::git-line store (list "rev-parse" (format nil "~a^{tree}" nlk::+snapshot-anchor-ref+))))
+          "and the anchor's")
+      (is (search "first walk" (nlk::run-snapshot-git store (list "log" "-1" "--format=%B" nlk::+snapshot-anchor-ref+)))
+          "under the walk's label")
+      (is (null (nth-value 0 (git-asked (nlk:anchor-tree store tree "again"))))
+          "the anchor that follows spawns nothing")
+      #-win32
+      (is (equal "quoted" (nlk::run-snapshot-git store (list "cat-file" "blob" (format nil "~a:~cquoted.txt" tree #\")))))
+      (dotimes (i 5) (%write-file dir (format nil "e~d.txt" i) "more"))
+      (delete-file (merge-pathnames "d0/f0.txt" dir))
+      (let ((second (nlk:capture-workspace-tree store)))
+        (is (not (equal tree second)))
+        (is (equal second (nlk::git-line store (list "write-tree"))) "a second import is the index's tree too")
+        (is (null (search "d0/f0.txt" (nlk::run-snapshot-git store (list "ls-tree" "-r" "--name-only" second))))
+            "and leaves the deleted file out")
+        (is (equal (list second tree)
+                   (nlk::lines (nlk::run-snapshot-git store (list "log" "--format=%T" nlk::+snapshot-anchor-ref+))))
+            "the anchor chains both")))))
 
 (deftest a-store-from-before-raw-captures-restages-once (with-temp-directory (dir "snap-raw"))
   ;; A store an earlier version kept staged converted blobs, and its index
