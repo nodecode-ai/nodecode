@@ -4355,7 +4355,7 @@ and the DELIVERY its handler declares."
       ;; The call owns the transmission, so the cache is keyed by it.
       (setf (gethash "call-img" model.kitty-image-cache)
             (nlt:make-terminal-image :id 42))
-      (let ((placements (nle::kitty-image-placements model)))
+      (let ((placements (nle::image-placements model)))
         (is (= 1 (length placements)) "one visible card, one placement")
         (let ((placement (first placements)))
           (is (eql 42 (nlt:terminal-image-id
@@ -4416,7 +4416,7 @@ and the DELIVERY its handler declares."
         (is (null (nle::image-band-at model.line-rows model.line-plain (1- header))) "never on the block's padding row"))
       (setf (gethash "call-look" model.kitty-image-cache)
             (nlt:make-terminal-image :id 7))
-      (let ((placement (first (nle::kitty-image-placements model))))
+      (let ((placement (first (nle::image-placements model))))
         (is placement "the visible card anchors one placement")
         (is-shape placement (.rows = nle::*image-preview-max-rows*) (.x = 5))
         ;; The anchor is the row after the header, never the block's
@@ -4463,18 +4463,126 @@ and the DELIVERY its handler declares."
         (is (at "The chart: sales by month") "the line reads as the alt text, its markup hidden")
         (is (eql (at "chart.png · image/png · 640x480 · 4.0 KB") (1+ (at "The chart: sales by month"))) "no graphics: the caption, under the line that names the picture")
         (is (at "And a logo closes.") "a remote picture is a link, and no fact names it")
-        (is (null (nle::kitty-image-placements model)))
+        (is (null (nle::image-placements model)))
         (nle:update model (nlt:make-kitty-graphics-msg :ok-p t))
         (let ((named (at "The chart: sales by month")))
           (is (= nle::*image-preview-max-rows* (- (at "chart.png · image/png") named 1)) "graphics: the card's band, sized from the fact, between them")
           (is (< (at "chart.png · image/png") (at "And a logo closes.")) "and the answer goes on under the caption")
           ;; An answer's picture is a file named by its bytes: the path keys it.
           (setf (gethash png model.kitty-image-cache) (nlt:make-terminal-image :id 9))
-          (let ((placement (first (nle::kitty-image-placements model))))
+          (let ((placement (first (nle::image-placements model))))
             (is placement "the visible answer anchors one placement")
             (is-shape placement (.rows = nle::*image-preview-max-rows*) (.x = 5 "the prose's own column"))
             (let ((band-row (- placement.y 3 (nth-value 3 (nle::transcript-band-metrics model)))))
               (is (= (1+ named) (nle::band-window-row-index model.band band-row)) "on the row under the line that names it"))))))))
+
+(deftest a-terminal-without-kitty-graphics-is-given-sixel-or-half-blocks (with-temp-store ())
+  ;; Windows Terminal answers no kitty query but lists sixel in its DA1; the
+  ;; Windows console lists neither, and keeps its colours. Before either
+  ;; answer nothing is reserved, so the first frame never guesses.
+  (with-temp-file (png :type "png")
+    (alexandria:write-byte-vector-into-file
+     (nle::pixels-png (nle::blank-pixels 40 20 3)) png :if-exists :supersede)
+    (with-durable-turn (turn (ensure-durable-session "raster-look") :input "look" :complete t)
+      (record-tool-use turn "call-look" "eval" "{}" "[image: shown at the next round]"
+                       :metadata (nlk:json-object
+                                  "image" (nlk:json-object
+                                           "payload_kind" "file" "source" "look"
+                                           "path" png "png_path" png
+                                           "media_type" "image/png"
+                                           "width" 40 "height" 20 "bytes" 100))))
+    (let ((nle::*color-profile* :truecolor))
+      (flet ((model-after (&rest msgs)
+               (let ((model (make-frame-model 200 60 :session-id "raster-look" :tool-detail :developer)))
+                 (nle::render-state model)
+                 (dolist (msg msgs model) (nle:update model msg)))))
+        (let ((model (model-after)))
+          (is (null (nle::image-protocol model)) "no answer yet: no protocol")
+          (is (null (nle::image-placements model))))
+        (let* ((model (model-after (nlt:make-device-attributes-msg :attributes '(61 4 6 7))))
+               (placement (first (nle::image-placements model))))
+          (is (eq :sixel (nle::image-protocol model)) "DA1 lists 4: sixel")
+          (is placement "the card anchors one placement")
+          (when placement
+            (let ((image placement.image))
+              (is (eq :sixel (nlt:terminal-image-protocol image)))
+              ;; 20 pixels want 2 rows at 18; on the VT340's 10x20 cell the
+              ;; picture is its own 40x20, four columns by one row.
+              (is (= 2 placement.rows))
+              (is (and (eql 4 (nlt:terminal-image-columns image)) (eql 1 (nlt:terminal-image-rows image))))
+              (is (uiop:string-prefix-p (format nil "~CP0;1;0q\"1;1;40;20" #\Escape) (nlt:terminal-image-data image)))
+              (let* ((header (row-index-of "Viewed " model.line-plain))
+                     (width (nle::projection-width model)))
+                (is (equal (list nil nil) (multiple-value-list (nle::image-band-covering model.line-rows model.line-plain header width))) "the header is no band row")
+                (is (eql 0 (nth-value 1 (nle::image-band-covering model.line-rows model.line-plain (1+ header) width))) "the band's head")
+                (is (eql 1 (nth-value 1 (nle::image-band-covering model.line-rows model.line-plain (+ 2 header) width))) "one row of it above"))
+              (is (eq image (nlt:image-placement-image (first (nle::image-placements model)))) "drawn once, the same picture every frame"))))
+        (let* ((model (model-after (nlt:make-device-attributes-msg :attributes '(61 1 6 7))))
+               (placement (first (nle::image-placements model))))
+          (is (eq :blocks (nle::image-protocol model)) "DA1 without 4 under a colour profile: half blocks")
+          (when placement
+            ;; Two rows of half blocks are four pixels tall: eight wide.
+            (is (eq :blocks (nlt:terminal-image-protocol placement.image)))
+            (is (eql 8 (nlt:terminal-image-columns placement.image)))
+            (is (= 2 (length (nlt:terminal-image-data placement.image))))))
+        (is (eq :kitty (nle::image-protocol
+                        (model-after (nlt:make-kitty-graphics-msg :ok-p t)
+                                     (nlt:make-device-attributes-msg :attributes '(61 4))))) "a kitty answer wins over its DA1")
+        (let ((nle::*color-profile* :none))
+          (is (null (nle::image-protocol (model-after (nlt:make-device-attributes-msg :attributes '(61))))) "no colour, no half blocks"))))))
+
+(deftest a-picture-under-the-pinned-prompt-draws-from-the-row-that-shows (with-temp-store ())
+  ;; Windows Terminal, a window too short for the whole answer: the prompt is
+  ;; pinned at the band's top and the tail follows it from the picture's
+  ;; fifth row. Kitty places whole images only, so it waits; a sixel is cut
+  ;; and drawn from the row that shows.
+  (with-temp-file (png :type "png")
+    (alexandria:write-byte-vector-into-file
+     (nle::pixels-png (nle::blank-pixels 640 400 3)) png :if-exists :supersede)
+    (with-durable-turn (turn (ensure-durable-session "pinned-picture") :input "show me the installs chart" :complete t)
+      (nlk:record-assistant-message
+       turn (nlk:json-object "role" "assistant"
+                             "content" (format nil "Linux leads.~%~%![installs](chart.png)~%~%Windows grew slowest."))
+       :metadata (nlk:json-object
+                  "images" (vector (nlk:json-object
+                                    "payload_kind" "file" "source" "answer"
+                                    "target" "chart.png" "path" png "copy_path" png "png_path" png
+                                    "media_type" "image/png" "width" 640 "height" 400 "bytes" 4096)))))
+    (let ((nle::*color-profile* :truecolor))
+      (flet ((model-after (msg)
+               (let ((model (make-frame-model 123 30 :session-id "pinned-picture")))
+                 (nle::render-state model)
+                 (nle:update model msg)
+                 model)))
+        (is (null (nle::image-placements (model-after (nlt:make-kitty-graphics-msg :ok-p t)))) "kitty: a band whose head is hidden anchors nothing")
+        (let* ((model (model-after (nlt:make-device-attributes-msg :attributes '(61 4))))
+               (placement (first (nle::image-placements model))))
+          (is placement "sixel: the rows that show are drawn")
+          (when placement
+            (let ((index (nle::band-window-row-index
+                          model.band
+                          (- (nlt:image-placement-y placement) 3 (nth-value 3 (nle::transcript-band-metrics model))))))
+              (is (zerop (length (string-trim " " (aref model.line-plain index)))) "anchored on a band row")
+              (is (not (eql (1- index) (nle::band-window-row-index
+                                        model.band
+                                        (- (nlt:image-placement-y placement) 4 (nth-value 3 (nle::transcript-band-metrics model)))))) "the first of its rows on screen"))
+            (is (< (nlt:terminal-image-height (nlt:image-placement-image placement)) 320) "the picture's lower part alone")
+            (is (= (* 20 (nlt:image-placement-rows placement)) (nlt:terminal-image-height (nlt:image-placement-image placement))) "as many rows as it covers")))))))
+
+(deftest a-sixel-is-cut-where-its-band-leaves-the-screen ()
+  (let ((entry (nle::make-raster-entry (nle::blank-pixels 40 200 3))))
+    (let ((image (nle::raster-image entry :sixel 10 0 3 100 '(10 . 20))))
+      (is (= 60 (nlt:terminal-image-height image)) "three rows of a ten-row band: sixty pixels")
+      (is (= 3 (nlt:terminal-image-rows image))))
+    (let ((image (nle::raster-image entry :sixel 10 0 10 100 '(10 . 20))))
+      (is (= 200 (nlt:terminal-image-height image)) "the whole band: the picture's own height")
+      (is (= 4 (nlt:terminal-image-columns image))))
+    (let ((image (nle::raster-image entry :sixel 10 0 10 2 '(10 . 20))))
+      (is (= 20 (nlt:terminal-image-width image)) "two columns hold twenty pixels")
+      (is (= 100 (nlt:terminal-image-height image)) "and the height follows"))
+    (let ((image (nle::raster-image entry :sixel 10 7 3 100 '(10 . 20))))
+      (is (= 60 (nlt:terminal-image-height image)) "a band seven rows above the viewport: its next three rows"))
+    (is (null (nle::raster-image entry :sixel 10 10 3 100 '(10 . 20))) "none of the picture in the rows shown: nothing")))
 
 ;;; --- raw diagnostics stay logged; explicit notices alone reach the TUI ---
 
@@ -6150,7 +6258,7 @@ and the DELIVERY its handler declares."
       (is (not (rows-carry-p "(+ 1 1)" (coerce model.line-plain 'list))) "the sibling stays closed"))))
 
 (deftest standard-unpadded-image-cards-keep-reserved-bands-and-anchor ()
-  (let ((nle::*kitty-images-enabled* t)
+  (let ((nle::*image-protocol* t)
         (nle::*color-profile* :none)
         (nle::*expanded-tool-call* "tight-image")
         (row (tool-row "eval" "{}" :tool-call-id "tight-image"

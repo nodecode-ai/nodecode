@@ -302,6 +302,7 @@ of stacking."
      (:file "term/terminal")
      (:file "term/input")
      (:file "term/image")
+     (:file "term/raster")
      (:file "term/render")
      (:file "term/program")
      ;; theme precedes ui: the design system (palette, wrap, gutters) is pure
@@ -615,6 +616,7 @@ of stacking."
      (:file "term/terminal-test")
      (:file "term/screen-test")
      (:file "term/image-test")
+     (:file "term/raster-test")
      (:file "term/program-test")
      (:file "tui/theme-test")
      (:file "tui/editor-test")

@@ -56,6 +56,8 @@ renderer, the program loop.")
    #:truecolor-msg-p #:truecolor-msg-ok-p #:make-truecolor-msg
    #:background-msg-p #:background-msg-rgb #:make-background-msg
    #:color-scheme-msg-p #:color-scheme-msg-scheme #:make-color-scheme-msg
+   #:device-attributes-msg-p #:device-attributes-msg-attributes #:make-device-attributes-msg
+   #:cell-size-msg-p #:cell-size-msg-width #:cell-size-msg-height #:make-cell-size-msg
    #:terminal-io-msg-p #:terminal-io-msg-thunk #:make-terminal-io-msg
    ;; --- the declarative view: CURSOR, its constructor, predicate and
    ;; readers are exported by DEFINE-RECORD at the declaration ---
@@ -77,7 +79,10 @@ renderer, the program loop.")
    ;; --- kitty graphics (image.lisp) ---
    #:image-media-type #:image-dimensions #:png-dimensions #:file-octets
    #:*png-transcoders* #:transcode-to-png #:transmit-image #:place-image
-   #:request-kitty-graphics
+   #:request-kitty-graphics #:request-terminal-attributes #:current-multiplexer
+   ;; --- sixel and half blocks (raster.lisp) ---
+   #:raster-colors #:unpack-rgb #:quantize-colors #:sixel-data #:half-block-grid
+   #:*sixel-colors*
    ;; --- the renderer (render.lisp) ---
    #:make-renderer #:render #:renderer-width #:renderer-height
    #:renderer-output-stream #:renderer-last-view-state
