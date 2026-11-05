@@ -49,10 +49,8 @@
   (is (null (tab-command-under nil)) "an ssh session with no multiplexer answers nothing"))
 
 (deftest open-effect-is-named-only-where-a-tab-opens ()
-  (is (equalp #("clipboard" "draft" "open") (nle::shell-effect-names :getenv (env-under (list "TMUX" "/t,1,0"))))
-      "a shell in a terminal it can drive says it opens")
-  (is (equalp #("clipboard" "draft") (nle::shell-effect-names :getenv (env-under nil)))
-      "one in none does not, so a command words its text for opening by hand"))
+  (is (equalp #("clipboard" "draft" "open") (nle::shell-effect-names :getenv (env-under (list "TMUX" "/t,1,0")))) "a shell in a terminal it can drive says it opens")
+  (is (equalp #("clipboard" "draft") (nle::shell-effect-names :getenv (env-under nil))) "one in none does not, so a command words its text for opening by hand"))
 
 (deftest open-effect-session-line ()
   (let ((argv (nle::open-session-argv "s-42" "look at this")))
