@@ -234,6 +234,12 @@ from the ones COLLECT-DURING-WAIT hid inside provider wait."
               (scroll-transcript model action)
               t))
 
+           ;; A chord keybinds.json binds to a slash line runs it, the draft
+           ;; left as it stands. It is read after every action above, so a
+           ;; built-in chord is never shadowed, and ahead of the editor.
+           ((when-let (line (keybind-slash-line (chat-model-keymap model) key mod))
+              (return-from update (values model (run-bound-slash-line model line)))))
+
            ;; Enter semantics belong to the keymap: the shell's own submit
            ;; arm (client.lisp) claims the submit chord before this update
            ;; runs, and an Enter chord matching neither submit nor
