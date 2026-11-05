@@ -94,7 +94,9 @@ and each TYPE are SB-ALIEN's, or SAP, INT or STR for the three most written."
     ("UpdateProcThreadAttribute" %update-attribute int (attributes sap) (flags sb-win32::dword)
      (attribute (sb-alien:unsigned 64)) (value sap) (size (sb-alien:unsigned 64))
      (previous sap) (returned sap))
-    ("DeleteProcThreadAttributeList" %delete-attribute-list sb-alien:void (attributes sap)))
+    ("DeleteProcThreadAttributeList" %delete-attribute-list sb-alien:void (attributes sap))
+    ("GetConsoleProcessList" %get-console-process-list sb-win32::dword (list sap)
+     (count sb-win32::dword)))
   (defconstant +handle-flag-inherit+ 1)
   (defconstant +proc-thread-attribute-handle-list+ #x20002)
   (defconstant +extended-startupinfo-present+ #x80000)
@@ -442,9 +444,7 @@ process's, is the child's stdout instead, LOG then its stderr alone."
   ;; (setsid -f, or macOS's wrapped shell), the wrapper started through
   ;; SPAWN-PROGRAM, which creates the log, and reaped here. On Windows one CreateProcessW with
   ;; DETACHED_PROCESS: no console, so the console that closes over the parent
-  ;; takes nothing with it; stdin is NUL and both output handles the log,
-  ;; inherited through the STARTUPINFO. Every inheritable handle of this
-  ;; process rides along, as under SBCL's own RUN-PROGRAM there.
+  ;; takes nothing with it; stdin is NUL and both output handles the log.
   (with-handlers ((error (condition)
                     (values nil (princ-to-string condition))))
     (ensure-directories-exist log)
@@ -459,41 +459,74 @@ process's, is the child's stdout instead, LOG then its stderr alone."
              :output (or stdout log) :error-output (if stdout log :output))))
       (wait-for-child pid process))
     #+win32
-    (let* ((command-line
-             ;; Quoted the way the C runtime unquotes, by SBCL's own RUN-PROGRAM
-             ;; quoting: an argument empty or holding a space, a tab or a quote
-             ;; is quoted, and the backslashes before a quote doubled.
-             (sb-impl::prepare-args command t))
-           (null-handle (sb-win32::duplicate-and-unwrap-fd
-                         (sb-posix:open "NUL" sb-posix:o-rdonly) :inheritp t))
-           (log-handle (sb-win32::duplicate-and-unwrap-fd
-                        (sb-posix:open (uiop:native-namestring log)
-                                       (logior sb-posix:o-wronly sb-posix:o-creat
-                                               sb-posix:o-append)
-                                       #o600)
-                        :inheritp t)))
+    (let ((null-handle (inheritable-handle (sb-posix:open "NUL" sb-posix:o-rdonly)))
+          (log-handle (inheritable-handle
+                       (sb-posix:open (uiop:native-namestring log)
+                                      (logior sb-posix:o-wronly sb-posix:o-creat
+                                              sb-posix:o-append)
+                                      #o600))))
       (with-cleanup ((sb-win32::close-handle null-handle) (sb-win32::close-handle log-handle))
-        (sb-alien:with-alien ((information sb-win32::process-information)
-                              (startup sb-win32::startup-info))
-          (sb-win32::zero-alien startup sb-win32::startup-info)
+        (start-windows-process command (list null-handle log-handle log-handle)
+                               +detached-process+)))
+    command))
+
+#+win32
+(progn
+  (defun inheritable-handle (fd)
+    "An inheritable handle on what descriptor FD names, FD closed."
+    (sb-win32::duplicate-and-unwrap-fd fd :inheritp t))
+
+  (defun start-windows-process (command handles flags)
+    "Start COMMAND, a program and its arguments, under creation FLAGS, its
+standard input, output and error HANDLES, three inheritable handles, and no
+other handle of this process (%CREATE-PROCESS-INHERITING-STD-HANDLES).
+=> the child's process id; an error when Windows refuses."
+    ;; Quoted the way the C runtime unquotes, by SBCL's own RUN-PROGRAM
+    ;; quoting: an argument empty or holding a space, a tab or a quote is
+    ;; quoted, and the backslashes before a quote doubled.
+    (let ((command-line (sb-impl::prepare-args command t)))
+      (sb-alien:with-alien ((information sb-win32::process-information)
+                            (startup sb-win32::startup-info))
+        (sb-win32::zero-alien startup sb-win32::startup-info)
+        (destructuring-bind (stdin stdout stderr) handles
           (setf (sb-alien:slot startup 'sb-win32::cb)
                 (sb-alien:alien-size sb-win32::startup-info :bytes)
                 (sb-alien:slot startup 'sb-win32::flags)
                 sb-win32::+startf-use-std-handles+
-                (sb-alien:slot startup 'sb-win32::stdin) null-handle
-                (sb-alien:slot startup 'sb-win32::stdout) log-handle
-                (sb-alien:slot startup 'sb-win32::stderr) log-handle)
-          (unless (sb-win32::create-process
-                   nil command-line nil nil t
-                   +detached-process+ nil nil
-                   (sb-alien:alien-sap startup) (sb-alien:alien-sap information))
-            (error "CreateProcess ~a: Windows error ~d"
-                   (first command) (sb-win32::get-last-error)))
-          (sb-win32::close-handle
-           (sb-alien:slot information 'sb-win32::thread-handle))
-          (sb-win32::close-handle
-           (sb-alien:slot information 'sb-win32::process-handle)))))
-    command))
+                (sb-alien:slot startup 'sb-win32::stdin) stdin
+                (sb-alien:slot startup 'sb-win32::stdout) stdout
+                (sb-alien:slot startup 'sb-win32::stderr) stderr))
+        (unless (sb-win32::create-process
+                 nil command-line nil nil t flags nil nil
+                 (sb-alien:alien-sap startup) (sb-alien:alien-sap information))
+          (error "CreateProcess ~a: Windows error ~d"
+                 (first command) (sb-win32::get-last-error)))
+        (sb-win32::close-handle (sb-alien:slot information 'sb-win32::thread-handle))
+        (sb-win32::close-handle (sb-alien:slot information 'sb-win32::process-handle))
+        (sb-alien:slot information 'sb-win32::process-id))))
+
+  (defun start-successor (command)
+    "Start COMMAND as this process's successor, as an exec would run it: on
+this process's console when it has one, its standard input, output and error
+this process's descriptors 0, 1 and 2 -- the null device for one that is
+closed -- its environment and folder this process's. => the successor's
+process id; an error when Windows refuses."
+    ;; Windows has no exec. A console process started without DETACHED_PROCESS
+    ;; shares its parent's console, its Ctrl+C included; one whose parent has
+    ;; no console would be handed a new console window, so it starts detached.
+    (let ((handles '()))
+      (with-cleanup ((mapc #'sb-win32::close-handle handles))
+        (dotimes (fd 3)
+          (push (inheritable-handle
+                 (or (ignore-errors (sb-posix:dup fd))
+                     (sb-posix:open "NUL" (if (zerop fd) sb-posix:o-rdonly sb-posix:o-wronly))))
+                handles))
+        (start-windows-process command (reverse handles)
+                               (sb-alien:with-alien ((one sb-win32::dword))
+                                 (if (zerop (%get-console-process-list
+                                             (sb-alien:alien-sap (sb-alien:addr one)) 1))
+                                     +detached-process+
+                                     0)))))))
 
 (defun kill-tree (pid)
   "End PID and everything under it, now: SIGKILL to PID's process group

@@ -376,7 +376,7 @@ it runs pushes :STOPPED or :STARTED onto (CAR LOG)."
   (with-saved-globals ((nle::*gateway-run* t) (nle::*serving* t) (nle::*fronted* nil))
     (with-stubbed-fdefinitions ((nlk:gateway-installed-p (&optional home) nil)
                                 (nlk:organism-binary () "/opt/nodecode/current/nodecode"))
-      (is (eq #-win32 :exec #+win32 nil (nle::restart-way)) "by hand, itself")))
+      (is (eq :exec (nle::restart-way)) "by hand, itself")))
   (with-saved-globals ((nle::*gateway-run* nil) (nle::*serving* t) (nle::*fronted* t))
     (with-stubbed-fdefinitions ((nlk:gateway-installed-p (&optional home) nil)
                                 (nlk:organism-binary () "/opt/nodecode/current/nodecode"))

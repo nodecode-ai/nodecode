@@ -507,6 +507,25 @@ pid, open fds and job control carry over."
                          (sb-alien::get-errno)))))))
         (format nil "execv ~a: ~a" file (sb-int:strerror errno))))))
 
+(defun run-in-place (path argv)
+  "Run PATH on ARGV -- argv[0] included -- in this process's place: the exec
+(EXEC-PROGRAM), and on Windows, which has no exec, PATH started as this
+process's successor (START-SUCCESSOR) and this process gone. Answers only the
+refusal, as text."
+  #-win32 (exec-program path argv)
+  #+win32
+  (let ((path (namestring path)))
+    (mapc #'finish-output (list *standard-output* *error-output*))
+    (multiple-value-bind (pid condition)
+        (ignore-errors
+         (call-with-unsevered-stdio
+          (lambda () (start-successor (cons path (rest argv))))))
+      (cond (pid
+             (format t "~&~a runs in this process's place as process ~d~%" path pid)
+             (finish-output)
+             (sb-ext:exit :code 0 :abort t))
+            (t (format nil "start ~a: ~a" path condition))))))
+
 (defun warm-pointer-path ()
   "The file naming this build's published image: written when one is
 published, read before anything else is walked on a launch."
