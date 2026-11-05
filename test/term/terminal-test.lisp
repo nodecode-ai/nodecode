@@ -410,16 +410,19 @@ as a window title, the empty string included."
   ;; release built from a terminal baked fd 10; the owner path's gateway
   ;; socket landed on it and the launch died in TCGETATTR).
   (is (member 'nlt::forget-terminal sb-ext:*save-hooks*))
-  (multiple-value-bind (read-fd write-fd) (sb-posix:pipe)
-    (nlk:with-cleanup ((ignore-errors (sb-posix:close read-fd)))
-      (let ((nlt::*tty-fd* write-fd)
+  ;; Any descriptor stands for the terminal's: a file opens alike everywhere.
+  (let* ((path (temp-path "terminal-state" "txt"))
+         (fd (sb-posix:open (sb-ext:native-namestring path)
+                            (logior sb-posix:o-creat sb-posix:o-wronly) #o600)))
+    (nlk:with-cleanup ((ignore-errors (delete-file path)))
+      (let ((nlt::*tty-fd* fd)
             (nlt::*tty-stream* nil)
             (nlt::*original-termios* :saved))
         (nlt::forget-terminal)
         (is (null nlt::*tty-fd*) "the descriptor is forgotten")
         (is (null nlt::*tty-stream*) "the stream over it too")
         (is (null nlt::*original-termios*) "and the saved attributes"))
-      (is (null (ignore-errors (sb-posix:fstat write-fd)))))))
+      (is (null (ignore-errors (sb-posix:fstat fd))) "and closed"))))
 
 ;;; --- a process with no terminal --------------------------------------------
 ;;; The device the terminal is opened by is the one seam: a path that will not

@@ -914,6 +914,14 @@ RESULT — IS-CARRYING's check shapes, so a bare form may read RESULT too."
 (defun octets (&rest bytes)
   (coerce bytes 'nlk:octets))
 
+(defun make-pipe ()
+  "A pipe, as (values READ-END WRITE-END): each what SB-SYS:MAKE-FD-STREAM
+takes -- a descriptor, or on Windows a handle."
+  (multiple-value-bind (read write) (sb-unix:unix-pipe)
+    (unless read
+      (error "no pipe: ~a" (sb-int:strerror write)))
+    (values read write)))
+
 (defun replace-once (text needle replacement &aux (at (search needle text)))
   "TEXT with the first NEEDLE replaced."
   ;; The expected document of a splice test is spelled as the fixture plus one
