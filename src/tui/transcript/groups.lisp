@@ -1020,7 +1020,7 @@ at WIDTH to LINES lines, or NIL for the first row."
           (when lines
             (cond ((and closing-pad-p opening-pad-p)
                    ;; The earlier block gives its closing pad up: a block's
-                   ;; own first row stays its pad (IMAGE-BAND-AT).
+                   ;; own first row stays its pad (IMAGE-BAND-COVERING).
                    (pop lines) (pop plains) (pop refs))
                   ((or closing-pad-p opening-pad-p))
                   ((or (and previous-fill fill) previous-heavy heavy)

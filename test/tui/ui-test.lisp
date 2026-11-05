@@ -4412,8 +4412,8 @@ and the DELIVERY its handler declares."
         (is (= nle::*image-preview-max-rows* (- caption header 1)))
         (is (zerop (length (string-trim " " (aref model.line-plain (1+ header))))))
         (is (zerop (length (string-trim " " (aref model.line-plain (1- header))))))
-        (is (nle::image-band-at model.line-rows model.line-plain (1+ header)) "the band opens under the header")
-        (is (null (nle::image-band-at model.line-rows model.line-plain (1- header))) "never on the block's padding row"))
+        (is (eql 0 (nth-value 1 (nle::image-band-covering model.line-rows model.line-plain (1+ header) (nle::projection-width model)))) "the band opens under the header")
+        (is (null (nle::image-band-covering model.line-rows model.line-plain (1- header) (nle::projection-width model))) "never on the block's padding row"))
       (setf (gethash "call-look" model.kitty-image-cache)
             (nlt:make-terminal-image :id 7))
       (let ((placement (first (nle::image-placements model))))
@@ -4532,10 +4532,10 @@ and the DELIVERY its handler declares."
           (is (null (nle::image-protocol (model-after (nlt:make-device-attributes-msg :attributes '(61))))) "no colour, no half blocks"))))))
 
 (deftest a-picture-under-the-pinned-prompt-draws-from-the-row-that-shows (with-temp-store ())
-  ;; Windows Terminal, a window too short for the whole answer: the prompt is
-  ;; pinned at the band's top and the tail follows it from the picture's
-  ;; fifth row. Kitty places whole images only, so it waits; a sixel is cut
-  ;; and drawn from the row that shows.
+  ;; A window too short for the whole answer: the prompt is pinned at the
+  ;; band's top and the tail follows it from the picture's fifth row. A
+  ;; kitty image is placed through a source rectangle of the rows that show;
+  ;; a sixel is cut and drawn from the row that shows.
   (with-temp-file (png :type "png")
     (alexandria:write-byte-vector-into-file
      (nle::pixels-png (nle::blank-pixels 640 400 3)) png :if-exists :supersede)
@@ -4554,7 +4554,15 @@ and the DELIVERY its handler declares."
                  (nle::render-state model)
                  (nle:update model msg)
                  model)))
-        (is (null (nle::image-placements (model-after (nlt:make-kitty-graphics-msg :ok-p t)))) "kitty: a band whose head is hidden anchors nothing")
+        (let ((model (model-after (nlt:make-kitty-graphics-msg :ok-p t))))
+          (setf (gethash (namestring png) model.kitty-image-cache)
+                (nlt:make-terminal-image :id 9 :width 640 :height 400))
+          (let ((placement (first (nle::image-placements model))))
+            (is placement "kitty: the rows that show are placed")
+            (when placement
+              (is (plusp (nlt:image-placement-crop-y placement)) "from the first of its rows on screen")
+              (is (< (nlt:image-placement-crop-height placement) 400) "its lower part alone")
+              (is (<= 399 (+ (nlt:image-placement-crop-y placement) (nlt:image-placement-crop-height placement)) 401) "down to its foot"))))
         (let* ((model (model-after (nlt:make-device-attributes-msg :attributes '(61 4))))
                (placement (first (nle::image-placements model))))
           (is placement "sixel: the rows that show are drawn")
@@ -4568,6 +4576,40 @@ and the DELIVERY its handler declares."
                                         (- (nlt:image-placement-y placement) 4 (nth-value 3 (nle::transcript-band-metrics model)))))) "the first of its rows on screen"))
             (is (< (nlt:terminal-image-height (nlt:image-placement-image placement)) 320) "the picture's lower part alone")
             (is (= (* 20 (nlt:image-placement-rows placement)) (nlt:terminal-image-height (nlt:image-placement-image placement))) "as many rows as it covers")))))))
+
+(deftest a-kitty-picture-stops-where-the-transcript-band-ends (with-temp-store ())
+  ;; Scrolled to the top of a window shorter than the picture: the band runs
+  ;; past the transcript's last row, where the composer or a setup panel
+  ;; stands. Kitty draws an image over the cells, so the placement shows the
+  ;; picture's upper rows alone, and never one row past the band.
+  (with-temp-file (png :type "png")
+    (alexandria:write-byte-vector-into-file
+     (nle::pixels-png (nle::blank-pixels 640 400 3)) png :if-exists :supersede)
+    (with-durable-turn (turn (ensure-durable-session "short-picture") :input "show me the installs chart" :complete t)
+      (nlk:record-assistant-message
+       turn (nlk:json-object "role" "assistant"
+                             "content" (format nil "Linux leads.~%~%![installs](chart.png)~%~%Windows grew slowest."))
+       :metadata (nlk:json-object
+                  "images" (vector (nlk:json-object
+                                    "payload_kind" "file" "source" "answer"
+                                    "target" "chart.png" "path" png "copy_path" png "png_path" png
+                                    "media_type" "image/png" "width" 640 "height" 400 "bytes" 4096)))))
+    (let ((model (make-frame-model 123 18 :session-id "short-picture")))
+      (nle::render-state model)
+      (nle:update model (nlt:make-kitty-graphics-msg :ok-p t))
+      (setf (gethash (namestring png) model.kitty-image-cache)
+            (nlt:make-terminal-image :id 9 :width 640 :height 400))
+      (nle::scroll-transcript model :home)
+      (nle::render-state model)
+      (let ((placement (first (nle::image-placements model))))
+        (is placement "the picture's head shows, so it is placed")
+        (when placement
+          (multiple-value-bind (vp-height columns rows top-pad) (nle::transcript-band-metrics model)
+            (declare (ignore columns rows))
+            (is (<= (+ (nlt:image-placement-y placement) (nlt:image-placement-rows placement))
+                    (+ 3 top-pad vp-height)) "never a row past the transcript band"))
+          (is (eql 0 (nlt:image-placement-crop-y placement)) "from its top row")
+          (is (< 0 (nlt:image-placement-crop-height placement) 400) "down to the band's last row only"))))))
 
 (deftest a-sixel-is-cut-where-its-band-leaves-the-screen ()
   (let ((entry (nle::make-raster-entry (nle::blank-pixels 40 200 3))))
@@ -6270,8 +6312,8 @@ and the DELIVERY its handler declares."
              (refs (make-array (length plains) :initial-element row))
              (first-image (if (eq nle::*tool-detail* :standard) 1 2)))
         (is (nle::row-image-plist row))
-        (is (nle::image-band-at refs plains first-image) "image band starts directly under its header")
-        (is (null (nle::image-band-at refs plains (1- first-image))) "never paint over the header")
+        (is (eql 0 (nth-value 1 (nle::image-band-covering refs plains first-image 80))) "image band starts directly under its header")
+        (is (null (nle::image-band-covering refs plains (1- first-image) 80)) "never paint over the header")
         (is (= (+ nle::*image-preview-rows* (if (eq nle::*tool-detail* :standard) 2 4)) (length plains)) "reserved image blanks are not structural padding")))))
 
 (defun footer-leaves-the-blank-be (row)

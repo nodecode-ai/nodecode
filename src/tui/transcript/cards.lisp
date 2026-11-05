@@ -843,7 +843,7 @@ the fact drawn there.")
 
 (defun row-body-llines (row width)
   "ROW's logical lines at WIDTH, EQ-stable across renders (the ROW-LLINES-CACHE),
-its inline image bands noted for the placement (IMAGE-BAND-AT)."
+its inline image bands noted for the placement (IMAGE-BAND-COVERING)."
   ;; Each fresh lline is replaced by ROW's previous content-identical lline at the
   ;; same position, so unchanged lines stay EQ across re-renders and hit the
   ;; LLINE-RENDER memo. The merged list becomes the new cache entry. Positional
