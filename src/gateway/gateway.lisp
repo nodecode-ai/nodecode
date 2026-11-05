@@ -5241,9 +5241,10 @@ installed binary started."
   ;; shell left behind -- has nobody to bring it back from an exit, so it
   ;; execs `current' itself. Without that, a release it refused left it on the
   ;; build before for good while `current' named the next one, and every
-  ;; shell of the new build attached to the old organism. Windows has no exec.
+  ;; shell of the new build attached to the old organism. Windows has no
+  ;; exec: there the binary starts as this process's successor and this
+  ;; process exits (NLK::RUN-IN-PLACE).
   (cond ((and *gateway-run* (ignore-errors (nlk:gateway-installed-p))) :unit)
-        #-win32
         ((and *serving* (not *fronted*) (nlk:organism-binary)) :exec)))
 
 (defun exit-for-restart (to &aux (in-place (eq (restart-way) :exec)))
