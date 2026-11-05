@@ -128,15 +128,33 @@ and each TYPE are SB-ALIEN's, or SAP, INT or STR for the three most written."
 
 ;;; --- the shell ---------------------------------------------------------------
 
+(defun executable-names (name)
+  "The file names the command NAME is found under in a PATH directory: NAME,
+or on Windows, where a command named with no extension the shell runs is
+looked for under each PATHEXT one in turn, those -- npx is npx.cmd."
+  #-win32 (list name)
+  #+win32
+  (let ((extensions (remove "" (uiop:split-string (or (uiop:getenv "PATHEXT") ".COM;.EXE;.BAT;.CMD")
+                                                  :separator ";")
+                            :test #'string=))
+        (dot (position #\. name :from-end t)))
+    (if (and dot (member (subseq name dot) extensions :test #'string-equal))
+        (list name)
+        (mapcar (lambda (extension) (concatenate 'string name extension)) extensions))))
+
 (defun executable-on-path (name)
-  "The first PATH directory holding NAME, as NAME's truename, or NIL."
-  (loop for directory in (uiop:split-string (or (uiop:getenv "PATH") "")
+  "NAME's truename in the first PATH directory holding it -- on Windows under
+the first PATHEXT extension it is there with (EXECUTABLE-NAMES) -- or NIL."
+  ;; Probed for NAME alone, every bare command on Windows read as absent: an
+  ;; import skipped each MCP server `npx' starts as not on this box's PATH.
+  (loop with files = (executable-names name)
+        for directory in (uiop:split-string (or (uiop:getenv "PATH") "")
                                             :separator #+win32 ";" #-win32 ":")
-        thereis (and (plusp (length directory))
-                     (ignore-errors
-                      (probe-file
-                       (merge-pathnames name (uiop:parse-native-namestring
-                                              directory :ensure-directory t)))))))
+        for folder = (and (plusp (length directory))
+                          (ignore-errors (uiop:parse-native-namestring directory :ensure-directory t)))
+        thereis (and folder
+                     (loop for file in files
+                           thereis (ignore-errors (probe-file (merge-pathnames file folder)))))))
 
 ;;; --- Git for Windows, past its redirectors -----------------------------------
 ;;; What Git for Windows puts on PATH are redirectors (git-wrapper.c in
