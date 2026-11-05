@@ -138,6 +138,44 @@ nothing pending fails as NEXT does."
 
 (encapsulate-afresh 'sb-bsd-sockets:socket-peername 'connect-failure #'peername-or-connect-failure)
 
+;;; --- a refused loopback dial on Windows -----------------------------------------
+;;; Winsock answers a refused connect by sending the SYN again -- two seconds
+;;; of retries on loopback -- where every other system answers in
+;;; microseconds: a port nothing listens on yet (AWAIT-PORT), a local provider
+;;; that is down, cost two seconds a dial. A loopback dial loses no packet, so
+;;; there the socket asks for no SYN retransmission (SIO_TCP_INITIAL_RTO) and
+;;; a refusal ends it at once; a dial off the machine keeps the retries that
+;;; carry it over a lossy link.
+
+#+win32
+(defun loopback-address-p (address)
+  "Whether ADDRESS, an octet vector, is IPv4's 127/8 or IPv6's ::1."
+  (and (typep address '(vector (unsigned-byte 8)))
+       (case (length address)
+         (4 (= 127 (aref address 0)))
+         (16 (and (every #'zerop (subseq address 0 15)) (= 1 (aref address 15)))))))
+
+#+win32
+(defun refuse-loopback-at-once (next socket &rest address)
+  "SB-BSD-SOCKETS:SOCKET-CONNECT's advice on Windows: a dial to a loopback
+address asks Winsock for no SYN retransmission, so a refusal ends it at once."
+  (when (loopback-address-p (first address))
+    ;; TCP_INITIAL_RTO_PARAMETERS: Rtt TCP_INITIAL_RTO_UNSPECIFIED_RTT,
+    ;; MaxSynRetransmissions TCP_INITIAL_RTO_NO_SYN_RETRANSMISSIONS. A Windows
+    ;; that refuses the ask keeps its retries.
+    (cffi:with-foreign-objects ((parameters :uint8 4) (returned :uint32))
+      (setf (cffi:mem-ref parameters :uint16 0) #xFFFF
+            (cffi:mem-ref parameters :uint8 2) #xFE
+            (cffi:mem-ref parameters :uint8 3) 0)
+      (cffi:foreign-funcall "WSAIoctl" :uintptr (sb-bsd-sockets:socket-file-descriptor socket)
+                            :uint32 #x98000011 ; SIO_TCP_INITIAL_RTO
+                            :pointer parameters :uint32 4 :pointer (cffi:null-pointer) :uint32 0
+                            :pointer returned :pointer (cffi:null-pointer) :pointer (cffi:null-pointer) :int)))
+  (apply next socket address))
+
+#+win32
+(encapsulate-afresh 'sb-bsd-sockets:socket-connect 'loopback #'refuse-loopback-at-once)
+
 ;;; --- a handshake that fails closes its socket ---------------------------------
 ;;; dexador connects the socket and then shakes hands over it (MAKE-SSL-STREAM)
 ;;; before its request's own cleanup holds either. A handshake that signals --
