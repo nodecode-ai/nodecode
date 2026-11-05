@@ -510,7 +510,7 @@ pid, open fds and job control carry over."
                                                            sb-alien:system-area-pointer))
                           file vector)
                          (sb-alien::get-errno)))))))
-        (format nil "execv ~a: ~a" file (sb-int:strerror errno))))))
+        (format nil "execv ~a: ~a" file (errno-text errno))))))
 
 (defun warm-pointer-path ()
   "The file naming this build's published image: written when one is

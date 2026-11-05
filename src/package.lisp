@@ -149,7 +149,7 @@ renderer, the program loop.")
    #:skip-openssl-exit-cleanup #:resolve-names-directly
    #:mapped-resident-bytes #:release-mapped-pages #:trim-working-set #:*shell* #:shell-argv
    #:*session-wrapper* #:session-argv #:pid-live-p #:kill-tree #:spawn-detached
-   #:exits-zero-p
+   #:exits-zero-p #:errno-text
    #:process-environment #:environment-with #:spawn-program #:wait-for-child #:child-exit #:run-bounded #:lock-file
    #:interruption-may-unwind-p #:interrupt-thread-safely #:terminate-thread-safely
    #:*wait-deadline* #:wait-seconds #:wait-deadline-passed-p #:wait-deadline-reason #:with-wait-deadline #:call-with-wait-deadline

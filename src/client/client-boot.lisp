@@ -269,7 +269,7 @@ system call (`read-only file system'), a store it cannot read named from
 words written for the operator, and NIL for a report, which may be Lisp's."
   (typecase condition
     (sb-posix:syscall-error
-     (values (format nil "~(~a~)" (sb-int:strerror (sb-posix:syscall-errno condition))) t))
+     (values (format nil "~(~a~)" (errno-text (sb-posix:syscall-errno condition))) t))
     ;; The store's sentence is the kernel's; only its path is written the way
     ;; the operator writes their own home.
     (nlk::store-unreadable
@@ -305,7 +305,7 @@ writable by this account', else `not writable (the system's words)'."
     ;; runtime agree on, which sb-posix names only where it has them.
     (30 "read-only")
     ((1 13) "not writable by this account")
-    (t (format nil "not writable (~(~a~))" (sb-int:strerror errno)))))
+    (t (format nil "not writable (~(~a~))" (errno-text errno)))))
 
 (defun folder-refusal (folder hint)
   "A sentence saying why nodecode cannot write in FOLDER -- a file or a link
@@ -342,7 +342,7 @@ in what to do and HINT, or NIL when it can."
                      (sentence (format nil "links to ~a, which does not exist" (home-abbreviated target))
                                "create that folder or remove the link,")
                      (sentence (format nil "links to ~a, which nodecode cannot reach (~(~a~))"
-                                       (home-abbreviated target) (sb-int:strerror unfollowed))
+                                       (home-abbreviated target) (errno-text unfollowed))
                                "fix the link or remove it,")))
                 (t (sentence "is a file, not a folder" (format nil "move ~a aside" it)))))))))
 

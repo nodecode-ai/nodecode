@@ -15,6 +15,18 @@
   "RUN-BOUNDED over COMMAND through sh, KEYS ahead of a ten-second bound."
   (apply #'nlk:run-bounded (nlk:shell-argv command) (append keys '(:seconds 10))))
 
+(deftest errno-text-says-what-the-failed-call-meant ()
+  ;; The numbers Linux, macOS and the Windows C runtime agree on, in the words
+  ;; each runtime's strerror gives them. On Windows SB-INT:STRERROR read them
+  ;; from the GetLastError table instead: 28 was a printer out of paper.
+  (is (equal "no such file or directory" (string-downcase (nlk:errno-text 2))))
+  (is (equal "permission denied" (string-downcase (nlk:errno-text 13))))
+  (is (equal "no space left on device" (string-downcase (nlk:errno-text 28))))
+  (is (equal "read-only file system" (string-downcase (nlk:errno-text 30))))
+  (let ((errno (handler-case (progn (sb-posix:mkdir "/no-such-dir/x" #o700) nil)
+                 (sb-posix:syscall-error (e) (sb-posix:syscall-errno e)))))
+    (is (equal "no such file or directory" (string-downcase (nlk:errno-text errno))))))
+
 (deftest shell-argv-runs-a-command-string-through-sh ()
   (let ((argv (nlk:shell-argv "echo hi")))
     (is (= 3 (length argv)) "program, flag, command")
