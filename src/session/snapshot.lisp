@@ -422,10 +422,11 @@ refusals."
 ;;; +SNAPSHOT-INDEX-DIGEST-CAP+ is not read at all: the digest would cost more
 ;;; than the call it saves, and that workspace pays both calls as before.
 
-(defparameter +snapshot-index-digest-cap+ (* 1024 1024)
-  "How large an index may be and still be digested — a megabyte is some
-twelve thousand staged paths, and reading it costs a fraction of the git
-call the digest stands in for.")
+(defparameter +snapshot-index-digest-cap+ (* 32 1024 1024)
+  "How large an index may be and still be digested: past the 200,000 paths a
+walk may stage. Reading and hashing 8 MB costs some 3 ms, the git call it
+stands in for 30 ms on Windows at 20,000 paths (T-442); under a cap of one
+megabyte, about 12,000 paths, every capture of a larger tree paid that call.")
 
 (define-side-table index-trees (:test #'equal :synchronized t :key snapshot-store-index-path)
   "index path -> (DIGEST . TREE-SHA): the tree WRITE-TREE answered for that
