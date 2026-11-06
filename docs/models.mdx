@@ -127,7 +127,9 @@ Cyber v1 is free from the Nodecode CLI once your account has topped up at least 
 | Model | `nodecode-cyber-v1` alone. Another model answers 403 `model_not_free`. |
 | Client | The Nodecode CLI alone. Any other client answers 403 `free_needs_nodecode`, naming the check it failed. Claude Code, Codex and your own code take a paid key. |
 | Context | 256K, prompt and output together; a paid key gets 1M. A longer prompt answers 400 `context_length_exceeded`. |
-| At once | 2 requests per account. |
+| At once | 2 requests per account; 1 for 14 days after your first card top-up. |
+| A day | No cap; for 14 days after your first card top-up, 3M tokens (input not read from the cache, and output) in any 24 hours, then 429 `free_daily_used`. |
+| A minute | 40 requests per account. The next answers 429 `free_rate_limited` with `Retry-After`, which the CLI waits out. |
 | Capacity | Paid calls go first. A free call runs where a machine has room, and answers 503 `free_capacity_busy` after 30 s without it. |
 | Footer | Free key · Cyber v1; Free key · top up first while the top-up is unpaid. |
 
