@@ -458,6 +458,51 @@ FORM-DEFINITIONS answers it."
                (and (find (cons kind (if setf-p (list 'setf symbol) symbol)) made :test #'equal)
                     t))))))
 
+(defun symbol-definition-kind (symbol)
+  "What SYMBOL names in this image -- \"a function\", \"a variable\", ... -- or
+NIL when it names nothing: a symbol a reader made and nothing defined."
+  (cond ((macro-function symbol) "a macro")
+        ((special-operator-p symbol) "a special operator")
+        ((fboundp symbol) "a function")
+        ((fboundp `(setf ,symbol)) "a setf function")
+        ((boundp symbol) "a variable")
+        ((not (eq :unknown (sb-int:info :variable :kind symbol))) "a declared variable")
+        ((find-class symbol nil) "a class")
+        ((sb-int:info :type :kind symbol) "a type")
+        ((sb-int:info :setf :expander symbol) "a setf expander")
+        ((symbol-plist symbol) "a symbol with properties")))
+
+(defun take-an-export-over-a-stray (condition)
+  "The handler for a NAME-CONFLICT that exporting a name raises in a package
+using the exporter: when the symbol in the way is that package's own and
+names nothing, the export takes its place; else a one-line error naming
+what stands there."
+  ;; A release that exports a name it now defines meets that name read here
+  ;; before the export: the upgrade classifier reads the new tree's files
+  ;; under this image's packages, so a file of a using package that calls
+  ;; the new name unqualified interns it there; an eval that typed it does
+  ;; the same. The symbol holds nothing -- no function, value, class, type
+  ;; or property -- so uninterning it loses nothing, and the release's
+  ;; definitions read the export once it is made. A symbol that does name
+  ;; something is the operator's, and the release waits for the restart.
+  (let* ((package (package-error-package condition))
+         (exported (sb-ext:name-conflict-datum condition))
+         (exporter (and (symbolp exported) (symbol-package exported)))
+         (local (remove exported (sb-ext:name-conflict-symbols condition))))
+    (when (and (eq 'export (sb-ext:name-conflict-function condition)) exporter local)
+      (flet ((stray-p (symbol)
+               (and (eq (symbol-package symbol) package)
+                    (null (symbol-definition-kind symbol)))))
+        (if (every #'stray-p local)
+            (invoke-restart (find-restart 'sb-ext:resolve-conflict condition) exported)
+            (let* ((other (first local))
+                   (named (let ((*package* (find-package "KEYWORD"))) (prin1-to-string other))))
+              (error "~(~a~) would export ~(~a~), but ~(~a~)"
+                     (package-name exporter) (symbol-name exported)
+                     (if (eq (symbol-package other) package)
+                         (format nil "~a is ~a here" named (or (symbol-definition-kind other) "a name"))
+                         (format nil "~a reads it as ~a" (package-name package) named)))))))))
+
 (defun make-definitions-live (text after wanted redefined-p verify
                               &aux (done '()) (live '()) (held '()) (sent '()) (taken '())
                               (pending '()) (undo '()) (forms (make-hash-table :test 'equal))
@@ -528,7 +573,8 @@ LOAD-SOURCE answers them."
                                  (let ((*package* package)
                                        (*read-eval* t))
                                    (with-compilation-unit (:override t)
-                                     (handler-bind ((warning #'muffle-warning))
+                                     (handler-bind ((warning #'muffle-warning)
+                                                    (sb-ext:name-conflict #'take-an-export-over-a-stray))
                                        (eval (read-from-string text t nil :start (second entry)
                                                                           :end (third entry)))))
                                    nil)
