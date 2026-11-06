@@ -328,6 +328,15 @@ the bare id (NEWER-VERSION-P), the provider, the id."
   "The provider id of nodecode.ai's own API, the one `nodecode login' wires:
 its models lead every model list, and /models pins them (MODELS-OWN-ROWS).")
 
+(defparameter +free-provider+ "nodecode-free"
+  "The provider id of the free key a sign-in saves beside the account's key (+OWN-PROVIDER+):
+nodecode.ai's API again, with a key that runs a model's free tier at no cost and nothing else.
+So /models offers Cyber v1 twice: free (badged FREE), and paid from the plan or the balance.")
+
+(defun own-provider-p (id)
+  "Whether provider ID is nodecode.ai's own: the account key's or the free key's."
+  (and (stringp id) (or (string-equal id +own-provider+) (string-equal id +free-provider+))))
+
 (defun model-choices ()
   "The models a turn can run on: the models.dev cache, the configured
 provider models, and each configured provider's fetched listing
@@ -441,8 +450,11 @@ DISPLAY is the model name when nonblank; provider names never fill it."
                                                              (getf row :provider) (getf row :model))
                                                        row))
                                    #'newer-model-p :key #'car))))
-         (flet ((own-p (row) (string-equal (getf row :provider) +own-provider+)))
-           (append (remove-if-not #'own-p newest) (remove-if #'own-p newest))))
+         ;; The free key's rows lead ours: Cyber v1 free, then Cyber v1 paid.
+         (flet ((own-p (row) (string-equal (getf row :provider) +own-provider+))
+                (free-p (row) (string-equal (getf row :provider) +free-provider+)))
+           (append (remove-if-not #'free-p newest) (remove-if-not #'own-p newest)
+                   (remove-if (lambda (row) (or (own-p row) (free-p row))) newest))))
        ;; Placeholders trail the list, in provider order.
        (sort placeholders #'string-lessp
              :key (lambda (row) (getf row :provider)))))))
@@ -463,16 +475,25 @@ selection summary."
                 ;; follows in the shared picker's two-space detail column.
                 ;; nodecode.ai's own models read as the pair a request names,
                 ;; nodecode/<model>, in their own tone on every list.
-                (make-picker-row
-                 :label (if (string-equal (getf row :provider) +own-provider+)
-                            (format nil "~a/~a" (getf row :provider) (getf row :model))
-                            (or (getf row :name) (getf row :model)))
-                 :tone (and (string-equal (getf row :provider) +own-provider+) :own-model)
-                 :detail (getf row :provider)
-                 :suffix (if (getf row :ctx)
-                             (format nil "  • ctx ~a" (format-token-count (getf row :ctx)))
-                             "")
-                 :value (list (getf row :provider) (getf row :model)))))
+                ;; The free key's rows carry a FREE chip, and both of ours say who pays
+                ;; (ACCOUNT-ROW-PAYS).
+                (let* ((provider (getf row :provider))
+                       (own (own-provider-p provider))
+                       (row (make-picker-row
+                             :label (if own
+                                        (format nil "~a/~a" provider (getf row :model))
+                                        (or (getf row :name) (getf row :model)))
+                             :tone (and own :own-model)
+                             :detail (if own
+                                         (format nil "~a~@[ · ~a~]" provider (account-row-pays provider))
+                                         provider)
+                             :suffix (if (getf row :ctx)
+                                         (format nil "  • ctx ~a" (format-token-count (getf row :ctx)))
+                                         "")
+                             :value (list provider (getf row :model)))))
+                  (when (string-equal provider +free-provider+)
+                    (setf (picker-row-badge row) (cons "FREE" :success)))
+                  row)))
           choices))
 
 (defun models-picker-title (count refreshing-p &key auxiliary)
@@ -714,6 +735,8 @@ signed in to nodecode.ai -- the row that signs it in (MODELS-SIGN-IN-ROWS).
 a provider's key."
   (let ((copy (copy-picker-row row)))
     (setf (picker-row-value copy) (list :model (picker-row-value row)))
+    (when-let (badge (picker-row-badge row))
+      (setf (picker-row-badge copy) badge))
     copy))
 
 (defun restock-models-dialog (model dialog value &key top)
