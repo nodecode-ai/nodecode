@@ -4094,6 +4094,12 @@ screen's logo -- is EFFECTIVE-VERSION, which starts out the same.")
       headers
       (cons (cons "user-agent" (user-agent)) headers)))
 
+(defun endpoint-on-domain-p (endpoint domain
+                             &aux (host (string-downcase
+                                         (or (ignore-errors (quri:uri-host (quri:uri endpoint))) ""))))
+  "Whether ENDPOINT's host is DOMAIN or a name under it."
+  (or (string= host domain) (uiop:string-suffix-p host (concatenate 'string "." domain))))
+
 (defun with-app-attribution (endpoint headers)
   "HEADERS plus the app-attribution headers ENDPOINT's host reads, each
 unless the caller set it: OpenRouter credits a request's tokens to the app
@@ -4103,15 +4109,14 @@ host gets HEADERS unchanged."
   ;; Only the host that ranks by them hears them: another provider has no use
   ;; for the app's name. A credential's own headers (CREDENTIAL-ATTRIBUTE
   ;; :HEADERS) outrank these, so an operator can name a different app.
-  (let ((host (string-downcase (or (ignore-errors (quri:uri-host (quri:uri endpoint))) ""))))
-    (if (or (string= host "openrouter.ai") (uiop:string-suffix-p host ".openrouter.ai"))
-        (append headers
-                (remove-if (lambda (header) (assoc (car header) headers :test #'string-equal))
-                           '(("HTTP-Referer" . "https://nodecode.ai")
-                             ("X-OpenRouter-Title" . "NODECODE")
-                             ("X-OpenRouter-Categories" . "cli-agent,personal-agent")))
-                '())
-        headers)))
+  (if (endpoint-on-domain-p endpoint "openrouter.ai")
+      (append headers
+              (remove-if (lambda (header) (assoc (car header) headers :test #'string-equal))
+                         '(("HTTP-Referer" . "https://nodecode.ai")
+                           ("X-OpenRouter-Title" . "NODECODE")
+                           ("X-OpenRouter-Categories" . "cli-agent,personal-agent")))
+              '())
+      headers))
 
 (defun http-fetch (url &key content headers (timeout 30) proxy binary)
   "URL's answer to one exchange of at most TIMEOUT seconds -- a POST of

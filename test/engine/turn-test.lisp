@@ -1912,6 +1912,25 @@ canned stream of LINES — the message, the usage, the finish reason."
       (is (null (nth-value 1 (gethash "reasoning_content" (aref wire 0)))))
       (is (null (nth-value 1 (gethash "reasoning_content" (aref wire 1))))))))
 
+(deftest request-body-carries-no-reasoning-field-to-mistral ()
+  ;; Mistral's API validates each message against its own schema and refuses
+  ;; a field the schema does not name: a deepseek model it hosts answered every
+  ;; turn after the first 422 extra_forbidden on
+  ;; messages[n].assistant.reasoning_content. Neither the thinking-mode
+  ;; backfill nor a streamed trace rides to that host.
+  (let* ((nle::*model* "deepseek-v4-1-flash-1017")
+         (nle::*endpoint* "https://api.mistral.ai/v1/chat/completions")
+         (streamed (nle::message "assistant" "seen"))
+         (bare (nle::message "assistant" "bare")))
+    (setf (gethash "reasoning_content" streamed) "already thought")
+    (let ((wire (gethash "messages" (nle::request-body
+                                     (compiled-context
+                                      (list (nle::message "user" "hi") streamed bare))))))
+      (is (equal '("seen" "bare") (map 'list (lambda (m) (gethash "content" m)) (subseq wire 2))) "both assistant messages ride, their words intact")
+      (loop for message across wire
+            do (is (null (nth-value 1 (gethash "reasoning_content" message))) "no message carries reasoning_content to api.mistral.ai"))
+      (is (equal "already thought" (gethash "reasoning_content" streamed)) "history keeps its trace"))))
+
 (deftest chat-request-projects-away-other-lane-reasoning-state ()
   ;; A Responses/Google/Anthropic answer may be replayed after failover to the
   ;; chat lane. Only the chat lane's fields may cross its request boundary.

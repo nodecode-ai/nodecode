@@ -11,8 +11,18 @@
 
 ;;; --- the openai-completions chat lane ---------------------------------------
 
-(defun chat-wire-message (message thinking-p &aux (role (json-value message :string "role")))
-  "MESSAGE projected onto the Chat Completions wire schema."
+(defun reasoning-content-endpoint-p (endpoint)
+  "Whether ENDPOINT's chat wire takes the reasoning_content message field.
+Mistral's (api.mistral.ai) does not: it validates each message against its
+own schema and answers 422 extra_forbidden for a field the schema does not
+name, and it carries a model's thinking as a thinking chunk inside content
+(docs.mistral.ai/inference/conversations/reasoning)."
+  (not (endpoint-on-domain-p endpoint "mistral.ai")))
+
+(defun chat-wire-message (message reasoning &aux (role (json-value message :string "role")))
+  "MESSAGE projected onto the Chat Completions wire schema. REASONING is what
+becomes of an assistant message's reasoning_content: :CARRY passes it on,
+:BACKFILL also gives \"\" to a message that never streamed one, NIL drops it."
   ;; History is shared across provider lanes, but its assistant object can carry
   ;; lane-owned replay state: Responses reasoning_items, Google
   ;; thought_signatures, or Anthropic reasoning_blocks. Never pass those
@@ -25,10 +35,10 @@
                :opt "name" (gethash "name" message)
                :opt "tool_call_id" (gethash "tool_call_id" message)
                :opt "tool_calls" (gethash "tool_calls" message)
-               :opt "reasoning_content" (gethash "reasoning_content" message))))
+               :opt "reasoning_content" (and reasoning (gethash "reasoning_content" message)))))
     ;; Thinking mode wants the field on every assistant message, including a
     ;; replayed message that never streamed reasoning_content.
-    (when (and thinking-p
+    (when (and (eq reasoning :backfill)
                (equal role "assistant")
                (not (json-value wire :string "reasoning_content")))
       (setf (gethash "reasoning_content" wire) ""))
@@ -43,20 +53,27 @@
   ;; serialize seam.
   (with-request-shape context
       ((messages (request-messages context))
-       ;; thinking mode wants reasoning_content on every assistant message: "" where none streamed
-       (thinking-p (or (thinking-mode-model-p config.model)
-                       (some (lambda (msg)
-                               (and (equal "assistant" (json-value msg :string "role"))
-                                    (json-value msg :string "reasoning_content")))
-                             messages)))
+       ;; thinking mode wants reasoning_content on every assistant message: ""
+       ;; where none streamed -- unless the endpoint's schema has no such field
+       (reasoning (cond ((not (reasoning-content-endpoint-p config.endpoint)) nil)
+                        ((or (thinking-mode-model-p config.model)
+                             (some (lambda (msg)
+                                     (and (equal "assistant" (json-value msg :string "role"))
+                                          (json-value msg :string "reasoning_content")))
+                                   messages))
+                         :backfill)
+                        (t :carry)))
        (wire (concatenate 'vector
                           (vector (message "system"
                                            context.system-prompt))
                           (json-memo-items context.memo
                                            messages
-                                           (if thinking-p :chat-thinking :chat)
+                                           (ecase reasoning
+                                             (:backfill :chat-thinking)
+                                             (:carry :chat)
+                                             ((nil) :chat-unreasoned))
                                            (lambda (message)
-                                             (list (chat-wire-message message thinking-p)))))))
+                                             (list (chat-wire-message message reasoning)))))))
     (json-object
      "model" config.model
      "messages" wire
