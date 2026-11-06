@@ -455,9 +455,12 @@ MODEL) pair the way a Frequently used shortcut does."
 
 (defun models-own-rows (rows)
   "/models' Nodecode section, the top of its root: nodecode.ai's own models
-among ROWS (+OWN-PROVIDER+), each picked the way a Frequently used shortcut
-is, under their heading and over a blank one; NIL when ROWS hold none."
-  (when-let (own (remove-if-not (lambda (row) (models-provider-row-p row +own-provider+)) rows))
+among ROWS (+OWN-PROVIDER+, and the free key's +FREE-PROVIDER+ ahead of them),
+each picked the way a Frequently used shortcut is, under their heading and over
+a blank one; NIL when ROWS hold none."
+  (when-let (own (remove-if-not (lambda (row) (or (models-provider-row-p row +free-provider+)
+                                                  (models-provider-row-p row +own-provider+)))
+                                rows))
     (append (list (make-picker-row :label "Nodecode" :heading t))
             (mapcar (lambda (row) (if (picker-row-value row) (models-root-row row) row)) own)
             (list (make-picker-row :heading t)))))

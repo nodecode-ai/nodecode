@@ -119,8 +119,16 @@ A sign-in never changes your default model. Pick one in `/models`: nodecode, the
 Cyber v1 is free from the Nodecode CLI once your account has topped up at least $2 (or €2). The top-up stays in your balance.
 
 1. Top up at https://nodecode.ai/account/top-up.
-2. At https://nodecode.ai/account/keys, tick Free key and make the key.
-3. `export NODECODE_API_KEY=sk-nc-...`, then in `/models` pick nodecode, then Cyber v1.
+2. Run `nodecode login` (or `/login` in a shell) and press Allow with a free key on the page it opens.
+
+The CLI saves two keys: the account's key (provider `nodecode`) and the free key beside it (provider `nodecode-free`). `/models` lists Cyber v1 twice at the top:
+
+| Row | Who pays |
+| --- | --- |
+| `nodecode-free/nodecode-cyber-v1` FREE | Nobody: the free key, with the limits below. A sign-in with a free key makes it the default model. |
+| `nodecode/nodecode-cyber-v1` | Your plan or your balance, per token, with the full 1M context. Its row says which, e.g. `from credit $2.00`. |
+
+The footer shows Free key · Cyber v1 while a session runs on the free one, and your plan or credit otherwise; `/usage` lists both. A free key made at https://nodecode.ai/account/keys (tick Free key) works on its own too: `export NODECODE_API_KEY=sk-nc-...`.
 
 | Fact | Value |
 | --- | --- |

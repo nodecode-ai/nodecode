@@ -20,7 +20,7 @@
 (defparameter *provider-terms-checked* "2026-10")
 
 (defparameter *provider-terms*
-  '((:name "NODECODE" :own t :hosts ("api.nodecode.ai") :ids ("nodecode") :where "DE → NL" :eu t
+  '((:name "NODECODE" :own t :hosts ("api.nodecode.ai") :ids ("nodecode" "nodecode-free") :where "DE → NL" :eu t
      :stored "no" :trains :no :zdr :yes :source "nodecode.ai/privacy")
     (:name "Anthropic" :hosts ("api.anthropic.com") :ids ("anthropic") :where "US"
      :stored "30 days" :trains :no :zdr :enterprise :source "privacy.anthropic.com")

@@ -46,8 +46,11 @@ retries. HOST is the name a timeout says did not answer."
     (values reply status)))
 
 (defun account-login-save (reply)
-  "Validate the grant, save its key once, and wire its provider without changing the model."
-  (with-json ((provider :string "provider") (key :string "api_key") (base :string "base_url")) reply
+  "Validate the grant, save its key once -- and the free key beside it when the grant hands one
+over (+FREE-PROVIDER+) -- and wire their providers without changing the model."
+  (with-json ((provider :string "provider") (key :string "api_key") (base :string "base_url")
+              (free :string "free_api_key"))
+      reply
     (unless (and (equal provider "nodecode") key (plusp (length key))
                  base (equal "https" (ignore-errors (quri:uri-scheme (quri:uri base))))
                  (ignore-errors (quri:uri-host (quri:uri base))))
@@ -58,7 +61,32 @@ retries. HOST is the name a timeout says did not answer."
     ;; A pre-existing inline key would outrank auth.json's newly granted key.
     (when (json-value (read-shared-config) :any "providers" provider "api_key")
       (config-set (list "providers" provider "api_key") :remove))
+    ;; Allow with a free key on nodecode.ai's /cli hands over the free key beside the account's:
+    ;; a provider of its own, so /models offers Cyber v1 free and paid. A sign-in without one
+    ;; takes back the free key an earlier one saved.
+    (if (and free (plusp (length free)))
+        (progn
+          (save-provider-api-key +free-provider+ free)
+          (config-set (list "providers" +free-provider+) (list :sdk "openai-completions" :base_url base)))
+        (account-forget-free-key))
     provider))
+
+(defun account-forget-free-key ()
+  "Take the free key (+FREE-PROVIDER+) out of auth.json and its provider out of the config.
+=> whether there was either."
+  (let ((key (account-credential +free-provider+))
+        (wired (json-value (read-shared-config) :object "providers" +free-provider+)))
+    (when key (save-provider-api-key +free-provider+ nil))
+    (when wired (config-set (list "providers" +free-provider+) :remove))
+    (and (or key wired) t)))
+
+(defun account-grant-provider (reply model)
+  "The provider a sign-in's default MODEL runs on: the free key's when REPLY hands one over and
+names MODEL itself (the free model), else the account key's."
+  (if (and (plusp (length (or (json-value reply :string "free_api_key") "")))
+           (equal model (json-value reply :string "model")))
+      +free-provider+
+      (json-value reply :string "provider")))
 
 (defun account-login-preflight ()
   "Refuse before a one-time code is spent when the local stores could not take the key."
@@ -84,7 +112,9 @@ sign-in page with the code already in it for a mode."
   (with-json ((id :string "request") (poll :text "poll") (shown :text "code")
               (confirm :string "confirm") (life :integer "expires_in") (every :integer "every"))
       (account-checked request :post "/api/link"
-                       (json-object "code" (or code :null) :opt "login" mode "host" (machine-instance)
+                       ;; keys 2: this machine keeps a free key apart from the account's
+                       ;; (+FREE-PROVIDER+), so a sign-in with one hands over both.
+                       (json-object "code" (or code :null) :opt "login" mode "keys" 2 "host" (machine-instance)
                                     "os" (format nil "~a ~a" (software-type) (software-version))
                                     "arch" (machine-type) "release" (effective-version))
                        nil 30)
@@ -145,33 +175,39 @@ link. Answers the name the machine was let in under."
            (saved (home-abbreviated (namestring (pathname *auth-file-path*)))))
       (account-login-save reply)
       (save-machine-link (getf claim :id) (getf claim :poll))
-      (let ((lead (account-default-model reply :request usage-request)))
+      (let* ((lead (account-default-model reply :request usage-request))
+             (provider (account-grant-provider reply lead))
+             (free (json-value reply :string "free_api_key")))
         (when lead
-          (persist-shared-model-pin "default_model" (json-value reply :string "provider") lead))
+          (persist-shared-model-pin "default_model" provider lead))
         (cond
           (mode
-           (format output "Signed in~@[ on ~a~]. Account key saved to ~a.~%" name saved)
+           (format output "Signed in~@[ on ~a~]. ~:[Account key~;Account key and free key~] saved to ~a.~%" name free saved)
            (account-print-usage output mode (json-value reply :string "api_key")
-                                (json-value reply :string "base_url") usage-request lead))
+                                (json-value reply :string "base_url") usage-request lead provider free))
           (t
            (format output "Linked~@[ as ~a~]. Account key saved to ~a.~%With /link turned on in nodecode, the Machines page shows its address.~%"
                    name saved)
-           (account-next-step output lead))))
+           (account-next-step output lead provider))))
       (finish-output output)
       name)))
 
-(defun account-next-step (output lead)
-  "What a sign-in prints last: the default model it chose, LEAD, or that /models chooses one."
+(defun account-next-step (output lead &optional (provider +own-provider+))
+  "What a sign-in prints last: the default model it chose, LEAD on PROVIDER, or that /models
+chooses one."
   (if lead
-      (format output "Default model: nodecode ~a. Run nodecode to start.~%" lead)
+      (format output "Default model: ~a ~a. Run nodecode to start.~%" provider lead)
       (format output "Run nodecode, then /models to choose a nodecode model.~%")))
 
-(defun account-print-usage (output mode key base request &optional lead)
-  "The meter a fresh sign-in prints, what MODE still lacks -- a plan or credit -- and the next
-step: LEAD, the default model the sign-in chose, or /models."
+(defun account-print-usage (output mode key base request &optional lead (provider +own-provider+) free)
+  "The meter a fresh sign-in prints -- FREE, a free key handed over beside KEY, its line too --
+what MODE still lacks -- a plan or credit -- and the next step: LEAD, the default model the
+sign-in chose on PROVIDER, or /models."
   (handler-case
       (let ((usage (account-usage-read key base :request request)))
         (dolist (line (account-usage-lines usage)) (format output "~a~%" line))
+        (when free
+          (format output "~a~%" (account-free-line (account-usage-read free base :request request))))
         (cond
           ((and (equal mode "subscription") (not (json-value usage :object "plan")))
            ;; No plan is sold now (nodecode.ai/pricing is per token), so the plan
@@ -181,7 +217,7 @@ step: LEAD, the default model the sign-in chose, or /models."
            (format output "This account has no API credit yet: add some at https://nodecode.ai/account/top-up~%"))))
     (error (condition)
       (format output "The account's meter could not be read yet: ~a~%" condition)))
-  (account-next-step output lead))
+  (account-next-step output lead provider))
 
 (defun account-ask-mode (&key (ask #'terminal-answer))
   "The mode `nodecode login' signs in for, asked on the terminal; refused where none can ask."
@@ -356,32 +392,66 @@ the plan runs low or a spent plan's credit pays, DANGER when nothing can pay."
                            ((equal pays "balance") "API credit")
                            (t "nothing yet: subscribe at https://nodecode.ai/pricing or add credit at https://nodecode.ai/account/top-up")))))))
 
-(defun account-credential ()
-  "The saved nodecode.ai key and the API base it is for, as (values KEY BASE); NIL with none."
+(defun account-credential (&optional (provider +own-provider+))
+  "The saved nodecode.ai key of PROVIDER -- the account's, or the free key's (+FREE-PROVIDER+) --
+and the API base it is for, as (values KEY BASE); NIL with none."
   ;; The chain's last tier is the "public" stand-in: a providers.nodecode entry with no key, as
   ;; a sign-out leaves it, is no account.
-  (let* ((credential (ignore-errors (resolve-provider-credential "nodecode")))
+  (let* ((credential (ignore-errors (resolve-provider-credential provider)))
          (key (and credential (not (eq :public (getf credential :source)))
                    (ignore-errors (credential-key credential)))))
     (when (and (stringp key) (plusp (length key)))
-      (values key (or (ignore-errors (provider-base-url "nodecode")) "https://api.nodecode.ai/v1")))))
+      (values key (or (ignore-errors (provider-base-url provider)) "https://api.nodecode.ai/v1")))))
+
+(defun account-free-line (usage)
+  "The line /usage and a sign-in print for the free key's USAGE, beside the account key's lines."
+  (format nil "Free key: ~a"
+          (if (equal "free_locked" (json-value usage :string "pays"))
+              "Cyber v1 at no cost once the account has topped up at https://nodecode.ai/account/top-up"
+              "Cyber v1 at no cost from this CLI, 256K context, 2 at once (nodecode-free in /models)")))
+
+(defun account-row-pays (provider)
+  "What a /models row of nodecode.ai's PROVIDER says pays for it, from this shell's meter: free
+for the free key's, else the plan or the credit; NIL before the meter is read."
+  (if (string-equal provider +free-provider+)
+      (if (eq :danger (getf (getf *account-meter* :free) :tone)) "free once topped up" "free")
+      (when-let (usage (getf *account-meter* :usage))
+        (let ((pays (json-value usage :string "pays")))
+          (cond ((equal pays "plan") "from the plan")
+                ((equal pays "balance")
+                 (format nil "from credit~@[ ~a~]"
+                         (when-let (money (first (account-balance-rows usage))) (account-money money))))
+                ;; a free key saved as the account's own, before keys came apart
+                ((equal pays "free") "free key")
+                (t "needs credit"))))))
 
 (defvar *account-usage* nil
   "The account's meter as this organism last read it: (:usage HT :read-at UT) or (:error TEXT
 :read-at UT), NIL before the first read and when this home holds no nodecode.ai key. Live-only.")
 
-(defun account-usage (&key (max-age 30) (request #'account-usage-request))
-  "*ACCOUNT-USAGE*, read again when older than MAX-AGE seconds; NIL with no nodecode.ai key."
+(defvar *account-free-usage* nil
+  "The free key's meter (+FREE-PROVIDER+) as *ACCOUNT-USAGE* keeps the account key's. Live-only.")
+
+(defun account-usage-state (provider held max-age request)
+  "PROVIDER's key's meter: HELD while younger than MAX-AGE seconds, else the gate's answer read
+again -- (:usage HT :read-at UT) or (:error TEXT :read-at UT); NIL with no key."
   ;; A failed read is kept as long as a good one, so a gate that is down is asked once a
   ;; MAX-AGE, not once a frame.
-  (multiple-value-bind (key base) (account-credential)
-    (let ((now (get-universal-time)) (held *account-usage*))
+  (multiple-value-bind (key base) (account-credential provider)
+    (let ((now (get-universal-time)))
       (cond
-        ((null key) (setf *account-usage* nil))
+        ((null key) nil)
         ((and held (< (- now (getf held :read-at)) max-age)) held)
-        (t (setf *account-usage*
-                 (handler-case (list :usage (account-usage-read key base :request request) :read-at now)
-                   (error (condition) (list :error (princ-to-string condition) :read-at now)))))))))
+        (t (handler-case (list :usage (account-usage-read key base :request request) :read-at now)
+             (error (condition) (list :error (princ-to-string condition) :read-at now))))))))
+
+(defun account-usage (&key (max-age 30) (request #'account-usage-request))
+  "*ACCOUNT-USAGE*, read again when older than MAX-AGE seconds; NIL with no nodecode.ai key."
+  (setf *account-usage* (account-usage-state +own-provider+ *account-usage* max-age request)))
+
+(defun account-free-usage (&key (max-age 30) (request #'account-usage-request))
+  "*ACCOUNT-FREE-USAGE*, read again when older than MAX-AGE seconds; NIL with no free key."
+  (setf *account-free-usage* (account-usage-state +free-provider+ *account-free-usage* max-age request)))
 
 (defvar *account-login* nil
   "The organism's sign-in /login started: (:state :waiting | :signed-in | :failed, :mode, :url,
@@ -409,11 +479,11 @@ A sign-in already waiting is answered again, not claimed twice."
                    (let* ((reply (account-await claim :request request :again "/login"))
                           (name (json-value reply :string "name")))
                      (account-login-save reply)
-                     (setf *account-usage* nil)
+                     (setf *account-usage* nil *account-free-usage* nil)
                      (let* ((lead (let ((id (account-default-model reply)))
                                     ;; the model a turn runs on from now: a refused pick sets none
                                     (and id (ignore-errors
-                                             (select-default-model :provider (json-value reply :string "provider")
+                                             (select-default-model :provider (account-grant-provider reply id)
                                                                    :model id))
                                          id)))
                             (state (account-usage :max-age 0))
@@ -430,18 +500,23 @@ A sign-in already waiting is answered again, not claimed twice."
                      (notice text :level :warning))))))
            login))))
 
-(defun account-json (&aux (state (account-usage)) (usage (getf state :usage)) (login *account-login*))
+(defun account-json (&aux (state (account-usage)) (usage (getf state :usage)) (login *account-login*)
+                          (free (getf (account-free-usage) :usage)))
   "The account's read model a shell and the web page draw: whether this home is signed in, the
-meter's words and tone, the lines /usage prints, the gate's usage as it came, and the sign-in in
-flight."
-  (multiple-value-bind (label value tone) (if usage (account-meter usage) (values nil nil nil))
-    (make-json-object
-     "signed_in" (if state t :false)
-     "meter" (if label
+meter's words and tone -- the free key's apart, in `free' -- the lines /usage prints, the gate's
+usage as it came, and the sign-in in flight."
+  (flet ((meter (usage)
+           (multiple-value-bind (label value tone) (if usage (account-meter usage) (values nil nil nil))
+             (if label
                  (json-object "label" label "value" value "tone" (string-downcase (symbol-name tone)))
-                 :null)
-     "lines" (coerce (cond (usage (account-usage-lines usage))
-                           ((getf state :error) (list (getf state :error))))
+                 :null))))
+    (make-json-object
+     "signed_in" (if (or state free) t :false)
+     "meter" (meter usage)
+     "free" (meter free)
+     "lines" (coerce (append (cond (usage (account-usage-lines usage))
+                                   ((getf state :error) (list (getf state :error))))
+                             (and free (list (account-free-line free))))
                      'vector)
      "error" (or (getf state :error) :null)
      "usage" (or usage :null)
@@ -459,7 +534,8 @@ cache of the gate's usage, and the sign-in /login has in flight."
   ;; ?fresh=1 asks the gate again whatever the cache's age: /usage opened on a top-up or a plan
   ;; bought while this shell is open shows it (checkout audit, 2026-10-22).
   (when (equal "1" (cdr (assoc "fresh" (gateway-query-parameters env) :test #'string=)))
-    (account-usage :max-age 0))
+    (account-usage :max-age 0)
+    (account-free-usage :max-age 0))
   (account-json))
 
 (define-gateway-route handle-gateway-account-login-http (env)
@@ -483,9 +559,10 @@ secrets file, and an inline providers.nodecode.api_key), forget the machine link
 meter and any sign-in in flight. => the words that say what happened, and whether a key or a
 link went; signed out already, it says so and writes nothing."
   (let ((key (account-credential))
+        (free (account-credential +free-provider+))
         (linked (json-value (read-auth-file *auth-file-path*) :object "machine_link")))
-    (setf *account-usage* nil *account-login* nil)
-    (if (not (or key linked))
+    (setf *account-usage* nil *account-free-usage* nil *account-login* nil)
+    (if (not (or key free linked))
         (values "Not signed in to nodecode.ai: nothing to sign out of" nil)
         (progn
           (when key
@@ -493,13 +570,14 @@ link went; signed out already, it says so and writes nothing."
             ;; An inline key outranks auth.json's (ACCOUNT-LOGIN-SAVE takes it out for the same reason).
             (when (json-value (read-shared-config) :any "providers" "nodecode" "api_key")
               (config-set (list "providers" "nodecode" "api_key") :remove)))
+          (when free (account-forget-free-key))
           (when linked
             (update-auth-file (lambda (auth) (remhash "machine_link" auth))))
           (values
            (if (account-credential)
                "Signed out here, but a nodecode.ai key still reaches this home from the environment or a config command: remove it there"
                (format nil "Signed out of nodecode.ai; remove this machine at https://nodecode.ai/account/machines to end its key there too~:[~; · the default model needs /login or /models~]"
-                       (equal "nodecode" (ignore-errors (shared-model-pin)))))
+                       (own-provider-p (ignore-errors (shared-model-pin)))))
            t)))))
 
 (define-gateway-route handle-gateway-account-logout-http (env)
@@ -529,6 +607,10 @@ lines), set on the loop by REFRESH-ACCOUNT-METER and drawn by the footer and /us
         :value (and meter (json-value meter :string "value"))
         :tone (when-let (tone (and meter (json-value meter :string "tone")))
                 (find tone '(:success :tool :danger) :key #'symbol-name :test #'string-equal))
+        :free (when-let (free (json-value json :object "free"))
+                (list :label (json-value free :string "label") :value (json-value free :string "value")
+                      :tone (when-let (tone (json-value free :string "tone"))
+                              (find tone '(:success :tool :danger) :key #'symbol-name :test #'string-equal))))
         :usage (json-value json :object "usage")
         :lines (coerce (or (json-value json :array "lines") #()) 'list)
         :login (json-value json :object "login")))
@@ -556,16 +638,22 @@ TONE's colour on whatever it stands on."
 
 (defun account-meter-segs (model)
   "The footer's account badge: the plan's name on a chip, then what is left on a chip of the
-meter's tone, both a link to /account; NIL when this home is not signed in to nodecode.ai."
-  (when-let (value (getf *account-meter* :value))
-    (let ((label (getf *account-meter* :label))
-          (tone (or (getf *account-meter* :tone) :muted))
-          (target (cons :command "account")))
-      (if (grounds-shown-p)
-          (list (make-seg :text (format nil " ~a " label) :link target :ground :sheet-chip
-                          :tone (if (equal target (chat-model-hover-target model)) :disclosure-hover :sheet-chip))
-                (account-chip-seg value tone :link target))
-          (list (hover-seg model (format nil "~a ~a" label value) target tone))))))
+meter's tone, both a link to /account -- the free key's (Free key, Cyber v1) while the session
+runs on it (+FREE-PROVIDER+); NIL when this home is not signed in to nodecode.ai."
+  (let* ((meter (or (and (string-equal +free-provider+
+                                       (or (ignore-errors (json-value (footer-identity model) :text)) ""))
+                         (getf *account-meter* :free))
+                    *account-meter*))
+         (value (getf meter :value)))
+    (when value
+      (let ((label (getf meter :label))
+            (tone (or (getf meter :tone) :muted))
+            (target (cons :command "account")))
+        (if (grounds-shown-p)
+            (list (make-seg :text (format nil " ~a " label) :link target :ground :sheet-chip
+                            :tone (if (equal target (chat-model-hover-target model)) :disclosure-hover :sheet-chip))
+                  (account-chip-seg value tone :link target))
+            (list (hover-seg model (format nil "~a ~a" label value) target tone)))))))
 
 ;;; /usage draws the account as two slabs side by side, the plan's and the credit's: no rules, a
 ;;; ground each, the one paying now lifted and badged. Where grounds do not paint (16 colours) the

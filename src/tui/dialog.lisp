@@ -90,6 +90,22 @@ row's segments, at most ROOM columns from the panel's content edge, and the
 tone whose ground the row stands on, or NIL for the panel's. Its slots stay
 what a search reads and a test names; the function is only the look.")
 
+(nlk:define-side-table picker-row-badge (:weakness :key)
+  "A row's live-only badge: (TEXT . TONE), a chip one space after its label -- the
+TONE's colour behind the chip ink where grounds paint, else TEXT bold in TONE --
+counted in the label's column, so the details beside it stay aligned. /models'
+free Cyber v1 carries FREE. Search reads the label alone.")
+
+(defun picker-badge-segs (badge)
+  "BADGE, a (TEXT . TONE) pair, as the segments that follow a label: a space, then the chip."
+  (destructuring-bind (text . tone) badge
+    (list (seg " " :muted)
+          (if (grounds-shown-p)
+              (make-seg :text (format nil " ~a " text) :bold t
+                        :tone (vstyle :fg (visual-style-fg (style-for-tone :sheet-chip-on)))
+                        :ground (vstyle :bg (visual-style-fg (style-for-tone tone))))
+              (make-seg :text text :tone tone :bold t)))))
+
 (defun prefix-picker-row (row prefix &key (field :label) (offset 0))
   "Give ROW an explicit muted PREFIX in FIELD at OFFSET, returning ROW."
   (let ((text (ecase field (:label row.label) (:key row.key))))
@@ -98,12 +114,16 @@ what a search reads and a test names; the function is only the look.")
   row)
 
 (defun picker-field-segs (row field text tone &aux (prefix (picker-row-prefix row)))
-  "TEXT's segments in TONE, with ROW's explicit prefix in the muted tone."
-  (if (and prefix (eq field (first prefix)))
-      (let ((offset (second prefix)))
-        (append (when (plusp offset) (list (seg (subseq text 0 offset) tone)))
-                (list (seg (third prefix) :muted) (seg (subseq text offset) tone))))
-      (list (make-seg :text text :tone tone))))
+  "TEXT's segments in TONE, with ROW's explicit prefix in the muted tone, and after
+the label its badge (PICKER-ROW-BADGE)."
+  (append
+   (if (and prefix (eq field (first prefix)))
+       (let ((offset (second prefix)))
+         (append (when (plusp offset) (list (seg (subseq text 0 offset) tone)))
+                 (list (seg (third prefix) :muted) (seg (subseq text offset) tone))))
+       (list (make-seg :text text :tone tone)))
+   (when-let (badge (and (eq field :label) (picker-row-badge row)))
+     (picker-badge-segs badge))))
 
 (defstruct picker-dialog
   "A docked list dialog."
