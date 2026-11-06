@@ -5109,8 +5109,13 @@ update poller and the folder's peripherals, TRIM as START-GATEWAY takes it.
   ;; The listener is bound: advertise the endpoint in the store's holder
   ;; sidecar so a contender that loses the ownership lock attaches here
   ;; instead of refusing. No-op when this process owns no open store
-  ;; (gateway tests run against fixture state).
-  (ignore-errors (nlk::publish-store-endpoint bound))
+  ;; (gateway tests run against fixture state). One that fails is said: an
+  ;; owner whose sidecar names no port serves where no shell looks, and each
+  ;; one waits on it saying only that no owner advertises.
+  (with-handlers ((error (condition)
+                    (format *error-output* "~&gateway: port ~d not published in the store's holder sidecar: ~a~%"
+                            bound condition)))
+    (nlk::publish-store-endpoint bound))
   (nlk:note-boot-phase "endpoint-published" bound)
   ;; The background-exec watcher: 200 ms tick projecting live-only shell
   ;; output frames and appending the durable exit fact per FINAL update.

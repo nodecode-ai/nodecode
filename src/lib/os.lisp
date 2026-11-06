@@ -1799,13 +1799,38 @@ FlushFileBuffers on Windows. Best effort; a refusal is not an error."
     #-win32 (ignore-errors (sb-posix:fsync fd))
     #+win32 (ignore-errors (%flush-file-buffers (sb-win32::get-osfhandle fd)))))
 
+(defparameter *rename-patience-seconds* 2
+  "How long a rename over a file asks again while Windows refuses it because
+another process has that file open (RENAME-OVER).")
+
+(defun rename-over (from to)
+  "rename(2) of the native name FROM over the native name TO: MoveFileEx with
+replacement on Windows, asked again for up to *RENAME-PATIENCE-SECONDS* while
+another process has TO open. => T, or NIL and the errno it ended on."
+  ;; Windows refuses to replace a file any process holds open without
+  ;; FILE_SHARE_DELETE -- every SBCL OPEN -- with access denied (5) or a
+  ;; sharing violation (32), for as long as that reader holds it; POSIX
+  ;; replaces it under the reader. A reader holds a sidecar for the moments
+  ;; one read takes, and readers come often: every shell waiting on a store
+  ;; polls its holder sidecar each 5 ms, and an owner whose port publication
+  ;; they refused served on a port no shell could find.
+  (loop with deadline = (+ (get-internal-real-time)
+                           (round (* *rename-patience-seconds* internal-time-units-per-second)))
+        do (multiple-value-bind (ok errno) (sb-unix:unix-rename from to)
+             (when ok (return t))
+             (unless (and #+win32 (member errno '(5 32)) #-win32 nil
+                          (< (get-internal-real-time) deadline))
+               (return (values nil errno)))
+             (sleep 0.005))))
+
 (defun replace-file (from to)
   "Rename FROM over TO atomically, TO replaced if it exists: rename(2), and
-on Windows MoveFileEx with replacement."
+on Windows MoveFileEx with replacement, which waits out a reader of TO
+(RENAME-OVER)."
   ;; Not CL:RENAME-FILE, which merges the target's missing type from the
   ;; source — "nodecode" would quietly stay "nodecode.tmp-<pid>". => TO.
   (multiple-value-bind (ok errno)
-      (sb-unix:unix-rename (uiop:native-namestring from) (uiop:native-namestring to))
+      (rename-over (uiop:native-namestring from) (uiop:native-namestring to))
     (unless ok
       (error "cannot replace ~a with ~a: ~a" to from
              (or (ignore-errors (sb-int:strerror errno)) errno)))
