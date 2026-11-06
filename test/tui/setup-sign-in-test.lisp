@@ -5,9 +5,10 @@
 ;;;; Claims:
 ;;;;   1. A box not signed in opens the walk on nodecode.ai's sign-in: the
 ;;;;      first row, where the list rests, over the providers a key connects.
-;;;;   2. Enter on it is /login's choice in the walk's words; Esc returns to
-;;;;      the providers. A choice opens a panel that shows the page and the
-;;;;      code, and the sign-in landing goes on to nodecode.ai's models.
+;;;;   2. Enter on it starts /login's sign-in, for API credit, the one mode
+;;;;      offered: a panel in the walk's words shows the page and the code, Esc
+;;;;      returns to the providers, and the sign-in landing goes on to
+;;;;      nodecode.ai's models.
 ;;;;   3. A failed sign-in says why over the providers; an answer landing after
 ;;;;      Esc moves nothing.
 ;;;;   4. Once a key is saved the row heads what is left to connect, under
@@ -34,6 +35,8 @@ ACCOUNT-LOGIN-FROM-SHELL, nothing sent to a gateway."
        ,@body)))
 
 (deftest setup-walk-opens-on-nodecode-sign-in (with-setup-box ((format nil "{}~%")))
+  ;; Plans are not sold (+ACCOUNT-OFFERED-MODES+), so no choice stands between the row and the
+  ;; browser.
   (with-frame-model (model 100 30 :session-id "setup-sign-in")
     (with-held-sign-in (mode then)
       (run-setup model)
@@ -43,16 +46,14 @@ ACCOUNT-LOGIN-FROM-SHELL, nothing sent to a gateway."
         (is (eq :own-model (nle::picker-row-tone (first dialog.rows))) "in our tone")
         (is (= 0 (nle::connect-dialog-selection dialog)) "the list rests on it: Enter signs in")
         (nle::picker-dialog-key model :enter)
-        (let ((choice model.dialog))
-          (is (equal "Sign in to nodecode.ai" (nle::picker-dialog-title choice)) "Enter asks /login's question")
-          (is (equal '("subscription" "api") (mapcar #'nle::picker-row-value (nle::picker-dialog-rows choice))) "a subscription or API credits")
-          (is (equal "Step 1. Sign in to nodecode.ai · step 1/3" (nle::picker-dialog-context choice)) "in the walk's words")
-          (is (search "esc back" (nle::picker-dialog-hint choice)) "Esc says it goes back"))
+        (is (equal "api" mode) "Enter starts the API-credit sign-in: no plan is sold, so nothing asks which")
+        (is (eq :setup-sign-in (nle::picker-dialog-kind model.dialog)) "a panel waits for the browser")
         (nle::picker-dialog-key model :escape)
         (is (nle::connect-dialog-p model.dialog) "Esc returns to the providers")
         (is (nle::chat-model-setup-walk model) "and the walk goes on")
-        (dialog-keys model :enter :enter)
-        (is (equal "subscription" mode) "Enter on Subscription starts that sign-in")
+        (setf mode nil)
+        (dialog-keys model :enter)
+        (is (equal "api" mode) "Enter starts it again")
         (let ((panel model.dialog))
           (is (eq :setup-sign-in (nle::picker-dialog-kind panel)) "a panel waits for the browser")
           (is (equal "Step 1. Sign in to nodecode.ai · step 1/3" (nle::picker-dialog-context panel)))
@@ -72,18 +73,19 @@ ACCOUNT-LOGIN-FROM-SHELL, nothing sent to a gateway."
   (with-frame-model (model 100 30 :session-id "setup-sign-in-fails")
     (with-held-sign-in (mode then)
       (run-setup model)
-      (dialog-keys model :enter :enter)
+      (dialog-keys model :enter)
       (funcall then model (sign-in-answer "waiting" "url" "https://nodecode.ai/link/k3y" "code" "ABCD-1234"))
       (funcall then model (sign-in-answer "failed" "text" "nodecode.ai sign-in: the code expired"))
       (is (nle::connect-dialog-p model.dialog) "a failed sign-in returns to the providers")
       (is (search "the code expired" (or (nle::status-said model) "")) "and says why")
-      (dialog-keys model :enter :down :enter)
-      (is (equal "api" mode) "API credits starts that sign-in")
+      (setf mode nil)
+      (dialog-keys model :enter)
+      (is (equal "api" mode) "Enter starts the sign-in again")
       (is (eq :setup-sign-in (nle::picker-dialog-kind model.dialog)))
       (funcall then model (list :error "connection refused"))
       (is (nle::connect-dialog-p model.dialog) "a start nothing answered returns to the providers")
       (is (search "connection refused" (or (nle::status-said model) "")) "and says so")
-      (dialog-keys model :enter :enter)
+      (dialog-keys model :enter)
       (nle::picker-dialog-key model :escape)
       (let ((providers model.dialog))
         (is (nle::connect-dialog-p providers) "Esc on the panel returns to the providers")
