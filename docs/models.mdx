@@ -103,7 +103,7 @@ A sign-in never changes your default model. Pick one in `/models`: nodecode, the
 
 | Model | Id | What it is |
 | --- | --- | --- |
-| Cyber v1 | `foresight-cyber-v1` | The security model. A chat model: 1M context, prompt and output together, and 16K output unless a call asks for more. A session can run on it. |
+| Cyber v1 | `nodecode-cyber-v1` | The security model. A chat model: 1M context, prompt and output together, and 16K output unless a call asks for more. A session can run on it. |
 | Image v1 | `foresight-image-v1` | The image model, at `POST /v1/images/generations`. The images come back in the body as `b64_json`, never as URLs. |
 | Decide v1 | `foresight-decide-v1` | The classifier. It answers named questions about one state as probabilities, never prose. 32K context. |
 
@@ -119,7 +119,7 @@ A sign-in never changes your default model. Pick one in `/models`: nodecode, the
 ```sh
 export ANTHROPIC_BASE_URL=https://api.nodecode.ai
 export ANTHROPIC_AUTH_TOKEN=sk-nc-...
-export ANTHROPIC_MODEL=foresight-cyber-v1
+export ANTHROPIC_MODEL=nodecode-cyber-v1
 claude
 ```
 
@@ -130,7 +130,7 @@ https://nodecode.ai/account/keys shows the same lines.
 Add this to `~/.codex/config.toml`, then `export NODECODE_API_KEY=sk-nc-...` and run `codex`:
 
 ```toml
-model = "foresight-cyber-v1"
+model = "nodecode-cyber-v1"
 model_provider = "nodecode"
 
 [model_providers.nodecode]
@@ -139,7 +139,7 @@ base_url = "https://api.nodecode.ai/v1"
 env_key = "NODECODE_API_KEY"
 ```
 
-Codex opens with "Model metadata for `foresight-cyber-v1` not found": that is harmless.
+Codex opens with "Model metadata for `nodecode-cyber-v1` not found": that is harmless.
 
 ## Default and auxiliary model
 
