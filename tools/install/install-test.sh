@@ -281,3 +281,23 @@ grep -q 'kept 3333333: something runs from it' "$root/output-prune" || pfail 'th
 grep -q 'kept 4444444: something runs from it' "$root/output-prune" || pfail 'the held release was not said'
 [ ! -e "$prune/.install-lock" ] || pfail 'the install lock was left behind'
 printf '%s\n' 'install-test: a link removes older releases but the way back, a fresh one and any in use'
+
+# A `nodecode' earlier on PATH shadows the install, and the warning says where to look instead.
+# With --no-modify-path no link is laid in ~/.local/bin, so it must name the install's own
+# current/ folder: pointing at ~/.local/bin, which holds nothing, is advice that cannot work.
+shadow="$root/shadow"
+mkdir -p "$shadow/bin" "$shadow/home"
+printf '%s\n' '#!/bin/sh' 'exit 0' > "$shadow/bin/nodecode"
+chmod +x "$shadow/bin/nodecode"
+PATH="$shadow/bin:$fake_bin:$PATH" \
+HOME="$shadow/home" \
+NODECODE_HOME="$root/install-shadow" \
+NODECODE_VERSION=test \
+NODECODE_BASE_URL="file://$root/release" \
+  sh "$(dirname "$0")/install.sh" --no-modify-path > "$root/output-shadow" 2>&1
+if ! grep -q "put $root/install-shadow/current ahead of it in PATH" "$root/output-shadow"; then
+  cat "$root/output-shadow" >&2
+  printf '%s\n' 'install-test: FAIL a shadowed --no-modify-path install points at a folder it never linked' >&2
+  exit 1
+fi
+printf '%s\n' 'install-test: a shadowed --no-modify-path install names its own current/ folder'
