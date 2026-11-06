@@ -13,7 +13,7 @@ summary: "Every nodecode command and option, the rules for combining them, and t
 <Commands first="nodecode">
 <Command line="nodecode" tty="Yes" show="home">Opens the shell on this home's organism. Starts the organism when none runs.</Command>
 <Command line="nodecode serve [--store PATH]" tty="No" show="serve">Runs the organism with no shell. Exits at once when another process owns the store.</Command>
-<Command line="nodecode login [--subscription | --api]" tty="No" show="help-login">Signs in to your nodecode.ai account in a browser, for a plan's requests or API credits. Saves the key and prints the account's meter.</Command>
+<Command line="nodecode login" tty="No" show="help-login">Signs in to your nodecode.ai account in a browser, to run on its API credit. Saves the key and prints the account's meter.</Command>
 <Command line="nodecode machine link [CODE]" tty="No" show="help-machine">Links this machine to your nodecode.ai account with a code from its Machines page.</Command>
 <Command line="nodecode setup" tty="Yes" show="setup">Opens the shell with setup on the first frame.</Command>
 <Command line="nodecode import [WORLD] [FLAGS]" tty="Yes" show="import-only">Reads another coding agent's home into this one. A preview until `--yes`.</Command>
@@ -151,7 +151,7 @@ In the shell, `/import` lists the repositories held, each one to take back.
 ## login
 
 ```sh
-nodecode login [--subscription | --api]
+nodecode login
 nodecode machine link [CODE]
 ```
 
@@ -159,9 +159,7 @@ nodecode machine link [CODE]
 
 | Form | Signs in for |
 | --- | --- |
-| `nodecode login` | It asks: `1` Subscription, your plan's requests, or `2` API credits, pay per token from your balance. |
-| `nodecode login --subscription` | A plan's requests. |
-| `nodecode login --api` | API credits. |
+| `nodecode login` | API credits, pay per token from your balance. It asks nothing, so a script can run it. `--api` says the same. |
 | `nodecode machine link [CODE]` | The Machines page's link: bring the code from https://nodecode.ai/account/machines, or omit CODE to get one to type there, then approve the machine. |
 | `nodecode logout` | Signs this machine out: the key leaves this home's `auth.json` and the machine link is forgotten. The key stays on the account until you remove the machine at https://nodecode.ai/account/machines. |
 
@@ -172,11 +170,6 @@ In the shell, `/login` does the same. From then on the footer shows the account'
 <What>`nodecode login CODE` with a code from the Machines page</What>
 <Why>Exit code 2. <Said>{"nodecode: login signs in with a browser and takes no CODE; a code from the Machines page is nodecode machine link CODE"}</Said></Why>
 <Instead>`nodecode machine link CODE`.</Instead>
-</Mistake>
-<Mistake>
-<What>`nodecode login` from a script, with no flag</What>
-<Why>No terminal can answer which one, so it is refused, naming both flags.</Why>
-<Instead>Put `--subscription` or `--api` on the line.</Instead>
 </Mistake>
 </Mistakes>
 

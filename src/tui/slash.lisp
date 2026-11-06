@@ -148,11 +148,11 @@
         ;; headless arm: a room or a page signing this home in to someone's account would
         ;; hand that account this machine's key.
         (make-slash-command "login"
-                            "Sign in to your nodecode.ai account: a subscription or API credits"
+                            "Sign in to your nodecode.ai account, to run on its API credit"
                             :dispatch :args :op 'slash-login-op
                             :session nil
                             :help-detail
-                            "It asks which one; either way nodecode.ai opens in your browser with this machine's code in the page, and you sign in with your nodecode.ai account and allow the machine. Over ssh, open the page the status line names on any device. The key is saved in this home's auth.json, and the footer shows the account's meter from then on: the plan's requests left, or the API credit; click it for /account")
+                            "nodecode.ai opens in your browser with this machine's code in the page, and you sign in with your nodecode.ai account and allow the machine. Over ssh, open the page the status line names on any device. The key is saved in this home's auth.json, and the footer shows the account's meter from then on; click it for /account")
         ;; /login's mirror (tui/account-login.lisp SLASH-LOGOUT-OP). No headless arm either: a
         ;; room or a page must not sign the owner's home out.
         (make-slash-command "logout"
