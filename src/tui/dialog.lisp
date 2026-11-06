@@ -90,11 +90,25 @@ row's segments, at most ROOM columns from the panel's content edge, and the
 tone whose ground the row stands on, or NIL for the panel's. Its slots stay
 what a search reads and a test names; the function is only the look.")
 
-(nlk:define-side-table picker-row-badge (:weakness :key)
-  "A row's live-only badge: (TEXT . TONE), a chip one space after its label -- the
-TONE's colour behind the chip ink where grounds paint, else TEXT bold in TONE --
+;;; A row's badge is a weak DEFVAR table rather than a side table or a slot: a
+;;; running image takes either of those only at its next boot, and this one
+;;; goes live in place.
+(defvar *picker-row-badges* (make-hash-table :test #'eq :weakness :key :synchronized t)
+  "ROW -> its live-only badge: (TEXT . TONE), a chip one space after its label --
+the TONE's colour behind the chip ink where grounds paint, else TEXT bold in TONE --
 counted in the label's column, so the details beside it stay aligned. /models'
 free Cyber v1 carries FREE. Search reads the label alone.")
+
+(defun picker-row-badge (row)
+  "ROW's badge (*PICKER-ROW-BADGES*), a (TEXT . TONE) pair, or NIL."
+  (values (gethash row *picker-row-badges*)))
+
+(defun (setf picker-row-badge) (badge row)
+  "Give ROW BADGE, a (TEXT . TONE) pair; NIL takes its badge away."
+  (if badge
+      (setf (gethash row *picker-row-badges*) badge)
+      (remhash row *picker-row-badges*))
+  badge)
 
 (defun picker-badge-segs (badge)
   "BADGE, a (TEXT . TONE) pair, as the segments that follow a label: a space, then the chip."

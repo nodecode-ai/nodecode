@@ -410,20 +410,6 @@ and the API base it is for, as (values KEY BASE); NIL with none."
               "Cyber v1 at no cost once the account has topped up at https://nodecode.ai/account/top-up"
               "Cyber v1 at no cost from this CLI, 256K context, 2 at once (nodecode-free in /models)")))
 
-(defun account-row-pays (provider)
-  "What a /models row of nodecode.ai's PROVIDER says pays for it, from this shell's meter: free
-for the free key's, else the plan or the credit; NIL before the meter is read."
-  (if (string-equal provider +free-provider+)
-      (if (eq :danger (getf (getf *account-meter* :free) :tone)) "free once topped up" "free")
-      (when-let (usage (getf *account-meter* :usage))
-        (let ((pays (json-value usage :string "pays")))
-          (cond ((equal pays "plan") "from the plan")
-                ((equal pays "balance")
-                 (format nil "from credit~@[ ~a~]"
-                         (when-let (money (first (account-balance-rows usage))) (account-money money))))
-                ;; a free key saved as the account's own, before keys came apart
-                ((equal pays "free") "free key")
-                (t "needs credit"))))))
 
 (defvar *account-usage* nil
   "The account's meter as this organism last read it: (:usage HT :read-at UT) or (:error TEXT
