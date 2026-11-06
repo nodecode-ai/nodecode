@@ -459,6 +459,22 @@ DISPLAY is the model name when nonblank; provider names never fill it."
        (sort placeholders #'string-lessp
              :key (lambda (row) (getf row :provider)))))))
 
+(defun account-row-pays (provider &aux (meter (symbol-value '*account-meter*)))
+  "What a /models row of nodecode.ai's PROVIDER says pays for it, from this shell's meter
+(account-login.lisp's *ACCOUNT-METER*, read by name: that file loads after this one): free for
+the free key's, else the plan or the credit; NIL before the meter is read."
+  (if (string-equal provider +free-provider+)
+      (if (eq :danger (getf (getf meter :free) :tone)) "free once topped up" "free")
+      (when-let (usage (getf meter :usage))
+        (let ((pays (json-value usage :string "pays")))
+          (cond ((equal pays "plan") "from the plan")
+                ((equal pays "balance")
+                 (format nil "from credit~@[ ~a~]"
+                         (when-let (money (first (account-balance-rows usage))) (account-money money))))
+                ;; a free key saved as the account's own, before keys came apart
+                ((equal pays "free") "free key")
+                (t "needs credit"))))))
+
 (defun build-models-catalog-picker-rows (choices)
   "CHOICES, rows shaped as MODEL-CHOICES answers them, as /models picker
 rows; NIL when there are none, and the caller falls back to the textual
