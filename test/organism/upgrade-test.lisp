@@ -301,3 +301,71 @@ before package.lisp exported it."
           (nlk::converge (list (cons plan new-root)) :version "t4")
           (is (eq (find-symbol "NEW" "UPG-ORDER-PKG") (funcall 'nodecode.evolved::upg-order-f)) "the user reads the new export")
           (is (equal "t4" nlk::*effective-version*)))))))
+
+(defun converge-stray-release (setup check)
+  "Converge a release that exports NEW from upg-stray-pkg, defines it there
+and calls it unqualified from upg-stray-user, a package using upg-stray-pkg,
+once SETUP, a function of no arguments, has run over the old tree's packages
+and definitions. => what CHECK answers, called before the packages go with
+the refusal's detail, NIL when the release went live."
+  (flet ((tree (exports lib user)
+           (list (cons "src/nodecode.asd"
+                       "(defsystem \"upg-stray\" :components ((:module \"src\" :serial t :components ((:file \"pkg\") (:file \"lib\") (:file \"user\")))))")
+                 (cons "src/src/pkg.lisp"
+                       (format nil "(defpackage #:upg-stray-pkg (:use #:cl) (:export ~{#:~a~^ ~}))~%(defpackage #:upg-stray-user (:use #:cl #:upg-stray-pkg))~%" exports))
+                 (cons "src/src/lib.lisp" (upgrade-source "upg-stray-pkg" lib))
+                 (cons "src/src/user.lisp" (upgrade-source "upg-stray-user" user))))
+         (evaluate (package text)
+           (eval (let ((*package* (find-package package))) (read-from-string text)))))
+    (nlk:with-cleanup ((dolist (name '("UPG-STRAY-USER" "UPG-STRAY-PKG"))
+                         (when (find-package name) (delete-package name))))
+      (eval '(defpackage #:upg-stray-pkg (:use #:cl) (:export #:old)))
+      (eval '(defpackage #:upg-stray-user (:use #:cl #:upg-stray-pkg)))
+      (evaluate "UPG-STRAY-PKG" "(defun old () :old)")
+      (evaluate "UPG-STRAY-USER" "(defun upg-stray-f () (old))")
+      (funcall setup)
+      (with-temp-trees ((old "stray-old") (new "stray-new"))
+        (write-upgrade-tree old (tree '("old") "(defun old () :old)" "(defun upg-stray-f () (old))"))
+        (write-upgrade-tree new (tree '("old" "new") (format nil "(defun old () :old)~%(defun new () :new)")
+                                      "(defun upg-stray-f () (new))"))
+        (let* ((old-root (truename (merge-pathnames "src/src/" old)))
+               (new-root (truename (merge-pathnames "src/src/" new)))
+               (nlk::*source-root* old-root)
+               (nlk::*shipped-definitions* nil)
+               (nlk::*effective-version* nil)
+               (nlk::*staged-source-root* nil)
+               (plan (nlk::classify-upgrade old-root new-root)))
+          (funcall check
+                   (handler-case (progn (nlk::converge (list (cons plan new-root)) :version "t-stray") nil)
+                     (nlk:upgrade-refusal (refusal) (nlk:upgrade-refusal-detail refusal)))))))))
+
+(defun stray-user-symbol (name)
+  (find-symbol name "UPG-STRAY-USER"))
+
+(deftest upgrade-converge-takes-a-new-export-over-a-name-read-before-it ()
+  "A release exporting a name it now defines goes live in an image whose
+using package already holds that name as a symbol of its own that names
+nothing -- the classifier read the release's caller of it under this
+image's packages, or an eval typed it, before the export existed. The
+export takes its place, and the caller runs the release's definition."
+  (converge-stray-release
+   (lambda () (intern "NEW" "UPG-STRAY-USER"))
+   (lambda (refusal)
+     (is (null refusal) (format nil "the release goes live: ~a" refusal))
+     (is (eq (stray-user-symbol "NEW") (find-symbol "NEW" "UPG-STRAY-PKG")) "upg-stray-user reads the export, not the stray")
+     (is (eq :new (funcall (stray-user-symbol "UPG-STRAY-F"))) "the caller runs the release's definition"))))
+
+(deftest upgrade-converge-refuses-an-export-over-a-name-defined-here ()
+  "The same release, where the using package's own symbol of that name is a
+function this image defined: the release waits for the restart, its refusal
+names that definition in one line, and the operator's function stands."
+  (converge-stray-release
+   (lambda () (setf (fdefinition (intern "NEW" "UPG-STRAY-USER")) (lambda () :mine)))
+   (lambda (refusal)
+     (is (and refusal
+              (search "upg-stray-pkg would export new, but upg-stray-user::new is a function here" refusal)
+              (not (find #\Newline refusal)))
+         (format nil "the refusal names the definition in the way: ~a" refusal))
+     (is (eq :mine (funcall (stray-user-symbol "NEW"))) "the operator's function stands")
+     (is (not (eq :external (nth-value 1 (find-symbol "NEW" "UPG-STRAY-PKG")))) "upg-stray-pkg does not export new")
+     (is (eq :old (funcall (stray-user-symbol "UPG-STRAY-F"))) "the caller is the old tree's"))))
