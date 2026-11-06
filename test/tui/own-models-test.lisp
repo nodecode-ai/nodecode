@@ -26,14 +26,14 @@
 nodecode.ai's chat and image model, and zeta's one model."
   `(:nodecode (:fetched_at ,now :base_url "https://api.nodecode.example/v1" :error :null
                :models #((:id "nodecode-cyber-v1" :context_window 1048576 :kind "chat")
-                         (:id "foresight-image-v1" :kind "image")))
+                         (:id "nodecode-image-v1" :kind "image")))
     :zeta (:fetched_at ,now :base_url "https://zeta.example/v1" :error :null
            :models #((:id "a-1" :display "Alpha One")))))
 
 (deftest provider-listing-keeps-a-models-kind ()
   (let ((rows (nle::parse-provider-listing
-               "{\"data\":[{\"id\":\"nodecode-cyber-v1\",\"kind\":\"chat\"},{\"id\":\"foresight-image-v1\",\"kind\":\"image\"},{\"id\":\"plain\"}]}")))
-    (is (equal '(("foresight-image-v1" "image") ("nodecode-cyber-v1" "chat") ("plain" nil))
+               "{\"data\":[{\"id\":\"nodecode-cyber-v1\",\"kind\":\"chat\"},{\"id\":\"nodecode-image-v1\",\"kind\":\"image\"},{\"id\":\"plain\"}]}")))
+    (is (equal '(("nodecode-cyber-v1" "chat") ("nodecode-image-v1" "image") ("plain" nil))
                (mapcar (lambda (row) (list (getf row :id) (getf row :kind))) rows)) "each row keeps the kind its listing names, NIL where it names none")))
 
 (deftest models-root-pins-own-models ()
@@ -44,7 +44,7 @@ nodecode.ai's chat and image model, and zeta's one model."
                                     (nle::open-models-reasoning-picker (model) nil))
           (let ((rows (nle::models-catalog-picker-rows)))
             (is (equal '("nodecode" "nodecode-cyber-v1") (nle::picker-row-value (first rows))) "our own model leads every model list")
-            (is (notany (lambda (row) (equal '("nodecode" "foresight-image-v1") (nle::picker-row-value row))) rows) "an image model is offered no turn")
+            (is (notany (lambda (row) (equal '("nodecode" "nodecode-image-v1") (nle::picker-row-value row))) rows) "an image model is offered no turn")
             (is (find '("zeta" "a-1") rows :key #'nle::picker-row-value :test #'equal) "a listing that names no kind keeps its models"))
           (nle::open-models-provider-picker model)
           (let* ((dialog model.dialog)
