@@ -35,24 +35,22 @@ CHECK YOUR BOX FIRST — LINUX
     sudo apt install -y ca-certificates git libsqlite3-0 openssl
 
 CHECK YOUR BOX FIRST — MACOS
-  Apple Silicon, macOS 14 or newer. Paste this:
+  Apple Silicon, macOS 15 or newer. Paste this:
 
     sw_vers -productVersion
-    printf '%-18s ' openssl@3
-    /opt/homebrew/opt/openssl/bin/openssl version 2>/dev/null | grep -q '^OpenSSL 3' && echo present || echo "MISSING, or not 3.x"
+    printf '%-18s ' openssl@3; [ -e /opt/homebrew/opt/openssl@3/lib/libssl.3.dylib ] && echo present || echo MISSING
+    printf '%-18s ' zstd; [ -e /opt/homebrew/opt/zstd/lib/libzstd.1.dylib ] && echo present || echo MISSING
     printf '%-18s ' git; command -v git >/dev/null && echo present || echo MISSING
 
-  OpenSSL 3 from Homebrew is required: the build loads it by that path, and
-  without it the executable does not start at all. Its CA bundle comes with
-  it, so the provider list is not empty on a Mac for that reason.
-    brew install openssl@3
+  Homebrew's openssl@3 and zstd are required: the build opens both by their
+  Homebrew paths, and without either the executable does not start at all.
+  The CA bundle comes with openssl@3, so the provider list is not empty on a
+  Mac for that reason.
+    brew install openssl@3 zstd
 
-  Presence is not enough: Homebrew's unversioned `openssl' now moves to 4.x,
-  and OpenSSL 4 removed ASN1_STRING_data, which this build calls. A 4.x
-  library loads and the executable answers, then every TLS call — sign-in
-  included — fails with `The alien function "ASN1_STRING_data" is undefined'.
-  If /opt/homebrew/opt/openssl is not 3.x, point it at the keg:
-    ln -sfn "$(cd /opt/homebrew/opt/openssl@3 && pwd -P)" /opt/homebrew/opt/openssl
+  It is openssl@3 by name: the build opens that formula's own path. Homebrew's
+  unversioned `openssl' is OpenSSL 4 now, which removed a function this build
+  calls. Having it installed is fine; the build never opens it.
   git comes with the Xcode command line tools (xcode-select --install).
   sqlite3 is the system's own; nothing to install.
 

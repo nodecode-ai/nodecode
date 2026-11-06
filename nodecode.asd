@@ -46,6 +46,17 @@ of stacking."
                                                :ignore-error-status t))))))
       (format nil "~a~@[+~a~]" base commit))))
 
+;; Which OpenSSL cl+ssl opens on an Apple Silicon Mac: Homebrew's openssl@3, by
+;; its own versioned path, never the unversioned `openssl' Homebrew now points
+;; at OpenSSL 4 (src/lib/openssl.lisp). A system of its own because it must
+;; load before cl+ssl does, and nodecode's own files load after every
+;; dependency.
+(defsystem "nodecode/openssl"
+  :description "On Apple Silicon, cl+ssl opens Homebrew's openssl@3 by its versioned path."
+  :license "MIT"
+  :depends-on ("cl+ssl/config")
+  :components ((:file "src/lib/openssl")))
+
 (defsystem "nodecode"
   :description "A self-modifying agent organism in SBCL: gateway, session, turn loop, and heredity."
   :license "MIT"
@@ -90,7 +101,10 @@ of stacking."
   ;; stream through it (it was already in the image through hunchentoot, so
   ;; nothing new is fetched); alexandria because the waist and the cells
   ;; read and write whole files through it (it came in through dexador).
-  :depends-on ("bordeaux-threads"
+  ;; nodecode/openssl comes first: it names the OpenSSL that cl+ssl, which
+  ;; dexador loads, will open.
+  :depends-on ("nodecode/openssl"
+               "bordeaux-threads"
                "shasht"
                "cl-ppcre"
                "dexador"
