@@ -189,6 +189,20 @@ if [ "$platform" = darwin ]; then
   /opt/homebrew/bin/brew install$formulae
   then run this installer again."
   fi
+  ssl_version="$(/opt/homebrew/opt/openssl/bin/openssl version 2>/dev/null | awk '{print $2}')"
+  case "$ssl_version" in
+    ''|3.*) ;;
+    *)
+      target="$(cd /opt/homebrew/opt/openssl@3 2>/dev/null && pwd -P)"
+      die "nodecode needs Homebrew's OpenSSL 3 at /opt/homebrew/opt/openssl, and that path is OpenSSL $ssl_version.
+  OpenSSL 4 removed ASN1_STRING_data, which this build calls: it starts, then
+  every TLS call — sign-in included — fails with
+  'The alien function \"ASN1_STRING_data\" is undefined'.
+  Point that path at the 3.x keg, then run this installer again:
+    brew install openssl@3
+    ln -sfn \"${target:-/opt/homebrew/opt/openssl@3}\" /opt/homebrew/opt/openssl"
+      ;;
+  esac
   [ -e /opt/homebrew/etc/openssl@3/cert.pem ] || say "WARNING: no CA bundle at /opt/homebrew/etc/openssl@3/cert.pem —
   brew reinstall ca-certificates, or the provider list on first run will be
   EMPTY with no error on screen."
