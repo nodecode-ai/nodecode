@@ -1566,15 +1566,20 @@ read answered, the highlight on SEAT's row when it is listed."
   "Create a fresh session at the gateway — a fork of PARENT when one is named,
 which the server anchors at the parent's current head — and switch MODEL to
 it. => NIL; the switch owns its composer status."
+  (switch-gateway-session model (create-fresh-gateway-session model parent)))
+
+(defun create-fresh-gateway-session (model &optional parent)
+  "Create a fresh session at MODEL's gateway -- a fork of PARENT when one is
+named -- and answer its id, switching nothing: one control call, which a
+caller off the loop makes before the loop switches (LAND-ACCOUNT-CHANGE)."
   ;; A fresh session opens in this shell's folder; a fork names none and works
   ;; where its parent does (NLK:STANDBY-SESSION).
-  (switch-gateway-session
-   model (gethash "session_id"
-                  (gateway-model-http-call
-                   model :post "/api/gateway/sessions"
-                   (json-object "session_id" (fresh-session-id)
-                                :opt "parent" parent
-                                :opt "cwd" (and (null parent) (workspace-directory)))))))
+  (gethash "session_id"
+           (gateway-model-http-call
+            model :post "/api/gateway/sessions"
+            (json-object "session_id" (fresh-session-id)
+                         :opt "parent" parent
+                         :opt "cwd" (and (null parent) (workspace-directory))))))
 
 (defun slash-clear-op (model)
   "Start a fresh session and switch to it; NIL on success, refusal text on failure."

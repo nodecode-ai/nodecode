@@ -443,6 +443,15 @@ again -- (:usage HT :read-at UT) or (:error TEXT :read-at UT); NIL with no key."
   "The organism's sign-in /login started: (:state :waiting | :signed-in | :failed, :mode, :url,
 :code, :opened, :text, :at). Live-only; the shell that started it watches it here.")
 
+(defun broadcast-account-changed (account &optional text)
+  "Tell every shell attached to this organism that its home's nodecode.ai sign-in moved:
+ACCOUNT is \"signed_out\" or \"signed_in\", TEXT the words that say so. => how many were told."
+  ;; It rides model_changed, session-less, and not a frame kind of its own: a shell of an older
+  ;; build takes a kind it does not know for a permanent transport error, and reads this one as
+  ;; what it also is -- the models a turn reaches moved with the key -- and reads its footer
+  ;; again. A shell of this build reads `account' as well (LAND-ACCOUNT-CHANGE).
+  (nth-value 1 (broadcast-organism "model_changed" (json-object "account" account :opt "text" text))))
+
 (defun account-login-start (mode &key (request #'account-login-request) (open #'open-target))
   "Begin MODE's browser sign-in for this organism's home -- claim, open the page where this
 machine has a display, ask after it on a thread of its own -- and answer *ACCOUNT-LOGIN* at once.
@@ -479,6 +488,8 @@ A sign-in already waiting is answered again, not claimed twice."
                             (text (format nil "Signed in to nodecode.ai~@[ on ~a~]~@[ · ~a~]~@[ · default model ~a~]"
                                           name meter lead)))
                        (settle :signed-in text)
+                       ;; every shell on the home reads its footer's meter again
+                       (broadcast-account-changed "signed_in" text)
                        (notice text)))
                  (error (condition)
                    (let ((text (format nil "nodecode.ai sign-in: ~a" condition)))
@@ -566,17 +577,67 @@ link went; signed out already, it says so and writes nothing."
                        (own-provider-p (ignore-errors (shared-model-pin)))))
            t)))))
 
+(defun account-logout-json (&optional note)
+  "Sign this home out in this process (ACCOUNT-LOGOUT) and answer ACCOUNT-JSON, `logout' the
+words -- NOTE after them when something went -- and `signed_out' whether a key or a link went."
+  (multiple-value-bind (text out) (account-logout)
+    (let ((json (account-json)))
+      (setf (gethash "logout" json) (if (and out note) (format nil "~a · ~a" text note) text)
+            (gethash "signed_out" json) (if out t :false))
+      json)))
+
 (define-gateway-route handle-gateway-account-logout-http (env)
   "POST /api/gateway/account/logout -- sign this organism's home out of nodecode.ai
-(ACCOUNT-LOGOUT), and answer ACCOUNT-JSON with what happened in `logout'."
+(ACCOUNT-LOGOUT), answer ACCOUNT-JSON with what happened in `logout', and, when a key or a
+link went, tell every attached shell (BROADCAST-ACCOUNT-CHANGED): each one drops its meter and
+clears its screen, not only the one that asked."
   (:route :post "/api/gateway/account/logout" "account sign-out")
-  (let* ((text (account-logout)) (json (account-json)))
-    (setf (gethash "logout" json) text)
+  (let ((json (account-logout-json)))
+    (when (eq t (gethash "signed_out" json))
+      (broadcast-account-changed "signed_out" (gethash "logout" json)))
     json))
 
+(defun route-missing-p (condition)
+  "Whether CONDITION, a GATEWAY-HTTP-ERROR, is an organism saying it has no such route: one of
+an older build."
+  (and (eql 404 (gateway-http-error-status condition))
+       (equal "not_found" (gateway-http-error-code condition))))
+
+(defparameter +older-organism-logout+
+  "this home's organism runs an older build with no sign-out, so it and the other open shells keep the account until it restarts on this one"
+  "What a sign-out done here says when the organism serving the home predates its route.")
+
+(defun account-logout-through (call)
+  "Sign this home out through the organism CALL reaches -- CALL posts its logout route and
+answers its ACCOUNT-JSON -- which forgets the key and tells every shell. An organism of a build
+before that route (0.1.9) answers 404 unknown route: then this process signs the home out
+itself, the same files, and says what still holds the account (+OLDER-ORGANISM-LOGOUT+).
+`here' in the answer is true when this process did it."
+  (handler-case (funcall call)
+    (gateway-http-error (condition)
+      (unless (route-missing-p condition) (error condition))
+      (let ((json (account-logout-json +older-organism-logout+)))
+        (setf (gethash "here" json) t)
+        json))))
+
+(defun account-logout-text (&key (port (organism-port)) (token (gateway-configured-operator-token)))
+  "`nodecode logout' without its exit: the words of a sign-out through the organism on PORT, the
+one serving this home, reached with TOKEN, so every shell open on it is told; with none, or one
+that does not answer, here."
+  (json-value (if port
+                  (handler-case
+                      (account-logout-through
+                       (lambda ()
+                         (gateway-http-session-request port :post "/api/gateway/account/logout" (json-object)
+                                                       token :connect-timeout 3 :read-timeout 30)))
+                    (error (condition)
+                      (account-logout-json (format nil "the organism serving this home did not answer (~a), so its open shells keep the account until it restarts" condition))))
+                  (account-logout-json))
+              :string "logout"))
+
 (defun account-logout-main ()
-  "`nodecode logout': ACCOUNT-LOGOUT's words on stdout, with no store or terminal UI."
-  (write-line (account-logout))
+  "`nodecode logout': ACCOUNT-LOGOUT-TEXT on stdout, with no store or terminal UI."
+  (write-line (account-logout-text))
   (uiop:finish-outputs)
   (uiop:quit 0))
 
@@ -837,19 +898,42 @@ choice is (SETUP-STAGE-SIGN-IN): the prompt and /models leave the picker's label
                            :hint (if on-cancel "enter choose  esc back  ↑↓ navigate" "enter choose  esc cancel  ↑↓ navigate"))
        nil)))
 
+(defun land-account-change (model account &optional text)
+  "This home's nodecode.ai sign-in moved (BROADCAST-ACCOUNT-CHANGED), on MODEL's shell, whichever
+shell asked: signed out, the footer's meter goes and the screen clears onto a fresh session with
+TEXT in the composer's status; signed in, the meter is read again."
+  (cond ((equal account "signed_out")
+         (setf *account-meter* nil)
+         ;; The fresh session is one control call, made off the loop; the switch lands on it.
+         (off-loop model
+                   (lambda () (create-fresh-gateway-session model))
+                   (lambda (model value)
+                     (let ((failure (off-loop-failure value)))
+                       (unless failure (switch-gateway-session model value))
+                       (show-status model (or text "Signed out of nodecode.ai")))
+                     (render-state model))))
+        ((equal account "signed_in")
+         (refresh-account-meter model))))
+
 (defun slash-logout-op (model args)
-  "/logout on a shell: sign this home out of nodecode.ai on its gateway, then clear the footer's
-meter and say what happened. It takes no argument."
+  "/logout on a shell: sign this home out of nodecode.ai on its gateway, which tells every shell
+open on it -- each drops the footer's meter and clears its screen (LAND-ACCOUNT-CHANGE) -- and
+say what happened. It takes no argument."
   (if (plusp (length (string-trim '(#\Space #\Tab) (or args ""))))
       "/logout takes no word: /logout alone signs this machine out of nodecode.ai"
       (progn
         (off-loop model
-                  (lambda () (gateway-model-http-call model :post "/api/gateway/account/logout" (json-object)))
+                  (lambda ()
+                    (account-logout-through
+                     (lambda () (gateway-model-http-call model :post "/api/gateway/account/logout" (json-object)))))
                   (lambda (model value)
                     (let ((failure (off-loop-failure value)))
-                      (if failure
-                          (show-status model (format nil "logout: ~a" failure) :error-p t)
-                          (progn (setf *account-meter* (account-meter-of value))
-                                 (show-status model (json-value value :string "logout")))))
+                      (cond (failure
+                             (show-status model (format nil "logout: ~a" failure) :error-p t))
+                            ;; An organism of an older build tells no shell: this one clears itself.
+                            ((and (json-value value :boolean "here") (json-value value :boolean "signed_out"))
+                             (land-account-change model "signed_out" (json-value value :string "logout")))
+                            (t (setf *account-meter* (account-meter-of value))
+                               (show-status model (json-value value :string "logout")))))
                     (render-state model)))
         "logout: signing out of nodecode.ai…")))
