@@ -793,6 +793,151 @@ table from ps; PID alone where ps cannot say."
             until (<= each 1))))
   #+win32 (list pid))
 
+;;; --- what a restart leaves running -------------------------------------------
+;;;
+;;; Under systemd every process a gateway's tool shell starts sits in the
+;;; unit's control group, a job it detached with setsid, nohup and `&' as much
+;;; as the shell itself: none of them leaves the group. KillMode=mixed ends the
+;;; whole group with the gateway, which is what an off means and what a restart
+;;; must not: 2026-11-06, an update's restart SIGKILLed the keeper and watcher
+;;; an agent had started for a rented GPU box, and the box was deleted for want
+;;; of its keep-alive. So before a restart lets the unit stop, each process tree
+;;; a shell left behind -- one whose parent is not in the group: the shell that
+;;; started it is gone and the user manager took it in -- moves to a scope of
+;;; its own beside the unit, which the stop does not touch. The image's own
+;;; children stay in the group and end with it, as before.
+
+(defun process-parent (pid)
+  "PID's parent off /proc, or NIL when PID is gone or there is no /proc."
+  #+linux
+  (let* ((stat (ignore-errors (uiop:read-file-string (format nil "/proc/~d/stat" pid))))
+         ;; `PID (COMM) STATE PPID ...': COMM may hold spaces and parentheses
+         (close (and stat (position #\) stat :from-end t))))
+    (and close (ignore-errors (parse-integer (second (split-words (subseq stat (1+ close))))))))
+  #-linux (progn pid nil))
+
+(defun group-holds-p (group own)
+  "Whether the control group OWN is GROUP or one below it."
+  (and group own (or (string= own group) (uiop:string-prefix-p (concatenate 'string group "/") own))))
+
+(defun group-processes (group)
+  "Every process in the control group GROUP, as PROCESS-CGROUP spells it, and
+in the groups below it, off cgroupfs: a list of (PID . PARENT), a process
+that ended while it was read left out."
+  #+linux
+  (let* ((hierarchy (if (probe-file "/sys/fs/cgroup/cgroup.controllers") "/sys/fs/cgroup" "/sys/fs/cgroup/systemd"))
+         (folder (and group (uiop:string-prefix-p "/" group)
+                      (uiop:directory-exists-p
+                       (uiop:ensure-directory-pathname
+                        (uiop:parse-native-namestring
+                         (concatenate 'string hierarchy (string-right-trim "/" group)))))))
+         (folders (and folder (list folder))))
+    (when folder
+      (uiop:collect-sub*directories folder t t (lambda (each) (pushnew each folders :test #'equal))))
+    (loop for each in folders
+          append (loop for word in (split-words (ignore-errors (uiop:read-file-string
+                                                                 (merge-pathnames "cgroup.procs" each))))
+                       for pid = (ignore-errors (parse-integer word))
+                       for parent = (and pid (process-parent pid))
+                       when parent collect (cons pid parent))))
+  #-linux (progn group nil))
+
+(defun detached-trees (table main)
+  "The process trees in TABLE, one control group's (PID . PARENT) pairs, that
+neither are MAIN nor descend from it inside the group: each a list of pids,
+its root -- a process whose parent is outside the group -- first."
+  (let ((children (make-hash-table))
+        (inside (make-hash-table)))
+    (loop for (pid . parent) in table
+          do (setf (gethash pid inside) t)
+             (push pid (gethash parent children)))
+    (labels ((tree (pid)
+               (cons pid (loop for child in (reverse (gethash pid children)) append (tree child)))))
+      (loop for (pid . parent) in table
+            unless (or (eql pid main) (gethash parent inside))
+              collect (tree pid)))))
+
+(defun process-command (pid)
+  "PID's command name off /proc, or NIL."
+  #+linux (let ((text (ignore-errors (uiop:read-file-string (format nil "/proc/~d/comm" pid)))))
+            (and text (plusp (length text)) (string-right-trim '(#\Newline) text)))
+  #-linux (progn pid nil))
+
+(defun start-scope (name pids &key slice description)
+  "Ask the user manager for the scope NAME holding the running PIDS: systemd's
+StartTransientUnit, the call logind and a terminal make for a session's
+processes. => (values OUTPUT ERROR-OUTPUT STATUS)."
+  (let ((properties (append (list "PIDs" "au" (princ-to-string (length pids)))
+                            (mapcar #'princ-to-string pids)
+                            (list "CollectMode" "s" "inactive-or-failed")
+                            (and description (list "Description" "s" description))
+                            (and slice (list "Slice" "s" slice)))))
+    (apply #'unit-run "busctl" "--user" "call" "org.freedesktop.systemd1" "/org/freedesktop/systemd1"
+           "org.freedesktop.systemd1.Manager" "StartTransientUnit" "ssa(sv)a(sa(sv))" name "fail"
+           (princ-to-string (+ 2 (if description 1 0) (if slice 1 0)))
+           (append properties (list "0")))))
+
+(defparameter *keep-wait-seconds* 3
+  "How long KEEP-SHELL-JOBS waits for the user manager to move what it asked for.")
+
+(defun keep-shell-jobs (&key (group (process-cgroup)) (main (sb-posix:getpid)))
+  "Move each process tree a shell left running in the systemd control group
+GROUP -- every one beside MAIN's, the gateway's own -- to a scope of its own,
+so that the stop of GROUP's unit which a restart takes does not end it. => one
+plist a tree: :SCOPE, :PIDS, :COMMAND its root's, :KEPT once the tree left
+GROUP, :WHY when it did not."
+  (when (and (eq *service-manager* :systemd) group (plusp (length group)))
+    (let* ((parts (remove "" (uiop:split-string group :separator "/") :test #'string=))
+           (unit (car (last parts)))
+           (slice (let ((above (car (last parts 2))))
+                    (and above (uiop:string-suffix-p above ".slice") (not (equal above unit)) above)))
+           (base (if (uiop:string-suffix-p unit ".service") (subseq unit 0 (- (length unit) 8)) unit))
+           (jobs (loop for tree in (detached-trees (group-processes group) main)
+                       for root = (first tree)
+                       for name = (format nil "~a-job-~d.scope" base root)
+                       for command = (process-command root)
+                       collect (multiple-value-bind (out err status)
+                                   (handler-case
+                                       (start-scope name tree :slice slice
+                                                    :description (format nil "~@[~a, ~]kept from ~a's restart"
+                                                                         command unit))
+                                     (error (condition) (values "" (princ-to-string condition) nil)))
+                                 (list :scope name :pids tree :command command :kept nil
+                                       :why (and (not (eql status 0))
+                                                 (or (answer-line err out) "the user manager did not answer")))))))
+      ;; The scope starts as a job of the manager's: wait for it to take the
+      ;; processes, or the stop that follows ends them all the same.
+      (loop with deadline = (+ (get-internal-real-time)
+                               (* *keep-wait-seconds* internal-time-units-per-second))
+            do (dolist (job jobs)
+                 (unless (or (getf job :why) (getf job :kept))
+                   (setf (getf job :kept)
+                         (notany (lambda (pid) (group-holds-p group (process-cgroup pid)))
+                                 (getf job :pids)))))
+            until (or (every (lambda (job) (or (getf job :why) (getf job :kept))) jobs)
+                      (> (get-internal-real-time) deadline))
+            do (sleep 0.05))
+      (dolist (job jobs jobs)
+        (unless (or (getf job :kept) (getf job :why))
+          (setf (getf job :why) (format nil "still in ~a after ~ds" unit *keep-wait-seconds*)))))))
+
+(defun kept-jobs-text (jobs)
+  "What KEEP-SHELL-JOBS did, JOBS, in one line, or NIL when it found none."
+  (flet ((name (job &aux (pids (getf job :pids)))
+           (format nil "~@[~a ~](pid ~d~@[, ~d processes~])" (getf job :command) (first pids)
+                   (and (rest pids) (length pids)))))
+    (let ((kept (remove-if-not (lambda (job) (getf job :kept)) jobs))
+          (lost (remove-if (lambda (job) (getf job :kept)) jobs)))
+      (when jobs
+        (format nil "~{~a~^; ~}"
+                (append (when kept
+                          (list (format nil "kept ~d job~:p a shell left running out of the stop: ~{~a~^, ~}"
+                                        (length kept)
+                                        (loop for job in kept
+                                              collect (format nil "~a in ~a" (name job) (getf job :scope))))))
+                        (loop for job in lost
+                              collect (format nil "the stop ends ~a: ~a" (name job) (getf job :why)))))))))
+
 (defun inside-gateway-p (state)
   "Whether this process runs inside STATE's gateway, so that the stop which
 ends the gateway ends it too."
@@ -804,7 +949,7 @@ ends the gateway ends it too."
   (let ((group state.cgroup)
         (own (process-cgroup)))
     (if (and group own)
-        (or (string= own group) (uiop:string-prefix-p (concatenate 'string group "/") own))
+        (group-holds-p group own)
         (and state.main-pid (member state.main-pid (process-lineage)) t))))
 
 (defun inside-own-gateway-p (&key (home *home*))
@@ -944,6 +1089,10 @@ moved — so it comes back on this build, with the config as it is now."
         (:systemd
          (when (and text (write-unit state.file text))
            (manager-or-fail "daemon-reload"))
+         ;; the restart stops the unit's whole group: what a shell left running moves out first
+         (when state.main-pid
+           (let ((line (kept-jobs-text (keep-shell-jobs :group state.cgroup :main state.main-pid))))
+             (when line (format *error-output* "~&restart: ~a~%" line))))
          (manager-or-fail "restart" state.unit))
         (:launchd
          (when text (install-gateway-launcher))

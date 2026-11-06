@@ -5337,13 +5337,20 @@ installed binary started."
         #-win32
         ((and *serving* (not *fronted*) (nlk:organism-binary)) :exec)))
 
-(defun exit-for-restart (to &aux (in-place (eq (restart-way) :exec)))
+(defun exit-for-restart (to &aux (way (restart-way)) (in-place (eq way :exec)))
   (format t "~&restart: ~a ~:[runs at the next launch; exiting for it~;runs now; running `current' again in place~]~%"
           to in-place)
   (finish-output)
   (setf *stop-reason* (or *restart-reason* "a restart"))
   (when in-place
     (return-from exit-for-restart (serve-next :restart)))
+  ;; The unit's stop ends its whole control group, and with it every job a
+  ;; tool shell left running there: those move to scopes of their own first.
+  (when (eq way :unit)
+    (let ((line (ignore-errors (nlk:kept-jobs-text (nlk:keep-shell-jobs)))))
+      (when line
+        (format t "~&restart: ~a~%" line)
+        (finish-output))))
   (ignore-errors (stop-gateway))
   (ignore-errors (nlk:close-store))
   (sb-ext:exit :code 0 :abort t))
