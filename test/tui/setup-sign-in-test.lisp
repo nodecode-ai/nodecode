@@ -61,7 +61,7 @@ ACCOUNT-LOGIN-FROM-SHELL, nothing sent to a gateway."
           (is (eq panel model.dialog) "the start keeps the panel")
           (is-carrying (text (page-said model))
             "Opened https://nodecode.ai/link/k3y" "code ABCD-1234" "allow this machine")
-          (funcall then model (sign-in-answer "signed-in" "text" "Signed in to nodecode.ai · default model nodecode/foresight-cyber-v1")))
+          (funcall then model (sign-in-answer "signed-in" "text" "Signed in to nodecode.ai · default model nodecode/nodecode-cyber-v1")))
         (is (eq :models (nle::picker-dialog-kind model.dialog)) "signed in, the walk goes on to the models")
         (is (equal "Step 2. Choose model · step 2/3" (nle::picker-dialog-context model.dialog)))
         (is (equal '("nodecode") (mapcar (lambda (tab) (getf tab :value)) (nle::picker-dialog-tabs model.dialog))) "on nodecode.ai's models")

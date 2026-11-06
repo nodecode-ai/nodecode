@@ -25,15 +25,15 @@
   "The provider-models cache +OWN-MODELS-CONFIG+'s providers left at NOW:
 nodecode.ai's chat and image model, and zeta's one model."
   `(:nodecode (:fetched_at ,now :base_url "https://api.nodecode.example/v1" :error :null
-               :models #((:id "foresight-cyber-v1" :context_window 1048576 :kind "chat")
+               :models #((:id "nodecode-cyber-v1" :context_window 1048576 :kind "chat")
                          (:id "foresight-image-v1" :kind "image")))
     :zeta (:fetched_at ,now :base_url "https://zeta.example/v1" :error :null
            :models #((:id "a-1" :display "Alpha One")))))
 
 (deftest provider-listing-keeps-a-models-kind ()
   (let ((rows (nle::parse-provider-listing
-               "{\"data\":[{\"id\":\"foresight-cyber-v1\",\"kind\":\"chat\"},{\"id\":\"foresight-image-v1\",\"kind\":\"image\"},{\"id\":\"plain\"}]}")))
-    (is (equal '(("foresight-cyber-v1" "chat") ("foresight-image-v1" "image") ("plain" nil))
+               "{\"data\":[{\"id\":\"nodecode-cyber-v1\",\"kind\":\"chat\"},{\"id\":\"foresight-image-v1\",\"kind\":\"image\"},{\"id\":\"plain\"}]}")))
+    (is (equal '(("foresight-image-v1" "image") ("nodecode-cyber-v1" "chat") ("plain" nil))
                (mapcar (lambda (row) (list (getf row :id) (getf row :kind))) rows)) "each row keeps the kind its listing names, NIL where it names none")))
 
 (deftest models-root-pins-own-models ()
@@ -43,7 +43,7 @@ nodecode.ai's chat and image model, and zeta's one model."
         (with-stubbed-fdefinitions ((nle::slash-models-op (model tokens) (setf picked tokens) "selected")
                                     (nle::open-models-reasoning-picker (model) nil))
           (let ((rows (nle::models-catalog-picker-rows)))
-            (is (equal '("nodecode" "foresight-cyber-v1") (nle::picker-row-value (first rows))) "our own model leads every model list")
+            (is (equal '("nodecode" "nodecode-cyber-v1") (nle::picker-row-value (first rows))) "our own model leads every model list")
             (is (notany (lambda (row) (equal '("nodecode" "foresight-image-v1") (nle::picker-row-value row))) rows) "an image model is offered no turn")
             (is (find '("zeta" "a-1") rows :key #'nle::picker-row-value :test #'equal) "a listing that names no kind keeps its models"))
           (nle::open-models-provider-picker model)
@@ -51,17 +51,17 @@ nodecode.ai's chat and image model, and zeta's one model."
                  (rows (nle::picker-visible-rows dialog)))
             (is-shape (first rows) (nle::picker-row-label "Nodecode") (nle::picker-row-heading eq t))
             (is-shape (second rows)
-              (nle::picker-row-label "nodecode/foresight-cyber-v1")
+              (nle::picker-row-label "nodecode/nodecode-cyber-v1")
               (nle::picker-row-tone eq :own-model)
-              (nle::picker-row-value '(:model ("nodecode" "foresight-cyber-v1"))))
-            (is (equal '(:model ("nodecode" "foresight-cyber-v1")) (picker-selected-value dialog)) "the list opens on it")
+              (nle::picker-row-value '(:model ("nodecode" "nodecode-cyber-v1"))))
+            (is (equal '(:model ("nodecode" "nodecode-cyber-v1")) (picker-selected-value dialog)) "the list opens on it")
             (dialog-after model "nodecode")
-            (is (equal '(("nodecode" "foresight-cyber-v1"))
+            (is (equal '(("nodecode" "nodecode-cyber-v1"))
                        (loop for row in (nle::picker-visible-rows dialog)
                              for pair = (getf (nle::picker-row-value row) :model)
                              when (and (consp pair) (stringp (first pair))) collect pair)) "a search for nodecode finds our model, once")
-            (enter-row model "nodecode/foresight-cyber-v1")
-            (is (equal '("nodecode" "foresight-cyber-v1") picked) "Enter on it picks it")))))))
+            (enter-row model "nodecode/nodecode-cyber-v1")
+            (is (equal '("nodecode" "nodecode-cyber-v1") picked) "Enter on it picks it")))))))
 
 (deftest models-root-signs-in-for-own-models ()
   (with-model-listings (:config +listed-providers-config+ :cache (listed-providers-cache))
