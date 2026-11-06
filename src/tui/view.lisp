@@ -231,6 +231,28 @@ or the cache is full."
              (setf (gethash key cache) :failed)
              nil)))))))
 
+(defun kitty-image-box (image rows columns cell)
+  "The cell box a kitty IMAGE is drawn in, under a band ROWS tall in a frame
+COLUMNS wide, CELL the terminal's (WIDTH . HEIGHT) in pixels: (values
+COLUMNS ROWS) that keep the picture's own aspect at that cell, ROWS the
+band's when the width they want fits, else every column and the rows that
+keep the aspect. With no CELL or no pixel size, (values NIL ROWS): the rows
+alone, for the terminal to derive the width."
+  ;; Both are said because a terminal need not derive one from the other:
+  ;; kitty keeps the aspect from r= alone, Konsole scales only when it has c=
+  ;; and r=, and from r= alone drew an 800x600 picture at its own pixel size,
+  ;; over the answer and the composer under its band.
+  (let ((width (nlt:terminal-image-width image))
+        (height (nlt:terminal-image-height image)))
+    (if (and (consp cell) width height (plusp width) (plusp height))
+        (destructuring-bind (cell-width . cell-height) cell
+          (let ((wide (max 1 (round (* rows cell-height width) (* height cell-width)))))
+            (if (<= wide columns)
+                (values wide rows)
+                (values columns (max 1 (min rows (round (* columns cell-width height)
+                                                        (* width cell-height))))))))
+        (values nil rows))))
+
 (defun image-placements (model &aux (protocol (image-protocol model)))
   "Declarative placements for the pictures visible in the transcript band, an
 image card's and an answer's alike, through the terminal's IMAGE-PROTOCOL:
@@ -270,7 +292,6 @@ each anchors its image at the first row of its own reserved band that shows
                                           (list fact skip))))
             for payload = (and fact (image-preview-payload fact ref))
             for band = (and payload (image-preview-rows fact width))
-            for rows = (and band (min (- band skip) (- vp-height row)))
             ;; A card's own call owns the transmission: two
             ;; looks at one path are two images. An answer's
             ;; picture is a file named by its bytes.
@@ -278,28 +299,41 @@ each anchors its image at the first row of its own reserved band that shows
                              (if (eq protocol :kitty)
                                  (ensure-kitty-image model (or ref.tool-call-id payload) payload)
                                  (ensure-raster-image model protocol (or ref.tool-call-id payload) payload
-                                                      band skip rows (max 8 (- width 4)))))
+                                                      band skip (min (- band skip) (- vp-height row))
+                                                      (max 8 (- width 4)))))
+            ;; A kitty picture fills the cell box KITTY-IMAGE-BOX gives it:
+            ;; COLUMNS, and SPAN of the band's rows from its head, all of them
+            ;; unless the band is too narrow for its aspect. A raster picture
+            ;; is drawn to the band.
+            for (columns span) = (if (and image (eq protocol :kitty))
+                                     (multiple-value-list
+                                      (kitty-image-box image band (max 8 (- width 4))
+                                                       (chat-model-cell-pixels model)))
+                                     (list nil band))
+            for rows = (and band (min (- span skip) (- vp-height row)))
             ;; The kitty image's pixel rows behind the band's rows that show,
             ;; when they are not all of it: a picture whose height the PNG
             ;; never said cannot be cut, and waits to show whole.
-            for height = (and image (eq protocol :kitty) (< rows band) (nlt:terminal-image-height image))
+            for height = (and image (eq protocol :kitty) (< 0 rows span) (nlt:terminal-image-height image))
             for top = (+ 3 top-pad row)
             ;; An image draws over the cells, so one sharing a row with a
-            ;; toast would cover it: it waits for the toast to go. A
-            ;; placement says no width, so a shared row is the whole test.
+            ;; toast would cover it: it waits for the toast to go. A shared
+            ;; row is the whole test.
             ;; Half blocks are cells under the toast's own, so they stay.
             when (and image
-                      (or (not (eq protocol :kitty)) (= rows band) height)
+                      (plusp rows)
+                      (or (not (eq protocol :kitty)) (= rows span) height)
                       (or (eq protocol :blocks) (not (toasts-cover-rows-p model top rows))))
               collect (nlt:make-image-placement
                        image
                        :x x
                        :y top
                        :rows rows
+                       :columns columns
                        :placement-id
                        (incf (gethash (nlt:terminal-image-id image) counts 0))
-                       :crop-y (and height (round (* height skip) band))
-                       :crop-height (and height (max 1 (round (* height rows) band))))))))
+                       :crop-y (and height (round (* height skip) span))
+                       :crop-height (and height (max 1 (round (* height rows) span))))))))
 
 (defun shell-window-title ()
   "The name this shell's window wears: the profile, then the workspace it

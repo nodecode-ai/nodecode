@@ -190,34 +190,39 @@ a TERMINAL-IMAGE carrying the pixel dimensions its PNG header declares."
 
 ;; Placement ids are namespaced per image: distinct ids show one image in several places.
 (nlk:define-record (image-placement (:constructor make-image-placement
-                                         (image &key (x 0) (y 0) rows (placement-id 1)
+                                         (image &key (x 0) (y 0) rows columns (placement-id 1)
                                                 crop-y crop-height))
                                     (:export :constructor image placement-id x y rows
-                                             crop-y crop-height))
-  "A transmitted image shown at a cell position. A kitty image cut at the
-screen's edge shows CROP-HEIGHT of its pixel rows from CROP-Y, in ROWS."
+                                             columns crop-y crop-height))
+  "A transmitted image shown at a cell position, COLUMNS x ROWS cells when it
+says COLUMNS. A kitty image cut at the screen's edge shows CROP-HEIGHT of its
+pixel rows from CROP-Y, in ROWS."
   (image nil :type (or null terminal-image))
   (placement-id 0 :type fixnum)
   (x 0 :type fixnum)
   (y 0 :type fixnum)
   (rows nil :type (or null fixnum))
+  (columns nil :type (or null fixnum))
   (crop-y nil :type (or null fixnum))
   (crop-height nil :type (or null fixnum)))
 
 (nlk:access (p image-placement))
 
-(defun place-image (image x y &key rows placement-id crop-y crop-height stream)
+(defun place-image (image x y &key rows columns placement-id crop-y crop-height stream)
   "Show IMAGE at cell X, Y: cursor there, then a kitty image's a=p with the
 geometry it was given — each key omitted rather than defaulted when its
-argument is NIL, CROP-Y and CROP-HEIGHT the source rectangle's y and h —
-and C=1 so the cursor does not move with the image, or a sixel's own
-string. A half-block picture is cells of the frame, never a placement
-written here."
+argument is NIL, COLUMNS and ROWS the cell box (c and r), CROP-Y and
+CROP-HEIGHT the source rectangle's y and h — and C=1 so the cursor does not
+move with the image, or a sixel's own string. A half-block picture is cells
+of the frame, never a placement written here."
+  ;; c= goes with r= because a terminal need not derive one from the other:
+  ;; Konsole scales a placement only when it has both, and with r= alone
+  ;; draws the picture at its own pixel size, over whatever lies past its band.
   (ecase image.protocol
     (:kitty
      (format stream
-             "~C[~D;~DH~C_Ga=p,i=~D~@[,p=~D~]~@[,r=~D~]~@[,y=~D~]~@[,h=~D~],C=1~C\\"
-             #\Escape (1+ y) (1+ x) #\Escape image.id placement-id rows
+             "~C[~D;~DH~C_Ga=p,i=~D~@[,p=~D~]~@[,c=~D~]~@[,r=~D~]~@[,y=~D~]~@[,h=~D~],C=1~C\\"
+             #\Escape (1+ y) (1+ x) #\Escape image.id placement-id columns rows
              (and crop-height crop-y) crop-height #\Escape))
     (:sixel
      (format stream "~C[~D;~DH" #\Escape (1+ y) (1+ x))
@@ -280,6 +285,14 @@ says it draws sixel."
   (format stream "~C[16t~C[>q~C[c" #\Escape #\Escape #\Escape)
   (force-output stream))
 
+(defun request-cell-size (stream)
+  "Ask the terminal for its cell size in pixels again (XTWINOPS 16), alone."
+  ;; A font zoom changes the cell under a running shell, and a kitty
+  ;; placement's columns are reckoned from it; the zoom reaches the shell as
+  ;; a resize, which is when this is asked.
+  (format stream "~C[16t" #\Escape)
+  (force-output stream))
+
 ;;; --- the renderer seam ---------------------------------------------------
 
 (defun %render-image-placements (old new stream &key force damaged)
@@ -295,6 +308,6 @@ everything (after a full paint)."
                         (if force new (union (set-difference new old :test #'equalp) damaged))
                         :key (lambda (p) (terminal-image-protocol p.image)))))
     (dolist (p placed)
-      (place-image p.image p.x p.y :rows p.rows :placement-id p.placement-id
+      (place-image p.image p.x p.y :rows p.rows :columns p.columns :placement-id p.placement-id
                                    :crop-y p.crop-y :crop-height p.crop-height :stream stream))
     (values new (and placed t))))

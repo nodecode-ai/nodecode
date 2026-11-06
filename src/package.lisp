@@ -80,7 +80,7 @@ renderer, the program loop.")
    ;; --- kitty graphics (image.lisp) ---
    #:image-media-type #:image-dimensions #:png-dimensions #:file-octets
    #:*png-transcoders* #:transcode-to-png #:transmit-image #:place-image
-   #:request-kitty-graphics #:request-terminal-attributes #:current-multiplexer
+   #:request-kitty-graphics #:request-terminal-attributes #:request-cell-size #:current-multiplexer
    ;; --- sixel and half blocks (raster.lisp) ---
    #:raster-colors #:unpack-rgb #:quantize-colors #:sixel-data #:half-block-grid #:mosaic-grid
    #:*sixel-colors*
