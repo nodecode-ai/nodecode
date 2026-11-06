@@ -15,8 +15,7 @@
   "A throwaway made-cell folder NAME/ with cell.lisp (its package) and
 NAME.lisp (one function, one variable, one generic), both loaded from disk.
 => (values DIRECTORY CODE-FILE PACKAGE)."
-  (let* ((directory (uiop:ensure-directory-pathname
-                     (format nil "/tmp/cell-drift-~d/~a/" (random 1000000) name)))
+  (let* ((directory (merge-pathnames (format nil "~a/" name) (temp-path "cell-drift")))
          (cell (merge-pathnames "cell.lisp" directory))
          (code (merge-pathnames (format nil "~a.lisp" name) directory)))
     (ensure-directories-exist directory)

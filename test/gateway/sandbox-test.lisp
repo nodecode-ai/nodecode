@@ -152,9 +152,7 @@
 (deftest sandbox-srt-on-path-reaches-the-argv-as-a-string ()
   ;; npm installs srt as a link to its dist/cli.js; the PATH lookup answers
   ;; the link's truename, a pathname, which the spawn refused as an argv word.
-  (let* ((dir (uiop:ensure-directory-pathname
-               (merge-pathnames (format nil "nodecode-srt-~36r/" (random (expt 36 8)))
-                                (uiop:temporary-directory))))
+  (let* ((dir (temp-path "srt"))
          (target (merge-pathnames "cli.js" dir))
          (saved-path (uiop:getenv "PATH"))
          (saved-srt (uiop:getenv "NODECODE_SRT")))
@@ -239,8 +237,7 @@
 
 (defun sandbox-test-home ()
   "A scratch home with one cells/ folder under git, one commit in it."
-  (let ((home (uiop:ensure-directory-pathname
-               (merge-pathnames (format nil "nc-sbx-~36r/" (random (expt 36 8))) (uiop:temporary-directory)))))
+  (let ((home (temp-path "sbx")))
     (ensure-directories-exist (merge-pathnames "cells/vise/" home))
     (with-open-file (o (merge-pathnames "cells/vise/a.lisp" home) :direction :output :if-exists :supersede)
       (write-line "(defun a () 1)" o))

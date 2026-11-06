@@ -218,9 +218,7 @@ exist to prevent."
   ;; tar alone while the export packs, then the archive goes round. GNU tar's
   ;; own -x -z runs gzip, so the import reads the archive on the real PATH.
   (profile-test-seed-every-entry (nlk:profile-create "coder"))
-  (let ((dir (uiop:ensure-directory-pathname
-              (merge-pathnames (format nil "nodecode-tar-only-~36r/" (random (expt 36 8)))
-                               (uiop:temporary-directory))))
+  (let ((dir (temp-path "tar-only"))
         (saved-path (uiop:getenv "PATH")))
     (with-temp-file (archive :type "tar.gz")
       (unwind-protect
