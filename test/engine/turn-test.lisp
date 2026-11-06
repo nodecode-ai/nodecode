@@ -2125,6 +2125,50 @@ list of part kinds (the lisp analogue of the Zig part-tag goldens)."
      :on-part (lambda (part) (when (eq :reasoning-delta part.kind) (push part.text received)))))
   (is (equal '("deep " "thought") (nreverse received))))
 
+;;; Mistral streams a reasoning model's delta.content as a list of typed
+;;; chunks while it thinks, then one list holding the closing thinking chunk
+;;; and the first text chunk, then plain strings
+;;; (docs.mistral.ai/inference/conversations/reasoning). A lane that reads
+;;; delta.content only as a string drops every list: the thinking never shows
+;;; and the answer loses its first piece.
+
+(defun content-chunks-json (&rest chunks)
+  "A streaming chunk whose delta.content is the list CHUNKS."
+  (json-line (nlk:json-object
+              "choices" (vector (nlk:json-object
+                                 "delta" (nlk:json-object
+                                          "content" (coerce chunks 'vector)))))))
+
+(defun thinking-content-chunk (text &key closed)
+  "Mistral's ThinkChunk: its trace is a list of text chunks."
+  (nlk:json-object "type" "thinking"
+                   "thinking" (vector (nlk:json-object "type" "text" "text" text))
+                   :opt "closed" closed))
+
+(defun text-content-chunk (text)
+  "Mistral's TextChunk: a piece of the answer."
+  (nlk:json-object "type" "text" "text" text))
+
+(deftest streaming-reads-content-sent-as-thinking-and-text-chunks (let ((deltas '())))
+  (let ((message (with-mock-sse-stream
+                     ((content-chunks-json (thinking-content-chunk "The user says hi. "))
+                      (content-chunks-json (thinking-content-chunk "Answer briefly." :closed t)
+                                           (text-content-chunk "PONG"))
+                      (chunk-json "-1" :finish-reason "stop"))
+                   (nle::call-provider-streaming
+                    (user-context)
+                    :on-part (lambda (part)
+                               (when (member part.kind '(:reasoning-delta :text-delta))
+                                 (push (list part.kind part.text) deltas)))))))
+    ;; the answer keeps the text chunk that rode with the closing thought
+    (is (equal "PONG-1" (gethash "content" message)))
+    ;; the thinking chunks are the round's reasoning
+    (is (equal "The user says hi. Answer briefly." (gethash "reasoning_content" message)))
+    ;; thought streams before the answer, in the order it was sent
+    (is (equal '((:reasoning-delta "The user says hi. ") (:reasoning-delta "Answer briefly.")
+                 (:text-delta "PONG") (:text-delta "-1"))
+               (nreverse deltas)))))
+
 ;;; =========================================================================
 ;;; F1 gates: stream integrity
 ;;; =========================================================================

@@ -92,6 +92,33 @@ becomes of an assistant message's reasoning_content: :CARRY passes it on,
      :when (and effort (not (string-equal effort "off")))
      "reasoning_effort" effort)))
 
+(defun chat-content-chunks (asm chunks)
+  "A streamed delta.content that came as the list CHUNKS, read in order: a
+thinking chunk is reasoning, a text chunk is content."
+  ;; Mistral streams a reasoning model this way
+  ;; (docs.mistral.ai/inference/conversations/reasoning): lists holding a
+  ;; thinking chunk while it thinks, one list holding the closing thinking
+  ;; chunk and the first text chunk, then plain strings. A thinking chunk's
+  ;; trace is itself a list of text chunks. Any other chunk type (a
+  ;; reference, an image) carries no text for the transcript.
+  (loop for chunk across chunks
+        when (hash-table-p chunk)
+          do (with-json ((kind :string "type")
+                         (text :string "text")
+                         (thinking :any "thinking"))
+                 chunk
+               (cond ((equal kind "thinking")
+                      (if (stringp thinking)
+                          (assembly-reasoning-delta asm "reasoning-0" thinking)
+                          (when (vectorp thinking)
+                            (loop for inner across thinking
+                                  for trace = (and (hash-table-p inner)
+                                                   (json-value inner :string "text"))
+                                  when trace
+                                    do (assembly-reasoning-delta asm "reasoning-0" trace)))))
+                     ((and (equal kind "text") text)
+                      (assembly-text-delta asm "txt-0" text :close-reasoning t))))))
+
 (define-provider-lane call-provider-streaming
     ;; OpenRouter's own package names the same chat-completions wire.
     (:name "openai-completions" :family :openai-completions
@@ -153,7 +180,7 @@ chat-shaped assistant message."
       (with-json ((fr :string "finish_reason")
                   (sr :string "stop_reason")
                   (delta :object "delta")
-                  (dc :string "delta" "content")
+                  (dc :any "delta" "content")
                   (tc-deltas :any "delta" "tool_calls"))
           (aref choices 0)
         ;; A server that stops a looping generation itself says so: vLLM's
@@ -168,8 +195,10 @@ chat-shaped assistant message."
         ;; Content chunk. Its arrival closes an open
         ;; thinking span (the chat.zig rule: text and
         ;; reasoning never interleave within one span).
-        (when dc
-          (assembly-text-delta asm "txt-0" dc :close-reasoning t))
+        ;; A content list is typed chunks, thinking and text in the order sent.
+        (typecase dc
+          (string (assembly-text-delta asm "txt-0" dc :close-reasoning t))
+          (vector (chat-content-chunks asm dc)))
         ;; Reasoning chunk (thinking mode). WIRE-REASONING
         ;; spans the field names the endpoints disagree on
         ;; (llama.cpp reasoning_content, vLLM reasoning) and
