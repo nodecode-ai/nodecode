@@ -32,6 +32,15 @@ nodecode 0.1.7+2629050e1
 The version comes first and the build label, the commit the release was built from, follows the `+`. An installed build moves to a new release by itself, between turns. `nodecode update` moves it now. See [Updates](updates.mdx).
 
 {/* source: tools/release/publish.sh */}
+## 0.1.11
+
+Linux, macOS and Windows. Changes since 0.1.10 (`1452d5350`).
+
+- Windows: a shell no longer waits forever on `advertises no gateway endpoint; still watching its sidecar - is an owner serving?`, which left `/login`, `/logout` and every other command unanswered. The gateway's port record could not be written while a shell was reading it; the write now waits for the reader, and a failed write is logged.
+- A free key shows as `Free key` in the footer, beside `Cyber v1`, or `top up first` until the account has topped up, and `/usage` says what pays. [Models](models.mdx) has a Free key section: how to make one and its limits.
+- A running build no longer refuses a live upgrade whose release exports a name that was already typed somewhere unqualified. When the name in the way does define something, the refusal says what.
+
+{/* source: tools/release/publish.sh */}
 ## 0.1.10
 
 Linux, macOS and Windows. Changes since 0.1.9 (`8c8dfdc47`).
