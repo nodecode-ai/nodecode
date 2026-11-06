@@ -630,8 +630,7 @@ f.close()"
     (nlk::write-store-holder (nlk::lease-path-for-store store) :pid 4242)
     (with-reader-holding ((nlk::lease-path-for-store store))
       (nlk::write-store-holder (nlk::lease-path-for-store store) :pid 4242 :port 58840)
-      (is (equal '(4242 58840) (multiple-value-list (nlk::read-store-holder store)))
-          "the owner's port is published while a shell reads its sidecar"))))
+      (is (equal '(4242 58840) (multiple-value-list (nlk::read-store-holder store))) "the owner's port is published while a shell reads its sidecar"))))
 
 (deftest random-bytes-come-from-the-operating-system (let ((first (nlk:random-bytes 32))
                                                            (second (nlk:random-bytes 32))))
