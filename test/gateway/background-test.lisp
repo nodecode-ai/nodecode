@@ -94,6 +94,8 @@ under *UNIT-DIRECTORY*, its enablement and its process FAKE's."
         ((string= program "loginctl") (values "" "Unknown command verb." 1))
         ((string= program "journalctl")
          (values (format nil "2026-09-11T21:00:00+0000 box nodecode[4242]: serving store~%") "" 0))
+        ;; StartTransientUnit taken, its job queued; nothing moves, no manager runs here
+        ((string= program "busctl") (values "o \"/org/freedesktop/systemd1/job/7\"" "" 0))
         (t (values "" (format nil "Couldn't find executable ~s" program) :missing))))
 
 (defmacro with-scripted-systemd ((fake &rest options) &body body)
@@ -344,6 +346,58 @@ the unit folder: what another naming of the same home left there."
     (is own "Linux names this process's cgroup")
     (is (nlk::inside-gateway-p (nlk::make-gateway-state :cgroup own)) "under systemd the unit's group decides")
     (is (not (nlk::inside-gateway-p (nlk::make-gateway-state :cgroup "/user.slice/elsewhere/x.service" :main-pid (sb-posix:getppid)))) "the group, not the lineage")))
+
+(deftest a-restart-keeps-the-trees-a-shell-left-in-the-group-and-ends-the-images-own ()
+  ;; 2026-11-06: an update's restart exited the gateway, and the stop of its
+  ;; unit SIGKILLed the keeper an agent had started with `setsid nohup ... &'.
+  ;; A tree whose root's parent is outside the group is one a shell left: it
+  ;; moves to a scope. MAIN's own children stay, and end with it.
+  (let ((table '((100 . 1) (101 . 100) (102 . 101)
+                 (200 . 2066) (201 . 200) (202 . 201)
+                 (300 . 1))))
+    (is (equal '((200 201 202) (300)) (nlk::detached-trees table 100)) "each detached root with what descends from it; the image's tree is not one")
+    (is (null (nlk::detached-trees '((100 . 1) (101 . 100)) 100)) "the image and its children alone: nothing to keep"))
+  (is (equal "kept 1 job a shell left running out of the stop: python3 (pid 200, 3 processes) in g-job-200.scope; the stop ends sleep (pid 300): no bus"
+             (nlk::kept-jobs-text (list (list :scope "g-job-200.scope" :pids '(200 201 202) :command "python3" :kept t)
+                                       (list :scope "g-job-300.scope" :pids '(300) :command "sleep" :kept nil :why "no bus")))) "the restart's line names what it kept and what it could not")
+  (is (null (nlk::kept-jobs-text '())) "no line when a shell left nothing"))
+
+#+linux
+(deftest a-restart-asks-the-user-manager-for-a-scope-for-a-detached-job (with-scripted-systemd (fake))
+  ;; A real job detached the way an agent does, in this process's own group:
+  ;; KEEP-SHELL-JOBS asks for a scope holding it, beside the unit, and never
+  ;; for this process. The fake manager moves nothing, so the job is named as
+  ;; one the stop would end.
+  (let* ((group (nlk::process-cgroup))
+         (file (temp-path "job-pid" "txt"))
+         (pid nil))
+    (when group
+      (nlk:with-cleanup ((when pid (ignore-errors (sb-posix:kill pid sb-posix:sigkill)))
+                         (ignore-errors (delete-file file)))
+        (sb-ext:run-program "/bin/sh" (list "-c" (format nil "setsid sh -c 'echo $$ > ~a; exec sleep 307' </dev/null >/dev/null 2>&1 &"
+                                                         (uiop:native-namestring file)))
+                            :wait t)
+        (loop repeat 200 until (ignore-errors (setf pid (parse-integer (uiop:read-file-string file)))) do (sleep 0.01))
+        (is pid "the detached job is running")
+        ;; this process's own tree in the group: from the topmost ancestor still in it down
+        (let* ((table (nlk::group-processes group))
+               (main (loop for each = (sb-posix:getpid) then (cdr (assoc each table))
+                           for parent = (cdr (assoc each table))
+                           until (or (null parent) (not (assoc parent table)))
+                           finally (return each)))
+               (jobs (let ((nlk::*keep-wait-seconds* 0.2)) (nlk::keep-shell-jobs :group group :main main)))
+               (calls (remove "busctl" (fake-systemd-calls fake) :key #'first :test-not #'string=))
+               (job (find pid jobs :key (lambda (job) (first (getf job :pids))))))
+          (is job "the detached job is one KEEP-SHELL-JOBS takes")
+          (is (notany (lambda (argv) (member (princ-to-string (sb-posix:getpid)) (member "au" argv :test #'string=)
+                                             :test #'string=))
+                      calls) "never this process, the image's own tree")
+          (let ((argv (find-if (lambda (argv) (search (format nil "-job-~d.scope" pid) (format nil "~{~a ~}" argv))) calls)))
+            (is argv "a scope named for the job's root is asked for")
+            (is (search (list "StartTransientUnit") argv :test #'equal) "by systemd's StartTransientUnit")
+            (is (search (list "PIDs" "au" "1" (princ-to-string pid)) argv :test #'equal) "holding the job")
+            (is (search (list "--user") argv :test #'equal) "on the user manager the unit runs under"))
+          (is (search "still in" (getf job :why)) "a job the manager did not move is said, not claimed kept"))))))
 
 #+linux
 (deftest gateway-off-and-restart-refuse-from-inside-the-gateway ()

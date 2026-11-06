@@ -144,6 +144,7 @@ renderer, the program loop.")
    #:gateway-off-p #:gateway-restart #:gateway-start #:gateway-start-argv
    #:gateway-installed-p #:gateway-by-default-p #:gateway-process-p #:gateway-log-argv
    #:gateway-log-text #:gateway-report #:gateway-text #:inside-own-gateway-p
+   #:keep-shell-jobs #:kept-jobs-text
    ;; --- the operating system beneath the organism (os.lisp) ---
    #:platform #:architecture #:disable-huge-pages #:cap-malloc-arenas #:resident-bytes
    #:skip-openssl-exit-cleanup #:resolve-names-directly
