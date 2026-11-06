@@ -273,6 +273,46 @@
         (nle::account-next-step out nil)
         (is (search "/models to choose a nodecode model" (get-output-stream-string out)) "with none named, /models is the next step")))))
 
+(deftest account-free-key-docs-recipe-runs-a-turn-on-the-free-key ()
+  ;; docs/models.mdx's Free key section tells someone holding a free key made on API keys how to
+  ;; run it without a sign-in. Taken as written -- its jsonc block as the config, the variable its sh
+  ;; block exports holding the key -- a turn must run on the free key's provider, at nodecode.ai,
+  ;; with that key. The section used to say `export NODECODE_API_KEY' alone, which names no
+  ;; provider or model: the turn ran on the build default and failed "no model is chosen yet".
+  (let* ((text (uiop:read-file-string (asdf:system-relative-pathname "nodecode" "docs/models.mdx")))
+         (start (search "### Free key" text))
+         (section (and start (subseq text start (or (search (format nil "~%### ") text :start2 (1+ start))
+                                                    (length text))))))
+    (flet ((fenced (language)
+             (let* ((fence (format nil "```~a~%" language))
+                    (at (and section (search fence section))))
+               (and at (subseq section (+ at (length fence))
+                               (search (format nil "~%```") section :start2 (+ at (length fence))))))))
+      (let* ((config (fenced "jsonc"))
+             (shell (fenced "sh"))
+             (variable (and shell (cl-ppcre:register-groups-bind (name)
+                                      ("export ([A-Z_]+)=sk-nc-" shell)
+                                    name))))
+        (is section "docs/models.mdx has a Free key section")
+        (is config "the Free key section wires the free key's provider in a jsonc block")
+        (is variable "and its sh block names the variable that hands the CLI the key")
+        (when (and config variable)
+          (let ((saved (mapcar (lambda (name) (cons name (uiop:getenv name)))
+                               (list variable "NODECODE_API_KEY" "NODECODE_PROVIDER" "NODECODE_MODEL"
+                                     "NODECODE_ENDPOINT"))))
+            (nlk:with-cleanup ((loop for (name . value) in saved
+                                     do (if value (sb-posix:setenv name value 1) (sb-posix:unsetenv name))))
+              (dolist (pair saved) (sb-posix:unsetenv (car pair)))
+              (sb-posix:setenv variable "sk-nc-free-fixture" 1)
+              (with-temp-file (nle::*auth-file-path*)
+                (with-temp-file (nle::*shared-config-path* :contents config)
+                  (let ((nle::*provider* "openai-completions") (nle::*model* "deepseek-v4-flash-free")
+                        (nle::*endpoint* nil) (nle::*api-key* nil))
+                    (nle::seed-model-config-from-shared-config)
+                    (is (equal '("nodecode-free" "nodecode-cyber-v1") (list nle::*provider* nle::*model*)) "a turn runs on the free key's provider and Cyber v1")
+                    (is (equal "https://api.nodecode.ai/v1/chat/completions" (nle::effective-endpoint)) "at nodecode.ai's API, on the chat wire the free tier takes")
+                    (is (equal "sk-nc-free-fixture" (nle::credential-key (nle::resolve-provider-credential "nodecode-free"))) "with the key the docs export")))))))))))
+
 (deftest account-meter-leads-with-what-pays-now ()
   ;; The plan as nodecode.ai sells it: the gate's label, else its id capitalized (the id alone
   ;; read Starter for Lite and Plus for Pro, checkout audit 2026-10-22).

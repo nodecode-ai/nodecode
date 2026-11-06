@@ -128,7 +128,7 @@ The CLI saves two keys: the account's key (provider `nodecode`) and the free key
 | `nodecode-free/nodecode-cyber-v1` FREE | Nobody: the free key, with the limits below. A sign-in with a free key makes it the default model. |
 | `nodecode/nodecode-cyber-v1` | Your plan or your balance, per token, with the full 1M context. Its row says which, e.g. `from credit $2.00`. |
 
-The footer shows Free key · Cyber v1 while a session runs on the free one, and your plan or credit otherwise; `/usage` lists both. A free key made at https://nodecode.ai/account/keys (tick Free key) works on its own too: `export NODECODE_API_KEY=sk-nc-...`.
+The footer shows Free key · Cyber v1 while a session runs on the free one, and your plan or credit otherwise; `/usage` lists both.
 
 | Fact | Value |
 | --- | --- |
@@ -140,6 +140,25 @@ The footer shows Free key · Cyber v1 while a session runs on the free one, and 
 | A minute | 40 requests per account. The next answers 429 `free_rate_limited` with `Retry-After`, which the CLI waits out. |
 | Capacity | Paid calls go first. A free call runs where a machine has room, and answers 503 `free_capacity_busy` after 30 s without it. |
 | Footer | Free key · Cyber v1; Free key · top up first while the top-up is unpaid. |
+
+A free key made at https://nodecode.ai/account/keys (tick Free key) runs without a sign-in once its provider is wired the way a sign-in wires it. A key alone names no provider or model, so `NODECODE_API_KEY` by itself runs no turn. Merge this into your [config](config.mdx):
+
+```jsonc
+{
+  "general": { "default_model": { "provider": "nodecode-free", "model": "nodecode-cyber-v1" } },
+  "providers": {
+    "nodecode-free": { "sdk": "openai-completions", "base_url": "https://api.nodecode.ai/v1" }
+  }
+}
+```
+
+Then hand it the key and run `nodecode`:
+
+```sh
+export NODECODE_FREE_API_KEY=sk-nc-...
+```
+
+`general.default_model` makes the free Cyber v1 the default, as a sign-in with a free key does. Leave it out to pick it in `/models` instead.
 
 ### Claude Code
 
