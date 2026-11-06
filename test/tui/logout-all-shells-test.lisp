@@ -4,13 +4,19 @@
 
 (defmacro with-signed-in-home (() &body body)
   "BODY over a home signed in to nodecode.ai with a key and a machine link, its auth.json and
-config set where the gateway's own threads read them too."
+config set where the gateway's own threads read them too. The account answers a machine's own
+sign-out (DELETE /api/link/<id>) here, on every thread, and nothing else reaches nodecode.ai."
   `(with-temp-file (nle::*auth-file-path* :setf t)
      (with-temp-file (nle::*shared-config-path* :setf t)
        (setf nle::*account-usage* nil nle::*account-free-usage* nil nle::*account-login* nil)
        (nle::account-login-save (shasht:read-json +account-linked+))
        (nle::save-machine-link "00000000-0000-0000-0000-000000000002" "poll-secret-fixture")
-       ,@body)))
+       (with-stubbed-fdefinition (nle::account-login-request (method path body poll timeout)
+                                   (declare (ignore body poll timeout))
+                                   (if (eq method :delete)
+                                       (values (nlk:json-object "state" "signed_out" "name" "Fixture machine") 200)
+                                       (error "no nodecode.ai in this test: ~a ~a" method path)))
+         ,@body))))
 
 (defun account-frames (frames &optional (account "signed_out"))
   "The model_changed frames in FRAMES that say the home's sign-in moved to ACCOUNT."
