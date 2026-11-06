@@ -10,6 +10,8 @@
   "{\"state\":\"linked\",\"name\":\"Fixture machine\",\"base_url\":\"https://api.nodecode.ai/v1\",\"api_key\":\"machine-key-fixture\",\"provider\":\"nodecode\",\"model\":null,\"address\":null}")
 (defparameter +account-usage-plan+
   "{\"object\":\"usage\",\"plan\":{\"name\":\"founders\",\"requests\":42000,\"used\":812.4,\"left\":41187.6,\"resets_at\":\"2026-11-01T00:00:00Z\",\"ends_at\":\"2026-11-24T00:00:00Z\",\"threads\":4,\"running\":1},\"balance\":[{\"currency\":\"eur\",\"micros\":12400000}],\"pays\":\"plan\"}")
+(defparameter +account-usage-plan-only+
+  "{\"object\":\"usage\",\"plan\":{\"name\":\"founders\",\"requests\":42000,\"used\":812.4,\"left\":41187.6,\"resets_at\":\"2026-11-01T00:00:00Z\",\"ends_at\":\"2026-11-24T00:00:00Z\",\"threads\":4,\"running\":1},\"balance\":[],\"pays\":\"plan\"}")
 (defparameter +account-usage-credit+
   "{\"object\":\"usage\",\"plan\":null,\"balance\":[{\"currency\":\"usd\",\"micros\":0},{\"currency\":\"eur\",\"micros\":12400000}],\"pays\":\"balance\"}")
 (defparameter +account-usage-empty+
@@ -19,7 +21,8 @@
 
 (deftest account-login-launch-is-a-browser-sign-in-and-machine-link-takes-the-code ()
   (is (equal '(nil (:login nil) nil nil nil nil nil) (launch-plan "login")))
-  (is (equal '(nil (:login "subscription") nil nil nil nil nil) (launch-plan "login" "--subscription")))
+  ;; No plan is sold (+ACCOUNT-OFFERED-MODES+): the flag is refused, saying so, not run.
+  (is (search "no plan is sold now, so there is no --subscription" (launch-refusal "login" "--subscription")))
   (is (equal '(nil (:login "api") nil nil nil nil nil) (launch-plan "login" "--api")))
   (is (equal '(nil (:machine-link nil) nil nil nil nil nil) (launch-plan "machine" "link")))
   (is (equal '(nil (:machine-link "DDAN-UY56") nil nil nil nil nil) (launch-plan "machine" "link" "DDAN-UY56")))
@@ -27,7 +30,8 @@
   (is (equal '(:help "login") (second (launch-plan "login" "--help"))))
   (is (null (nle::terminal-refusal '(:login "api") nil '("login" "--api"))))
   (is (null (nle::terminal-refusal '(:machine-link "DDAN-UY56") nil '("machine" "link" "DDAN-UY56"))))
-  (is (search "--subscription" (nle::launch-help-text "login")))
+  (is (not (search "subscription" (string-downcase (nle::launch-help-text "login")))) "no plan is offered")
+  (is (search "API credit" (nle::launch-help-text "login")))
   (is (search "link [CODE]" (nle::launch-help-text "machine")))
   (is (search "login is a command of its own" (launch-refusal "--ephemeral" "login")))
   (is (search "machine link is a command of its own" (launch-refusal "--ephemeral" "machine" "link")))
@@ -142,26 +146,57 @@
           (if hint
               (is (search hint text))
               (is-carrying text "API credit: €12.40" "Paying with: API credit" (:absent "add some")))
-          (is (search "/models" text)))))))
+          (is (search "/models" text))))))
+  ;; A plan pays before the balance (the gate's `pays'): an API sign-in on an account holding
+  ;; one, and no credit, is not told to add credit it does not need.
+  (let ((out (make-string-output-stream)))
+    (nle::account-print-usage out "api" "k" "https://api.nodecode.ai/v1"
+                              (lambda (&rest args) (declare (ignore args)) (values (shasht:read-json +account-usage-plan-only+) 200)))
+    (let ((text (get-output-stream-string out)))
+      (is-carrying text "Founders plan: 41,187 of 42,000 requests left" (:absent "add some") (:absent "no API credit")))))
+
+(deftest account-login-takes-the-one-offered-mode-without-asking ()
+  ;; No plan is sold: `nodecode login' signs in for API credit and asks nothing, so a script
+  ;; with no terminal runs it too; a subscription is no word /login takes.
+  (is (equal "api" (nle::account-ask-mode :ask (lambda (prompt) (error "asked ~s" prompt)))))
+  (is (equal "api" (nle::account-ask-mode :ask (constantly nil))))
+  (is (equal "api" (nle::account-mode-word "credits")))
+  (is (null (nle::account-mode-word "subscription")))
+  (is (nle::account-mode-offered-p "api"))
+  (is (not (nle::account-mode-offered-p "subscription"))))
 
 (deftest account-login-asks-the-mode-or-refuses-without-a-terminal ()
-  (is (equal "api" (nle::account-ask-mode :ask (constantly "2"))))
-  (is (equal "subscription" (nle::account-ask-mode :ask (constantly " subscription "))))
-  (is (search "--subscription" (refusal-text error (nle::account-ask-mode :ask (constantly nil)))))
-  (is (search "takes 1" (refusal-text error (nle::account-ask-mode :ask (constantly "3")))))
-  (is (null (nle::account-mode-word "bogus"))))
+  ;; With plans offered again the choice comes back, asked on the terminal.
+  (let ((nle::+account-offered-modes+ '("subscription" "api")))
+    (is (equal "api" (nle::account-ask-mode :ask (constantly "2"))))
+    (is (equal "subscription" (nle::account-ask-mode :ask (constantly " subscription "))))
+    (is (search "--subscription" (refusal-text error (nle::account-ask-mode :ask (constantly nil)))))
+    (is (search "takes 1" (refusal-text error (nle::account-ask-mode :ask (constantly "3")))))
+    (is (null (nle::account-mode-word "bogus")))))
 
-(deftest account-login-bare-opens-the-choice-from-the-shell (with-temp-store ())
+(deftest account-login-bare-starts-the-offered-sign-in-from-the-shell (with-temp-store ())
   ;; #230: a bare /login typed at the prompt, and the /models sign-in row that runs it the same
   ;; way, handed the setup walk's CONTEXT keyword, NIL outside the walk, to the picker's string
   ;; slot: the event loop caught a TYPE-ERROR and no picker opened.
-  (let ((model (make-frame-model 100 30)))
-    (nle::execute-slash-command model "login" "")
-    (is-present (dialog (nle::chat-model-dialog model)) "bare /login opens a picker"
-      (is (equal "Sign in to nodecode.ai" (nle::picker-dialog-title dialog)))
-      (is (equal "" (nle::picker-dialog-context dialog)) "no walk, no context label")
-      (is (equal '("Subscription" "API credits")
-                 (mapcar #'nle::picker-row-label (nle::picker-dialog-rows dialog)))))))
+  ;; With API credit the one mode offered (+ACCOUNT-OFFERED-MODES+), bare /login asks nothing and
+  ;; starts that sign-in; the choice comes back with plans.
+  (let ((model (make-frame-model 100 30)) (asked '()))
+    (with-stubbed-fdefinition (nle::account-login-from-shell (model mode &key then)
+                                (declare (ignore model then))
+                                (push mode asked)
+                                "login: asking nodecode.ai…")
+      (nle::execute-slash-command model "login" "")
+      (is (equal '("api") asked) "bare /login starts the API-credit sign-in")
+      (is (null (nle::chat-model-dialog model)) "no picker stands in its way")
+      (nle::execute-slash-command model "login" "subscription")
+      (is (equal '("api") asked) "/login subscription starts nothing")
+      (let ((nle::+account-offered-modes+ '("subscription" "api")))
+        (nle::execute-slash-command model "login" "")
+        (is-present (dialog (nle::chat-model-dialog model)) "with plans offered, bare /login opens a picker"
+          (is (equal "Sign in to nodecode.ai" (nle::picker-dialog-title dialog)))
+          (is (equal "" (nle::picker-dialog-context dialog)) "no walk, no context label")
+          (is (equal '("Subscription" "API credits")
+                     (mapcar #'nle::picker-row-label (nle::picker-dialog-rows dialog)))))))))
 
 (deftest account-login-terminal-verdicts-save-nothing ()
   (dolist (state '("refused" "expired" "gone" "unknown"))
@@ -249,7 +284,9 @@
   (flet ((meter (json) (multiple-value-list (nle::account-meter (shasht:read-json json)))))
     (is (equal '("Founders" "41.1k" :success) (meter +account-usage-plan+)))
     (is (equal '("Credit" "€12.40" :success) (meter +account-usage-credit+)))
-    (is (equal '("nodecode.ai" "no plan or credit" :danger) (meter +account-usage-empty+)))
+    (is (equal '("nodecode.ai" "no credit" :danger) (meter +account-usage-empty+)) "no plan is offered: credit is what is missing")
+    (let ((nle::+account-offered-modes+ '("subscription" "api")))
+      (is (equal '("nodecode.ai" "no plan or credit" :danger) (meter +account-usage-empty+))))
     (is (equal '("Free key" "Cyber v1" :success) (meter "{\"object\":\"usage\",\"plan\":null,\"balance\":[],\"pays\":\"free\"}")) "a free key says what it calls, whatever the account holds")
     (is (equal '("Free key" "top up first" :danger) (meter "{\"object\":\"usage\",\"plan\":null,\"balance\":[{\"currency\":\"usd\",\"micros\":1000000}],\"pays\":\"free_locked\"}")) "and that it calls nothing before the top-up")
     (is (search "a free key" (car (last (nle::account-usage-lines (shasht:read-json "{\"object\":\"usage\",\"plan\":null,\"balance\":[],\"pays\":\"free\"}"))))) "/usage names it as what pays")
@@ -314,8 +351,17 @@
            (title (find-if (lambda (line) (search "API credit" (car line)))
                            (mapcar (lambda (row) (account-slab-painted row 110))
                                    (remove-if-not #'nle::picker-row-paint (nle::account-slab-rows "7d"))))))
-      (is (search "No plan" (car title)))
-      (is (search "● PAYING" (car title)) "the credit pays without a plan"))
+      (is (not (search "No plan" (car title))) "no plan is offered: no slab sells one")
+      (is (search "● PAYING" (car title)) "the credit pays without a plan")
+      (is (notany (lambda (row) (search "subscribe" (nle::picker-row-label row))) (nle::account-slab-rows "7d")))
+      (let ((painted (remove-if-not #'nle::picker-row-paint (nle::account-slab-rows "7d"))))
+        (is (every (lambda (row) (<= (length (car (account-slab-painted row 110))) 110)) painted) "the credit's slab alone keeps to its room")))
+    (let* ((nle::+account-offered-modes+ '("subscription" "api"))
+           (nle::*account-meter* (account-meter-fixture +account-usage-credit+))
+           (title (find-if (lambda (line) (search "API credit" (car line)))
+                           (mapcar (lambda (row) (account-slab-painted row 110))
+                                   (remove-if-not #'nle::picker-row-paint (nle::account-slab-rows "7d"))))))
+      (is (search "No plan" (car title)) "with plans offered, the plan's slab says there is none"))
     (let ((nle::*account-meter* nil))
       (is (null (nle::account-slab-rows "7d")) "a home not signed in draws no account"))))
 
@@ -364,7 +410,8 @@
           (is (eq dialog (nle::chat-model-dialog model)))
           (let ((fresh (mapcar #'nle::picker-row-label (nle::picker-dialog-rows dialog))))
             (is (equal "nodecode.ai account" (first fresh)))
-            (is (some (lambda (label) (search "No plan" label)) fresh) "the fresh meter's slabs")
+            (is (some (lambda (label) (search "API credit" label)) fresh) "the fresh meter's slabs")
+            (is (notany (lambda (label) (search "No plan" label)) fresh) "no plan is offered: none is sold")
             (is (notany (lambda (label) (search "Founders plan" label)) fresh) "the stale ones go"))))
       (nle::dismiss-dialog model nil)
       (let ((nle::*account-meter* nil))

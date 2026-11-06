@@ -191,7 +191,7 @@ API credit from [nodecode.ai](https://nodecode.ai/pricing) needs no key pasted. 
 nodecode login
 ```
 
-It asks what for: `1  Subscription: your Founders or Plus plan's requests` or `2  API credits: pay per token from your balance`. `--subscription` or `--api` answers up front. In the shell, `/login` does the same.
+It signs in for API credit, pay per token from your balance, and asks nothing. In the shell, `/login` does the same.
 
 It opens nodecode.ai in your browser with this machine's code already in the page: `Your browser is open at nodecode.ai`. Over SSH it prints the link instead, `Open this page in a browser, on this machine or any other`, and any device signs it in. Nothing is pasted back.
 
@@ -201,21 +201,16 @@ The footer shows the meter from then on. A click on it opens `/usage`.
 
 | Command | Does |
 | --- | --- |
-| `nodecode login` | Signs in, in a browser. Asks which, or takes `--subscription` or `--api`. |
+| `nodecode login` | Signs in, in a browser, to run on the account's API credit. |
 | `/login` | The same, from the shell. |
 | `nodecode logout`, `/logout` | Signs this machine out again. |
 | `nodecode machine link [CODE]` | Links this machine with a code from [Machines](https://nodecode.ai/account/machines). |
 
 <Mistakes>
 <Mistake>
-<What>Running `nodecode login` from a script</What>
-<Why>With no terminal it cannot ask: `nodecode login asks what to sign in for and no terminal can answer`.</Why>
-<Instead>`nodecode login --subscription` or `nodecode login --api`.</Instead>
-</Mistake>
-<Mistake>
-<What>Signing in for a subscription with no plan</What>
-<Why>`This account holds no plan, and plans are not sold now: it runs on API credit, added at https://nodecode.ai/account/top-up`. With no credit either, calls answer 402.</Why>
-<Instead>Plans are not sold now: [top up](https://nodecode.ai/account/top-up) and sign in with `nodecode login --api`.</Instead>
+<What>Signing in on an account with no credit</What>
+<Why>`This account has no API credit yet: add some at https://nodecode.ai/account/top-up`. Calls answer 402 until there is some. An account that holds a plan is not told this: the plan pays first.</Why>
+<Instead>[Top up](https://nodecode.ai/account/top-up). The terminal spends it from its next request, with no new sign-in.</Instead>
 </Mistake>
 </Mistakes>
 
@@ -236,7 +231,7 @@ The config names the file, never the value.
 | --- | --- |
 | `nodecode setup` | Opens the shell with setup on the first frame. |
 | `/setup` | Opens the whole walk. Takes no argument. |
-| `/login` | Signs in to your nodecode.ai account: a subscription or API credits. |
+| `/login` | Signs in to your nodecode.ai account, to run on its API credit. |
 | `/models` | Opens the providers under Main, Auxiliary, Decider and Backup tabs. Connect one, or pick a model. |
 | `/cells` | Lists cells. Space turns one on or off. |
 | `/settings` | Browse and change settings, a cell's among them. |
