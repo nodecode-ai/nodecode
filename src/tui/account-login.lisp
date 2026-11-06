@@ -14,10 +14,22 @@
 by the token. The gate decides who pays each request (the plan while it has requests left, then
 the balance); the mode decides what the sign-in asks of the person and what the meter leads with.")
 
+(defparameter +account-offered-modes+ '("api")
+  "The modes a person is offered: what `nodecode login', /login and the setup walk sign in for.
+No plan is sold now (nodecode.ai/pricing is per token), so a sign-in is for API credit alone and
+nothing asks which; a subscription comes back by naming it here, which brings the choice back with
+it. +ACCOUNT-MODES+ stays whole: the gateway's route still takes an older shell's pick.")
+
+(defun account-mode-offered-p (mode)
+  "Whether MODE is one a person is offered (+ACCOUNT-OFFERED-MODES+)."
+  (and (member mode +account-offered-modes+ :test #'equal) t))
+
 (defun account-mode-word (text &aux (word (string-trim '(#\Space #\Tab #\Return) (or text ""))))
-  "The mode TEXT names -- subscription (1, s, sub, plan) or api (2, a, credit, credits) -- or NIL."
-  (cond ((member word '("subscription" "1" "s" "sub" "plan") :test #'string-equal) "subscription")
-        ((member word '("api" "2" "a" "credit" "credits") :test #'string-equal) "api")))
+  "The offered mode (+ACCOUNT-OFFERED-MODES+) TEXT names -- subscription (1, s, sub, plan) or api
+(2, a, credit, credits) -- or NIL."
+  (let ((mode (cond ((member word '("subscription" "1" "s" "sub" "plan") :test #'string-equal) "subscription")
+                    ((member word '("api" "2" "a" "credit" "credits") :test #'string-equal) "api"))))
+    (and (member mode +account-offered-modes+ :test #'equal) mode)))
 
 ;;; --- the claim: nodecode login and nodecode machine link -----------------------
 
@@ -213,14 +225,19 @@ sign-in chose on PROVIDER, or /models."
            ;; No plan is sold now (nodecode.ai/pricing is per token), so the plan
            ;; a person lacks is not one to buy: the account runs on API credit.
            (format output "This account holds no plan, and plans are not sold now: it runs on API credit, added at https://nodecode.ai/account/top-up~%"))
-          ((and (equal mode "api") (not (account-balance-rows usage)))
+          ;; A plan pays before the balance (the gate's `pays'): an account holding one is not
+          ;; told to add credit it does not need.
+          ((and (equal mode "api") (not (account-balance-rows usage)) (not (json-value usage :object "plan")))
            (format output "This account has no API credit yet: add some at https://nodecode.ai/account/top-up~%"))))
     (error (condition)
       (format output "The account's meter could not be read yet: ~a~%" condition)))
   (account-next-step output lead provider))
 
 (defun account-ask-mode (&key (ask #'terminal-answer))
-  "The mode `nodecode login' signs in for, asked on the terminal; refused where none can ask."
+  "The mode `nodecode login' signs in for: the one offered (+ACCOUNT-OFFERED-MODES+) without a
+question, else asked on the terminal, and refused where none can ask."
+  (unless (rest +account-offered-modes+)
+    (return-from account-ask-mode (first +account-offered-modes+)))
   (loop repeat 3
         for reply = (funcall ask (format nil "Sign in to nodecode.ai for:~%  1  Subscription: your Founders plan's requests (Lite, Base or Pro)~%  2  API credits: pay per token from your balance~%Choose 1 or 2:"))
         do (cond ((null reply)
@@ -229,7 +246,7 @@ sign-in chose on PROVIDER, or /models."
         finally (error "nodecode login takes 1 (subscription) or 2 (API credits).")))
 
 (defun account-login-main (mode)
-  "`nodecode login [--subscription | --api]': the browser sign-in, with no store or terminal UI."
+  "`nodecode login [--api]': the browser sign-in, with no store or terminal UI."
   (account-login nil :mode (or mode (account-ask-mode)))
   (uiop:quit 0))
 
@@ -366,10 +383,12 @@ the plan runs low or a spent plan's credit pays, DANGER when nothing can pay."
            (values name (format nil "credit ~a" (account-money money)) :tool)
            (values "Credit" (account-money money) :success)))
       (plan (values name "0 left" :danger))
-      (t (values "nodecode.ai" "no plan or credit" :danger)))))
+      ;; No plan is offered (+ACCOUNT-OFFERED-MODES+): what is missing is credit alone.
+      (t (values "nodecode.ai" (if (account-mode-offered-p "subscription") "no plan or credit" "no credit") :danger)))))
 
 (defun account-usage-lines (usage)
-  "USAGE as the lines /usage and a sign-in print: the plan, the credit, what pays now."
+  "USAGE as the lines /usage and a sign-in print: the plan, the credit, what pays now. An account
+with no plan reads no plan line while none is offered (+ACCOUNT-OFFERED-MODES+)."
   (let* ((plan (json-value usage :object "plan"))
          (rows (account-balance-rows usage))
          (pays (json-value usage :string "pays")))
@@ -383,14 +402,16 @@ the plan runs low or a spent plan's credit pays, DANGER when nothing can pay."
                          (account-day (json-value plan :string "ends_at"))
                          (when-let (threads (json-value plan :integer "threads"))
                            (format nil "~d of ~d running" (or (json-value plan :integer "running") 0) threads)))
-                 "No plan.")
+                 (and (account-mode-offered-p "subscription") "No plan."))
              (format nil "API credit: ~:[none~;~:*~{~a~^, ~}~]" (mapcar #'account-money rows))
              (format nil "Paying with: ~a"
                      (cond ((equal pays "free") "a free key: Cyber v1 from this CLI, 256K context, 2 at once")
                            ((equal pays "free_locked") "nothing yet: a free key works once the account has topped up at https://nodecode.ai/account/top-up")
                            ((equal pays "plan") "the plan")
                            ((equal pays "balance") "API credit")
-                           (t "nothing yet: subscribe at https://nodecode.ai/pricing or add credit at https://nodecode.ai/account/top-up")))))))
+                           ((account-mode-offered-p "subscription")
+                            "nothing yet: subscribe at https://nodecode.ai/pricing or add credit at https://nodecode.ai/account/top-up")
+                           (t "nothing yet: add credit at https://nodecode.ai/account/top-up")))))))
 
 (defun account-credential (&optional (provider +own-provider+))
   "The saved nodecode.ai key of PROVIDER -- the account's, or the free key's (+FREE-PROVIDER+) --
@@ -743,36 +764,45 @@ LEFT clipped to what RIGHT leaves, RIGHT flush to the far pad and dropped when i
 (defun account-slab-rows (key)
   "The nodecode.ai account as /account and /usage show it: its heading, then the plan's slab and
 the credit's side by side, a picker row per line keyed by KEY (a /usage tab; empty in /account), each
-a heading the arrows pass over that paints its line of both. NIL when this home is not signed in
-to nodecode.ai."
+a heading the arrows pass over that paints its line of each. An account with no plan draws the
+credit's slab alone while no plan is offered (+ACCOUNT-OFFERED-MODES+): a slab saying `No plan,
+subscribe' would sell what is not sold. NIL when this home is not signed in to nodecode.ai."
   (when-let (usage (getf *account-meter* :usage))
-    (destructuring-bind ((plan-ground plan-lines) (credit-ground credit-lines)) (account-slabs usage)
-      (let* ((depth (+ 2 (max (length plan-lines) (length credit-lines))))
-             (blank (list nil nil)))
-        (flet ((pad (lines)
-                 (append (list blank) lines (make-list (- depth 1 (length lines)) :initial-element blank)))
-               (text (line)
-                 (string-trim " " (format nil "~{~a~}" (mapcar #'seg-text (append (first line) (second line)))))))
-          (append
-           (list (make-picker-row :key key :label "nodecode.ai account" :mark "■" :mark-tone :accent
-                                  :value (list :account)))
-           (loop for plan-line in (pad plan-lines)
-                 for credit-line in (pad credit-lines)
-                 collect (let ((row (make-picker-row :key key :heading t :value (list :account)
-                                                     :label (format nil "~a  ~a" (text plan-line) (text credit-line))))
-                               (plan-line plan-line)
-                               (credit-line credit-line))
-                           (setf (picker-row-paint row)
-                                 (lambda-ignoring (selected room)
-                                   (let* ((plan-width (min 60 (floor (* 3 (max 0 (- room 7))) 5)))
-                                          (credit-width (max 0 (min 44 (- room 7 plan-width)))))
-                                     (values (append (list (make-seg :text "    " :tone :muted))
-                                                     (account-slab-line plan-line plan-width plan-ground)
-                                                     (list (make-seg :text "   " :tone :muted))
-                                                     (account-slab-line credit-line credit-width credit-ground))
-                                             nil))))
-                           row))
-           (list (make-picker-row :key key :heading t :label "" :value (list :account)))))))))
+    (let* ((slabs (if (or (json-value usage :object "plan") (account-mode-offered-p "subscription"))
+                      (account-slabs usage)
+                      (rest (account-slabs usage))))
+           (depth (+ 2 (reduce #'max slabs :key (lambda (slab) (length (second slab))))))
+           (blank (list nil nil)))
+      (flet ((pad (lines)
+               (append (list blank) lines (make-list (- depth 1 (length lines)) :initial-element blank)))
+             (text (line)
+               (string-trim " " (format nil "~{~a~}" (mapcar #'seg-text (append (first line) (second line))))))
+             (widths (room)
+               ;; Two slabs: the plan's three fifths of the room up to 60, the credit's the rest up
+               ;; to 44; one slab the plan's measure, so it reads the same width either way.
+               (let ((first-width (min 60 (floor (* 3 (max 0 (- room 7))) 5))))
+                 (if (rest slabs)
+                     (list first-width (max 0 (min 44 (- room 7 first-width))))
+                     (list first-width)))))
+        (append
+         (list (make-picker-row :key key :label "nodecode.ai account" :mark "■" :mark-tone :accent
+                                :value (list :account)))
+         (apply #'mapcar
+                (lambda (&rest lines)
+                  (let ((row (make-picker-row :key key :heading t :value (list :account)
+                                              :label (format nil "~{~a~^  ~}" (mapcar #'text lines)))))
+                    (setf (picker-row-paint row)
+                          (lambda-ignoring (selected room)
+                            (values (loop for line in lines
+                                          for (ground) in slabs
+                                          for width in (widths room)
+                                          for gap = "    " then "   "
+                                          append (list (make-seg :text gap :tone :muted))
+                                          append (account-slab-line line width ground))
+                                    nil)))
+                    row))
+                (mapcar (lambda (slab) (pad (second slab))) slabs))
+         (list (make-picker-row :key key :heading t :label "" :value (list :account))))))))
 
 (defun account-login-watch (model &key (deadline (+ (get-universal-time) 660)) then)
   "Ask MODEL's gateway after the sign-in it started every few seconds, off the loop, until it is
@@ -817,19 +847,24 @@ then the one the sign-in ended on (ACCOUNT-LOGIN-WATCH)."
 
 (defun slash-login-op (model args &key (pick #'account-login-from-shell) (context "") on-cancel
                                   &aux (word (string-trim '(#\Space #\Tab) (or args ""))))
-  "/login on a shell: bare, the choice between a subscription and API credits; named, that sign-in.
-PICK takes the choice as (MODEL MODE); CONTEXT and ON-CANCEL are the setup walk's, whose step the
-choice is (SETUP-STAGE-SIGN-IN): the prompt and /models leave the picker's label empty."
+  "/login on a shell: bare, the sign-in for the one offered mode (+ACCOUNT-OFFERED-MODES+), or the
+choice between them while there are more; named, that sign-in. PICK takes the choice as (MODEL
+MODE); CONTEXT and ON-CANCEL are the setup walk's, whose step the choice is (SETUP-STAGE-SIGN-IN):
+the prompt and /models leave the picker's label empty."
   (cond
     ((plusp (length word))
      (if-let (mode (account-mode-word word))
        (funcall pick model mode)
        (slash-unoffered "login")))
+    ;; One mode offered: nothing to choose, so no picker stands between /login and the browser.
+    ((null (rest +account-offered-modes+))
+     (funcall pick model (first +account-offered-modes+)))
     (t (open-picker-dialog model "Sign in to nodecode.ai"
-                           (list (make-picker-row :label "Subscription" :detail "your Founders plan's requests (Lite, Base or Pro)"
-                                                  :value "subscription")
-                                 (make-picker-row :label "API credits" :detail "pay per token from your balance"
-                                                  :value "api"))
+                           (loop for (mode label detail)
+                                   in '(("subscription" "Subscription" "your Founders plan's requests (Lite, Base or Pro)")
+                                        ("api" "API credits" "pay per token from your balance"))
+                                 when (member mode +account-offered-modes+ :test #'equal)
+                                   collect (make-picker-row :label label :detail detail :value mode))
                            pick
                            :context context
                            :on-cancel on-cancel

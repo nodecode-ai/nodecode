@@ -320,9 +320,8 @@ Zig launcher gives the same thing."
    (nlk:make-verb "serve" "run this home's organism headless: a gateway and no shell"
                   :arguments "[--store PATH]"
                   :detail "It owns the store and serves its gateway until stopped, or exits at once when another process already owns it. A reconnecting shell spawns one; it is also the way to run an organism with no terminal.")
-   (nlk:make-verb "login" "sign in to your nodecode.ai account: a subscription or API credits"
-                  :arguments "[--subscription | --api]"
-                  :detail "Asks which one unless a flag says it, opens nodecode.ai in your browser with this machine's code in the page, and waits there for you to sign in with your nodecode.ai account and allow the machine; over ssh, open the printed page on any device. The key is saved locally and the account's meter printed: the plan's requests left and when the plan ends, the API credit. No terminal UI or session is opened. /login does the same from inside the shell; /models is for other providers.")
+   (nlk:make-verb "login" "sign in to your nodecode.ai account, to run on its API credit"
+                  :detail "Opens nodecode.ai in your browser with this machine's code in the page, and waits there for you to sign in with your nodecode.ai account and allow the machine; over ssh, open the printed page on any device. The key is saved locally and the account's meter printed. No terminal UI or session is opened. /login does the same from inside the shell; /models is for other providers.")
    (nlk:make-verb "logout" "sign this machine out of your nodecode.ai account"
                   :detail "Takes the account's key out of this home's auth.json and forgets the machine link; the key stays on the account until you remove the machine at https://nodecode.ai/account/machines. No terminal UI or session is opened. /logout does the same from inside the shell; nodecode login signs in again.")
    (nlk:make-verb "machine" "link this machine to your nodecode.ai account with a code from its Machines page"
@@ -585,7 +584,13 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
                  ((string= name "serve") (setf serve t))
                  ;; (:login MODE): what the sign-in is for, NIL to ask on the terminal.
                  ((string= name "login")
-                  (let ((mode (cond ((equal (first args) "--subscription") (pop args) "subscription")
+                  ;; --api is the one mode offered (+ACCOUNT-OFFERED-MODES+), kept so a line
+                  ;; that names it still runs; --subscription waits for plans to be sold.
+                  (let ((mode (cond ((equal (first args) "--subscription")
+                                     (pop args)
+                                     (unless (account-mode-offered-p "subscription")
+                                       (launch-usage-error "login signs in for API credit: no plan is sold now, so there is no --subscription"))
+                                     "subscription")
                                     ((equal (first args) "--api") (pop args) "api"))))
                     (when (and args (not (uiop:string-prefix-p "-" (first args))))
                       (launch-usage-error "login signs in with a browser and takes no CODE; a code from the Machines page is nodecode machine link ~a"
