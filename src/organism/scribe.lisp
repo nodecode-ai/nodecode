@@ -699,8 +699,9 @@ PATH is new. DIRECTORY-MODE is the directory's mode."
         (when bits
           #-win32 (sb-posix:fchmod fd bits)
           #+win32 (sb-posix:chmod temp bits)))
-      ;; rename(2), MoveFileEx with replacement on Windows (REPLACE-FILE's call)
-      (multiple-value-bind (ok errno) (sb-unix:unix-rename temp native)
+      ;; rename(2), MoveFileEx with replacement on Windows, a reader of PATH
+      ;; waited out there (RENAME-OVER)
+      (multiple-value-bind (ok errno) (rename-over temp native)
         (unless ok (error "cannot replace ~a: ~a" native (sb-int:strerror errno))))
       (setf renamed t))
     path))

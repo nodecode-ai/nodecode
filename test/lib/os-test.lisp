@@ -591,6 +591,47 @@ the child on unwind."
                (namestring (nlk:replace-file (progn (write-temp-file from "x") from)
                                              to))))))
 
+(defun reader-holding-argv (path seconds)
+  "A child that opens PATH to read it, as a reader of a sidecar does, says
+`open', and holds it SECONDS before it closes it and exits."
+  #-win32
+  (list "python3" "-c" "import sys,time
+f=open(sys.argv[1])
+print('open',flush=True)
+time.sleep(float(sys.argv[2]))
+f.close()"
+        (namestring path) (princ-to-string seconds))
+  #+win32
+  (list "powershell" "-NoProfile" "-Command"
+        (format nil "$f = [IO.File]::Open(~a, 'Open', 'Read', 'ReadWrite'); [Console]::Out.Write('open' + [char]10); Start-Sleep -Milliseconds ~d; $f.Close()"
+                (powershell-quoted (uiop:native-namestring path)) (round (* 1000 seconds)))))
+
+(defmacro with-reader-holding ((path) &body body &aux (reader (gensym "READER")))
+  "Run BODY while a child holds PATH open for reading, after it says it does."
+  `(let ((,reader (uiop:launch-program (reader-holding-argv ,path 0.5) :output :stream)))
+     (nlk:with-cleanup ((uiop:terminate-process ,reader) (uiop:wait-process ,reader))
+       (is (equal "open" (string-right-trim '(#\Return)
+                                            (or (read-line (uiop:process-info-output ,reader) nil) ""))))
+       ,@body)))
+
+(deftest a-file-another-process-reads-is-replaced-once-it-lets-go (with-temp-workspace (dir))
+  ;; Windows refuses a rename over a file another process has open, where
+  ;; POSIX replaces it under the reader. Each shell waiting on a store reads
+  ;; its holder sidecar every 5 ms: an owner whose port publication such a
+  ;; read refused served on a port no shell found, and every shell waited.
+  (let ((from (merge-pathnames "from" dir))
+        (to (merge-pathnames "to" dir)))
+    (write-temp-file to "old")
+    (with-reader-holding (to)
+      (write-temp-file from "new")
+      (is (equal (namestring to) (namestring (nlk:replace-file from to))))
+      (is (equal "new" (uiop:read-file-string to)) "the replace waited the reader out")))
+  (let ((store (merge-pathnames "history.db" dir)))
+    (nlk::write-store-holder (nlk::lease-path-for-store store) :pid 4242)
+    (with-reader-holding ((nlk::lease-path-for-store store))
+      (nlk::write-store-holder (nlk::lease-path-for-store store) :pid 4242 :port 58840)
+      (is (equal '(4242 58840) (multiple-value-list (nlk::read-store-holder store))) "the owner's port is published while a shell reads its sidecar"))))
+
 (deftest random-bytes-come-from-the-operating-system (let ((first (nlk:random-bytes 32))
                                                            (second (nlk:random-bytes 32))))
   (is (and (typep first '(vector (unsigned-byte 8))) (= 32 (length first))))
