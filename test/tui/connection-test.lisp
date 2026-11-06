@@ -10,8 +10,7 @@
 (defmacro with-connection-scratch ((&key (delays ''())) &body body)
   "BODY with an empty check table, kept measurements in a scratch file, and DELAYS between tries."
   (let ((dir (gensym "DIR")))
-    `(let* ((,dir (uiop:ensure-directory-pathname
-                   (merge-pathnames (format nil "nc-conn-~36r/" (random (expt 36 8))) (uiop:temporary-directory))))
+    `(let* ((,dir (temp-path "conn"))
             (nle::*connection-checks* (make-hash-table :test #'equal))
             (nle::*connection-memory* :unread)
             (nle::*connection-memory-path* (merge-pathnames "connection-checks.sexp" ,dir))
