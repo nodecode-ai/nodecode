@@ -1594,6 +1594,37 @@ SESSION-ID, in log order."
               never (equal "system" (gethash "role" (aref wire index)))))
     (is (equal "system" (gethash "role" stub)))))
 
+(deftest request-body-sends-no-empty-user-message ()
+  ;; A channel room records an answer no new message asked for (a background
+  ;; evaluation's wake, a turn a restart resumed) as a turn whose user message
+  ;; is "", and every lane forked off the room carries it. A strict chat wire
+  ;; refuses the whole request for it (Moonshot: 400 `the message at position
+  ;; N with role 'user' must not be empty'), so every new thread of that room
+  ;; failed: an empty user message is left out, as the Messages lane leaves it
+  ;; out. One with text or an image stays.
+  (let* ((wire (gethash "messages"
+                        (nle::request-body
+                         (compiled-context
+                          (list (nle::message "user" "start the build")
+                                (wire-message "assistant" :content "started")
+                                (nle::message "user" "")
+                                (wire-message "assistant" :content "the build finished")
+                                (nle::message "user" (vector (nle::make-text-content-part "")))
+                                (wire-message "assistant" :content "still green")
+                                (nle::message "user"
+                                              (vector (nle::make-text-content-part "")
+                                                      (nle::make-image-content-part
+                                                       "data:image/png;base64,QUJD")))
+                                (wire-message "assistant" :content "a cat")
+                                (nle::message "user" "and the tests?"))))))
+         (users (remove "user" wire :key (lambda (message) (gethash "role" message))
+                                    :test-not #'equal)))
+    (is (equal '("system" "user" "assistant" "assistant" "assistant" "user" "assistant" "user")
+               (map 'list (lambda (message) (gethash "role" message)) wire)))
+    (is (equal "start the build" (gethash "content" (aref users 0))))
+    (is (equal "image_url" (gethash "type" (aref (gethash "content" (aref users 1)) 1))))
+    (is (equal "and the tests?" (gethash "content" (aref users 2))))))
+
 (deftest request-body-serializes-to-json ()
   (is-carrying (json (with-output-to-string (out)
                        (shasht:write-json (nle::request-body

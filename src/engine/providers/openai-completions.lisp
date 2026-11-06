@@ -44,6 +44,23 @@ becomes of an assistant message's reasoning_content: :CARRY passes it on,
       (setf (gethash "reasoning_content" wire) ""))
     wire))
 
+(defun empty-user-message-p (message)
+  "Whether MESSAGE goes on the chat wire as a user message with nothing in it:
+no text and no image."
+  ;; A channel room records an answer no new message asked for (a background
+  ;; evaluation's wake, a turn a restart resumed) with "" for its user half,
+  ;; and every lane forked off the room carries it. A strict chat endpoint
+  ;; refuses the whole request for that one message (Moonshot: 400 `the
+  ;; message at position N with role 'user' must not be empty'), so it is left
+  ;; out, as the Messages lane leaves it out (ANTHROPIC-MESSAGES). The answers
+  ;; on either side of it then stand next to each other, as an exit wake's
+  ;; first round already stands next to the answer before it.
+  (and (member (json-value message :string "role") '("user" "system") :test #'equal)
+       (null (map-content-parts (gethash "content" message)
+                                :text-fn #'identity
+                                :image-fn #'identity
+                                :drop-empty-text-p t))))
+
 (defun request-body (context)
   "Build a chat-completions request solely from compiled CONTEXT."
   ;; Controls are emitted only when configured: an unset control is an absent
@@ -73,7 +90,8 @@ becomes of an assistant message's reasoning_content: :CARRY passes it on,
                                              (:carry :chat)
                                              ((nil) :chat-unreasoned))
                                            (lambda (message)
-                                             (list (chat-wire-message message reasoning)))))))
+                                             (unless (empty-user-message-p message)
+                                               (list (chat-wire-message message reasoning))))))))
     (json-object
      "model" config.model
      "messages" wire
