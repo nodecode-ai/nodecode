@@ -32,6 +32,16 @@ nodecode 0.1.7+2629050e1
 The version comes first and the build label, the commit the release was built from, follows the `+`. An installed build moves to a new release by itself, between turns. `nodecode update` moves it now. See [Updates](updates.mdx).
 
 {/* source: tools/release/publish.sh */}
+## 0.1.11
+
+Linux, macOS and Windows. Changes since 0.1.10 (`1452d5350`).
+
+- Cyber v1 for free: top up $2 once, run `nodecode login` and press Allow with a free key. The CLI saves two keys, so `/models` lists Cyber v1 twice: `nodecode-free/nodecode-cyber-v1` marked FREE (no cost, 256K context), then `nodecode/nodecode-cyber-v1`, which draws on your plan or credit and says which. See [Free key](models.mdx#free-key).
+- The footer shows Free key · Cyber v1 while a session runs on the free key, and your plan or credit otherwise. `/usage` and `nodecode login` list both keys. `nodecode logout` forgets both.
+- A live upgrade no longer stops when a release exports a name that a package using it already holds but that names nothing.
+- Windows: a shell no longer waits forever on "advertises no gateway endpoint" when the gateway could not publish its port while shells were reading it.
+
+{/* source: tools/release/publish.sh */}
 ## 0.1.10
 
 Linux, macOS and Windows. Changes since 0.1.9 (`8c8dfdc47`).
