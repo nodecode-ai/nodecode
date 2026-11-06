@@ -249,7 +249,10 @@ and PROMPTS queued behind it, each INGEST-PENDING-INPUT-FACT's arguments."
         (is (equal "coder" (nlk:profile-label)) "a named profile is its folder")
         (is (search "coder" (second (profile-row))) "named on the landing screen")
         (is (eql 0 (search "coder" (right))) "and leading the footer lane")
-        (is (uiop:string-suffix-p (second (profile-row)) "/coder") "the clipped path keeps the home's own folder")))))
+        ;; The row names the home natively: `~/.../coder' under the operator's
+        ;; home, `C:\...\coder' outside it on Windows.
+        (let ((path (second (profile-row))))
+          (is (some (lambda (tail) (uiop:string-suffix-p path tail)) '("/coder" #+win32 "\\coder")) "the clipped path keeps the home's own folder"))))))
 
 (deftest the-window-wears-the-profile-and-the-workspace ()
   ;; The one identity surface an operator reads without looking inside the
