@@ -32,8 +32,10 @@ more. => (values URL V1 HEAD), URL its file:// address."
   (import-write repo "skills/probe-audit/scripts/check.cjs" (format nil "console.log('ok')~%"))
   (import-write repo "SKILL.md"
                 (format nil "---~%name: root-skill~%description: The first root skill.~%---~%Say where it sits.~%"))
+  ;; the server's command is one every box this runs on has on PATH -- git, which
+  ;; the fixture needs anyway: Windows keeps no sh there
   (import-write repo ".mcp.json"
-                "{\"mcpServers\": {\"probe-srv\": {\"command\": \"sh\", \"args\": [\"${CLAUDE_PLUGIN_ROOT}/bin/serve.sh\", \"--quiet\"]}}}")
+                "{\"mcpServers\": {\"probe-srv\": {\"command\": \"git\", \"args\": [\"${CLAUDE_PLUGIN_ROOT}/bin/serve.sh\", \"--quiet\"]}}}")
   (import-write repo "CLAUDE.md" (format nil "Maintainers: run make test before each push.~%"))
   (import-write repo "memory/notes.md" (format nil "The maintainers prefer tabs.~%"))
   (fixture-git repo "init" "--quiet" "--initial-branch=main")
@@ -85,9 +87,13 @@ more. => (values URL V1 HEAD), URL its file:// address."
       (is (probe-file (merge-pathnames "skills/probe-audit/scripts/check.cjs" folder)) "the folder is kept at its commit, scripts and all")
       (is (null (probe-file (merge-pathnames ".git/" folder))) "without its .git")
       (nik:apply-plan plan)
-      (is (null (kept-text "probe-audit")) "no skill is copied")
-      (is-present (skill (nlk:knowledge-entry-named "probe-audit" nil)) "the skill is linked"
-        (is (equal (truename (merge-pathnames "skills/probe-audit/SKILL.md" folder)) (nlk:knowledge-entry-path skill)) "read where the fetch keeps it, its script beside it")
+      ;; Windows makes no symbolic link, so an import there converts each skill
+      (if nik::*link-skills*
+          (is (null (kept-text "probe-audit")) "no skill is copied")
+          (is (kept-text "probe-audit") "converted where no link is made"))
+      (is-present (skill (nlk:knowledge-entry-named "probe-audit" nil)) "the skill is here"
+        (when nik::*link-skills*
+          (is (equal (truename (merge-pathnames "skills/probe-audit/SKILL.md" folder)) (nlk:knowledge-entry-path skill)) "read where the fetch keeps it, its script beside it"))
         (is (equal "Audit a probe with a fresh verifier." (nlk:knowledge-entry-description skill)) "a folded block scalar is its description"))
       (is (equal "The second root skill." (nlk:knowledge-entry-description (nlk:knowledge-entry-named "root-skill" nil))) "no ref is the default branch's head")
       (let ((server (nlk:json-value (import-config) :object "mcp" "servers" "probe-srv")))
@@ -101,10 +107,12 @@ more. => (values URL V1 HEAD), URL its file:// address."
     (let ((plan (nik:make-plan :source (format nil "~a#v1" url) :only "skills")))
       (is (equal '("skills") (remove-duplicates (mapcar #'nik:item-kind (nik:plan-items plan)) :test #'string=)))
       (nik:apply-plan plan)
-      (is-present (skill (nlk:knowledge-entry-named "root-skill" nil)) "the tag's root skill is imported"
+      (is-present (skill (nlk:knowledge-entry-named "root-skill" nil)) "the tag's root skill is here"
         (is (equal "The first root skill." (nlk:knowledge-entry-description skill)) "the tag's commit, not the head")
-        (is (uiop:subpathp (nlk:knowledge-entry-path skill)
-                           (truename (merge-pathnames (format nil "sources/~a/" (source-label box v1)) home))))))
+        (if nik::*link-skills*
+            (is (uiop:subpathp (nlk:knowledge-entry-path skill)
+                               (truename (merge-pathnames (format nil "sources/~a/" (source-label box v1)) home))))
+            (is (kept-text "root-skill") "converted where no link is made"))))
     (signals-error nik:import-error (nik:make-plan :source url :only "instructions"))))
 
 (deftest import-source-removal-takes-back-what-it-brought (with-import-runtime (home box))
