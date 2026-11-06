@@ -57,7 +57,7 @@ for arg in "$@"; do
   case "$arg" in
     --no-modify-path) MODIFY_PATH=0 ;;
     --stage) STAGE=stage ;;
-    --link) STAGE=link ;;
+    --link) STAGE='link' ;;
     --force) FORCE=1 ;;
     -h|--help) sed -n '3,25p' "$0" 2>/dev/null || true; exit 0 ;;
     *) echo "install.sh: unknown argument $arg" >&2; exit 2 ;;
@@ -569,10 +569,12 @@ if [ -n "$resolved" ]; then
   real_resolved="$(readlink -f "$resolved" 2>/dev/null || printf '%s' "$resolved")"
   real_installed="$(readlink -f "$installed" 2>/dev/null || printf '%s' "$installed")"
   if [ "$real_resolved" != "$real_installed" ]; then
+    # --no-modify-path laid no link in $BIN_DIR: name the folder that holds the build.
+    if [ "$MODIFY_PATH" -eq 1 ]; then ahead="$BIN_DIR"; else ahead="$HOME_DIR/current"; fi
     say "WARNING: 'nodecode' on your PATH is NOT the build just installed.
   it runs:       $resolved
   this installed: $installed
-  Remove the other one, or put $BIN_DIR ahead of it in PATH.
+  Remove the other one, or put $ahead ahead of it in PATH.
   Until then run the full path above."
   fi
 fi
