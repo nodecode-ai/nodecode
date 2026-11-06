@@ -291,7 +291,12 @@ thread reads it and clears this place.")
             (when (member (json-value payload :any "session_id")
                           (list nil model.session-id) :test #'equal)
               (invalidate-gateway-model-facts model)
-              (refresh-gateway-model-facts model)))
+              (refresh-gateway-model-facts model))
+            ;; A sign-in or sign-out at the organism, from any shell or
+            ;; `nodecode logout' (BROADCAST-ACCOUNT-CHANGED): every shell
+            ;; follows it, not only the one that asked.
+            (when-let (account (json-value payload :string "account"))
+              (land-account-change model account (json-value payload :string "text"))))
            ((string= kind "session_titled")
             ;; The session this shell shows was named -- the operator's
             ;; /rename, a cell, the title a model wrote beside the first
@@ -903,10 +908,20 @@ dead owner -- or NIL when this image cannot name a dumped executable to exec."
   ;; replay this organism from the command line, so a serve is a
   ;; dumped-binary process; the dumped executable IS the runtime, so its own
   ;; path is the program. The home rides the environment (NLK:PUBLISH-HOME).
+  ;;
+  ;; An installed release names the binary through its `current' link
+  ;; (NLK:ORGANISM-BINARY), never its own folder: the organism a shell starts
+  ;; runs the release the home installed last, whichever build that shell is.
+  ;; A shell still open from before an update named its own folder, and on
+  ;; Windows -- where an organism cannot exec onto `current', so its restart
+  ;; ends it and a shell starts the next -- that shell's old build won the
+  ;; organism back after every restart a newer shell asked for, and every
+  ;; route the newer shells called answered 404 (Thomas's /logout, 0.1.10
+  ;; shells on a 0.1.9 organism, 2026-11-06).
   (when-let (program (or *serve-program*
                          (let ((runtime (namestring (nlk::origin-pathname))))
                            (when (search "nodecode" (file-namestring runtime))
-                             (list runtime)))))
+                             (list (or (ignore-errors (nlk:organism-binary)) runtime))))))
     (append program (list "serve" "--store" (namestring store-path)))))
 
 (defun gateway-supervises-p (store-path)

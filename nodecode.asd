@@ -658,6 +658,8 @@ of stacking."
      (:file "tui/timestamps-test")
      (:file "tui/history-lane-test")
      (:file "gateway/gateway-test")
+     ;; Uses gateway-test's WS peers and account-login-test's fixtures.
+     (:file "tui/logout-all-shells-test")
      (:file "tui/open-effect-test")
      ;; Uses gateway-test's silent peers.
      (:file "gateway/questions-test")
