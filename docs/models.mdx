@@ -101,14 +101,14 @@ A sign-in never changes your default model. Pick one in `/models`: nodecode, the
 
 | Model | Id | What it is |
 | --- | --- | --- |
-| Cyber v1 | `foresight-cyber-v1` | The security model. A chat model: 128K context, prompt and output together, and 16K output unless a call asks for more. A session can run on it. |
+| Cyber v1 | `foresight-cyber-v1` | The security model. A chat model: 1M context, prompt and output together, and 16K output unless a call asks for more. A session can run on it. |
 | Image v1 | `foresight-image-v1` | The image model, at `POST /v1/images/generations`. The images come back in the body as `b64_json`, never as URLs. |
 | Decide v1 | `foresight-decide-v1` | The classifier. It answers named questions about one state as probabilities, never prose. 32K context. |
 
 | Fact | Value |
 | --- | --- |
 | Keys | Start with `sk-nc-`. A key made at https://nodecode.ai/account/keys works the same. Any other key answers 401 `invalid_api_key`: run `nodecode login` again. |
-| Routes | `POST /v1/chat/completions`, `POST /v1/messages` and `POST /v1/messages/count_tokens` (Anthropic's Messages API), `POST /v1/images/generations`, `GET /v1/models`, `GET /v1/models/ID`, `GET /v1/usage`. There is no `/v1/responses`. |
+| Routes | `POST /v1/chat/completions`, `POST /v1/responses` (OpenAI's Responses API), `POST /v1/messages` and `POST /v1/messages/count_tokens` (Anthropic's Messages API), `POST /v1/images/generations`, `GET /v1/models`, `GET /v1/models/ID`, `GET /v1/usage`. |
 | Who pays | The topped-up balance, per token; a plan the account already holds pays first. With neither, a call answers 402. See [Pricing](pricing.mdx). |
 | What is left | `GET /v1/usage`: the plan's requests left, its reset and seats, the credit. The shell's footer and `/usage` show it. |
 
@@ -126,6 +126,24 @@ export ANTHROPIC_DEFAULT_HAIKU_MODEL=foresight-cyber-v1
 ```
 
 The base URL has no `/v1`: Claude Code adds `/v1/messages` itself. Every model Claude Code asks for must be one the gateway serves, so all four model variables name Cyber v1. A call is paid and limited exactly as a chat call is. Thinking comes back as `thinking` blocks; prompt caching is automatic, so `cache_control` is ignored; server tools such as Anthropic's web search are left out. https://nodecode.ai/account/keys shows the same lines under Claude Code.
+
+### Codex CLI
+
+`POST /v1/responses` speaks OpenAI's Responses API, so Codex CLI runs on Cyber v1 too. Add this to `~/.codex/config.toml`, set `NODECODE_API_KEY` to an `sk-nc-` key, and run `codex`:
+
+```toml
+model = "foresight-cyber-v1"
+model_provider = "nodecode"
+model_context_window = 1048576
+
+[model_providers.nodecode]
+name = "Nodecode"
+base_url = "https://api.nodecode.ai/v1"
+env_key = "NODECODE_API_KEY"
+wire_api = "responses"
+```
+
+Nothing is stored: a call carries the whole conversation (`store: false`, as Codex sends it), and `previous_response_id` answers 400. Reasoning comes back as a `reasoning` item that Codex hands back on the next call. Hosted tools such as web search are left out. Codex knows only OpenAI's own models, so it opens with "Model metadata for `foresight-cyber-v1` not found": the notice is harmless.
 
 {/* source: src/engine/provider.lisp */}
 ## Default and auxiliary model
