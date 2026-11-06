@@ -32,6 +32,16 @@ nodecode 0.1.7+2629050e1
 The version comes first and the build label, the commit the release was built from, follows the `+`. An installed build moves to a new release by itself, between turns. `nodecode update` moves it now. See [Updates](updates.mdx).
 
 {/* source: tools/release/publish.sh */}
+## 0.1.12
+
+Linux, macOS and Windows. Changes since 0.1.11 (`50d5d867c`).
+
+- `/logout` signs out every shell open on this home, not only the one you typed it in: each one drops its credit line and clears onto a fresh session. `nodecode logout` in a terminal goes through the running gateway and does the same.
+- A shell starts the gateway on the release installed last, so a shell still open on an older build no longer brings back an older gateway. A shell that meets an older gateway without `/logout` signs out by itself and says why.
+- Sign-in is for API credit alone while no plan is sold: `/login` and `nodecode login` offer no Subscription choice, and an account without a plan shows no plan line.
+- A sign-in in one shell updates the credit line in every shell.
+
+{/* source: tools/release/publish.sh */}
 ## 0.1.11
 
 Linux, macOS and Windows. Changes since 0.1.10 (`1452d5350`).
