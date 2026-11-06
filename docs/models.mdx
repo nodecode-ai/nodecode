@@ -25,6 +25,8 @@ A provider whose `base_url` is a machine of your own, on localhost, your LAN or 
 
 A request to openrouter.ai carries `HTTP-Referer: https://nodecode.ai` and `X-OpenRouter-Title: Nodecode`, which credit the tokens to Nodecode on OpenRouter's app rankings. No other host gets them.
 
+A chat request to api.mistral.ai carries no `reasoning_content` on its messages. Mistral refuses a message field its schema does not name, so a DeepSeek model it hosts would fail every turn after the first.
+
 {/* source: src/engine/provider.lisp */}
 ## Dialects
 
