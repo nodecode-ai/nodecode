@@ -320,6 +320,9 @@ the plan runs low or a spent plan's credit pays, DANGER when nothing can pay."
          (money (first (account-balance-rows usage)))
          (pays (json-value usage :string "pays")))
     (cond
+      ;; A free key draws on neither: Cyber v1's free tier, once the account has paid its top-up.
+      ((equal pays "free") (values "Free key" "Cyber v1" :success))
+      ((equal pays "free_locked") (values "Free key" "top up first" :danger))
       ((and plan (equal pays "plan"))
        (values name (account-count left :short t) (account-plan-tone left requests)))
       ((and money (equal pays "balance"))
@@ -347,7 +350,9 @@ the plan runs low or a spent plan's credit pays, DANGER when nothing can pay."
                  "No plan.")
              (format nil "API credit: ~:[none~;~:*~{~a~^, ~}~]" (mapcar #'account-money rows))
              (format nil "Paying with: ~a"
-                     (cond ((equal pays "plan") "the plan")
+                     (cond ((equal pays "free") "a free key: Cyber v1 from this CLI, 256K context, 2 at once")
+                           ((equal pays "free_locked") "nothing yet: a free key works once the account has topped up at https://nodecode.ai/account/top-up")
+                           ((equal pays "plan") "the plan")
                            ((equal pays "balance") "API credit")
                            (t "nothing yet: subscribe at https://nodecode.ai/pricing or add credit at https://nodecode.ai/account/top-up")))))))
 
