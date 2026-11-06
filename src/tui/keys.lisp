@@ -389,6 +389,13 @@ the base key name."
                 ((characterp code) (string (char-upcase code)))
                 (t (string-capitalize (symbol-name code))))))
 
+(defun keybind-line-label (keymap line)
+  "Every chord KEYMAP binds to the slash LINE itself joined with \" / \", or
+NIL when no key runs it (KEYBIND-SLASH-LINES)."
+  (when-let (chords (loop for (chord . bound) in (keybind-slash-lines keymap)
+                          when (equal bound line) collect chord))
+    (format nil "~{~a~^ / ~}" (mapcar #'key-chord-label chords))))
+
 (defun keybind-chords-label (keymap action &key (unbound "Unbound"))
   "Every bound chord for ACTION joined with \" / \" — the help dialog's key
 column."

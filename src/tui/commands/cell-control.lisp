@@ -40,10 +40,11 @@ the draft; else NIL, so a command that did not ask is never sent it."
 run in MODEL's session, DRAFT the composer's text for a command that reads it."
   (gateway-model-http-call
    model :post "/api/gateway/slash"
-   ;; This shell performs both effects there are (PERFORM-ANSWER-EFFECTS), and
-   ;; says so, so a command words its text by what will happen here.
+   ;; This shell performs the effects it names (PERFORM-ANSWER-EFFECTS), and
+   ;; says so, so a command words its text by what will happen here: :open
+   ;; only in a terminal it can open a tab in (SHELL-EFFECT-NAMES).
    (json-object "line" line :opt "session_id" (json-value model.session-id :text)
-                "effects" #("clipboard" "draft")
+                "effects" (shell-effect-names)
                 :opt "draft" draft)))
 
 (defun run-gateway-command (model entry args &key trigger)
@@ -71,7 +72,10 @@ it."
   (loop with editor = model.editor
         for effect across (or (json-value answer :array "effects") #())
         for draft = (json-value effect :string "draft")
-        do (cond ((json-value effect :string "clipboard")
+        do (cond ((json-value effect :string "open")
+                  (perform-open-effect model (json-value effect :string "open")
+                                       (json-value effect :string "prompt")))
+                 ((json-value effect :string "clipboard")
                   (write-model-clipboard model (json-value effect :string "clipboard")))
                  (draft
                   (nlk:dispatch (or (json-value effect :string "how") "set") equal

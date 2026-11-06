@@ -2447,9 +2447,19 @@ ARGS its message) unless TEST."
   ;; and CSRF-adjacent hole, and the Zig gateway refuses it too.
   (unless (string-equal "application/json" (request-media-type env))
     (nlk::protocol-refuse :unsupported_media_type "request body must be application/json"))
-  (let ((text (make-string length)))
-    (unless (= length (read-sequence text (getf env :raw-body)))
+  ;; JSON is UTF-8 (RFC 8259). The server's raw body is a bivalent stream
+  ;; whose characters are Latin-1, so a body read as text would turn `café'
+  ;; into `cafÃ©': it is read as the octets CONTENT-LENGTH counts and decoded
+  ;; here, a malformed sequence a replacement character. A body that is
+  ;; characters already (a string stream) is read as it is.
+  (let* ((body (getf env :raw-body))
+         (text (if (eq 'character (stream-element-type body))
+                   (make-string length)
+                   (make-array length :element-type '(unsigned-byte 8)))))
+    (unless (= length (read-sequence text body))
       (nlk::protocol-refuse :truncated_request "HTTP request body ended early"))
+    (unless (stringp text)
+      (setf text (sb-ext:octets-to-string text :external-format '(:utf-8 :replacement #\ufffd))))
     (let ((value (handler-case (nlk:decode-json text)
                    (error (condition)
                      (nlk::protocol-refuse :invalid_json "invalid JSON: ~a" condition)))))
@@ -3288,10 +3298,10 @@ a surface that draws one wears (a room's card its edge), NIL for none."
 
 (defvar *slash-effects* nil
   "The effects the caller of the slash line being run performs, as keywords:
-(:CLIPBOARD :DRAFT) from a shell; NIL from a caller that names none -- eval,
+(:CLIPBOARD :DRAFT), and :OPEN where it can open a tab, from a shell; NIL from a caller that names none -- eval,
 a room, the web page -- so a RUN words its text by what will happen.")
 
-(defparameter +effect-names+ '("clipboard" "draft")
+(defparameter +effect-names+ '("clipboard" "draft" "open")
   "The effects there are, as a caller names them in POST /api/gateway/slash.")
 
 (defun performed-effects (names)
@@ -3309,7 +3319,9 @@ malformed effect signals, naming it."
   ;; only that shell can: (:clipboard TEXT) copies TEXT with the shell's own
   ;; clipboard writer, whatever desktop the gateway runs on; (:draft TEXT :how
   ;; HOW) puts TEXT in the shell's composer, HOW :set (the default) replacing
-  ;; the draft, :insert at the caret, :append at its end. Each plist crosses
+  ;; the draft, :insert at the caret, :append at its end; (:open SESSION-ID
+  ;; :prompt TEXT) opens that session in a new tab of the shell's own
+  ;; terminal, TEXT its first prompt (open-effect.lisp). Each plist crosses
   ;; as it is, keys and keyword values downcased, so a shell passes over an
   ;; effect it does not know, and a surface with neither a clipboard nor a
   ;; composer -- the web page, a room, rpc -- shows the command's text alone.
