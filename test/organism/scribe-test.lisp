@@ -209,6 +209,84 @@ holding DEFINITION alone, and drop the index."
                 (format nil "~a loads at the next boot: ~a" name refusal)))))
       (is (and (boundp variable) (equal text (symbol-value variable))) "and the variable holds the text the call carried"))))
 
+;;; A kept variable whose init is a call: the call ran at the eval, and the
+;;; file must not make it again at every load.
+
+(defvar *scribe-v-calls* 0
+  "How often a SCRIBE-V- call ran.")
+
+(defun scribe-v-post (text)
+  "A post: counted, and answering what a channel answers."
+  (incf *scribe-v-calls*)
+  (list :id "1568290648262582315" :said text))
+
+(defun scribe-v-key ()
+  "A credential read from where it is kept: counted."
+  (incf *scribe-v-calls*)
+  "sk-nc-4f9a8b7c6d5e4f3a2b1c0d9e")
+
+(defun load-layer-file (name)
+  "Load NAME from the fixture layer the way a boot does, with no call around it."
+  (load (merge-pathnames name (nlk:layer-directory))))
+
+(deftest scribe-a-kept-variable-keeps-the-value-its-call-gave (with-scribe-fixture)
+  ;; A report kept as (defparameter *rep* (post ...)) was posted twelve
+  ;; times: the layer file held the call, and every load of it - each boot,
+  ;; each shell told of the keep - posted again. The file holds the value the
+  ;; eval made, its docstring and comment as written, and loading it posts
+  ;; nothing.
+  (setf *scribe-v-calls* 0)
+  (is-eval (format nil ";; the report~%(defparameter *scribe-v1* (nodecode.test::scribe-v-post \"the 400s\")~%  \"The report's post.\")")
+    ("[layer: *scribe-v1* keeps the value it holds; (nodecode.test::scribe-v-post ...) does not run again when the layer loads]" result)
+    ("[layer: kept *scribe-v1*]" result))
+  (is (= 1 *scribe-v-calls*) "the eval posted once")
+  (is-present (file (layer-file-text "_scribe-v1_.lisp"))
+      "the variable has its file"
+      (is-carrying file
+        ";; the report"
+        "(defparameter *scribe-v1* '(:id \"1568290648262582315\" :said \"the 400s\")"
+        "  \"The report's post.\")"
+        (:absent "scribe-v-post \"the 400s\"" "the call is not in the file")))
+  (let ((variable (find-symbol "*SCRIBE-V1*" '#:nodecode.evolved)))
+    (makunbound variable)
+    (load-layer-file "_scribe-v1_.lisp")
+    (is (= 1 *scribe-v-calls*) "loading the file posts nothing")
+    (is (equal '(:id "1568290648262582315" :said "the 400s") (symbol-value variable)) "and the variable holds the value the eval made")))
+
+(deftest scribe-a-kept-variable-holding-a-credential-keeps-its-name-alone (with-scribe-fixture)
+  ;; Writing the value would put the key in the layer and its history; the
+  ;; call would read it again at every load. Neither: the name, unbound.
+  (setf *scribe-v-calls* 0)
+  (is-eval "(defparameter *scribe-v2* (nodecode.test::scribe-v-key))"
+    ("[layer: *scribe-v2* is kept by name alone: its value looks like a credential" result))
+  (is-present (file (layer-file-text "_scribe-v2_.lisp"))
+      "the variable has its file"
+      (is-carrying file
+        "(defvar *scribe-v2*)"
+        (:absent "sk-nc-" "the key is not in the file")
+        (:absent "(defparameter" "nor the call")))
+  (let ((variable (find-symbol "*SCRIBE-V2*" '#:nodecode.evolved)))
+    (makunbound variable)
+    (load-layer-file "_scribe-v2_.lisp")
+    (is (= 1 *scribe-v-calls*) "loading the file reads no key")
+    (is (not (boundp variable)) "and the variable is unbound there")))
+
+(deftest scribe-a-kept-table-keeps-the-form-that-made-it (with-scribe-fixture)
+  ;; No printed form reads back as a table or a lock: a constructor is how a
+  ;; load makes one, so its form stands as written - and a literal, quoted or
+  ;; not, was never a call. A PROGN member keeps its value in its own file.
+  (nle:eval-string
+   (format nil "(progn (defparameter *scribe-v3* (make-hash-table :test 'equal))~%  (defparameter *scribe-v4* '(1 2))~%  (defparameter *scribe-v5* (list (+ 1 2) \"three\")))"))
+  (is-carrying (file (layer-file-text "_scribe-v3_.lisp"))
+    "(defparameter *scribe-v3* (make-hash-table :test 'equal))"
+    (:absent "kept as the value"))
+  (is-carrying (file (layer-file-text "_scribe-v4_.lisp"))
+    "(defparameter *scribe-v4* '(1 2))"
+    (:absent "kept as the value"))
+  (is-carrying (file (layer-file-text "_scribe-v5_.lisp"))
+    "(defparameter *scribe-v5* '(3 \"three\"))"
+    (:absent "scribe-v3")))
+
 (deftest scribe-redefinition-rewrites-the-same-file-and-keeps-its-slot (with-scribe-fixture)
   (nle:eval-string "(defun scribe-r3 () :first)")
   (nle:eval-string "(defun scribe-r3-other () :other)")

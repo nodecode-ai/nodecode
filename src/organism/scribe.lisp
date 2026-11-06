@@ -1040,6 +1040,140 @@ FOLDERS already holding KEY's file, else the organism's own
   (dolist (hit (toplevel-definitions text) table)
     (alexandria:ensure-gethash (first hit) table hit)))
 
+;;; --- a kept variable keeps its value --------------------------------------
+
+;;; A DEFPARAMETER or DEFVAR runs its init form wherever its file loads: at
+;;; every boot, and in every shell told of the keep (SOURCE-LOADED). An init
+;;; that is a call - a probe kept in a variable, a post, a request - made that
+;;; call again at each load: a report kept as (defparameter *rep* (post ...))
+;;; was posted twelve times, once per load. The value the eval made is what
+;;; the variable means, so its file holds that value, and the call ran once,
+;;; at the eval. An object no printed form reads back as (a table, a lock, a
+;;; function) keeps the form that made it, as a constructor must; a value
+;;; shaped like a credential, or too long to write, keeps the name alone.
+
+(defparameter +kept-value-limit+ 65536
+  "The most characters a kept variable's value is written in.")
+
+(defun written-value (value package)
+  "VALUE as text that reads back in PACKAGE as the same value, or NIL and why:
+:UNWRITABLE for an object no printed form reads back as, :TOO-LARGE for one
+longer than +KEPT-VALUE-LIMIT+ written."
+  (flet ((write-it (object)
+           (with-standard-io-syntax
+             (let ((*package* package) (*read-eval* nil) (*print-readably* t) (*print-circle* t)
+                   (*print-pretty* t) (*print-right-margin* 100) (*print-case* :downcase))
+               (prin1-to-string object))))
+         (read-it (text)
+           (with-standard-io-syntax
+             (let ((*package* package) (*read-eval* nil))
+               (read-from-string text)))))
+    (if (and (vectorp value) (> (length value) +kept-value-limit+))
+        (values nil :too-large)
+        (let ((written (handler-case (write-it value) (error () nil))))
+          (cond ((null written) (values nil :unwritable))
+                ((> (length written) +kept-value-limit+) (values nil :too-large))
+                ;; written, read back and written again, the same text: nothing
+                ;; was lost on the way
+                ((string/= written (handler-case (write-it (read-it written)) (error () "")))
+                 (values nil :unwritable))
+                (t written))))))
+
+(defun credential-text-p (text)
+  "Whether TEXT is shaped like a credential: one run of sixteen or more
+characters with no blank, a letter and a digit among them, and not a URL or a
+path."
+  (and (>= (length text) 16)
+       (notany (lambda (char) (member char +scribe-whitespace+)) text)
+       (find-if #'alpha-char-p text)
+       (find-if #'digit-char-p text)
+       (not (search "://" text))
+       (not (member (char text 0) '(#\/ #\~)))))
+
+(defun credential-shaped-p (value &aux (seen (make-hash-table :test #'eq)))
+  "Whether VALUE holds, anywhere in it, a string CREDENTIAL-TEXT-P takes."
+  (labels ((walk (object)
+             (typecase object
+               (string (credential-text-p object))
+               (cons (loop for tail = object then (cdr tail)
+                           do (cond ((atom tail) (return (walk tail)))
+                                    ((gethash tail seen) (return nil))
+                                    (t (setf (gethash tail seen) t)
+                                       (when (walk (car tail)) (return t))))))
+               (vector (unless (gethash object seen)
+                         (setf (gethash object seen) t)
+                         (some #'walk object)))
+               (t nil))))
+    (walk value)))
+
+(defun kept-variable-text (form text start end package-name)
+  "The text a layer file keeps for FORM, written in TEXT from START to END,
+when FORM is a DEFPARAMETER or DEFVAR whose init form is a call: FORM with the
+value its variable holds in place of the call, or a DEFVAR of the name alone
+when that value is shaped like a credential or too long to write. The second
+value is the line the eval's output says so in. NIL when TEXT stands as
+written: any other form, an init that is no call, an unbound variable, or a
+value no printed form reads back as."
+  (let ((package (find-package package-name))
+        (name (and (consp form) (consp (cdr form)) (second form))))
+    (unless (and package
+                 (or (named-form-p form "DEFPARAMETER") (named-form-p form "DEFVAR"))
+                 (consp (cddr form))
+                 name (symbolp name) (boundp name))
+      (return-from kept-variable-text nil))
+    (flet ((read-at (position)
+             ;; the form at POSITION, past blanks and comments: (FORM START END)
+             (let ((at (scribe-skip-blank text position end))
+                   (*package* package)
+                   (*read-eval* nil))
+               (multiple-value-bind (object after)
+                   (read-from-string text t nil :start at :end end :preserve-whitespace t)
+                 (list object at after)))))
+      (let* ((open (scribe-skip-blank text start end))
+             (spans (and (< open end)
+                         (char= (char text open) #\()
+                         (handler-case
+                             (let* ((operator (read-at (1+ open)))
+                                    (name (read-at (third operator))))
+                               (list name (read-at (third name))))
+                           (error () nil))))
+             (init (first (second spans))))
+        ;; the init as the file would load it: a literal, a quoted form or a
+        ;; variable it reads stands as written
+        (when (or (null spans) (atom init) (named-form-p init "QUOTE"))
+          (return-from kept-variable-text nil))
+        (destructuring-bind ((name-form name-start name-end) (init-form init-start init-end)) spans
+          (declare (ignore name-form init-form))
+          (let* ((value (symbol-value name))
+                 (label (subseq text name-start name-end))
+                 (call (if (symbolp (first init))
+                           (let ((*package* package)) (format nil "(~(~s~) ...)" (first init)))
+                           "its call"))
+                 (lead (let ((before (subseq text start open)))
+                         (if (or (zerop (length before)) (char= #\Newline (char before (1- (length before)))))
+                             before
+                             (format nil "~a~%" before)))))
+            (multiple-value-bind (written why) (written-value value package)
+              (let ((withheld (cond ((eq why :too-large)
+                                     (format nil "runs past ~d KB written" (floor +kept-value-limit+ 1024)))
+                                    ((and written (credential-shaped-p value))
+                                     "looks like a credential"))))
+                (cond (withheld
+                       (values (format nil "~a;; kept by name alone: the value ~a gave ~a, and loading this file does not call it~%(defvar ~a)"
+                                       lead call withheld label)
+                               (format nil "[layer: ~a is kept by name alone: its value ~a; ~a does not run again when the layer loads]"
+                                       label withheld call)))
+                      (written
+                       (values (format nil "~a;; kept as the value ~a gave: loading this file does not call it~%~a~:[~;'~]~a~a"
+                                       lead call
+                                       (subseq text open init-start)
+                                       (or (consp value)
+                                           (and (symbolp value) (not (keywordp value)) (not (member value '(t nil)))))
+                                       written
+                                       (subseq text init-end end))
+                               (format nil "[layer: ~a keeps the value it holds; ~a does not run again when the layer loads]"
+                                       label call))))))))))))
+
 (defvar *kept-locks* '()
   "The knowledge folders whose lock the RECORD-DEFINITIONS running on this
 thread holds until it returns.")
@@ -1196,7 +1330,11 @@ out of every one."
                                                                    (setf spans (spans-by-key text))
                                                                    spans))
                                                   (error "cannot isolate ~a inside the evaluated form"
-                                                         (definition-key-label key))))))
+                                                         (definition-key-label key)))))
+                                     ;; a variable whose init is a call keeps the value
+                                     ;; it holds, never the call (KEPT-VARIABLE-TEXT)
+                                     (kept-text (multiple-value-list
+                                                 (kept-variable-text sub text (second own) (third own) package))))
                                 (call-with-kept-lock
                                  knowledge directory
                                  (lambda ()
@@ -1218,8 +1356,10 @@ out of every one."
                                                                 package)))
                                           (content (lambda (out)
                                                      (write-sequence (sb-ext:string-to-octets head :external-format :utf-8) out)
-                                                     (write-sequence (sb-ext:string-to-octets text :external-format :utf-8
-                                                                                                   :start (second own) :end (third own))
+                                                     (write-sequence (if (first kept-text)
+                                                                         (sb-ext:string-to-octets (first kept-text) :external-format :utf-8)
+                                                                         (sb-ext:string-to-octets text :external-format :utf-8
+                                                                                                       :start (second own) :end (third own)))
                                                                      out)
                                                      (write-byte 10 out))))
                                      (write-file-atomically path content)
@@ -1229,6 +1369,8 @@ out of every one."
                                          (let ((name (folder-name directory)))
                                            (write-layer-system (layer-system-file name) name
                                                                (pathname-name path)))))))
+                                (when (second kept-text)
+                                  (format t "~&~a~%" (second kept-text)))
                                 ;; a folder this write made is one the next member may move a name out of
                                 (unless (find (folder-name directory) (listed-folders)
                                               :key #'folder-name :test #'string=)
