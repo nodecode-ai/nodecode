@@ -114,38 +114,31 @@ A sign-in never changes your default model. Pick one in `/models`: nodecode, the
 
 ### Claude Code
 
-The gateway also speaks Anthropic's Messages API at `POST /v1/messages`, so Claude Code runs on Cyber v1 with an `sk-nc-` key. Set these in the shell you start `claude` from:
-
 ```sh
 export ANTHROPIC_BASE_URL=https://api.nodecode.ai
 export ANTHROPIC_AUTH_TOKEN=sk-nc-...
 export ANTHROPIC_MODEL=foresight-cyber-v1
-export ANTHROPIC_DEFAULT_OPUS_MODEL=foresight-cyber-v1
-export ANTHROPIC_DEFAULT_SONNET_MODEL=foresight-cyber-v1
-export ANTHROPIC_DEFAULT_HAIKU_MODEL=foresight-cyber-v1
+claude
 ```
 
-The base URL has no `/v1`: Claude Code adds `/v1/messages` itself. Every model Claude Code asks for must be one the gateway serves, so all four model variables name Cyber v1. A call is paid and limited exactly as a chat call is. Thinking comes back as `thinking` blocks; prompt caching is automatic, so `cache_control` is ignored; server tools such as Anthropic's web search are left out. https://nodecode.ai/account/keys shows the same lines under Claude Code.
+https://nodecode.ai/account/keys shows the same lines.
 
 ### Codex CLI
 
-`POST /v1/responses` speaks OpenAI's Responses API, so Codex CLI runs on Cyber v1 too. Add this to `~/.codex/config.toml`, set `NODECODE_API_KEY` to an `sk-nc-` key, and run `codex`:
+Add this to `~/.codex/config.toml`, then `export NODECODE_API_KEY=sk-nc-...` and run `codex`:
 
 ```toml
 model = "foresight-cyber-v1"
 model_provider = "nodecode"
-model_context_window = 1048576
 
 [model_providers.nodecode]
 name = "Nodecode"
 base_url = "https://api.nodecode.ai/v1"
 env_key = "NODECODE_API_KEY"
-wire_api = "responses"
 ```
 
-Nothing is stored: a call carries the whole conversation (`store: false`, as Codex sends it), and `previous_response_id` answers 400. Reasoning comes back as a `reasoning` item that Codex hands back on the next call. Hosted tools such as web search are left out. Codex knows only OpenAI's own models, so it opens with "Model metadata for `foresight-cyber-v1` not found": the notice is harmless.
+Codex opens with "Model metadata for `foresight-cyber-v1` not found": that is harmless.
 
-{/* source: src/engine/provider.lisp */}
 ## Default and auxiliary model
 
 ```jsonc
