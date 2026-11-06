@@ -535,22 +535,54 @@ api) on this organism's home, and answer ACCOUNT-JSON with the page and code in 
     (account-json)))
 
 ;;; --- signing out: /logout and `nodecode logout' ---------------------------------
-;;; The sign-in's mirror: this home forgets the account's key and the link's secret, so no turn,
-;;; meter or machine report reaches the account from here. The key itself lives on the account
-;;; until the machine is removed on its Machines page; the words say so.
+;;; The sign-in's mirror: the account signs the machine out first -- the link's own secret proves
+;;; it is this machine (DELETE /api/link/<id>), and its keys are revoked there, as the Machines
+;;; page's sign-out does -- and then this home forgets the key and the link's secret, so no turn,
+;;; meter or machine report reaches the account from here. When the account cannot be told, the
+;;; home is signed out all the same and the words say where to end the key.
 
-(defun account-logout ()
-  "Sign this home out of nodecode.ai: take the account's key out of auth.json (and out of its own
+(defun account-end-machine (link &key (request #'account-login-request))
+  "Sign this machine out on its nodecode.ai account: DELETE /api/link/<id> with LINK's own poll
+secret, which revokes its keys there. => :SIGNED-OUT, :ALREADY when the account had signed it out
+before, or the words why the account was not told."
+  (with-json ((id :string "request") (poll :text "poll")) link
+    (if (not (and id poll))
+        "this home's link to the account is incomplete"
+        (handler-case
+            (multiple-value-bind (reply status)
+                (funcall request :delete (concatenate 'string "/api/link/" id) nil poll 10)
+              (case status
+                (200 :signed-out)
+                (410 :already)
+                (t (format nil "~a (HTTP ~d)"
+                           (string-right-trim "." (or (json-value reply :string "error") "nodecode.ai refused"))
+                           status))))
+          (error (condition) (princ-to-string condition))))))
+
+(defun account-logout-words (ended)
+  "What a sign-out says of the account, ENDED being ACCOUNT-END-MACHINE's answer, or NIL when this
+home held a key and no link to sign the machine out with."
+  (case ended
+    (:signed-out "Signed out of nodecode.ai: this machine's key is ended on the account")
+    (:already "Signed out of nodecode.ai: the account had signed this machine out already")
+    ((nil) "Signed out of nodecode.ai here; remove this machine at https://nodecode.ai/account/machines to end its key there too")
+    (t (format nil "Signed out here, but nodecode.ai was not told (~a): sign this machine out at https://nodecode.ai/account/machines to end its key"
+               (string-right-trim "." ended)))))
+
+(defun account-logout (&key (request #'account-login-request))
+  "Sign this home out of nodecode.ai: sign the machine out on the account by its link
+(ACCOUNT-END-MACHINE, through REQUEST), take the account's key out of auth.json (and out of its own
 secrets file, and an inline providers.nodecode.api_key), forget the machine link, and drop the
 meter and any sign-in in flight. => the words that say what happened, and whether a key or a
-link went; signed out already, it says so and writes nothing."
+link went; signed out already, it says so and writes nothing. The home is signed out even when
+the account cannot be told, and the words say so."
   (let ((key (account-credential))
         (free (account-credential +free-provider+))
         (linked (json-value (read-auth-file *auth-file-path*) :object "machine_link")))
     (setf *account-usage* nil *account-free-usage* nil *account-login* nil)
     (if (not (or key free linked))
         (values "Not signed in to nodecode.ai: nothing to sign out of" nil)
-        (progn
+        (let ((ended (and linked (account-end-machine linked :request request))))
           (when key
             (save-provider-api-key "nodecode" nil)
             ;; An inline key outranks auth.json's (ACCOUNT-LOGIN-SAVE takes it out for the same reason).
@@ -560,10 +592,10 @@ link went; signed out already, it says so and writes nothing."
           (when linked
             (update-auth-file (lambda (auth) (remhash "machine_link" auth))))
           (values
-           (if (account-credential)
-               "Signed out here, but a nodecode.ai key still reaches this home from the environment or a config command: remove it there"
-               (format nil "Signed out of nodecode.ai; remove this machine at https://nodecode.ai/account/machines to end its key there too~:[~; · the default model needs /login or /models~]"
-                       (own-provider-p (ignore-errors (shared-model-pin)))))
+           (format nil "~a~:[~; · a nodecode.ai key still reaches this home from the environment or a config command: remove it there~]~:[~; · the default model needs /login or /models~]"
+                   (account-logout-words ended)
+                   (account-credential)
+                   (and (not (account-credential)) (own-provider-p (ignore-errors (shared-model-pin)))))
            t)))))
 
 (define-gateway-route handle-gateway-account-logout-http (env)
