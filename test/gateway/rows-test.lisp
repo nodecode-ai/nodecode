@@ -113,6 +113,22 @@ each row's text whole; and the ids in their order."
                    append (remove session-id views :key #'nle::rows-view-session-id :test-not #'string=)))))
     (is-eventually (null (views-of "rows-c")) "no view outlives its socket")))
 
+(deftest an-in-process-shells-rows-view-closes-with-its-link (with-temp-gateway (port))
+  ;; Given the shell that boots this image's gateway, attached in-process, and
+  ;; subscribed to a session's rows,
+  ;; When it hangs up through GATEWAY-LINK-CLOSE, as it does on its way out,
+  ;; Then its rows view closes with it, as a socket's close closes a page's.
+  (declare (ignorable port))
+  (seed-completed-turn "rows-lb" "hello" "answer")
+  (let ((link (nle::attach-loopback-gateway-peer (lambda (text) (declare (ignore text)) nil))))
+    (is (typep link 'nle::gw-loopback-client) "the shell attaches in-process")
+    (nle::send-gateway-command
+     link :set-session-subscriptions
+     (nlk:json-object "subscriptions" (vector (nlk:json-object "session_id" "rows-lb" "rows" t))))
+    (is-eventually (gethash link nle::*rows-views*) "the subscribe opens its rows view")
+    (nle::gateway-link-close link)
+    (is-eventually (null (gethash link nle::*rows-views*)) "no view outlives the in-process link")))
+
 (defun output-band-row (output &rest keys)
   (apply #'nle::make-bg-band-row :output-tail (nlk:utf-8-octets output) keys))
 
