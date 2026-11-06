@@ -32,6 +32,24 @@ nodecode 0.1.7+2629050e1
 The version comes first and the build label, the commit the release was built from, follows the `+`. An installed build moves to a new release by itself, between turns. `nodecode update` moves it now. See [Updates](updates.mdx).
 
 {/* source: tools/release/publish.sh */}
+## 0.1.10
+
+Linux, macOS and Windows. Changes since 0.1.9 (`8c8dfdc47`).
+
+- Cyber v1 is `nodecode-cyber-v1` and holds a 1M-token context. Decide v1 and Image v1 are `nodecode-decide-v1` and `nodecode-image-v1`. The old `foresight-*` ids still answer.
+- `/logout` and `nodecode logout` sign this machine out of nodecode.ai.
+- A chat request to Mistral no longer carries `reasoning_content`, which Mistral refused with a 422 (`Extra inputs are not permitted`).
+- A streamed reply that sends thinking and text in one chunk keeps its first words instead of dropping them.
+- `keybinds.json` binds a key chord to a slash command, and the `/` menu shows the chord beside it.
+- A cell command can put text on the clipboard or in the message box, read what you are typing, and open a link in a new browser tab. A cell's list dialog can have heading rows.
+- A submitted turn can name the only tools it may call (`:tools`).
+- `/models` refuses a model id its provider's list does not offer.
+- The settings sheet calls `budget_calls` "Tool call budget".
+- Turning a cell off parks a link to your own folder instead of deleting it, and one build's cleanup no longer deletes the cell cache another build is using.
+- Windows: stopping a command stops everything it started, a command is found the way the shell finds it (`PATHEXT`), a path under your home shows as `~`, the Files view shows every file with its right time, and errors name paths the way Windows writes them.
+- A release moves the nightly channel too, so nightly is never behind stable.
+
+{/* source: tools/release/publish.sh */}
 ## 0.1.9
 
 Linux, macOS and Windows. Changes since 0.1.8 (`c27e63333`).
