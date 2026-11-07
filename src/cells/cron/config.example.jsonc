@@ -1,0 +1,13 @@
+// The section ~/.nodecode/config.jsonc may carry for this peripheral —
+// documentation, not config: the folder gets pushed and holds no secret.
+// A present section is enabled; "enabled": false vetoes it. Jobs are not
+// config: they live in the store, written by (cron:add ...) through eval.
+{
+  "cron": {
+    "enabled": true,
+    // Minutes a fired turn may run: its budget. Past it the fire's tool
+    // calls are refused and it answers with what it has. A job may pin its
+    // own with :timeout-minutes.
+    "timeout_minutes": 10
+  }
+}

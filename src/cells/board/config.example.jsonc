@@ -1,0 +1,17 @@
+// The section ~/.nodecode/config.jsonc may carry for the board cell --
+// documentation, not config. A present section is enabled; "enabled": false
+// vetoes it, and an absent one runs on the defaults below. Sessions join a
+// board with /board NAME or (board:join "name"); a post reaches every other
+// session on it at that session's next model request.
+{
+  "board": {
+    // Wakes in a row between sessions: a post that @mentions an idle session
+    // on the board starts its turn, and a post written in that turn can wake
+    // another, up to this many in a row. The operator's next word to any of
+    // them resets the count. 0: a mention never starts a turn.
+    "hops": 4,
+    // The longest post, in characters: a post carries a pointer (a file, a
+    // commit, a session id), not a dump.
+    "post_chars": 1000
+  }
+}

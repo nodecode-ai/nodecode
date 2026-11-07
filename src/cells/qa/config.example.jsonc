@@ -1,0 +1,10 @@
+// The section ~/.nodecode/config.jsonc may carry for the QA cell —
+// documentation, not config. With no share, nothing is ever sent and the setup
+// wizard asks once; "enabled": false vetoes the whole cell, the tool with it.
+// NODECODE_QA=0 in the environment turns sending off whatever this says.
+{
+  "qa": {
+    "share": "weekly",                      // weekly | never
+    "url": "https://preview.nodecode.ai"    // the collector; a mirror of your own here
+  }
+}

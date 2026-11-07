@@ -1,0 +1,2649 @@
+{
+  "format": 1,
+  "updated": "2026-10-26T22:17:12Z",
+  "window": "2026-10-12 to 2026-10-26",
+  "advisories": [
+    {
+      "id": "npm-sham-scopes-2026-10",
+      "title": "npm: eight sham scoped packages (@greenlake, @drone-js-ext, @factoryz, @futurae-public and others) beacon hosts and pull an off-registry payload",
+      "date": "2026-10-25",
+      "severity": "critical",
+      "exploited": true,
+      "cves": [],
+      "summary": "Eight packages published to npm are malware (CWE-506), reported by Amazon Inspector. All are scoped-namespace shams: zero-functionality stubs whose main entry exports a Proxy of no-op functions so consumer builds resolve the name, versioned 99.x to win resolution over the real package. Their real behavior is twofold: a beacon (postinstall or a beacon.cjs) that collects host identifiers - hostname, install path, working directory, Node version - and POSTs them in cleartext; and/or a sole dependency 'ltidisafe' declared as a bare HTTPS tarball URL on ltidi.storage.googleapis.com/depenconf/ (3.9.1-3.9.3) instead of the npm registry, so npm fetches and executes whatever the attacker serves there at install time. There is no clean version of any of them: remove and rotate.",
+      "affected": "@greenlake/session 99.0.1, @greenlake/common-context 99.0.1, @drone-js-ext/vip-badge 99.0.1, @drone-js-ext/core 99.0.1, @generic-means/ing-feat-scanner-libs 99.9.1, @factoryz/apollo 99.9.1, @futurae-public/adaptive-js 99.9.1, @fmr-ap153177/apex-kit-icons 99.9.1 (npm). The packages should be removed.",
+      "fixed": [],
+      "checks": [
+        {
+          "kind": "npm",
+          "label": "@greenlake/session",
+          "package": "@greenlake/session",
+          "bad": [
+            "99.0.1"
+          ]
+        },
+        {
+          "kind": "npm",
+          "label": "@greenlake/common-context",
+          "package": "@greenlake/common-context",
+          "bad": [
+            "99.0.1"
+          ]
+        },
+        {
+          "kind": "npm",
+          "label": "@drone-js-ext/vip-badge",
+          "package": "@drone-js-ext/vip-badge",
+          "bad": [
+            "99.0.1"
+          ]
+        },
+        {
+          "kind": "npm",
+          "label": "@drone-js-ext/core",
+          "package": "@drone-js-ext/core",
+          "bad": [
+            "99.0.1"
+          ]
+        },
+        {
+          "kind": "npm",
+          "label": "@generic-means/ing-feat-scanner-libs",
+          "package": "@generic-means/ing-feat-scanner-libs",
+          "bad": [
+            "99.9.1"
+          ]
+        },
+        {
+          "kind": "npm",
+          "label": "@factoryz/apollo",
+          "package": "@factoryz/apollo",
+          "bad": [
+            "99.9.1"
+          ]
+        },
+        {
+          "kind": "npm",
+          "label": "@futurae-public/adaptive-js",
+          "package": "@futurae-public/adaptive-js",
+          "bad": [
+            "99.9.1"
+          ]
+        },
+        {
+          "kind": "npm",
+          "label": "@fmr-ap153177/apex-kit-icons",
+          "package": "@fmr-ap153177/apex-kit-icons",
+          "bad": [
+            "99.9.1"
+          ]
+        }
+      ],
+      "patch": [
+        "Remove the packages (npm uninstall <name>; delete them from lockfiles and CI images) and reinstall from the public registry",
+        "Treat every machine that installed one as compromised: rotate its secrets from a different machine and rebuild from a clean image"
+      ],
+      "mitigation": [
+        "Block ltidi.storage.googleapis.com at build-host egress and pin npm to the public registry so an off-registry tarball cannot resolve",
+        "Watch the dependency tree for 99.x sham scoped names: npm ls --all, and review any scoped package you did not add"
+      ],
+      "iocs": [
+        "ltidi.storage.googleapis.com/depenconf/ltidisafe-3.9.{1,2,3}.tgz (the off-registry payload)",
+        "cleartext beacon POSTs carrying hostname, install path, working directory and Node version"
+      ],
+      "sources": [
+        "https://github.com/advisories/GHSA-ph7p-r8mj-5q6r",
+        "https://github.com/advisories/GHSA-p5fc-j294-qr5q",
+        "https://github.com/advisories/GHSA-3qv7-4fg6-54gp",
+        "https://github.com/advisories/GHSA-8wg4-rwxf-cv7v",
+        "https://github.com/advisories/GHSA-79qp-32qv-632x",
+        "https://github.com/advisories/GHSA-vw9v-ghxv-m2gw",
+        "https://github.com/advisories/GHSA-g6h7-w896-4p29",
+        "https://github.com/advisories/GHSA-68q8-r62c-rwgx"
+      ]
+    },
+    {
+      "id": "tekmidian-pai-malware",
+      "title": "Malware in @tekmidian/pai (npm): releases 1.0.8-1.0.10 carry malicious code",
+      "date": "2026-10-23",
+      "severity": "critical",
+      "exploited": true,
+      "cves": [],
+      "summary": "Releases 1.0.8, 1.0.9 and 1.0.10 of @tekmidian/pai - a Personal AI Infrastructure / knowledge-OS package with federated memory and project management, run beside an agent that holds local project data - are malware (CWE-506, embedded malicious code). GitHub's advisory carries no patched version and no source to review; npm's latest tag is back at the clean 1.0.7. The advisory's standing advice: any computer that installed a poisoned release is fully compromised - rotate its secrets from a different machine, remove the package, and do not assume removing it cleans the machine.",
+      "affected": "@tekmidian/pai 1.0.8, 1.0.9 and 1.0.10 (the releases the advisory lists). There is no patched build of those releases: 1.0.7 is the latest clean one, and the package should be removed.",
+      "fixed": [],
+      "checks": [
+        {
+          "kind": "npm",
+          "label": "@tekmidian/pai",
+          "package": "@tekmidian/pai",
+          "bad": [
+            "1.0.8",
+            "1.0.9",
+            "1.0.10"
+          ]
+        }
+      ],
+      "patch": [
+        "Remove the package (npm uninstall @tekmidian/pai; delete it from lockfiles and CI images), then treat the machine as compromised",
+        "Rotate every secret and key the machine held - from a different machine - and rebuild from a clean image; removing the package does not guarantee the machine is clean"
+      ],
+      "mitigation": [],
+      "iocs": [],
+      "sources": [
+        "https://github.com/advisories/GHSA-xvgg-qjjh-gq34",
+        "https://www.npmjs.com/package/@tekmidian/pai"
+      ]
+    },
+    {
+      "id": "wasmtime-cranelift-2026-10",
+      "title": "Wasmtime before 36.0.19 / 43.0.0: Cranelift SSA-index overflow lets a crafted Wasm module escape the sandbox (CVE-2026-115889)",
+      "date": "2026-10-23",
+      "severity": "critical",
+      "exploited": false,
+      "cves": [
+        "CVE-2026-115889"
+      ],
+      "summary": "Cranelift bit-packs its SSA value indices; in release builds a very large or specially crafted Wasm function body can make that packing silently overflow, so the IR carries incorrect value references - arbitrary miscompilation that a crafted module turns into type confusion, side effects and escape from the Wasmtime sandbox. Default settings on any architecture are affected. v43 switched to a full u32 index with an explicit check; the 36 line got the fix in 36.0.19.",
+      "affected": "wasmtime before 36.0.19 on the 36 line, and 37.0.0 through 42.x on newer lines (fixed by the v43 change). Language bindings embed the same compiler, so their crate and package versions matter too.",
+      "fixed": [
+        "36.0.19",
+        "43.0.0"
+      ],
+      "checks": [
+        {
+          "kind": "version",
+          "label": "wasmtime",
+          "command": [
+            "wasmtime",
+            "--version"
+          ],
+          "line": 1,
+          "fixed": [
+            "36.0.19",
+            "43.0.0"
+          ]
+        }
+      ],
+      "patch": [
+        "cargo update wasmtime (>=36.0.19 on the 36 line, or 43.0.0) and rebuild every service that embeds it; rebuild bindings (pip install -U wasmtime and friends) to match"
+      ],
+      "mitigation": [
+        "Until rebuilt: do not run untrusted Wasm through the Cranelift compiler - sandbox limits do not help against a compiler bug; move the untrusted workload to a patched engine"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://github.com/bytecodealliance/wasmtime/security/advisories/GHSA-897f-g5gm-fmxm",
+        "https://github.com/bytecodealliance/wasmtime/releases/tag/v36.0.19"
+      ]
+    },
+    {
+      "id": "laravel-tokenguard-bypass",
+      "title": "Laravel before 12.68.0 / 13.29.0: TokenGuard authentication bypass with a non-string API credential (CVE-2026-114509)",
+      "date": "2026-10-23",
+      "severity": "critical",
+      "exploited": false,
+      "cves": [
+        "CVE-2026-114509"
+      ],
+      "summary": "TokenGuard, used as the standard token-based API guard, can be bypassed: on MySQL/MariaDB the authentication lookup mishandles a specially crafted non-string credential value, so the query matches an unintended user record instead of failing. An unauthenticated attacker authenticates as an existing user without their API token - account takeover on any route the guard protects.",
+      "affected": "laravel/framework before 12.68.0 and 13.0.0 through 13.28.x, with TokenGuard configured as the API guard on a MySQL or MariaDB connection.",
+      "fixed": [
+        "12.68.0",
+        "13.29.0"
+      ],
+      "checks": [
+        {
+          "kind": "composer",
+          "label": "laravel/framework",
+          "packages": [
+            "laravel/framework"
+          ],
+          "line": 1,
+          "fixed": [
+            "12.68.0",
+            "13.29.0"
+          ]
+        }
+      ],
+      "patch": [
+        "composer update laravel/framework (>=12.68.0 or >=13.29.0), then redeploy"
+      ],
+      "mitigation": [
+        "Until upgraded: reject non-string credentials before they reach the guard (an explicit is_string() check in middleware), and review access logs for sessions opened without a token"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://github.com/laravel/framework/security/advisories/GHSA-f9x3-7vq9-cph6",
+        "https://github.com/laravel/framework/releases/tag/v12.68.0"
+      ]
+    },
+    {
+      "id": "echo-ws-proxy-2026-10",
+      "title": "Echo v4/v5 before 4.16.1 / 5.4.1: WebSocket-upgrade proxy bypass, retained WS connections, unbounded gzip and BodyDump buffering",
+      "date": "2026-10-23",
+      "severity": "critical",
+      "exploited": false,
+      "cves": [],
+      "summary": "Four fixes in one release. The proxy middleware took a raw tunnel when a client requested a WebSocket upgrade before checking that the upstream accepted it: if the upstream answers with ordinary HTTP and keeps the connection alive, later HTTP requests on that connection go straight to the upstream past Echo's router and route middleware, bypassing authentication enforced only at those routes (Echo rates this one Moderate; the advisory database critical). Also: the WebSocket proxy could retain connections and handlers after a client disconnected (4.15.0+), the Decompress middleware allowed unbounded gzip expansion, and BodyDump captured request and response bodies with no size limit - both memory-exhaustion paths in v4.",
+      "affected": "github.com/labstack/echo/v4 up to 4.16.0 and /v5 up to 5.4.0 (the upgrade bypass reaches back to v4.0.0; the retained-connection bug is 4.15.0+).",
+      "fixed": [
+        "4.16.1",
+        "5.4.1"
+      ],
+      "checks": [],
+      "patch": [
+        "go get github.com/labstack/echo/v4@v4.16.1 (or /v5@v5.4.1), then rebuild and redeploy every service on it"
+      ],
+      "mitigation": [
+        "Until rebuilt: reject WebSocket upgrade requests before they reach affected proxy routes, and enforce authorization independently at every upstream resource - a non-101 answer from the upstream is not enough",
+        "Cap request body size and gzip expansion at the proxy or through the Decompress middleware options"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://github.com/labstack/echo/security/advisories/GHSA-cxf3-9h37-7rr8",
+        "https://github.com/labstack/echo/security/advisories/GHSA-9969-6676-49h5",
+        "https://github.com/labstack/echo/security/advisories/GHSA-h7wr-284f-5qvc",
+        "https://github.com/labstack/echo/security/advisories/GHSA-f48p-c9v4-h7xv",
+        "https://github.com/labstack/echo/releases/tag/v4.16.1"
+      ]
+    },
+    {
+      "id": "obsidian-tc-2026-10",
+      "title": "obsidian-tc (npm) before 1.3.1 / 1.31.4: drive-by vault access on loopback, tokens reaching any vault, masked destructive calls",
+      "date": "2026-10-23",
+      "severity": "critical",
+      "exploited": false,
+      "cves": [
+        "CVE-2026-77363",
+        "CVE-2026-77366",
+        "CVE-2026-115477",
+        "CVE-2026-115478"
+      ],
+      "summary": "Four holes in the Obsidian MCP server. The Streamable HTTP transport ran with no DNS-rebinding protection and no Origin validation, so with the documented auth.mode 'none' loopback default a drive-by web page could POST http://127.0.0.1/mcp and answer as caller http-local with scopes ['*'] - full vault read/write through DNS rebinding or a forged Origin (CVE-2026-77363). Tokens could also reach arbitrary configured vaults (CVE-2026-77366). Both fixed in 1.3.1 (an invalid Origin now gets 403, per MCP 2025-11-25). Later: memory-lifecycle tools could overwrite unowned notes or partially commit lifecycle changes (CVE-2026-115478), and a declined human-in-the-loop confirmation could still permit destructive calls over HTTP (CVE-2026-115477, since 1.13.0) - fixed in 1.31.4.",
+      "affected": "obsidian-tc below 1.3.1 for the transport and cross-vault issues; 1.0.1 through 1.31.3 for the lifecycle and confirmation issues (the confirmation bug from 1.13.0).",
+      "fixed": [
+        "1.31.4"
+      ],
+      "checks": [
+        {
+          "kind": "npm",
+          "label": "obsidian-tc",
+          "package": "obsidian-tc",
+          "line": 1,
+          "fixed": [
+            "1.31.4"
+          ]
+        }
+      ],
+      "patch": [
+        "npm install obsidian-tc@^1.31.4 and restart the MCP server"
+      ],
+      "mitigation": [
+        "Until upgraded: do not run the HTTP transport with auth.mode none - require JWT auth, or bind to a non-loopback interface behind a proxy that validates Origin"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://github.com/advisories/GHSA-pqh8-4pj7-32xx",
+        "https://github.com/advisories/GHSA-84c9-qqpq-2pq5",
+        "https://github.com/advisories/GHSA-737x-cwfr-5vvc",
+        "https://github.com/advisories/GHSA-r3g7-r4hr-m258",
+        "https://github.com/The-40-Thieves/obsidian-tc/releases/tag/v1.31.4"
+      ]
+    },
+    {
+      "id": "happy-dom-esm-alias-rce",
+      "title": "happy-dom 17.0.0-21.0.3: unsanitized ESM import alias reaches host code execution (CVE-2026-115895, incomplete fix for CVE-2026-33943)",
+      "date": "2026-10-23",
+      "severity": "high",
+      "exploited": false,
+      "cves": [
+        "CVE-2026-115895"
+      ],
+      "summary": "The ESM compiler does not validate imported local binding aliases before interpolating them into generated JavaScript, so an invalid alias can become a working destructuring default initializer and execute. A page or test input that reaches Window or a <script type='module'> escapes the simulated DOM into the Node.js host - the report's PoC obtains node:fs and writes to the host filesystem. It is an alternate injection path the CVE-2026-33943 fix left open in the named-import handler; the ESM compiler arrived in v17.",
+      "affected": "happy-dom 17.0.0 up to 21.0.3 (16.8.1 and earlier are not affected).",
+      "fixed": [
+        "21.0.4"
+      ],
+      "checks": [
+        {
+          "kind": "npm",
+          "label": "happy-dom",
+          "package": "happy-dom",
+          "line": 1,
+          "min": "17.0.0",
+          "fixed": [
+            "21.0.4"
+          ]
+        }
+      ],
+      "patch": [
+        "npm install happy-dom@^21.0.4 (or bump the transitive pin) and rebuild the test/CI image"
+      ],
+      "mitigation": [
+        "Until upgraded: do not let untrusted HTML or module scripts reach happy-dom - keep it out of any path that processes untrusted input - and run the tests that need it without host secrets in the environment"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://github.com/capricorn86/happy-dom/security/advisories/GHSA-834v-8h66-3h79",
+        "https://github.com/advisories/GHSA-6q6h-j7hj-3r64"
+      ]
+    },
+    {
+      "id": "strands-a2a-session-mixup",
+      "title": "Strands Agents SDK: the A2A server shares conversation history across callers (CVE-2026-115419)",
+      "date": "2026-10-23",
+      "severity": "high",
+      "exploited": false,
+      "cves": [
+        "CVE-2026-115419"
+      ],
+      "summary": "The Agent2Agent (A2A) server did not isolate conversation state by caller: callers with different context_id values could land in one session, so an authenticated remote user can read another caller's conversation history and influence model behavior for other callers (CWE-488). Any A2A server reachable by more than one user or tenant is affected. The fix gives the server an agent factory so state is isolated per context_id.",
+      "affected": "strands-agents (Python) with the multiagent.a2a module below 1.43.0, and @strands-agents/sdk (TypeScript) below 1.5.0.",
+      "fixed": [
+        "1.43.0",
+        "1.5.0"
+      ],
+      "checks": [
+        {
+          "kind": "version",
+          "label": "strands-agents",
+          "command": [
+            "python3",
+            "-c",
+            "import importlib.metadata as m; print(m.version('strands-agents'))"
+          ],
+          "line": 1,
+          "fixed": [
+            "1.43.0"
+          ]
+        },
+        {
+          "kind": "npm",
+          "label": "@strands-agents/sdk",
+          "package": "@strands-agents/sdk",
+          "line": 1,
+          "fixed": [
+            "1.5.0"
+          ]
+        }
+      ],
+      "patch": [
+        "pip install --upgrade 'strands-agents>=1.43.0' or npm install @strands-agents/sdk@^1.5.0, then restart the A2A servers"
+      ],
+      "mitigation": [
+        "No workaround fully addresses it: until upgraded, do not expose an A2A server to more than one user or tenant - run a separate instance per tenant"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://github.com/strands-agents/harness-sdk/security/advisories/GHSA-4v6f-7vjh-6x4m",
+        "https://github.com/strands-agents/harness-sdk/releases/tag/python/v1.43.0"
+      ]
+    },
+    {
+      "id": "mistune-include-directive",
+      "title": "Mistune before 3.3.0: the Include directive allows path traversal reads and XSS (CVE-2026-115355)",
+      "date": "2026-10-23",
+      "severity": "high",
+      "exploited": false,
+      "cves": [
+        "CVE-2026-115355"
+      ],
+      "summary": "The Include directive (the include plugin, which must be enabled explicitly) resolves a path without checking that it stays inside the source directory, so ../ sequences pull arbitrary files into the rendered output. Error messages and included content are rendered without HTML escaping even with escape=True, giving XSS. Both fixed in 3.3.0.",
+      "affected": "mistune up to 3.2.0 with the include plugin enabled.",
+      "fixed": [
+        "3.3.0"
+      ],
+      "checks": [
+        {
+          "kind": "version",
+          "label": "mistune",
+          "command": [
+            "python3",
+            "-c",
+            "import importlib.metadata as m; print(m.version('mistune'))"
+          ],
+          "line": 1,
+          "fixed": [
+            "3.3.0"
+          ]
+        }
+      ],
+      "patch": [
+        "pip install --upgrade 'mistune>=3.3.0' and restart the service"
+      ],
+      "mitigation": [
+        "Until upgraded: do not enable the include plugin on untrusted Markdown - it is off unless you configure it"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://github.com/lepture/mistune/security/advisories/GHSA-h7ww-273w-6cm8",
+        "https://github.com/advisories/GHSA-8cqv-vvq2-6p8c",
+        "https://github.com/lepture/mistune/releases/tag/v3.3.0"
+      ]
+    },
+    {
+      "id": "siyuan-ws-parser-differential",
+      "title": "SiYuan: a parser differential on the WebSocket URI lets an unauthenticated caller into the kernel event stream (CVE-2026-73054)",
+      "date": "2026-10-23",
+      "severity": "high",
+      "exploited": false,
+      "cves": [
+        "CVE-2026-73054"
+      ],
+      "summary": "Two checks on the same WebSocket request URI parse it differently: the keepalive exemption matches raw substrings ('/ws?app=siyuan' and '&id=auth&type=auth') while the quarantine reads a parsed query parameter and takes only its first value. A URI like /ws?app=siyuan&id=main&type=main&id=auth&type=auth satisfies the exemption and still resolves to a non-auth session, so an unauthenticated remote caller - no cookie, JWT or access code - joins the general broadcast pool and receives the live kernel event stream. Fixed by the 2026-07-31 commit; the first stable release carrying it is v3.8.0.",
+      "affected": "SiYuan kernel builds before v3.8.0 (fix commit 67bc300b6ea6, 2026-07-31) where the kernel WebSocket is reachable.",
+      "fixed": [
+        "3.8.0"
+      ],
+      "checks": [],
+      "patch": [
+        "Upgrade SiYuan to v3.8.0 or later (Docker images included) and restart the kernel"
+      ],
+      "mitigation": [
+        "Until upgraded: keep the SiYuan kernel off untrusted networks - bind it to loopback behind your own authenticated proxy"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://github.com/siyuan-note/siyuan/security/advisories/GHSA-c8w8-3pqp-wr83",
+        "https://github.com/siyuan-note/siyuan/releases/tag/v3.8.0"
+      ]
+    },
+    {
+      "id": "gamipress-8-0-8",
+      "title": "GamiPress (WordPress plugin) up to 8.0.7: blind SQL injection (CVE-2026-112837)",
+      "date": "2026-10-23",
+      "severity": "high",
+      "exploited": false,
+      "cves": [
+        "CVE-2026-112837"
+      ],
+      "summary": "GamiPress up to and including 8.0.7 has a blind SQL injection (CWE-89, CVSS 8.5): crafted input reaches the plugin's database queries, letting an attacker query, modify or delete data through the WordPress database user. Fixed in 8.0.8. Not on the known-exploited list.",
+      "affected": "GamiPress 8.0.7 and earlier, any deployment size.",
+      "fixed": [
+        "8.0.8"
+      ],
+      "checks": [
+        {
+          "kind": "wp-plugin",
+          "label": "gamipress",
+          "slugs": [
+            "gamipress"
+          ],
+          "line": 1,
+          "fixed": [
+            "8.0.8"
+          ]
+        }
+      ],
+      "patch": [
+        "Update the GamiPress plugin to 8.0.8 or later from the WordPress admin, or wp plugin update gamipress"
+      ],
+      "mitigation": [
+        "Until updated: keep SQL-injection rules on the site's WAF and watch for unexplained admin activity"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://wordpress.org/plugins/gamipress/",
+        "https://app.opencve.io/cve/CVE-2026-112837"
+      ]
+    },
+    {
+      "id": "msal-node-authcode-disclosure",
+      "title": "@azure/msal-node before 7.1.0: authorization code flow may disclose parameters to an attacker-controlled endpoint (CVE-2026-109461)",
+      "date": "2026-10-23",
+      "severity": "high",
+      "exploited": false,
+      "cves": [
+        "CVE-2026-109461"
+      ],
+      "summary": "An origin validation error in Microsoft Authentication Library for Node.js lets an unauthorized attacker disclose information over the network: in the auth_code flow, request parameters can reach an attacker-controlled endpoint. Microsoft rates it Moderate (5.9); the advisory database rates it high. Version 7.1.0 is patched.",
+      "affected": "@azure/msal-node 5.0.0-beta.0 and later, below 7.1.0, when the application uses the authorization code (auth_code) flow.",
+      "fixed": [
+        "7.1.0"
+      ],
+      "checks": [
+        {
+          "kind": "npm",
+          "label": "@azure/msal-node",
+          "package": "@azure/msal-node",
+          "line": 1,
+          "fixed": [
+            "7.1.0"
+          ]
+        }
+      ],
+      "patch": [
+        "npm install @azure/msal-node@^7.1.0, then rebuild and redeploy the application"
+      ],
+      "mitigation": [
+        "Until upgraded: pass in only the auth_code to acquireTokenByCode (Microsoft's workaround) - do not forward extra request parameters into the flow"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://github.com/AzureAD/microsoft-authentication-library-for-js/security/advisories/GHSA-xcx6-jx8p-x3h5",
+        "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2026-109461"
+      ]
+    },
+    {
+      "id": "conduitops-logview-archive-malware",
+      "title": "Malware in @conduitops/logview-archive (npm): postinstall fetches and runs a payload from a disguised, masked registry URL",
+      "date": "2026-10-22",
+      "severity": "critical",
+      "exploited": true,
+      "cves": [],
+      "summary": "Version 1.0.1 of @conduitops/logview-archive is a trojan. Its postinstall hook runs install.js, which shells out to 'npm install @conduit/logview-cli@2.2.0 --registry <decoded URL>', where the URL sits as a base64+XOR-masked string (key c0ndu1t-ops) in lib/toolchain.json and is decoded in memory by lib/origin.js. The decoded registry is a plain-HTTP bare IP - http://139.196.94.195:8080/dl/npm/ - not the public registry and nothing like the package's claimed conduit.internal provenance, so npm fetches and executes the lifecycle scripts of whatever package the attacker serves there: arbitrary install-time code execution on the installer's host. A comment in lib/origin.js says the masking is deliberate, leaving no readable address in the download. Reported by Amazon Inspector (IN-MAL-2026-021570) and published in the OSSF malicious-packages feed.",
+      "affected": "@conduitops/logview-archive 1.0.1 (npm). There is no patched build: the package should be removed.",
+      "fixed": [],
+      "checks": [
+        {
+          "kind": "npm",
+          "label": "@conduitops/logview-archive",
+          "package": "@conduitops/logview-archive",
+          "bad": [
+            "1.0.1"
+          ]
+        }
+      ],
+      "patch": [
+        "Remove the package (npm uninstall @conduitops/logview-archive; delete it from lockfiles and CI images) and reinstall dependencies from the public registry",
+        "Treat the machine as compromised: rotate its secrets from a different machine and rebuild from a clean image"
+      ],
+      "mitigation": [
+        "Build hosts should not reach a plain-HTTP bare-IP registry: block 139.196.94.195 outbound, and pin npm to the public registry with an .npmrc scope check"
+      ],
+      "iocs": [
+        "139.196.94.195:8080 (the masked registry the postinstall fetches from)",
+        "install.js sha256 0d11efbb0880f2b9f3d4c8f073cf4ddddb105badc34ffaed48ae76d59a0609a8",
+        "lib/origin.js sha256 4a2485296ad2178b7bf07ebba6d13b300728582dd9ca673aa3e262d46e49c44e",
+        "logview-archive-1.0.1.tgz sha1 0b49478bb2f4e40d6e34adee09daa9c8f8c73fc8"
+      ],
+      "sources": [
+        "https://osv.dev/vulnerability/MAL-2026-18183",
+        "https://vulnerability.circl.lu/vuln/MAL-2026-18183",
+        "https://www.npmjs.com/package/@conduitops/logview-archive"
+      ]
+    },
+    {
+      "id": "linux-ksmbd-zdi-2026-10",
+      "title": "Linux KSMBD (in-kernel SMB server): two unpatched remote code execution bugs, one before login (ZDI-CAN-33774, ZDI-CAN-33549)",
+      "date": "2026-10-22",
+      "severity": "critical",
+      "exploited": false,
+      "cves": [],
+      "summary": "Trend Micro's ZDI sent two CVSS 9.0 KSMBD reports to public kernel mailing lists before any fix existed. ZDI-CAN-33774: a race in protocol dispatch (a burst of short SMB1 packets followed by an SMB2 packet in one TCP write) makes the server read past a buffer with no authentication, over TCP 445; with access to a share it can also write past it. ZDI-CAN-33549: an integer underflow in the SMB Direct (RDMA) path overruns a buffer; it needs an RDMA-capable interface (or the rxe software driver), a writable share and a client negotiating SMB Direct. No fix in mainline, linux-next or stable yet, so no CVE. Samba (smbd) is separate software and is not affected.",
+      "affected": "Linux machines running KSMBD (the ksmbd kernel module loaded, started by ksmbd-tools / ksmbd.service), above all with TCP 445 reachable from untrusted networks. A kernel that merely ships the module, unloaded, is not exposed; Samba is not affected.",
+      "fixed": [],
+      "checks": [
+        {
+          "kind": "command",
+          "label": "ksmbd module loaded",
+          "command": [
+            "sh",
+            "-c",
+            "awk '$1==\"ksmbd\"{print \"ksmbd kernel module is loaded\"}' /proc/modules 2>/dev/null"
+          ]
+        }
+      ],
+      "patch": [
+        "No kernel fix exists yet: when your distro ships a kernel that names ZDI-CAN-33774 / ZDI-CAN-33549 (or their CVEs), install it and reboot"
+      ],
+      "mitigation": [
+        "Not using KSMBD: stop it and keep it from loading: systemctl disable --now ksmbd; rmmod ksmbd; echo 'install ksmbd /bin/false' > /etc/modprobe.d/disable-ksmbd.conf",
+        "Need the share: allow TCP 445 only from trusted hosts at the firewall, never from the internet",
+        "SMB Direct (ZDI-CAN-33549): do not load rdma_rxe or offer SMB Direct on the share host until it is patched"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://www.zerodayinitiative.com/advisories/upcoming/",
+        "https://lore.kernel.org/lkml/BYAPR01MB383076AC412E19C48CFBEAE980662@BYAPR01MB3830.prod.exchangelabs.com/",
+        "https://lore.kernel.org/lkml/BYAPR01MB3830472B5702C089B0BBB77D80662@BYAPR01MB3830.prod.exchangelabs.com/",
+        "https://thehackernews.com/2026/10/two-cvss-90-linux-ksmbd-rce-flaws.html",
+        "https://x.com/markgadala/status/2113385154458583370"
+      ]
+    },
+    {
+      "id": "next-use-cache-rce",
+      "title": "Next.js 16.0.0-16.4.0: unauthenticated RCE in `use cache` functions returning typed arrays",
+      "date": "2026-10-22",
+      "severity": "critical",
+      "exploited": false,
+      "cves": [],
+      "summary": "An application using the App Router with Cache Components can be driven to remote code execution through a use cache function that returns multiple typed arrays. No authentication is needed, and Vercel publishes no workaround for applications that have such functions: upgrade immediately even if yours does not look like the shape they name. This is the third Next.js advisory in this feed this week, after the Image Optimization RCE and the Server Actions DoS (nextjs-2026-10); 16.4.1 carries all three fixes.",
+      "affected": "next 16.0.0 up to 16.4.0, when the app uses App Router with Cache Components and has a use cache function returning multiple typed arrays.",
+      "fixed": [
+        "16.4.1"
+      ],
+      "checks": [
+        {
+          "kind": "npm",
+          "label": "next",
+          "package": "next",
+          "line": 1,
+          "min": "16.0.0",
+          "fixed": [
+            "16.4.1"
+          ]
+        }
+      ],
+      "patch": [
+        "npm install next@^16.4.1, rebuild and redeploy"
+      ],
+      "mitigation": [
+        "No workaround is published for affected applications - upgrading is the only fix, and Vercel says to do it even when you think you have no such function",
+        "While planning the upgrade, audit use cache functions that return multiple typed arrays"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://github.com/vercel/next.js/security/advisories/GHSA-673q-mjm6-r5xr",
+        "https://github.com/vercel/next.js/releases/tag/v16.4.1"
+      ]
+    },
+    {
+      "id": "dompurify-3-4-17",
+      "title": "DOMPurify before 3.4.17: SAFE_FOR_TEMPLATES bypass through shadow root content, and armed handlers in hook-detached subtrees",
+      "date": "2026-10-22",
+      "severity": "critical",
+      "exploited": false,
+      "cves": [],
+      "summary": "Two sanitization gaps closed in one release. With SAFE_FOR_TEMPLATES and a DOM-returning mode (RETURN_DOM, RETURN_DOM_FRAGMENT or IN_PLACE), template expressions like {{...}}, ${...} and <%...%> split across text nodes inside an attached shadow root survive sanitization: DOMPurify's final normalize-and-re-scrub pass never descends into shadow trees (per DOM spec, neither normalize() nor NodeIterator does), so once the disallowed elements between the fragments are removed they join into an expression a downstream template engine evaluates - cross-site scripting client-side, template injection server-side. Second: in IN_PLACE mode a hook that removes a node other than itself - its parent or a later sibling - leaves that detached subtree unvisited and un-neutralized, so event handlers on it stay armed and an img onerror already loading fires after sanitize() returns (an incomplete fix for GHSA-p98j-92pf-mc4p).",
+      "affected": "dompurify up to 3.4.16. The shadow-root bypass needs SAFE_FOR_TEMPLATES together with RETURN_DOM, RETURN_DOM_FRAGMENT or IN_PLACE and attacker-influenced DOM nodes carrying an attached shadow root (3.4.4+); the handler gap needs IN_PLACE with hooks that remove a parent or sibling (tested on 2.5.8 through 3.4.16).",
+      "fixed": [
+        "3.4.17"
+      ],
+      "checks": [
+        {
+          "kind": "npm",
+          "label": "dompurify",
+          "package": "dompurify",
+          "line": 1,
+          "fixed": [
+            "3.4.17"
+          ]
+        }
+      ],
+      "patch": [
+        "npm install dompurify@^3.4.17 and rebuild"
+      ],
+      "mitigation": [
+        "Until upgraded: do not feed DOM nodes with shadow roots into a SAFE_FOR_TEMPLATES configuration",
+        "Do not trust an IN_PLACE hook that removes a parent or sibling to neutralize what it detached - scrub that subtree yourself before removing it"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://github.com/cure53/DOMPurify/security/advisories/GHSA-cg2g-xh64-v4q7",
+        "https://github.com/cure53/DOMPurify/security/advisories/GHSA-mrv2-3pqr-j5jr",
+        "https://github.com/cure53/DOMPurify/releases/tag/3.4.17"
+      ]
+    },
+    {
+      "id": "gitpython-submodule-git",
+      "title": "GitPython before 3.2.1: create_submodule clones into .git/hooks before the path check, planting a git hook (RCE)",
+      "date": "2026-10-22",
+      "severity": "high",
+      "exploited": false,
+      "cves": [
+        "CVE-2026-114145"
+      ],
+      "summary": "create_submodule(name, path, url) clones the submodule before it rejects the destination path. A path of .git/hooks passes the pre-clone check, so the clone lands in the repository's live hooks directory and a file named post-checkout in the submodule becomes an executable .git/hooks/post-checkout - code execution at the next git operation. On 3.2.0 the later index check does raise, but only after the clone wrote to disk and without removing the planted hook; on 3.1.x nothing checks and the call succeeds silently. Reachable wherever an application hands an attacker-influenced path or URL to Submodule.add()/create_submodule() - repo tooling, web UIs that add submodules, CI utilities.",
+      "affected": "GitPython 3.1.x and 3.2.0 (fixed in 3.2.1).",
+      "fixed": [
+        "3.2.1"
+      ],
+      "checks": [
+        {
+          "kind": "version",
+          "label": "GitPython",
+          "command": [
+            "python3",
+            "-c",
+            "import importlib.metadata as m; print(m.version('gitpython'))"
+          ],
+          "line": 1,
+          "fixed": [
+            "3.2.1"
+          ]
+        }
+      ],
+      "patch": [
+        "pip install --upgrade 'GitPython>=3.2.1' wherever submodules are added through it, then restart the services using it"
+      ],
+      "mitigation": [
+        "Until upgraded: never pass an untrusted path or URL to Submodule.add()/create_submodule(); add submodules through the git CLI after reviewing the path"
+      ],
+      "iocs": [
+        "a git hook you did not write appearing under .git/hooks of a repository this library manages"
+      ],
+      "sources": [
+        "https://github.com/gitpython-developers/GitPython/security/advisories/GHSA-83vg-56qc-22m7",
+        "https://github.com/gitpython-developers/GitPython/releases/tag/3.2.1"
+      ]
+    },
+    {
+      "id": "toml-node-prototype-pollution",
+      "title": "toml (toml-node) before 5.0.1: parsing a crafted TOML document writes to Object.prototype",
+      "date": "2026-10-22",
+      "severity": "high",
+      "exploited": false,
+      "cves": [
+        "CVE-2026-114142"
+      ],
+      "summary": "The 4.1.2 fix for CVE-2026-63376 is bypassable: the path-key encoding is still ambiguous (a quote plays the dot's role, and a quote inside a segment is never escaped), a table-array header can clear another key's guard bookkeeping, and the assign() descent has no owned-container check - a TOML datetime is a Date object whose prototype chain reaches Object.prototype. A four-line TOML document parsed with toml.parse() writes a property onto Object.prototype where every object in the process sees it, including objects from unrelated libraries - the classic prototype pollution foothold. (The npm package is toml; the advisory record lists it as tome.)",
+      "affected": "toml up to 5.0.0 (npm package toml, the BinaryMuse/toml-node parser).",
+      "fixed": [
+        "5.0.1"
+      ],
+      "checks": [
+        {
+          "kind": "npm",
+          "label": "toml",
+          "package": "toml",
+          "line": 1,
+          "fixed": [
+            "5.0.1"
+          ]
+        }
+      ],
+      "patch": [
+        "npm install toml@^5.0.1 wherever TOML is parsed with toml.parse(), then restart"
+      ],
+      "mitigation": [
+        "Until upgraded: do not parse TOML from untrusted sources with this package - JSON or a validated parser avoids the whole class"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://github.com/BinaryMuse/toml-node/security/advisories/GHSA-h895-cgqg-jf52",
+        "https://github.com/BinaryMuse/toml-node/releases/tag/v5.0.1"
+      ]
+    },
+    {
+      "id": "graphql-tools-prototype-pollution",
+      "title": "@graphql-tools/utils before 12.0.2: prototype pollution in mergeIncrementalResult via non-primitive path segments",
+      "date": "2026-10-22",
+      "severity": "high",
+      "exploited": false,
+      "cves": [
+        "CVE-2026-114604"
+      ],
+      "summary": "mergeIncrementalResult merges an incremental GraphQL response part into the accumulated result by walking ['data', ...path] and writing at the resolved location. setObjectKeyPath blocks __proto__, constructor and prototype by strict string equality but never checks that a path segment is a primitive string or number, so a segment like a ['__proto__'] array slips past the guard and lands a write on Object.prototype. No options are involved: the vulnerable path is on by default. An attacker who influences an incremental (defer/stream) response can pollute the prototype of a GraphQL server or client process.",
+      "affected": "@graphql-tools/utils 10.10.1 up to 12.0.1 (10.10.0 and older do not carry the vulnerable code). The fix ships only on the 12.x line.",
+      "fixed": [
+        "12.0.2"
+      ],
+      "checks": [
+        {
+          "kind": "npm",
+          "label": "@graphql-tools/utils",
+          "package": "@graphql-tools/utils",
+          "line": 1,
+          "min": "10.10.1",
+          "fixed": [
+            "12.0.2"
+          ]
+        }
+      ],
+      "patch": [
+        "npm install @graphql-tools/utils@^12.0.2 - a major bump from 10.x/11.x; move the other @graphql-tools/* packages with it - then rebuild and redeploy"
+      ],
+      "mitigation": [
+        "Until upgraded: do not merge incremental GraphQL results from untrusted subgraphs or executors; validate that response paths contain only strings before incremental merging"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://github.com/ardatan/graphql-tools/security/advisories/GHSA-c4qx-w738-7hr3",
+        "https://github.com/ardatan/graphql-tools/releases/tag/@graphql-tools/utils@12.0.2"
+      ]
+    },
+    {
+      "id": "nbconvert-path-traversal",
+      "title": "nbconvert before 7.17.2: arbitrary file write through cell output filenames (path traversal when exporting)",
+      "date": "2026-10-22",
+      "severity": "high",
+      "exploited": false,
+      "cves": [
+        "CVE-2026-114140"
+      ],
+      "summary": "ExtractOutputPreprocessor joins an attacker-controlled filename attribute from ipynb cell output metadata onto output_files_dir with no canonicalization check, so converting a malicious notebook writes attacker-chosen data to attacker-chosen paths - the report's example overwrites targets reached through ../ traversal, such as authorized_keys. Vulnerable exports: --to markdown, latex, rst and asciidoc. A sibling of GHSA-4c99-qj7h-p3vg. Any service, CI job or doc pipeline that converts notebooks it did not author is the exposure; running the cells in Jupyter first would overwrite the malicious output and hide it.",
+      "affected": "nbconvert 5.4.0 up to 7.17.1.",
+      "fixed": [
+        "7.17.2"
+      ],
+      "checks": [
+        {
+          "kind": "version",
+          "label": "nbconvert",
+          "command": [
+            "python3",
+            "-c",
+            "import importlib.metadata as m; print(m.version('nbconvert'))"
+          ],
+          "line": 1,
+          "fixed": [
+            "7.17.2"
+          ],
+          "min": "5.4.0"
+        }
+      ],
+      "patch": [
+        "pip install --upgrade 'nbconvert>=7.17.2' on every host that converts notebooks (Jupyter servers, CI images, doc pipelines)"
+      ],
+      "mitigation": [
+        "Until upgraded: do not run nbconvert on .ipynb files you did not author; strip output metadata (the filename attributes) from untrusted notebooks before converting"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://github.com/jupyter/nbconvert/security/advisories/GHSA-pjvx-prjx-h659",
+        "https://github.com/jupyter/nbconvert/releases/tag/v7.17.2"
+      ]
+    },
+    {
+      "id": "black-action-required-version",
+      "title": "Black before 26.10.1: its GitHub Action installs an unvalidated required-version from pyproject.toml (RCE via pull request)",
+      "date": "2026-10-22",
+      "severity": "high",
+      "exploited": false,
+      "cves": [
+        "CVE-2026-114134"
+      ],
+      "summary": "The GitHub Action bundled with Black reads tool.black.required-version from pyproject.toml when use_pyproject is true and installs that value as the Black version without validating it, so a pull request that edits pyproject.toml can point the action at a malicious repository and run its code in the context of the victim's repository - the same class as CVE-2026-31900. Anyone running psf/black's action with use_pyproject: true on pull_request events is exposed, and the attacker only needs to open a PR.",
+      "affected": "The bundled GitHub Action in Black releases before 26.10.1, in workflows that set use_pyproject: true.",
+      "fixed": [
+        "26.10.1"
+      ],
+      "checks": [
+        {
+          "kind": "version",
+          "label": "black",
+          "command": [
+            "python3",
+            "-c",
+            "import importlib.metadata as m; print(m.version('black'))"
+          ],
+          "line": 1,
+          "fixed": [
+            "26.10.1"
+          ]
+        }
+      ],
+      "patch": [
+        "In every workflow using psf/black's action, pin it to 26.10.1 or newer (uses: psf/black@26.10.1 or a tag you verified); pip install --upgrade 'black>=26.10.1' where Black is used from PyPI"
+      ],
+      "mitigation": [
+        "Until the action pin is fixed: stop setting use_pyproject: true (then the required-version path is not read), or require approval for pull_request runs from forks and protect pyproject.toml with CODEOWNERS"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://github.com/psf/black/security/advisories/GHSA-cg8m-r9f2-5wm2",
+        "https://github.com/psf/black/releases/tag/26.10.1"
+      ]
+    },
+    {
+      "id": "djangorestframework-3-18-2",
+      "title": "Django REST framework before 3.18.2: silent no-op token revocation, an Accept-header CPU denial of service, and request-stream codec injection",
+      "date": "2026-10-22",
+      "severity": "high",
+      "exploited": false,
+      "cves": [
+        "CVE-2026-114137",
+        "CVE-2026-114138",
+        "CVE-2026-114136"
+      ],
+      "summary": "Three bugs, one upgrade. TokenProxy.delete() reports success and revokes nothing: its pk returns the user id and Model.delete() matches that against the 40-character key column, so every caller that revokes a token through TokenProxy - anything outside the shipped admin, which re-fetches the concrete row - believes a live credential is gone (CVE-2026-114137). A crafted Accept header of many large quoted parameters burns about 19 seconds of CPU per unauthenticated request in content negotiation; two concurrent requests stop a default two-worker deployment answering (CVE-2026-114138). And JSONParser applies an attacker-named codec from the Content-Type charset parameter to the request stream: charset=bz2_codec turns a 108-byte body into a 50-million-character value inside the view, defeating DATA_UPLOAD_MAX_MEMORY_SIZE and ballooning worker memory (CVE-2026-114136).",
+      "affected": "djangorestframework up to 3.18.1: the codec injection from 3.6.4, TokenProxy.delete() from 3.12.0, the Accept-header DoS per the record in all of < 3.18.2. The shipped TokenAdmin path is not affected by the revocation bug.",
+      "fixed": [
+        "3.18.2"
+      ],
+      "checks": [
+        {
+          "kind": "version",
+          "label": "djangorestframework",
+          "command": [
+            "python3",
+            "-c",
+            "import importlib.metadata as m; print(m.version('djangorestframework'))"
+          ],
+          "line": 1,
+          "fixed": [
+            "3.18.2"
+          ]
+        }
+      ],
+      "patch": [
+        "pip install --upgrade 'djangorestframework>=3.18.2', then restart the app workers"
+      ],
+      "mitigation": [
+        "Until upgraded: revoke tokens through the concrete model (Token.objects.get(key=...).delete()), never TokenProxy.delete(), and re-check anything your scripts believe they revoked since 3.12.0",
+        "Cap request header sizes at the proxy and reject Content-Type charset values that are not plain text codecs",
+        "Rotate any token whose revocation you cannot prove"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://github.com/encode/django-rest-framework/security/advisories/GHSA-xw6w-gcfp-cf8m",
+        "https://github.com/encode/django-rest-framework/security/advisories/GHSA-33wh-fxxf-88vv",
+        "https://github.com/encode/django-rest-framework/security/advisories/GHSA-3547-9m27-7rxg",
+        "https://github.com/encode/django-rest-framework/releases/tag/3.18.2"
+      ]
+    },
+    {
+      "id": "opencode-skills-collection-malware",
+      "title": "Malware in opencode-skills-collection (npm): agent skill collection releases carry malicious code",
+      "date": "2026-10-22",
+      "severity": "critical",
+      "exploited": true,
+      "cves": [],
+      "summary": "Releases of the opencode-skills-collection npm package - an OpenCode CLI plugin that downloads and keeps agent skills up to date - are malware (CWE-506, embedded malicious code). GitHub's advisory carries no patched version and no source to review. Agent-skill packages run with the privileges of the agent that loads them, which on a developer or CI machine means the keys in its environment: the poisoned releases sit in the 4.0.56-4.1.20 range the advisory lists, and the advisory's standing advice is that any computer that installed the package is fully compromised.",
+      "affected": "opencode-skills-collection 4.0.56, 4.0.57, 4.0.77 and 4.1.0 through 4.1.20 (the releases the advisory lists). There is no clean upgrade: the package should be removed.",
+      "fixed": [],
+      "checks": [
+        {
+          "kind": "npm",
+          "label": "opencode-skills-collection",
+          "package": "opencode-skills-collection",
+          "line": 1,
+          "bad": [
+            "*"
+          ]
+        }
+      ],
+      "patch": [
+        "Remove the package (npm uninstall opencode-skills-collection; delete it from lockfiles and CI images)",
+        "Treat the machine as compromised: rotate every secret and key it held, from a different machine, and rebuild from a clean image - removing the package does not guarantee the machine is clean"
+      ],
+      "mitigation": [],
+      "iocs": [],
+      "sources": [
+        "https://github.com/advisories/GHSA-9855-prwc-mfp2",
+        "https://www.npmjs.com/package/opencode-skills-collection"
+      ]
+    },
+    {
+      "id": "agentic-awesome-skills-malware",
+      "title": "Malware in agentic-awesome-skills (npm): agent skill collection releases carry malicious code",
+      "date": "2026-10-22",
+      "severity": "critical",
+      "exploited": true,
+      "cves": [],
+      "summary": "Releases of the agentic-awesome-skills npm package - AAS Core, a local collection of 2700+ agentic skills that agents discover and load - are malware (CWE-506, embedded malicious code), with no patched version and no source to review. A skill collection runs with the privileges of the agent that loads it: on a developer or CI machine that is the whole key environment. The advisory lists the poisoned releases across 18.9.0-18.14.0 and 19.0.0-19.13.0, and its standing advice is that any computer that installed the package is fully compromised.",
+      "affected": "agentic-awesome-skills 18.9.0 through 18.14.0 and 19.0.0 through 19.13.0 (the releases the advisory lists). There is no clean upgrade: the package should be removed.",
+      "fixed": [],
+      "checks": [
+        {
+          "kind": "npm",
+          "label": "agentic-awesome-skills",
+          "package": "agentic-awesome-skills",
+          "line": 1,
+          "bad": [
+            "*"
+          ]
+        }
+      ],
+      "patch": [
+        "Remove the package (npm uninstall agentic-awesome-skills; delete it from lockfiles and CI images)",
+        "Treat the machine as compromised: rotate every secret and key it held, from a different machine, and rebuild from a clean image - removing the package does not guarantee the machine is clean"
+      ],
+      "mitigation": [],
+      "iocs": [],
+      "sources": [
+        "https://github.com/advisories/GHSA-rgwm-3jj9-h563",
+        "https://www.npmjs.com/package/agentic-awesome-skills"
+      ]
+    },
+    {
+      "id": "nextjs-2026-10",
+      "title": "Next.js before 15.5.28 / 16.4.1: unauthenticated RCE through Image Optimization with SVG, and a Server Actions denial of service",
+      "date": "2026-10-22",
+      "severity": "critical",
+      "exploited": false,
+      "cves": [
+        "CVE-2026-96889",
+        "CVE-2026-94482"
+      ],
+      "summary": "Two bugs, one upgrade. The Image Optimization API can be made to trigger a use-after-free in librsvg while processing an SVG through sharp, and when Next.js runs on glibc-based Linux that memory bug is exploitable for unauthenticated remote code execution (CVE-2026-96889, the librsvg bug listed separately in this feed as librsvg-xinclude-uaf). Separately, crafted requests to an App Router application with at least one Server Action drive CPU usage until the process stops answering other requests (CVE-2026-94482). Upgrading Next.js moves sharp to a build that carries the fixed librsvg.",
+      "affected": "next 10.0.0 up to 15.5.27 and 16.0.0 up to 16.4.0 for the RCE (needs the Image Optimization API processing SVG files, Next.js on a glibc Linux); next 13.0.0 up to 15.5.27 and 16.0.0 up to 16.4.0 for the DoS (needs App Router with at least one Server Action; Pages Router apps and apps without Server Actions are not hit). sharp below 0.35.5 carries the vulnerable librsvg.",
+      "fixed": [
+        "15.5.28",
+        "16.4.1"
+      ],
+      "checks": [
+        {
+          "kind": "npm",
+          "label": "next",
+          "package": "next",
+          "line": 1,
+          "min": "10.0.0",
+          "fixed": [
+            "15.5.28",
+            "16.4.1"
+          ]
+        }
+      ],
+      "patch": [
+        "npm install next@^15.5.28 or next@^16.4.1 (or your framework's pinned upgrade), rebuild and redeploy; a fresh install pulls a sharp with the fixed librsvg",
+        "Docker: rebuild the image so the new sharp/librsvg lands, then redeploy"
+      ],
+      "mitigation": [
+        "Until upgraded: keep the Image Optimization API from processing SVGs - do not allow SVG sources into the optimizer",
+        "Or ensure the sharp Next.js uses is 0.35.5 or newer (the vendor's own workaround); check npm ls sharp",
+        "For the DoS: rate-limit or block unauthenticated POSTs to Server Action endpoints at the proxy until upgraded"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://github.com/vercel/next.js/security/advisories/GHSA-2464-fhr4-w9xw",
+        "https://github.com/vercel/next.js/security/advisories/GHSA-p3m5-59mp-jv5r",
+        "https://github.com/vercel/next.js/releases/tag/v15.5.28",
+        "https://github.com/vercel/next.js/releases/tag/v16.4.1"
+      ]
+    },
+    {
+      "id": "librsvg-xinclude-uaf",
+      "title": "Librsvg before 2.57.5 / 2.60.3 / 2.61.5 / 2.62.4 / 2.63.2: use-after-free rendering an SVG whose XML includes declare a duplicated entity (CVE-2026-96889)",
+      "date": "2026-10-22",
+      "severity": "high",
+      "exploited": false,
+      "cves": [
+        "CVE-2026-96889"
+      ],
+      "summary": "Librsvg parses XML with libxml2. In an SVG with a nested XInclude, an XML entity declaration whose name duplicates one already in use makes the included parse free an xmlEntity that the outer parse keeps using - a use-after-free over a freed 144-byte node that a crafted SVG triggers in whatever renders it. Hosts that render untrusted SVGs are exposed (rsvg-convert, thumbnailers, media pipelines, image proxies); through sharp the same bug also reaches Next.js Image Optimization, where it is unauthenticated RCE on glibc Linux (see nextjs-2026-10). The fix stops freeing xmlEntity pointers libxml2 still uses. Red Hat has shipped errata; the GNOME work item is 1241.",
+      "affected": "librsvg up to 2.57.4, 2.60.0-beta up to 2.60.2, 2.61.0 up to 2.61.4, 2.62.0-beta up to 2.62.3, 2.63.0-beta up to 2.63.1. Distro builds may carry the fix under an older number (the changelog check below reads that).",
+      "fixed": [
+        "2.57.5",
+        "2.60.3",
+        "2.61.5",
+        "2.62.4",
+        "2.63.2"
+      ],
+      "checks": [
+        {
+          "kind": "version",
+          "label": "librsvg",
+          "command": [
+            "sh",
+            "-c",
+            "rsvg-convert --version 2>/dev/null || pkg-config --modversion librsvg-2.0 2>/dev/null"
+          ],
+          "fixed": [
+            "2.57.5",
+            "2.60.3",
+            "2.61.5",
+            "2.62.4",
+            "2.63.2"
+          ],
+          "backport": [
+            "sh",
+            "-c",
+            "zgrep -l 'CVE-2026-96889' /usr/share/doc/librsvg*/changelog* 2>/dev/null | head -1; rpm -q --changelog librsvg2 2>/dev/null | grep -m1 'CVE-2026-96889'"
+          ]
+        }
+      ],
+      "patch": [
+        "Debian/Ubuntu: apt update && apt install librsvg2-common librsvg2-bin librsvg2-2 (the distro's fixed or backported build); Fedora/RHEL: dnf update librsvg2 librsvg2-tools",
+        "Rebuild containers and image pipelines that bundle librsvg, and any sharp below 0.35.5, then redeploy"
+      ],
+      "mitigation": [
+        "Until updated: do not render untrusted SVGs with librsvg - reject SVG uploads at the edge or convert them with a renderer outside librsvg",
+        "The bug is in XML includes: stripping xi:include elements and entity declarations from incoming SVGs removes the trigger"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://rustsec.org/advisories/RUSTSEC-2026-0305.html",
+        "https://github.com/GNOME/librsvg/releases/tag/2.63.2",
+        "https://github.com/GNOME/librsvg/releases/tag/2.57.5"
+      ]
+    },
+    {
+      "id": "pyjwt-empty-hmac-key",
+      "title": "PyJWT before 2.14.0: HS256/384/512 verification accepts an empty HMAC key from an oct JWK, so a forged token passes (PyJWK / PyJWKClient)",
+      "date": "2026-10-22",
+      "severity": "high",
+      "exploited": false,
+      "cves": [],
+      "summary": "HMACAlgorithm.from_jwk accepts a symmetric JWK (kty=oct) whose k value is the empty string and returns a zero-length key without raising. Verifying a token with that key object - a PyJWK, or one built by PyJWKSet or PyJWKClient from a JWKS - computes the HMAC with an empty key, so any token an attacker forged with the same empty key verifies: no secret knowledge needed, just reproduce the digest with key b\"\" and set the token's kid to the empty-key JWK. The empty-key rejection that prepare_key gained in 2.13.0 for string and bytes secrets never reached the from_jwk path, and by default a short key only warns (InsecureKeyLengthWarning) instead of failing. The same empty-HMAC-key defect is being closed across the JWT ecosystem (fast-jwt CVE-2026-44351).",
+      "affected": "PyJWT up to 2.13.0 where verification uses JWK or JWKS keys (PyJWK, PyJWKSet, PyJWKClient) with HMAC algorithms HS256/384/512. Applications that pass a plain string or bytes secret to jwt.decode are not affected: that path has rejected empty keys since 2.13.0.",
+      "fixed": [
+        "2.14.0"
+      ],
+      "checks": [
+        {
+          "kind": "version",
+          "label": "PyJWT",
+          "command": [
+            "python3",
+            "-c",
+            "import importlib.metadata as m; print(m.version('PyJWT'))"
+          ],
+          "line": 1,
+          "fixed": [
+            "2.14.0"
+          ]
+        }
+      ],
+      "patch": [
+        "pip install --upgrade 'PyJWT>=2.14.0' everywhere tokens are verified, then restart the app workers"
+      ],
+      "mitigation": [
+        "Until upgraded: verify with enforce_minimum_key_length so a short key raises instead of warning, or reject oct JWKs with an empty or short k when you load JWKS",
+        "Prefer passing the HMAC secret as a string or bytes key (that path has rejected empty keys since 2.13.0) over JWK objects",
+        "Rotate signing keys if untrusted JWKS input could reach the verifier"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://github.com/jpadilla/pyjwt/security/advisories/GHSA-pxh4-856f-4h89",
+        "https://github.com/jpadilla/pyjwt/releases/tag/2.14.0"
+      ]
+    },
+    {
+      "id": "jupyter-gateway-authz",
+      "title": "Jupyter Server 2.0.0-2.5.0: gateway WebSocket handler skips the kernel execute authorization check (CVE-2026-114135)",
+      "date": "2026-10-22",
+      "severity": "high",
+      "exploited": false,
+      "cves": [
+        "CVE-2026-114135"
+      ],
+      "summary": "When GatewayClient.url is configured, Jupyter Server replaces the normal kernel channel handler with a gateway-specific one. That handler checks only that the caller is authenticated and never asks the configured Authorizer whether the user may execute on kernels, so an authenticated user who is deliberately denied execute - a read-only or otherwise limited account - can still open a kernel channel and send messages to the upstream kernel, obtaining kernel execution with whatever data and credentials that kernel holds. A missing authorization check, not an authentication bypass: it matters in deployments that use a restrictive custom Authorizer together with Jupyter Gateway or Enterprise Gateway. The 2.6.0 fix routes gateway traffic through GatewayWebSocketConnection instead of replacing the handler; the deprecated handler is still present and must not be registered by hand.",
+      "affected": "jupyter-server 2.0.0 up to 2.5.0 with GatewayClient.url set (Jupyter Gateway / Enterprise Gateway deployments).",
+      "fixed": [
+        "2.6.0"
+      ],
+      "checks": [
+        {
+          "kind": "version",
+          "label": "jupyter-server",
+          "command": [
+            "python3",
+            "-c",
+            "import importlib.metadata as m; print(m.version('jupyter-server'))"
+          ],
+          "line": 1,
+          "min": "2.0.0",
+          "fixed": [
+            "2.6.0"
+          ]
+        }
+      ],
+      "patch": [
+        "pip install --upgrade 'jupyter-server>=2.6.0' (or your JupyterLab / Hub distribution's equivalent), then restart the jupyter server or gateway"
+      ],
+      "mitigation": [
+        "Until upgraded: do not register the deprecated gateway WebSocketChannelsHandler yourself, and keep execute-denied users off the gateway's kernel routes at the proxy (authentication is checked, execute rights are not)",
+        "Audit the Authorizer: the gap only matters where authorization is stricter than 'any authenticated user may execute'"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://github.com/jupyter-server/jupyter_server/security/advisories/GHSA-354v-3q48-cv69",
+        "https://github.com/jupyter-server/jupyter_server/releases/tag/v2.6.0"
+      ]
+    },
+    {
+      "id": "sentry-tunnel-middleware-bypass",
+      "title": "Sentry-Javascript before 9.47.2 / 10.75.2 / 11.0.0-rc.1: the Next.js tunnel route skips middleware on more than the tunnel path (CVE-2026-114139)",
+      "date": "2026-10-22",
+      "severity": "critical",
+      "exploited": false,
+      "cves": [
+        "CVE-2026-114139"
+      ],
+      "summary": "With tunnelRoute set, the Sentry Next.js SDK sends browser events to a path on your own Next.js server and skips middleware for those envelope requests so the tunnel rewrite can pass them on. The skip was wider than the rewrite: the rewrite only serves the tunnel path itself, but the skip covered everything under it, so a request in that gap - /monitoring/foo for a /monitoring tunnel, or anything a dynamic app/[locale]/ segment matches - reaches your application with middleware never running. Skipping middleware grants no privileges of its own: routes that check the session server-side stay protected. Sentry itself rates the issue Moderate (the setup it needs is narrow); the advisory database rates it critical.",
+      "affected": "@sentry/nextjs 9.36.0 up to 9.47.1, 10.x up to 10.75.1 and 11.0.0 pre-releases up to 11.0.0-rc.0, and only where all of these hold: tunnelRoute is set, the app is built with webpack (Turbopack builds are not affected), some route resolves under the tunnel path, and middleware is the only place that enforces authorization for that route. Sentry's own services and organization data are not affected.",
+      "fixed": [
+        "9.47.2",
+        "10.75.2",
+        "11.0.0-rc.1"
+      ],
+      "checks": [
+        {
+          "kind": "npm",
+          "label": "@sentry/nextjs",
+          "package": "@sentry/nextjs",
+          "line": 1,
+          "min": "9.36.0",
+          "fixed": [
+            "9.47.2",
+            "10.75.2",
+            "11.0.0-rc.1"
+          ]
+        }
+      ],
+      "patch": [
+        "npm install @sentry/nextjs@^9.47.2 (or ^10.75.2, or the 11.0.0-rc.1 pre-release) and rebuild; no configuration change is needed"
+      ],
+      "mitigation": [
+        "Until upgraded: set tunnelRoute to a path no route of yours can resolve under, or remove the option",
+        "Build with Turbopack (the default for next build from Next.js 16), which is not affected",
+        "Enforce authorization in the route, layout or data-access path as well as in middleware"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://github.com/getsentry/sentry-javascript/security/advisories/GHSA-mchm-gjx6-7h55",
+        "https://github.com/getsentry/sentry-javascript/releases/tag/9.47.2",
+        "https://github.com/getsentry/sentry-javascript/releases/tag/10.75.2"
+      ]
+    },
+    {
+      "id": "mem0ai-databricks-sqli",
+      "title": "mem0ai before 1.0.8: SQL injection in the Databricks vector store through stored memory text (CVE-2026-115324)",
+      "date": "2026-10-22",
+      "severity": "critical",
+      "exploited": false,
+      "cves": [
+        "CVE-2026-115324"
+      ],
+      "summary": "mem0's Databricks vector store interpolates values into SQL statements unescaped: crafted memory text, metadata or message names reach the insert() and update() strings and execute as SQL on the configured Databricks SQL warehouse. Anyone who can write memories into the store - a user whose chat input becomes a memory is enough - can run statements with the adapter's database permissions.",
+      "affected": "mem0ai 0.1.117 up to 1.0.7, using the Databricks vector store.",
+      "fixed": [
+        "1.0.8"
+      ],
+      "checks": [
+        {
+          "kind": "version",
+          "label": "mem0ai",
+          "command": [
+            "python3",
+            "-c",
+            "import importlib.metadata as m; print(m.version('mem0ai'))"
+          ],
+          "line": 1,
+          "fixed": [
+            "1.0.8"
+          ],
+          "min": "0.1.117"
+        }
+      ],
+      "patch": [
+        "pip install --upgrade 'mem0ai>=1.0.8', then restart the service and rebuild images that pin it"
+      ],
+      "mitigation": [
+        "Until upgraded: keep untrusted text out of the Databricks vector store (disable that store or funnel writes through an allow-listed path), and give the warehouse credential the least privilege it needs"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://github.com/mem0ai/mem0/security/advisories/GHSA-7587-9684-52r6",
+        "https://github.com/mem0ai/mem0/releases/tag/v1.0.8"
+      ]
+    },
+    {
+      "id": "arista-velocloud-114625",
+      "title": "Arista VeloCloud Orchestrator on-prem before 5.2.3.18: SQL injection lets the lowest tenant role become superuser, exploited (CVE-2026-114625)",
+      "date": "2026-10-22",
+      "severity": "critical",
+      "exploited": true,
+      "cves": [
+        "CVE-2026-114625"
+      ],
+      "summary": "A SQL injection (CWE-89, CVSS 9.9/9.4) in the on-prem VCO lets any authenticated user gain operator privileges and masquerade as a local superuser operator, reaching internally-only functionality not meant to be remotely reachable. The only privilege needed is the lowest built-in tenant role, Enterprise Read Only. VCO is exposed by default: the attack needs network access to the web interface and a valid session, and no configuration prevents it. Arista detected the flaw and reports it actively exploited; CISA's KEV catalog added it on October 23 with a due date of October 26 and forensic triage required.",
+      "affected": "VeloCloud Orchestrator on-prem (formerly by Broadcom) 5.2.x releases before 5.2.3.18. Hosted and Dedicated VCO were patched by Arista. VeloCloud Gateway and Edge are not affected.",
+      "fixed": [
+        "5.2.3.18",
+        "6.1.3.10",
+        "6.4.2.12"
+      ],
+      "checks": [],
+      "patch": [
+        "Upgrade to VCO 5.2.3.18 (5.2 train), 6.1.3.10 (6.1) or 6.4.2.12 (6.4); for a train no longer supported, contact Arista TAC"
+      ],
+      "mitigation": [
+        "Until upgraded: restrict VCO web interface access to trusted administrative networks, monitor for the known malicious source IPs and for unexpected outbound activity, backdoor daemons and webshells, and review recent administrator activity",
+        "Preserve VCO web, backend, system and database logs plus file timestamps before remediating where operationally feasible"
+      ],
+      "iocs": [
+        "74.82.197.86",
+        "38.54.50.151"
+      ],
+      "sources": [
+        "https://www.arista.com/en/support/advisories-notices/security-advisory/24838-security-advisory-0199",
+        "https://www.cisa.gov/known-exploited-vulnerabilities-catalog",
+        "https://nvd.nist.gov/vuln/detail/CVE-2026-114625"
+      ]
+    },
+    {
+      "id": "basercms-theme-file-traversal",
+      "title": "baserCMS 5.2.3-5.3.1 / 5.4.0-5.4.1: encoded path traversal in the theme file Admin API allows PHP upload and RCE (CVE-2026-114622)",
+      "date": "2026-10-22",
+      "severity": "high",
+      "exploited": false,
+      "cves": [
+        "CVE-2026-114622"
+      ],
+      "summary": "The BcThemeFile plugin's Admin API validates the raw path before decoding it with rawurldecode, so an encoded traversal slips past the containment check and writes files outside the intended theme directory: an authenticated administrator can upload PHP into writable locations such as the webroot and get remote code execution and full compromise of the installation (CWE-22 with CWE-180). The same security release also closes a related theme-file viewing traversal reachable with view-only permissions (GHSA-rqr8-gmx5-xvrr). Exploitation needs an administrator session, the non-default BcThemeFile plugin and a same-origin Origin header; USE_CORE_ADMIN_API=FALSE does not block the request. baserCMS notes the admin-side fixes in this release only need action where the admin screen is open to untrusted users.",
+      "affected": "baserproject/basercms 5.2.3 through 5.3.1 and 5.4.0 through 5.4.1, where the BcThemeFile plugin's Admin API is reachable.",
+      "fixed": [
+        "5.3.2",
+        "5.4.2"
+      ],
+      "checks": [
+        {
+          "kind": "composer",
+          "label": "baserproject/basercms",
+          "packages": [
+            "baserproject/basercms"
+          ],
+          "line": 1,
+          "fixed": [
+            "5.3.2",
+            "5.4.2"
+          ]
+        }
+      ],
+      "patch": [
+        "composer update baserproject/basercms (5.3.2 on the 5.3 line, 5.4.2 on 5.4), then redeploy"
+      ],
+      "mitigation": [
+        "Until upgraded: keep administrator accounts trusted and few - the attack needs an admin session and a same-origin request",
+        "Watch for PHP files outside theme directories and review the theme file Admin API's access logs"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://github.com/baserproject/basercms/releases/tag/5.4.2",
+        "https://github.com/baserproject/basercms/releases/tag/5.3.2",
+        "https://app.opencve.io/cve/CVE-2026-114622"
+      ]
+    },
+    {
+      "id": "virtualenv-2026-10",
+      "title": "virtualenv before 21.14.9: generated activate scripts and pip launchers run commands from an attacker-named path",
+      "date": "2026-10-21",
+      "severity": "high",
+      "exploited": false,
+      "cves": [
+        "CVE-2026-113722",
+        "CVE-2026-113725",
+        "CVE-2026-113726",
+        "CVE-2026-113732",
+        "CVE-2026-113776"
+      ],
+      "summary": "virtualenv writes the environment's directory name and path into every script it generates, and five bugs let that text run as shell code. The attacker's input is a directory name: a cloned repository, an unpacked archive, or a CI path built from a branch or job name. In bash, activate escapes the name for only one of bash's two PS1 passes, so a name like a\\$(touch pwned) runs at every prompt; under zsh with PROMPT_SUBST on (oh-my-zsh's default) the raw name is expanded the same way; activate.fish quotes with POSIX sh rules that fish reads differently, so a backslash before a quote escapes out of the literal; a path containing a placeholder name such as __VIRTUAL_NAME__ is rewritten after quoting and breaks out into code; and the POSIX console launchers (bin/pip and friends) hand the interpreter path to distlib's #!/bin/sh wrapper unescaped, which expands the payload when the user runs the launcher. Nothing runs when the environment is created - the user must source activate or run a generated script from an environment an attacker named. Per bug: launchers CVE-2026-113722 (21.14.8 only, fixed 21.14.9), bash PS1 CVE-2026-113725 (up to 21.14.6, fixed 21.14.7), zsh PROMPT_SUBST CVE-2026-113726 (up to 21.14.3, fixed 21.14.4), fish quoting CVE-2026-113732 (up to 21.14.1, fixed 21.14.2), placeholder rewrite CVE-2026-113776 (20.26.6-21.14.1, fixed 21.14.2).",
+      "affected": "virtualenv up to 21.14.8, per vector: console launchers 21.14.8, bash activate up to 21.14.6, zsh up to 21.14.3, activate.fish and the template rewrite up to 21.14.1 (the rewrite bug only since 20.26.6). Windows exe launchers are not affected. A dev-machine and CI bug: build hosts that create environments under paths named after a branch, project or job are the exposure.",
+      "fixed": [
+        "21.14.9"
+      ],
+      "checks": [
+        {
+          "kind": "version",
+          "label": "virtualenv",
+          "command": [
+            "sh",
+            "-c",
+            "virtualenv --version 2>/dev/null || python3 -c \"import importlib.metadata as m; print(m.version('virtualenv'))\""
+          ],
+          "line": 1,
+          "fixed": [
+            "21.14.9"
+          ]
+        }
+      ],
+      "patch": [
+        "pip install --upgrade 'virtualenv>=21.14.9' wherever environments are created (pipx upgrade virtualenv, your distro package, or the CI image)",
+        "Recreate environments whose path or prompt was not fully trusted: the generated activate and launcher scripts carry the bug and upgrading virtualenv does not rewrite them"
+      ],
+      "mitigation": [
+        "Do not create an environment under a path someone else named: check a cloned repository's or unpacked archive's directory names before running virtualenv there",
+        "VIRTUAL_ENV_DISABLE_PROMPT=1 before sourcing activate (bash, zsh), or shopt -u promptvars (bash) / unsetopt prompt_subst (zsh) when the prompt needs no expansion; inspect activate.fish and the bin/ scripts before running one you did not create",
+        "pip's vendored distlib can write the vulnerable launcher wrapper again on a later pip install or upgrade inside an environment - the virtualenv fix does not patch pip's copy, so keep pip current"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://github.com/pypa/virtualenv/security/advisories/GHSA-c978-59m8-c77v",
+        "https://github.com/pypa/virtualenv/security/advisories/GHSA-vxj4-q4g9-crj7",
+        "https://github.com/pypa/virtualenv/security/advisories/GHSA-5vjq-rrrf-7h2q",
+        "https://github.com/pypa/virtualenv/security/advisories/GHSA-c947-3pg5-gm8q",
+        "https://github.com/pypa/virtualenv/security/advisories/GHSA-8rjx-v5ww-45pp"
+      ]
+    },
+    {
+      "id": "openchoreo-workflowrun-authz",
+      "title": "OpenChoreo before 1.0.6 / 1.1.7 / 1.2.5: WorkflowRun update authorization bypass lets one project take over another's runs",
+      "date": "2026-10-21",
+      "severity": "high",
+      "exploited": false,
+      "cves": [
+        "CVE-2026-113727"
+      ],
+      "summary": "The OpenChoreo API server authorized PUT .../workflowruns/{runName} against the openchoreo.dev/project and openchoreo.dev/component labels supplied in the request body, while the run it mutated is the one named in the URL. A caller holding workflowrun:update on one component could name a run of another project or component in the URL, send their own labels, pass the check, and rewrite the victim run's ownership labels. Every other WorkflowRun permission - view, logs, events, status, delete - derives from those stored labels, so after the write the attacker legitimately reads the victim's build logs (raw pod logs that routinely carry source paths, registry destinations and credentials a build step echoed), deletes the run, or overwrites a pending run's parameters. Needs an authenticated caller with an AuthzRoleBinding or ClusterAuthzRoleBinding for workflowrun:update in the same namespace plus the run's name; anonymous callers cannot reach it; cross-project and cross-component inside one namespace, not cross-tenant.",
+      "affected": "OpenChoreo 1.0.0-1.0.5, 1.1.0-1.1.6, 1.2.0-1.2.4.",
+      "fixed": [
+        "1.0.6",
+        "1.1.7",
+        "1.2.5"
+      ],
+      "checks": [],
+      "patch": [
+        "Upgrade to the patched release on your line: 1.0.6, 1.1.7 or 1.2.5; no configuration change is needed after upgrading (the fix also makes the two ownership labels immutable on update)"
+      ],
+      "mitigation": [
+        "Until upgraded: restrict who holds workflowrun:update - audit AuthzRole and ClusterAuthzRole definitions for that action and drop it from any role held by principals you would not trust with write access to every workflow run in the namespace",
+        "Among the shipped roles only workload-publisher lists workflowrun:update (admin holds it through its * wildcard), and custom roles in your own values file may too: treat any credential bound to workload-publisher, typically a CI token, as privileged"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://github.com/openchoreo/openchoreo/security/advisories/GHSA-46r4-q7wv-32fc",
+        "https://github.com/openchoreo/openchoreo/releases/tag/v1.2.5"
+      ]
+    },
+    {
+      "id": "apostrophe-import-export-dos",
+      "title": "ApostropheCMS before 4.33.0: unauthenticated big-upload processing drains the server (@apostrophecms/import-export)",
+      "date": "2026-10-21",
+      "severity": "high",
+      "exploited": false,
+      "cves": [
+        "CVE-2026-113711"
+      ],
+      "summary": "The chunked import routes (importExportImport on pages and piece types) run bigUploadMiddleware() before the import handler's own req.user check and pass it no authorize callback, so an unauthenticated request drives the whole aposBigUpload start / chunk / end flow first: the server creates upload state, writes attacker chunk data into big-uploads, processes temporary files, and loops cleanup over an attacker-declared chunk count - only then does the import handler reject the caller. An anonymous remote attacker burns storage, filesystem I/O and CPU at will (CWE-400 denial of service) and gets arbitrary file content written to the server before any authentication. Reported by Kai Zhi; no exploitation known.",
+      "affected": "@apostrophecms/import-export 3.6.2 (confirmed) and likely earlier 3.x with the big-upload import implementation, paired with apostrophe up to 4.32.x.",
+      "fixed": [
+        "4.33.0",
+        "3.7.0"
+      ],
+      "checks": [
+        {
+          "kind": "npm",
+          "label": "apostrophe",
+          "package": "apostrophe",
+          "line": 1,
+          "fixed": [
+            "4.33.0"
+          ]
+        },
+        {
+          "kind": "npm",
+          "label": "@apostrophecms/import-export",
+          "package": "@apostrophecms/import-export",
+          "line": 1,
+          "fixed": [
+            "3.7.0"
+          ]
+        }
+      ],
+      "patch": [
+        "npm install apostrophe@^4.33.0 @apostrophecms/import-export@^3.7.0 (or update package.json and reinstall), then restart the app"
+      ],
+      "mitigation": [
+        "Until upgraded: block unauthenticated POSTs to /api/v1/@apostrophecms/*/importExportImport at the reverse proxy, or remove @apostrophecms/import-export if nobody imports",
+        "Watch the big-uploads and temp directories for growth you did not cause and clean up orphaned chunk files"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://github.com/apostrophecms/apostrophe/security/advisories/GHSA-86wm-68pq-5jwq",
+        "https://github.com/apostrophecms/apostrophe/releases/tag/apostrophe@4.33.0"
+      ]
+    },
+    {
+      "id": "pillow-13-0-0",
+      "title": "Pillow before 13.0.0: Ghostscript argument injection to RCE, and a heap overflow saving TIFF",
+      "date": "2026-10-21",
+      "severity": "critical",
+      "exploited": false,
+      "cves": [
+        "CVE-2026-112900",
+        "CVE-2026-112393"
+      ],
+      "summary": "Two critical bugs in Python's image library. When the file name passed to Image.open() for an EPS is attacker-influenced (an upload stored under its own name), Pillow hands it to Ghostscript unchecked: a leading - or @ injects Ghostscript arguments, verified to run commands even with -dSAFER. Re-saving an uploaded image as TIFF to an in-memory target (BytesIO, an HTTP response, a storage stream) overflows the heap and copies stale heap bytes into the output. 13.0.0 also fixes about a dozen high-severity crash and memory bugs published the same day.",
+      "affected": "Pillow 2.0.0 up to 13.0.0 (TIFF save to a non-file target), Pillow 2.6.0 up to 13.0.0 (EPS via Ghostscript, needs Ghostscript installed). Saves to real file paths are not affected by the TIFF bug.",
+      "fixed": [
+        "13.0.0"
+      ],
+      "checks": [
+        {
+          "kind": "version",
+          "label": "Pillow",
+          "command": [
+            "python3",
+            "-c",
+            "import importlib.metadata as m; print(m.version('Pillow'))"
+          ],
+          "fixed": [
+            "13.0.0"
+          ],
+          "line": 1
+        }
+      ],
+      "patch": [
+        "pip install --upgrade 'Pillow>=13.0.0' in every virtualenv that handles user images (pin it in requirements / lock files), then restart the app workers",
+        "Docker: rebuild images with Pillow 13.0.0 or newer and redeploy"
+      ],
+      "mitigation": [
+        "Until upgraded: never pass a user-chosen file name to Image.open(); store uploads under generated names or open them from a file object",
+        "Where EPS is not needed, keep it from reaching Ghostscript (Image.open(f, formats=[...]) with only the formats you accept, or no Ghostscript on the host)",
+        "Save TIFFs to a real file path, not io.BytesIO or a stream"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://github.com/python-pillow/Pillow/security/advisories/GHSA-w889-685w-c8fh",
+        "https://github.com/python-pillow/Pillow/security/advisories/GHSA-332p-7hrc-92wf",
+        "https://github.com/python-pillow/Pillow/releases/tag/13.0.0"
+      ]
+    },
+    {
+      "id": "storybook-dev-server-2026-10",
+      "title": "Storybook dev server: a malicious website can change project files (CVE-2026-114125)",
+      "date": "2026-10-21",
+      "severity": "critical",
+      "exploited": false,
+      "cves": [
+        "CVE-2026-114125"
+      ],
+      "summary": "While storybook dev runs, a website open in the developer's browser can reach the dev server on localhost and change files in the project; under further conditions a changed file is then run with the developer's privileges. Built Storybooks, and dev servers never opened in a browser (headless automation, MCP clients), are not affected. Storybook knows of no exploitation.",
+      "affected": "storybook (and @storybook/core, @storybook/core-server, @storybook/experimental-addon-test, @storybook/addon-vitest, @storybook/addon-mcp) 8.0.0 before 8.6.19, 9.x before 9.1.21, 10.x before 10.6.2, 11.0.0-alpha before 11.0.0-alpha.6.",
+      "fixed": [
+        "8.6.19",
+        "9.1.21",
+        "10.6.2",
+        "11.0.0-alpha.6"
+      ],
+      "checks": [
+        {
+          "kind": "npm",
+          "label": "storybook",
+          "package": "storybook",
+          "min": "8.0.0",
+          "fixed": [
+            "8.6.19",
+            "9.1.21",
+            "10.6.2"
+          ],
+          "line": 1
+        }
+      ],
+      "patch": [
+        "Upgrade storybook and every @storybook/* package to 10.6.2 (9.1.21 on 9.x, 8.6.19 on 8.x, 11.0.0-alpha.6 on the 11 alpha) and commit the lockfile before running storybook dev again",
+        "Read the advisory's list of changed network defaults: the fix changes how the dev server accepts connections, also on 8.x and 9.x"
+      ],
+      "mitigation": [
+        "Do not run an affected storybook dev server until it is upgraded",
+        "Deny the browser's permission prompt for a website to connect to localhost unless you trust the site"
+      ],
+      "iocs": [
+        "Project file changes you did not make while storybook dev was running (git status / git diff)"
+      ],
+      "sources": [
+        "https://github.com/storybookjs/storybook/security/advisories/GHSA-f2ph-cmg5-wxc8",
+        "https://github.com/storybookjs/storybook/releases/tag/v10.6.2"
+      ]
+    },
+    {
+      "id": "php2shell",
+      "title": "PHP2Shell: unauthenticated remote code execution in PHP core",
+      "date": "2026-10-21",
+      "severity": "critical",
+      "exploited": true,
+      "cves": [
+        "CVE-2026-109618",
+        "CVE-2026-109619"
+      ],
+      "summary": "Two memory-corruption bugs in PHP's session upload-progress path (on by default since PHP 5.4) let one request run code on the server before any application code runs. WordPress, Drupal, Joomla and MediaWiki are all reachable. Details leaked before the fix; exploit attempts started the same day.",
+      "affected": "PHP 8.5 before 8.5.12, 8.4 before 8.4.27, 8.3 before 8.3.36, 8.2 before 8.2.35, and every end-of-life line (8.1 and older), under every SAPI (FPM, mod_php, CGI, FrankenPHP, LiteSpeed).",
+      "fixed": [
+        "8.5.12",
+        "8.4.27",
+        "8.3.36",
+        "8.2.35"
+      ],
+      "checks": [
+        {
+          "kind": "version",
+          "label": "php",
+          "command": [
+            "php",
+            "-r",
+            "echo PHP_VERSION;"
+          ],
+          "fixed": [
+            "8.5.12",
+            "8.4.27",
+            "8.3.36",
+            "8.2.35"
+          ],
+          "backport": [
+            "sh",
+            "-c",
+            "zgrep -l 'CVE-2026-109618' /usr/share/doc/php*-common/changelog.Debian.gz 2>/dev/null | head -1; rpm -q --changelog php-common 2>/dev/null | grep -m1 'CVE-2026-109618'"
+          ]
+        }
+      ],
+      "patch": [
+        "Debian/Ubuntu: sudo apt update && sudo apt install --only-upgrade 'php*' then sudo systemctl restart 'php*-fpm' apache2 (whichever you run)",
+        "RHEL/Alma/Rocky/Fedora: sudo dnf upgrade 'php*' then restart php-fpm / httpd",
+        "Docker: rebuild on php:8.5.12 / 8.4.27 / 8.3.36 / 8.2.35 (or newer) base images and redeploy",
+        "Source builds: upgrade to 8.5.12, 8.4.27, 8.3.36 or 8.2.35; PHP 7.4/8.0/8.1 have source backports only (php.net), so move to 8.2+",
+        "Managed hosting: confirm with the host that PHP was updated and workers restarted"
+      ],
+      "mitigation": [
+        "Until patched: session.upload_progress.enabled = 0 in php.ini or the FPM pool (not ini_set or .user.ini), then restart every PHP worker",
+        "PHP 8.5: fatal_error_backtraces = 0",
+        "post_max_size 8M (32M if you take uploads) with upload_max_filesize below it",
+        "These only narrow the attack; only the update fixes it"
+      ],
+      "iocs": [
+        "Unexpected child processes of php-fpm/apache (shells, curl, wget): watch with https://github.com/Neo23x0/process-watcher"
+      ],
+      "sources": [
+        "https://www.php.net/archive/2026.php#2026-10-20-1",
+        "https://github.com/php/php-src/security/advisories/GHSA-w8hw-w9fx-j79w",
+        "https://github.com/php/php-src/security/advisories/GHSA-6wmf-4rv5-p3rp",
+        "https://cert.europa.eu/publications/security-advisories/2026-018",
+        "https://github.com/NCSC-NL/php2shell",
+        "https://x.com/sagitz_/status/2112901380080058778",
+        "https://x.com/FBICyberDiv/status/2112921648252719420"
+      ]
+    },
+    {
+      "id": "nodejs-2026-10",
+      "title": "Node.js October security release: Brotli decoder RCE and 9 more",
+      "date": "2026-10-21",
+      "severity": "high",
+      "exploited": false,
+      "cves": [
+        "CVE-2026-111497",
+        "CVE-2026-105483",
+        "CVE-2026-106069",
+        "CVE-2026-105482",
+        "CVE-2026-105481",
+        "CVE-2026-106072",
+        "CVE-2026-106074",
+        "CVE-2026-106070",
+        "CVE-2026-106071",
+        "CVE-2026-106073"
+      ],
+      "summary": "An out-of-bounds write in Node's Brotli decoder can run code when a server decompresses attacker data; the same release fixes TLS hostname-check bypasses and a dns.resolve truncation, and drops the eMudhra CA from Node's bundled store.",
+      "affected": "Node.js 22.x, 24.x and 26.x before the fixed releases, and every end-of-life line.",
+      "fixed": [
+        "22.23.4",
+        "24.22.1",
+        "26.12.1"
+      ],
+      "checks": [
+        {
+          "kind": "version",
+          "label": "node",
+          "command": [
+            "node",
+            "-v"
+          ],
+          "line": 1,
+          "fixed": [
+            "22.23.4",
+            "24.22.1",
+            "26.12.1"
+          ]
+        }
+      ],
+      "patch": [
+        "nvm: nvm install 24.22.1 (or 22.23.4 / 26.12.1) && nvm alias default 24.22.1",
+        "Debian/Ubuntu (NodeSource): sudo apt update && sudo apt install --only-upgrade nodejs",
+        "Docker: rebuild on node:22.23.4 / 24.22.1 / 26.12.1 (or newer) and redeploy",
+        "Restart every Node process after upgrading"
+      ],
+      "mitigation": [
+        "Until patched: refuse Content-Encoding: br request bodies at the reverse proxy and do not decompress untrusted Brotli in app code (Vercel's WAF already blocks known patterns for Vercel deployments)"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://nodejs.org/en/blog/vulnerability/october-2026-security-releases",
+        "https://x.com/vercel_dev/status/2113048861526852004"
+      ]
+    },
+    {
+      "id": "gitlab-110264",
+      "title": "GitLab: unauthenticated RCE through the regex compiler (CVSS 10)",
+      "date": "2026-10-21",
+      "severity": "critical",
+      "exploited": false,
+      "cves": [
+        "CVE-2026-110264",
+        "CVE-2026-97229"
+      ],
+      "summary": "An integer overflow in GitLab's regex compiler lets anyone reach code execution on a self-managed server; it spans 12 years of releases. The same fixed releases supersede the October 12 fix for CVE-2026-97229 (CI/CD regex RCE, also CVSS 10). GitLab.com and Dedicated are already patched.",
+      "affected": "GitLab CE/EE self-managed 7.0 up to 18.11.12, 19.0 before 19.0.10, 19.1 before 19.1.9, 19.2 before 19.2.9, 19.3 before 19.3.6, 19.4 before 19.4.3, 19.5 before 19.5.1.",
+      "fixed": [
+        "19.5.1",
+        "19.4.3",
+        "19.3.6",
+        "19.2.9",
+        "19.1.9",
+        "19.0.10",
+        "18.11.13"
+      ],
+      "checks": [
+        {
+          "kind": "version",
+          "label": "gitlab",
+          "command": [
+            "cat",
+            "/opt/gitlab/embedded/service/gitlab-rails/VERSION"
+          ],
+          "min": "7.0",
+          "fixed": [
+            "19.5.1",
+            "19.4.3",
+            "19.3.6",
+            "19.2.9",
+            "19.1.9",
+            "19.0.10",
+            "18.11.13"
+          ]
+        }
+      ],
+      "patch": [
+        "Omnibus (Debian/Ubuntu): sudo apt update && sudo apt install gitlab-ee (or gitlab-ce) to 19.5.1 or the fixed patch of your minor",
+        "Omnibus (RHEL): sudo dnf upgrade gitlab-ee (or gitlab-ce)",
+        "Docker: pull gitlab/gitlab-ee:19.5.1-ee.0 (or your minor's fixed tag) and recreate the container",
+        "Then: sudo gitlab-ctl reconfigure && sudo gitlab-ctl restart"
+      ],
+      "mitigation": [
+        "None published; take the instance off the public internet until upgraded"
+      ],
+      "iocs": [
+        "GitLab published detections for CVE-2026-97229 (e.g. Onigmo native worker crashes) in its 19.4.2 release post"
+      ],
+      "sources": [
+        "https://docs.gitlab.com/releases/patches/patch-release-gitlab-19-5-1-released/",
+        "https://docs.gitlab.com/releases/patches/patch-release-gitlab-19-4-2-released/",
+        "https://x.com/TheHackersNews/status/2112981939984671090"
+      ]
+    },
+    {
+      "id": "onamae-desktop-cloud-2026-10",
+      "title": "Onamae.com Desktop Cloud: malware planted in customer servers, stored credentials may have been viewed (GMO Internet, 26,739 systems)",
+      "date": "2026-10-21",
+      "severity": "high",
+      "exploited": true,
+      "cves": [],
+      "summary": "Attackers installed malicious programs in the server environments of customers of Onamae.com Desktop Cloud, GMO Internet's Japanese desktop-as-a-service. GMO confirmed it on October 20 after a customer inquiry on the 19th, suspended the service across all plans, and says 26,739 servers are potentially affected. Unauthorized operations were observed on customers' brokerage trading accounts (MT4/MT5 and similar), and login data stored on the servers may have been viewed and used: the company's urgent request is to change those credentials from a different device and to check transaction histories. Investigation with an external cybersecurity firm is ongoing.",
+      "affected": "Onamae.com Desktop Cloud customers: the provider identified 26,739 potentially affected servers and stopped the service across all plans. Any credential stored on those servers should be treated as viewed.",
+      "fixed": [],
+      "checks": [],
+      "patch": [
+        "Change passwords for trading tools (MT4/MT5) and trading accounts from a device other than the Service's servers, then log off - GMO's urgent request",
+        "If you stored credentials (IDs, passwords, API keys) on the server, change them promptly, including everywhere the same password was reused; enable two-factor authentication where your broker offers it",
+        "Check the transaction history and balance of every trading account used on the servers and contact the broker about anything you do not recognize"
+      ],
+      "mitigation": [
+        "Treat everything on the affected servers as compromised: once service is restored, rebuild from clean images rather than cleaning in place",
+        "Reissue SSH keys, API tokens and certificates the server held, and review connected systems for what its credentials could reach"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://internet.gmo/en/news/article/247/",
+        "https://internet.gmo/en/news/article/246/",
+        "https://www.bleepingcomputer.com/news/security/japans-onamae-desktop-cloud-hacked-up-to-27-000-servers-affected/"
+      ]
+    },
+    {
+      "id": "pingcap-tidb-cloud-breach",
+      "title": "TiDB Cloud (PingCAP): September-October breach exposed customer records, SQL editor text and API-key material - rotate credentials",
+      "date": "2026-10-19",
+      "severity": "high",
+      "exploited": true,
+      "cves": [],
+      "summary": "Between September 9 and October 7 an unauthorized party used stolen service account credentials to access PingCAP's internal systems, copy data and obtain source code; the company discovered it on October 7, disabled the credentials the same day, and had all identified compromised credentials invalidated by October 14. PingCAP confirms exported records included user names and email addresses, organization and project associations, SQL editor text and errors, organization/project/cluster identifiers, and business and billing data (customer contacts, contract terms, orders, pricing, payment terms, billing configuration), plus a table of encrypted TiDB Cloud API-key values - one investigator-tested value did not work as a live API key, but whether other usable credentials were exposed is still being determined. The extortion group FulcrumSec claims 10.6 TB including 115K console API key pairs (40K+ allegedly active), around 1,800 external database endpoints with root and admin accounts for customer MySQL/Aurora hosts used in migration jobs, and four years of connection logs; those claims are not verified. Investigators found no commands or persistence in the systems reviewed and no evidence that data stored in TiDB itself was impacted.",
+      "affected": "TiDB Cloud customers: per-customer scope is still being determined. The confirmed exposed categories are account, project and SQL-editor data, billing data, and encrypted API-key material; the attacker additionally claims live API keys and external migration endpoints.",
+      "fixed": [],
+      "checks": [],
+      "patch": [
+        "Rotate TiDB Cloud console API keys: the attacker claims key pairs and the investigation has not ruled out usable ones - mint new keys and delete the old ones",
+        "If your migration jobs used external database endpoints (MySQL/Aurora), rotate those root and admin credentials and review their access logs for the September 9 - October 7 window",
+        "Review what your SQL editor traffic carried: query text and errors were exported, so treat anything typed in the console as seen"
+      ],
+      "mitigation": [
+        "Watch TiDB Cloud audit and connection logs for unknown access during and after the window",
+        "Phishing risk is elevated: real names, emails, organization and billing data are confirmed exposed - brief finance staff and administrators"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://www.pingcap.com/trust-hub/security/security-update-october-2026/",
+        "https://www.infoq.com/news/2026/10/pingcap-cloud-data-breach/",
+        "https://imasters.com/news/pingcap-confirms-tidb-cloud-data-and-source-code-breach"
+      ]
+    },
+    {
+      "id": "ahsaycbs-chain-2026-10",
+      "title": "AhsayCBS: authentication bypass chained with command injection on the Replication Receiver, exploited (CVE-2026-105133, CVE-2026-105134)",
+      "date": "2026-10-14",
+      "severity": "critical",
+      "exploited": true,
+      "cves": [
+        "CVE-2026-105133",
+        "CVE-2026-105134"
+      ],
+      "summary": "Two flaws that chain on Ahsay's cloud backup server: an improper-authentication bug in the API's checkSysPwd function (CVE-2026-105133) lets a remote attacker bypass authentication by manipulating the random parameter, and a command injection in the Replication Receiver's /rps/api/json/UpdateReceivers.do endpoint (CVE-2026-105134) executes operating-system commands through the same parameter - remote code execution on the backup server, where every customer's backup data and credentials sit. Both are on CISA's KEV catalog since October 14 (due October 17; the command injection also requires forensic triage). Ahsay's October 12 update says the earlier patches v9.15.2.59 and v10.3.4.0 were not sufficient.",
+      "affected": "AhsayCBS v10 builds needing hotfix 10.3.4.45 and v7/v8/v9 builds needing 9.15.2.70 - anything not on those hotfixes (the earlier v9.15.2.59 / v10.3.4.0 patches left the flaws reachable).",
+      "fixed": [
+        "9.15.2.70",
+        "10.3.4.45"
+      ],
+      "checks": [],
+      "patch": [
+        "Apply the v10.3.4.45 hotfix (v10) or v9.15.2.70 (v7/v8/v9) from Ahsay's partner portal, then reboot the server as the vendor instructs"
+      ],
+      "mitigation": [
+        "Until patched: keep the AhsayCBS web interface and the /rps endpoints off the public internet where your topology allows, and treat a reachable Replication Receiver as exposed",
+        "With KEV forensic triage on the command injection: hunt for unexpected processes, cron entries and webshells on the backup host, and preserve logs before remediating"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://www.ahsay.com/en/company/announcements/patch-cve-105133-105134-update",
+        "https://www.cisa.gov/known-exploited-vulnerabilities-catalog",
+        "https://www.bitdefender.com/en-au/blog/businessinsights/technical-advisory-ahsaycbs-exploitation-chain-cve-2026-105133-cve-2026-105134"
+      ]
+    },
+    {
+      "id": "s4yhi-r2-https-b-malware",
+      "title": "Malware in @s4yhiitestpoc/r2-https-b (npm): postinstall beacons installer and internal registry data to a collector",
+      "date": "2026-10-12",
+      "severity": "critical",
+      "exploited": true,
+      "cves": [],
+      "summary": "Version 1.0.0 of @s4yhiitestpoc/r2-https-b runs postinstall.js at npm install, which collects installer-side identifying data - hostname, username, home directory, non-internal network interface addresses, DNS servers, current working directory, install directory, and npm_config_registry (which discloses the installer's internal or private npm registry URL) - and POSTs it as JSON over HTTPS to a hardcoded collector at collector.oob.s4yhii.com/_npm-poc/beacon, with a parallel DNS lookup to a unique per-run subdomain under oob.s4yhii.com as an out-of-band confirmation channel that survives blocked HTTPS. The dual-channel beacon, internal-registry capture and install-time trigger match the fingerprint of a dependency-confusion probe: the package self-describes as a proof of concept, but installer-side host and internal-infrastructure data leaves the host to an attacker-controlled destination without opt-in. Reported by Amazon Inspector (IN-MAL-2026-021460); GitHub's advisory carries the standing malware advice: consider the machine compromised, rotate its secrets from a different machine, and remove the package.",
+      "affected": "@s4yhiitestpoc/r2-https-b 1.0.0 - every version of the npm package. No patched build exists: the package should be removed.",
+      "fixed": [],
+      "checks": [
+        {
+          "kind": "npm",
+          "label": "@s4yhiitestpoc/r2-https-b",
+          "package": "@s4yhiitestpoc/r2-https-b",
+          "bad": [
+            "*"
+          ]
+        }
+      ],
+      "patch": [
+        "Remove the package (npm uninstall @s4yhiitestpoc/r2-https-b; check lockfiles and CI images) and rotate the machine's secrets from a different machine, per the advisory's standing advice",
+        "If your CI pulled it: treat your internal registry URL and build-host details as disclosed and review who could have received them"
+      ],
+      "mitigation": [
+        "Block collector.oob.s4yhii.com and *.oob.s4yhii.com at build-host egress",
+        "Alert on postinstall scripts reaching OOB or per-run DNS-lookup domains - a unique subdomain lookup per install is a classic probe channel"
+      ],
+      "iocs": [
+        "collector.oob.s4yhii.com/_npm-poc/beacon (HTTPS beacon endpoint)",
+        "per-run DNS lookups under oob.s4yhii.com",
+        "postinstall.js sha256 4e1c182ebf45e34a28a3e7b757eb8442d3b307372dbbc0d2b50898c03fb738d6",
+        "r2-https-b-1.0.0.tgz sha1 8a275bc95b24a3acaa524dcad29bc9007355fc19"
+      ],
+      "sources": [
+        "https://osv.dev/vulnerability/MAL-2026-17808",
+        "https://github.com/advisories/GHSA-h99w-8693-g33v",
+        "https://vulnerability.circl.lu/vuln/mal-2026-17808"
+      ]
+    },
+    {
+      "id": "tensorlake-0-5-144-malware",
+      "title": "Malware in tensorlake (npm) 0.5.144: preinstall steals developer and cloud credentials, then spreads with the stolen npm tokens",
+      "date": "2026-10-08",
+      "severity": "critical",
+      "exploited": true,
+      "cves": [],
+      "summary": "Version 0.5.144 of the tensorlake npm SDK - Tensorlake's SDK for running untrusted LLM-generated code in isolated sandboxes - was trojanized in a ChainDrop / Shai-Hulud campaign and published October 8 at 01:12 UTC; Socket flagged it 11 minutes later. A preinstall script runs the payload before any sandbox can matter: it harvests npm and GitHub tokens, AWS credentials, Kubernetes and HashiCorp Vault credentials, SSH keys, .env files and data from certain AI development tools, exfiltrates over an encrypted channel (an Ethereum contract resolves the remote endpoint, with a dead-man switch reacting to token revocation), then uses stolen npm tokens to modify packages and spread. npm has unpublished 0.5.144; releases from 0.5.145 up are clean (latest is 0.5.158).",
+      "affected": "tensorlake 0.5.144 (npm), installed or built on between October 8 and its removal. Releases up to 0.5.143 and from 0.5.145 on are not affected.",
+      "fixed": [],
+      "checks": [
+        {
+          "kind": "npm",
+          "label": "tensorlake",
+          "package": "tensorlake",
+          "bad": [
+            "0.5.144"
+          ]
+        }
+      ],
+      "patch": [
+        "Remove 0.5.144 from lockfiles and reinstall tensorlake at 0.5.145 or newer (npm has unpublished the poisoned release; verify no lockfile or CI cache still references it)",
+        "Treat any machine that installed 0.5.144 as compromised: rotate npm and GitHub tokens, AWS keys, Kubernetes and Vault credentials, SSH keys and .env secrets - from a different machine"
+      ],
+      "mitigation": [
+        "Review what the machine's npm token touched between October 8 and its rotation: the malware spreads by modifying packages",
+        "Hunt for follow-on activity the dead-man switch enables: unexpected npm publishing after tokens were revoked or rotated"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://www.thaicert.or.th/en/2026/10/09/supply-chain-attack-through-tensorlake-npm-package-steals-credentials-and-spreads-malware/",
+        "https://badge.socket.dev/blog/tensorlake-compromise",
+        "https://www.npmjs.com/package/tensorlake"
+      ]
+    },
+    {
+      "id": "subql-common-5-8-3-malware",
+      "title": "Malware in @subql/common (npm) 5.8.3: credential stealer that rides SubQuery's transitive dependencies into CI",
+      "date": "2026-10-05",
+      "severity": "critical",
+      "exploited": true,
+      "cves": [],
+      "summary": "StepSecurity found malware in @subql/common 5.8.3 - the npm package at the base of the SubQuery project - and published details on October 5. The release runs on an ordinary install, or whenever the package is loaded later, and searches developer systems and CI/CD jobs for credentials: it gathers them, sends them over an encrypted channel and accepts commands. Because SubQuery tooling pulls @subql/common transitively, the poisoned release reached workstations, Linux runners, containers and deployment jobs where its name never appeared in a package list, and provenance did not stop it. npm has unpublished 5.8.3 and rolled the latest tag back to the clean 5.8.2.",
+      "affected": "@subql/common 5.8.3 (npm), anywhere it landed - including transitively through SubQuery tooling. npm has removed the release; 5.8.2 is the current clean latest.",
+      "fixed": [],
+      "checks": [
+        {
+          "kind": "npm",
+          "label": "@subql/common",
+          "package": "@subql/common",
+          "bad": [
+            "5.8.3"
+          ]
+        }
+      ],
+      "patch": [
+        "Confirm no lockfile or CI cache still references @subql/common 5.8.3 and reinstall dependencies from the public registry",
+        "Treat every machine and runner that installed or loaded it as compromised: rotate the CI credentials it could reach (registry tokens, cloud keys, repository and deployment secrets) from a different machine"
+      ],
+      "mitigation": [
+        "Audit CI logs from the window for jobs that pulled 5.8.3 and what credentials those jobs held",
+        "Pin and lock transitive dependencies - a poisoned base package rides in through tooling you never listed"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://linuxsecurity.com/news/security-vulnerabilities/subquery-supply-chain-attack",
+        "https://www.npmjs.com/package/@subql/common"
+      ]
+    },
+    {
+      "id": "citrix-netscaler-88779",
+      "title": "Citrix NetScaler ADC/Gateway before 14.1-73.41 / 13.1-64.28: memory overflow in SAML auth, exploited to reboot internet-facing appliances (CVE-2026-88779)",
+      "date": "2026-10-04",
+      "severity": "high",
+      "exploited": true,
+      "cves": [
+        "CVE-2026-88779"
+      ],
+      "summary": "A memory buffer overflow in NetScaler's SAML authentication path (CWE-119, CVSS v4 8.7) crashes the appliance; triggered repeatedly the service stays down. Citrix says it has observed targeted attacks on unmitigated deployments and rates the impact availability-only, but the field reports are nastier: administrators saw crafted SAML usernames carrying shell commands that tried to download and run a payload from 213.209.159[.]55, patched appliances rebooted in loops, Kevin Beaumont found a honeypot running a downloaded binary, and watchTowr reproduced the flaw. CISA's KEV catalog added it on October 4, the day Citrix published the bulletin and emergency builds, with a federal deadline of October 7; attempts seen so far look like broad spraying. Applies to appliances configured as a SAML service provider or SAML identity provider; Secure Private Access Hybrid deployments on NetScaler instances are affected too. Appliances already updated for the earlier NetScaler flaws (CVE-2026-88771 through 88778) need this upgrade as well. This entry carries the October 4 date because the feed's scan window missed it then; it is still exploited and still unpatched on many appliances.",
+      "affected": "NetScaler ADC and NetScaler Gateway 14.1 before 14.1-73.41, 13.1 before 13.1-64.28, ADC FIPS before 14.1-73.41 FIPS, and ADC FIPS/NDcPP before 13.1-37.282 - when configured with SAML authentication on a Gateway or AAA virtual server (an 'add authentication samlAction' or 'add authentication samlIdPProfile' entry in the running config).",
+      "fixed": [
+        "14.1-73.41",
+        "13.1-64.28",
+        "14.1-73.41 FIPS",
+        "13.1-37.282"
+      ],
+      "checks": [],
+      "patch": [
+        "Upgrade to 14.1-73.41 (FIPS: 14.1-73.41 FIPS; 13.1 line: 13.1-64.28; ADC FIPS/NDcPP on 13.1: 13.1-37.282) from Citrix's downloads, then reboot the appliance",
+        "Secure Private Access Hybrid: upgrade the NetScaler instances as well; Citrix-managed cloud services are already updated"
+      ],
+      "mitigation": [
+        "Until upgraded: enable Citrix's Global Deny List signatures (NetScaler Console 'Virtual patching' on; default-on from 14.1-60.52 and 13.1-63.21; check 'show appfw signatures' shows Encrypted Version at least v24)",
+        "Restrict management and SAML endpoints where the topology allows (ACLs on the management interface), and review logs for repeated reboots, nsaaad crashes and unexpected files",
+        "No SAML action configured means the vendor's precondition is absent - confirm before you deprioritize the upgrade"
+      ],
+      "iocs": [
+        "213.209.159.55 (payload host seen in crafted SAML usernames)"
+      ],
+      "sources": [
+        "https://support.citrix.com/support-home/kbsearch/article?articleNumber=CTX697174",
+        "https://community.citrix.com/techzone-blogs/110_security-updates/understanding-and-addressing-cve-2026-88779-in-citrix-netscaler-adc-and-citrix-netscaler-gateway/",
+        "https://www.cisa.gov/known-exploited-vulnerabilities-catalog",
+        "https://www.cert.ug/index.php/citrix-netscaler-gets-another-exploited-zero-day-and-last-weeks-patches-do-not-cover-it-cve-2026"
+      ]
+    },
+    {
+      "id": "citrix-netscaler-88771",
+      "title": "Citrix NetScaler ADC/Gateway before 14.1-73.37: unauthenticated RCE batch (CVE-2026-88771 through 88778) exploited to drop web shells and FreeBSD malware",
+      "date": "2026-09-27",
+      "severity": "critical",
+      "exploited": true,
+      "cves": [
+        "CVE-2026-88771",
+        "CVE-2026-88772",
+        "CVE-2026-88773",
+        "CVE-2026-88774",
+        "CVE-2026-88775",
+        "CVE-2026-88776",
+        "CVE-2026-88777",
+        "CVE-2026-88778"
+      ],
+      "summary": "The late-September NetScaler batch includes an improper-input-validation flaw that gives an unauthenticated attacker remote command execution (CVE-2026-88771, CVSS 9.8) and a memory-buffer flaw that can be driven to RCE or denial of service (CVE-2026-88772); both are on CISA's known-exploited list since September 27. Exploitation is active and evolving: Zscaler ThreatLabz observed a staged chain - poisoned access logs, crafted authentication requests, appliance fingerprinting, attempted web-shell installation, then delivery of a Rust-based FreeBSD x64 malware payload - with a burst from at least 26 source IPs, and Gurucul published 28 IP indicators. Patching does not remove installed implants or web shells. Note the October 4 batch (citrix-netscaler-88779) needs a second upgrade on top of these fixes.",
+      "affected": "NetScaler ADC and NetScaler Gateway 14.1 before 14.1-73.37, 13.1 before 13.1-64.23, ADC FIPS before 14.1-73.37 FIPS, and ADC FIPS/NDcPP before 13.1-37.279. Secure Private Access Hybrid deployments using NetScaler instances are affected too.",
+      "fixed": [
+        "14.1-73.37",
+        "13.1-64.23",
+        "14.1-73.37 FIPS",
+        "13.1-37.279"
+      ],
+      "checks": [],
+      "patch": [
+        "Upgrade to 14.1-73.37 (FIPS: 14.1-73.37 FIPS; 13.1 line: 13.1-64.23; ADC FIPS/NDcPP on 13.1: 13.1-37.279), then upgrade again to the October 4 builds (14.1-73.41 / 13.1-64.28 / 14.1-73.41 FIPS / 13.1-37.282), which also fix CVE-2026-88779"
+      ],
+      "mitigation": [
+        "Treat patching as remediation for future attacks only: preserve forensic evidence, isolate appliances you suspect, and hunt for web shells and the FreeBSD malware before and after upgrading - Citrix's steps-if-compromised guidance is CTX694799",
+        "Block the observed source IPs at the edge and run the bulletin's console IOCs to identify exploitation"
+      ],
+      "iocs": [
+        "Rust-based FreeBSD x64 malware payload delivered to appliances",
+        "web-shell installation attempts on the management plane",
+        "at least 26 attacking source IPs in the observed burst (Zscaler); Gurucul's report lists 28 IP indicators"
+      ],
+      "sources": [
+        "https://support.citrix.com/support-home/kbsearch/article?articleNumber=CTX697096",
+        "https://community.citrix.com/techzone-blogs/110_security-updates/netscaler-adc-and-netscaler-gateway-security-bulletin-for-cve-2026-88771-through-cve-2026-88778",
+        "https://mallory.ai/stories/01a15988-a20d-701d-bac7-2dcba6ffc9d3",
+        "https://www.cisa.gov/known-exploited-vulnerabilities-catalog"
+      ]
+    },
+    {
+      "id": "gitlab-85706",
+      "title": "GitLab: unauthenticated arbitrary file read (CVSS 10), exploited",
+      "date": "2026-09-10",
+      "severity": "critical",
+      "exploited": true,
+      "cves": [
+        "CVE-2026-85706"
+      ],
+      "summary": "A path traversal in the commits API reads any file on the server with one request: CI/CD secrets, deploy tokens, SSH keys. In CISA's exploited list since September 11 and still being hit (reposted widely on October 21).",
+      "affected": "GitLab CE/EE 18.7 before 19.1.8, 19.2 before 19.2.6, 19.3 before 19.3.2. An 18.x instance should move to a current 19.x release.",
+      "fixed": [
+        "19.1.8",
+        "19.2.6",
+        "19.3.2"
+      ],
+      "checks": [
+        {
+          "kind": "version",
+          "label": "gitlab",
+          "command": [
+            "cat",
+            "/opt/gitlab/embedded/service/gitlab-rails/VERSION"
+          ],
+          "min": "18.7",
+          "fixed": [
+            "19.1.8",
+            "19.2.6",
+            "19.3.2"
+          ]
+        }
+      ],
+      "patch": [
+        "Upgrade as for gitlab-110264 (its fixed releases include this fix)",
+        "Then rotate CI/CD variables, deploy tokens, runner tokens and SSH keys, and hunt for unknown access"
+      ],
+      "mitigation": [
+        "None; upgrade"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://www.rapid7.com/blog/post/etr-cve-2026-85706-critical-gitlab-path-traversal-exploited-in-the-wild/",
+        "https://x.com/offsectraining/status/2112955084963230173"
+      ]
+    },
+    {
+      "id": "drupal-sa-core-2026-014",
+      "title": "Drupal core: remote code execution in Field UI (SA-CORE-2026-014)",
+      "date": "2026-10-14",
+      "severity": "critical",
+      "exploited": false,
+      "cves": [
+        "CVE-2026-108097"
+      ],
+      "summary": "A remote code execution bug in Drupal core's Field UI, reachable through contributed modules or custom code. Drupal sites also run on PHP, so patch php2shell too.",
+      "affected": "Drupal core before 11.4.10, 11.3.19 and 10.6.19.",
+      "fixed": [
+        "11.4.10",
+        "11.3.19",
+        "10.6.19"
+      ],
+      "checks": [
+        {
+          "kind": "composer",
+          "label": "drupal/core",
+          "packages": [
+            "drupal/core",
+            "drupal/core-recommended"
+          ],
+          "fixed": [
+            "11.4.10",
+            "11.3.19",
+            "10.6.19"
+          ]
+        }
+      ],
+      "patch": [
+        "composer update 'drupal/core-*' --with-all-dependencies, then drush updatedb && drush cache:rebuild"
+      ],
+      "mitigation": [],
+      "iocs": [],
+      "sources": [
+        "https://www.drupal.org/sa-core-2026-014",
+        "https://digital.nhs.uk/cyber-alerts/2026/cc-4871",
+        "https://x.com/ThreatWire_/status/2111744851205120016"
+      ]
+    },
+    {
+      "id": "rank-math-pro-3-0-123",
+      "title": "WordPress: Rank Math SEO PRO 3.0.123 shipped a backdoor",
+      "date": "2026-10-16",
+      "severity": "critical",
+      "exploited": true,
+      "cves": [],
+      "summary": "The PRO build downloaded between Oct 15 20:02 and Oct 16 07:12 UTC carried a self-rebuilding backdoor. Updating alone is not enough once it was active: it re-plants itself.",
+      "affected": "Rank Math PRO 3.0.123, if it was activated. The free wordpress.org plugin is not affected.",
+      "fixed": [
+        "3.0.124"
+      ],
+      "checks": [
+        {
+          "kind": "wp-plugin",
+          "label": "rank-math-pro",
+          "slugs": [
+            "seo-by-rank-math-pro",
+            "rank-math-pro"
+          ],
+          "bad": [
+            "3.0.123"
+          ]
+        },
+        {
+          "kind": "command",
+          "label": "rank1cdn.com in wp-content",
+          "needs": "dir",
+          "command": [
+            "sh",
+            "-c",
+            "grep -rl 'rank1cdn.com' '{dir}/wp-content' 2>/dev/null | head -5"
+          ]
+        }
+      ],
+      "patch": [
+        "Best: restore files and database from a backup taken before 2026-10-15 20:02 UTC, then install 3.0.124",
+        "Otherwise, in order: delete the whole Rank Math PRO plugin folder; delete wp_options rows _uf6qdn2hmm, t8krdk990phb, _np5pvf754c; block rank1cdn.com; check mu-plugins, fake core files, PHP under .cache, cron entries and unknown admins; reinstall 3.0.124",
+        "Then rotate WordPress passwords, DB credentials, salts, and API/payment/SMTP/hosting/SSH keys"
+      ],
+      "mitigation": [],
+      "iocs": [
+        "wp_options: _uf6qdn2hmm, t8krdk990phb, _np5pvf754c",
+        "domain: rank1cdn.com"
+      ],
+      "sources": [
+        "https://rankmath.com/kb/pro-3-0-123-security-incident/",
+        "https://www.wordfence.com/blog/2026/10/rank-math-seo-pro-3-0-123-malware/",
+        "https://x.com/oestagiarioplus/status/2113087076409151799"
+      ]
+    },
+    {
+      "id": "updraftcentral-keys",
+      "title": "WordPress: stolen UpdraftCentral keys used to take over sites",
+      "date": "2026-10-18",
+      "severity": "high",
+      "exploited": true,
+      "cves": [],
+      "summary": "teamupdraft.com was breached; stolen UpdraftCentral cloud keys were used to create admins and install malicious plugins on connected WordPress sites. The fixed UpdraftPlus revokes keys made before Oct 18.",
+      "affected": "WordPress sites connected to UpdraftCentral cloud; UpdraftPlus Premium users should check. Self-hosted UpdraftCentral is not affected.",
+      "fixed": [
+        "1.26.13",
+        "2.26.13"
+      ],
+      "checks": [
+        {
+          "kind": "wp-plugin",
+          "label": "updraftplus",
+          "slugs": [
+            "updraftplus"
+          ],
+          "line": 1,
+          "fixed": [
+            "1.26.13",
+            "2.26.13"
+          ]
+        }
+      ],
+      "patch": [
+        "Update UpdraftPlus to 1.26.13 (free) or 2.26.13 (Premium)",
+        "Delete the UpdraftCentral key, remove unknown admins and plugins, change admin passwords, re-authorise remote storage, change your teamupdraft.com password"
+      ],
+      "mitigation": [],
+      "iocs": [
+        "Admin accounts or plugins you did not create"
+      ],
+      "sources": [
+        "https://teamupdraft.com/blog/security-incident-october-2026/"
+      ]
+    },
+    {
+      "id": "strapi-kev-2026-10",
+      "title": "Strapi: template injection to RCE, now exploited (CISA KEV)",
+      "date": "2026-10-08",
+      "severity": "critical",
+      "exploited": true,
+      "cves": [
+        "CVE-2023-22621",
+        "CVE-2023-22894"
+      ],
+      "summary": "Two 2023 Strapi bugs chain to unauthenticated code execution on self-hosted instances; CISA added them to its exploited list on Oct 8.",
+      "affected": "Strapi 4 before 4.8.0 (CVE-2023-22621: 4.5.5 and older) and every Strapi 3.",
+      "fixed": [
+        "4.8.0"
+      ],
+      "checks": [
+        {
+          "kind": "npm",
+          "label": "@strapi/strapi",
+          "package": "@strapi/strapi",
+          "fixed": [
+            "4.8.0"
+          ]
+        }
+      ],
+      "patch": [
+        "npm install @strapi/strapi@latest (4.8.0 or newer; Strapi 5 is current) and rebuild",
+        "Strapi 3: migrate, it gets no fix"
+      ],
+      "mitigation": [],
+      "iocs": [
+        "PUT /users-permissions/email-templates in access logs"
+      ],
+      "sources": [
+        "https://strapi.io/blog/security-disclosure-of-vulnerabilities-cve",
+        "https://www.cisa.gov/known-exploited-vulnerabilities-catalog",
+        "https://x.com/fofabot/status/2108405735990145217"
+      ]
+    },
+    {
+      "id": "nextcloud-110447",
+      "title": "Nextcloud: command injection in the built-in Collabora server, exploited",
+      "date": "2026-10-14",
+      "severity": "critical",
+      "exploited": true,
+      "cves": [
+        "CVE-2026-110447"
+      ],
+      "summary": "Unauthenticated command injection through proxy.php in the Collabora Online built-in CODE server app (richdocumentscode).",
+      "affected": "richdocumentscode before 26.4.303.",
+      "fixed": [
+        "26.4.303"
+      ],
+      "checks": [
+        {
+          "kind": "version",
+          "label": "richdocumentscode",
+          "needs": "dir",
+          "command": [
+            "sh",
+            "-c",
+            "grep -o '<version>[^<]*' '{dir}/apps/richdocumentscode/appinfo/info.xml' 2>/dev/null | cut -d'>' -f2"
+          ],
+          "fixed": [
+            "26.4.303"
+          ]
+        }
+      ],
+      "patch": [
+        "sudo -u www-data php occ app:update richdocumentscode (or update it in Apps), or disable the app"
+      ],
+      "mitigation": [
+        "php occ app:disable richdocumentscode until updated"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://www.tenable.com/cve/CVE-2026-110447",
+        "https://x.com/ThreatWire_/status/2110224199604220150"
+      ]
+    },
+    {
+      "id": "plex2shell",
+      "title": "Plex2Shell: Plex Media Server chain exploited for miners and proxies",
+      "date": "2026-10-20",
+      "severity": "critical",
+      "exploited": true,
+      "cves": [
+        "CVE-2026-96652",
+        "CVE-2026-96654",
+        "CVE-2026-96655",
+        "CVE-2026-96656"
+      ],
+      "summary": "A four-bug chain in Plex Media Server, exploited since Oct 17 to drop crypto miners and proxy malware; CISA added it to its exploited list on Oct 20.",
+      "affected": "Plex Media Server before 1.43.3.10861.",
+      "fixed": [
+        "1.43.3.10861"
+      ],
+      "checks": [
+        {
+          "kind": "version",
+          "label": "plexmediaserver",
+          "command": [
+            "sh",
+            "-c",
+            "dpkg-query -W -f='${Version}' plexmediaserver 2>/dev/null || rpm -q --qf '%{VERSION}' plexmediaserver 2>/dev/null"
+          ],
+          "fixed": [
+            "1.43.3.10861"
+          ]
+        }
+      ],
+      "patch": [
+        "Update Plex Media Server to 1.43.3.10861 or newer (package manager or Plex's download page)"
+      ],
+      "mitigation": [
+        "Keep Plex off the public internet until updated"
+      ],
+      "iocs": [
+        "Unknown processes using CPU (miners) under the plex user"
+      ],
+      "sources": [
+        "https://www.cisa.gov/news-events/alerts/2026/10/20/cisa-adds-six-known-exploited-vulnerabilities-catalog",
+        "https://www.bleepingcomputer.com/news/security/cisa-hackers-chain-plex-flaws-in-plex2shell-attacks-to-breach-servers/",
+        "https://x.com/TheHackersNews/status/2112808297564881184"
+      ]
+    },
+    {
+      "id": "litellm-1-107-0",
+      "title": "LiteLLM 1.107.0 on PyPI and Docker carried a credential stealer",
+      "date": "2026-10-21",
+      "severity": "critical",
+      "exploited": true,
+      "cves": [],
+      "summary": "A release built from a lookalike repo put cook.pth in site-packages, so the stealer runs on every Python start. It takes cloud keys, SSH keys, .env files, AI tool configs, and every provider key in the LiteLLM database.",
+      "affected": "litellm==1.107.0 from PyPI (all seven wheels, Oct 21 11:39-13:23 UTC); Docker Hub and GHCR (ghcr.io/berriai/litellm, litellm-database, litellm-non_root) tags v1.107.0, latest, main-latest, main-stable pulled Oct 21 11:46-14:20 UTC (GHCR until 13:51 UTC). The GitHub v1.107.0 source tag is clean.",
+      "fixed": [
+        "1.106.2"
+      ],
+      "checks": [
+        {
+          "kind": "version",
+          "label": "litellm",
+          "command": [
+            "python3",
+            "-c",
+            "import importlib.metadata as m; print(m.version('litellm'))"
+          ],
+          "bad": [
+            "1.107.0"
+          ]
+        },
+        {
+          "kind": "command",
+          "label": "cook.pth in site-packages",
+          "command": [
+            "python3",
+            "-c",
+            "import site,glob,os; d=site.getsitepackages()+[site.getusersitepackages()]; print(chr(10).join(f for x in d for f in glob.glob(os.path.join(x,'cook.p*'))))"
+          ]
+        },
+        {
+          "kind": "files",
+          "label": "stealer marker",
+          "paths": [
+            "/tmp/.pc_once_*"
+          ]
+        }
+      ],
+      "patch": [
+        "Isolate the host; rebuild the virtualenv or image from scratch (do not pip install over it); pin litellm==1.106.2 or a later clean release, and pin Docker images by digest",
+        "Rotate everything the host could read: cloud keys and instance roles, SSH/GPG keys, .env files, .npmrc/.pypirc/.git-credentials, kube/docker/gh tokens, AI tool keys, and every provider key stored in LiteLLM's database"
+      ],
+      "mitigation": [],
+      "iocs": [
+        "site-packages/cook.pth, cook.py",
+        "/tmp/.pc_once_72129118c59f5636c0bb",
+        "POST http://www.litellm.dev/healthcheck",
+        "Docker image index sha256:1bbcb1443bc962e45f5aad53fe3d2c30600e0379715fb6c664cdd3ac126c339e (ghcr.io/berriai/litellm, Docker Hub)"
+      ],
+      "sources": [
+        "https://docs.litellm.ai/blog/security-incident-oct-21-2026",
+        "https://github.com/BerriAI/litellm/issues/47826",
+        "https://www.wiz.io/blog/litellm-compromised-steals-credentials",
+        "https://x.com/JFrogSecurity/status/2112882176156909646"
+      ]
+    },
+    {
+      "id": "ovhcloud-cli",
+      "title": "OVHcloud CLI releases replaced with a secret stealer",
+      "date": "2026-10-19",
+      "severity": "high",
+      "exploited": true,
+      "cves": [],
+      "summary": "Release binaries v0.11.0 to v0.15.0 were swapped for a secret stealer through a compromised contributor account, for installs via install.sh, Homebrew or GitHub tarballs on Oct 19 14:47-16:21 UTC.",
+      "affected": "ovhcloud-cli v0.11.0 to v0.15.0 installed in that window (Go-module, source and Docker installs are clean).",
+      "fixed": [
+        "0.16.0"
+      ],
+      "checks": [
+        {
+          "kind": "version",
+          "label": "ovhcloud",
+          "command": [
+            "ovhcloud",
+            "version"
+          ],
+          "min": "0.11.0",
+          "fixed": [
+            "0.16.0"
+          ]
+        }
+      ],
+      "patch": [
+        "Update to v0.16.0 or delete the binary",
+        "If it was installed in the window: change every secret on that disk"
+      ],
+      "mitigation": [],
+      "iocs": [],
+      "sources": [
+        "https://www.helpnetsecurity.com/2026/10/21/ovhcloud-cli-github-malware/",
+        "https://x.com/olesovhcom/status/2112225308589834260",
+        "https://x.com/IntCyberDigest/status/2112427342928736543"
+      ]
+    },
+    {
+      "id": "apex-accelerator-npm",
+      "title": "npm: fake Web3 accelerator packages install a stealer and hijack AI agents",
+      "date": "2026-10-12",
+      "severity": "high",
+      "exploited": true,
+      "cves": [],
+      "summary": "@apexacc/cli and @apexacc/audit drop a Windows stealer or macOS backdoor and reroute AI agent traffic through an attacker's proxy and a persistent MCP server.",
+      "affected": "Any project or machine that installed @apexacc/cli or @apexacc/audit.",
+      "fixed": [],
+      "checks": [
+        {
+          "kind": "npm",
+          "label": "@apexacc/cli",
+          "package": "@apexacc/cli",
+          "bad": [
+            "*"
+          ]
+        },
+        {
+          "kind": "npm",
+          "label": "@apexacc/audit",
+          "package": "@apexacc/audit",
+          "bad": [
+            "*"
+          ]
+        }
+      ],
+      "patch": [
+        "Remove the packages, check your AI agent configs for an MCP server or model proxy you did not add, rotate keys on that machine"
+      ],
+      "mitigation": [],
+      "iocs": [
+        "apexacc in ~/.config or agent config folders"
+      ],
+      "sources": [
+        "https://www.elastic.co/security-labs/threat-command/apex-accelerator-malicious-npm-packages",
+        "https://x.com/TheHackersNews/status/2112123909063491916"
+      ]
+    },
+    {
+      "id": "emudhra-ca",
+      "title": "eMudhra CA: weak keys let anyone forge TLS certificates",
+      "date": "2026-10-20",
+      "severity": "critical",
+      "exploited": false,
+      "cves": [
+        "CVE-2026-111943"
+      ],
+      "summary": "Eight eMudhra intermediate CA keys were generated with weak entropy (one key was the number 4), so certificates for any domain could be forged. Chrome blocked them on Oct 17 and removes the emSign ECC Root CA - G3 on Oct 27.",
+      "affected": "Sites whose certificate chains to eMudhra/emSign (they stop working in Chrome on Oct 27); servers, apps and Python environments whose trust store still holds the emSign ECC Root CA - G3 (OS ca-certificates, certifi, pip's and uv's bundled copies, container images).",
+      "fixed": [],
+      "checks": [
+        {
+          "kind": "command",
+          "label": "site certificate issuer",
+          "needs": "host",
+          "match": "(?i)emsign|emudhra",
+          "command": [
+            "sh",
+            "-c",
+            "echo | openssl s_client -connect '{host}:443' -servername '{host}' 2>/dev/null | openssl x509 -noout -issuer"
+          ]
+        },
+        {
+          "kind": "command",
+          "label": "trust store still has emSign ECC Root CA - G3",
+          "command": [
+            "sh",
+            "-c",
+            "ls /etc/ssl/certs 2>/dev/null | grep -i 'emSign_ECC_Root_CA_-_G3' | sed 's|^|system trust store: /etc/ssl/certs/|'; trust list 2>/dev/null | grep -q 'emSign ECC Root CA - G3' && echo 'system trust store: emSign ECC Root CA - G3'; python3 -c \"import certifi; p=certifi.where(); print('certifi ' + certifi.__version__ + ': ' + p) if 'emSign ECC Root CA - G3' in open(p).read() else None\" 2>/dev/null; true"
+          ]
+        }
+      ],
+      "patch": [
+        "If your certificate is issued by eMudhra/emSign: get a new one from another CA (e.g. Let's Encrypt: certbot --nginx -d {host}) before Oct 27",
+        "Update OS ca-certificates, language runtimes (Node 22.23.4/24.22.1/26.12.1, Go's crypto/x509 fix GO-2026-6809) and bundled trust stores; rebuild images; restart",
+        "Python: certifi 2026.10.19, pip 26.2.2, uv 0.13.4, conda 26.9.4 in every virtualenv and tool install (pipx, uv tool); pip and uv carry their own copy, so upgrade them too",
+        "Never fix new certificate errors by turning verification off"
+      ],
+      "mitigation": [],
+      "iocs": [],
+      "sources": [
+        "https://blog.google/security/protecting-chrome-and-android-users-from-compromised-emudhra-intermediate-ca-certificates/",
+        "https://blog.cloudflare.com/emudhra-certificate-compromise",
+        "https://pkg.go.dev/vuln/GO-2026-6809",
+        "https://discuss.python.org/t/information-for-python-users-regarding-emudhra-emsign-ca-certificate-security-incident/109576",
+        "https://github.com/certifi/python-certifi/security/advisories/GHSA-6q48-6c7w-9gw2",
+        "https://x.com/AFpost/status/2112926349891412345"
+      ]
+    },
+    {
+      "id": "railway-2026-10-21",
+      "title": "Railway: customer environment variables accessed",
+      "date": "2026-10-21",
+      "severity": "high",
+      "exploited": true,
+      "cves": [],
+      "summary": "Railway's environment-variable store was accessed and some values decrypted, in a campaign against platforms hosting AI inference.",
+      "affected": "Anyone who deploys on Railway.",
+      "fixed": [],
+      "checks": [],
+      "patch": [
+        "Rotate every Railway environment variable, API key, database password and private-registry credential; review service logs"
+      ],
+      "mitigation": [],
+      "iocs": [],
+      "sources": [
+        "https://blog.railway.com/p/security-disclosure-wednesday-october-21st",
+        "https://status.railway.com/incident/QH8L8B3E"
+      ]
+    },
+    {
+      "id": "opencode-console-keys",
+      "title": "OpenCode Console: linked provider API keys stolen",
+      "date": "2026-10-17",
+      "severity": "high",
+      "exploited": true,
+      "cves": [],
+      "summary": "1.4% of OpenCode Console users had their linked external provider keys stolen and abused (rogue charges up to $1,700, Google Cloud projects suspended).",
+      "affected": "Anyone who linked provider keys to OpenCode Console.",
+      "fixed": [],
+      "checks": [],
+      "patch": [
+        "Revoke and reissue every provider key you linked to OpenCode Console; check provider bills"
+      ],
+      "mitigation": [],
+      "iocs": [],
+      "sources": [
+        "http://x.com/opencode/status/2111519637049319818",
+        "https://www.bleepingcomputer.com/news/security/opencode-hack-exposes-api-keys-amid-ai-distillation-attacks/"
+      ]
+    },
+    {
+      "id": "zeabur-2026-10",
+      "title": "Zeabur: platform database and clusters breached, shutting down",
+      "date": "2026-10-15",
+      "severity": "high",
+      "exploited": true,
+      "cves": [],
+      "summary": "Zeabur's shared cluster, dedicated servers and platform database (environment variables) were read; it is its second breach in two months and the service shuts down in December.",
+      "affected": "Anyone who deployed on Zeabur.",
+      "fixed": [],
+      "checks": [],
+      "patch": [
+        "Replace every password and key stored on Zeabur, even ones rotated in August, and migrate off"
+      ],
+      "mitigation": [],
+      "iocs": [],
+      "sources": [
+        "https://zeabur.com/blogs/october-2026-security-incident"
+      ]
+    },
+    {
+      "id": "connectwise-cloud-backup",
+      "title": "ConnectWise Cloud Backup OAuth app abused to read Microsoft 365 tenants",
+      "date": "2026-10-17",
+      "severity": "high",
+      "exploited": true,
+      "cves": [],
+      "summary": "A vendor credential for the SkyKick/ConnectWise Cloud Backup app was used to read mail, files and directory data across Microsoft 365 tenants through Graph.",
+      "affected": "Microsoft 365 tenants that granted the ConnectWise Cloud Backup (SkyKick) app.",
+      "fixed": [],
+      "checks": [],
+      "patch": [
+        "In Entra ID, disable (not delete) enterprise apps 506e08f9-6e9a-4da4-942b-a099a03644ae and 24205314-2b89-4e07-a2a4-579e898a5640; review credentials added to all apps"
+      ],
+      "mitigation": [],
+      "iocs": [
+        "Sign-ins from 144.172.64.128"
+      ],
+      "sources": [
+        "https://www.huntress.com/blog/vendor-credential-enables-unauthorized-access",
+        "https://x.com/MsftSecIntel/status/2111358888125878426"
+      ]
+    },
+    {
+      "id": "linux-pwnescape",
+      "title": "Linux KVM PwnEscape: guest VM can take over the host (CVE-2026-99999)",
+      "date": "2026-10-16",
+      "severity": "critical",
+      "exploited": false,
+      "cves": [
+        "CVE-2026-99999"
+      ],
+      "summary": "Crafted packets from a guest VM leak host memory, crash the host, or run code as root on it. It matters to anyone hosting other people's VMs (VPS providers, sandboxes); a site on a VPS depends on its provider having rebooted into a patched kernel.",
+      "affected": "KVM hosts on unpatched kernels.",
+      "fixed": [],
+      "checks": [],
+      "patch": [
+        "VM hosts: install the distro's patched kernel and reboot",
+        "VPS customers: confirm your provider patched its hosts"
+      ],
+      "mitigation": [],
+      "iocs": [],
+      "sources": [
+        "https://almalinux.org/blog/2026-10-16-pwnescape-cve-2026-99999/",
+        "https://x.com/PaulosYibelo/status/2111541156572013043"
+      ]
+    },
+    {
+      "id": "siteguard-106931",
+      "title": "SiteGuard Server Edition: local command injection to root, exploited",
+      "date": "2026-10-20",
+      "severity": "high",
+      "exploited": true,
+      "cves": [
+        "CVE-2026-106931"
+      ],
+      "summary": "The host WAF's statistics feature (on by default) lets a low-privilege local user become root; CISA added it to its exploited list on Oct 20.",
+      "affected": "SiteGuard Server Edition 2.20 and later with statistics on.",
+      "fixed": [
+        "8.00 Update 5",
+        "7.00 Update 6 (FreeBSD)"
+      ],
+      "checks": [],
+      "patch": [
+        "Apply Ver8.00 Update 5 (Apache/Nginx/IIS) or Ver7.00 Update 6 (FreeBSD), or the vendor's file-replacement patch"
+      ],
+      "mitigation": [
+        "Turn the statistics feature off until patched"
+      ],
+      "iocs": [],
+      "sources": [
+        "https://jvn.jp/en/jp/JVN88474777/",
+        "https://www.eg-secure.co.jp/siteguard/news/alert-202610-1"
+      ]
+    }
+  ]
+}

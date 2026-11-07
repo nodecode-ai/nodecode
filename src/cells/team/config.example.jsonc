@@ -1,0 +1,28 @@
+// The section ~/.nodecode/config.jsonc may carry for the team cell —
+// documentation, not config. A present section is enabled; "enabled": false
+// vetoes it. While it is enabled, /team TEXT in a session's shell seats a
+// standing team of "nodes" nodes under that session, and every later /team
+// goes to the same nodes, a spent node's seat taken by a fresh one; nothing
+// else the operator types reaches them, and between inputs they sit idle. A
+// standing team has no scorer: its product is LOG, best/ and work-K/ in
+// ~/.nodecode/team/<session>/standing/. A team is not config: it lives in
+// its directory, written by /team or by (team:open ...) through eval.
+{
+  "team": {
+    // How many nodes a session's standing team and one (team:open ...) start,
+    // 1 to 5. Nodes are minted as they are needed: a later open of the same
+    // session carries on from the numbers already taken, so a session's nodes
+    // count up as it uses them. A team of one reads the task alone.
+    "nodes": 3,
+    // Billable tokens (uncached input + output + reasoning) one node may
+    // spend, summed over every turn it runs: a node prompted again starts
+    // from what it has left, never from a fresh budget. A standing node takes
+    // every /team, so this is its lifetime cap: once spent it is replaced at
+    // the next /team.
+    "budget_tokens": 1500000,
+    // Seconds a team runs, counted from when it opened -- a standing team's
+    // from the latest /team; every node's turn runs under what is
+    // left of them.
+    "budget_seconds": 7200
+  }
+}

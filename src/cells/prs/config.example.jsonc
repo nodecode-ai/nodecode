@@ -1,0 +1,27 @@
+// The section ~/.nodecode/config.jsonc may carry for this peripheral —
+// documentation, not config: the folder gets pushed and holds no secret.
+// The declaration in cell.lisp is the authority. A present section is
+// enabled; "enabled": false vetoes it.
+{
+  "prs": {
+    // Every repository the watch ranks. Empty, nothing is watched and the
+    // verbs still answer for a :repo named in the call.
+    "repos": ["owner/name"],
+    // The token is named, never written here: a file (gh auth token > FILE,
+    // chmod 600) or an environment variable (token_env). A private
+    // repository needs repo scope; a review and a label need write access.
+    "token_file": "~/.nodecode/secrets/github-token",
+    // How often the watch asks what moved; a 304 costs nothing.
+    "poll_seconds": 60,
+    // How many rank turns run at once; the rest wait a poll.
+    "concurrent": 2,
+    // A rank turn's budget: past it its calls are refused.
+    "turn_minutes": 5,
+    // Pin the PR sessions to a cheaper model than the default.
+    // "provider": "...", "model": "...",
+    // Shell commands (prs:prep) runs in the rebased clone, in order.
+    "checks": ["just lint"],
+    "check_minutes": 15,
+    "merge_method": "squash"
+  }
+}

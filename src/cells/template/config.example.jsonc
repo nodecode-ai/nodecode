@@ -1,0 +1,11 @@
+// The section ~/.nodecode/config.jsonc may carry for this peripheral —
+// documentation, not config: the folder gets pushed and holds no secret.
+// The declaration in cell.lisp is the authority; this is an illustration
+// of it. A present section is enabled; "enabled": false vetoes it. Rename
+// the key with the system.
+{
+  "template": {
+    "enabled": true,
+    "times": 1
+  }
+}

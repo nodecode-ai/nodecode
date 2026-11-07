@@ -1,0 +1,104 @@
+// channels.discord — the section ~/.nodecode/config.jsonc needs for this
+// adapter. Copy it in (a present section is enabled; "enabled": false
+// vetoes it), or say "set up discord" to the agent, which writes it through
+// (config-set ...) and checks the token with (nck:probe "discord").
+//
+// Secrets are never inline: bot_token_env names an environment variable,
+// bot_token_file a file holding the token. Exactly one of the two.
+{
+  "channels": {
+    "discord": {
+      "bot_token_env": "DISCORD_BOT_TOKEN",
+      // At least one of allowed_channels / allowed_users / allowed_roles must
+      // be non-empty: channel messages run with full host authority, so a
+      // lane never starts open to the world. Ids are strings; the probe lists
+      // them.
+      "allowed_channels": ["<channel id>"],
+      "allowed_users": ["<user id>"],
+      // A server member holding any one of these roles talks as a listed
+      // user does. A direct message carries no roles.
+      "allowed_roles": [],
+      // Whose word is standing policy in the room; every slash command but
+      // /help is theirs.
+      "owner": ["<user id>"],
+      // true: a direct message from someone no list names is answered with a
+      // pairing code; /channels pair CODE lets them in.
+      "pairing": true,
+      // Other bots' messages: "none", "mentions" (one that @mentions this
+      // bot), or "all". The bot's own are always ignored.
+      "allow_bots": "none",
+      // true: answer when @mentioned, replied to, or in a DM.
+      // false: answer every unlisted channel — needs the Message Content
+      // intent. Without it the bot answers mentions, replies and DMs only
+      // (a follow-up in its thread needs its mention too), and /channels
+      // says so.
+      "require_mention": true,
+      // Per-channel speaking overrides. If a channel appears in more than
+      // one list, ignored wins, then free response, then require mention.
+      // Threads match their active, parent, and thread ids.
+      "free_response_channels": [],
+      "require_mention_channels": [],
+      "ignored_channels": [],
+      // Optional case-insensitive wake words for mention-gated channels.
+      "mention_patterns": [],
+      // true: each ask carries the eye on the message itself from admission
+      // through the working turn — admitted, queued, running — then a check
+      // when its answer lands, a cross when it fails. Needs Add Reactions.
+      "reactions": false,
+      // true (default): the model's words show in the room as it writes
+      // them, in a message edited as it grows. The answer still posts as a
+      // fresh reply that pings its asker, and the streamed copy is deleted.
+      "stream": true,
+      // An answer can come as a voice message too, below its words: "on"
+      // answers an ask said in a voice message with one, "tts" answers every
+      // ask with one, "off" (default) never does. /voice on, tts or off sets
+      // it for one room. Spoken by the speech section's voice; needs ffmpeg.
+      "voice_replies": "off",
+      // Minutes an ask's turn may run. Past them its tool calls are refused
+      // and it answers with what is done and what is left; the room gets a
+      // report instead of a turn that runs on. 0, the default, caps nothing:
+      // the turn sees its own clock on every tool result.
+      "turn_budget_minutes": 0,
+      // The most history the room keeps, in estimated tokens (a token per
+      // four characters; the provider counts about a quarter more).
+      // Every ask opens on the room's record, so past this the room evicts
+      // its older half and the next ask opens on the rest; what went stays
+      // in the log, where recall reads it. 0 keeps everything.
+      "room_tokens": 40000,
+      // What the bot does about threads, in the channel config's own words.
+      // "create_per_message" (the default): an ask typed in a plain channel
+      // opens a THREAD for itself — created off the ask's own message and
+      // named after it — and the answer, its chrome and its record live
+      // there; the first answer names the asker. A thread the bot takes part
+      // in is one conversation: a follow-up typed there needs no mention,
+      // and one typed while a turn runs steers it. Needs Create Public
+      // Threads. "reply_in_place": the
+      // flat surface, one lane per message in the channel, where the reply
+      // chain is the branch. "disabled": the flat surface, and an ask typed
+      // inside a thread is refused.
+      "thread_behavior": "create_per_message",
+      // Channels that keep the flat surface even with threads on — the ones
+      // whose traffic is chatter, or where a thread per ask would outgrow
+      // the channel list. Ids are strings; a thread's parent matches.
+      "flat_channels": [],
+      // After the bot was away, read what the channels said in the last
+      // this-many minutes of it and answer the asks it missed. 0 never.
+      "catch_up_minutes": 60,
+      // Agents a room's asks may run as: the folder they work in, a persona
+      // in place of soul_file, standing instructions, a model, and skills
+      // the model reads first. /agent NAME typed in a room hands it to one.
+      "agents": {
+        // "coder": {"folder": "~/src/app", "soul_file": "/path/to/SOUL.md",
+        //           "prompt": "...", "provider": "...", "model": "...",
+        //           "skills": ["..."]}
+      },
+      // Which asks run as which agent, by "guild", "channel" (and its
+      // threads), "thread", "user" or "role" ids, written as strings. Every
+      // key a route names must match; the most specific wins, user first,
+      // then thread, channel, role, guild. "agent": "default" is none.
+      "routes": [
+        // {"agent": "coder", "channel": "<channel id>"}
+      ]
+    }
+  }
+}

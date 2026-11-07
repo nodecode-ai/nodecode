@@ -1,0 +1,126 @@
+;;;; schedule-test.lisp --- the grammar and the next-fire arithmetic, as data.
+;;;;
+;;;; SPDX-License-Identifier: MIT
+;;;;
+;;;; Every instant here is a local wall-clock time built with CRON-LOCAL, so
+;;;; the assertions hold in whatever zone the test image runs in. The anchor
+;;;; NOW is Friday 2026-09-04 10:00.
+
+(in-package #:nodecode.test)
+
+(nlk:access (in nodecode-cron::schedule))
+
+(defparameter +cron-now+ (cron-local 2026 9 4 10 0)
+  "Friday 2026-09-04 10:00 local.")
+
+(defun cron-parse (text &optional (now +cron-now+))
+  (nodecode-cron::parse-schedule text :now now))
+
+(defun cron-expr (text)
+  (nodecode-cron::schedule-expr (cron-parse text)))
+
+(defun cron-next-of (text after)
+  (nodecode-cron::next-fire (cron-parse text) after))
+
+(deftest cron-cell-parses-durations-into-intervals ()
+  (flet ((seconds (text) (nodecode-cron::schedule-seconds (cron-parse text))))
+    (is (= 1800 (seconds "30m")) "30m")
+    (is (= 7200 (seconds "every 2h")) "every 2h")
+    (is (= 3600 (seconds "every hour")) "every hour")
+    (is (= 86400 (seconds "every day")) "every day with no time is a daily interval")
+    (is (= 5400 (seconds "1h 30m")) "compound durations sum")
+    (is (= 604800 (seconds "1w")) "weeks")
+    (is (eq :interval (nodecode-cron::schedule-kind (cron-parse "every 2h"))))
+    (is (equal "every 2h" (nodecode-cron::schedule-display (cron-parse "every 120m"))))
+    (is (signals-error cron:cron-error (cron-parse "30s")))))
+
+(deftest cron-cell-parses-wall-clock-phrases-into-cron ()
+  (is (equal "0 9 * * 1" (cron-expr "every monday 9am")))
+  (is (equal "30 9 * * 1-5" (cron-expr "weekdays at 9:30")))
+  (is (equal "0 12 * * *" (cron-expr "every day at noon")))
+  (is (equal "0 18 * * 1,3,5" (cron-expr "every mon, wed and fri at 18:00")))
+  (is (equal "0 0 * * 0,6" (cron-expr "weekends at midnight")))
+  (is (equal "30 21 * * *" (cron-expr "daily at 9:30pm")))
+  (is (eq :cron (nodecode-cron::schedule-kind (cron-parse "every monday 9am"))))
+  (is (equal "every monday 9am" (nodecode-cron::schedule-display (cron-parse "every monday 9am"))))
+  (is (signals-error cron:cron-error (cron-parse "every monday at 25:00"))))
+
+(deftest cron-cell-parses-cron-fields-and-refuses-nonsense ()
+  (flet ((fields (text) (nodecode-cron::schedule-fields (cron-parse text))))
+    (is (equal '((0) (9) t t (1 2 3 4 5)) (fields "0 9 * * 1-5")))
+    (is (equal '((0 15 30 45) t t t t) (fields "*/15 * * * *")))
+    (is (equal '((0) (0) (1) (1 4 7 10) t) (fields "0 0 1 jan,apr,jul,oct *")) "month names")
+    (is (equal '((0) (9) t t (0 6)) (fields "0 9 * * sat,sun")) "weekday names")
+    (is (equal '((0) (9) t t (0)) (fields "0 9 * * 7")) "7 is Sunday")
+    (is (equal '((5 15 25 35 45 55) t t t t) (fields "5/10 * * * *")) "a start with a step runs to the end")
+    (is (equal '((0) (8 9 10 11 12) t t t) (fields "0 8-12 * * *")))
+    (is (signals-error cron:cron-error (cron-parse "0 9 * *")) "four fields")
+    (is (signals-error cron:cron-error (cron-parse "0 9 * * 8")) "weekday out of range")
+    (is (signals-error cron:cron-error (cron-parse "60 * * * *")) "minute out of range")
+    (is (signals-error cron:cron-error (cron-parse "0 9 32 * *")) "day out of range")
+    (is-carrying (text (refusal-text cron:cron-error (cron-parse "banana")))
+      "a schedule is one of"
+      ;; The page says it under the form as it is: one line, no source-file tilde.
+      (:absent "~" "no tilde") (:absent (string #\Newline) "no line break")
+      "\"1h 30m\" (recurring)")))
+
+(deftest cron-cell-cron-next-fire-honours-the-fields ()
+  (is-each (cron-next-of)
+    ("0 9 * * 1-5" +cron-now+ (cron-local 2026 9 7 9 0)
+     "weekdays at 9 from a Friday 10:00 is Monday 09:00")
+    ("*/15 * * * *" (cron-local 2026 9 4 10 7) (cron-local 2026 9 4 10 15) "the next quarter hour")
+    ("*/15 * * * *" (cron-local 2026 9 4 10 0) (cron-local 2026 9 4 10 15)
+     "strictly after: a fire at 10:00 is not the next fire after 10:00")
+    ("0 0 1 * *" +cron-now+ (cron-local 2026 10 1 0 0) "the first of next month")
+    ("0 9 15 * 1" (cron-local 2026 9 13 10 0) (cron-local 2026 9 14 9 0)
+     "both day fields restricted: the Monday (weekday) comes before the 15th")
+    ("0 9 15 * 1" (cron-local 2026 9 14 10 0) (cron-local 2026 9 15 9 0)
+     "and the 15th (day of month) comes before the next Monday")
+    ("0 10 * * fri" (cron-local 2026 9 4 9 59) (cron-local 2026 9 4 10 0) "a minute before")
+    ("0 12 29 2 *" +cron-now+ (cron-local 2028 2 29 12 0) "February 29 is inside the horizon")))
+
+(deftest cron-cell-interval-next-fire-keeps-its-phase (let ((every-2h (cron-parse "every 2h"))))
+  (is (= (+ +cron-now+ 7200) (nodecode-cron::next-fire every-2h +cron-now+)))
+  (is (= (cron-local 2026 9 4 10 30)
+         (nodecode-cron::next-fire every-2h +cron-now+ :anchor (cron-local 2026 9 4 8 30))))
+  (is (= (cron-local 2026 9 4 12 30)
+         (nodecode-cron::next-fire every-2h (cron-local 2026 9 4 11 0)
+                                   :anchor (cron-local 2026 9 4 4 30))))
+  (is (= 3600 (nodecode-cron::schedule-grace every-2h +cron-now+)))
+  (is (= 120 (nodecode-cron::schedule-grace (cron-parse "3m") +cron-now+)))
+  (is (= 7200 (nodecode-cron::schedule-grace (cron-parse "every day at 9am") +cron-now+))))
+
+(deftest cron-cell-one-shots-in-at-and-iso ()
+  (let ((in (cron-parse "in 45m")))
+    (is-shape in (.kind eq :once) (.at = (+ +cron-now+ 2700)))
+    (is (= (+ +cron-now+ 2700) (nodecode-cron::next-fire in +cron-now+)))
+    (is (null (nodecode-cron::next-fire in (+ +cron-now+ 2700)))))
+  (flet ((at (text) (nodecode-cron::schedule-at (cron-parse text))))
+    (is-each (at)
+      ("at 11:00" (cron-local 2026 9 4 11 0) "at 11:00 from 10:00 is today")
+      ("at 9am" (cron-local 2026 9 5 9 0) "at 9am from 10:00 is tomorrow")
+      ("2026-09-10T09:00" (cron-local 2026 9 10 9 0) "an ISO time without a zone is local")
+      ("2026-09-10 09:00" (cron-local 2026 9 10 9 0) "a space works as well as the T")
+      ("2026-09-10T09:00Z" (encode-universal-time 0 0 9 10 9 2026 0) "Z is UTC")
+      ("2026-09-10T09:00+02:00" (encode-universal-time 0 0 9 10 9 2026 -2)
+       "an offset is honoured")))
+  (is (signals-error cron:cron-error (cron-parse "2026-01-01T09:00")))
+  (is (signals-error cron:cron-error (cron-parse "in bananas"))))
+
+(deftest cron-cell-local-text-and-duration-text ()
+  (is (equal "2026-09-04 10:00" (nodecode-cron::local-text +cron-now+)))
+  (is (equal "2h" (nodecode-cron::duration-text 7200)))
+  (is (equal "1h 30m" (nodecode-cron::duration-text 5400)))
+  (is (equal "1d 2m 3s" (nodecode-cron::duration-text (+ 86400 120 3))))
+  (is-each (nodecode-cron::left-text)
+    ((cron-local 2026 9 5 9 0) +cron-now+ "in 23h" "a fire ahead reads as time left")
+    ((- +cron-now+ 180) +cron-now+ "3m ago" "an instant behind reads as time past")
+    (+cron-now+ +cron-now+ "now" nil)
+    ((+ +cron-now+ 45) +cron-now+ "in 45s" "under a minute reads in seconds")
+    ((+ +cron-now+ 95) +cron-now+ "in 1m"
+     "a minute or more reads in whole minutes, the grain of the wall clock"))
+  (is (equal "2026-09-05 09:00 (in 23h)"
+             (nodecode-cron::at-text (cron-local 2026 9 5 9 0) +cron-now+)))
+  (is (equal "hn-digest" (nodecode-cron::slug "HN digest!")))
+  (is (equal "job" (nodecode-cron::slug "!!!")))
+  (is (<= (length (nodecode-cron::slug (make-string 80 :initial-element #\a))) 32)))

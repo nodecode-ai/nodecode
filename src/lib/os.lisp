@@ -2050,6 +2050,36 @@ through the plugins nsswitch.conf lists."
                                          sb-alien:system-area-pointer))
            #x00080000 (sb-sys:int-sap 0)))))
 
+(defun bind-asn1-string-get0 ()
+  "Point CL+SSL's ASN1-STRING-DATA at ASN1_STRING_get0_data, the name OpenSSL kept."
+  ;; => :GET0 when it bound it; NIL where libcrypto carries neither name, or
+  ;; is not loaded yet.
+  ;;
+  ;; OpenSSL 4.0.0 removed ASN1_STRING_data() and kept ASN1_STRING_get0_data(),
+  ;; which has returned the same pointer, under a const qualifier, since 1.1.0.
+  ;; cl+ssl still calls the removed name wherever it reads a certificate
+  ;; (x509.lisp: ASN1-STRING-BYTES-VECTOR and TRY-GET-ASN1-STRING-DATA), and
+  ;; every name the image takes off a certificate - the subject common names,
+  ;; the issuer, the subjectAltName a verified handshake checks the host
+  ;; against - goes through it. Homebrew's `openssl' alias moved to openssl@4,
+  ;; so a Mac that upgraded stopped at the first HTTPS the image made: "The
+  ;; alien function \"ASN1_STRING_data\" is undefined", nodecode login on
+  ;; danishsaleem's MacBook, 2026-11-07. The image loads whichever OpenSSL the
+  ;; box has (tools/install/install.sh), so it binds the name every 1.1.0 and
+  ;; later carries instead of the one 4.0 dropped.
+  ;;
+  ;; The address is resolved here, at every start, and never held in the image:
+  ;; a shared object sits where its own load put it, not where the build's did.
+  (let ((address (sb-sys:find-foreign-symbol-address "ASN1_STRING_get0_data")))
+    (when address
+      (let ((get0 (sb-alien:sap-alien (sb-sys:int-sap address)
+                                       (function sb-alien:system-area-pointer
+                                                 sb-alien:system-area-pointer))))
+        (setf (symbol-function 'cl+ssl::asn1-string-data)
+              (lambda (asn1-string)
+                (sb-alien:alien-funcall get0 asn1-string))))
+      :get0)))
+
 ;;; The open-file limit. Every descriptor the organism holds -- a socket, a
 ;;; pipe, the store, a log -- counts against its soft limit, and past it
 ;;; nothing opens: no connection, and no name resolves either. macOS starts

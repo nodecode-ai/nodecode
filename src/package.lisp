@@ -146,7 +146,7 @@ renderer, the program loop.")
    #:gateway-log-text #:gateway-report #:gateway-text #:inside-own-gateway-p
    ;; --- the operating system beneath the organism (os.lisp) ---
    #:platform #:architecture #:disable-huge-pages #:cap-malloc-arenas #:resident-bytes
-   #:skip-openssl-exit-cleanup #:resolve-names-directly
+   #:skip-openssl-exit-cleanup #:bind-asn1-string-get0 #:resolve-names-directly
    #:mapped-resident-bytes #:release-mapped-pages #:trim-working-set #:*shell* #:shell-argv
    #:*session-wrapper* #:session-argv #:pid-live-p #:kill-tree #:spawn-detached
    #:exits-zero-p #:errno-text

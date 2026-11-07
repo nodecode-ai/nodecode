@@ -1,0 +1,44 @@
+browser-extension/ is the Chrome companion extension of pi-chrome 0.15.51
+(https://github.com/tianrendong/pi-chrome, commit 4811ee6, MIT — see LICENSE),
+with these changes, and no others:
+
+- Named for Nodecode: manifest name, title and description ("Nodecode Chrome
+  Connector"), the poll's client name (the bridge hands commands only to a
+  poll carrying it), the "nc" badge, the default tab-group title and the
+  console prefix. The fourth version part counts these changes.
+- groupTab creates a new group in the tab's own window
+  (createProperties.windowId). Upstream's call puts it in the last-focused
+  window, which moved the session's tab out of its automation window into a
+  background slot of the user's.
+- createAutomationTarget reuses the session group's window only while every
+  tab in it is the group's, and makes the new tab the active one there:
+  upstream created it inactive, and Chrome drops input to a background tab.
+- Input on a hidden page (window minimized or covered, tab in the
+  background), read by page script: click and fill take their DOM forms at
+  once, type focuses by script and inserts through Input.insertText, key
+  dispatches page events (Enter in a form field submits it unless
+  prevented), scroll scrolls the element or page; hover, drag and tap refuse
+  with a reason. Chrome stalls mouse moves, wheel and touch on a page that
+  renders no frames, and acknowledges then drops presses and keys on one
+  that never rendered. Results say input: "dom".
+- On a visible page whose frames are slow (a throttled window), a mouse path,
+  drag or wheel flick that waits more than 100 ms for one event finishes in
+  one more event instead of paying a frame per step.
+- Model-facing error text names this cell's verbs ((chrome:snapshot),
+  (chrome:tabs), :target/:url-includes/:title-includes) instead of pi's
+  chrome_* tools.
+
+Wire names (x-pi-chrome-version, the actions, the params) are upstream's. The
+pi host side (extensions/chrome-profile-bridge/index.ts) is not vendored;
+tools/nodecode-chrome/*.lisp re-implements that bridge for the Lisp organism. The
+extension hard-codes http://127.0.0.1:17318 and reloads itself when the host
+advertises a newer version than manifest.json, so the Lisp host advertises
+exactly the version read from this folder's manifest.json, and START copies
+this folder to ~/.nodecode/chrome-extension/, the one the operator loads: a
+reload re-reads the folder an unpacked extension was loaded from, and this
+one moves with every release.
+
+To update: copy manifest.json, service_worker.js and snapshot_injected.js from
+upstream, re-apply the changes above, bump the commit here and the fourth
+version part, and re-run just chrome-check (the cell test pins the manifest
+version).

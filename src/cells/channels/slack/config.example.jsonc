@@ -1,0 +1,51 @@
+// channels.slack — the section ~/.nodecode/config.jsonc needs for this
+// adapter. Copy it in (a present section is enabled; "enabled": false
+// vetoes it), or say "set up slack" to the agent, which writes it through
+// (config-set ...) and checks both tokens with (nck:probe "slack").
+//
+// Secrets are never inline. A Slack app has two tokens, and each is named
+// by exactly one of <name>_env (an environment variable) or <name>_file (a
+// file holding it): the bot token (xoxb-) posts, the app-level token
+// (xapp-, connections:write) opens the Socket Mode socket.
+{
+  "channels": {
+    "slack": {
+      "bot_token_env": "SLACK_BOT_TOKEN",
+      "app_token_env": "SLACK_APP_TOKEN",
+      // At least one of allowed_channels / allowed_users must be non-empty:
+      // channel messages run with full host authority, so a lane never
+      // starts open to the world. Ids are strings: a channel's begins with
+      // C (G for some private ones), a DM's with D, a person's with U. With
+      // allowed_channels set, a DM answers only when its D id is listed too.
+      // The probe lists the bot's conversations and the workspace's people.
+      "allowed_users": ["<user id>"],
+      // Whose word is standing policy in the channel.
+      "owner": ["<user id>"],
+      // true: in channels, answer when @mentioned or in a thread the bot
+      // answers in. A DM always answers.
+      "require_mention": true,
+      // Other bots' messages: "none", "mentions" (one that @mentions this
+      // bot), or "all". The bot's own are always ignored.
+      "allow_bots": "none",
+      // Your own workspace id: in a channel shared with another
+      // organization (Slack Connect), only its people may drive the bot.
+      "allowed_workspaces": ["<workspace id>"],
+      // Wake words, and user group ids, that count as mentioning the bot.
+      "mention_patterns": [],
+      "mention_groups": [],
+      // true: each ask carries 👀 on the message itself while its turn runs,
+      // then ✅ once answered or ❌ if it failed.
+      "reactions": false,
+      // true: the turn's calls show in the thread as their own messages.
+      "show_tools": false,
+      // Minutes an ask's turn may run; 0, the default, caps nothing.
+      "turn_budget_minutes": 0,
+      // After the bot was away, read back this many minutes of what was said
+      // and answer the asks it missed, marked late; 0 never.
+      "catch_up_minutes": 60,
+      // A channel the bot keeps one message in: every thread it answers in,
+      // by who moves next (README: The thread board). Unset, no board.
+      "board_channel": "<channel id>"
+    }
+  }
+}

@@ -1,0 +1,227 @@
+{
+  "about": "Well-known MCP servers the web page offers to add, each in a shape this client speaks: a command over stdio with the environment it needs, or a URL over streamable HTTP with the headers it needs; none needs OAuth. Every recipe was read from its project's own documentation at the commit or version in `source' (2026-09-28), and the no-key URLs answered an anonymous initialize that day. `env' and `headers' name what the operator supplies: `ask' is the question, `prefix' goes before the answer, `optional' may be left empty.",
+  "servers": [
+    {
+      "name": "playwright",
+      "what": "Drives a real browser: opens pages, clicks, types, reads what is on screen",
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest"],
+      "needs": "Node.js",
+      "homepage": "https://github.com/microsoft/playwright-mcp",
+      "source": "microsoft/playwright-mcp README.md @ f183dad4a529; npm @playwright/mcp 0.0.83"
+    },
+    {
+      "name": "chrome-devtools",
+      "what": "Controls and inspects a live Chrome through its DevTools",
+      "command": "npx",
+      "args": ["-y", "chrome-devtools-mcp@latest", "--no-usage-statistics"],
+      "needs": "Node.js and Chrome",
+      "homepage": "https://github.com/ChromeDevTools/chrome-devtools-mcp",
+      "source": "ChromeDevTools/chrome-devtools-mcp README.md @ 47c5b3753d9b; npm chrome-devtools-mcp 1.10.1"
+    },
+    {
+      "name": "github",
+      "what": "GitHub repositories, issues, pull requests and Actions",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "headers": [
+        {"name": "Authorization", "prefix": "Bearer ", "ask": "A GitHub personal access token"}
+      ],
+      "homepage": "https://github.com/github/github-mcp-server",
+      "source": "github/github-mcp-server README.md, docs/remote-server.md @ 85598ba6e125"
+    },
+    {
+      "name": "linear",
+      "what": "Linear issues, projects and comments",
+      "url": "https://mcp.linear.app/mcp",
+      "headers": [
+        {"name": "Authorization", "prefix": "Bearer ", "ask": "A Linear API key"}
+      ],
+      "homepage": "https://linear.app/docs/mcp",
+      "source": "linear.app/docs/mcp (read 2026-09-28)"
+    },
+    {
+      "name": "sentry",
+      "what": "Sentry issues, events and traces, for triage",
+      "command": "npx",
+      "args": ["-y", "@sentry/mcp-server@latest"],
+      "env": [
+        {"name": "SENTRY_ACCESS_TOKEN", "ask": "A Sentry user auth token"}
+      ],
+      "needs": "Node.js",
+      "homepage": "https://github.com/getsentry/sentry-mcp",
+      "source": "getsentry/sentry-mcp README.md @ 0563bde2925f; npm @sentry/mcp-server 0.42.0"
+    },
+    {
+      "name": "stripe",
+      "what": "The Stripe API: payments, customers, billing",
+      "url": "https://mcp.stripe.com",
+      "headers": [
+        {"name": "Authorization", "prefix": "Bearer ", "ask": "A Stripe secret key (sk_) or, better, a restricted key (rk_)"}
+      ],
+      "homepage": "https://docs.stripe.com/mcp",
+      "source": "stripe/ai tools/modelcontextprotocol README.md, src/cli.ts @ 6a482a7ab5aa; npm @stripe/mcp 0.3.3"
+    },
+    {
+      "name": "supabase",
+      "what": "Supabase projects: tables, SQL, edge functions, docs",
+      "command": "npx",
+      "args": ["-y", "@supabase/mcp-server-supabase"],
+      "env": [
+        {"name": "SUPABASE_ACCESS_TOKEN", "ask": "A Supabase personal access token"}
+      ],
+      "needs": "Node.js",
+      "homepage": "https://supabase.com/mcp",
+      "source": "supabase/mcp packages/mcp-server-supabase server.json, src/cli.ts @ 4cc6660f6566; npm 0.13.0"
+    },
+    {
+      "name": "figma",
+      "what": "Figma files' layout and styles, for building a design (Framelink)",
+      "command": "npx",
+      "args": ["-y", "figma-developer-mcp", "--stdio"],
+      "env": [
+        {"name": "FIGMA_API_KEY", "ask": "A Figma personal access token"}
+      ],
+      "needs": "Node.js",
+      "homepage": "https://github.com/GLips/Figma-Context-MCP",
+      "source": "GLips/Figma-Context-MCP README.md, src/bin.ts @ c083d65c7e00; npm figma-developer-mcp 0.13.2"
+    },
+    {
+      "name": "context7",
+      "what": "Current documentation and examples for a library's version",
+      "url": "https://mcp.context7.com/mcp",
+      "headers": [
+        {"name": "Authorization", "prefix": "Bearer ", "ask": "A Context7 API key, for higher rate limits", "optional": true}
+      ],
+      "homepage": "https://context7.com",
+      "source": "upstash/context7 README.md, packages/mcp/src/index.ts @ 713b0a80be71; hermes-agent optional-mcps/context7 @ 6f7a7991bb06"
+    },
+    {
+      "name": "deepwiki",
+      "what": "Questions answered about any public GitHub repository",
+      "url": "https://mcp.deepwiki.com/mcp",
+      "homepage": "https://docs.devin.ai/work-with-devin/deepwiki-mcp",
+      "source": "docs.devin.ai deepwiki-mcp (read 2026-09-28); hermes-agent optional-mcps/deepwiki @ 6f7a7991bb06"
+    },
+    {
+      "name": "microsoft-learn",
+      "what": "Official Microsoft, Azure and .NET documentation and code samples",
+      "url": "https://learn.microsoft.com/api/mcp",
+      "homepage": "https://github.com/MicrosoftDocs/mcp",
+      "source": "MicrosoftDocs/mcp README.md @ f8ffde185dfd; hermes-agent optional-mcps/microsoft-learn @ 6f7a7991bb06"
+    },
+    {
+      "name": "aws-knowledge",
+      "what": "AWS documentation, API references and regional availability",
+      "url": "https://knowledge-mcp.global.api.aws",
+      "homepage": "https://github.com/awslabs/mcp/tree/main/src/aws-knowledge-mcp-server",
+      "source": "awslabs/mcp src/aws-knowledge-mcp-server/README.md @ 69a3cb031839; hermes-agent optional-mcps/aws-knowledge @ 6f7a7991bb06"
+    },
+    {
+      "name": "cloudflare-docs",
+      "what": "Cloudflare's developer documentation, searched",
+      "url": "https://docs.mcp.cloudflare.com/mcp",
+      "homepage": "https://github.com/cloudflare/mcp-server-cloudflare/tree/main/apps/docs-ai-search",
+      "source": "cloudflare/mcp-server-cloudflare apps/docs-ai-search/README.md @ 1d7a16b25db7"
+    },
+    {
+      "name": "exa",
+      "what": "Web search and page reading through Exa",
+      "url": "https://mcp.exa.ai/mcp",
+      "headers": [
+        {"name": "x-api-key", "ask": "An Exa API key, past the free rate limit", "optional": true}
+      ],
+      "homepage": "https://exa.ai/docs/reference/exa-mcp",
+      "source": "exa-labs/exa-mcp-server README.md @ f3d71fb6b0ff"
+    },
+    {
+      "name": "brave-search",
+      "what": "Web, news, image and local search through the Brave Search API",
+      "command": "npx",
+      "args": ["-y", "@brave/brave-search-mcp-server", "--transport", "stdio"],
+      "env": [
+        {"name": "BRAVE_API_KEY", "ask": "A Brave Search API key"}
+      ],
+      "needs": "Node.js",
+      "homepage": "https://github.com/brave/brave-search-mcp-server",
+      "source": "brave/brave-search-mcp-server README.md @ a75d7eff34c2; npm 2.1.4"
+    },
+    {
+      "name": "tavily",
+      "what": "Web search, extraction and crawling through Tavily",
+      "command": "npx",
+      "args": ["-y", "tavily-mcp@latest"],
+      "env": [
+        {"name": "TAVILY_API_KEY", "ask": "A Tavily API key"}
+      ],
+      "needs": "Node.js",
+      "homepage": "https://github.com/tavily-ai/tavily-mcp",
+      "source": "tavily-ai/tavily-mcp README.md @ 1c1d54c2a619; npm tavily-mcp 0.2.22"
+    },
+    {
+      "name": "firecrawl",
+      "what": "Web pages scraped, crawled and searched as markdown",
+      "command": "npx",
+      "args": ["-y", "firecrawl-mcp"],
+      "env": [
+        {"name": "FIRECRAWL_API_KEY", "ask": "A Firecrawl API key"}
+      ],
+      "needs": "Node.js",
+      "homepage": "https://firecrawl.dev",
+      "source": "firecrawl/firecrawl-mcp-server README.md @ 4fce27511579; npm firecrawl-mcp 3.26.0"
+    },
+    {
+      "name": "memory",
+      "what": "A knowledge graph kept in a local file, across sessions",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"],
+      "needs": "Node.js",
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/memory",
+      "source": "modelcontextprotocol/servers src/memory/README.md @ f46d9578190b; npm 2026.8.31"
+    },
+    {
+      "name": "sequential-thinking",
+      "what": "Step-by-step problem solving, each step revisable",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+      "needs": "Node.js",
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/sequentialthinking",
+      "source": "modelcontextprotocol/servers src/sequentialthinking/README.md @ f46d9578190b; npm 2026.8.31"
+    },
+    {
+      "name": "fetch",
+      "what": "A URL fetched and turned into markdown",
+      "command": "uvx",
+      "args": ["mcp-server-fetch"],
+      "needs": "uv",
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/fetch",
+      "source": "modelcontextprotocol/servers src/fetch/README.md @ f46d9578190b; PyPI mcp-server-fetch 2026.8.18"
+    },
+    {
+      "name": "git",
+      "what": "A local git repository read, diffed and committed",
+      "command": "uvx",
+      "args": ["mcp-server-git"],
+      "needs": "uv",
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/git",
+      "source": "modelcontextprotocol/servers src/git/README.md @ f46d9578190b; PyPI mcp-server-git 2026.8.18"
+    },
+    {
+      "name": "time",
+      "what": "The current time, and times converted between zones",
+      "command": "uvx",
+      "args": ["mcp-server-time"],
+      "needs": "uv",
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/time",
+      "source": "modelcontextprotocol/servers src/time/README.md @ f46d9578190b; PyPI mcp-server-time 2026.8.18"
+    },
+    {
+      "name": "everything",
+      "what": "The protocol's reference test server: sample tools, prompts, resources",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-everything"],
+      "needs": "Node.js",
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/everything",
+      "source": "modelcontextprotocol/servers src/everything/README.md @ f46d9578190b; npm 2026.8.31"
+    }
+  ]
+}

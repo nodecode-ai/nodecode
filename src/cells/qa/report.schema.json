@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "nodecode/weekly/1",
+  "description": "One page of counts an organism sends nodecode.ai once a week when its operator chose to share. Every field is listed here and nothing else is sent: no prompt, path, file, hostname, session id or install id. The nonce is minted per page and links nothing across pages. `nodecode` prints the next page with /qa show.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["report", "nonce", "version", "platform", "since", "until", "rounds", "turns", "tools", "issues", "crashes"],
+  "properties": {
+    "report": {"const": "nodecode/weekly/1"},
+    "nonce": {"type": "string", "pattern": "^[0-9a-f]{32}$", "description": "minted for this page; the collector keeps it two weeks to drop a redelivery, then forgets it"},
+    "version": {"type": "string", "description": "the build, as nodecode --version prints it"},
+    "platform": {"type": "string", "description": "arch-os as a release names itself: x86_64-linux, arm64-darwin"},
+    "since": {"type": "string", "format": "date-time", "description": "the window's start: the previous page's end, or the moment sharing was chosen"},
+    "until": {"type": "string", "format": "date-time"},
+    "rounds": {
+      "type": "array",
+      "description": "one entry per provider and model that answered a round in the window",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["provider", "model", "requests", "retries", "fallbacks", "input_tokens", "output_tokens", "cached_tokens"],
+        "properties": {
+          "provider": {"type": "string"},
+          "model": {"type": "string"},
+          "requests": {"type": "integer", "description": "provider rounds that reported usage"},
+          "retries": {"type": "integer", "description": "transient failures retried"},
+          "fallbacks": {"type": "integer", "description": "rounds that failed over to another model"},
+          "input_tokens": {"type": "integer", "description": "to the nearest thousand"},
+          "output_tokens": {"type": "integer", "description": "to the nearest thousand"},
+          "cached_tokens": {"type": "integer", "description": "cache-read input tokens, to the nearest thousand"},
+          "ttft_ms": {"type": "integer", "description": "median time to first token; absent when no round measured one"}
+        }
+      }
+    },
+    "turns": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["completed", "cancelled", "failed"],
+      "properties": {
+        "completed": {"type": "integer"},
+        "cancelled": {"type": "integer"},
+        "failed": {"type": "object", "description": "count per failure class: the condition type's name, package dropped", "additionalProperties": {"type": "integer"}}
+      }
+    },
+    "tools": {
+      "type": "array",
+      "description": "one entry per tool called in the window",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tool", "calls", "errors"],
+        "properties": {
+          "tool": {"type": "string"},
+          "calls": {"type": "integer"},
+          "errors": {"type": "integer", "description": "results that began with ERROR:"},
+          "duration_ms": {"type": "integer", "description": "median body time; absent when unmeasured"}
+        }
+      }
+    },
+    "issues": {
+      "type": "array",
+      "description": "what the model reported through report_issue, by tool and symptom; the note's text never rides here",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tool", "symptom", "count"],
+        "properties": {
+          "tool": {"type": "string"},
+          "symptom": {"type": "string", "enum": ["timeout", "wrong_output", "refused", "schema_mismatch", "missing_capability", "other"]},
+          "count": {"type": "integer"}
+        }
+      }
+    },
+    "crashes": {"type": "object", "description": "count per condition class of the process-ending reports the stdio log holds", "additionalProperties": {"type": "integer"}}
+  }
+}

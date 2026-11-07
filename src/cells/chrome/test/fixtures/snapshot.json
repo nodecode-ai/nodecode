@@ -1,0 +1,852 @@
+{
+ "title": "Fix flaky bridge test by alice - Pull Request #42 - nodecode",
+ "url": "https://github.com/example/nodecode/pull/42",
+ "mode": "auto",
+ "query": "merge button",
+ "viewport": {
+  "width": 1440,
+  "height": 900,
+  "scrollX": 0,
+  "scrollY": 480
+ },
+ "summary": {
+  "visibleText": "...",
+  "visibleInteractiveCount": 30,
+  "totalInteractiveSampled": 34,
+  "totalInteractiveVisible": 61,
+  "focused": {
+   "uid": "el-4",
+   "role": "textbox",
+   "label": "Add a comment"
+  },
+  "hints": [
+   "el-3 'Squash and merge' is disabled.",
+   "el-5 'Comment' appears occluded by div."
+  ]
+ },
+ "text": "Fix flaky bridge test\nThis PR makes the port probe deterministic.\nFix flaky bridge test\nThis PR makes the port probe deterministic.\nFix flaky bridge test\nThis PR makes the port probe deterministic.\n",
+ "textTruncated": true,
+ "textSnippets": [
+  {
+   "uid": "el-50",
+   "text": "Fix flaky bridge test"
+  },
+  {
+   "uid": "el-51",
+   "text": "This PR makes the port probe deterministic.   It also\n removes a sleep."
+  },
+  {
+   "uid": "el-52",
+   "text": "2 approvals"
+  }
+ ],
+ "elements": [
+  {
+   "index": 0,
+   "uid": "el-1",
+   "tag": "a",
+   "role": "link",
+   "selector": "a:nth-of-type(1)",
+   "label": "Skip to content",
+   "disabled": false,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 0,
+    "y": 0,
+    "width": 1,
+    "height": 1
+   }
+  },
+  {
+   "index": 1,
+   "uid": "el-2",
+   "tag": "button",
+   "role": "button",
+   "selector": "button:nth-of-type(2)",
+   "label": "Merge pull request",
+   "disabled": false,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 842,
+    "y": 512,
+    "width": 168,
+    "height": 32
+   },
+   "context": {
+    "uid": "el-40",
+    "label": "Merge box"
+   }
+  },
+  {
+   "index": 2,
+   "uid": "el-3",
+   "tag": "button",
+   "role": "button",
+   "selector": "button:nth-of-type(3)",
+   "label": "Squash and merge",
+   "disabled": true,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 1014,
+    "y": 512,
+    "width": 40,
+    "height": 32
+   }
+  },
+  {
+   "index": 3,
+   "uid": "el-4",
+   "tag": "input",
+   "role": "textbox",
+   "selector": "input:nth-of-type(4)",
+   "label": "Add a comment",
+   "disabled": false,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 120,
+    "y": 700,
+    "width": 720,
+    "height": 80
+   },
+   "value": "Looks \"good\" to me"
+  },
+  {
+   "index": 4,
+   "uid": "el-5",
+   "tag": "button",
+   "role": "button",
+   "selector": "button:nth-of-type(5)",
+   "label": "Comment",
+   "disabled": false,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 760,
+    "y": 800,
+    "width": 90,
+    "height": 32
+   },
+   "occluded": {
+    "tag": "div",
+    "id": "toast"
+   }
+  },
+  {
+   "index": 5,
+   "uid": "el-6",
+   "tag": "a",
+   "role": "link",
+   "selector": "a:nth-of-type(6)",
+   "label": "Files changed",
+   "disabled": false,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 380,
+    "y": 120,
+    "width": 110,
+    "height": 40
+   }
+  },
+  {
+   "index": 6,
+   "uid": "el-7",
+   "tag": "input",
+   "role": "checkbox",
+   "selector": "input:nth-of-type(7)",
+   "label": "Viewed",
+   "disabled": false,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 1100,
+    "y": 640,
+    "width": 16,
+    "height": 16
+   },
+   "checked": false
+  },
+  {
+   "index": 7,
+   "uid": "el-8",
+   "tag": "input",
+   "role": "textbox",
+   "selector": "input:nth-of-type(8)",
+   "label": "Password",
+   "disabled": false,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 120,
+    "y": 900,
+    "width": 300,
+    "height": 32
+   },
+   "valueRedacted": true,
+   "hasValue": true,
+   "valueLength": 12
+  },
+  {
+   "index": 8,
+   "uid": "el-9",
+   "tag": "a",
+   "role": "link",
+   "selector": "a:nth-of-type(9)",
+   "label": "Link number 9 with a fairly long label that goes on and on to exercise compaction  and   whitespace",
+   "disabled": false,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 10,
+    "y": 1240,
+    "width": 200,
+    "height": 24
+   }
+  },
+  {
+   "index": 9,
+   "uid": "el-10",
+   "tag": "a",
+   "role": "link",
+   "selector": "a:nth-of-type(10)",
+   "label": "Link number 10 with a fairly long label that goes on and on to exercise compaction  and   whitespace",
+   "disabled": false,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 10,
+    "y": 1270,
+    "width": 200,
+    "height": 24
+   }
+  },
+  {
+   "index": 10,
+   "uid": "el-11",
+   "tag": "a",
+   "role": "link",
+   "selector": "a:nth-of-type(11)",
+   "label": "Link number 11 with a fairly long label that goes on and on to exercise compaction  and   whitespace",
+   "disabled": false,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 10,
+    "y": 1300,
+    "width": 200,
+    "height": 24
+   }
+  },
+  {
+   "index": 11,
+   "uid": "el-12",
+   "tag": "a",
+   "role": "link",
+   "selector": "a:nth-of-type(12)",
+   "label": "Link number 12 with a fairly long label that goes on and on to exercise compaction  and   whitespace",
+   "disabled": false,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 10,
+    "y": 1330,
+    "width": 200,
+    "height": 24
+   }
+  },
+  {
+   "index": 12,
+   "uid": "el-13",
+   "tag": "a",
+   "role": "link",
+   "selector": "a:nth-of-type(13)",
+   "label": "Link number 13 with a fairly long label that goes on and on to exercise compaction  and   whitespace",
+   "disabled": false,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 10,
+    "y": 1360,
+    "width": 200,
+    "height": 24
+   }
+  },
+  {
+   "index": 13,
+   "uid": "el-14",
+   "tag": "a",
+   "role": "link",
+   "selector": "a:nth-of-type(14)",
+   "label": "Link number 14 with a fairly long label that goes on and on to exercise compaction  and   whitespace",
+   "disabled": false,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 10,
+    "y": 1390,
+    "width": 200,
+    "height": 24
+   }
+  },
+  {
+   "index": 14,
+   "uid": "el-15",
+   "tag": "a",
+   "role": "link",
+   "selector": "a:nth-of-type(15)",
+   "label": "Link number 15 with a fairly long label that goes on and on to exercise compaction  and   whitespace",
+   "disabled": false,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 10,
+    "y": 1420,
+    "width": 200,
+    "height": 24
+   }
+  },
+  {
+   "index": 15,
+   "uid": "el-16",
+   "tag": "a",
+   "role": "link",
+   "selector": "a:nth-of-type(16)",
+   "label": "Link number 16 with a fairly long label that goes on and on to exercise compaction  and   whitespace",
+   "disabled": false,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 10,
+    "y": 1450,
+    "width": 200,
+    "height": 24
+   }
+  },
+  {
+   "index": 16,
+   "uid": "el-17",
+   "tag": "a",
+   "role": "link",
+   "selector": "a:nth-of-type(17)",
+   "label": "Link number 17 with a fairly long label that goes on and on to exercise compaction  and   whitespace",
+   "disabled": false,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 10,
+    "y": 1480,
+    "width": 200,
+    "height": 24
+   }
+  },
+  {
+   "index": 17,
+   "uid": "el-18",
+   "tag": "a",
+   "role": "link",
+   "selector": "a:nth-of-type(18)",
+   "label": "Link number 18 with a fairly long label that goes on and on to exercise compaction  and   whitespace",
+   "disabled": false,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 10,
+    "y": 1510,
+    "width": 200,
+    "height": 24
+   }
+  },
+  {
+   "index": 18,
+   "uid": "el-19",
+   "tag": "a",
+   "role": "link",
+   "selector": "a:nth-of-type(19)",
+   "label": "Link number 19 with a fairly long label that goes on and on to exercise compaction  and   whitespace",
+   "disabled": false,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 10,
+    "y": 1540,
+    "width": 200,
+    "height": 24
+   }
+  },
+  {
+   "index": 19,
+   "uid": "el-20",
+   "tag": "a",
+   "role": "link",
+   "selector": "a:nth-of-type(20)",
+   "label": "Link number 20 with a fairly long label that goes on and on to exercise compaction  and   whitespace",
+   "disabled": false,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 10,
+    "y": 1570,
+    "width": 200,
+    "height": 24
+   }
+  },
+  {
+   "index": 20,
+   "uid": "el-21",
+   "tag": "a",
+   "role": "link",
+   "selector": "a:nth-of-type(21)",
+   "label": "Link number 21 with a fairly long label that goes on and on to exercise compaction  and   whitespace",
+   "disabled": false,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 10,
+    "y": 1600,
+    "width": 200,
+    "height": 24
+   }
+  },
+  {
+   "index": 21,
+   "uid": "el-22",
+   "tag": "a",
+   "role": "link",
+   "selector": "a:nth-of-type(22)",
+   "label": "Link number 22 with a fairly long label that goes on and on to exercise compaction  and   whitespace",
+   "disabled": false,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 10,
+    "y": 1630,
+    "width": 200,
+    "height": 24
+   }
+  },
+  {
+   "index": 22,
+   "uid": "el-23",
+   "tag": "a",
+   "role": "link",
+   "selector": "a:nth-of-type(23)",
+   "label": "Link number 23 with a fairly long label that goes on and on to exercise compaction  and   whitespace",
+   "disabled": false,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 10,
+    "y": 1660,
+    "width": 200,
+    "height": 24
+   }
+  },
+  {
+   "index": 23,
+   "uid": "el-24",
+   "tag": "a",
+   "role": "link",
+   "selector": "a:nth-of-type(24)",
+   "label": "Link number 24 with a fairly long label that goes on and on to exercise compaction  and   whitespace",
+   "disabled": false,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 10,
+    "y": 1690,
+    "width": 200,
+    "height": 24
+   }
+  },
+  {
+   "index": 24,
+   "uid": "el-25",
+   "tag": "a",
+   "role": "link",
+   "selector": "a:nth-of-type(25)",
+   "label": "Link number 25 with a fairly long label that goes on and on to exercise compaction  and   whitespace",
+   "disabled": false,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 10,
+    "y": 1720,
+    "width": 200,
+    "height": 24
+   }
+  },
+  {
+   "index": 25,
+   "uid": "el-26",
+   "tag": "a",
+   "role": "link",
+   "selector": "a:nth-of-type(26)",
+   "label": "Link number 26 with a fairly long label that goes on and on to exercise compaction  and   whitespace",
+   "disabled": false,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 10,
+    "y": 1750,
+    "width": 200,
+    "height": 24
+   }
+  },
+  {
+   "index": 26,
+   "uid": "el-27",
+   "tag": "a",
+   "role": "link",
+   "selector": "a:nth-of-type(27)",
+   "label": "Link number 27 with a fairly long label that goes on and on to exercise compaction  and   whitespace",
+   "disabled": false,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 10,
+    "y": 1780,
+    "width": 200,
+    "height": 24
+   }
+  },
+  {
+   "index": 27,
+   "uid": "el-28",
+   "tag": "a",
+   "role": "link",
+   "selector": "a:nth-of-type(28)",
+   "label": "Link number 28 with a fairly long label that goes on and on to exercise compaction  and   whitespace",
+   "disabled": false,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 10,
+    "y": 1810,
+    "width": 200,
+    "height": 24
+   }
+  },
+  {
+   "index": 28,
+   "uid": "el-29",
+   "tag": "a",
+   "role": "link",
+   "selector": "a:nth-of-type(29)",
+   "label": "Link number 29 with a fairly long label that goes on and on to exercise compaction  and   whitespace",
+   "disabled": false,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 10,
+    "y": 1840,
+    "width": 200,
+    "height": 24
+   }
+  },
+  {
+   "index": 29,
+   "uid": "el-30",
+   "tag": "a",
+   "role": "link",
+   "selector": "a:nth-of-type(30)",
+   "label": "Link number 30 with a fairly long label that goes on and on to exercise compaction  and   whitespace",
+   "disabled": false,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 10,
+    "y": 1870,
+    "width": 200,
+    "height": 24
+   }
+  },
+  {
+   "index": 30,
+   "uid": "el-31",
+   "tag": "a",
+   "role": "link",
+   "selector": "a:nth-of-type(31)",
+   "label": "Link number 31 with a fairly long label that goes on and on to exercise compaction  and   whitespace",
+   "disabled": false,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 10,
+    "y": 1900,
+    "width": 200,
+    "height": 24
+   }
+  },
+  {
+   "index": 31,
+   "uid": "el-32",
+   "tag": "a",
+   "role": "link",
+   "selector": "a:nth-of-type(32)",
+   "label": "Link number 32 with a fairly long label that goes on and on to exercise compaction  and   whitespace",
+   "disabled": false,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 10,
+    "y": 1930,
+    "width": 200,
+    "height": 24
+   }
+  },
+  {
+   "index": 32,
+   "uid": "el-33",
+   "tag": "a",
+   "role": "link",
+   "selector": "a:nth-of-type(33)",
+   "label": "Link number 33 with a fairly long label that goes on and on to exercise compaction  and   whitespace",
+   "disabled": false,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 10,
+    "y": 1960,
+    "width": 200,
+    "height": 24
+   }
+  },
+  {
+   "index": 33,
+   "uid": "el-34",
+   "tag": "a",
+   "role": "link",
+   "selector": "a:nth-of-type(34)",
+   "label": "Link number 34 with a fairly long label that goes on and on to exercise compaction  and   whitespace",
+   "disabled": false,
+   "inert": false,
+   "pointerEvents": "auto",
+   "rect": {
+    "x": 10,
+    "y": 1990,
+    "width": 200,
+    "height": 24
+   }
+  }
+ ],
+ "forms": {
+  "fields": [
+   {
+    "index": 3,
+    "uid": "el-4",
+    "tag": "input",
+    "role": "textbox",
+    "selector": "input:nth-of-type(4)",
+    "label": "Add a comment",
+    "disabled": false,
+    "inert": false,
+    "pointerEvents": "auto",
+    "rect": {
+     "x": 120,
+     "y": 700,
+     "width": 720,
+     "height": 80
+    },
+    "value": "Looks \"good\" to me",
+    "required": false,
+    "invalid": false
+   },
+   {
+    "index": 7,
+    "uid": "el-8",
+    "tag": "input",
+    "role": "textbox",
+    "selector": "input:nth-of-type(8)",
+    "label": "Password",
+    "disabled": false,
+    "inert": false,
+    "pointerEvents": "auto",
+    "rect": {
+     "x": 120,
+     "y": 900,
+     "width": 300,
+     "height": 32
+    },
+    "valueRedacted": true,
+    "hasValue": true,
+    "valueLength": 12,
+    "required": true,
+    "invalid": true
+   }
+  ],
+  "submits": [
+   {
+    "index": 4,
+    "uid": "el-5",
+    "tag": "button",
+    "role": "button",
+    "selector": "button:nth-of-type(5)",
+    "label": "Comment",
+    "disabled": false,
+    "inert": false,
+    "pointerEvents": "auto",
+    "rect": {
+     "x": 760,
+     "y": 800,
+     "width": 90,
+     "height": 32
+    },
+    "occluded": {
+     "tag": "div",
+     "id": "toast"
+    }
+   }
+  ]
+ },
+ "layout": [
+  {
+   "uid": "el-40",
+   "role": "region",
+   "tag": "section",
+   "label": "Merge box",
+   "rect": {
+    "x": 100,
+    "y": 500,
+    "width": 1000,
+    "height": 120
+   },
+   "fields": [],
+   "actions": [
+    {
+     "uid": "el-2",
+     "label": "Merge pull request",
+     "disabled": false
+    },
+    {
+     "uid": "el-3",
+     "label": "Squash and merge",
+     "disabled": true
+    }
+   ]
+  },
+  {
+   "uid": "el-41",
+   "role": "form",
+   "tag": "form",
+   "label": null,
+   "text": "Leave a comment",
+   "rect": {
+    "x": 100,
+    "y": 680,
+    "width": 1000,
+    "height": 200
+   },
+   "fields": [
+    {
+     "uid": "el-4",
+     "label": "Add a comment",
+     "role": "textbox"
+    }
+   ],
+   "actions": [
+    {
+     "uid": "el-5",
+     "label": "Comment"
+    }
+   ]
+  }
+ ],
+ "pageMap": {
+  "regions": [
+   {
+    "uid": "el-40",
+    "kind": "region",
+    "label": "Merge box",
+    "actions": [
+     {
+      "uid": "el-2",
+      "role": "button",
+      "label": "Merge pull request",
+      "disabled": false
+     }
+    ]
+   }
+  ],
+  "headings": [
+   {
+    "uid": "el-60",
+    "level": 1,
+    "text": "Fix flaky bridge test #42"
+   }
+  ]
+ },
+ "matches": [
+  {
+   "kind": "element",
+   "uid": "el-2",
+   "role": "button",
+   "label": "Merge pull request",
+   "rect": {
+    "x": 842,
+    "y": 512,
+    "width": 168,
+    "height": 32
+   },
+   "score": 0.98
+  },
+  {
+   "kind": "region",
+   "uid": "el-40",
+   "label": "Merge box",
+   "headings": [
+    "Merge"
+   ]
+  },
+  {
+   "kind": "text",
+   "uid": "el-52",
+   "text": "2 approvals",
+   "rect": {
+    "x": 1,
+    "y": 2,
+    "width": 3,
+    "height": 4
+   }
+  }
+ ],
+ "filter": {},
+ "diff": {
+  "changes": [
+   {
+    "kind": "textChanged"
+   },
+   {
+    "kind": "focus",
+    "before": null,
+    "after": "el-4"
+   }
+  ],
+  "added": [
+   {
+    "uid": "el-7",
+    "role": "checkbox",
+    "label": "Viewed"
+   }
+  ],
+  "removed": [],
+  "updated": [
+   {
+    "uid": "el-3",
+    "before": {
+     "uid": "el-3",
+     "label": "Squash and merge",
+     "disabled": false
+    },
+    "after": {
+     "uid": "el-3",
+     "label": "Squash and merge",
+     "disabled": true
+    }
+   }
+  ]
+ }
+}

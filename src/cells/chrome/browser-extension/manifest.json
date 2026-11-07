@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Nodecode Chrome Connector",
+  "version": "0.15.51.4",
+  "description": "Lets Nodecode control tabs in Chrome via a local connector at 127.0.0.1.",
+  "permissions": [
+    "tabs",
+    "tabGroups",
+    "scripting",
+    "storage",
+    "activeTab",
+    "alarms",
+    "webNavigation",
+    "debugger"
+  ],
+  "host_permissions": [
+    "<all_urls>",
+    "http://127.0.0.1:17318/*"
+  ],
+  "background": {
+    "service_worker": "service_worker.js"
+  },
+  "action": {
+    "default_title": "Nodecode Chrome Connector"
+  }
+}

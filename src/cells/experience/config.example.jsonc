@@ -1,0 +1,15 @@
+// The `experience' section of ~/.nodecode/config.jsonc. Every key is
+// optional; the cell runs on these defaults with no section at all.
+{
+  "experience": {
+    // reflect after: "tools" (turns that ran a tool call, or ended failed
+    // or cancelled), "every" (every operator turn), "off" (only by hand)
+    "reflect": "tools",
+    // record the reflection's recap back into the session as its own note
+    "recap": true,
+    "recap_lines": 1
+    // "sources": ["gateway", "in_process"],   // invocation source kinds reflected on
+    // "provider": "a6api", "model": "glm-5.3-flash"   // a reflection model of its own (gives up the shared prefix)
+    // "verification_repair_attempts": 1   // repairs a reflection may make per failed check
+  }
+}
