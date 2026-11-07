@@ -6,10 +6,14 @@
 ;;;; dependencies), because cl+ssl chooses its libraries as it loads. Left to
 ;;;; itself on Apple Silicon it opens /opt/homebrew/opt/openssl/lib, the path
 ;;;; of Homebrew's unversioned `openssl', and that name is OpenSSL 4 now.
-;;;; OpenSSL 4 removed ASN1_STRING_data, which cl+ssl's certificate check
-;;;; calls, so a build that opened it starts and then fails its first TLS
-;;;; connection, sign-in included: `The alien function "ASN1_STRING_data" is
-;;;; undefined'.
+;;;; Builds through 0.1.12 opened it there, and since OpenSSL 4 removed
+;;;; ASN1_STRING_data, which cl+ssl's certificate check calls, they started
+;;;; and then failed their first TLS connection, sign-in included: `The alien
+;;;; function "ASN1_STRING_data" is undefined'. bind-asn1-string-get0 (src/lib/os.lisp)
+;;;; now reads certificates through ASN1_STRING_get0_data, the name OpenSSL 4
+;;;; kept, so a 4.x library no longer breaks a build; this pin is what keeps a
+;;;; Homebrew alias move from swapping the library under a shipped build at
+;;;; all, so every Mac runs the OpenSSL the release was built and tested with.
 ;;;;
 ;;;; SBCL reopens a loaded library at every start of the dumped image, by the
 ;;;; path it was loaded from on the box that built it. So the path named here
