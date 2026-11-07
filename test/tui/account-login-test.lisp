@@ -462,7 +462,8 @@
 
 (deftest account-footer-badge-is-two-chips-where-grounds-paint ()
   (let ((nle::*account-meter* (account-meter-fixture +account-usage-plan+))
-        (model (make-instance 'nle::chat-model)))
+        (model (make-instance 'nle::gateway-chat-model)))
+    (setf (nle::gateway-model-model-facts model) (list :provider nle::+own-provider+ :model "nodecode-cyber-v1"))
     (let ((nle::*color-profile* :truecolor))
       (let ((segs (nle::account-meter-segs model)))
         (is (equal '(" Founders " " 41.1k ") (mapcar #'nle::seg-text segs)))
@@ -473,6 +474,20 @@
       (let ((segs (nle::account-meter-segs model)))
         (is (equal '("Founders 41.1k") (mapcar #'nle::seg-text segs)) "16 colours: plain words")
         (is (null (nle::seg-ground (first segs))))))))
+
+(deftest account-footer-badge-shows-only-on-nodecode-ais-own-providers ()
+  (let ((nle::*account-meter* (account-meter-fixture +account-usage-plan+))
+        (nle::*color-profile* :ansi)
+        (model (make-instance 'nle::gateway-chat-model)))
+    (flet ((badge (provider)
+             (setf (nle::gateway-model-model-facts model)
+                   (if provider (list :provider provider :model "m") :unresolved))
+             (mapcar #'nle::seg-text (nle::account-meter-segs model))))
+      (is (equal '("Founders 41.1k") (badge "nodecode")) "on nodecode.ai's own API: the account's meter")
+      (is (equal '("Founders 41.1k") (badge "nodecode-free")) "on the free key with no free meter read: still the account's")
+      (is (null (badge "openai-codex")) "another provider pays its own turns: no nodecode.ai credit beside it")
+      (is (null (badge "anthropic")) "nor beside any other")
+      (is (null (badge nil)) "a shell that has not learned its provider names no meter"))))
 
 (deftest account-usage-read-refuses-a-key-the-gate-refuses ()
   (is (search "Sign in again"
