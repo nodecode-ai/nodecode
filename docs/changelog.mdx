@@ -32,6 +32,19 @@ nodecode 0.1.7+2629050e1
 The version comes first and the build label, the commit the release was built from, follows the `+`. An installed build moves to a new release by itself, between turns. `nodecode update` moves it now. See [Updates](updates.mdx).
 
 {/* source: tools/release/publish.sh */}
+## 0.1.13
+
+Linux, macOS and Windows. Changes since 0.1.12 (`e105154bc`).
+
+- On a Mac whose Homebrew `openssl` has moved to 4.x, sign-in, the provider list and updates work again: nodecode opens OpenSSL 3 by `openssl@3`'s own path, and reads a certificate through the name OpenSSL 4 kept. A Mac on 0.1.11 or 0.1.12 that met this cannot update itself, because its HTTPS fails: run the installer again, and it asks for `brew install openssl@3` when that is missing.
+- `nodecode logout` and `/logout` also sign the machine out on nodecode.ai, so its key stops working.
+- The footer shows nodecode.ai credit only while a session runs on nodecode.ai. `/account` and `/usage` still show it on any provider.
+- A variable kept from a call keeps the value the call gave, so a later shell or boot no longer runs the call again: a kept post is posted once.
+- An answer no message asked for no longer leaves an empty user message behind, which strict providers such as Kimi refused.
+- A gateway restart keeps the jobs a tool shell left running.
+- A picture in Konsole stays in its band.
+
+{/* source: tools/release/publish.sh */}
 ## 0.1.12
 
 Linux, macOS and Windows. Changes since 0.1.11 (`50d5d867c`).
