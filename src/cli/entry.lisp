@@ -1082,6 +1082,9 @@ condition's report, exit 1."
   (nlk:resolve-names-directly)
   ;; And an exit that never waits on OpenSSL's cleanup (os.lisp).
   (nlk:skip-openssl-exit-cleanup)
+  ;; And the one name OpenSSL 4.0 dropped, bound to the one it kept, before a
+  ;; certificate is read (os.lisp, BIND-ASN1-STRING-GET0).
+  (nlk:bind-asn1-string-get0)
   ;; Room for descriptors: macOS starts a process at 256 open files
   ;; (os.lisp, RAISE-FILE-LIMIT), inherited by every child spawned after.
   (nlk::raise-file-limit)
