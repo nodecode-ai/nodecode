@@ -739,11 +739,17 @@ TONE's colour on whatever it stands on."
 (defun account-meter-segs (model)
   "The footer's account badge: the plan's name on a chip, then what is left on a chip of the
 meter's tone, both a link to /account -- the free key's (Free key, Cyber v1) while the session
-runs on it (+FREE-PROVIDER+); NIL when this home is not signed in to nodecode.ai."
-  (let* ((meter (or (and (string-equal +free-provider+
-                                       (or (ignore-errors (json-value (footer-identity model) :text)) ""))
-                         (getf *account-meter* :free))
-                    *account-meter*))
+runs on it (+FREE-PROVIDER+). NIL when this home is not signed in to nodecode.ai, and while the
+session runs on any provider but nodecode.ai's own (+OWN-PROVIDER+, +FREE-PROVIDER+), or has not
+learned its provider yet."
+  ;; The badge says what pays for the next turn. A session on another provider (openai-codex,
+  ;; anthropic) is paid there, so nodecode.ai's credit beside its model was noise (the operator,
+  ;; 2026-11-07: "if on another provider -- it should not show the usage credits"). /account and
+  ;; /usage still read the account on any provider.
+  (let* ((provider (or (ignore-errors (json-value (footer-identity model) :text)) ""))
+         (meter (cond ((string-equal provider +free-provider+)
+                       (or (getf *account-meter* :free) *account-meter*))
+                      ((string-equal provider +own-provider+) *account-meter*)))
          (value (getf meter :value)))
     (when value
       (let ((label (getf meter :label))
