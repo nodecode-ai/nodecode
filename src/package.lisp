@@ -80,7 +80,7 @@ renderer, the program loop.")
    ;; --- kitty graphics (image.lisp) ---
    #:image-media-type #:image-dimensions #:png-dimensions #:file-octets
    #:*png-transcoders* #:transcode-to-png #:transmit-image #:place-image
-   #:request-kitty-graphics #:request-terminal-attributes #:current-multiplexer
+   #:request-kitty-graphics #:request-terminal-attributes #:request-cell-size #:current-multiplexer
    ;; --- sixel and half blocks (raster.lisp) ---
    #:raster-colors #:unpack-rgb #:quantize-colors #:sixel-data #:half-block-grid #:mosaic-grid
    #:*sixel-colors*
@@ -147,7 +147,7 @@ renderer, the program loop.")
    #:keep-shell-jobs #:kept-jobs-text
    ;; --- the operating system beneath the organism (os.lisp) ---
    #:platform #:architecture #:disable-huge-pages #:cap-malloc-arenas #:resident-bytes
-   #:skip-openssl-exit-cleanup #:resolve-names-directly
+   #:skip-openssl-exit-cleanup #:bind-asn1-string-get0 #:resolve-names-directly
    #:mapped-resident-bytes #:release-mapped-pages #:trim-working-set #:*shell* #:shell-argv
    #:*session-wrapper* #:session-argv #:pid-live-p #:kill-tree #:spawn-detached
    #:exits-zero-p #:errno-text

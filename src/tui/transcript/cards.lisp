@@ -372,11 +372,11 @@ fact never measured the image (the Zig image_preview_rows viewport input).")
   ;; sharing state — and lets every attached shell reserve exactly what it
   ;; places.
   ;;
-  ;; The terminal is never asked: kitty is given a row count and derives the
-  ;; columns from the image's own aspect ratio, so the guess only has to be close
-  ;; enough to keep an image off its own scale. A cell is nominally 18 pixels tall
-  ;; (near enough) and 2 times taller than wide (near enough), which is what
-  ;; keeps a wide image inside the frame.
+  ;; The terminal is never asked here: the placement fits the picture into
+  ;; these rows at the cell size the terminal reported (KITTY-IMAGE-BOX), so
+  ;; the guess only has to be close enough to keep an image off its own scale.
+  ;; A cell is nominally 18 pixels tall (near enough) and 2 times taller than
+  ;; wide (near enough), which is what keeps a wide image inside the frame.
   (if (and (integerp image-width) (plusp image-width)
            (integerp image-height) (plusp image-height))
       (max 1 (min *image-preview-max-rows*

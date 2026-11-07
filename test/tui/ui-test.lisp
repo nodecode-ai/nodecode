@@ -4497,6 +4497,46 @@ and the DELIVERY its handler declares."
           (is (zerop (length (string-trim " " (aref model.line-plain index)))))
           (is (search "Viewed " (aref model.line-plain (1- index)))))))))
 
+(deftest a-kitty-picture-is-placed-in-the-box-of-the-reported-cell (with-temp-store ())
+  ;; Konsole scales a kitty placement only when it has both c= and r=, and
+  ;; from r= alone drew an 800x600 look at its own pixel size, over the
+  ;; answer and the composer under its band. Once the terminal says its
+  ;; cell, the placement says the columns that keep the picture's aspect.
+  (with-temp-file (png :type "png")
+    (alexandria:write-byte-vector-into-file
+     (cl-base64:base64-string-to-usb8-array +ui-test-png-base64+) png)
+    (with-durable-turn (turn (ensure-durable-session "look-box") :input "look" :complete t)
+      (record-tool-use turn "call-look" "eval" "{}" "[image: shown at the next round]"
+                       :metadata (nlk:json-object
+                                  "image" (nlk:json-object
+                                           "payload_kind" "file" "source" "look"
+                                           "path" png "png_path" png
+                                           "media_type" "image/png"
+                                           "width" 800 "height" 600
+                                           "bytes" 4096))))
+    (let ((model (make-frame-model 200 60 :session-id "look-box")))
+      (nle::render-state model)
+      (nle:update model (nlt:make-kitty-graphics-msg :ok-p t))
+      (setf (gethash "call-look" model.kitty-image-cache)
+            (nlt:make-terminal-image :id 7 :width 800 :height 600))
+      (let ((placement (first (nle::image-placements model))))
+        (is placement "the card anchors one placement")
+        (is (eql nle::*image-preview-max-rows* (and placement (nlt:image-placement-rows placement))) "the band's rows")
+        (is (null (and placement (nlt:image-placement-columns placement))) "no cell said yet: the rows alone, as before"))
+      (nle:update model (nlt:make-cell-size-msg :width 8 :height 16))
+      ;; 16 rows of 16px are 256px, and 800x600 at that height is 341px: 43 cells of 8px.
+      (let ((placement (first (nle::image-placements model))))
+        (is (eql nle::*image-preview-max-rows* (and placement (nlt:image-placement-rows placement))) "still the band's rows")
+        (is (eql 43 (and placement (nlt:image-placement-columns placement))) "and the columns that keep its aspect at that cell"))
+      (let ((cmd (nth-value 1 (nle:update model (nlt:make-window-size-msg :width 180 :height 50)))))
+        (is (functionp cmd) "a resize answers a command")
+        (is (equal (format nil "~C[16t" #\Escape) (and (functionp cmd) (with-output-to-string (out) (funcall (nlt:terminal-io-msg-thunk (funcall cmd)) out)))) "which asks the cell size again, a font zoom being one"))))
+  (let ((image (nlt:make-terminal-image :id 1 :width 800 :height 600)))
+    (is (equal '(43 16) (multiple-value-list (nle::kitty-image-box image 16 100 '(8 . 16)))) "the band's rows, the columns its aspect wants")
+    (is (equal '(30 11) (multiple-value-list (nle::kitty-image-box image 16 30 '(8 . 16)))) "too narrow: every column, and the rows that keep the aspect")
+    (is (equal '(nil 16) (multiple-value-list (nle::kitty-image-box image 16 100 nil))) "no cell size: the rows alone")
+    (is (equal '(nil 16) (multiple-value-list (nle::kitty-image-box (nlt:make-terminal-image :id 2) 16 100 '(8 . 16)))) "no pixel size: the rows alone")))
+
 (deftest an-image-with-no-carriable-png-reserves-no-band ()
   ;; A JPEG on a box with no transcoder: the fact names no png_path, so the
   ;; card says why and nothing reserves rows a placement could never fill.

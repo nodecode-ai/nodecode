@@ -264,7 +264,10 @@ from the ones COLLECT-DURING-WAIT hid inside provider wait."
                (editor-max-height (chat-model-editor model)) (composer-max-rows height))
          (sync-viewport-geometry model)
 
-         (render-state model)))
+         (render-state model)
+         ;; A font zoom reaches the shell as a resize: the cell it measured
+         ;; a kitty picture's columns by may have changed with it.
+         (return-from update (values model (nlt:terminal-io-cmd #'nlt:request-cell-size)))))
 
       ;; Bracketed paste arrives as one message, and it lands where typing
       ;; would: an open dialog's field when it has one — the API key the
@@ -316,7 +319,8 @@ from the ones COLLECT-DURING-WAIT hid inside provider wait."
       ;; The terminal said how big a cell is: a sixel is scaled to it.
       ((nlt:cell-size-msg-p msg)
        (let ((width (nlt:cell-size-msg-width msg)) (height (nlt:cell-size-msg-height msg)))
-         (when (and (plusp width) (plusp height))
+         (when (and (plusp width) (plusp height)
+                    (not (equal (chat-model-cell-pixels model) (cons width height))))
            (setf (chat-model-cell-pixels model) (cons width height))
            (render-state model))))
 

@@ -111,6 +111,8 @@ A definition inside a top-level `progn` or `eval-when` is kept as its own file.
 
 A `($ "name")` in a kept definition is kept as the text that `strings` entry carried, so the file loads at the next boot, when no call carries `strings`. A `($ "name")` in a comment or a string, or naming an entry the call did not carry, is kept as written.
 
+A `defparameter` or `defvar` whose value comes from a call is kept with the value the call returned, written out, so loading the file never makes the call again. A value with no printed form that reads back, such as a hash table, a lock or a function, is kept as the form that made it, which runs at every load. A value shaped like a credential, or longer than 64 KB written, is kept as `(defvar NAME)` and is unbound at the next boot.
+
 | Fact | Value |
 | --- | --- |
 | Folder | `~/.nodecode/cells/<name>/` |

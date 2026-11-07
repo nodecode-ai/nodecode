@@ -541,6 +541,10 @@ of stacking."
      (:file "lib/contract-test")
      (:file "lib/config-test")
      (:file "lib/os-test")
+     ;; openssl-test follows os-test: both pin a boot-time fact about the
+     ;; shared object the image opened, and this one reads a certificate
+     ;; through the binding it installs.
+     (:file "lib/openssl-test")
      (:file "lib/dial-test")
      (:file "lib/proxy-test")
      (:file "lib/paths-test")

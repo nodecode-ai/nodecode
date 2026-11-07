@@ -98,6 +98,16 @@
                      (nlt:place-image image 4 2 :rows 3 :placement-id 7 :crop-y 10 :crop-height 30 :stream out))))
       (is (search (format nil "_Ga=p,i=~D,p=7,r=3,y=10,h=30,C=1" image.id) written) "a cut placement names its source rectangle's pixel rows"))))
 
+(deftest a-kitty-placement-names-its-cell-box ()
+  ;; Konsole scales a placement only when it has both c= and r=; from r=
+  ;; alone it drew the picture at its own pixel size, past its band.
+  (let* ((image (nlt:transmit-image +png-1x1-base64+ :stream (make-string-output-stream)))
+         (written (with-output-to-string (out)
+                    (nlt:place-image image 4 2 :rows 3 :columns 8 :placement-id 7 :stream out))))
+    (is (search (format nil "_Ga=p,i=~D,p=7,c=8,r=3,C=1" image.id) written) "the columns ride beside the rows")
+    (let ((p (nlt:make-image-placement image :rows 3 :columns 8)))
+      (is (search ",c=8,r=3," (with-output-to-string (out) (nlt::%render-image-placements nil (list p) out))) "the renderer passes them on"))))
+
 (deftest the-graphics-query-loads-a-pixel-so-the-answer-can-be-ok ()
   ;; a=q asks the terminal to LOAD an image and answer OK or the error, so
   ;; the query must carry one: kitty answers a payload-less query
