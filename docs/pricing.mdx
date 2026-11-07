@@ -23,8 +23,8 @@ A call costs its tokens at the model's price: input the model had cached, the re
 
 | Model | Cached input | Input | Output |
 | --- | --- | --- | --- |
-| Cyber v1 | 0.009 | 0.45 | 1.80 |
-| Decide v1 | 0.10 | 0.10 | Free |
+| Cyber v1 | 0.009 | 0.33 | 1.32 |
+| Decide v1 | 0.04 | 0.04 | Free |
 | Image v1 | 0.04 an image | | |
 
 Cyber v1 costs the same at every hour. Its context window is 1,048,576 tokens (1M); a longer prompt is refused by the model and costs nothing. A request with more than 262,144 tokens of input pays four times the cached input price for its cached input. A typical call of our own agent, 89K cached and 2.5K new input tokens and 1.3K output, costs about 0.0043 on Cyber v1, so a top-up of 5 pays for about 1,200 of them.
