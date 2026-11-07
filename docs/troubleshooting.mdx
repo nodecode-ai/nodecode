@@ -90,6 +90,7 @@ nodecode gateway                 # state, pid, port, uptime, build
 | `macOS X is too old` | macOS is older than 15. | Upgrade macOS. |
 | `nodecode needs Homebrew's openssl@3` or `zstd` | A Homebrew library is missing. | `brew install openssl@3 zstd`, then run the installer again. |
 | The macOS executable does not answer at all | Homebrew `openssl@3` or `zstd` is missing. | `brew install openssl@3 zstd`. |
+| `The alien function "ASN1_STRING_data" is undefined` on a Mac | A build through 0.1.12 opened Homebrew's plain `openssl`, which is OpenSSL 4 now, and OpenSSL 4 removed that function. Later builds open `openssl@3` and read certificates through the name OpenSSL 4 kept. | `brew install openssl@3 zstd`, then run the installer again. A `DYLD_LIBRARY_PATH` wrapper is not enough: the processes nodecode starts itself, like `nodecode serve`, still open OpenSSL 4. |
 | `WARNING: not found: libsqlite3.so.0 ...` | A runtime library is missing on Linux. | Install sqlite3 and OpenSSL 3. |
 | `WARNING: no CA bundle found` | No CA certificates. | Linux: install `ca-certificates`. macOS: `brew reinstall ca-certificates`. |
 | `WARNING: git is not installed` | git is missing. | Install git. macOS: `xcode-select --install`. |

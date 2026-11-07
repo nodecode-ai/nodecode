@@ -227,6 +227,11 @@ No flag changes a stop. A warning lets the install go on.
 <Instead>Install `ca-certificates`, then run `nodecode` again.</Instead>
 </Mistake>
 <Mistake os="macos">
+<What>Installing Homebrew's plain `openssl`</What>
+<Why>That name is OpenSSL 4 now. nodecode opens `openssl@3` by its own path, so the installer still stops.</Why>
+<Instead>`brew install openssl@3 zstd`, then run the installer again.</Instead>
+</Mistake>
+<Mistake os="macos">
 <What>Installing `openssl@3` alone</What>
 <Why>The build also opens Homebrew's `zstd` at every start. Without it, it does not answer at all.</Why>
 <Instead>`brew install openssl@3 zstd`, then run the installer again.</Instead>

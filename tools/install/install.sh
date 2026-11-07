@@ -24,9 +24,9 @@
 # The preflight is not decoration. Every check here is a failure someone
 # actually hit: glibc below 2.34 cannot run the image at all, and a missing CA
 # bundle makes the setup wizard's provider list come up EMPTY WITH NO ERROR,
-# which reads as a broken build. On a Mac the one hard gate is Homebrew's
-# OpenSSL 3: the image loads it by that path at every start, and without it
-# the executable does not answer at all.
+# which reads as a broken build. On a Mac the hard gates are Homebrew's
+# openssl@3 and zstd: the image opens both by their Homebrew paths at every
+# start, and without either the executable does not answer at all.
 #
 #   NODECODE_VERSION   install this version instead of the one the channel names
 #   NODECODE_CHANNEL   the channel whose pointer to read (default: stable)
@@ -176,8 +176,17 @@ if [ "$platform" = darwin ]; then
   # dependency), so the quiet failure Linux has is not this platform's —
   # unless the bundle is gone. Everything missing is named in one command,
   # and Homebrew itself when a fresh Mac has none.
+  #
+  # OpenSSL's path is openssl@3's own, its versioned files
+  # (src/lib/openssl.lisp). Homebrew's unversioned `openssl' names OpenSSL 4
+  # now, which removed ASN1_STRING_data: a build that opened it started, then
+  # failed every TLS call, sign-in included, with `The alien function
+  # "ASN1_STRING_data" is undefined'. And `brew install openssl@3' no longer
+  # makes /opt/homebrew/opt/openssl at all. So whatever that path holds, or
+  # whether it is there, is not asked.
   formulae=''
-  [ -e /opt/homebrew/opt/openssl/lib/libssl.dylib ] || formulae="$formulae openssl@3"
+  { [ -e /opt/homebrew/opt/openssl@3/lib/libssl.3.dylib ] &&
+    [ -e /opt/homebrew/opt/openssl@3/lib/libcrypto.3.dylib ]; } || formulae="$formulae openssl@3"
   [ -e /opt/homebrew/opt/zstd/lib/libzstd.1.dylib ] || formulae="$formulae zstd"
   if [ -n "$formulae" ] && [ -x /opt/homebrew/bin/brew ]; then
     die "nodecode needs Homebrew's$formulae —

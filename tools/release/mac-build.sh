@@ -54,9 +54,12 @@ cd "$repo"
 if [ -f src/nodecode.asd ]; then sys=src; else sys=.; fi
 [ "$(git rev-parse --short=9 HEAD)" = "$label" ] || { echo "mac: the tree is not $label" >&2; exit 1; }
 
+# The image opens openssl@3's versioned files by this path on every Mac it
+# runs on (src/lib/openssl.lisp), so they are the ones that must be here.
 step 'Homebrew zstd and openssl@3, present (nothing is installed)'
 for f in /opt/homebrew/opt/zstd/include/zstd.h /opt/homebrew/opt/zstd/lib/libzstd.1.dylib \
-         /opt/homebrew/opt/openssl@3/lib/libssl.dylib /opt/homebrew/opt/openssl@3/bin/openssl; do
+         /opt/homebrew/opt/openssl@3/lib/libssl.3.dylib /opt/homebrew/opt/openssl@3/lib/libcrypto.3.dylib \
+         /opt/homebrew/opt/openssl@3/bin/openssl; do
   [ -e "$f" ] || { echo "mac: $f is missing; this arm needs Homebrew's zstd and openssl@3 and installs nothing outside $B" >&2; exit 1; }
 done
 export CPATH=/opt/homebrew/opt/zstd/include LIBRARY_PATH=/opt/homebrew/opt/zstd/lib
