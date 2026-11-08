@@ -8097,6 +8097,47 @@ and a context_over_200k no reader may trust: it names no size.")
     (is (equal "xhigh" (gethash "effort" output-config)))
     (is (null (nth-value 1 (gethash "temperature" body))))))
 
+(deftest configured-reasoning-options-declare-the-ladder ()
+  ;; A gateway that names a model its own way ("Claude Haiku 5.5") is in no
+  ;; catalog namespace, so its ladder was unknown and the anthropic lane sent
+  ;; a thinking budget, which current Claude models refuse with a 400. The
+  ;; operator declares the ladder on the models[] entry, in the models.dev
+  ;; shape, and it outranks the catalog and the learned overrides.
+  (nlk:bind ((nle::*models-catalog-path* nil) (nle::*provider* "nexos")
+             (nle::*model* "Claude Haiku 5.5")
+             (nle::*model-capability-overrides* '(("other-model" . (:effort-levels ("low" "high")))))
+             (nle::*context-tokens-env-override* nil) (nle::*model-capability-memo* nil)
+             (nle::*shared-config-memo* nil) (nle::*max-completion-tokens* 8192)
+             (nle::*reasoning-effort* "high"))
+    (with-temp-shared-config ("{\"providers\": {\"nexos\": {\"sdk\": \"anthropic\", \"api_key\": \"k\",
+  \"base_url\": \"https://gateway.invalid/v1\",
+  \"models\": [{\"id\": \"Claude Haiku 5.5\", \"context_window\": 64000,
+                \"reasoning_options\": [{\"type\": \"effort\", \"values\": [\"none\", \"low\", \"medium\", \"high\", \"xhigh\", \"max\"]}]},
+               {\"id\": \"other-model\", \"reasoning_options\": [{\"type\": \"effort\", \"values\": [\"low\", \"medium\"]}]},
+               {\"id\": \"plain-model\"},
+               {\"id\": \"bad-model\", \"reasoning_options\": \"lots\"}]}}}")
+      (let* ((capability (nle::resolve-model-capability "Claude Haiku 5.5" "nexos"))
+             ;; compiled against nexos itself, an anthropic-sdk provider of the config
+             (body (nle::anthropic-request-body (let ((nle::*endpoint* nil))
+                                                  (compiled-context (list (nle::message "user" "x"))))))
+             (thinking (gethash "thinking" body)))
+        (is (equal '("off" "low" "medium" "high" "xhigh" "max") (nle::model-capability-effort-levels capability)))
+        (is (nle::model-capability-reasoning-p capability))
+        (is (equal "adaptive" (gethash "type" thinking)))
+        (is (null (nth-value 1 (gethash "budget_tokens" thinking))))
+        (is (equal "high" (gethash "effort" (gethash "output_config" body)))))
+      (flet ((ladder (model provider)
+               (nle::model-capability-effort-levels (nle::resolve-model-capability model provider))))
+        (is (equal '("low" "medium") (ladder "other-model" "nexos")) "the operator's config outranks a learned override")
+        (is (null (ladder "plain-model" "nexos")))
+        (is (null (ladder "Claude Haiku 5.5" "elsewhere")) "another provider's entry declares nothing for this one"))
+      (let ((warned nil))
+        (handler-bind ((warning (lambda (w)
+                                  (setf warned (princ-to-string w))
+                                  (muffle-warning w))))
+          (is (null (nle::model-capability-effort-levels (nle::resolve-model-capability "bad-model" "nexos")))))
+        (is (and warned (search "bad-model" warned)))))))
+
 (deftest anthropic-adaptive-off-disables-thinking ()
   (nlk:bind ((nle::*models-catalog-path* nil) (nle::*model* "claude-adaptive-test")
              (nle::*model-capability-overrides*

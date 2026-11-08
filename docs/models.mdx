@@ -261,6 +261,8 @@ The ladder, weakest first: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `
 | `google` | Clamped to `high`. |
 | `anthropic` | An adaptive effort or a thinking budget, by what the model declares. |
 
+A model declares its rungs in the [models.dev](https://models.dev) catalog, under its id. A gateway that names a model its own way is in no catalog, so declare its rungs on its `providers.<id>.models[]` entry with `reasoning_options`, in the models.dev shape. They outrank the catalog. See [Configuration](config.mdx).
+
 {/* source: src/engine/provider.lisp */}
 ## Retries
 
