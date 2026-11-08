@@ -306,11 +306,24 @@ under a found-block pin, which rests on a line of the whole table."
   ;; The tail is chosen again at every following render — the rows are
   ;; cached, so it is cheap — rather than kept: a render landing mid-replay
   ;; would otherwise pin the start of the few rows folded so far.
-  (let ((entry (chat-model-projection-start model)))
+  (let ((entry (chat-model-projection-start model))
+        (tail (and (hash-table-p state) (gethash "tail_rows" state))))
     (cond ((transcript-pins model)
            (setf (chat-model-projection-start model) (cons state nil))
            nil)
           ((and entry (eq (car entry) state) (not (chat-model-follow-bottom model)))
+           (cdr entry))
+          ;; Following the bottom while a streamed delta appends into the
+          ;; live tail's last row in place leaves TAIL_ROWS the very list
+          ;; object it was: no row opened, closed, voided or moved lanes, so
+          ;; the run TAIL-PROJECTION-START last chose to start at is still a
+          ;; run after it groups the same way -- reprojecting it from WIDTH
+          ;; picks up every row the fold added since, word included, same as
+          ;; a fresh walk would, without paying to walk back and relay out
+          ;; runs nothing moved. A changed TAIL_ROWS (a new row, a promotion,
+          ;; a reset, an eviction) falls to the walk below, same as ever.
+          ((and entry (eq (car entry) state) (chat-model-follow-bottom model)
+                tail (eq tail (chat-model-projection-start-tail model)))
            (cdr entry))
           ;; A preview under a dialog is looked at rather than read back, and a
           ;; held arrow lays one out a row: its first projection is one window.
@@ -319,6 +332,7 @@ under a found-block pin, which rests on a line of the whole table."
           ;; few, and a tail chosen under it outlives the dialog.
           (t (let ((band (chat-model-band model))
                    (preview (chat-model-transcript-preview model)))
+               (setf (chat-model-projection-start-tail model) tail)
                (cdr (setf (chat-model-projection-start model)
                           (cons state
                                 (tail-projection-start
