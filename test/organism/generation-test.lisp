@@ -574,6 +574,29 @@ exit 0~%" ,report ,score))
       (is (zerop opened) "no manifest was opened to count them")
       (is (= 3 (length (nlk:manifests))) "the manifests themselves still read whole"))))
 
+(deftest the-boot-line-opens-one-manifest-at-the-newest-seal ()
+  ;; GENERATION-LABEL is read before the store opens, on every boot: it used
+  ;; to decode every manifest in the home -- and, asking twice, to do it
+  ;; twice -- to find the one the folder stands at.
+  (labels ((seal (number)
+             (nlk::write-file-atomically
+              (nlk::manifest-path number)
+              (nlk::pretty-json (nlk:json-object "format" nlk::+manifest-format+
+                                                 "number" number "rows" #())))))
+    (let* ((nlk::*pristine* nil)   ; a home that holds seals is not pristine
+           (base (1+ (or (loop for path in (directory (merge-pathnames "*.json" (nlk:generations-directory)))
+                               maximize (parse-integer (or (pathname-name path) "") :junk-allowed t))
+                          0)))
+           (newest (+ base 4))
+           (opened 0))
+      (dotimes (i 5) (seal (+ base i)))
+      (setf nlk::*generation-label* nil nlk::*manifest-count* nil)
+      (with-stubbed-fdefinitions
+          ((nlk::read-generation-manifest (path) (incf opened) (funcall original path))
+           (nlk::self-identity (&optional rows version) (list :the-folder)))
+        (is (equal (format nil "generation ~d" newest) (nlk::generation-label)) "the newest seal carries the folder")
+        (is (= 1 opened) "one manifest was opened, and the walk stopped there")))))
+
 ;;; --- the bytes a seal keeps, and a generation laid beside the folder ----------
 ;;; What no repository can put back is kept whole, so a generation can be laid
 ;;; somewhere else exactly while the folder it was read from stays put.

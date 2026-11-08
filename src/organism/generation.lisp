@@ -297,6 +297,16 @@ the generations directory, none of them read."
   (remove-if-not (lambda (path) (parse-integer (or (pathname-name path) "") :junk-allowed t))
                  (directory (merge-pathnames "*.json" (generations-directory)))))
 
+(defun manifest-path-number (path)
+  "The generation number PATH's name carries, or NIL for a name that is no
+manifest: the name is the number MANIFEST-PATH writes, so ordering the files
+by it costs no read."
+  (parse-integer (or (pathname-name path) "") :junk-allowed t))
+
+(defun manifest-paths-newest-first ()
+  "Every generation's manifest in this home, newest first, none of them read."
+  (sort (manifest-paths) #'> :key #'manifest-path-number))
+
 (defun manifests ()
   "Every generation sealed in this home, newest first."
   (sort (nreverse (loop for path in (manifest-paths)
@@ -349,10 +359,18 @@ manifest sealed before seals recorded them."
 (defun manifest-identity (manifest)
   (self-identity (manifest-rows manifest) (json-value manifest :string "binary" "version")))
 
-(defun sealed-generation (&optional (identity (self-identity)) (manifests (manifests)))
+(defun sealed-generation (&optional (identity (self-identity)) manifests)
   "The manifest carrying IDENTITY -- the generation the folder stands at --
-or NIL when it matches none."
-  (find identity manifests :key #'manifest-identity :test #'equal))
+or NIL when it matches none. Without MANIFESTS the manifests are read newest
+first and the walk stops at the first that matches: a folder almost always
+stands at its newest seal, and decoding every manifest of a home with
+thousands of generations cost seconds before the boot line (GENERATION-LABEL)."
+  (if manifests
+      (find identity manifests :key #'manifest-identity :test #'equal)
+      (loop for path in (manifest-paths-newest-first)
+            for manifest = (read-generation-manifest path)
+            when (and manifest (equal identity (manifest-identity manifest)))
+              return manifest)))
 
 (defun row-json (row)
   (json-object (:getf row "name" "kind" "origin" "revision")
@@ -492,13 +510,13 @@ N' when a manifest carries its identity, else `unsealed'."
   ;; so the word is read once per layer revision and manifest count -- what a
   ;; keep and a seal move.
   (let ((witness (list (ignore-errors (layer-revision))
-                       (length (directory (merge-pathnames "*.json" (generations-directory)))))))
+                       (manifest-count))))
     (if (equal witness (car *generation-label*))
         (cdr *generation-label*)
-        (let ((label (cond (*pristine* "pristine (generation 0)")
-                           ((ignore-errors (sealed-generation))
-                            (format nil "generation ~d" (manifest-number (sealed-generation))))
-                           (t "unsealed"))))
+        (let* ((sealed (unless *pristine* (ignore-errors (sealed-generation))))
+               (label (cond (*pristine* "pristine (generation 0)")
+                            (sealed (format nil "generation ~d" (manifest-number sealed)))
+                            (t "unsealed"))))
           (setf *generation-label* (cons witness label))
           label))))
 
