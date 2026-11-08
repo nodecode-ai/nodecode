@@ -142,6 +142,14 @@ for the many bars and rows that paint one run of text in one tone."
    ;; walk again rather than waiting on it.
    (file-catalog :initform nil :accessor chat-model-file-catalog)
    (file-catalog-loaded :initform nil :accessor chat-model-file-catalog-loaded)
+   ;; Where the @ token that last asked for a fresh walk starts in the
+   ;; composer text, NIL once no token is typed: every new @ reads the
+   ;; workspace again, so a file written since the last walk -- by the agent,
+   ;; mid-session -- is offered (TOKEN-SUGGESTIONS-FOR).
+   (file-catalog-asked :initform nil :accessor chat-model-file-catalog-asked)
+   ;; The @ lane's last ranking, (FILTER CATALOG . ROWS): every frame between
+   ;; two keystrokes asks for the rows, and scoring the catalog is the cost.
+   (file-rows-memo :initform nil :accessor chat-model-file-rows-memo)
    ;; The @ lane's folder listings for path tokens (`@~/', `@../', `@/'),
    ;; each (HEAD . ENTRIES), newest first and bounded, HEAD the token up to
    ;; its last separator; and the HEAD last asked for, NIL while no path

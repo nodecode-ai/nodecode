@@ -164,7 +164,7 @@ a held one until the composer's text moves off the draft it was said over."
 
 (defstruct (composer-suggestion
             (:constructor composer-suggestion (text remainder source
-                                               &key detail alias entry)))
+                                               &key detail alias entry replace)))
   "One dropdown row, whatever lane produced it."
   ;; TEXT is the completion
   ;; target as the row paints it, REMAINDER what the ghost shows after the cursor
@@ -172,9 +172,12 @@ a held one until the composer's text moves off the draft it was said over."
   ;; @ path row that goes on into a folder, ACCEPT-SUGGESTION), DETAIL the
   ;; description column, ALIAS the command's other triggers painted beside the
   ;; label (slash rows only, empty elsewhere), and ENTRY the catalog
-  ;; SLASH-COMMAND the row dispatches on Enter.
+  ;; SLASH-COMMAND the row dispatches on Enter. REPLACE is the typed token a
+  ;; workspace row completes by replacing it with TEXT -- a fuzzy match need
+  ;; not extend what was typed -- and empty for a row that inserts REMAINDER.
   (text "" :type string)
   (remainder "" :type string)
+  (replace "" :type string)
   (source nil)
   (detail "" :type string)
   (alias "" :type string)
@@ -265,15 +268,40 @@ text)."
       (unless (find-if #'blank-char-p filter)
         filter))))
 
-(defun token-suggestion (filter target source)
-  "One suggestion when FILTER prefixes TARGET (Zig prefix + case rules:
-strict case-insensitive prefix, or full-length case-insensitive equality)."
-  ;; The detail column is the lane's own name, which is what the Zig
-  ;; ComposerDropdownItem prints for a catalog entry carrying no description
-  ;; of its own; a token row leaves the alias column empty.
-  (when (slash-name-prefix-p filter target)
-    (composer-suggestion target (subseq target (length filter)) source
-                         :detail (string-downcase source))))
+(defun file-suggestion-rows (filter paths)
+  "The @ lane's rows for FILTER over PATHS, the workspace catalog: every path
+whose file name or whole path answers FILTER through the dialogs' fuzzy
+matcher (SEARCH-SCORE), best first, the shorter path first among equals."
+  ;; `@brief' finds docs/2026-11-08-brief.md, `@2026' too, and `@srmain'
+  ;; src/main.lisp: the file name is the field asked first, the path after.
+  ;; A row completes by replacing the typed token with its path, so a match
+  ;; anywhere completes; the ghost shows only where the path extends what was
+  ;; typed, since a dim tail can only continue the text.
+  (flet ((file-name (path)
+           (subseq path (1+ (or (position #\/ path :from-end t) -1)))))
+    (let ((scored (loop for path in paths
+                        for score = (search-score filter (list (file-name path) path))
+                        when score collect (cons score path))))
+      (mapcar (lambda (scored &aux (path (cdr scored)))
+                (composer-suggestion path
+                                     (if (slash-name-prefix-p filter path)
+                                         (subseq path (length filter))
+                                         "")
+                                     :file :detail "file" :replace filter))
+              (stable-sort scored (lambda (a b)
+                                    (or (> (car a) (car b))
+                                        (and (= (car a) (car b))
+                                             (< (length (cdr a)) (length (cdr b)))))))))))
+
+(defun file-token-suggestions (model filter &aux (catalog (chat-model-file-catalog model))
+                                                 (memo (chat-model-file-rows-memo model)))
+  "FILE-SUGGESTION-ROWS for FILTER over MODEL's catalog, scored once per
+filter and catalog."
+  (if (and memo (string= filter (first memo)) (eq catalog (second memo)))
+      (cddr memo)
+      (let ((rows (file-suggestion-rows filter catalog)))
+        (setf (chat-model-file-rows-memo model) (list* filter catalog rows))
+        rows)))
 
 (defun token-suggestions-for (model &aux (text (editor-value (chat-model-editor model))))
   "The active @ suggestion list, or NIL."
@@ -283,9 +311,13 @@ strict case-insensitive prefix, or full-length case-insensitive equality)."
   ;; gate), so completions always land on the trigger token. The catalog is
   ;; walked off this path: an unloaded one asks for the walk
   ;; (START-COMPOSER-CATALOG-WALK) and this reads whatever has landed, so no
-  ;; keystroke ever waits on the filesystem. A token that starts at a root of
-  ;; its own takes the path lane instead (PATH-TOKEN-SUGGESTIONS); while none
-  ;; is typed the lane forgets its last folder, so the next one lists fresh.
+  ;; keystroke ever waits on the filesystem. Each new @ token asks for a fresh
+  ;; walk while it paints from the catalog in hand, so a file written since
+  ;; the last walk -- the agent's own, mid-session -- is offered once the walk
+  ;; lands; the catalog was walked once per process before, and never offered
+  ;; it. A token that starts at a root of its own takes the path lane instead
+  ;; (PATH-TOKEN-SUGGESTIONS); while none is typed the lane forgets its last
+  ;; folder, so the next one lists fresh.
   (let ((filter (unless (or (slash-input-p text)
                             (not (composer-cursor-at-end-p (chat-model-editor model))))
                   (composer-token-filter text #\@))))
@@ -293,12 +325,17 @@ strict case-insensitive prefix, or full-length case-insensitive equality)."
            (path-token-suggestions model filter))
           (t
            (setf (chat-model-path-listing-asked model) nil)
-           (when filter
-             (unless (chat-model-file-catalog-loaded model)
-               (start-composer-catalog-walk model))
-             (loop for path in (chat-model-file-catalog model)
-                   when (token-suggestion filter path :file)
-                     collect it))))))
+           (cond ((null filter)
+                  (setf (chat-model-file-catalog-asked model) nil))
+                 (t
+                  ;; The token is known by where it starts: one typed over the
+                  ;; last with no frame between is still a new token.
+                  (let ((start (- (length text) (length filter))))
+                    (unless (and (chat-model-file-catalog-loaded model)
+                                 (eql start (chat-model-file-catalog-asked model)))
+                      (setf (chat-model-file-catalog-asked model) start)
+                      (start-composer-catalog-walk model)))
+                  (file-token-suggestions model filter)))))))
 
 ;;; --- the @ lane's paths outside the workspace --------------------------------
 ;;; A token that starts at a root of its own -- the home `~/', the folder `./',
@@ -412,25 +449,32 @@ the token lanes take everything else."
   ;; a command is its name, so nothing is invited after it, and the dropdown
   ;; stays on the row, Enter running it. A token row inserts its remainder
   ;; plus a space at the cursor; a folder row its remainder alone, which ends
-  ;; in the separator, so the dropdown goes on into the folder. => T when a
-  ;; completion landed.
+  ;; in the separator, so the dropdown goes on into the folder. A workspace
+  ;; row replaces the typed token with its path instead: its match can sit
+  ;; anywhere in the path. => T when a completion landed.
   (when-let (suggestion (selected-composer-suggestion model))
-    (let ((editor (chat-model-editor model)) (slash (eq :slash suggestion.source)))
+    (let* ((editor (chat-model-editor model)) (slash (eq :slash suggestion.source))
+           (replace (plusp (length suggestion.replace))))
       (when slash (editor-reset editor))
+      (when replace (editor-delete-before editor (length suggestion.replace)))
       (editor-insert editor (case suggestion.source
                               (:slash suggestion.text)
                               (:folder suggestion.remainder)
-                              (t (uiop:strcat suggestion.remainder " ")))))
+                              (t (uiop:strcat (if replace suggestion.text suggestion.remainder)
+                                              " ")))))
     (setf (chat-model-slash-selection model) 0)
     t))
 
 (defun accept-token-suggestion-for-submit (model)
   "Enter over an open TOKEN dropdown completes instead of submitting, but
-only when the completion would actually extend the text (Zig
+only when the completion would actually change the text (Zig
 acceptComposerTokenSuggestionForSubmit)."
   ;; The slash lane is not this lane: Enter there dispatches the command.
   (let ((suggestion (selected-composer-suggestion model)))
-    (when (and suggestion (not (eq :slash suggestion.source)) (plusp (length suggestion.remainder)))
+    (when (and suggestion (not (eq :slash suggestion.source))
+               (or (plusp (length suggestion.remainder))
+                   (let ((typed suggestion.replace))
+                     (and (plusp (length typed)) (string/= typed suggestion.text)))))
       (accept-suggestion model))))
 
 (defun composer-dropdown-key (model key &aux (count (length (composer-suggestions-for model)))

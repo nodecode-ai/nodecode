@@ -156,6 +156,14 @@ splits the line."
           (concatenate 'string (subseq line 0 start) text (subseq line end))))
   (%editor-touch editor))
 
+(defun editor-delete-before (editor count &aux (col editor.col) (start (max 0 (- col count))))
+  "Delete the COUNT characters before the caret on its line, the caret at
+their start; fewer when the line holds fewer."
+  (when (< start col)
+    (%editor-splice editor start col)
+    (setf editor.col start))
+  editor)
+
 ;;; --- caret motion --------------------------------------------------------
 
 (defun editor-cursor-end (editor)

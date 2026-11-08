@@ -418,23 +418,37 @@ directories. Zig walks no .gitignore either — the skip list is the filter."
                      "target" "zig-cache" "zig-out")
               :test #'string=)))
 
-(defun workspace-file-catalog (root &aux (entries '()) (count 0) (max-depth 10) (max-entries 512))
+(defparameter *file-catalog-max-entries* 2048
+  "The most workspace files the @ catalog holds.")
+
+(defun workspace-file-catalog (root &key (max-entries *file-catalog-max-entries*) (max-depth 10)
+                                    &aux (entries '()) (count 0))
   "Relative paths of the workspace files @-mentions complete against:
-recursive walk under ROOT, hidden and vendored names skipped, depth and
-entry bounded, sorted case-insensitively (Zig loadWorkspaceFileCatalog)."
-  ;; RELATIVE is NIL at the root.
-  (labels ((walk (dir relative depth)
-             ;; Files first, then the folders under DIR, each named from the root.
-             (dolist (path (append (ignore-errors (uiop:directory-files dir))
-                                   (and (< depth max-depth)
-                                        (ignore-errors (uiop:subdirectories dir)))))
-               (let* ((name (nlk:folder-name path))
-                      (entry (format nil "~@[~a/~]~a" relative name)))
-                 (cond ((>= count max-entries) (return-from walk))
-                       ((file-catalog-skip-name-p name))
-                       ((uiop:directory-pathname-p path) (walk path entry (1+ depth)))
-                       (t (push entry entries) (incf count)))))))
-    (walk (uiop:ensure-directory-pathname root) nil 0))
+hidden and vendored names skipped, depth and entry bounded, sorted
+case-insensitively."
+  ;; Breadth first, a folder's files before the folders under it: a bound that
+  ;; cuts the walk short drops the deepest files, never one beside the
+  ;; operator. The depth-first walk this replaced spent the whole bound inside
+  ;; the first deep folder and left the workspace's own top files out.
+  ;; LEVEL is one depth's folders as (DIR . RELATIVE), RELATIVE NIL at the root.
+  (flet ((entry (relative name) (format nil "~@[~a/~]~a" relative name)))
+    (loop with level = (list (cons (uiop:ensure-directory-pathname root) nil))
+          for depth from 0 to max-depth
+          while level
+          do (let ((next '()))
+               (loop for (dir . relative) in level
+                     do (dolist (path (ignore-errors (uiop:directory-files dir)))
+                          (let ((name (nlk:folder-name path)))
+                            (cond ((>= count max-entries) (return-from workspace-file-catalog
+                                                            (sort entries #'string-lessp)))
+                                  ((file-catalog-skip-name-p name))
+                                  (t (push (entry relative name) entries) (incf count)))))
+                        (when (< depth max-depth)
+                          (dolist (sub (ignore-errors (uiop:subdirectories dir)))
+                            (let ((name (nlk:folder-name sub)))
+                              (unless (file-catalog-skip-name-p name)
+                                (push (cons sub (entry relative name)) next))))))
+               (setf level (nreverse next)))))
   (sort entries #'string-lessp))
 
 (defparameter *path-listing-max-entries* 4096

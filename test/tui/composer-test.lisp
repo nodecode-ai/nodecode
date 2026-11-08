@@ -277,6 +277,68 @@ ABOVE, then expires into the placeholder with the band as it was."
       (is-composer model "@src/main.lisp @README.md " "Enter over the dropdown completes instead of submitting")
       (is (null model.turn-in-flight)))))
 
+(deftest composer-file-trigger-matches-anywhere-in-the-path ()
+  ;; The @ lane matched only a prefix of the whole relative path, so `@2026'
+  ;; never found docs/2026-11-08-brief.md and `@brief' found nothing. It ranks
+  ;; through the dialogs' fuzzy matcher now, the file name asked first, and a
+  ;; row completes by replacing the token typed with its path.
+  (with-temp-workspace (dir "README.md" "docs/2026-11-08-brief.md" "src/main.lisp"
+                            "src/brief-tool.lisp")
+    (with-frame-model (model 80 24 :session-id "at-fuzzy")
+      (setf model.file-catalog (nle::workspace-file-catalog dir) model.file-catalog-loaded t)
+      (flet ((texts () (mapcar #'nle::composer-suggestion-text (nle::token-suggestions-for model))))
+        (type-string model "@2026")
+        (is (equal '("docs/2026-11-08-brief.md") (texts)) "a file name's own start answers, whatever folder holds it")
+        (is (zerop (length (or (nle::composer-ghost-remainder model) ""))) "no ghost where the path does not extend the token")
+        (press model :tab)
+        (is-composer model "@docs/2026-11-08-brief.md " "Tab replaces the token with the path")
+        (type-string model "@brief")
+        (is (equal '("src/brief-tool.lisp" "docs/2026-11-08-brief.md") (texts)) "a name that starts with the token outranks one that holds it")
+        (press model :enter)
+        (is-composer model "@docs/2026-11-08-brief.md @src/brief-tool.lisp " "Enter over the dropdown completes instead of submitting")
+        (is (null model.turn-in-flight))
+        (type-string model "@srmain")
+        (is (equal '("src/main.lisp") (texts)) "a scattered subsequence still answers")
+        (type-string model "@zzz")
+        (is (null (texts)) "a token nothing answers opens no dropdown")))))
+
+(deftest composer-file-catalog-keeps-the-shallow-files-under-its-bound ()
+  ;; The walk went depth first and spent its bound in the first deep folder,
+  ;; leaving the workspace's own top files out of the catalog.
+  (with-temp-workspace (dir "a/b/c/one.lisp" "a/b/c/two.lisp" "a/b/three.lisp" "top.md")
+    (is (equal '("a/b/three.lisp" "top.md") (nle::workspace-file-catalog dir :max-entries 2)))
+    (is (equal '("top.md") (nle::workspace-file-catalog dir :max-depth 1)) "the depth bound still holds")))
+
+(deftest composer-file-trigger-rereads-the-workspace-per-token ()
+  ;; The catalog was walked once per process, so a file written after it --
+  ;; the agent's own brief, mid-session -- was never offered. Each new @ token
+  ;; asks for a fresh walk; the token that asked does not ask again.
+  (with-temp-workspace (dir "README.md")
+    (let ((nle::*composer-catalog-cache-path* nil))
+      (uiop:with-current-directory (dir)
+        (with-frame-model (model 80 24 :session-id "at-fresh")
+          (let ((program (nlt:make-program model)))
+            (setf (nlt:program-running program) t model.program program)
+            (flet ((land ()
+                     (nlt::mailbox-drain (nlt::program-mailbox program) :timeout 10)
+                     (nle::land-composer-catalog-walks model))
+                   (texts () (mapcar #'nle::composer-suggestion-text (nle::token-suggestions-for model))))
+              (unwind-protect
+                   (progn
+                     (type-string model "@RE")
+                     (texts)
+                     (is (land) "the token's walk lands")
+                     (is (equal '("README.md") (texts)))
+                     (write-temp-file (merge-pathnames "2026-11-08-brief.md" dir))
+                     (type-string model "A")
+                     (texts)
+                     (is (null (gethash model nle::*composer-catalog-walks*)) "the same token asks once")
+                     (type-string model " @2026")
+                     (is (null (texts)) "the new token paints from the catalog in hand")
+                     (is (land) "and its walk lands")
+                     (is (equal '("2026-11-08-brief.md") (texts)) "the file written since is offered"))
+                (setf (nlt:program-running program) nil)))))))))
+
 (deftest composer-at-path-token-takes-the-folder-lane ()
   ;; A token naming a root of its own leaves the workspace catalog; a bare
   ;; name, a hidden name and a workspace folder stay in it.
