@@ -528,6 +528,7 @@ basic 40-47/100-107 — or NIL for the terminal's default."
             (nth (- (first codes) (if (< (first codes) 100) 40 92)) *ansi16-palette*)))))
 
 (defun selection-overlay (model &aux (selection (chat-model-selection model))
+                                      (drafted (composer-mark-cells model))
                                       (profile (effective-color-profile))
                                       (selection-bg (visual-style-bg (style-for-tone :selection))))
   "The translucent drag-selection wash as the frame's overlay (NLT:MAKE-VIEW
@@ -545,12 +546,13 @@ cell loop."
   ;; it lands on whatever region painted the row and restyles no row: a
   ;; frame that moves only the mark lays out nothing twice. Colorless
   ;; frames (:none) carry no wash -- there is nothing to blend.
-  (when (and selection selection-bg (not (eq profile :none)))
+  ;; The draft's mark (COMPOSER-MARK-CELLS) washes the same way.
+  (when (and (or selection drafted) selection-bg (not (eq profile :none)))
     (let ((canvas-bg (or (canvas-rgb) (visual-style-bg (style-for-tone :selection-ground))))
           ;; The parser hands every cell of one colour the same string, so a
           ;; frame blends each colour it washes once.
           (washes (make-hash-table :test 'eq)))
-      (let ((cells (mark-frame-cells model selection)))
+      (let ((cells (append (and selection (mark-frame-cells model selection)) drafted)))
         (lambda (buffer &aux (width (nlt:screen-buffer-width buffer)))
           (loop for (row first last) in cells
                 when (< row (nlt:screen-buffer-height buffer))
@@ -656,7 +658,8 @@ the selection anchor and its drag flag."
         (chat-model-selection-anchor model) nil
         (chat-model-selection-dragged model) nil)
   (forget-anchor-point model)
-  (forget-drag-edge model))
+  (forget-drag-edge model)
+  (forget-composer-drag model))
 
 (defun handle-mouse-press (model msg &aux (x msg.x)
                                           (y msg.y))
@@ -753,6 +756,8 @@ instead selects the word under the pointer."
         (t
          (disarm-pointer model)
          (setf (chat-model-selection model) nil)
+         ;; One mark at a time: a press anywhere takes the draft's away too.
+         (forget-editor-mark (chat-model-editor model))
          (bind ((cell (frame-position model x y))
                 ((line column) (frame-transcript-position model x y))
                 (frame-target (frame-target-at-position model x y))
@@ -765,6 +770,8 @@ instead selects the word under the pointer."
                         `(setf ,place ,value (chat-model-selection-anchor model) cell)))
              (cond
                (frame-target (arm (chat-model-pressed-link model) frame-target))
+               ;; The draft's own text: the caret goes where the press lands.
+               ((composer-press model cell))
                ;; A running exec's ✕ arms its interrupt the way a target
                ;; arms its open: the release on it with no drag between
                ;; sends it.
@@ -825,6 +832,8 @@ on pure motion. => whether anything a frame shows moved."
                   (apply-scrollbar-track-row
                    model (max 0 (min (- y 4) (1- (transcript-band-metrics model)))) (cdr drag))))
             t)
+           ((and (eq button :left) (composer-drag model))
+            (composer-drag-to model x y))
            ((eq button :left)
             (when-let (anchor (chat-model-selection-anchor model))
               (let ((cell (frame-position model x y)))
@@ -909,6 +918,82 @@ composer the caret alone. The release that ends a drag and the
 :COPY-SELECTION key both come here."
   (unless (zerop (length text))
     (write-model-clipboard model text)))
+
+(defun copy-marked-text (model)
+  "The copy key (:COPY-SELECTION, and Ctrl+C or Ctrl+X over a marked draft):
+the draft's marked text when it has some, else the frame's mark."
+  (if-let (text (editor-selected-text (chat-model-editor model)))
+    (write-model-clipboard model text)
+    (copy-frame-selection model)))
+
+;;; --- the draft's mark under the pointer -----------------------------------
+;;; The draft marks under the pointer as the transcript's words do: a press on
+;;; its text puts the caret there, a drag marks from the press to the pointer,
+;;; both ends inclusive as a transcript drag's are, a double click marks the
+;;; word, and the release copies what is marked. The mark is the editor's own
+;;; (EDITOR-MARK), so the Shift keys go on from it and typing replaces it.
+
+(nlk:define-side-table composer-origin (:weakness :key)
+  "The frame cell (ROW . COLUMN) of the composer's first text cell on the last
+composed frame, NIL while a panel stands over the composer.")
+
+(nlk:define-side-table composer-drag (:weakness :key)
+  "The draft place (ROW . COL) a left press on the composer's text landed on,
+while the button is held.")
+
+(defun composer-place-at (model cell &key clamp)
+  "=> the draft place (ROW . COL) under frame CELL (ROW . COLUMN), or NIL when
+CELL is off the draft's rows -- unless CLAMP, which takes the nearest."
+  (when-let (origin (composer-origin model))
+    (let* ((editor (chat-model-editor model))
+           (y (- (car cell) (car origin))))
+      (when (or clamp
+                (and (plusp (length (editor-value editor)))
+                     (< -1 y (min (editor-height editor) (composer-visible-rows model)))))
+        (editor-position-at editor (max 0 (- (cdr cell) (cdr origin))) y)))))
+
+(defun composer-press (model cell)
+  "A left press on the draft at frame CELL puts the caret there and arms a drag
+from it; the second click of a double click marks the word there instead.
+=> whether the press was the draft's."
+  (when-let (place (composer-place-at model cell))
+    (let ((editor (chat-model-editor model)))
+      (multiple-value-bind (from to) (and (note-left-press model (car cell) (cdr cell))
+                                          (editor-word-at editor place))
+        (if from
+            (editor-select editor from to)
+            (setf (editor-row editor) (car place)
+                  (editor-col editor) (cdr place))))
+      (setf (composer-drag model) place)
+      t)))
+
+(defun composer-drag-to (model x y &aux (editor (chat-model-editor model))
+                                        (from (composer-drag model)))
+  "The press on the draft held and moved to frame X,Y: mark from the press to
+the place under the pointer, both inclusive, the caret at the pointer's end.
+=> whether the mark moved."
+  (flet ((past (place)
+           ;; The place after PLACE's character, its line's end the last.
+           (cons (car place) (min (1+ (cdr place))
+                                  (length (aref (editor-lines editor) (car place))))))
+         (before-p (a b)
+           (or (< (car a) (car b)) (and (= (car a) (car b)) (< (cdr a) (cdr b))))))
+    (let ((to (composer-place-at model (frame-position model x y) :clamp t))
+          (was (list (editor-mark editor) (editor-row editor) (editor-col editor))))
+      ;; A press that has not left its character is not yet a drag.
+      (when (and to (or (editor-mark editor) (not (equal to from))))
+        (if (before-p to from)
+            (editor-select editor (past from) to)
+            (editor-select editor from (past to)))
+        (not (equal was (list (editor-mark editor) (editor-row editor) (editor-col editor))))))))
+
+(defun composer-mark-cells (model)
+  "=> ((ROW FIRST LAST) ...): the frame cells the draft's mark washes."
+  (when-let (origin (composer-origin model))
+    (loop with shown = (composer-visible-rows model)
+          for (y first last) in (editor-visible-marks (chat-model-editor model))
+          when (< y shown)
+            collect (list (+ (car origin) y) (+ (cdr origin) first) (+ (cdr origin) last)))))
 
 (defun write-model-clipboard (model text &aux (program (chat-model-program model)))
   "Put TEXT on the clipboard through MODEL's program, saying in the hint lane
@@ -1495,6 +1580,11 @@ selection copies to the clipboard through the program's own writer."
     ;; drag was the gesture, not the row the pointer came to rest on.
     ((chat-model-scrollbar-drag model)
      (setf (chat-model-scrollbar-drag model) nil))
+    ;; A press on the draft let go: what it marked is copied.
+    ((composer-drag model)
+     (disarm-pointer model)
+     (when-let (text (editor-selected-text (chat-model-editor model)))
+       (write-model-clipboard model text)))
     ;; A left click on an open sheet's window is the sheet's.
     ((sheet-dialog-p (chat-model-dialog model))
      (disarm-pointer model)

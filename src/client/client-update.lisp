@@ -501,6 +501,8 @@ thread reads it and clears this place.")
     ((and (eq (nlt:key-event-code msg) :left)
           (not (nlt:mod-contains (nlt:key-event-mod msg) nlt:+mod-ctrl+))
           (not (nlt:mod-contains (nlt:key-event-mod msg) nlt:+mod-alt+))
+          ;; Shift+Left marks text; on an idle composer it leaves nothing.
+          (not (nlt:mod-contains (nlt:key-event-mod msg) nlt:+mod-shift+))
           (zerop (length (editor-value model.editor))))
      ;; Left on an idle composer leaves the session (LEAVE-SESSION-OP): it
      ;; runs on without this shell, and the shell goes home with /sessions

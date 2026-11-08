@@ -4308,8 +4308,9 @@ and the DELIVERY its handler declares."
 
 (deftest selection-marks-only-the-transcripts-words (let ((nle::*color-profile* :truecolor)))
   ;; A drag selects what was said, never the shell around it: the header,
-  ;; the composer, the footer, the band's inset and the scroll rail are
-  ;; chrome, and a mark neither washes nor copies them.
+  ;; the footer, the band's inset and the scroll rail are chrome, and a mark
+  ;; neither washes nor copies them. The composer's draft marks on its own
+  ;; (A-DRAG-OVER-THE-DRAFT-MARKS-AND-COPIES-IT), never into the frame's mark.
   (with-frame-model (model 80 24 :session-id "mark-words" :typed "pick me now"
                      :paint ((nle::ingest-message-fact "assistant" "alpha one")))
     (let* ((rows (nle::compose-frame model))
@@ -4319,13 +4320,7 @@ and the DELIVERY its handler declares."
            (answer (row-index-of "alpha one" plains :start 3 :required t))
            (column (search "pick" (nth composer plains)))
            (painted (nlt:parse-styled-string rows 80 24)))
-      ;; A drag over the composer's words marks nothing and copies nothing.
-      (mouse-update model #'nlt:make-mouse-click-msg (1+ column) (1+ composer) :button :left)
-      (mouse-update model #'nlt:make-mouse-motion-msg (+ column 4) (1+ composer) :button :left)
-      (is (null model.selection) "the composer is the shell's")
-      (is (equal "" (or (nle::frame-selection-text model) "")))
-      (mouse-update model #'nlt:make-mouse-release-msg (+ column 4) (1+ composer) :button :left)
-      ;; A double-click on the composer's word selects none.
+      ;; A double-click on the composer's word selects none of the frame's.
       (is (null (nle::word-selection-at model composer (1+ column))) "no word of the shell's")
       (when header
         (is (null (nle::word-selection-at model header (search "mark" (nth header plains)))) "nor the header's"))
@@ -4341,7 +4336,12 @@ and the DELIVERY its handler declares."
           (is (equal (cell-bg-at painted column composer) (cell-bg-at washed column composer)) "the composer keeps its paint")
           (is (equal (cell-bg-at painted 79 bottom) (cell-bg-at washed 79 bottom)) "the rail's column never washes")
           (is (equal (cell-bg-at painted 0 bottom) (cell-bg-at washed 0 bottom)) "nor the band's inset")
-          (is (not (equal (cell-bg-at painted left bottom) (cell-bg-at washed left bottom))) "the lane under the answer does"))))))
+          (is (not (equal (cell-bg-at painted left bottom) (cell-bg-at washed left bottom))) "the lane under the answer does")))
+      ;; A drag over the composer's words marks the draft, never the frame.
+      (mouse-update model #'nlt:make-mouse-click-msg (1+ column) (1+ composer) :button :left)
+      (mouse-update model #'nlt:make-mouse-motion-msg (+ column 4) (1+ composer) :button :left)
+      (is (null model.selection) "the frame's mark is the transcript's alone")
+      (is (equal "pick" (nle::editor-selected-text model.editor)) "the draft holds a mark of its own"))))
 
 (deftest a-copy-leaves-the-gutters-marks-behind ()
   ;; A notice's ■ and a disclosure's ▸ stand in the gutter beside the words,
@@ -4409,6 +4409,48 @@ and the DELIVERY its handler declares."
       (is (null (nle::chat-model-dialog model)) "the drag opened no checkpoint tree")
       ;; No program here, so the copy is attempted and says it wrote nothing.
       (is (equal nle::+selection-copy-failed-hint+ (nle::status-said model)) "the release copies the mark"))))
+
+(deftest a-drag-over-the-draft-marks-and-copies-it ()
+  ;; The draft was the one text on the frame no drag could mark: the frame's
+  ;; mark is the transcript's, and a press on the composer did nothing.
+  (with-frame-model (model 80 24 :session-id "draft-drag")
+    (type-string model "please copy my draft")
+    (nle::compose-frame model)
+    (destructuring-bind (row . col) (nle::composer-origin model)
+      ;; One-based cells: the press lands on the c of "copy".
+      (let ((x (+ col 1 7)) (y (1+ row)))
+        (mouse-update model #'nlt:make-mouse-click-msg x y :button :left)
+        (is (equal '(0 7) (list (nle::editor-row model.editor) (nle::editor-col model.editor))) "the press puts the caret on the c")
+        (is (null (nle::editor-selected-text model.editor)) "a press alone marks nothing")
+        (mouse-update model #'nlt:make-mouse-motion-msg (+ x 3) y :button :left)
+        ;; Both ends inclusive, as a transcript drag's are.
+        (is (equal "copy" (nle::editor-selected-text model.editor)) "the drag marks from the press to the pointer")
+        (is (equal (list (list row (+ col 7) (+ col 10))) (nle::composer-mark-cells model)) "the mark washes its cells")
+        (mouse-update model #'nlt:make-mouse-release-msg (+ x 3) y :button :left)
+        ;; No program here, so the copy is attempted and says it wrote nothing.
+        (is (equal nle::+selection-copy-failed-hint+ (nle::status-said model)) "the release copies the mark")
+        (is (equal "please copy my draft" (composer-value model)) "the draft stays whole")
+        (press model #\X)
+        (is (equal "please X my draft" (composer-value model)) "typing replaces the mark")
+        (mouse-update model #'nlt:make-mouse-click-msg (+ col 1 3) y :button :left)
+        (mouse-update model #'nlt:make-mouse-release-msg (+ col 1 3) y :button :left)
+        (is (equal '(0 3) (list (nle::editor-row model.editor) (nle::editor-col model.editor))) "a click places the caret")
+        (is (equal "please X my draft" (composer-value model)) "and changes nothing")))))
+
+(deftest shift-keys-mark-the-draft-and-the-copy-keys-take-it ()
+  ;; Shift+arrows only moved the caret, and Ctrl+C over a draft wiped it.
+  (with-frame-model (model 80 24 :session-id "draft-keys")
+    (type-string model "hello world")
+    (press model :left :mod nlt:+mod-shift+ :left :mod (logior nlt:+mod-shift+ nlt:+mod-ctrl+))
+    (is (equal "world" (nle::editor-selected-text model.editor)) "Shift with the arrows marks the draft")
+    (is (nle::composer-mark-cells (progn (nle::compose-frame model) model)) "and the frame washes it")
+    (press model #\c :mod nlt:+mod-ctrl+)
+    (is (equal "hello world" (composer-value model)) "Ctrl+C over a mark copies it and keeps the draft")
+    (is (equal nle::+selection-copy-failed-hint+ (nle::status-said model)) "the copy went to the clipboard writer")
+    (press model #\x :mod nlt:+mod-ctrl+)
+    (is (equal "hello " (composer-value model)) "Ctrl+X cuts the mark")
+    (press model #\c :mod nlt:+mod-ctrl+)
+    (is (equal "" (composer-value model)) "with nothing marked Ctrl+C still clears the draft")))
 
 ;;; --- block kinds: image result ---------------------------------------------
 

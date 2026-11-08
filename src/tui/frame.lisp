@@ -69,6 +69,14 @@ from the ones COLLECT-DURING-WAIT hid inside provider wait."
                  (not (and ctrl (characterp key) (char-equal key #\d)
                            (not (composer-empty-p model)))))
             (return-from update (values model (nlt:quit-cmd))))
+           ;; Over marked draft text Ctrl+C copies it, as a text field does, and
+           ;; Ctrl+X cuts it: the draft is what the operator is working on.
+           ((and ctrl (not alt) (characterp key) (member key '(#\c #\x))
+                 (editor-selection (chat-model-editor model)))
+            (copy-marked-text model)
+            (when (char= key #\x)
+              (editor-delete-selection (chat-model-editor model))
+              (reset-history-navigation model)))
            ((and ctrl (characterp key) (char= key #\c))
             (cond ((plusp (length (editor-value (chat-model-editor model))))
                    (editor-reset (chat-model-editor model)))
@@ -145,7 +153,7 @@ from the ones COLLECT-DURING-WAIT hid inside provider wait."
            ((loop for (action . call) in '((:select-transcript . begin-transcript-select)
                                            (:history-dialog . open-prompt-history-dialog)
                                            (:paste-image . paste-clipboard-image)
-                                           (:copy-selection . copy-frame-selection))
+                                           (:copy-selection . copy-marked-text))
                     thereis (and (model-key-matches-p model action key mod) (progn (funcall call model) t))))
 
            ;; Switch Developer / Standard viewport (Ctrl+O).
@@ -1208,6 +1216,7 @@ footer, and the final blank; short windows end with two blank rows."
            ;; composer keeps its rows.
            (multiple-value-bind (panel-height above below)
                (docked-dialog-frame-rows model)
+             (forget-composer-origin model)
              ;; The panel replaces the composer, so the composer caret is gone;
              ;; a panel that owns a text field takes the cursor with it (Zig
              ;; ui.zig: cursor_vis off, then the dialog's own focus puts it
@@ -1263,21 +1272,22 @@ footer, and the final blank; short windows end with two blank rows."
              ;; cursor parks -- unless the keyboard selects the transcript,
              ;; whose cursor it stands on then (SELECT-CURSOR-CELL), hidden
              ;; while the window does not show that line.
+             ;; The composer's first text cell: blank + header + blank, the
+             ;; band, the gap blank, and the box's top pad row on tall windows;
+             ;; the side gutter, then the text's own inset in the box (the
+             ;; single-line mode has no gutter). A press there places the caret
+             ;; and a drag marks the draft (COMPOSER-PRESS).
+             (setf (composer-origin model)
+                   (cons (+ 3 (length band) 1 (if (shell-footer-p height) 1 0))
+                         (+ (composer-left-margin height) (composer-text-indent height))))
              (setf (chat-model-parked-cursor model)
                    (if (transcript-select model)
                        (select-cursor-cell model)
                        (multiple-value-bind (x y)
                            (editor-cursor-screen-position (chat-model-editor model))
                          (when (and x (< y (composer-visible-rows model)))
-                           (let* ((tall (shell-footer-p height))
-                                  ;; blank + header + blank, the band, the gap blank, and
-                                  ;; the box's top pad row on tall windows.
-                                  (row (+ 3 (length band) 1 (if tall 1 0) y))
-                                  ;; The side gutter, then the text's own inset in the box
-                                  ;; (the single-line mode has no gutter).
-                                  (col (+ (composer-left-margin height)
-                                          (composer-text-indent height)
-                                          x)))
+                           (let ((row (+ (car (composer-origin model)) y))
+                                 (col (+ (cdr (composer-origin model)) x)))
                              (when (< row height)
                                (cons (min col (1- width)) row)))))))
              (setf toast-floor (+ (length head) (length band)))
