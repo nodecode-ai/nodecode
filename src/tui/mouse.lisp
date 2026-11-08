@@ -789,11 +789,13 @@ instead selects the word under the pointer."
                 ;; toggle resolves on release.
                 (arm (chat-model-pressed-tool-row model) row))
                ((restorable-prompt-p model row)
-                ;; Click-to-restore: a press on a user prompt opens the
-                ;; checkpoint picker (the Zig
-                ;; openCheckpointRestoreDialogForPrompt affordance).
-                (when-let (notice (slash-tree-op model))
-                  (show-status model notice)))
+                ;; Click-to-restore arms as a card does: the release on
+                ;; the prompt with no drag between opens the checkpoint
+                ;; picker (the Zig openCheckpointRestoreDialogForPrompt
+                ;; affordance), and a drag from it selects the prompt's
+                ;; words -- opening on the press left the operator's own
+                ;; text the one text no drag could copy.
+                (arm (chat-model-pressed-tool-row model) row))
                (t
                 (if-let (word (and (note-left-press model (car cell) (cdr cell))
                                    (word-selection-at model (car cell) (cdr cell))))
@@ -1500,6 +1502,16 @@ selection copies to the clipboard through the program's own writer."
        (when (and column (eq :left (nlt:mouse-event-button msg)))
          (funcall (sheet-dialog-click (chat-model-dialog model))
                   model (chat-model-dialog model) column row))))
+    ;; A click on the operator's own prompt opens the checkpoint tree on
+    ;; it; the press armed it, and a drag from it was a selection instead.
+    ((and (chat-model-pressed-tool-row model) undragged
+          (restorable-prompt-p model (chat-model-pressed-tool-row model)))
+     (let ((pressed (chat-model-pressed-tool-row model)))
+       (disarm-pointer model)
+       (let ((line (frame-transcript-position model x y)))
+         (when (and line (eq pressed (transcript-item-at-line model line)))
+           (when-let (notice (slash-tree-op model))
+             (show-status model notice))))))
     ((and (chat-model-pressed-tool-row model) undragged)
      (let ((pressed (chat-model-pressed-tool-row model)))
        (disarm-pointer model)

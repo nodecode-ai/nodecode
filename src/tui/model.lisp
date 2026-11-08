@@ -177,6 +177,9 @@ for the many bars and rows that paint one run of text in one tone."
    ;; Whether the pointer rests on the transcript's scroll rail, which lights
    ;; its thumb (RAIL-HOT-P).
    (rail-hover :initform nil :accessor chat-model-rail-hover)
+   ;; The armed press on a row a click acts on: a tool card, a group or a
+   ;; folded thought its release toggles, or the operator's own prompt its
+   ;; release opens the checkpoint tree on. A drag from it selects instead.
    (pressed-tool-row :initform nil :accessor chat-model-pressed-tool-row)
    (pressed-link :initform nil :accessor chat-model-pressed-link)
    ;; The armed press on a band row's ✕: the exec id its release interrupts.

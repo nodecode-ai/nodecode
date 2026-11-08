@@ -4375,12 +4375,40 @@ and the DELIVERY its handler declares."
     (is (not (nle::note-left-press model 4 10)))))
 
 (deftest mouse-click-on-user-prompt-opens-checkpoints ()
+  ;; The click opens the tree, not the press: the press only arms, so a drag
+  ;; begun on the prompt selects its words instead
+  ;; (A-DRAG-OVER-A-USER-PROMPT-COPIES-ITS-WORDS).
   (with-frame-model (model 80 24 :session-id "mouse-restore"
                      :paint ((nle::ingest-message-fact "user" "restore me")))
-    (let ((index (line-row-index model :role "user")))
+    (let* ((index (line-row-index model :role "user"))
+           (y (and index (mouse-y-for-line model index))))
       (is index "the line table locates the prompt")
-      (mouse-update model #'nlt:make-mouse-click-msg 6 (mouse-y-for-line model index) :button :left)
-      (is (search "gateway" (or (nle::status-said model) ""))))))
+      (mouse-update model #'nlt:make-mouse-click-msg 6 y :button :left)
+      (is (null (nle::status-said model)) "the press alone opens nothing")
+      (mouse-update model #'nlt:make-mouse-release-msg 6 y :button :left)
+      (is (search "gateway" (or (nle::status-said model) "")) "the release on the same prompt opens the tree"))))
+
+(deftest a-drag-over-a-user-prompt-copies-its-words ()
+  ;; The operator's own prompt could not be copied: the press on it opened
+  ;; the checkpoint tree at once, so no drag ever started there. Now the
+  ;; press arms as a tool card's does, and a drag from it marks and copies
+  ;; the prompt's words like any other row's.
+  (with-frame-model (model 80 24 :session-id "prompt-select"
+                     :paint ((nle::ingest-message-fact "user" "please copy this sentence of mine")
+                             (nle::ingest-message-fact "assistant" "sure")))
+    (let* ((y (mouse-y-for-text model "please copy"))
+           ;; The band's two-column inset, one-based: the press lands on the
+           ;; prompt's first letter.
+           (x (+ 3 (search "please" (aref model.line-plain
+                                          (row-index-of "please copy" model.line-plain :required t))))))
+      (mouse-update model #'nlt:make-mouse-click-msg x y :button :left)
+      (mouse-update model #'nlt:make-mouse-motion-msg (+ x 15) y :button :left)
+      (is (nle::chat-model-selection model) "the drag marks the prompt")
+      (is (equal "please copy this" (nle::frame-selection-text model)) "the mark holds the prompt's words")
+      (mouse-update model #'nlt:make-mouse-release-msg (+ x 15) y :button :left)
+      (is (null (nle::chat-model-dialog model)) "the drag opened no checkpoint tree")
+      ;; No program here, so the copy is attempted and says it wrote nothing.
+      (is (equal nle::+selection-copy-failed-hint+ (nle::status-said model)) "the release copies the mark"))))
 
 ;;; --- block kinds: image result ---------------------------------------------
 
