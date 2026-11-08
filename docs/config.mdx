@@ -83,6 +83,7 @@ One entry per provider id, under `providers.<id>`.
 | `display_name` | String | The id |
 | `models[].id` | String | None |
 | `models[].context_window` | Integer above 0 | None |
+| `models[].reasoning_options` | The [models.dev](https://models.dev) shape: `[{"type": "effort", "values": ["low", "medium", "high", "xhigh", "max"]}]` | The models.dev entry for the model id |
 | `models[].sdk` | A dialect, for this model only | The provider's `sdk` |
 | `proxy` | String | None |
 | `request_max_retries` | Integer, 0 or more | 4 |

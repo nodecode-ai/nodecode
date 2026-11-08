@@ -411,7 +411,10 @@ size, write-date) identity moved since the parse MEMO holds."
 ;;; the models.dev disk cache; for the window, the operator's own number in the
 ;;; shared config (providers.<id>.models[].context_window) outranks both, and
 ;;; the NODECODE_CONTEXT_TOKENS env override outranks the config. A model no
-;;; source knows keeps a NIL window — unknown, never a guess.
+;;; source knows keeps a NIL window — unknown, never a guess. The reasoning
+;;; ladder takes the same order: the operator's own
+;;; providers.<id>.models[].reasoning_options, in the models.dev shape, outranks
+;;; the overrides and the catalog.
 ;;; Everything that shapes a request or an eviction budget reads
 ;;; RESOLVE-MODEL-CAPABILITY — no other authority.
 
@@ -901,7 +904,7 @@ and the models.dev cache, in that authority order per field — NIL where no
 source answers."
   ;; PROVIDER selects which namespace of the catalog answers for a model id
   ;; many of them republish, and which providers.<PROVIDER> entry of the
-  ;; config: only the window is read there (its models[].context_window).
+  ;; config: its models[].context_window and models[].reasoning_options.
   ;; Memoized per (provider, id) until one of the inputs changes.
   ;; the KEY: every input's identity, compared by EQL; none of them touches a file
   (let ((key (list (models-catalog-table) *model-capability-overrides*
@@ -923,9 +926,9 @@ source answers."
          ;; relay no catalog knows has no other source, and an unknown window
          ;; never arms the eviction trigger. One not a positive integer warns:
          ;; the bound did not take.
+         (model-entry (and (stringp model-id) (configured-model-entry provider model-id)))
          (configured
-           (when-let (model-entry (and (stringp model-id)
-                                       (configured-model-entry provider model-id)))
+           (when model-entry
              (or (config-context-window model-entry)
                  (multiple-value-bind (value present-p)
                      (gethash "context_window" model-entry)
@@ -935,7 +938,13 @@ source answers."
                    nil))))
          (entry (models-catalog-entry (or model-id "") provider))
          (operator (or *context-tokens-env-override* configured (getf override :context-tokens)))
-         (levels (or (getf override :effort-levels)
+         ;; The operator's own ladder from providers.<PROVIDER>.models: a
+         ;; gateway that names a model its own way is in no catalog namespace,
+         ;; and without it an adaptive-thinking model would be sent a thinking
+         ;; budget it refuses.
+         (configured-levels (and model-entry (config-effort-levels provider model-id model-entry)))
+         (levels (or configured-levels
+                     (getf override :effort-levels)
                      (declared-effort-levels model-id provider))))
     (make-model-capability
      ;; NIL when no source knows: an unknown window is unknown, not a flat
@@ -953,7 +962,8 @@ source answers."
      ;; who records only :EFFORT-LEVELS does not have to say `reasoning` too.
      ;; An explicit :REASONING-P still outranks both.
      :reasoning-p (let ((recorded (getf override :reasoning-p :unset)))
-                    (cond ((not (eq recorded :unset)) (and recorded t))
+                    (cond (configured-levels t)
+                          ((not (eq recorded :unset)) (and recorded t))
                           (entry (catalog-model-reasoning-p entry))
                           (t (and levels t))))
      :effort-levels levels
@@ -2996,6 +3006,19 @@ window in the provider's own tokens — else NIL."
   ;; configured-model inventory alike.
   (let ((value (json-value model-entry :integer "context_window")))
     (and value (plusp value) value)))
+
+(defun config-effort-levels (provider model model-entry)
+  "MODEL-ENTRY's reasoning ladder, weakest rung first: the effort values of
+its reasoning_options, in the models.dev shape, or NIL when it declares none."
+  ;; One parse with the catalog's own (CATALOG-EFFORT-LEVELS), so a row copied
+  ;; from models.dev reads the same in either place. A key present that names
+  ;; no rung warns: the ladder did not take.
+  (or (catalog-effort-levels model-entry)
+      (multiple-value-bind (value present-p) (gethash "reasoning_options" model-entry)
+        (when present-p
+          (warn "providers.~a.models ~a: reasoning_options ~s names no effort rung, so no ladder is set"
+                provider model value))
+        nil)))
 
 (defparameter +sdk-names+ '("openai-completions" "openai-responses" "anthropic" "google")
   "The config sdk alphabet (pi's api ids, one spelling per wire), in the
