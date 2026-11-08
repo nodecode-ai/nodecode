@@ -171,6 +171,13 @@ otherwise."
        (some #'row-image-plist round)
        round))
 
+(nlk:define-side-table group-rows-memo (:weakness :key)
+  "Weak memo: CONTEXT's own list cells (TRANSCRIPT-ROWS' ALL, kept EQ by
+TRANSCRIPT-ROWS-MEMO across a streamed delta) -> the (ENDED NEWEST
+NEWEST-CALL) GROUP-ROWS last walked CONTEXT for in Standard, so a render
+whose CONTEXT is unchanged answers them again rather than walk every row of
+a transcript long past its tail window for the same three facts.")
+
 (defun group-rows (rows &optional (context rows) backgrounds)
   "ROWS as projection items, in order: a row, or a TOOL-GROUP for each run
 of routine calls. Reflection recaps appear only in the Developer viewport."
@@ -199,25 +206,36 @@ of routine calls. Reflection recaps appear only in the Developer viewport."
   ;; the turn runs, its newest finished thought stands under the live bar
   ;; (the THOUGHT the run holds, LIVE-THOUGHT-ROWS). CONTEXT carries the
   ;; turns' ends and words even for a partial projection.
-  (let ((standard (eq *tool-detail* :standard))
-        (items '())
-        (run '())
-        (held '())
-        (aside '())
-        (recap nil)
-        ;; ENDED: the turns that have. NEWEST: each turn's newest words.
-        (ended (make-hash-table :test #'equal))
-        (newest (make-hash-table :test #'equal))
-        ;; The newest call made: an ended turn's round that holds it keeps
-        ;; standing while a picture stands in it (PICTURE-ROUND).
-        (newest-call (and (eq *tool-detail* :standard)
-                          (find :tool-call context :key #'transcript-row-kind :from-end t))))
-    (when standard
+  (let* ((standard (eq *tool-detail* :standard))
+         (items '())
+         (run '())
+         (held '())
+         (aside '())
+         (recap nil)
+         ;; ENDED, NEWEST and NEWEST-CALL are CONTEXT's alone -- which turns
+         ;; have ended, each turn's newest words, the newest call made -- so a
+         ;; render whose CONTEXT is EQ to the last one standard projected (a
+         ;; streamed delta grows a row's text in place, never CONTEXT's own
+         ;; list cells: TRANSCRIPT-ROWS-MEMO) answers the very tables that
+         ;; walk found rather than pay to walk every row of a transcript long
+         ;; past its tail window again for the same answer. A row whose
+         ;; outcome or turn-id changed changes no row CONTEXT already holds in
+         ;; place (a fact lands as a new row, PROMOTE or EVICT moves CONTEXT's
+         ;; own cons cells), so the memo answers exactly what a fresh walk
+         ;; would while CONTEXT stands as it was.
+         (memo (and standard (group-rows-memo context)))
+         (ended (if memo (first memo) (make-hash-table :test #'equal)))
+         (newest (if memo (second memo) (make-hash-table :test #'equal)))
+         (newest-call (if memo (third memo)
+                          (and standard
+                               (find :tool-call context :key #'transcript-row-kind :from-end t)))))
+    (when (and standard (not memo))
       (dolist (row context)
         (when-let (turn row.turn-id)
           (cond (row.outcome (setf (gethash turn ended) t))
                 ((and (assistant-text-p row) (position-if-not #'blank-char-p row.text))
-                 (setf (gethash turn newest) row))))))
+                 (setf (gethash turn newest) row)))))
+      (setf (group-rows-memo context) (list ended newest newest-call)))
     (labels ((alone (row) (close-run) (forget-row-groups row) (push row items))
              (close-run ()
                (when run

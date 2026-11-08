@@ -137,11 +137,35 @@ the in-place append buffer streaming rows carry as their text."
     (replace buf seed)
     buf))
 
+(nlk:define-side-table transcript-rows-memo (:weakness :key)
+  "STATE's last (HISTORY-LANE TAIL-LANE . ALL): the two lanes' own list cells
+as TRANSCRIPT-ROWS last appended them, and the append. A streamed delta
+mutates the live tail's own last row in place and leaves both lanes EQ
+(APPEND-TAIL-ROW only rebuilds TAIL_ROWS on a new row; history never moves
+between renders of the same delta), so TRANSCRIPT-ROWS answers this ALL
+again rather than pay to copy HISTORY_ROWS fresh for a frame nothing in it
+changed.")
+
 (defun transcript-rows (state)
   "All rows in display order: promoted history first, then the live tail."
+  ;; APPEND always copies its first argument's conses fresh, so this was
+  ;; O(history length) on every call, streamed delta or not — most of a
+  ;; render's PROJECT-STATE cost for a transcript long past its tail window
+  ;; (dfb3610's own gate run: a streamed word still n^0.43 after its fix,
+  ;; bytes flat; this and GROUP-ROWS-MEMO are the two walks that were still
+  ;; paying for history on every delta). Neither lane is ever mutated in
+  ;; place once handed out (every writer SETFs the hash entry, never NCONCs
+  ;; onto a cell this held), so the memo answers exactly what a fresh APPEND
+  ;; would while both lanes stand as they were.
   (when (hash-table-p state)
-    (append (gethash "history_rows" state '())
-            (gethash "tail_rows" state '()))))
+    (let ((history (gethash "history_rows" state '()))
+          (tail (gethash "tail_rows" state '()))
+          (memo (transcript-rows-memo state)))
+      (if (and memo (eq (first memo) history) (eq (second memo) tail))
+          (cddr memo)
+          (let ((all (append history tail)))
+            (setf (transcript-rows-memo state) (list* history tail all))
+            all)))))
 
 (defun find-transcript-row (predicate state)
   "The first row in display order PREDICATE answers, or NIL: TRANSCRIPT-ROWS
