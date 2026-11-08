@@ -594,6 +594,15 @@ shell is Git's bash, started past its redirector with Git's PATH."
        (,(if setf 'with-saved-globals 'let) ((,place ,path))
         ,@body))))
 
+(defmacro with-env-var ((name value) &body body &aux (saved (gensym "SAVED")) (new (gensym "VALUE")))
+  "Run BODY with the environment variable NAME set to VALUE, or unset when
+VALUE is NIL, and put back what it was on unwind."
+  `(let ((,saved (uiop:getenv ,name))
+         (,new ,value))
+     (nlk:with-cleanup ((if ,saved (sb-posix:setenv ,name ,saved 1) (sb-posix:unsetenv ,name)))
+       (if ,new (sb-posix:setenv ,name ,new 1) (sb-posix:unsetenv ,name))
+       ,@body)))
+
 (defmacro await ((&key (tries 100) (rest 0.1) timeout) &body test)
   "Evaluate TEST until it answers non-NIL or TRIES looks (TIMEOUT seconds' worth
 when given) are up, resting REST seconds between; answers what the last look gave."

@@ -2168,6 +2168,77 @@ neither names one, or while MISSING, the blanks nothing fills, is not empty."
                           (and (= a 100) (<= 64 b 127)) (and (= a 169) (= b 254)))))))
          t)))
 
+;;; --- local runtimes ------------------------------------------------------------
+;;; A model server installed on the operator's own machine answers at the
+;;; address its own docs name, with no key: Ollama on 127.0.0.1:11434, moved by
+;;; OLLAMA_HOST. Such a runtime needs no providers.<id> entry: every /models
+;;; open asks that address for a listing, and once it answers, its models are
+;;; listed under Local and a pick of one runs there. Before, an operator with
+;;; models pulled found nothing in /models until they wrote the entry into
+;;; config.jsonc by hand (#377). An entry of the operator's own under the same
+;;; id replaces the built-in one whole.
+
+(defparameter +local-runtimes+
+  '(("ollama" :name "Ollama" :host-env "OLLAMA_HOST" :port 11434 :path "/v1"
+     :start "run `ollama serve'"
+     :pull "run `ollama pull <model>'"))
+  "Each model server this build looks for on the operator's machine without a
+config entry: (ID :NAME :HOST-ENV :PORT :PATH :START :PULL) -- its display
+name, the environment variable its own CLI reads its address from, its
+default port, the path of its OpenAI-compatible API, and the words telling
+an operator how to start it and how to add a model to it.")
+
+(defun local-runtime-facts (id)
+  "ID's +LOCAL-RUNTIMES+ plist, or NIL when ID names no local runtime."
+  (and (stringp id) (cdr (assoc id +local-runtimes+ :test #'string=))))
+
+(defun local-runtime-base-url (id &aux (facts (local-runtime-facts id)))
+  "The OpenAI-compatible base URL the local runtime ID answers at, or NIL
+when ID names none: its HOST-ENV read the way its own CLI reads it -- a bare
+host, host:port, :port, [v6]:port or a URL, a scheme without a port on 80 or
+443, a wildcard listen address dialled as loopback -- else 127.0.0.1 on its
+default port."
+  ;; Ollama's envconfig.Host is the rule followed: the server and its CLI
+  ;; agree on the address through the one variable, so nodecode reads it too.
+  (when facts
+    (destructuring-bind (&key host-env port path &allow-other-keys) facts
+      (let* ((raw (nlk:trimmed (or (uiop:getenv host-env) "")))
+             (cut (search "://" raw))
+             (scheme (if cut (string-downcase (subseq raw 0 cut)) "http"))
+             (rest (if cut (subseq raw (+ cut 3)) raw))
+             (slash (position #\/ rest))
+             (hostport (subseq rest 0 slash))
+             (prefix (if slash (string-right-trim "/" (subseq rest slash)) ""))
+             (default-port (cond ((not cut) port) ((string= scheme "https") 443) (t 80))))
+        (multiple-value-bind (match groups)
+            (ppcre:scan-to-strings "^(?:\\[([^]]*)\\]|([^:\\[\\]]*))(?::(\\d{1,5}))?$" hostport)
+          (let* ((host (if match
+                           (or (aref groups 0) (aref groups 1))
+                           (string-trim "[]" hostport)))
+                 (number (and match (aref groups 2) (parse-integer (aref groups 2))))
+                 (host (if (member host '("" "0.0.0.0" "::") :test #'string=) "127.0.0.1" host)))
+            (format nil "~a://~:[~a~;[~a]~]:~d~a~a" scheme (find #\: host) host
+                    (if (and number (<= number 65535)) number default-port)
+                    prefix path)))))))
+
+(defun local-runtime-entry (id)
+  "The providers.<ID> entry the local runtime ID stands for when the config
+names none -- an openai-completions lane on LOCAL-RUNTIME-BASE-URL, no key --
+or NIL when ID names no runtime."
+  (when-let (base (local-runtime-base-url id))
+    (let ((entry (make-hash-table :test #'equal)))
+      (setf (gethash "sdk" entry) "openai-completions"
+            (gethash "base_url" entry) base
+            (gethash "display_name" entry) (getf (local-runtime-facts id) :name))
+      entry)))
+
+(defun implicit-local-runtime-ids ()
+  "The local runtimes (+LOCAL-RUNTIMES+) the shared config names no entry
+for: the ones nodecode looks for at their own address."
+  (loop for (id) in +local-runtimes+
+        unless (json-value (read-shared-config) :object "providers" id)
+          collect id))
+
 (defun lane-default-endpoint (provider lane)
   "LANE's default endpoint, for PROVIDER when that address is its own:
 PROVIDER is the lane's name (`anthropic', `google', the build's keyless
@@ -2990,9 +3061,11 @@ trimmedStringField rule)."
 
 (defun configured-provider-entry (name)
   "The providers.<NAME> object, or NIL — exact key match, the Zig
-providerObjectForId rule."
+providerObjectForId rule — or, for a local runtime the config names no entry
+for (+LOCAL-RUNTIMES+), the entry it stands for (LOCAL-RUNTIME-ENTRY)."
   (when (stringp name)
-    (json-value (read-shared-config) :object "providers" name)))
+    (or (json-value (read-shared-config) :object "providers" name)
+        (local-runtime-entry name))))
 
 (defun configured-model-entry (provider model)
   "The providers.<PROVIDER>.models[] row whose id is MODEL, or NIL."
@@ -4027,6 +4100,13 @@ the background. /models refresh drops it outright.")
 a blip clears on the first open a minute later, while a good listing rides
 the full TTL and a dead endpoint is still not re-dialled on every open.")
 
+;;; A model pulled or removed a moment ago, or a server just started, shows
+;;; on the next open: asking a machine of the operator's own costs nothing a
+;;; remote provider's rate limit would count.
+(defparameter *local-provider-models-ttl-seconds* 10
+  "How long a listing from a machine of the operator's own (LOCAL-ENDPOINT-P)
+is trusted, answer or failure, before the picker re-asks.")
+
 ;;; Without the deadline, a server that accepts and stays silent keeps the
 ;;; GET waiting past Dexador's read timeout, which does not cover cl+ssl's
 ;;; handshake wait. The fetch runs off the UI thread, so this bounds how long
@@ -4058,12 +4138,18 @@ base_url, whether or not they carry a key (a keyless local server lists
 fine), plus every credentialed provider whose base the models.dev catalog
 supplies (PROVIDER-BASE-URL) — a key /models saved against a catalog
 provider lists from that provider's own endpoint, not from the catalog's
-snapshot of it."
+snapshot of it. A local runtime nothing configures (IMPLICIT-LOCAL-RUNTIME-IDS)
+joins once its last listing answered (LOCAL-RUNTIME-ANSWERING-P)."
   ;; Sorted ascending, like the inventory. A decider's entry moves its
   ;; address only: it serves no chat listing.
   (loop for (id . entry) in (provider-config-entries)
         when (and (trimmed-config-string entry "base_url") (not (find-decider id)))
           do (pushnew id ids :test #'string-equal))
+  ;; A runtime that is not running is no provider of this home: its failure
+  ;; would trail a placeholder row through every operator's model list.
+  (dolist (id (implicit-local-runtime-ids))
+    (when (local-runtime-answering-p id)
+      (pushnew id ids :test #'string-equal)))
   ;; The inventory's ids are auth.json's plus the config entries carrying a
   ;; credential; the ones the catalog gives a base join.
   (dolist (id (configured-provider-inventory))
@@ -4207,6 +4293,11 @@ plists (:id :display :context-window :owned-by :kind), or NIL and why."
          (rows '()))
     (cond
       ((not (hash-table-p parsed)) (values nil "unparseable listing"))
+      ;; Ollama with nothing pulled yet answers {"object":"list","data":null}:
+      ;; a server holding no model, not a listing gone wrong.
+      ((and (null entries)
+            (some (lambda (key) (eq :null (gethash key parsed))) '("data" "models")))
+       (values nil nil))
       ((null entries) (values nil "listing carries neither data[] nor models[]"))
       (t
        (loop for entry across entries
@@ -4384,16 +4475,41 @@ different base_url than the one configured now."
               :fetched-at fetched-at
               :fresh-p (and fetched-at
                             (< (- (get-universal-time) fetched-at)
-                               (if error
-                                   *provider-models-failure-ttl-seconds*
-                                   *provider-models-ttl-seconds*))))))))
+                               (min (if error
+                                        *provider-models-failure-ttl-seconds*
+                                        *provider-models-ttl-seconds*)
+                                    ;; a machine of the operator's own is asked again sooner
+                                    (if (local-endpoint-p (json-value entry :text "base_url"))
+                                        *local-provider-models-ttl-seconds*
+                                        most-positive-fixnum)))))))))
+
+(defun local-runtime-answering-p (id &aux (entry (provider-models-cache-entry id)))
+  "Whether the last listing asked of ID, a local runtime, answered: an entry
+fetched from the address it answers at now, recording no failure."
+  (and entry (null (getf entry :error))))
+
+(defun listing-provider-ids (&aux (listable (listable-provider-ids)))
+  "Every provider a listing is asked of: the listable ones, then the local
+runtimes nothing configures (IMPLICIT-LOCAL-RUNTIME-IDS), which are asked
+whether or not they answered last time -- how one started since is found."
+  (append listable (remove-if (lambda (id) (member id listable :test #'string-equal))
+                              (implicit-local-runtime-ids))))
 
 (defun stale-listable-provider-ids ()
   "The listable providers whose cache entry is absent or past the TTL — what
-a /models open refreshes."
+a /models open refreshes, beside STALE-LOCAL-RUNTIME-IDS."
   (remove-if (lambda (id &aux (entry (provider-models-cache-entry id)))
                (and entry (getf entry :fresh-p)))
              (listable-provider-ids)))
+
+(defun stale-local-runtime-ids ()
+  "The local runtimes nothing configures (IMPLICIT-LOCAL-RUNTIME-IDS) and no
+listing is listed for yet, whose cache entry is absent or past the TTL: the
+ones a /models open asks whether they run now."
+  (remove-if (lambda (id &aux (entry (provider-models-cache-entry id)))
+               (or (and entry (getf entry :fresh-p))
+                   (member id (listable-provider-ids) :test #'string-equal)))
+             (implicit-local-runtime-ids)))
 
 (defun write-provider-models-cache (root)
   "Persist ROOT as the cache file, atomically (temp file + rename), and drop

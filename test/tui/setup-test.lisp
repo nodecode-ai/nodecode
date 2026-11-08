@@ -634,7 +634,7 @@ decoded body: each model a turn can run on, and each connected provider."
           (let ((dialog model.dialog))
             (is (nle::connect-dialog-p dialog))
             ;; The Main tab's rows: the dialog holds every tab's.
-            (is (= 1 (length (nle::picker-visible-rows dialog))))
+            (is (= 2 (length (nle::picker-visible-rows dialog))) "Ollama, which needs no catalog, and Other provider")
             (nle::install-fetched-catalog model "host not found")
             ;; the way on inside the 74 columns an 80-column row shows
             (is (equal "no models.dev list (host not found) · deepseek needs it · reopen online"
@@ -642,7 +642,7 @@ decoded body: each model a turn can run on, and each connected provider."
             (nle::save-provider-api-key "deepseek" nil)
             (write-temp-file nle::*models-catalog-path* +connect-catalog-fixture+)
             (nle::install-fetched-catalog model nil)
-            (is (= 5 (length (nle::picker-visible-rows dialog))) "three providers under a heading, and Other provider")
+            (is (= 6 (length (nle::picker-visible-rows dialog))) "three providers under a heading, Ollama, and Other provider")
             (is (equal "anthropic" (getf (nle::picker-row-value (first (nle::picker-visible-rows dialog))) :provider)))
             (is (zerop dialog.selection) "resting on the first row")
             (is (equal "Search providers and models" dialog.search-placeholder) "the failure goes with it")))))))

@@ -535,7 +535,8 @@ thread, then rebuild an open /models picker from what it landed."
   ;; keep the memo's identity.
   (let ((program model.program)
         (dialog model.dialog)
-        (stale (and *provider-models-cache-path* (stale-listable-provider-ids))))
+        (stale (and *provider-models-cache-path*
+                    (append (stale-listable-provider-ids) (stale-local-runtime-ids)))))
     ;; Every open rereads the gateway's list (its cells add models this
     ;; shell never sees); => T only when a stale listing is being fetched.
     (when (and program
@@ -553,7 +554,13 @@ thread, then rebuild an open /models picker from what it landed."
                                (json-object "ids" (coerce stale 'vector)))))
                           (ignore-errors (fetch-gateway-models model))))
                       (lambda (model value)
-                        (if (eq dialog model.dialog)
+                        ;; The list open when it lands, whether the one that
+                        ;; asked or one opened since (INSTALL-REFRESHED-MODELS
+                        ;; restocks a models list alone): first-run setup's
+                        ;; provider list, opened while an earlier refresh
+                        ;; still ran, kept the rows it opened on and called a
+                        ;; running Ollama not answering.
+                        (if (or (eq dialog model.dialog) (picker-dialog-p model.dialog))
                             (install-refreshed-models model value)
                             :quiet))))
       (and stale t))))
@@ -1426,7 +1433,7 @@ MODEL's transport."
             ((and (not seat) (equalp (first tokens) "list"))
              (values (model-catalog-list-text (second tokens)) nil))
             ((or (null picks) (and (not seat) (equalp picks '("refresh"))))
-             (when picks (drop-provider-models-cache (listable-provider-ids)))
+             (when picks (drop-provider-models-cache (listing-provider-ids)))
              (open-models-provider-picker model :tab (if seat (string-downcase seat) "main")))
             (aux (values (slash-auxiliary-model-op model picks) nil))
             (seat (values (slash-decider-model-op model picks) nil))

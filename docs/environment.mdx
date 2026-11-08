@@ -50,6 +50,7 @@ A command run outside a session's turn, or by the gateway's own session `s-GATEW
 | `NODECODE_TOOL_CHOICE` | `auto`, `none` or `required`. | Not sent |
 | `NODECODE_CONTEXT_TOKENS` | Context window in tokens, an integer. Outranks every other source. | None |
 | `NODECODE_MODELS_CATALOG` | Path of the models.dev catalog cache. | `~/.cache/nodecode/models.dev/api.json` |
+| `OLLAMA_HOST` | Where Ollama answers, read the way Ollama's own CLI reads it. Ignored once `providers.ollama` is set. | `127.0.0.1:11434` |
 
 See [Models and providers](models.mdx).
 

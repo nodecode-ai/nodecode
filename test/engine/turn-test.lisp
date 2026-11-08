@@ -5938,6 +5938,27 @@ own provider with one model pinned to another lane.")
     (is (null rows) "an object without data[]/models[] yields no rows")
     (is (search "neither" error) "and names the missing shape")))
 
+(deftest an-ollama-listing-with-nothing-pulled-is-no-failure ()
+  ;; Ollama before its first pull answers data:null: no model, nothing wrong.
+  (multiple-value-bind (rows error) (nle::parse-provider-listing "{\"object\":\"list\",\"data\":null}")
+    (is (null rows) "no rows")
+    (is (null error) "and no failure to show")))
+
+(deftest local-runtime-address-follows-ollama-host ()
+  ;; Ollama's own CLI and server agree on OLLAMA_HOST: nodecode reads it the
+  ;; same way, and dials a wildcard listen address as loopback.
+  (flet ((at (value) (with-env-var ("OLLAMA_HOST" value) (nle::local-runtime-base-url "ollama"))))
+    (is (equal "http://127.0.0.1:11434/v1" (at nil)) "unset: the default port on loopback")
+    (is (equal "http://127.0.0.1:11434/v1" (at "  ")) "blank reads as unset")
+    (is (equal "http://127.0.0.1:11434/v1" (at "0.0.0.0")) "a wildcard host is dialled on loopback")
+    (is (equal "http://127.0.0.1:11500/v1" (at "0.0.0.0:11500")))
+    (is (equal "http://127.0.0.1:11500/v1" (at ":11500")) "a bare port")
+    (is (equal "http://gpu-box.lan:11434/v1" (at "gpu-box.lan")) "a bare host keeps the default port")
+    (is (equal "http://gpu-box.lan:80/v1" (at "http://gpu-box.lan")) "a scheme without a port means its own port")
+    (is (equal "https://gpu-box.lan:443/ollama/v1" (at "https://gpu-box.lan/ollama/")) "a path prefix stays")
+    (is (equal "http://[::1]:11500/v1" (at "[::1]:11500")) "an IPv6 host keeps its brackets"))
+  (is (null (nle::local-runtime-base-url "acme")) "an id no runtime has has no address"))
+
 (deftest provider-auth-headers-follow-the-lane-family ()
   (is (equal '(("x-api-key" . "k") ("anthropic-version" . "2023-06-01"))
              (nle::provider-auth-headers :anthropic "k")))

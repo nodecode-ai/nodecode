@@ -643,6 +643,89 @@ tailnet address.")
       (let ((nle::*shared-config-memo* nil))
         (is (null (nle::shared-model-pin "decider_model")))))))
 
+(deftest an-unconfigured-ollama-is-listed-once-it-answers ()
+  ;; Nothing in config.jsonc names Ollama: a /models open asks it anyway, it
+  ;; joins the listable providers only once it answered, and a failure --
+  ;; Ollama not running, the common case -- adds no row anywhere.
+  (with-env-var ("OLLAMA_HOST" nil)
+    (let ((now (get-universal-time)))
+      (flet ((cache (&key error (age 0))
+               (format nil "{\"ollama\": {\"fetched_at\": ~d, \"base_url\": \"http://127.0.0.1:11434/v1\", ~
+                            \"error\": ~:[null~;~:*~s~], \"models\": [~:[{\"id\": \"qwen3:8b\"}~;~]]}}"
+                       (- now age) error error))
+             (ollama-rows ()
+               (remove-if-not (lambda (row) (string-equal "ollama" (getf row :provider)))
+                              (nle::model-choices))))
+        (with-model-listings (:config "{}")
+          (is (equal "http://127.0.0.1:11434/v1" (nle::provider-base-url "ollama")) "its built-in address")
+          (is (equal "openai-completions" (gethash "sdk" (nle::configured-provider-entry "ollama"))))
+          (is (null (nle::selection-refusal "ollama")) "a turn can run on it")
+          (is (notany (lambda (id) (string-equal id "ollama")) (nle::listable-provider-ids)) "never asked: not listed")
+          (is (equal '("ollama") (nle::stale-local-runtime-ids)) "but asked on the next open"))
+        (with-model-listings (:config "{}" :cache (cache :error "connection refused"))
+          (is (notany (lambda (id) (string-equal id "ollama")) (nle::listable-provider-ids)) "not running: not listed")
+          (is (null (ollama-rows)) "and no placeholder row says so to everyone"))
+        (with-model-listings (:config "{}" :cache (cache))
+          (is (member "ollama" (nle::listable-provider-ids) :test #'string-equal) "answered: listed")
+          (is (equal '("qwen3:8b") (mapcar (lambda (row) (getf row :model)) (ollama-rows))) "with its models")
+          (is (null (nle::stale-local-runtime-ids)) "a fresh answer is not asked again")
+          (is (null (nle::stale-listable-provider-ids)) "by either path"))
+        (with-model-listings (:config "{}" :cache (cache :age 20))
+          (is (equal '("ollama") (nle::stale-listable-provider-ids)) "a model pulled since shows on the next open"))
+        (with-model-listings (:config "{\"providers\": {\"ollama\": {\"sdk\": \"openai-completions\", \"base_url\": \"http://gpu-box.lan:11434/v1\"}}}")
+          (is (null (nle::implicit-local-runtime-ids)) "an entry of the operator's own replaces the built-in one")
+          (is (equal "http://gpu-box.lan:11434/v1" (nle::provider-base-url "ollama"))))))))
+
+(deftest slash-models-lists-an-unconfigured-ollama ()
+  ;; Ollama has a row among the providers before anything configures it:
+  ;; one not running says so, and Enter says how to start it and asks again.
+  ;; Once it answers, its models are listed under Local.
+  (with-env-var ("OLLAMA_HOST" nil)
+    (with-model-listings (:config "{}")
+      (is (equal "local  checking"
+                 (nle::picker-row-detail (find "Ollama" (nle::connect-picker-rows) :key #'nle::picker-row-label :test #'equal))) "never asked yet: checking, not a verdict"))
+    (with-model-listings (:config "{}" :cache (format nil "{\"ollama\": {\"fetched_at\": ~d, \"base_url\": \"http://127.0.0.1:11434/v1\", \"error\": \"connection refused\", \"models\": []}}" (get-universal-time)))
+      (let ((row (find "Ollama" (nle::connect-picker-rows) :key #'nle::picker-row-label :test #'equal)))
+        (is (equal "local  not answering" (and row (nle::picker-row-detail row))) "listed, and not answering")
+        (is (not (getf (nle::picker-row-value row) :connected)) "no pick to make"))
+      (with-frame-model (model 100 40 :session-id "models-ollama-down")
+        (let ((asked '())
+              (answer nil))
+          (with-stubbed-fdefinitions
+              ((nle::start-provider-models-refresh (model) nil)
+               (nle::off-loop (model thunk continuation) (funcall continuation model (funcall thunk)))
+               (nle::fetch-gateway-models (model) nil)
+               (nle::gateway-model-http-call (model method path body)
+                 (push (list path (nlk:encode-json-object body)) asked)
+                 ;; the gateway's fetch: Ollama answers once it is started
+                 (when answer (write-temp-file nle::*provider-models-cache-path* answer))
+                 nil))
+            (with-slash-dialog (dialog model "models" "") "/models opens silently"
+              (is (enter-row model "Ollama"))
+              (is (equal '("/api/gateway/provider-models/refresh" "{\"ids\":[\"ollama\"]}") (first asked)) "Enter asks it again")
+              (is (rows-carry-p "Ollama not answering at 127.0.0.1:11434 · run `ollama serve', then Enter"
+                                (nle::compose-frame model)) "and says how to start it")
+              ;; Started since: the next Enter lands on its models.
+              (setf answer (format nil "{\"ollama\": {\"fetched_at\": ~d, \"base_url\": \"http://127.0.0.1:11434/v1\", \"error\": null, \"models\": [{\"id\": \"qwen3:8b\"}]}}" (get-universal-time)))
+              (is (enter-row model "Ollama"))
+              (is (= 2 (length asked)) "asked again")
+              (is (rows-carry-p "qwen3:8b" (nle::compose-frame model)) "and on to the model it now has")
+              (is (not (rows-carry-p "not answering" (nle::compose-frame model))) "the old words gone"))))))
+    (with-model-listings (:config "{}" :cache (format nil "{\"ollama\": {\"fetched_at\": ~d, \"base_url\": \"http://127.0.0.1:11434/v1\", \"error\": null, \"models\": [{\"id\": \"qwen3:8b\"}, {\"id\": \"gemma3:4b\"}]}}" (get-universal-time)))
+      (let ((row (find "Ollama" (nle::connect-picker-rows) :key #'nle::picker-row-label :test #'equal)))
+        (is (equal "2 models  local" (and row (nle::picker-row-detail row))) "answering, with its count")
+        (is (getf (nle::picker-row-value row) :connected) "Enter goes on to its models"))
+      (with-frame-model (model 100 40 :session-id "models-ollama-up")
+        (with-slash-dialog (dialog model "models" "") "/models opens silently"
+          (let* ((rows (nle::picker-visible-rows dialog))
+                 (at (position "Local" rows :key #'nle::picker-row-label :test #'equal)))
+            (is (and at (nle::picker-row-heading (nth at rows))) "a Local heading")
+            (is (equal '("gemma3:4b" "qwen3:8b")
+                       (sort (loop for row in (nthcdr (1+ at) rows)
+                                   until (nle::picker-row-heading row)
+                                   collect (nle::picker-row-label row))
+                             #'string<)) "over the models Ollama has")))))))
+
 (deftest slash-models-backup-tab-reads-and-writes-the-chain ()
   ;; /models' fourth tab, Backup, is the failover chain every session and room
   ;; share: each backup in order with what history says of it, Add, the
@@ -889,7 +972,7 @@ package no lane speaks.")
           (let ((rows (nle::picker-visible-rows dialog))) ; the Main tab's
             ;; a pinned provider first, a heading, the rest by name; no lane
             ;; speaks Lost's package, and Speechco has no model a turn runs on
-            (is (equal '("Anthropic" "More providers, A to Z" "Acme Labs" "barecorp" "Other provider")
+            (is (equal '("Anthropic" "More providers, A to Z" "Acme Labs" "barecorp" "Ollama" "Other provider")
                        (mapcar #'nle::picker-row-label rows)))
             (is (nle::picker-row-heading (second rows)))
             (is (equal "anthropic"
@@ -918,7 +1001,7 @@ package no lane speaks.")
           (is (eq :provider (step-after model :enter)) "a saved key has no screen of its own")
           (is (zerop (length dialog.input)))
           (is (equal '("Suggested" "Acme Labs" "Connect another" "Anthropic"
-                       "More providers, A to Z" "barecorp" "Other provider")
+                       "More providers, A to Z" "barecorp" "Ollama" "Other provider")
                      (mapcar #'nle::picker-row-label (nle::picker-visible-rows dialog))))
           (is (= 1 (nle::connect-dialog-selection dialog)) "resting on the connected provider")
           (is (equal "sk-123" (nlk:json-value
@@ -1088,7 +1171,7 @@ cloudflare-workers-ai's carries ${CLOUDFLARE_ACCOUNT_ID}.")
       (is (equal '("acme-labs" "anthropic") (nle::connected-provider-ids)))
       (let ((rows (nle::connect-picker-rows)))
         (is (equal '("Suggested" "Anthropic" "Acme Labs" "Connect another"
-                     "barecorp" "Other provider")
+                     "barecorp" "Ollama" "Other provider")
                    (mapcar #'nle::picker-row-label rows)))
         (is (equal '("1 model  connected (auth.json)" "1 model  connected (env)" "1 model")
                    (mapcar #'nle::picker-row-detail (list (second rows) (third rows) (fifth rows))))))

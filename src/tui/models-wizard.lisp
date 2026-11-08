@@ -191,6 +191,41 @@ while its cell starts, `waiting for the sign-in… 1.3s' on the sign-in step."
   "Close DIALOG on CHOICE, handed to its ON-SUCCESS."
   (dismiss-dialog model (and on-success (lambda (model) (funcall on-success model choice)))))
 
+(defun connect-local-runtime-check (model dialog id &aux (facts (local-runtime-facts id))
+                                                         (address (decider-address (local-runtime-base-url id))))
+  "Ask ID, a local runtime DIALOG's list shows, again -- off the loop,
+through the gateway as every listing is, and this shell's copy of the
+gateway's list read anew -- then go on to its models when it offers some,
+or say on MODEL's status line what it needs: starting, or a model."
+  ;; Started or pulled since the list opened, Enter lands on its models: the
+  ;; operator never has to find a refresh key. Asked even when its row reads
+  ;; answering: the models the pick goes on to are the gateway's list's.
+  (drop-provider-models-cache (list id))
+  (show-status model (format nil "asking ~a at ~a…" (getf facts :name) address))
+  (off-loop model
+            (lambda ()
+              (ignore-errors (gateway-model-http-call model :post "/api/gateway/provider-models/refresh"
+                                                      (json-object "ids" (vector id))))
+              (setf *provider-models-memo* nil)
+              (ignore-errors (fetch-gateway-models model)))
+            (lambda (model value)
+              (declare (ignore value))
+              (cond ((not (connect-on-step-p model dialog :provider)) :quiet)
+                    (t (setf dialog.rows (funcall (connect-dialog-provider-rows dialog)))
+                       (let ((now (find-if (lambda (row &aux (value (picker-row-value row)))
+                                             (and (getf value :local-runtime) (equal id (getf value :provider))))
+                                           dialog.rows)))
+                         (cond ((getf (and now (picker-row-value now)) :connected)
+                                (show-status model nil)
+                                (connect-pick model dialog id))
+                               ;; Short enough for the hint row of an 80-column dialog.
+                               ((getf (and now (picker-row-value now)) :answering)
+                                (show-status model (format nil "~a has no models yet · ~a, then Enter"
+                                                           (getf facts :name) (getf facts :pull))))
+                               (t (show-status model (format nil "~a not answering at ~a · ~a, then Enter"
+                                                             (getf facts :name) address (getf facts :start))))))
+                       (render-state model))))))
+
 (defun connect-on-step-p (model dialog step)
   "Whether DIALOG is still MODEL's open dialog, on STEP."
   (and (eq dialog (chat-model-dialog model)) (eq step (connect-dialog-step dialog))))
@@ -441,7 +476,7 @@ showing for one to mean anything else."
     ;; Every provider's fetched list forgotten and fetched again behind the
     ;; list, which repaints as each lands: what a stale catalog needs.
     ((and (eq step :provider) ctrl (characterp key) (char-equal key #\r))
-     (drop-provider-models-cache (listable-provider-ids))
+     (drop-provider-models-cache (listing-provider-ids))
      (start-provider-models-refresh model)
      (show-status model "fetching every provider's models again")
      t)
@@ -464,6 +499,10 @@ showing for one to mean anything else."
                   ;; A provider a folder not installed here serves: the
                   ;; folder first, then what the provider asks for.
                   ((getf value :install) (connect-install model dialog row))
+                  ;; A local runtime takes no key: it is asked again, then
+                  ;; picked when it offers a model, or says what it needs.
+                  ((getf value :local-runtime)
+                   (connect-local-runtime-check model dialog (getf value :provider)))
                   ;; A provider whose key answers is a pick, not a key to paste
                   ;; again: Enter picks it. Ctrl+E pastes a new one.
                   ((getf value :connected) (pick (getf value :provider)))
