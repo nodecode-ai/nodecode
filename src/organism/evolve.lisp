@@ -36,6 +36,11 @@
 (defvar *floor-locked* nil
   "Whether the kernel package is locked. Set by LOCK-FLOOR.")
 
+(defvar *standing-packages* nil
+  "The packages standing when LOCK-FLOOR raised the floor, NIL while it is
+lowered: DELETE-PACKAGE refuses to delete one, and RENAME-PACKAGE to take a
+name from one (STANDING-PACKAGE).")
+
 (defun kernel-owned-name-p (name-string)
   "Whether NAME-STRING names real floor material: a kernel symbol that is
 exported, or that already denotes a function or a variable — exactly the set
@@ -50,22 +55,78 @@ a mutation could damage by redefining."
              (boundp found)))))
 
 (defun lock-floor ()
-  "Lock the kernel package so redefining a kernel symbol is an error. Idempotent."
+  "Lock the kernel package so redefining a kernel symbol is an error, and
+hold every package standing now against deletion (*STANDING-PACKAGES*).
+Idempotent."
   (unless *floor-locked*
     (sb-ext:lock-package '#:nodecode.kernel)
-    (setf *floor-locked* t))
+    (setf *standing-packages* (list-all-packages)
+          *floor-locked* t))
   *floor-locked*)
 
 (defun unlock-floor ()
-  "Unlock the kernel package."
+  "Unlock the kernel package, and let the standing packages go."
   ;; The organism is allowed to lower its own floor. That is the point of a
   ;; floor that is chosen rather than imposed: a kernel that could not be
   ;; unlocked would make this a sandbox, and the mutation path stops being
   ;; honest about what it can reach.
   (when *floor-locked*
     (sb-ext:unlock-package '#:nodecode.kernel)
-    (setf *floor-locked* nil))
+    (setf *standing-packages* nil
+          *floor-locked* nil))
   (not *floor-locked*))
+
+;;; --- the packages the image runs on ---------------------------------------
+;;; The kernel lock guards one package; the image runs on many more: EVOLVED,
+;;; which every snippet is read in, the cells', the libraries'. None of them
+;;; can carry SBCL's lock -- EVOLVED is the mutation target, and a lock refuses
+;;; its DEFUNs -- so DELETE-PACKAGE and RENAME-PACKAGE reached them freely. One
+;;; snippet's cleanup, (dolist (p made) (ignore-errors (delete-package p))),
+;;; over packages it had found as well as made, deleted NODECODE.EVOLVED, and
+;;; every later snippet of every session then died binding *PACKAGE* to NIL
+;;; until the gateway restarted (2026-11-08). So the raised floor also holds
+;;; every package standing when it was raised: deleting one, or renaming it
+;;; away from a name or nickname it answers to, is refused. A package made
+;;; after is its maker's to delete, and lowering the floor lets them all go,
+;;; as a live upgrade does while it loads (CONVERGE).
+
+(defun standing-package (designator)
+  "The package DESIGNATOR names when the raised floor holds it, else NIL."
+  (when *standing-packages*
+    (let ((package (if (packagep designator) designator (find-package designator))))
+      (and package (member package *standing-packages* :test #'eq) package))))
+
+(defun keeps-its-names-p (package new-name new-nicknames)
+  "Whether renaming PACKAGE to NEW-NAME and NEW-NICKNAMES keeps every name it
+answers to: a redefinition restating the package, as UIOP:DEFINE-PACKAGE does."
+  (flet ((name-of (designator)
+           (if (packagep designator) (package-name designator) (string designator))))
+    (and (string= (package-name package) (name-of new-name))
+         (subsetp (package-nicknames package) (mapcar #'name-of new-nicknames)
+                  :test #'string=))))
+
+(define-error standing-package-refused (error)
+    (operation name)
+  (:report "~(~a~) refused: ~a is a package this image runs on, and taking it ~
+             away breaks every session until a restart. A package made after the ~
+             boot stays its maker's to delete."
+           operation name))
+
+;; By name and afresh, so a reload replaces the advice instead of stacking it.
+(encapsulate-afresh 'delete-package 'standing-package
+                    (lambda (next designator)
+                      (when-let (package (standing-package designator))
+                        (error 'standing-package-refused
+                               :operation 'delete-package :name (package-name package)))
+                      (funcall next designator)))
+
+(encapsulate-afresh 'rename-package 'standing-package
+                    (lambda (next designator new-name &optional new-nicknames)
+                      (let ((package (standing-package designator)))
+                        (when (and package (not (keeps-its-names-p package new-name new-nicknames)))
+                          (error 'standing-package-refused
+                                 :operation 'rename-package :name (package-name package))))
+                      (funcall next designator new-name new-nicknames)))
 
 ;;; --- the floor as recorded lineage ---
 ;;;

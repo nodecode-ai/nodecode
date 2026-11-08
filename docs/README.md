@@ -98,6 +98,12 @@ Boot locks it with `sb-ext:lock-package`.
 the turn loop, projections and UI methods. The turn loop lives here on
 purpose, because it is the thing the organism rewrites most.
 
+The raised floor also holds every package that stood when it was raised,
+`nodecode.evolved` and the cells' and libraries' among them: `delete-package`
+refuses to delete one, and `rename-package` to take a name from one, so a
+snippet cannot take away the package every session reads in. A package made
+after is its maker's to delete.
+
 The organism can move that line itself: `eval` reaches every definition, and
 `save-lisp-and-die` saves compiled code.
 
