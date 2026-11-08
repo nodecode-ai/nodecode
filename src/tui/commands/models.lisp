@@ -189,6 +189,24 @@ the list on both shells)."
                                         (:api-key "auth.json")
                                         (:secret-file "secrets/")
                                         (t state))))))))
+      ;; A local runtime nothing configures (IMPLICIT-LOCAL-RUNTIME-IDS) has a
+      ;; row whether or not it answers: the row is how an operator learns it is
+      ;; looked for, and Enter on one that offers no model says what it needs
+      ;; (CONNECT-LOCAL-RUNTIME-HINT).
+      (dolist (id (implicit-local-runtime-ids))
+        (unless (find id rows :test #'string-equal :key #'provider)
+          (let ((answering (and (member-p id listable) t))
+                (count (models id)))
+            (push (make-picker-row
+                   :label (getf (local-runtime-facts id) :name)
+                   :detail (cond ((and (not answering) (null (provider-models-cache-entry id)))
+                                  "local  checking")
+                                 ((not answering) "local  not answering")
+                                 ((zerop count) "local  no models yet")
+                                 (t (format nil "~d model~:p  local" count)))
+                   :value (list :provider id :local-runtime t :answering answering
+                                :connected (and answering (plusp count))))
+                  rows))))
       ;; Configured and local providers need a row even without a models.dev entry.
       ;; Their models and listing failures still come from the one model catalog.
       (dolist (id (union connected listable :test #'string-equal))

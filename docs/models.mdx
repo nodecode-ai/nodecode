@@ -23,6 +23,10 @@ Every provider key is listed in [Config](config.mdx). `/models` connects a provi
 
 A provider whose `base_url` is a machine of your own, on localhost, your LAN or your tailnet, is listed under Local in `/models`. Its models come from `GET <base_url>/models`.
 
+Ollama needs no entry. Each time `/models` or `/setup` opens, Nodecode asks `http://127.0.0.1:11434/v1/models`, or the address in `OLLAMA_HOST`, and lists the models Ollama answers with under Local. The provider list shows Ollama either way. While Ollama is not running or has no model, Enter on it says what to do and asks again. A model pulled or removed shows on the next open. A `providers.ollama` entry of your own replaces the built-in one.
+
+Ollama gives a model a 4K context window by default on a GPU with less than 24 GiB of memory, and recommends at least 64K for agents. Set `OLLAMA_CONTEXT_LENGTH=64000` before `ollama serve` ([Ollama: context length](https://docs.ollama.com/context-length)).
+
 A request to openrouter.ai carries `HTTP-Referer: https://nodecode.ai` and `X-OpenRouter-Title: Nodecode`, which credit the tokens to Nodecode on OpenRouter's app rankings. No other host gets them.
 
 A chat request to api.mistral.ai carries no `reasoning_content` on its messages. Mistral refuses a message field its schema does not name, so a DeepSeek model it hosts would fail every turn after the first.

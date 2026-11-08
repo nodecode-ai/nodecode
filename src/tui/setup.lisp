@@ -1165,7 +1165,10 @@ the operator has keys for."
   ;; the walk before this list (SLASH-SETUP-OP). Esc ends the walk; the
   ;; closing line's health problems and the footer (FOOTER-FRAME-ROW) say
   ;; a provider is still missing. Before this stage only an import names
-  ;; the walk's providers (SETUP-IMPORT-APPLY).
+  ;; the walk's providers (SETUP-IMPORT-APPLY). The listings are asked for
+  ;; as /models asks them: a running Ollama nothing configures is found on
+  ;; the first run, the moment it would be looked for.
+  (start-provider-models-refresh model)
   (open-connect-dialog
    model #'setup-provider-rows
    (connect-credential-sink

@@ -1426,7 +1426,7 @@ MODEL's transport."
             ((and (not seat) (equalp (first tokens) "list"))
              (values (model-catalog-list-text (second tokens)) nil))
             ((or (null picks) (and (not seat) (equalp picks '("refresh"))))
-             (when picks (drop-provider-models-cache (listable-provider-ids)))
+             (when picks (drop-provider-models-cache (listing-provider-ids)))
              (open-models-provider-picker model :tab (if seat (string-downcase seat) "main")))
             (aux (values (slash-auxiliary-model-op model picks) nil))
             (seat (values (slash-decider-model-op model picks) nil))
