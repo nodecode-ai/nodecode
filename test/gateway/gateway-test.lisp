@@ -3622,12 +3622,12 @@ request."
     (is (eq t (getf (nle::gateway-models-facts old) :unreported)) "an answer without the field is unreported")
     (is (null (getf (nle::gateway-models-facts new) :unreported)) "an empty providers field is a report: nothing connected")
     (with-stubbed-fdefinitions ((nle::models-catalog-table () nil))
-      (flet ((first-label (body)
+      (flet ((labels-of (body)
                (with-saved-globals ((nle::*serving* nil)
                                     (nle::*gateway-models* (nle::gateway-models-facts body)))
-                 (nle::picker-row-label (first (nle::connect-picker-rows))))))
-        (is (search "Saved keys unknown: the gateway runs an older build" (first-label old)) "the list leads with what it cannot know")
-        (is (equal "Other provider" (first-label new)) "a reporting gateway's list is as it was")))))
+                 (mapcar #'nle::picker-row-label (nle::connect-picker-rows)))))
+        (is (search "Saved keys unknown: the gateway runs an older build" (first (labels-of old))) "the list leads with what it cannot know")
+        (is (equal '("Ollama" "Other provider") (labels-of new)) "a reporting gateway's list is as it was: Ollama, which needs no catalog, and Other provider")))))
 
 (deftest the-model-changed-frame-refreshes-attached-facts (let ((model (detached-shell))))
   ;; The client half: the frame invalidates the cached footer facts and

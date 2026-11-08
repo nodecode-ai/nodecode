@@ -4475,10 +4475,13 @@ different base_url than the one configured now."
               :fetched-at fetched-at
               :fresh-p (and fetched-at
                             (< (- (get-universal-time) fetched-at)
-                               (cond ((local-endpoint-p (json-value entry :text "base_url"))
-                                      *local-provider-models-ttl-seconds*)
-                                     (error *provider-models-failure-ttl-seconds*)
-                                     (t *provider-models-ttl-seconds*)))))))))
+                               (min (if error
+                                        *provider-models-failure-ttl-seconds*
+                                        *provider-models-ttl-seconds*)
+                                    ;; a machine of the operator's own is asked again sooner
+                                    (if (local-endpoint-p (json-value entry :text "base_url"))
+                                        *local-provider-models-ttl-seconds*
+                                        most-positive-fixnum)))))))))
 
 (defun local-runtime-answering-p (id &aux (entry (provider-models-cache-entry id)))
   "Whether the last listing asked of ID, a local runtime, answered: an entry
@@ -4493,11 +4496,20 @@ whether or not they answered last time -- how one started since is found."
                               (implicit-local-runtime-ids))))
 
 (defun stale-listable-provider-ids ()
-  "The providers a listing is asked of (LISTING-PROVIDER-IDS) whose cache
-entry is absent or past the TTL — what a /models open refreshes."
+  "The listable providers whose cache entry is absent or past the TTL — what
+a /models open refreshes, beside STALE-LOCAL-RUNTIME-IDS."
   (remove-if (lambda (id &aux (entry (provider-models-cache-entry id)))
                (and entry (getf entry :fresh-p)))
-             (listing-provider-ids)))
+             (listable-provider-ids)))
+
+(defun stale-local-runtime-ids ()
+  "The local runtimes nothing configures (IMPLICIT-LOCAL-RUNTIME-IDS) and no
+listing is listed for yet, whose cache entry is absent or past the TTL: the
+ones a /models open asks whether they run now."
+  (remove-if (lambda (id &aux (entry (provider-models-cache-entry id)))
+               (or (and entry (getf entry :fresh-p))
+                   (member id (listable-provider-ids) :test #'string-equal)))
+             (implicit-local-runtime-ids)))
 
 (defun write-provider-models-cache (root)
   "Persist ROOT as the cache file, atomically (temp file + rename), and drop

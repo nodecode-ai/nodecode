@@ -1165,10 +1165,7 @@ the operator has keys for."
   ;; the walk before this list (SLASH-SETUP-OP). Esc ends the walk; the
   ;; closing line's health problems and the footer (FOOTER-FRAME-ROW) say
   ;; a provider is still missing. Before this stage only an import names
-  ;; the walk's providers (SETUP-IMPORT-APPLY). The listings are asked for
-  ;; as /models asks them: a running Ollama nothing configures is found on
-  ;; the first run, the moment it would be looked for.
-  (start-provider-models-refresh model)
+  ;; the walk's providers (SETUP-IMPORT-APPLY).
   (open-connect-dialog
    model #'setup-provider-rows
    (connect-credential-sink
@@ -1190,6 +1187,10 @@ the operator has keys for."
             (setup-stage-model model run provider)))))
   (let ((dialog model.dialog))
     (when (connect-dialog-p dialog)
+      ;; The listings are asked for as /models asks them, once the list is
+      ;; open so their landing repaints it: a running Ollama nothing
+      ;; configures is found on the first run, where it would be looked for.
+      (start-provider-models-refresh model)
       ;; A refused key's row is where Enter pastes a new one: the selection
       ;; starts there, not on the first connected provider.
       (when-let (at (setup-provider-prompt run dialog))

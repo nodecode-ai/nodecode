@@ -193,12 +193,13 @@ while its cell starts, `waiting for the sign-in… 1.3s' on the sign-in step."
 
 (defun connect-local-runtime-check (model dialog id &aux (facts (local-runtime-facts id))
                                                          (address (decider-address (local-runtime-base-url id))))
-  "Ask ID, a local runtime DIALOG's list shows offering no model, again --
-off the loop, through the gateway as every listing is -- then go on to its
-models when it offers some now, or say on MODEL's status line what it needs:
-starting, or a model."
+  "Ask ID, a local runtime DIALOG's list shows, again -- off the loop,
+through the gateway as every listing is, and this shell's copy of the
+gateway's list read anew -- then go on to its models when it offers some,
+or say on MODEL's status line what it needs: starting, or a model."
   ;; Started or pulled since the list opened, Enter lands on its models: the
-  ;; operator never has to find a refresh key.
+  ;; operator never has to find a refresh key. Asked even when its row reads
+  ;; answering: the models the pick goes on to are the gateway's list's.
   (drop-provider-models-cache (list id))
   (show-status model (format nil "asking ~a at ~a…" (getf facts :name) address))
   (off-loop model
@@ -498,13 +499,13 @@ showing for one to mean anything else."
                   ;; A provider a folder not installed here serves: the
                   ;; folder first, then what the provider asks for.
                   ((getf value :install) (connect-install model dialog row))
+                  ;; A local runtime takes no key: it is asked again, then
+                  ;; picked when it offers a model, or says what it needs.
+                  ((getf value :local-runtime)
+                   (connect-local-runtime-check model dialog (getf value :provider)))
                   ;; A provider whose key answers is a pick, not a key to paste
                   ;; again: Enter picks it. Ctrl+E pastes a new one.
                   ((getf value :connected) (pick (getf value :provider)))
-                  ;; A local runtime takes no key: one with no model to offer
-                  ;; says what it needs, and is asked again.
-                  ((getf value :local-runtime)
-                   (connect-local-runtime-check model dialog (getf value :provider)))
                   (t (connect-ask-key dialog row))))))
        (:custom-provider
         (let ((input dialog.input))
