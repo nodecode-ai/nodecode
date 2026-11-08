@@ -51,10 +51,21 @@
   (value-memo nil)
   (visual-memo nil))
 
+;;; The selection: Shift with a motion key, or a drag over the composer, marks
+;;; the text between the caret and the place the mark was dropped. Typing or a
+;;; paste replaces it, Backspace and Delete take it away, the copy keys copy
+;;; it. Any edit drops the mark (%EDITOR-TOUCH), so a mark only ever spans the
+;;; text it was laid on. It hangs beside the record, weak, as the frame's lanes
+;;; do: a slot added to EDITOR would leave every live editor obsolete.
+(nlk:define-side-table editor-mark (:weakness :key)
+  "The composer's selection anchor: the (ROW . COL) the mark was dropped at,
+the caret its other end.")
+
 (declaim (inline %editor-touch))
 (defun %editor-touch (editor)
-  "Mark the text changed: bump the epoch the memos key on."
+  "Mark the text changed: bump the epoch the memos key on, and drop the mark."
   (incf editor.epoch)
+  (forget-editor-mark editor)
   editor)
 
 (defun %editor-set-lines (editor start end rows &aux (lines editor.lines))
@@ -127,7 +138,8 @@ was when that answer was made, else BODY, stored back under the fresh fields."
   "Insert TEXT at the caret and leave the caret after it; a newline in TEXT
 splits the line."
   ;; Trimmed to CHAR-LIMIT when one is set — the budget counts characters,
-  ;; newlines excluded. => EDITOR.
+  ;; newlines excluded. Marked text is replaced. => EDITOR.
+  (editor-delete-selection editor)
   (let ((text (if (plusp editor.char-limit)
                   (let ((used (reduce #'+ editor.lines :key #'length)))
                     (subseq text 0 (min (length text) (max 0 (- editor.char-limit used)))))
@@ -241,6 +253,49 @@ the caret past it."
       (setf editor.col end)))
   editor)
 
+;;; --- the mark ------------------------------------------------------------
+
+(defun editor-selection (editor &aux (mark (editor-mark editor)))
+  "=> (values START-ROW START-COL END-ROW END-COL): the marked text, its
+earlier end first, or NIL while nothing is marked."
+  (when mark
+    (let ((row (car mark)) (col (cdr mark)))
+      (cond ((or (< row editor.row) (and (= row editor.row) (< col editor.col)))
+             (values row col editor.row editor.col))
+            ((or (> row editor.row) (> col editor.col))
+             (values editor.row editor.col row col))))))
+
+(defun editor-selected-text (editor)
+  "The marked text, its lines joined by newlines, or NIL while nothing is
+marked."
+  (multiple-value-bind (r1 c1 r2 c2) (editor-selection editor)
+    (when r1
+      (if (= r1 r2)
+          (subseq (aref editor.lines r1) c1 c2)
+          (format nil "~a~%~{~a~%~}~a" (subseq (aref editor.lines r1) c1)
+                  (loop for row from (1+ r1) below r2 collect (aref editor.lines row))
+                  (subseq (aref editor.lines r2) 0 c2))))))
+
+(defun editor-select (editor from to)
+  "Mark the text from FROM to TO, both (ROW . COL), the caret at TO."
+  (setf (editor-mark editor) (cons (car from) (cdr from))
+        editor.row (car to)
+        editor.col (cdr to))
+  editor)
+
+(defun editor-delete-selection (editor)
+  "Delete the marked text, the caret at its start. => T when any was marked."
+  (multiple-value-bind (r1 c1 r2 c2) (editor-selection editor)
+    (forget-editor-mark editor)
+    (when r1
+      (%editor-set-lines editor r1 (1+ r2)
+                         (list (concatenate 'string (subseq (aref editor.lines r1) 0 c1)
+                                            (subseq (aref editor.lines r2) c2))))
+      (setf editor.row r1
+            editor.col c1)
+      (%editor-touch editor)
+      t)))
+
 ;;; --- visual rows ---------------------------------------------------------
 ;;; The wrap map: every logical line broken at WIDTH by BREAK-FRAGMENTS, as
 ;;; a vector of (row start end). Memoized on the epoch and the width.
@@ -330,12 +385,48 @@ in display columns from the left edge, Y in rows from the top visible row."
            (col (max start (min editor.col (length line)))))
       (values (text-display-width (subseq line start col)) y))))
 
+(defun editor-visible-marks (editor)
+  "=> ((Y FIRST LAST) ...): each visible row the mark covers, Y from the top
+visible row, FIRST and LAST the display columns of its first and last marked
+cell, inclusive."
+  (multiple-value-bind (r1 c1 r2 c2) (editor-selection editor)
+    (when r1
+      (loop with visuals = (%editor-settle editor)
+            for y from 0 below (editor-height editor)
+            for vi = (+ editor.offset y)
+            while (< vi (length visuals))
+            nconc (destructuring-bind (row start end) (aref visuals vi)
+                    (let* ((line (aref editor.lines row))
+                           (from (max start (if (= row r1) c1 0)))
+                           (to (min end (if (= row r2) c2 (length line)))))
+                      (when (and (<= r1 row r2) (< from to))
+                        (let ((first (text-display-width (subseq line start from))))
+                          (list (list y first (+ first -1 (text-display-width
+                                                           (subseq line from to)))))))))))))
+
+(defun editor-position-at (editor x y)
+  "=> (ROW . COL): the place in the text the visible cell at display column X
+of row Y (from the top visible row) stands on -- the character painted
+there, or the row's end past its text -- clamped into the visible rows."
+  (let* ((visuals (%editor-settle editor))
+         (vi (max 0 (min (1- (length visuals))
+                         (+ editor.offset (max 0 (min y (1- (editor-height editor)))))))))
+    (destructuring-bind (row start end) (aref visuals vi)
+      (let ((line (aref editor.lines row)))
+        (cons row (loop for col from start below end
+                        for width = (text-display-width (string (char line col)))
+                        sum width into covered
+                        when (> covered x) return col
+                        finally (return end)))))))
+
 ;;; --- keys ----------------------------------------------------------------
 
 (defun editor-handle-key (editor msg &aux (before editor.epoch))
   "Apply the key press MSG to EDITOR: the arrows and Home/End, the readline
 motion, kill and word chords, Backspace/Delete, Enter (and its Ctrl+M /
-Ctrl+J spellings) as a newline, and plain characters as text."
+Ctrl+J spellings) as a newline, and plain characters as text. Shift with an
+arrow or Home/End -- Ctrl for words and the document's ends -- marks as it
+moves."
   ;; A ctrl or alt chord this table does not name is a gesture, not text: it
   ;; never types its base letter. => T when the text changed; motion alone
   ;; answers NIL.
@@ -343,9 +434,37 @@ Ctrl+J spellings) as a newline, and plain characters as text."
     (let* ((key (nlt:key-event-code msg))
            (mod (nlt:key-event-mod msg))
            (ctrl (nlt:mod-contains mod nlt:+mod-ctrl+))
-           (alt (nlt:mod-contains mod nlt:+mod-alt+)))
+           (alt (nlt:mod-contains mod nlt:+mod-alt+))
+           (shift (nlt:mod-contains mod nlt:+mod-shift+))
+           (marked (editor-selection editor)))
       (flet ((chord (char) (and (characterp key) (char= key char))))
+        ;; The first Shift+motion drops the mark where the caret stands and
+        ;; the motion below carries the caret off it. Any other motion, and
+        ;; any key while nothing is marked, takes the mark away -- but Left
+        ;; and Right fold a mark to its near end first, below.
+        (cond ((and shift (member key '(:left :right :up :down :home :end)))
+               (unless (editor-mark editor)
+                 (setf (editor-mark editor) (cons editor.row editor.col))))
+              ((or (not marked)
+                   (member key '(:up :down :home :end))
+                   (and (member key '(:left :right)) (or ctrl alt))
+                   (and ctrl (or (chord #\a) (chord #\e) (chord #\b) (chord #\f)))
+                   (and alt (or (chord #\b) (chord #\f))))
+               (forget-editor-mark editor)))
         (cond
+          ;; Left or Right over a mark lands on its near end, as a text field's do.
+          ((and (editor-mark editor) (not shift) (member key '(:left :right)))
+           (multiple-value-bind (r1 c1 r2 c2) (editor-selection editor)
+             (if (eq key :left)
+                 (setf editor.row r1 editor.col c1)
+                 (setf editor.row r2 editor.col c2)))
+           (forget-editor-mark editor))
+          ;; Backspace, Delete and the deleting chords take the marked text
+          ;; away, and only it.
+          ((and marked (or (member key '(:backspace :delete))
+                           (and ctrl (or (chord #\d) (chord #\w)))
+                           (and alt (chord #\d))))
+           (editor-delete-selection editor))
           ;; Word motion first: Ctrl/Alt + arrow outranks the plain arrow.
           ((or (and (or ctrl alt) (eq key :left)) (and alt (chord #\b))) (editor-word editor -1))
           ((or (and (or ctrl alt) (eq key :right)) (and alt (chord #\f))) (editor-word editor 1))
@@ -408,3 +527,12 @@ Ctrl+J spellings) as a newline, and plain characters as text."
           ((and (characterp key) (not ctrl) (not alt))
            (editor-insert editor (string key)))))))
   (/= before editor.epoch))
+
+(defun editor-word-at (editor place &aux (line (aref editor.lines (car place)))
+                                         (col (min (cdr place) (length line))))
+  "=> (values FROM TO): the word at PLACE (ROW . COL) as two places, or NIL
+when PLACE stands on no word character -- a double click's span."
+  (when (and (< col (length line)) (alphanumericp (char line col)))
+    (values (cons (car place) (%prev-word-boundary line (1+ col)))
+            (cons (car place) (or (position-if-not #'alphanumericp line :start col)
+                                  (length line))))))
