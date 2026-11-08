@@ -44,6 +44,39 @@
             (format nil "refused from ~a: ~a" name result))
         (is (search "lock" (string-downcase result)))))))
 
+(deftest a-snippet-cannot-take-away-a-package-the-raised-floor-stands-on (with-floor-restored)
+  ;; 2026-11-08: a snippet's cleanup deleted the packages it had found as well
+  ;; as made, NODECODE.EVOLVED among them, and every later snippet of every
+  ;; session died binding *PACKAGE* to NIL until the gateway restarted. A
+  ;; standing stand-in carries the deletion here, so the red run harms nothing.
+  (nlk:unlock-floor)
+  (let* ((name "NL-STANDING-PROBE")
+         (standing (or (find-package name)
+                       (make-package name :use '(#:cl) :nicknames '("NL-STANDING-NICK")))))
+    (nlk:with-cleanup ((nlk:unlock-floor)
+                       (when (find-package name) (delete-package name)))
+      (nlk:lock-floor)
+      (let ((cleanup (format nil "(let ((made (list (find-package ~s) (make-package \"NL-MADE-AFTER\"))))~
+                                     (dolist (p made 1) (ignore-errors (delete-package p))))"
+                             name)))
+        (is (equal "1" (nle:eval-string cleanup)) "the cleanup runs"))
+      (is (eq standing (find-package name)) "the standing package survives the cleanup")
+      (is (null (find-package "NL-MADE-AFTER")) "the package the snippet made is its own to delete")
+      (is (equal "3" (nle:eval-string "(+ 1 2)")) "the next snippet runs")
+      (dolist (form '("(delete-package \"NL-STANDING-NICK\")"
+                      "(rename-package \"NL-STANDING-PROBE\" \"NL-STANDING-GONE\")"
+                      "(rename-package \"NL-STANDING-PROBE\" \"NL-STANDING-PROBE\")"))
+        (let ((result (nle:eval-string form)))
+          (is (search "refused: NL-STANDING-PROBE is a package this image runs on" result)
+              (format nil "~a: ~a" form result))))
+      (is (eq standing (find-package "NL-STANDING-NICK")) "no rename took a name from it")
+      (nle:eval-string "(rename-package \"NL-STANDING-PROBE\" \"NL-STANDING-PROBE\" '(\"NL-STANDING-NICK\" \"NL-STANDING-MORE\"))")
+      (is (eq standing (find-package "NL-STANDING-MORE")) "a rename keeping every name goes through")
+      (is (nlk::standing-package "NODECODE.EVOLVED") "the package every snippet reads in is held")
+      (nlk:unlock-floor)
+      (is (null (nlk::standing-package name)) "a lowered floor lets them go")
+      (is (eq t (delete-package standing))))))
+
 ;;; --- ownership ------------------------------------------------------------
 
 (deftest a-fresh-name-typed-in-the-kernel-is-not-floor-material ()
