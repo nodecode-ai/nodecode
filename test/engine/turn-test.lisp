@@ -6096,6 +6096,48 @@ own provider with one model pinned to another lane.")
                 (is (equal '("acme-large:free") (mapcar (lambda (row) (getf row :id)) (getf entry :models))) "the rows the endpoint listed and the catalog never carried")))
             (is (equal '("odd" "pinned") (nle::stale-listable-provider-ids)) "a fresh listing is not refetched; the never-listed config providers are")))))))
 
+(deftest anthropic-lists-from-its-own-models-api ()
+  ;; A model Anthropic ships today is in no catalog yet: its own listing
+  ;; names it, with its window.
+  (with-catalog-fixture (catalog)
+    (with-temp-auth (auth "{\"api_keys\":{\"anthropic\":{\"provider\":\"anthropic\",\"key\":\"k\"},\"openai\":{\"provider\":\"openai\",\"key\":\"k\"}}}")
+      (with-temp-shared-config ("{}")
+        (let ((nle::*auth-file-path* auth)
+              (nle::*provider-models-memo* nil)
+              (asked nil)
+              (sent nil))
+          (is (equal "https://api.anthropic.com/v1" (nle::provider-listing-base "anthropic")) "the lane's own address, less its path")
+          (is (null (nle::provider-listing-base "openai")) "OpenAI's default listing carries more than chat models, so it is not asked")
+          (is (member "anthropic" (nle::listable-provider-ids) :test #'equal) "/models fetches anthropic's listing")
+          (is (not (member "openai" (nle::listable-provider-ids) :test #'equal)) "and not openai's")
+          (with-stubbed-fdefinition
+              (nle::http-fetch (url &rest args)
+               (setf asked url sent (getf args :headers))
+               (values "{\"data\":[{\"type\":\"model\",\"id\":\"claude-new-9\",\"display_name\":\"Claude New 9\",\"max_input_tokens\":1000000}],\"has_more\":false}" 200))
+            (nlk:bind (((rows error) (nle::list-provider-models "anthropic")))
+              (is (null error) "the listing answered")
+              (is (equal "https://api.anthropic.com/v1/models" asked) "Anthropic's own Models API")
+              (is (equal "k" (cdr (assoc "x-api-key" sent :test #'string-equal))) "asked with the key")
+              (is (equal '(("claude-new-9" 1000000)) (mapcar (lambda (row) (list (getf row :id) (getf row :context-window))) rows)) "its window from max_input_tokens"))))))))
+
+(deftest a-model-no-catalog-carries-takes-its-window-from-the-listing ()
+  (with-catalog-fixture (catalog)
+    (with-temp-auth (auth "{\"api_keys\":{\"acme\":{\"provider\":\"acme\",\"key\":\"k\"}}}")
+      (with-temp-shared-config ("{}")
+        (let ((nle::*auth-file-path* auth)
+              (nle::*provider-models-memo* nil)
+              (nle::*model-capability-memo* nil))
+          (with-temp-file (nle::*provider-models-cache-path*
+                           :contents (format nil "{\"acme\": {\"fetched_at\": ~d, \"base_url\": \"https://api.acme.dev/v1\", \"error\": null, \"models\": [{\"id\": \"brand-new\", \"context_window\": 400000}, {\"id\": \"acme-large\", \"context_window\": 1}]}}"
+                                             (get-universal-time)))
+            (let ((new (nle::resolve-model-capability "brand-new" "acme")))
+              (is (eql 400000 (nle::model-capability-context-tokens new)) "a model no catalog carries has the window its provider's listing names")
+              (is (not (nle::model-capability-context-tokens-operator-p new)) "a prior, not the operator's contract"))
+            (is (eql 200000 (nle::model-capability-context-tokens (nle::resolve-model-capability "acme-large" "acme"))) "the catalog's window outranks the listing's")
+            (is (null (nle::model-capability-context-tokens (nle::resolve-model-capability "brand-new" "elsewhere"))) "another provider's listing is not this one's")
+            (nle::write-provider-models-cache (nlk:decode-json (format nil "{\"acme\": {\"fetched_at\": ~d, \"base_url\": \"https://api.acme.dev/v1\", \"error\": null, \"models\": [{\"id\": \"brand-new\", \"context_window\": 500000}]}}" (get-universal-time))))
+            (is (eql 500000 (nle::model-capability-context-tokens (nle::resolve-model-capability "brand-new" "acme"))) "a new listing moves the window at once")))))))
+
 (defparameter +blanked-catalog-json+
   "{\"blanked\": {\"name\": \"Blanked AI\", \"npm\": \"@ai-sdk/openai-compatible\",
                  \"env\": [\"NL_BLANK_ACCOUNT\", \"NL_BLANK_KEY\"],

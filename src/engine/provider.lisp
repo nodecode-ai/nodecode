@@ -900,15 +900,16 @@ last read.")
 
 (defun resolve-model-capability (model-id &optional (provider *provider*))
   "Resolve MODEL-ID against the env override, the shared config, overrides,
-and the models.dev cache, in that authority order per field — NIL where no
-source answers."
+and the models.dev cache, in that authority order per field, the window last
+from PROVIDER's own cached listing -- NIL where no source answers."
   ;; PROVIDER selects which namespace of the catalog answers for a model id
   ;; many of them republish, and which providers.<PROVIDER> entry of the
   ;; config: its models[].context_window and models[].reasoning_options.
   ;; Memoized per (provider, id) until one of the inputs changes.
   ;; the KEY: every input's identity, compared by EQL; none of them touches a file
   (let ((key (list (models-catalog-table) *model-capability-overrides*
-                   *context-tokens-env-override* *shared-config-path* *shared-config-memo*))
+                   *context-tokens-env-override* *shared-config-path* *shared-config-memo*
+                   (provider-models-identity)))
         (memo *model-capability-memo*))
     (unless (and memo (every #'eql key (car memo)))
       ;; Turn threads and the render thread both resolve capabilities, so
@@ -952,8 +953,12 @@ source answers."
      ;; window it never had, because the learned floor can only ratchet to
      ;; what the eviction trigger sends. NIL disables the trigger; the
      ;; provider's own rejection teaches the ceiling (CONTEXT-WINDOW-BELIEF).
+     ;; The provider's own listing comes last: a model it ships today, which
+     ;; no catalog carries yet, still has its window (Anthropic's
+     ;; max_input_tokens).
      :context-tokens (or operator
-                         (and entry (catalog-model-context entry)))
+                         (and entry (catalog-model-context entry))
+                         (listed-context-window model-id provider))
      :context-tokens-operator-p (and operator t)
      :output-limit (or (getf override :output-limit)
                        (and entry (catalog-model-output entry)))
@@ -4132,6 +4137,26 @@ or it does not parse. Memoized on (path, size, mtime) like the catalog."
   (values (read-json-file-memo '*provider-models-memo*
                                *provider-models-cache-path*)))
 
+(defparameter +default-listing-families+ '(:anthropic)
+  "The lane families whose own default endpoint lists chat models alone, so
+the lane's own provider lists from it with no base of its own: Anthropic's
+Models API names Claude models only, where OpenAI's and Google's default
+listings carry embedding, image and speech models too.")
+
+(defun provider-listing-base (provider)
+  "The base PROVIDER's model listing is fetched against: PROVIDER-BASE-URL,
+else, for the own provider of a lane in +DEFAULT-LISTING-FAMILIES+, the
+lane's default endpoint less its path (https://api.anthropic.com/v1), so a
+model the vendor ships today is offered today; NIL when neither names one."
+  ;; The address a turn dials with no base_url (LANE-DEFAULT-ENDPOINT), as
+  ;; PROVIDER-KEY-CHECK asks it; any other provider of the lane has none.
+  (or (provider-base-url provider)
+      (let ((lane (ignore-errors (find-provider-lane provider))))
+        (when (and lane (member lane.family +default-listing-families+))
+          (let ((default (ignore-errors (lane-default-endpoint provider lane))))
+            (and default lane.path (uiop:string-suffix-p default lane.path)
+                 (subseq default 0 (- (length default) (length lane.path)))))))))
+
 (defun listable-provider-ids (&aux (ids '()))
   "The providers a listing can be fetched for: config providers carrying a
 base_url, whether or not they carry a key (a keyless local server lists
@@ -4153,7 +4178,7 @@ joins once its last listing answered (LOCAL-RUNTIME-ANSWERING-P)."
   ;; The inventory's ids are auth.json's plus the config entries carrying a
   ;; credential; the ones the catalog gives a base join.
   (dolist (id (configured-provider-inventory))
-    (when (provider-base-url id)
+    (when (provider-listing-base id)
       (pushnew id ids :test #'string-equal)))
   (sort ids #'string<))
 
@@ -4304,9 +4329,11 @@ plists (:id :display :context-window :owned-by :kind), or NIL and why."
              for raw = (json-first entry :text '("id") '("name"))
              for id = (and raw (nlk:trimmed (ppcre:regex-replace "(?s)^models/(?=.)" raw "")))
              ;; a window the listing happens to carry: vLLM's max_model_len,
-             ;; OpenRouter's context_length, google's, llama.cpp's n_ctx_train
+             ;; OpenRouter's context_length, google's, llama.cpp's n_ctx_train,
+             ;; Anthropic's max_input_tokens
              for window = (json-first entry :integer '("max_model_len") '("context_length")
-                                      '("inputTokenLimit") '("meta" "n_ctx_train"))
+                                      '("inputTokenLimit") '("meta" "n_ctx_train")
+                                      '("max_input_tokens"))
              when (and id (plusp (length id))
                        (not (find id rows :key (lambda (row) (getf row :id))
                                            :test #'string=)))
@@ -4336,7 +4363,7 @@ names no API version segment of its own — <BASE>/v1/models after it."
          (versioned (ppcre:scan "(?i)(?:^|/)v\\d[^/]*$" base)))
     (cons (uiop:strcat base "/models") (unless versioned (list (uiop:strcat base "/v1/models"))))))
 
-(defun list-provider-models (provider &key key (base (provider-base-url provider)))
+(defun list-provider-models (provider &key key (base (provider-listing-base provider)))
   "(values ROWS ERROR): GET the configured PROVIDER's model listing from
 BASE, with KEY in place of the credential PROVIDER resolves when given."
   ;; Never signals — every failure is a reason (HTTP 401, timeout, the config
@@ -4456,6 +4483,19 @@ entry's models[] array carries; a row without an id is dropped."
                         :owned-by (json-value row :text "owned_by")
                         :kind (json-value row :text "kind"))))
 
+(defun provider-models-identity ()
+  "The identity of the listing cache as this process last read it: it moves
+when the file is read anew or written, so a memo that answers from the
+listing (RESOLVE-MODEL-CAPABILITY) keys on it without touching the file."
+  *provider-models-memo*)
+
+(defun listed-context-window (model-id provider)
+  "The window PROVIDER's own cached listing gives MODEL-ID, or NIL."
+  (and (stringp model-id) (stringp provider)
+       (getf (find model-id (getf (provider-models-cache-entry provider) :models)
+                   :key (lambda (row) (getf row :id)) :test #'equal)
+             :context-window)))
+
 (defun provider-models-cache-entry (provider)
   "The cached listing for PROVIDER as a plist (:models :error :fetched-at
 :fresh-p), or NIL when nothing is cached or the entry was fetched from a
@@ -4467,7 +4507,7 @@ different base_url than the one configured now."
   ;; the rows still show, the picker just refetches behind them.
   (let ((entry (json-value (provider-models-cache) :object provider)))
     (when (and entry
-               (equal (json-value entry :text "base_url") (provider-base-url provider)))
+               (equal (json-value entry :text "base_url") (provider-listing-base provider)))
       (let ((fetched-at (json-value entry :integer "fetched_at"))
             (error (json-value entry :text "error")))
         (list :models (listing-rows-from-json (json-value entry :array "models"))
@@ -4523,7 +4563,10 @@ it anew."
   ;; while the listing lands would keep its old rows.
   (nlk:write-file-atomically (merge-pathnames *provider-models-cache-path*)
                              (shasht:write-json root nil))
-  (setf *provider-models-memo* nil))
+  ;; A window a listing names is a capability source too: the capability
+  ;; memo answered from the rows this write replaces.
+  (setf *provider-models-memo* nil
+        *model-capability-memo* nil))
 
 (defun refresh-provider-models (ids)
   "Fetch every provider in IDS — one worker thread each, joined — and merge
@@ -4544,7 +4587,7 @@ the answers into the cache file in one write."
         (let ((root (or (provider-models-cache)
                         (make-hash-table :test #'equal))))
           (loop for (id rows error) in (remove nil answers)
-                do (let* ((base (provider-base-url id))
+                do (let* ((base (provider-listing-base id))
                           (prior (and error (json-value root :object id)))
                           (kept (and prior
                                      (equal (json-value prior :text "base_url") base)
