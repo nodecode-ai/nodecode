@@ -273,10 +273,13 @@ file."
 (defun snippet-operator-name (token)
   "TOKEN as an operator name the tables spell: lower case, bars dropped, a
 Common Lisp or evolved-package prefix removed, ppcre spelled cl-ppcre."
-  ;; NIL for a keyword or a token that is no symbol.
-  (when (and (stringp token) (plusp (length token)))
+  ;; NIL for a keyword, a token that is no symbol, and a token of bars alone:
+  ;; || is the empty name, and Rust's closure head where a raw-text block
+  ;; holds foo(|| 1) - its name is empty once the bars go.
+  (when (stringp token)
     (let ((name (string-downcase (remove #\| token))))
-      (cond ((or (member (char name 0) '(#\: #\#)) (digit-char-p (char name 0))) nil)
+      (cond ((zerop (length name)) nil)
+            ((or (member (char name 0) '(#\: #\#)) (digit-char-p (char name 0))) nil)
             ((not (find #\: name)) name)
             (t (ppcre:register-groups-bind (package symbol) ("(?s)\\A([^:]*):+(.*)\\z" name)
                  (cond ((member package '("cl" "common-lisp" "cl-user" "common-lisp-user"
