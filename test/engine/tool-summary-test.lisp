@@ -120,6 +120,24 @@
              (nle::activity-title (snippet-activity "(uiop:read-file-string (merge-pathnames \"src/b.lisp\" root))"))))
   (is (not (nle::activity-groupable-p (snippet-activity "(sh (format nil \"~a ~a\" tool file))")))))
 
+(deftest a-rust-closure-in-a-raw-text-block-still-draws-its-card ()
+  ;; #395: a raw-text block holding Rust's nullary closure, spawn(|| 1),
+  ;; reads as a list headed by ||, a token whose name is empty once its bars
+  ;; go. It names no operator; before, it signalled, and every frame that
+  ;; projected the call signalled again, so the screen stood still.
+  (is-table (token) (null (nle::snippet-operator-name token))
+    ("||") ("|") ("||||"))
+  (let ((form (format nil "(write-file \"x.rs\" #>RS~%fn main() {~%    std::thread::spawn(|| 1);~%}~%RS)")))
+    (is (equal '(("write-file" . "x.rs")) (nle::snippet-calls form)))
+    (is (equal "Wrote x.rs" (nle::activity-title (snippet-activity form))))
+    (dolist (detail '(:standard :verbose))
+      (let* ((nle::*tool-detail* detail) (nle::*expanded-tool-call* nil)
+             (state (nle::ingest-tool-call-fact nil "c1" "eval" (eval-args form) :turn-id "t1"))
+             (rows (mapcan (lambda (block) (copy-list (nle::display-block-plain-lines block)))
+                           (nle:project-state state :width 140))))
+        (is (find-if (lambda (row) (search "x.rs" row)) rows)
+            (format nil "~(~a~): the call's card names the file" detail))))))
+
 (deftest a-snippet-note-titles-an-unknown-snippet-and-decides-nothing ()
   (let ((noted (snippet-activity (format nil ";; look at the lanes~%(nck:map-lanes)"))))
     (is (eq :eval noted.family) "an unknown operator stays a snippet")
