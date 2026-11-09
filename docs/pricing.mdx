@@ -1,22 +1,35 @@
 ---
 title: Pricing
-summary: "The hosted models are paid per token from a balance you top up: how much a top-up can be, what each model costs, how many calls run at once, and what a call answers when the balance is empty."
+summary: "The hosted models are paid per token from a balance you top up: how much a top-up can be, auto top-up, what each model costs on a weekday and at the weekend, how many calls run at once, and what a call answers when the balance is empty."
 ---
 
-{/* Plans are off since 2026-11-05 (v1se.thom: "API should be the only thing available, turn off all subscriptions"; nodecode-website web/src/lib/sales.ts `PLANS_OPEN`, foresight-labs web/lib/sales.ts): no plan is sold, the API per token is. A plan already held keeps working, so the gate still counts plans' requests (crates/gate/src/meter.rs, plans.rs). To sell plans again, bring back this page's plan sections with the switch: commit fb85833 ("docs: pricing reads open when sales open") has them with their prices. Off-peak pricing is off (`off_peak` in deploy/gate.toml, since 2026-10-24): one price at every hour. The least top-up is 5 since 2026-11-06 (v1se.thom: "make the minimum topup $5"; it was 20 the day before). Cyber v1 costs 1.5 times DeepSeek's peak price for DeepSeek-V4.1-Flash-1017 (https://api-docs.deepseek.com/quick_start/pricing: 0.006 / 0.3 / 1.2) since 2026-11-05 (v1se.thom: "minimum amount that people can buy is $20 for API requests. And the price should be 1.5x the deepseek API pricing for the first month"). */}
+{/* Plans are off since 2026-11-05 (v1se.thom: "API should be the only thing available, turn off all subscriptions"; nodecode-website web/src/lib/sales.ts `PLANS_OPEN`, foresight-labs web/lib/sales.ts): no plan is sold, the API per token is. A plan already held keeps working, so the gate still counts plans' requests (crates/gate/src/meter.rs, plans.rs). To sell plans again, bring back this page's plan sections with the switch: commit fb85833 ("docs: pricing reads open when sales open") has them with their prices. Off-peak pricing is off (`off_peak` in deploy/gate.toml, since 2026-10-24): one price at every hour of a weekday. The weekend price takes 50% off every token, Friday to Sunday on Amsterdam's clock, since 2026-11-06 (v1se.thom: "weekend we have the 50% off peak pricing. (remove the developer price)"; deploy/gate.toml `weekend_off`, web/src/lib/lab-plans.ts `WEEKEND_OFF`). The least top-up is 2 since 2026-11-06 (v1se.thom: "also put the minimum to $2 to topup"; 5 earlier that day, 20 the day before), and the most is 20,000 at a time and a day (web/src/lib/lab-plans.ts `TOPUP_MIN`, `TOPUP_MAX`). VAT follows where the buyer is since 2026-11-06 (web/src/lib/tax-rules.ts; it followed the currency before). Auto top-up since 2026-11-09 (v1se.thom: "add an auto-top-up function"; web/src/lib/autotopup.ts, on while the site runs with STRIPE_AUTOTOPUP=1). Cyber v1 costs 0.009 / 0.33 / 1.32 since 2026-11-06; it was 1.5 times DeepSeek's peak price for DeepSeek-V4.1-Flash-1017 from 2026-11-05 (v1se.thom: "the price should be 1.5x the deepseek API pricing for the first month"). nodecode-website docs/src/lib/__tests__/pricing-facts.test.ts holds this page to the site's own figures. */}
 
 Nodecode itself is free, under the MIT license, and runs on your own provider key. The hosted models at [nodecode.ai](https://nodecode.ai/pricing) are paid per token from a balance you top up, as on DeepSeek's platform. Plans are not sold now.
 
-{/* source: web/src/lib/topup.ts, web/src/lib/topup-rules.ts, web/src/lib/lab-plans.ts (`TOPUP_MIN`, `TOPUP_MAX`) */}
+{/* source: web/src/lib/topup.ts, web/src/lib/topup-rules.ts, web/src/lib/tax-rules.ts, web/src/lib/lab-plans.ts (`TOPUP_MIN`, `TOPUP_MAX`, `FREE_KEY`) */}
 ## Topping up
 
-Top up on [Top up](https://nodecode.ai/account/top-up), in euros or dollars, a whole amount from 5 to 10,000 at a time. The amount is before tax: a top-up in euros adds 21% Dutch VAT on top, one in dollars none. The balance gets the amount you chose.
+Top up on [Top up](https://nodecode.ai/account/top-up), in euros or dollars, a whole amount from 2 to 20,000 at a time. The balance gets the amount you chose. Once your top-ups come to 2 or more, the account can also make a [free key](models.mdx#free-key), which runs Cyber v1 from the Nodecode CLI at no cost.
 
-A new account tops up at most 100 at a time and 200 a day, until its first top-up is 14 days old. Any account tops up at most 10,000 a day and opens at most five checkouts an hour.
+The amount is before tax. 21% Dutch VAT goes on top when you pay in euros, or when you top up from the European Union in either currency. A business gives its name, and in the EU its VAT number, which the EU's register (VIES) confirms before the checkout opens: a Dutch number pays Dutch VAT on an invoice that names the business, another EU country's number pays none (reverse charge).
+
+A new account tops up at most 100 at a time and 200 a day, until its first top-up is 14 days old. Any account tops up at most 20,000 a day and opens at most 5 checkouts an hour. Once one card has been declined 3 times in an hour, no new checkout opens until that hour is over.
 
 Then sign in with `nodecode login --api`: see [A nodecode.ai account](first-run.mdx).
 
-{/* source: crates/gate/src/prices.rs, deploy/gate.toml (off-peak pricing off: `off_peak = false`, so a model's `peak` price holds at every hour). Context: deploy/gate.toml says `context = 1048576` for Cyber v1, and the gate only advertises it (relay.rs `context_length`), it does not cap a call; the machine that serves Cyber v1 (2x B200, vLLM) runs the full 1,048,576-token window since 2026-11-06 (`--max-model-len 1048576` with a chunked indexer; a 1,023,781-token prompt was answered), so the 262,144 long-context line (`cache_over`, `cache_times = 4`) is reached there. */}
+{/* source: web/src/lib/autotopup.ts, web/src/lib/autotopup-rules.ts (`AUTO_BELOW`, `AUTO_CAP_MAX`, `AUTO_GAP_MIN`) */}
+## Auto top-up
+
+Auto top-up refills the balance from a saved card, so a long job is not cut off by an empty balance. It is off until you turn it on under [Top up](https://nodecode.ai/account/top-up), pick three figures and accept its terms:
+
+- **When:** the balance, euros and dollars together, falls below 5, 10, 20, 50 or 100.
+- **How much:** any amount a top-up may be, within the limits above.
+- **Monthly limit:** required, up to 100,000. A charge never takes the calendar month, on Amsterdam's clock, past it.
+
+The card is saved through a checkout that charges nothing. Each charge comes at least 5 minutes after the one before, carries VAT as a top-up does, and is mailed to you as an invoice. The first declined charge turns auto top-up off and mails you why; it stays off until you turn it on again.
+
+{/* source: crates/gate/src/prices.rs, crates/gate/src/upstream.rs (`price_at`), deploy/gate.toml (off-peak pricing off: `off_peak = false`, so a model's `peak` price holds at every hour of a weekday; `weekend_off = 0.5`). Context: deploy/gate.toml says `context = 1048576` for Cyber v1, and the gate only advertises it (relay.rs `context_length`), it does not cap a call; the machine that serves Cyber v1 (2x B200, vLLM) runs the full 1,048,576-token window since 2026-11-06 (`--max-model-len 1048576` with a chunked indexer; a 1,023,781-token prompt was answered), so the 262,144 long-context line (`cache_over`, `cache_times = 4`) is reached there. */}
 ## What a call costs
 
 A call costs its tokens at the model's price: input the model had cached, the rest of the input, and the output, each per million tokens; an image model by the image. The prices are the same number in euros or dollars, before tax, and are on [the pricing page](https://nodecode.ai/pricing#api).
@@ -27,12 +40,15 @@ A call costs its tokens at the model's price: input the model had cached, the re
 | Decide v1 | 0.04 | 0.04 | Free |
 | Image v1 | 0.04 an image | | |
 
-Cyber v1 costs the same at every hour. Its context window is 1,048,576 tokens (1M); a longer prompt is refused by the model and costs nothing. A request with more than 262,144 tokens of input pays four times the cached input price for its cached input. A typical call of our own agent, 89K cached and 2.5K new input tokens and 1.3K output, costs about 0.0043 on Cyber v1, so a top-up of 5 pays for about 1,200 of them.
+These are the weekday prices, the same at every hour. Every weekend, from Friday 00:00 to Monday 00:00 Amsterdam time, every token costs 50% less: Cyber v1 0.0045, 0.165 and 0.66, Decide v1's input 0.02. An image keeps its price. A call is priced by when it starts.
+
+Cyber v1's context window is 1,048,576 tokens (1M); a longer prompt is refused by the model and costs nothing. A request with more than 262,144 tokens of input pays four times the cached input price for its cached input. A typical call of our own agent, 89K cached and 2.5K new input tokens and 1.3K output, costs about 0.0033 on Cyber v1 on a weekday, so a top-up of 2 pays for about 600 of them, and about 1,200 at the weekend.
 
 The cost is taken once the model has answered and shows beside the call under [Usage](https://nodecode.ai/account/usage). The tokens are the model's own count; when the model reports none, they are estimated from the size of the call and its answer, about four bytes a token. A balance held in both currencies is spent in euros first.
 
 Costs nothing:
 
+- A call on a [free key](models.mdx#free-key).
 - Listing the models (`/v1/models`).
 - Asking what is left (`/v1/usage`): the balance and the requests running now, which `nodecode` prints after `nodecode login` and at `/usage`.
 - A call refused because your requests at once are all busy.
@@ -46,4 +62,4 @@ An account runs 12 requests at the same time across all your machines and keys. 
 {/* source: crates/gate/src/error.rs (`insufficient_balance`) */}
 ## When the balance is used up
 
-A call is answered with `402` and `insufficient_balance`, saying where to top up. Top up and the next call goes through; nothing else needs to change.
+A call is answered with `402` and `insufficient_balance`, saying where to top up. Top up and the next call goes through; nothing else needs to change. With [auto top-up](#auto-top-up) on, the balance is refilled once it falls below the figure you picked, while the monthly limit allows.
