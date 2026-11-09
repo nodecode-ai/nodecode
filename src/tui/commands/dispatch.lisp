@@ -467,7 +467,8 @@ the free key's, else the plan or the credit; NIL before the meter is read."
       (if (eq :danger (getf (getf meter :free) :tone)) "free once topped up" "free")
       (when-let (usage (getf meter :usage))
         (let ((pays (json-value usage :string "pays")))
-          (cond ((equal pays "plan") "from the plan")
+          (cond ((equal pays "house") "unlimited")
+                ((equal pays "plan") "from the plan")
                 ((equal pays "balance")
                  (format nil "from credit~@[ ~a~]"
                          (when-let (money (first (account-balance-rows usage))) (account-money money))))
