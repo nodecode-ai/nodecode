@@ -225,6 +225,15 @@ holding DEFINITION alone, and drop the index."
   (incf *scribe-v-calls*)
   "sk-nc-4f9a8b7c6d5e4f3a2b1c0d9e")
 
+(defun scribe-v-launch ()
+  "A relay started: counted, and answering the process it started, run to
+its end so no test leaves one behind."
+  (incf *scribe-v-calls*)
+  (let ((process (uiop:launch-program (list (namestring sb-ext:*runtime-pathname*) "--version")
+                                      :output nil :error-output nil)))
+    (uiop:wait-process process)
+    process))
+
 (defun load-layer-file (name)
   "Load NAME from the fixture layer the way a boot does, with no call around it."
   (load (merge-pathnames name (nlk:layer-directory))))
@@ -286,6 +295,55 @@ holding DEFINITION alone, and drop the index."
   (is-carrying (file (layer-file-text "_scribe-v5_.lisp"))
     "(defparameter *scribe-v5* '(3 \"three\"))"
     (:absent "scribe-v3")))
+
+(deftest scribe-a-kept-variable-holding-a-process-keeps-its-name-alone (with-scribe-fixture)
+  ;; A relay kept as (defparameter *relay* (uiop:launch-program ...)) started
+  ;; again at every load of its file: no printed form reads back as a
+  ;; process, so the file held the call, and each boot and each shell told of
+  ;; the keep launched another copy, which took the first one's socket. A
+  ;; process belongs to the image that started it: the name, unbound.
+  (setf *scribe-v-calls* 0)
+  (is-eval "(defparameter *scribe-v6* (nodecode.test::scribe-v-launch))"
+    ("[layer: *scribe-v6* is kept by name alone: its value holds a process; (nodecode.test::scribe-v-launch ...) does not run again when the layer loads]" result))
+  (is (= 1 *scribe-v-calls*) "the eval started the process once")
+  (is-present (file (layer-file-text "_scribe-v6_.lisp"))
+      "the variable has its file"
+      (is-carrying file
+        "(defvar *scribe-v6*)"
+        (:absent "(defparameter" "the call is not in the file")))
+  (let ((variable (find-symbol "*SCRIBE-V6*" '#:nodecode.evolved)))
+    (is (typep (symbol-value variable) 'uiop/launch-program::process-info) "the eval's image keeps its process")
+    (makunbound variable)
+    (load-layer-file "_scribe-v6_.lisp")
+    (is (= 1 *scribe-v-calls*) "loading the file starts no process")
+    (is (not (boundp variable)) "and the variable is unbound there")))
+
+(deftest scribe-a-handle-is-found-wherever-a-kept-value-holds-it (with-scribe-fixture)
+  ;; What a load cannot make again without starting it anew, named as the
+  ;; eval's line names it, found in a list, a vector, a table or an object's
+  ;; slots; a constructor's value - a table, a lock, a buffer, the image's own
+  ;; standard streams - holds none, so its form stands as written.
+  (let ((process (scribe-v-launch))
+        (thread (bt2:make-thread (lambda () 1) :name "scribe-handle"))
+        (stream (open (merge-pathnames "handle.txt" nlk::*source-root*)
+                      :direction :output :if-does-not-exist :create))
+        (socket (make-instance 'sb-bsd-sockets:inet-socket :type :stream :protocol :tcp)))
+    (bt2:join-thread thread)
+    (unwind-protect
+         (is-table (value expected) (equal expected (nlk::live-handle value))
+           (process "a process" "a process uiop launched")
+           ((sb-ext:run-program sb-ext:*runtime-pathname* '("--version") :output nil) "a process" "one sb-ext ran")
+           ((list :relay (vector 1 process)) "a process" "in a list and a vector")
+           (thread "a thread")
+           (stream "a file or socket stream")
+           ((let ((table (make-hash-table))) (setf (gethash :listener table) socket) table) "a socket" "in a table")
+           ((make-hash-table) nil "a table")
+           ((bt2:make-lock) nil "a lock")
+           ((make-string-output-stream) nil "a buffer")
+           ((make-two-way-stream sb-sys:*stdin* sb-sys:*stdout*) nil "the image's standard streams")
+           ('(1 "two" :three) nil "plain data"))
+      (close stream)
+      (sb-bsd-sockets:socket-close socket))))
 
 (deftest scribe-redefinition-rewrites-the-same-file-and-keeps-its-slot (with-scribe-fixture)
   (nle:eval-string "(defun scribe-r3 () :first)")

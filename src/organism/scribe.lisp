@@ -1050,7 +1050,11 @@ FOLDERS already holding KEY's file, else the organism's own
 ;;; the variable means, so its file holds that value, and the call ran once,
 ;;; at the eval. An object no printed form reads back as (a table, a lock, a
 ;;; function) keeps the form that made it, as a constructor must; a value
-;;; shaped like a credential, or too long to write, keeps the name alone.
+;;; shaped like a credential, or too long to write, keeps the name alone. So
+;;; does a value holding a process, a thread, a socket or a file's stream:
+;;; its call started that outside the image, so a load would start another -
+;;; a relay kept as (defparameter *relay* (uiop:launch-program ...)) launched
+;;; a copy at every load, and each copy took the first one's socket.
 
 (defparameter +kept-value-limit+ 65536
   "The most characters a kept variable's value is written in.")
@@ -1106,11 +1110,74 @@ path."
                (t nil))))
     (walk value)))
 
+(defparameter +live-handle-types+
+  '(("UIOP/LAUNCH-PROGRAM" "PROCESS-INFO" "a process")
+    ("SB-IMPL" "PROCESS" "a process")
+    ("BT2" "THREAD" "a thread")
+    ("SB-THREAD" "THREAD" "a thread")
+    ("USOCKET" "USOCKET" "a socket")
+    ("SB-BSD-SOCKETS" "SOCKET" "a socket")
+    ("SB-SYS" "FD-STREAM" "a file or socket stream"))
+  "(PACKAGE CLASS KIND): a value of CLASS is a handle on something its call
+started outside the image, named KIND. Read by name, so a library this image
+does not load names nothing.")
+
+(defun live-handle (value &aux (seen (make-hash-table :test #'eq)) (budget 100000)
+                               (standard (list sb-sys:*stdin* sb-sys:*stdout* sb-sys:*stderr* sb-sys:*tty*))
+                               (classes (loop for (package name kind) in +live-handle-types+
+                                              for symbol = (and (find-package package)
+                                                                (find-symbol name package))
+                                              for class = (and symbol (find-class symbol nil))
+                                              when class collect (cons class kind))))
+  "The kind of handle VALUE holds, as +LIVE-HANDLE-TYPES+ names it - \"a
+process\", \"a thread\" - looking through its conses, vectors and tables, and
+through slots three objects deep; NIL when it holds none, or when the walk
+runs past BUDGET objects first. The image's own standard streams are no
+handle a call made."
+  (labels ((spend ()
+             (when (minusp (decf budget))
+               (return-from live-handle nil)))
+           (kind (object)
+             (unless (member object standard)
+               (cdr (find-if (lambda (class) (typep object class)) classes :key #'car))))
+           (slot-values (object &aux (class (class-of object)))
+             (loop for slot in (sb-mop:class-slots class)
+                   when (ignore-errors (sb-mop:slot-boundp-using-class class object slot))
+                     collect (ignore-errors (sb-mop:slot-value-using-class class object slot))))
+           (walk (object depth)
+             (typecase object
+               ((or number character symbol string) nil)
+               ;; a list's spine is walked, not recursed into: it may be long
+               (cons (loop for tail = object then (cdr tail)
+                           do (cond ((atom tail) (return (walk tail depth)))
+                                    ((gethash tail seen) (return nil))
+                                    (t (setf (gethash tail seen) t)
+                                       (spend)
+                                       (let ((found (walk (car tail) depth)))
+                                         (when found (return found)))))))
+               (t (unless (gethash object seen)
+                    (setf (gethash object seen) t)
+                    (spend)
+                    (or (kind object)
+                        (typecase object
+                          (vector (and (eq t (array-element-type object))
+                                       (loop for element across object
+                                             thereis (walk element depth))))
+                          (hash-table (loop for key being the hash-keys of object using (hash-value element)
+                                            thereis (or (walk key depth) (walk element depth))))
+                          ((or structure-object standard-object)
+                           (and (< depth 3)
+                                (loop for element in (slot-values object)
+                                      thereis (walk element (1+ depth))))))))))))
+    (walk value 0)))
+
 (defun kept-variable-text (form text start end package-name)
   "The text a layer file keeps for FORM, written in TEXT from START to END,
 when FORM is a DEFPARAMETER or DEFVAR whose init form is a call: FORM with the
 value its variable holds in place of the call, or a DEFVAR of the name alone
-when that value is shaped like a credential or too long to write. The second
+when that value is shaped like a credential, too long to write, or holds a
+handle LIVE-HANDLE finds (a process, a thread, a socket, a file's stream),
+which a load would start anew. The second
 value is the line the eval's output says so in. NIL when TEXT stands as
 written: any other form, an init that is no call, an unbound variable, or a
 value no printed form reads back as."
@@ -1145,6 +1212,7 @@ value no printed form reads back as."
         (destructuring-bind ((name-form name-start name-end) (init-form init-start init-end)) spans
           (declare (ignore name-form init-form))
           (let* ((value (symbol-value name))
+                 (handle (live-handle value))
                  (label (subseq text name-start name-end))
                  (call (if (symbolp (first init))
                            (let ((*package* package)) (format nil "(~(~s~) ...)" (first init)))
@@ -1154,7 +1222,9 @@ value no printed form reads back as."
                              before
                              (format nil "~a~%" before)))))
             (multiple-value-bind (written why) (written-value value package)
-              (let ((withheld (cond ((eq why :too-large)
+              (let ((withheld (cond (handle
+                                     (format nil "holds ~a" handle))
+                                    ((eq why :too-large)
                                      (format nil "runs past ~d KB written" (floor +kept-value-limit+ 1024)))
                                     ((and written (credential-shaped-p value))
                                      "looks like a credential"))))
