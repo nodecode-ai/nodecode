@@ -221,6 +221,8 @@ sign-in chose on PROVIDER, or /models."
         (when free
           (format output "~a~%" (account-free-line (account-usage-read free base :request request))))
         (cond
+          ;; An unlimited account lacks nothing: it is told to buy nothing.
+          ((account-house-p usage))
           ((and (equal mode "subscription") (not (json-value usage :object "plan")))
            ;; No plan is sold now (nodecode.ai/pricing is per token), so the plan
            ;; a person lacks is not one to buy: the account runs on API credit.
@@ -362,6 +364,16 @@ chosen or nothing names one."
     (with-json ((model :string "model") (key :string "api_key") (base :string "base_url")) reply
       (or model (and key base (account-lead-model key base :request request))))))
 
+(defun account-house-p (usage)
+  "Whether USAGE is an unlimited account's: one of nodecode.ai's own, which no plan or credit
+meters (the gate's `pays' \"house\"), only its seats."
+  (equal "house" (json-value usage :string "pays")))
+
+(defun account-house-running (usage)
+  "An unlimited account's seats as USAGE says them, `N of M running'; NIL when it names none."
+  (when-let (threads (json-value usage :integer "house" "threads"))
+    (format nil "~d of ~d running" (or (json-value usage :integer "house" "running") 0) threads)))
+
 (defun account-meter (usage)
   "The footer's badge for USAGE, as (values LABEL VALUE TONE): the plan's name and its requests
 left while the plan pays, the credit once it does, and the tone of what pays -- SUCCESS, TOOL when
@@ -373,6 +385,8 @@ the plan runs low or a spent plan's credit pays, DANGER when nothing can pay."
          (money (first (account-balance-rows usage)))
          (pays (json-value usage :string "pays")))
     (cond
+      ;; An unlimited account draws on neither: nothing meters it but its seats.
+      ((equal pays "house") (values "Unlimited" "∞" :success))
       ;; A free key draws on neither: Cyber v1's free tier, once the account has paid its top-up.
       ((equal pays "free") (values "Free key" "Cyber v1" :success))
       ((equal pays "free_locked") (values "Free key" "top up first" :danger))
@@ -392,6 +406,10 @@ with no plan reads no plan line while none is offered (+ACCOUNT-OFFERED-MODES+).
   (let* ((plan (json-value usage :object "plan"))
          (rows (account-balance-rows usage))
          (pays (json-value usage :string "pays")))
+    (if (equal pays "house")
+        ;; Nothing to buy and nothing to run out of: the seats are all there is to say.
+        (list (format nil "Unlimited: no plan or credit needed~@[ · ~a~]" (account-house-running usage))
+              "Paying with: nothing, this account is unlimited")
     (remove nil
             (list
              (if plan
@@ -411,7 +429,7 @@ with no plan reads no plan line while none is offered (+ACCOUNT-OFFERED-MODES+).
                            ((equal pays "balance") "API credit")
                            ((account-mode-offered-p "subscription")
                             "nothing yet: subscribe at https://nodecode.ai/pricing or add credit at https://nodecode.ai/account/top-up")
-                           (t "nothing yet: add credit at https://nodecode.ai/account/top-up")))))))
+                           (t "nothing yet: add credit at https://nodecode.ai/account/top-up"))))))))
 
 (defun account-credential (&optional (provider +own-provider+))
   "The saved nodecode.ai key of PROVIDER -- the account's, or the free key's (+FREE-PROVIDER+) --
@@ -794,6 +812,19 @@ slab's far edge."
            (badge (lit) (if lit
                             (list (account-chip-seg "● PAYING" :success))
                             (list (make-seg :text "standby" :tone :muted)))))
+      (if (equal pays "house")
+          ;; An unlimited account: one slab, no plan to sell and no credit to top up.
+          (list (list (ground t)
+                      (remove nil
+                              (list (list (list (s "Unlimited" :foreground t))
+                                          (list (account-chip-seg "∞" :success)))
+                                    (only (list (s "no plan or credit needed" :foreground)))
+                                    (when-let (threads (json-value usage :integer "house" "threads"))
+                                      (let ((running (min threads (or (json-value usage :integer "house" "running") 0))))
+                                        (only (list (s "threads ")
+                                                    (s (make-string running :initial-element #\●) :success)
+                                                    (s (make-string (- threads running) :initial-element #\○))
+                                                    (s (format nil " ~d of ~d" running threads))))))))))
       (list
        (list (ground plan-lit)
              (if plan
@@ -833,7 +864,7 @@ slab's far edge."
                                         (t "pays once there is some")))))
                    ;; A click opens the page it names (DOCKED-PANEL-ROW keeps the link).
                    (only (list (s "top up at nodecode.ai/account/top-up" :muted nil
-                                  "https://nodecode.ai/account/top-up")))))))))
+                                  "https://nodecode.ai/account/top-up"))))))))))
 
 (defun account-slab-line (line width ground &key (pad 2))
   "LINE, a slab's (LEFT RIGHT), laid WIDTH columns wide on GROUND: PAD columns of pad each side,
@@ -867,7 +898,8 @@ a heading the arrows pass over that paints its line of each. An account with no 
 credit's slab alone while no plan is offered (+ACCOUNT-OFFERED-MODES+): a slab saying `No plan,
 subscribe' would sell what is not sold. NIL when this home is not signed in to nodecode.ai."
   (when-let (usage (getf *account-meter* :usage))
-    (let* ((slabs (if (or (json-value usage :object "plan") (account-mode-offered-p "subscription"))
+    (let* ((slabs (if (or (json-value usage :object "plan") (account-mode-offered-p "subscription")
+                          (account-house-p usage))
                       (account-slabs usage)
                       (rest (account-slabs usage))))
            (depth (+ 2 (reduce #'max slabs :key (lambda (slab) (length (second slab))))))

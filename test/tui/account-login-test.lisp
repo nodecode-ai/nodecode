@@ -16,6 +16,8 @@
   "{\"object\":\"usage\",\"plan\":null,\"balance\":[{\"currency\":\"usd\",\"micros\":0},{\"currency\":\"eur\",\"micros\":12400000}],\"pays\":\"balance\"}")
 (defparameter +account-usage-empty+
   "{\"object\":\"usage\",\"plan\":null,\"balance\":[],\"pays\":\"none\"}")
+(defparameter +account-usage-house+
+  "{\"object\":\"usage\",\"plan\":null,\"balance\":[],\"pays\":\"house\",\"house\":{\"threads\":12,\"running\":3}}")
 (defparameter +account-models+
   "{\"object\":\"list\",\"data\":[{\"id\":\"image-v1\",\"kind\":\"image\"},{\"id\":\"cyber-v1\",\"kind\":\"chat\"},{\"id\":\"decide-v1\",\"kind\":\"chat\"}]}")
 
@@ -340,6 +342,30 @@
   (is (null (nle::account-day "soon")))
   (is (equal "41,187" (nle::account-count 41187.6)))
   (is (equal "$3.05" (nle::account-money '("usd" . 3050000)))))
+
+(deftest account-meter-says-an-unlimited-account-needs-nothing ()
+  ;; nodecode.ai's own accounts: the gate meters them by nothing but their seats (`pays' house).
+  (is (equal '("Unlimited" "∞" :success) (multiple-value-list (nle::account-meter (shasht:read-json +account-usage-house+)))) "the footer badge is the infinity sign, never `no credit'")
+  (is (equal '("Unlimited: no plan or credit needed · 3 of 12 running" "Paying with: nothing, this account is unlimited")
+             (nle::account-usage-lines (shasht:read-json +account-usage-house+))) "/usage says it needs nothing, and how many of its seats run")
+  (is (equal '("Unlimited: no plan or credit needed" "Paying with: nothing, this account is unlimited")
+             (nle::account-usage-lines (shasht:read-json "{\"object\":\"usage\",\"plan\":null,\"balance\":[],\"pays\":\"house\"}"))) "a gate that names no seats leaves the count out")
+  (dolist (mode '("subscription" "api"))
+    (let ((out (make-string-output-stream)))
+      (nle::account-print-usage out mode "k" "https://api.nodecode.ai/v1"
+                                (lambda (&rest args) (declare (ignore args)) (values (shasht:read-json +account-usage-house+) 200)))
+      (let ((text (get-output-stream-string out)))
+        (is-carrying text "Unlimited: no plan or credit needed" "Paying with: nothing, this account is unlimited"
+                     (:absent "top-up") (:absent "plans are not sold") (:absent "nothing yet")))))
+  (let ((nle::*color-profile* :truecolor)
+        (nle::*account-meter* (account-meter-fixture +account-usage-house+)))
+    (let ((lines (mapcar (lambda (row) (car (account-slab-painted row 110)))
+                         (remove-if-not #'nle::picker-row-paint (nle::account-slab-rows "7d")))))
+      (is (find-if (lambda (line) (and (search "Unlimited" line) (search "∞" line))) lines) "/usage draws one slab, Unlimited with the infinity sign")
+      (is (find-if (lambda (line) (search "3 of 12" line)) lines) "and its seats")
+      (is (notany (lambda (line) (or (search "API credit" line) (search "top up" line) (search "No plan" line))) lines) "no credit to top up, no plan to sell")
+      (is (every (lambda (line) (<= (length line) 110)) lines) "a line keeps to its room"))
+    (is (equal "unlimited" (nle::account-row-pays nle::+own-provider+)) "a /models row says nothing pays for it")))
 
 (defun account-meter-fixture (json)
   "*ACCOUNT-METER* as a shell holds it for the gate's usage JSON."
