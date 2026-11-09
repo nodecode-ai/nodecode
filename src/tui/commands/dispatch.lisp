@@ -1560,13 +1560,50 @@ settled it yet."
 
 (defun fetch-gateway-model-facts (model)
   "Dial the gateway for MODEL's session model facts => the plist, or NIL
-(the empty plist) on any refusal."
+(the empty plist) on any refusal, which the phase log records."
   ;; One call answers identity, pin provenance and reasoning effort because
   ;; the gateway resolves all three against the same session-effective target;
   ;; an attached client has no store to ask instead. Never called on the loop
   ;; thread — the frame renders the cache; REFRESH-GATEWAY-MODEL-FACTS fills
   ;; it from a thread of its own.
-  (ignore-errors (nth-value 3 (target-snapshot model))))
+  ;;
+  ;; A refusal is noted, never swallowed: a footer that kept `setting up…'
+  ;; past launch left no trace of the read that failed, so nobody could say
+  ;; why (NODECODE_PHASE_LOG names the condition, one line).
+  (handler-case (nth-value 3 (target-snapshot model))
+    (error (condition)
+      (nlk:note-boot-phase "model-facts-refused"
+                           (substitute #\Space #\Newline (princ-to-string condition)))
+      nil)))
+
+(defparameter *model-facts-retry-base-seconds* 0.25
+  "The wait before a failed model-facts read is tried again
+(READ-GATEWAY-MODEL-FACTS); it doubles on each failure after that.")
+
+(defparameter *model-facts-retry-ceiling-seconds* 5
+  "The longest wait between two tries of a failing model-facts read.")
+
+(defun read-gateway-model-facts (model epoch)
+  "FETCH-GATEWAY-MODEL-FACTS until a read answers => its facts, or NIL once
+EPOCH is no longer the newest read or MODEL's connection is not up."
+  ;; One failed read used to be final: the invalidation before it had left
+  ;; the cache :UNRESOLVED, and nothing reads again while a shell stays
+  ;; connected and changes nothing, so the footer said `setting up…' for good
+  ;; although the gateway answered the very next request. The wait doubles
+  ;; from *MODEL-FACTS-RETRY-BASE-SECONDS* to the ceiling and holds there.
+  ;; A newer read (a higher epoch) owns the cache and ends this one; so does
+  ;; a dropped connection, whose fresh connection reads again itself
+  ;; (the GW-CONNECTION-MSG arm of UPDATE).
+  (flet ((current-p ()
+           (and (= epoch model.facts-epoch)
+                (eq model.sync-lifecycle :connected))))
+    (loop for wait = *model-facts-retry-base-seconds*
+            then (min *model-facts-retry-ceiling-seconds* (* 2 wait))
+          for facts = (fetch-gateway-model-facts model)
+          until (or facts (not (current-p)))
+          do (sleep wait)
+          while (current-p)
+          finally (return facts))))
 
 (defun gateway-model-facts (model &aux (facts model.model-facts))
   "The gateway's model facts for this client's session, read from the
@@ -1597,13 +1634,14 @@ where a dial would stall every frame, and never the
 worker, where a wedged gateway would park quit and every queued command
 behind a 30 s read)."
   ;; The epoch captured at spawn keeps a slow fetch from overwriting newer
-  ;; facts. A shell with no loop to install them on reads nothing at all.
+  ;; facts, and ends the retries of a failing one (READ-GATEWAY-MODEL-FACTS).
+  ;; A shell with no loop to install them on reads nothing at all.
   (let ((epoch (incf model.facts-epoch)))
     ;; The /models list rides the same moments: a port known, a model moved.
     (start-models-picker-warm model)
     (when model.program
       (off-loop model
-                (lambda (&aux (facts (fetch-gateway-model-facts model)))
+                (lambda (&aux (facts (read-gateway-model-facts model epoch)))
                   ;; PUBLISHED HERE, where the answer lands, not on the loop
                   ;; alone: the launch frame is painted before the loop drains
                   ;; its queue, so a value that only arrives as a message
@@ -1620,8 +1658,9 @@ behind a 30 s read)."
   "Install the facts a refresh read — newest EPOCH only — and repaint the
 footer."
   (when (= epoch model.facts-epoch)
-    ;; A NIL answer is a read that never landed — the control surface
-    ;; refused, timed out, or the session did not exist yet — and that is no
+    ;; A NIL answer is a read that never landed — every try was refused,
+    ;; timed out, or found no session yet, until a newer read took over or
+    ;; the connection dropped (READ-GATEWAY-MODEL-FACTS) — and that is no
     ;; evidence about the target: the cache keeps what it held, so
     ;; :UNRESOLVED still reads `setting up…' and an earlier answer stays the
     ;; last one the gateway confirmed. Installing the empty value instead

@@ -12,6 +12,10 @@
 ;;;;      so the LAUNCH frame can carry the identity, and the launch frame
 ;;;;      settles for it, bounded (SETTLE-BEFORE-FIRST-FRAME).
 ;;;;
+;;;;   3. A read that failed is no final answer: it is tried again, with a
+;;;;      doubling wait, while it is the newest read and the shell is
+;;;;      connected, and each refusal is noted on the phase log.
+;;;;
 ;;;; Loads after ui-test: reuses MAKE-FRAME-MODEL and the row helpers.
 
 (in-package #:nodecode.test)
@@ -128,6 +132,70 @@
         (is (equal "of-s-2" (getf (nle::gateway-model-facts model) :model)) "the destination's facts landed")
         (is (rows-carry-p "deepseek of-s-2" (nle::compose-frame model)) "and the slot names them")
         (is (not (rows-carry-p "setting up…" (nle::compose-frame model))))))))
+
+(deftest a-failed-facts-read-is-read-again ()
+  ;; One failed read used to be final: a model change blanks the cache, its
+  ;; refetch is refused, nothing reads again while the shell stays connected
+  ;; and changes nothing, and the footer says `setting up…' for good although
+  ;; the gateway answers the very next request.
+  (with-frame-model (model 100 30 :session-id "footer-retry")
+    (setf model.program (nlt:make-program model)
+          model.sync-lifecycle :connected)
+    (land-model-facts model :provider "acme" :model "m-one")
+    (let ((reads 0))
+      (with-saved-globals ((nle::*model-facts-retry-base-seconds* 0.01))
+        (with-stubbed-fdefinition (nle::fetch-gateway-model-facts (model)
+                                   ;; The gateway refuses two reads, then answers.
+                                   (and (> (incf reads) 2) (list :provider "acme" :model "m-two")))
+          ;; What a model_changed frame does (CLIENT-UPDATE).
+          (nle::invalidate-gateway-model-facts model)
+          (nle::refresh-gateway-model-facts model)
+          (await (:tries 300 :rest 0.01) (not (eq :unresolved model.model-facts)))
+          (is (equal "m-two" (getf (nle::gateway-model-facts model) :model)) "the read that answered landed")
+          (sleep 0.1)
+          (is (= 3 reads) (format nil "read again after each refusal, never after the answer: ~d" reads))
+          (is (rows-carry-p "acme m-two" (nle::compose-frame model)) "the slot names the new target")
+          (is (not (rows-carry-p "setting up…" (nle::compose-frame model)))))))))
+
+(deftest a-failing-facts-read-ends-when-it-serves-no-one ()
+  ;; The retries are bounded by what they serve: a newer read owns the cache,
+  ;; and a dropped connection reads again itself once it is back, so neither
+  ;; leaves a thread dialing for an answer nobody installs.
+  (with-frame-model (model 100 30 :session-id "footer-retry-ends")
+    (with-saved-globals ((nle::*model-facts-retry-base-seconds* 0.001))
+      (flet ((reads-until (last change)
+               ;; Every read is refused; read LAST makes CHANGE.
+               (let ((reads 0))
+                 (setf model.sync-lifecycle :connected)
+                 (with-stubbed-fdefinition (nle::fetch-gateway-model-facts (model)
+                                            (when (= last (incf reads)) (funcall change))
+                                            nil)
+                   (values (nle::read-gateway-model-facts model model.facts-epoch) reads)))))
+        (multiple-value-bind (facts reads) (reads-until 3 (lambda () (incf model.facts-epoch)))
+          (is (null facts))
+          (is (= 3 reads) "a newer read ends the retries"))
+        (multiple-value-bind (facts reads) (reads-until 3 (lambda () (setf model.sync-lifecycle :reconnecting)))
+          (is (null facts))
+          (is (= 3 reads) "so does a dropped connection"))
+        (multiple-value-bind (facts reads) (reads-until 7 (lambda () (incf model.facts-epoch)))
+          (is (null facts))
+          (is (= 7 reads) "and until one of them happens, the reads go on")))
+      (let ((reads 0))
+        (setf model.sync-lifecycle :connecting)
+        (with-stubbed-fdefinition (nle::fetch-gateway-model-facts (model) (incf reads) nil)
+          (is (null (nle::read-gateway-model-facts model model.facts-epoch)))
+          (is (= 1 reads) "a shell not connected yet reads once: its connection reads again"))))))
+
+(deftest a-refused-facts-read-is-noted ()
+  ;; The condition a failed read signalled was swallowed whole, so a stuck
+  ;; footer left nothing to diagnose; it goes to the phase log, on one line.
+  (with-frame-model (model 100 30 :session-id "footer-refusal-noted")
+    (let ((noted '()))
+      (with-stubbed-fdefinitions ((nle::target-snapshot (shell) (error "gateway answered 503~%for the target"))
+                                  (nlk:note-boot-phase (label &optional detail)
+                                    (push (list label detail) noted)))
+        (is (null (nle::fetch-gateway-model-facts model)) "a refusal is still no answer")
+        (is (equal '(("model-facts-refused" "gateway answered 503 for the target")) noted) "and the phase log names it")))))
 
 ;;; Footer actions read the clipped painted row, not guessed text positions.
 (defun footer-test-cell (model needle)
