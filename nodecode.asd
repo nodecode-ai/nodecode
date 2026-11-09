@@ -771,7 +771,9 @@ of stacking."
      (:file "import/home-test")
      (:file "import/import-test")
      (:file "import/source-test")
-     (:file "engine/model-id-test"))))
+     (:file "engine/model-id-test")
+     ;; The structural lint is a script; its gates run it as `just lint' does.
+     (:file "tools/lint-structure-test"))))
   ;; Resolved at run time: the package does not exist when this form is read.
   ;; RUN-ALL is defined by support, the first file above.
   :perform (test-op (operation component)

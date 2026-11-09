@@ -18,6 +18,13 @@
 ;;;;      over a form the reader can already see. Either it fits on the form's
 ;;;;      line or it is not saying enough to cost a line.
 ;;;;
+;;;; Check 2 also fails a line that starts at column 0 inside an open list,
+;;;; whatever the list's head. Column 0 is where a top-level form starts, so
+;;;; such a line is a form a missing paren above has swallowed: three DEFUNs
+;;;; after a DEFUN whose WHEN never closed read, by column alone, as a body
+;;;; after its docstring, the very shape the distinguished-argument exemption
+;;;; below admits.
+;;;;
 ;;;; Check 2 is the reason this file exists. A CASE clause can read as a sibling
 ;;;; but evaluate as the body of the clause above it, which turns (:empty nil)
 ;;;; into a call to the undefined function :EMPTY on the first blank SSE line.
@@ -119,11 +126,21 @@ lines that break that shape."
 
 (defun close-frame (lx &aux (frame (pop (lx-stack lx))))
   "Pop the innermost list and record a finding when its line-starting elements
-disagree on column."
+disagree on column, or one of them starts at column 0."
   (when frame
-    (let* ((starts (reverse (frame-starts frame)))
+    (let* ((all (reverse (frame-starts frame)))
+           ;; Column 0 inside an open list is a swallowed top-level form under
+           ;; any head, so it is reported apart and kept out of the alignment
+           ;; below, which would otherwise name the same line twice.
+           (outdented (remove-if-not #'zerop all :key #'cdr))
+           (starts (remove-if #'zerop all :key #'cdr))
            (head (frame-head frame))
            (name (and head (strip-package-qualifier head))))
+      (when outdented
+        (push (list :open-line (frame-open-line frame)
+                    :head head
+                    :outdented outdented)
+              (lx-findings lx)))
       (when (and (> (length starts) 1)
                  (not (member name *unaligned-heads* :test #'equal)))
         (let ((bad (if (and name
@@ -280,10 +297,13 @@ disagree on column."
         (format t "       parens and indentation disagree~%"))
       (loop for f in findings
             for shown from 0 below max-findings
-            do (destructuring-bind (&key open-line head base-line base-column offenders) f
-                 (format t "       (~a at line ~d): siblings start at column ~d (line ~d), but~%"
-                         (or head "list") open-line base-column base-line)
-                 (loop for (lineno . column) in offenders
+            do (destructuring-bind (&key open-line head base-line base-column offenders outdented) f
+                 (if outdented
+                     (format t "       (~a at line ~d) is still open where a top-level form starts:~%"
+                             (or head "list") open-line)
+                     (format t "       (~a at line ~d): siblings start at column ~d (line ~d), but~%"
+                             (or head "list") open-line base-column base-line))
+                 (loop for (lineno . column) in (or outdented offenders)
                        do (format t "         line ~d starts at column ~d~%" lineno column))))
       (when (> (length findings) max-findings)
         (format t "       ... and ~d more~%" (- (length findings) max-findings))))))

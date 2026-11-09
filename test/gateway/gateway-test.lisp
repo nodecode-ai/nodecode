@@ -3005,15 +3005,15 @@ the one reader."
 ;; vr-101: skipping it left the baked default lane under the pin's model, and
 ;; every turn went to OpenCode Zen as "public". The pin is seeded as written,
 ;; and every shell is told at boot why it cannot serve.
-(setf nle::*provider* "openai-completions"
-      nle::*model* "m0"
-      nle::*endpoint* nil)
-(handler-bind ((warning #'muffle-warning))
-  (nle::restore-model-config))
-(is (equal "retired-lane" nle::*provider*))
-(is (equal "still-good" nle::*model*))
-(is (search "provider retired-lane is not" (gethash "refusal" (nle::gateway-target-json))))
-(is (equal "retired-lane" (config-pin path "default_model" "provider"))))
+  (setf nle::*provider* "openai-completions"
+        nle::*model* "m0"
+        nle::*endpoint* nil)
+  (handler-bind ((warning #'muffle-warning))
+    (nle::restore-model-config))
+  (is (equal "retired-lane" nle::*provider*))
+  (is (equal "still-good" nle::*model*))
+  (is (search "provider retired-lane is not" (gethash "refusal" (nle::gateway-target-json))))
+  (is (equal "retired-lane" (config-pin path "default_model" "provider"))))
 
 (deftest the-model-route-answers-a-selection-with-no-address-and-why ()
   ;; Without this, a provider with no endpoint of its own (providers.acme, a
@@ -3086,14 +3086,14 @@ the one reader."
 
 (deftest gateway-session-model-clear-leaves-the-default-alone (with-selection-gateway)
   (path port "clear-session" :model "kept" :pinned t)
-(nlk:record-session-model-selection "clear-session" :model "pinned")
-(with-gateway-http (port :post "/api/gateway/sessions/clear-session/model"
-                    :body "{\"provider\":null,\"model\":null}")
-  (is (= 200 status) "clearing is accepted")
-  (is (null (gethash "shared_config" body))))
-(is-model-pin "clear-session" nil nil "the pin is gone" "on both fields")
-(is (equal "kept" (config-pin path "default_model" "model")))
-(is (equal "kept" nle::*model*) "as are the globals"))
+  (nlk:record-session-model-selection "clear-session" :model "pinned")
+  (with-gateway-http (port :post "/api/gateway/sessions/clear-session/model"
+                      :body "{\"provider\":null,\"model\":null}")
+    (is (= 200 status) "clearing is accepted")
+    (is (null (gethash "shared_config" body))))
+  (is-model-pin "clear-session" nil nil "the pin is gone" "on both fields")
+  (is (equal "kept" (config-pin path "default_model" "model")))
+  (is (equal "kept" nle::*model*) "as are the globals"))
 
 ;;; --- start_turn names the target a fresh session runs on ---------------------
 

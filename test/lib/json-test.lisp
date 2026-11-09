@@ -514,8 +514,8 @@ write's four values."
   ;; The chat lane replays the key's PRESENCE, not its text, so an empty
   ;; reasoning chunk still has to register or replay drops the field.
   (nlk:wire-reasoning (nlk:decode-json "{\"reasoning_content\":\"\"}"))
-(is (equal "" text) "an empty trace reads as the empty string")
-(is present "and is still present"))
+  (is (equal "" text) "an empty trace reads as the empty string")
+  (is present "and is still present"))
 
 ;;; --- decode-json: the one reader, what it reads and what it costs ----------
 
