@@ -1835,11 +1835,11 @@ canned stream of LINES — the message, the usage, the finish reason."
   (streamed-message (chunk-json "alpha")
                     (chunk-json "beta")
                     (chunk-json "gamma" :finish-reason "stop"))
-(declare (ignore usage))
-(is (equal "alphabetagamma" (gethash "content" message)))
-(is (equal "assistant" (gethash "role" message)))
-(is (equal "stop" finish-reason))
-(is (null (nth-value 1 (gethash "finish_reason" message)))))
+  (declare (ignore usage))
+  (is (equal "alphabetagamma" (gethash "content" message)))
+  (is (equal "assistant" (gethash "role" message)))
+  (is (equal "stop" finish-reason))
+  (is (null (nth-value 1 (gethash "finish_reason" message)))))
 
 ;;; --- B1 gate: works without delta-fn ------------------------------------
 
@@ -2246,8 +2246,8 @@ defaulted its numbers could not state it."
 
 (deftest streaming-usage-absent-stays-nil-not-zero (multiple-value-bind (message usage))
   (streamed-message (chunk-json "ok"))
-(declare (ignore message))
-(is (null usage) "a provider that reported nothing yields NIL, never zeros"))
+  (declare (ignore message))
+  (is (null usage) "a provider that reported nothing yields NIL, never zeros"))
 
 (deftest streaming-request-asks-for-usage (let ((captured nil)))
   (with-stubbed-fdefinition (dex:post (url &rest args)
@@ -2263,11 +2263,11 @@ defaulted its numbers could not state it."
 (deftest streaming-in-stream-error-frame-signals (with-mock-sse-stream)
   ((chunk-json "partial")
    "{\"error\": {\"message\": \"upstream fell over\", \"code\": 500}}")
-(let ((condition (signals-error nle::provider-error
-                   (nle::call-provider-streaming (user-context)))))
-  (is condition "an in-stream error frame fails the attempt")
-  (is (eql 500 (nle::provider-error-status condition)))
-  (is (search "upstream fell over" (nle::provider-error-detail condition)))))
+  (let ((condition (signals-error nle::provider-error
+                     (nle::call-provider-streaming (user-context)))))
+    (is condition "an in-stream error frame fails the attempt")
+    (is (eql 500 (nle::provider-error-status condition)))
+    (is (search "upstream fell over" (nle::provider-error-detail condition)))))
 
 (defun make-truncated-sse-stream (&rest data-strings &aux (buf (make-string-output-stream)))
   "Canned SSE lines that end without the [DONE] sentinel."
@@ -2593,15 +2593,15 @@ lane function, so nothing dials."
   ;; of the candidate's own base_url.
   (path :contents
         "{\"providers\": {\"alt\": {\"api_key\": \"k\", \"base_url\": \"https://alt.example/v1\", \"sdk\": \"openai-completions\"}}}")
-(let* ((nle::*shared-config-path* path)
-       (nle::*provider* "failproof")
-       (nle::*model* "dead-model")
-       (candidate (nle::failover-candidate-config "alt" "m2")))
-  (is (equal "alt" candidate.provider))
-  (is (equal "m2" candidate.model))
-  (is (uiop:string-prefix-p "https://alt.example/v1" candidate.endpoint))
-  (is (not (search "failproof"
-                   candidate.endpoint)))))
+  (let* ((nle::*shared-config-path* path)
+         (nle::*provider* "failproof")
+         (nle::*model* "dead-model")
+         (candidate (nle::failover-candidate-config "alt" "m2")))
+    (is (equal "alt" candidate.provider))
+    (is (equal "m2" candidate.model))
+    (is (uiop:string-prefix-p "https://alt.example/v1" candidate.endpoint))
+    (is (not (search "failproof"
+                     candidate.endpoint)))))
 
 (deftest a-spent-budget-falls-over-to-the-configured-chain (with-session-store ("failover-ok"))
   (with-durable-turn (turn "failover-ok" :command-id "failover-ok-cmd" :input "go" :current t :retry-delay 0)
@@ -4313,8 +4313,8 @@ every one of them."
                     "content_block" (json-obj "type" "text"))
    (anthropic-event "content_block_delta" "index" 0
                     "delta" (json-obj "type" "text_delta" "text" "half")))
-(is (signals-error nle::provider-stream-incomplete
-      (nle::call-anthropic-streaming (anthropic-user-context)))))
+  (is (signals-error nle::provider-stream-incomplete
+        (nle::call-anthropic-streaming (anthropic-user-context)))))
 
 (deftest anthropic-lane-is-dispatched-by-call-provider (let ((captured-headers nil)))
   (with-stubbed-fdefinition (dex:post (url &rest args)
@@ -4482,13 +4482,13 @@ every one of them."
                     (usage-chunk-json :prompt 100 :completion 20 :total 120
                                       :cached 30 :reasoning 7
                                       :cache-write 40 :write-5m 25 :write-1h 15))
-(declare (ignore message))
-(is (= 70 usage.input-tokens))
-(is (= 30 usage.cached-input-tokens))
-(is (= 7 usage.reasoning-tokens))
-(is (= 40 usage.cache-write-tokens))
-(is (= 25 usage.cache-write-5m-tokens))
-(is (= 15 usage.cache-write-1h-tokens)))
+  (declare (ignore message))
+  (is (= 70 usage.input-tokens))
+  (is (= 30 usage.cached-input-tokens))
+  (is (= 7 usage.reasoning-tokens))
+  (is (= 40 usage.cache-write-tokens))
+  (is (= 25 usage.cache-write-5m-tokens))
+  (is (= 15 usage.cache-write-1h-tokens)))
 
 (deftest chat-usage-prefers-the-count-the-relay-actually-served ()
   ;; Captured live off a6api's chat endpoint: a relay that converts a
@@ -4535,14 +4535,14 @@ every one of them."
                     "delta" (json-obj "stop_reason" "end_turn")
                     "usage" (json-obj "output_tokens" 25))
    (anthropic-event "message_stop"))
-(multiple-value-bind (message usage)
-    (nle::call-anthropic-streaming (anthropic-user-context))
-  (declare (ignore message))
-  (is (= 300 usage.cache-write-tokens))
-  (is (= 200 usage.cache-write-5m-tokens))
-  (is (= 100 usage.cache-write-1h-tokens))
-  (is (= 75 usage.total-tokens))
-  (is (null usage.reasoning-tokens))))
+  (multiple-value-bind (message usage)
+      (nle::call-anthropic-streaming (anthropic-user-context))
+    (declare (ignore message))
+    (is (= 300 usage.cache-write-tokens))
+    (is (= 200 usage.cache-write-5m-tokens))
+    (is (= 100 usage.cache-write-1h-tokens))
+    (is (= 75 usage.total-tokens))
+    (is (null usage.reasoning-tokens))))
 
 ;;; =========================================================================
 ;;; stream-part projection gates: reasoning rows and stream reset
@@ -5129,21 +5129,21 @@ next boot resume."
   ;; EOF after an in-stream error: the recorded error frame names the failure
   ;; better than generic truncation, and its code drives retry classification.
   (:truncated "{\"error\": {\"message\": \"overloaded\", \"code\": 429}}")
-(let ((condition (signals-error nle::provider-error
-                   (nle::call-provider-streaming (user-context)))))
-  (is condition "the attempt fails")
-  (is (not (typep condition 'nle::provider-stream-incomplete)))
-  (is (eql 429 (nle::provider-error-status condition)))))
+  (let ((condition (signals-error nle::provider-error
+                     (nle::call-provider-streaming (user-context)))))
+    (is condition "the attempt fails")
+    (is (not (typep condition 'nle::provider-stream-incomplete)))
+    (is (eql 429 (nle::provider-error-status condition)))))
 
 (deftest anthropic-error-event-without-completion-signals (with-mock-sse-stream)
   (:truncated
    (anthropic-event "error"
                     "error" (json-obj "type" "overloaded_error"
                                       "message" "busy")))
-(let ((condition (signals-error nle::provider-error
-                   (nle::call-anthropic-streaming (anthropic-user-context)))))
-  (is condition "an error event without message_stop fails the attempt")
-  (is (eql 529 (nle::provider-error-status condition)))))
+  (let ((condition (signals-error nle::provider-error
+                     (nle::call-anthropic-streaming (anthropic-user-context)))))
+    (is condition "an error event without message_stop fails the attempt")
+    (is (eql 529 (nle::provider-error-status condition)))))
 
 (deftest anthropic-error-event-with-declared-completion-degrades (let ((warned nil)))
   (with-mock-sse-stream
@@ -7964,25 +7964,25 @@ three
                   \"m2\":{\"reasoning\":true,
                   \"reasoning_options\":[{\"type\":\"effort\",
                     \"values\":[\"low\",\"high\",\"max\"]}]}}}}")
-(is (equal '("low" "medium" "high" "xhigh" "max")
-           (nle::declared-effort-levels "m1" "vendor")))
-(is (equal '("low" "high")
-           (nle::declared-effort-levels "m1" "zzz-reseller")))
-(is (equal '("low" "medium" "high" "xhigh" "max")
-           (nle::declared-effort-levels "m1" "some-private-router")))
-;; The vendor says m2 spends a budget, not an effort. That
-;; silence is a fact: a reseller's ladder must not fill it.
-(is (null (nle::declared-effort-levels "m2" "vendor")))
-(is (equal '("low" "high" "max")
-           (nle::declared-effort-levels "m2" "unknown-router")))
-(is (eq t (nle::model-capability-reasoning-p
-           (nle::resolve-model-capability "m1" "vendor"))))
-(is (nle::anthropic-adaptive-p
-     (nle::model-capability-effort-levels
-      (nle::resolve-model-capability "m1" "vendor"))))
-(is (null (nle::anthropic-adaptive-p
-           (nle::model-capability-effort-levels
-            (nle::resolve-model-capability "m2" "vendor"))))))
+  (is (equal '("low" "medium" "high" "xhigh" "max")
+             (nle::declared-effort-levels "m1" "vendor")))
+  (is (equal '("low" "high")
+             (nle::declared-effort-levels "m1" "zzz-reseller")))
+  (is (equal '("low" "medium" "high" "xhigh" "max")
+             (nle::declared-effort-levels "m1" "some-private-router")))
+  ;; The vendor says m2 spends a budget, not an effort. That
+  ;; silence is a fact: a reseller's ladder must not fill it.
+  (is (null (nle::declared-effort-levels "m2" "vendor")))
+  (is (equal '("low" "high" "max")
+             (nle::declared-effort-levels "m2" "unknown-router")))
+  (is (eq t (nle::model-capability-reasoning-p
+             (nle::resolve-model-capability "m1" "vendor"))))
+  (is (nle::anthropic-adaptive-p
+       (nle::model-capability-effort-levels
+        (nle::resolve-model-capability "m1" "vendor"))))
+  (is (null (nle::anthropic-adaptive-p
+             (nle::model-capability-effort-levels
+              (nle::resolve-model-capability "m2" "vendor"))))))
 
 (defparameter *priced-catalog-json*
   "{\"vendor\":{\"models\":{\"m1\":{\"cost\":{\"input\":2,\"output\":10,\"cache_read\":0.2,\"cache_write\":2.5}}}},

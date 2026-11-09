@@ -1215,21 +1215,21 @@ line 6~%line 7")
   ((nle::send-subscribe (ws ids))
    (nle::gateway-model-http-call (model method path body)
      (nlk::make-json-object "session_id" "fresh-after-clear")))
-(with-frame-model (model 80 24 :session-id "old-session" :http-port 4321)
-  (nle::append-tail-row
-   model.state
-   (nle::make-transcript-row :kind :text :role "user" :text "hello"))
-  (nle::render-state model)
-  (is (not (nle::home-screen-p model)))
-  (type-string model "/clear" :enter)
-  (is-shape model (nle::chat-model-session-id "fresh-after-clear")
-    (nle::home-screen-p is))
-  (let* ((rows (nle::compose-frame model))
-         (logo (row-index-of "█▀▄█" rows :required t)))
-    (is (search "Tip " (nth (+ logo 4) rows)))
-    (is (search "v" (nth (+ logo 2) rows)) "clearing restores the version below the logo")
-    (is (eq :shine (car (nle::chat-model-mark-glow model))) "and the launch's glint")
-    (is (not (rows-carry-p "switched" rows))))))
+  (with-frame-model (model 80 24 :session-id "old-session" :http-port 4321)
+    (nle::append-tail-row
+     model.state
+     (nle::make-transcript-row :kind :text :role "user" :text "hello"))
+    (nle::render-state model)
+    (is (not (nle::home-screen-p model)))
+    (type-string model "/clear" :enter)
+    (is-shape model (nle::chat-model-session-id "fresh-after-clear")
+      (nle::home-screen-p is))
+    (let* ((rows (nle::compose-frame model))
+           (logo (row-index-of "█▀▄█" rows :required t)))
+      (is (search "Tip " (nth (+ logo 4) rows)))
+      (is (search "v" (nth (+ logo 2) rows)) "clearing restores the version below the logo")
+      (is (eq :shine (car (nle::chat-model-mark-glow model))) "and the launch's glint")
+      (is (not (rows-carry-p "switched" rows))))))
 
 
 ;;; --- command palette ---------------------------------------------------------

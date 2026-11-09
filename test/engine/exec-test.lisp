@@ -727,8 +727,8 @@ completed. BODY runs with SID bound."
 
 (deftest sh-rejects-unified-diff-payloads-before-launch (multiple-value-bind (output status))
   (nle:sh "*** Begin Patch\n*** Update File: x")
-(is (= 2 status) "a diff sent to sh is rejected as a command")
-(is (search "(edit path old new)" output)))
+  (is (= 2 status) "a diff sent to sh is rejected as a command")
+  (is (search "(edit path old new)" output)))
 
 ;; gpt-6-astra passed whole commands as the name, 30 times, and the error
 ;; echoed each back as the key to send.
