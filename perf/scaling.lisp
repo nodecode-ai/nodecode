@@ -67,8 +67,8 @@ pairs, each answer a few paragraphs, painted once."
       (nle::compose-frame model))))
 
 (define-scaling a-streamed-word-in-a-long-transcript
-    (n :kind :constant :bound 0.85
-       :known "main 25bc955: instructions n^0.55, bytes n^0.79; TAIL-PROJECTION-START runs GROUP-ROWS over every row per look")
+    (n :kind :constant :bound 0.35
+       :known "this PR (dfb3610/d17996c/groups.lisp+fact-block.lisp fixes): instructions n^0.24, bytes n^0.29; the fast paths this PR corrected (TRANSCRIPT-ROWS-MEMO, GROUP-ROWS-MEMO, TAIL-PROJECTION-START's reuse) cover a pure streamed delta, flat on its own (confirmed by hand outside this gate); what is left is every 64th call's durable fact, which opens a fresh tail row and promotes the tail's oldest one into history -- TAIL-PROJECTION-START's own COERCE of TRANSCRIPT-ROWS to a vector materializes the whole history on that walk, same on main, never addressed by this PR's caches (which key on an UNCHANGED transcript, not on one that just grew). A real fix wants TAIL-PROJECTION-START reading only as much history back as its own walk needs, not the whole lane up front -- a larger change than this gate warrants blocking on")
   ;; A word of a streaming answer landing at the tail of a long conversation:
   ;; the fold, the re-projection of the live tail and the frame, as the frame
   ;; clock paints a dirty transcript.
@@ -108,10 +108,12 @@ pairs, each answer a few paragraphs, painted once."
                                               "{\"form\":\"(+ 1 2)\"}" "3"))))))
 
 (define-scaling a-turn-appended-to-a-long-session
-    (n :kind :constant :bound 0.75 :sizes '(200 800 3200)
-       :known "main 25bc955: instructions n^0.54, bytes n^0.56; COMPLETE-TURN's TURN-CHAIN-DEPTH reads every TURN.STARTED, ADMIT-TURN scans")
+    (n :kind :constant :sizes '(200 800 3200))
   ;; Admitting, journaling and completing one more turn: the store's cost per
-  ;; write must not see how long the session already is.
+  ;; write must not see how long the session already is. Flat since b79b808
+  ;; (TURN-CHAIN-DEPTH's verified per-session memo; ADMIT-COMMAND's duplicate
+  ;; guard through the TURN-STARTED-BY-COMMAND index instead of a scan) --
+  ;; the default :CONSTANT bound applies, no :KNOWN breach left to name.
   (let ((session (seeded-session n)))
     (lambda (i)
       (seed-completed-turn session (format nil "more ~d" i) "ok"

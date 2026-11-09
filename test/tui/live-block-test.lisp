@@ -69,6 +69,25 @@ fact landed, and its RESULT when given."
       (is (not (eq tail (gethash "tail_rows" model.state))) "a new row changes TAIL_ROWS' identity")
       (is (not (eq entry (nle::chat-model-projection-start model))) "and the start is walked afresh, not reused stale"))))
 
+(deftest a-blank-first-delta-still-reaches-newest-once-it-grows ()
+  ;; GROUP-ROWS-MEMO (Standard) keys its ENDED/NEWEST/NEWEST-CALL walk on
+  ;; CONTEXT's own identity, which a streamed delta growing the live tail
+  ;; row in place never touches (TRANSCRIPT-ROWS-MEMO). A model's first
+  ;; delta is often blank -- a leading space or newline -- which
+  ;; ASSISTANT-TEXT-P's BLANK-CHAR-P guard skips, so the row earns no place
+  ;; in NEWEST on that first render; later deltas then grow the very same
+  ;; row in place with real words, and CONTEXT stays EQ throughout, so the
+  ;; memo must notice the growth some other way (NEWEST-ROW-GROWTH-MARK) or
+  ;; it goes on answering the walk that found nothing, forever.
+  (with-frame-model (model 80 24 :session-id "blank-first-delta")
+    (paint-model model (nle::ingest-stream-body :text " " :turn-id "t1"))
+    (paint-model model (nle::ingest-stream-body :text "Hello, world" :turn-id "t1"))
+    ;; FRAME-PLAIN-ROWS is read only once, after both deltas: it caches a
+    ;; composed frame lane and only recomposes on a geometry change, so a
+    ;; read taken between the two deltas (nothing to show yet, a correct
+    ;; answer) would otherwise serve that same stale lane right back here.
+    (is (rows-carry-p "Hello, world" (nle::frame-plain-rows model)) "the words that grew into the row the blank delta opened still reach the frame")))
+
 (deftest a-call-without-a-stream-index-is-a-round-of-its-own ()
   (let* ((state (nle::ingest-message-fact nil "user" "go" :turn-id "t1"))
          (state (tool-round state "a" "eval" (eval-args (format nil ";; Read the first file~%(+ 1 1)")) "1" :turn-id "t1"))
