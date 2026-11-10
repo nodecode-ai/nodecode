@@ -3155,7 +3155,12 @@ AIM-PROVIDER or AIM-MODEL and no session, that target over the gateway's."
      ;; admits it, else the default — and the rungs it admits, weakest
      ;; first: empty for a model that does not reason.
      "effort" (or (effective-effort effort provider model) :null)
-     "efforts" (coerce (effort-ladder provider model) 'vector)
+     "efforts" (coerce (effort-choices provider model) 'vector)
+     ;; While a turn runs on SESSION-ID, the effort its latest round sent
+     ;; (NOTE-TURN-EFFORT): auto's routed rung, or what a :ROUND hook moved
+     ;; it to, which the pick above never says. NULL between turns.
+     "running" (multiple-value-bind (sent running-p) (running-turn-effort session-id)
+                 (if running-p (json-object "effort" (or sent :null)) :null))
      ;; Why the target cannot serve a turn, when it cannot (an entry
      ;; naming no sdk), else why the config's own pin was not applied
      ;; (the retired flat keys, a pin missing its lane): the attached
@@ -5154,6 +5159,13 @@ update poller and the folder's peripherals, TRIM as START-GATEWAY takes it.
               (announce-loaded path definitions)))
   ;; A hook an isolated chain stepped over is said to every attached shell
   ;; and stands on the board until it is registered again or unhooked.
+  ;; The effort a running turn sends moved, or its turn ended: every footer
+  ;; on that session reads the target again (GATEWAY-TARGET-JSON's running).
+  (nlk:hook 'note-turn-effort "gateway-footer"
+            (lambda (next session-id effort &rest options)
+              (let ((moved (apply next session-id effort options)))
+                (when moved (ignore-errors (broadcast-model-changed session-id)))
+                moved)))
   (nlk:hook 'nlk::note-hook-failure "gateway-notice"
             (lambda (next name key condition)
               (declare (ignore next))
@@ -5323,6 +5335,7 @@ back after them (NLK:TRIM-MEMORY)."
     (set-help-topic :image nil)
     (nlk:unhook 'nlk:source-loaded "gateway-loaded")
     (nlk:unhook 'nlk::note-hook-failure "gateway-notice")
+    (nlk:unhook 'note-turn-effort "gateway-footer")
     (setf *gateway-handler* nil
           *gateway-bound-port* nil
           *gateway-started-at* nil

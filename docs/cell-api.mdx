@@ -331,12 +331,12 @@ A field may be `:required` and carry `:default` and `:doc`. Section options: `(:
 | `:tool` | `(op next)`. One tool dispatch. OP is `(:name :arguments :call-id)`. |
 | `:frame` | `(op next)`. One live frame leaving the gateway. |
 | `:credential` | `(op next)`. |
-| `:round` | `(op next)`. One model request about to be built, every round of every turn. OP is `(:session-id :turn :round)`. A reminder recorded here is in that request. |
+| `:round` | `(op next)`. One model request about to be built, every round of every turn. OP is `(:session-id :turn-id :turn :round)`: the session and turn ids as strings, `:turn` the durable turn object, `:round` 0 for the turn's first. Key on the ids; the turn object's fields change between releases. A reminder recorded here is in that request, and `(setf *reasoning-effort* "high")` sets the effort from this round on. |
 | A function name | `(next &rest args)`. Around every call of it. |
 
 Call `next` to run the rest of the chain. Don't, to replace it. A hook that refuses a call answers `(nle:failure "ERROR: ...")`, and the call is recorded failed.
 
-`:frame` and `:round` hooks only watch. An error such a hook signals itself, outside `next`, is stepped over: the frame still goes out, the request is still built, and every shell shows the error as a notice, once per registration. On `:tool`, `:credential` and around a function, a hook's error is the call's own error.
+`:frame` and `:round` hooks only watch. An error such a hook signals itself, outside `next`, is stepped over: the frame still goes out, the request is still built, and the error stands until the hook is registered again or unhooked: the footer shows `1 hook skipped`, and `/status` names it under Needs attention. On `:tool`, `:credential` and around a function, a hook's error is the call's own error.
 
 <Screen name="cell-hook-failure" />
 

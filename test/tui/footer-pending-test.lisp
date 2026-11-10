@@ -445,6 +445,34 @@
           (is (zerop applied) "dismissal never selects an effort")
           (is (equal "keep my draft" (composer-value model)) "toggle preserves the draft"))))))
 
+(deftest footer-effort-names-what-the-running-turn-sends ()
+  ;; nodecode#421: the chip named the pick while the turn's requests said
+  ;; otherwise -- auto's rung, or a :ROUND hook's move.
+  (with-frame-model (model 220 30 :session-id "footer-running-effort")
+    (land-model-facts model :provider "p" :model "m" :effort "auto")
+    (is (search "(auto)" (nle::footer-frame-row model 100 nil)))
+    (land-model-facts model :provider "p" :model "m" :effort "auto" :running-p t :running-effort "high")
+    (is (search "(auto: high)" (nle::footer-frame-row model 100 nil)))
+    (land-model-facts model :provider "p" :model "m" :effort "low" :running-p t :running-effort "xhigh")
+    (is (search "(xhigh)" (nle::footer-frame-row model 100 nil)) "a hook's move is what it shows")
+    (land-model-facts model :provider "p" :model "m" :effort "low")
+    (is (search "(low)" (nle::footer-frame-row model 100 nil)) "between turns, the pick")))
+
+(deftest footer-says-a-skipped-hook-until-the-board-clears-it ()
+  ;; nodecode#421: a broken :ROUND hook was stepped over with its notice in
+  ;; /status only, popups being off, so nothing on screen said it.
+  (with-frame-model (model 220 30 :session-id "footer-skipped-hook" :http-port 4321)
+    (flet ((board (&rest notices) (nlk:json-object "notices" (coerce notices 'vector)))
+           (right () (first (nle::footer-right-candidates model))))
+      (nle::note-skipped-hooks
+       model (board (nlk:json-object "text" "hook :round \"effort-router\" failed" "level" "error"
+                                     "key" "hook :round effort-router")
+                    (nlk:json-object "text" "rules loaded" "level" "info" "key" "rules")))
+      (is (search "1 hook skipped" (nle::segs-text (right))))
+      (is (equal '(:command . "status") (nle::seg-link (first (right)))) "it opens /status")
+      (nle::note-skipped-hooks model (board))
+      (is (not (search "hook skipped" (nle::segs-text (right))))))))
+
 (deftest footer-gateway-token-is-fragment-only-and-encoded ()
   (with-frame-model (model 220 30 :session-id "gateway-token" :http-port 4321
                            :http-token "a&b=#/+?")

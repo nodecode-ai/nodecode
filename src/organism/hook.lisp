@@ -41,9 +41,19 @@
 ;;;;           so a fact a hook records there -- a reminder through
 ;;;;           NLK:RECORD-TURN-CONTEXT-PROMPT's :TEXT -- is in that very
 ;;;;           request: a running turn hears it without stopping. OP is
-;;;;           (:session-id ID :turn TURN :round N), TURN the running
-;;;;           durable turn or NIL; NEXT does nothing and answers NIL. Runs
-;;;;           on the turn worker. Isolated, like :FRAME.
+;;;;           (:session-id ID :turn-id ID :turn TURN :round N): the
+;;;;           session's id and the running turn's, both strings (the
+;;;;           turn's NIL outside a durable turn), and N the round, 0 the
+;;;;           turn's first. Hook by the ids: TURN is the durable turn
+;;;;           itself, a struct whose fields move between releases, read
+;;;;           only through NLK:DURABLE-TURN-* readers. A hook may move
+;;;;           what the turn sends -- (setf *reasoning-effort* "high")
+;;;;           is the effort from this round on -- and the footer shows
+;;;;           what was sent (NOTE-TURN-EFFORT). NEXT does nothing and answers
+;;;;           NIL. Runs on the turn worker. Isolated, like :FRAME: a
+;;;;           hook's own error is stepped over, said once, and stands
+;;;;           on the board -- and in a shell's footer -- until the hook
+;;;;           is registered again or unhooked.
 ;;;;
 ;;;; The same primitive is generalized to ANY function name: (hook
 ;;;; 'compose-frame "mine" fn) wraps every call of COMPOSE-FRAME, fn receiving
