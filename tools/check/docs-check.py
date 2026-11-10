@@ -17,7 +17,10 @@
 #            .md files beside the pages (README, CELLS, UPGRADE) are this
 #            repository's own notes and no page.
 #   front    every page opens with frontmatter that has a title and a summary:
-#            the page's masthead, its row in the rail and in llms.txt.
+#            the page's masthead, its row in the rail and in llms.txt. A
+#            title written as a search types it is longer than a row of the
+#            rail, which cuts it short: such a page names its row itself, in
+#            rail, and a rail that is there is not empty.
 #   links    a link to another page is SLUG.mdx, the page's file beside this
 #            one, so it lands on the page both on GitHub and on the site, which
 #            serves it as /docs/SLUG; it names a page nav.json lists, and a
@@ -192,6 +195,8 @@ for path, lines, _, _ in read.values():
     for key in ("title", "summary"):
         if not fields.get(key):
             problem(path, 1, f"frontmatter has no {key}: the site's masthead, rail and llms.txt read it")
+    if "rail" in fields and not fields["rail"]:
+        problem(path, 1, "frontmatter has an empty rail: leave the key out and the rail shows the title")
 
 # --- links and media ----------------------------------------------------------
 
