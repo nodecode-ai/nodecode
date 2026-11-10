@@ -56,7 +56,9 @@ stopped and the thread joined however BODY leaves."
     (bt2:join-thread
      (nlk:spawn "test-sender" (nlt:send program (nlt:make-key-press-msg :code #\a))))
     (is (await () (seen-of-type model 'nlt:key-press-msg)))
-    (is (plusp (probe-frames model)) "and the frame after it is painted")
+    ;; The loop paints after UPDATE returns, on its own thread: a look
+    ;; between the two sees the message and no frame yet, so wait for both.
+    (is (await () (plusp (probe-frames model))) "and the frame after it is painted")
     (nlt:send program (nlt:make-quit-msg))
     (is (await () (not (bt2:thread-alive-p loop-thread))))
     (is (null program.running) "and the program is no longer running")
