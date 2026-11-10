@@ -2796,7 +2796,9 @@ models.dev catalog holds -- the ids CHECK-MODEL-ID takes on sight."
 
 (defun check-model-id (provider model)
   "MODEL unchanged, or PROVIDER-CONFIG-ERROR for an empty id or a known
-listing/catalog display name. Exact ids win; unlisted private ids stay legal."
+listing/catalog display name. Exact ids win; unlisted private ids stay legal.
+Another catalog provider's display name refuses only for a provider the
+catalog names or the config declares."
   ;; Never translate a name into an id: resellers can use different namespaces,
   ;; and one display name can describe several ids. Tell the caller what to pick.
   (unless (present-text model)
@@ -2817,7 +2819,14 @@ listing/catalog display name. Exact ids win; unlisted private ids stay legal."
       (names (and catalog (gethash provider catalog)))
       ;; A configured aggregator is not a models.dev provider. Its labels still
       ;; have useful id hints in the catalog, not an implicit provider switch.
-      (when (and catalog (null candidates))
+      ;; A provider neither the catalog names nor the config declares -- a
+      ;; cell's lane, whose ids are its own, and which nothing speaks for
+      ;; before its cell starts -- shares no namespace with the catalog:
+      ;; another provider's label equal to its id is a coincidence, not a sign
+      ;; the id is a label (Poe's poetools/claude-code is named "claude-code",
+      ;; the id of acp's Claude Code agent).
+      (when (and catalog (null candidates)
+                 (or (gethash provider catalog) (configured-provider-entry provider)))
         (maphash (lambda (id entry) (declare (ignore id)) (names entry)) catalog)))
     (when candidates
       (error 'provider-config-error :provider provider :model model
