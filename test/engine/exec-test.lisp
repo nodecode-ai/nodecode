@@ -1096,6 +1096,45 @@ completed. BODY runs with SID bound."
     (is (eq :quiet shallow) "a shallow probe is quiet and clears the hold")
     (is (search "control stack runaway" again) "so the next climb takes its verdict at the limit")))
 
+(deftest a-runaway-verdict-that-names-nothing-waits-for-a-probe-that-does ()
+  ;; On Windows a probe can land in POST-GC, which the allocator runs under the
+  ;; recursion's own MAKE-ARRAY: the walk from there stops at the allocator's
+  ;; C frames and names nothing. Below the hard mark that probe lets its pass
+  ;; go and the next one, landing in the recursion, names it; at the hard mark
+  ;; the stack comes first and the verdict is raised unnamed.
+  (destructuring-bind ((first-pass next-pass) shallow (blind-at-limit) (blind-at-hard))
+      (bt2:join-thread
+       (nlk:spawn "runaway-blind"
+         (let ((nle::*runaway-climb* (list nil))
+               (blind 1))
+           (multiple-value-bind (used span) (nle::control-stack-usage)
+             (declare (ignore used))
+             (let* ((limit (min (* 16 1024 1024) (floor span 2)))
+                    (hard (+ limit (floor (- span limit) 2))))
+               (labels ((probe ()
+                          (handler-case (progn (nle::eval-runaway-thread-probe) :quiet)
+                            (nle::eval-runaway (e) (princ-to-string e))))
+                        (climb (mark passes)
+                          (if (> (nle::control-stack-usage) mark)
+                              (loop repeat passes collect (probe))
+                              (copy-list (climb mark passes)))))
+                 (with-stubbed-fdefinition (nle::runaway-frame-name ()
+                                             (if (plusp blind)
+                                                 (progn (decf blind) nil)
+                                                 (funcall original)))
+                   (list (climb limit 2)
+                         (probe)
+                         (progn (setf blind most-positive-fixnum)
+                                (climb limit 1))
+                         (climb hard 1)))))))))
+    (is (eq :quiet first-pass) "a probe whose walk names nothing lets its pass go")
+    (is (and (stringp next-pass) (search "control stack runaway" next-pass)) "the next pass takes the verdict")
+    (is (and (stringp next-pass) (search "CLIMB" next-pass)) "naming the recursion")
+    (is (eq :quiet shallow) "a shallow probe clears the hold")
+    (is (eq :quiet blind-at-limit) "a walk that stays blind waits past the limit")
+    (is (and (stringp blind-at-hard) (search "control stack runaway" blind-at-hard)) "until the hard mark, where the stack comes first")
+    (is (and (stringp blind-at-hard) (not (search "deepest in" blind-at-hard))) "and the verdict goes unnamed")))
+
 (deftest control-stack-usage-grows-with-depth (labels ((deep (n)
                                                          (if (zerop n)
                                                              (list (nle::control-stack-usage))
