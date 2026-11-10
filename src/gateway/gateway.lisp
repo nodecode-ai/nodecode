@@ -3120,7 +3120,7 @@ default, field by field — and the effort the session picked."
             (or pin-model *model*)
             pin-provider
             pin-model
-            (not (or pin-provider pin-model (default-model-configured-p)))
+            (not (or pin-provider pin-model (default-target-chosen-p)))
             (and session-id (nlk:session-model-effort session-id)))))
 
 (defun gateway-target-json (&key session-id aim-provider aim-model)
@@ -3144,7 +3144,7 @@ AIM-PROVIDER or AIM-MODEL and no session, that target over the gateway's."
      "unconfigured" (if unconfigured t :false)
      ;; What a session that follows the default runs on: a client names it
      ;; beside a pick, so the pick's scope is never a guess.
-     "default" (if (default-model-configured-p)
+     "default" (if (default-target-chosen-p)
                    (json-object "provider" *provider* "model" *model*)
                    :null)
      ;; The session's own pin; NULL when it follows the default.

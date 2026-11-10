@@ -3724,6 +3724,21 @@ request."
     (is (search (format nil "session override: ~a m-x" nle::*provider*)
                 (nle::slash-models-op model '())))))
 
+(deftest a-refused-pin-leaves-the-target-unconfigured-not-the-image-target ()
+  ;; The seed refused the config's pin and the process still holds the image's
+  ;; own target; the pin reads clean by now. The footer named that target as
+  ;; though the file had chosen it: the shell says how to get a model, beside
+  ;; the refusal, and no default is offered.
+  (with-temp-shared-config ("{\"general\":{\"default_model\":{\"provider\":\"openai-completions\",\"model\":\"m-1\"}}}")
+    (with-saved-globals ((nle::*provider* (first nle::+image-target+)) (nle::*model* (second nle::+image-target+))
+                         (nle::*endpoint* nil) (nle::*model-config-refusal* "config refusal: general.default_model: m-1 was refused at boot"))
+      (let ((target (nle::gateway-target-json)))
+        (is (eq t (gethash "unconfigured" target)) "the target is unconfigured")
+        (is (eq :null (gethash "default" target)) "no default is offered")
+        (is (search "m-1 was refused at boot" (gethash "refusal" target)) "and the refusal says why"))
+      (setf nle::*model* "m-1")
+      (is (eq :false (gethash "unconfigured" (nle::gateway-target-json))) "a target the pin moved to is configured"))))
+
 (deftest attached-client-footer-reads-the-gateway-not-its-own-globals (with-temp-gateway (port))
   ;; The reported defect: a second ./nodecode attaches to the running
   ;; organism's gateway, owns no store, and rendered its own unrestored
