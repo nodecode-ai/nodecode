@@ -255,18 +255,35 @@ N; KEYS reach RECORD-EVENT, whose answer this is."
   (is (zerop (insert-statement-reprepares)) "the insert was never re-prepared"))
 
 (deftest two-thousand-appends-under-250ms (with-session-store ("s-perf"))
+  ;; The gate is the appends' CPU time, not the wall clock. Under WAL with
+  ;; synchronous = normal no commit waits on the disk, but each checkpoint
+  ;; syncs the WAL and the database, and how long a sync waits is the disk's
+  ;; and whatever else it has queued: the same 2000 appends take 61 ms of wall
+  ;; on tmpfs and 195 ms on btrfs (105 ms of CPU), pass 500 ms on NTFS, and a
+  ;; full suite's writes still queued for the disk doubled one machine's wall
+  ;; (170 ms alone, 341 ms in `just test'). A wait costs no CPU, so CPU holds
+  ;; the append path to its own work on any disk; the wall is printed beside
+  ;; it. What a wall gate also caught, a commit that syncs, is read off the
+  ;; store instead: the two pragmas that keep a commit off the disk.
+  ;;
   ;; The window times the appends alone: a nursery that earlier tests left
   ;; nearly full would bill their collection, some 60 ms, to it.
+  (let ((store (nlk::require-open-store)))
+    (is (equalp "wal" (sqlite:execute-single store "pragma journal_mode")) "the store journals to a WAL")
+    (is (eql 1 (sqlite:execute-single store "pragma synchronous")) "a commit is synchronous = normal: it waits on no sync of its own"))
   (sb-ext:gc)
-  (let ((start (get-internal-real-time)))
-    (dotimes (i 2000)
-      (record-probe "s-perf" i))
-    (let* ((end (get-internal-real-time))
-           (elapsed-ms (/ (* 1000.0 (- end start)) internal-time-units-per-second)))
-      (format t "       append: 2000 events in ~,1fms, ~,3fms each (gate ~,1fms)~%"
-              elapsed-ms (/ elapsed-ms 2000) 250.0)
-      (is (< elapsed-ms 250.0)
-          (format nil "2000 appends took ~,1fms (gate: <250ms)" elapsed-ms)))))
+  (flet ((ms (from to) (/ (* 1000.0 (- to from)) internal-time-units-per-second)))
+    (let ((cpu (get-internal-run-time))
+          (wall (get-internal-real-time)))
+      (dotimes (i 2000)
+        (record-probe "s-perf" i))
+      (let ((cpu-ms (ms cpu (get-internal-run-time)))
+            (wall-ms (ms wall (get-internal-real-time))))
+        (format t "       append: 2000 events in ~,1fms of CPU, ~,3fms each, ~,1fms of wall (gate ~,1fms of CPU)~%"
+                cpu-ms (/ cpu-ms 2000) wall-ms 250.0)
+        (is (< cpu-ms 250.0)
+            (format nil "2000 appends took ~,1fms of CPU (gate: <250ms), ~,1fms of wall"
+                    cpu-ms wall-ms))))))
 
 (deftest paging-two-thousand-under-50ms (with-session-store ("s-perf"))
   (dotimes (i 2000)
