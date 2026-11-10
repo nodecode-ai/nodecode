@@ -594,6 +594,17 @@ shell is Git's bash, started past its redirector with Git's PATH."
        (,(if setf 'with-saved-globals 'let) ((,place ,path))
         ,@body))))
 
+(defparameter *fixture-git-config* '("-c" "maintenance.auto=false" "-c" "gc.auto=0")
+  "The `-c' pairs every git a test runs on its own fixture carries: no auto
+maintenance and no auto gc. A commit starts `git maintenance run --auto
+--detach', and git 2.56's detached child holds objects/maintenance.lock past
+the commit's exit: a test that deletes its repository right after can lose
+that race (`Could not delete the file .../maintenance.lock').")
+
+(defun git-trace-starts-maintenance-p (trace)
+  "Whether the GIT_TRACE2 log at TRACE shows a git starting `maintenance run'."
+  (and (probe-file trace) (search "maintenance run" (uiop:read-file-string trace)) t))
+
 (defmacro with-env-var ((name value) &body body &aux (saved (gensym "SAVED")) (new (gensym "VALUE")))
   "Run BODY with the environment variable NAME set to VALUE, or unset when
 VALUE is NIL, and put back what it was on unwind."
