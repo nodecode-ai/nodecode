@@ -32,6 +32,29 @@ nodecode 0.1.7+2629050e1
 The version comes first and the build label, the commit the release was built from, follows the `+`. An installed build moves to a new release by itself, between turns. `nodecode update` moves it now. See [Updates](updates.mdx).
 
 {/* source: tools/release/publish.sh */}
+## 0.1.14
+
+Linux, macOS and Windows. Changes since 0.1.13 (`98dd6dc80`).
+
+- `/models` lists Anthropic's models from Anthropic's own Models API, so a model it ships today is offered before any catalog carries it.
+- `/models` finds a running Ollama with no config entry and lists its models under Local.
+- A provider's `models[]` entry can declare its effort ladder with `reasoning_options`, for a gateway that refuses a thinking budget.
+- Web search can use DeepSeek's own search, with a DeepSeek key.
+- `@` finds workspace files by fuzzy match, and offers files written during the session.
+- The draft marks text with Shift and the arrows, Home or End (Ctrl for words), or a drag. Typing or pasting replaces the mark, and it copies.
+- A drag over your own prompt selects and copies it. A click still opens the session tree.
+- A written file holding a Rust closure such as `spawn(|| 1)` no longer freezes the screen.
+- After a model or effort change, the footer no longer stays on `setting up…`.
+- An account with no plan or credit to meter reads Unlimited ∞ in the footer, `/usage` and at sign-in.
+- A kept variable holding a process, thread, socket or open stream keeps its name alone, so a boot no longer starts that process again.
+- A snippet can no longer delete or rename a package nodecode runs on. That took down every session until a restart.
+- A home with many generations boots faster: the boot line reads the newest one first.
+- `config-set` and `config-get` refuse a dotted name such as `"goal.check_seconds"`, which nothing reads. `/doctor` and the cell start name such a member and the nesting it meant.
+- `restart-cells` takes the name `/cells` shows and says when a cell is off. A bare `restart-cells` starts no cell `/cells` turned off.
+- A channel card whose picture Discord refuses to upload still updates its words.
+- `nck:answer-file` refuses a file too large for the answer, so the turn can post it on its own.
+
+{/* source: tools/release/publish.sh */}
 ## 0.1.13
 
 Linux, macOS and Windows. Changes since 0.1.12 (`e105154bc`).
