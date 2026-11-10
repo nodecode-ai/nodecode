@@ -6010,6 +6010,23 @@ and the DELIVERY its handler declares."
         (is (notany (lambda (id) (rows-carry-p (format nil "Step ~a" id) rows)) '("s1" "s2" "s3")) "a turn no answer followed folds too, its call cut off with it")
         (is (not (rows-carry-p "Step c1" rows)) "as does the answered one")))))
 
+(deftest an-opened-run-lists-a-cell-tools-call-by-what-it-did ()
+  ;; A Spotify search listed as `spotify_search' in the Standard view: the
+  ;; name the model calls the tool by, and not what it searched.
+  (let ((nle::*tool-detail* :standard) (nle::*expanded-tool-call* '(:process "live")) (state nil))
+    (setf state (nle::ingest-tool-call-fact state "s1" "spotify_search" "{\"query\":\"Discovery Daft Punk\",\"type\":\"album\"}"
+                                            :turn-id "live")
+          state (nle::ingest-tool-result-fact state "s1" "spotify_search" "{\"success\":true}" :turn-id "live")
+          state (nle::ingest-tool-call-fact state "s2" "spotify_playback" "{\"action\":\"play\",\"context_uri\":\"spotify:album:2noRn\"}"
+                                            :turn-id "live")
+          state (nle::ingest-tool-result-fact state "s2" "spotify_playback" "{\"success\":true}" :turn-id "live"))
+    (let ((rows (mapcan (lambda (block) (copy-list (nle::display-block-plain-lines block)))
+                        (nle:project-state state :width 100))))
+      (is (rows-carry-p "Ran 2 commands" rows))
+      (is (rows-carry-p "Spotify search 'Discovery Daft Punk'" rows) "a search by what it searched")
+      (is (rows-carry-p "Spotify playback: play spotify:album:2noRn" rows) "an action by what it did")
+      (is (not (rows-carry-p "spotify_" rows)) "never by the name the model calls the tool by"))))
+
 (deftest a-runs-arrow-says-what-it-lists-and-a-click-folds-or-opens-it ()
   ;; `▸ Ran 11 commands' over the calls it listed read as shut; ▾ is a run
   ;; listing its whole trail, and a click folds it, a live one too. A run

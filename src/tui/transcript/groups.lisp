@@ -542,7 +542,11 @@ Too wide for its row, the line gives way inside, never its end (FITTED-TAIL-LLIN
            (append-status-text line (if (row-load-errors row) "error" row.tool-status)
                                (tool-failure-text row) (row-exit-document row))
            line))
-       (nlk:one-line (or (tool-summary-words row) (json-value row.tool-name :text) "…"))
+       ;; A cell's own tool reads by what it did: `Spotify search 'Discovery'',
+       ;; where the name the model calls it by said only `spotify_search'.
+       (nlk:one-line (or (tool-summary-words row)
+                         (tool-arguments-words (json-value row.tool-name :text) row.tool-args)
+                         (json-value row.tool-name :text) "…"))
        (kept-files-text receipts) width))))
 
 (defun paragraph-start (text end &aux (line-end end))

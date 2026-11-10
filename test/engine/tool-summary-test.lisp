@@ -218,6 +218,27 @@
     ("browser_click" "{}" :default "a tool with no words keeps the pulse")
     (nil nil :default "and so does a call not yet named")))
 
+(deftest a-cell-tool-reads-as-its-name-and-what-its-arguments-say ()
+  ;; A cell's own tool has no family: an opened run listed `spotify_search'
+  ;; and `spotify_playback', the names the model calls them by, and nothing
+  ;; said what the call searched or played.
+  (is-each (nle::tool-arguments-words)
+    ("spotify_search" "{\"query\":\"Discovery Daft Punk\",\"type\":\"album\",\"limit\":3}"
+     "Spotify search 'Discovery Daft Punk'" "a query is the subject, quoted, ahead of the rest")
+    ("spotify_playback" "{\"action\":\"play\",\"context_uri\":\"spotify:album:2noRn2Aes5\"}"
+     "Spotify playback: play spotify:album:2noRn2Aes5" "an action in words, then the first text")
+    ("spotify_playback" "{\"action\":\"get_currently_playing\"}"
+     "Spotify playback: get currently playing" "an action alone")
+    ("spotify_playback" "{\"action\":\"set_volume\",\"volume_percent\":40}"
+     "Spotify playback: set volume 40" "a number when no text says more")
+    ("spotify_queue" "{\"action\":\"add\",\"uris\":[\"spotify:track:a\",\"spotify:track:b\"]}"
+     "Spotify queue: add spotify:track:a +1" "a list by its first and how many more")
+    ("browser_click" "{}" "Browser click" "no arguments: the name as words")
+    ("spotify_search" "{\"query\":\"Disc" "Spotify search" "arguments still streaming: the name until they are whole")
+    ("eval" "{\"form\":\"(+ 1 2)\"}" nil "eval has words of its own")
+    ("bash" "{\"command\":\"ls\"}" nil "and so does a shell tool")
+    (nil "{}" nil "and a call not yet named")))
+
 (deftest a-shell-command-no-family-names-runs-as-its-line ()
   ;; An echo, a cd, a test name nothing the split reads, lists or searches,
   ;; but a shell tool's call still ran a command: it runs as `running echo
