@@ -1030,7 +1030,10 @@ operator's first frame."
                       (if (nlt:wait-for-frames-past 0 1000)
                           (progn (nlk:note-boot-phase "exec-image")
                                  (nlk::hand-over-to-image image))
-                          "the frame never landed")))))))
+                          "the frame never landed")))
+        ;; A cell words the calls it runs with hooks its start lays, and its
+        ;; start runs in the organism's process: this one lays them itself.
+        (show-cells)))))
 
 (defun handover-give-back ()
   "Switch off what this image inherited and never took over: written when a

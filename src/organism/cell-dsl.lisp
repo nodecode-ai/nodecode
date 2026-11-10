@@ -125,6 +125,56 @@ that signals does not strand the rest."
              key (loop for (name nil) on settings by #'cddr collect name)))
     value))
 
+;;; --- the words a shell puts on a cell's calls ---------------------------------
+;;;
+;;; A shell runs in a process of its own beside the organism
+;;; (ATTACH-OR-OWN-ORGANISM): it loads the folder, so every cell's code is
+;;; there, and it starts none of them -- the organism does. A cell's hook on a
+;;; function that words a call was then laid where the organism words its
+;;; rows and digests, never where the shell draws: an acp call read as the
+;;; command it ran in a browser and as `acp' in the shell. So the shell lays
+;;; those hooks itself, from the declaration, and nothing else of the cell: no
+;;; tool, no worker, no settings.
+
+(defparameter *shell-points*
+  '(tool-arguments-activity tool-activity-verb tool-result-shown)
+  "The functions a shell words a call with, from the call alone: a cell's
+:hook on one is laid in the shell too (SHOW-CELLS), not only where it starts.")
+
+(defvar *cell-hooks* (make-hash-table :test 'equal :synchronized t)
+  "Each declared cell's :hook clauses, by its key: (PATH . THUNKS), PATH its
+section's, each thunk answering (values POINT FN) as the clause evaluates them.")
+
+(defun note-cell-hooks (key path thunks)
+  "Keep the cell KEY's section PATH and :hook THUNKS for SHOW-CELL."
+  (setf (gethash key *cell-hooks*) (cons path thunks)))
+
+(defun show-cell (key config)
+  "Lay the cell KEY's :hook clauses whose point is one of *SHELL-POINTS*, under
+KEY, unless CONFIG vetoes its section; nothing else of it. => the points laid."
+  (destructuring-bind (&optional path &rest thunks) (gethash key *cell-hooks*)
+    (when (and path (section-enabled-p (section-table config path)))
+      (loop for thunk in thunks
+            for (point fn) = (multiple-value-list (funcall thunk))
+            when (member point *shell-points*)
+              do (hook point key fn)
+              and collect point))))
+
+(defun show-cells (&optional (config (read-shared-config)))
+  "SHOW-CELL every loaded cell whose folder is on (NLK:CELL-FOLDER-ON-P),
+starting none: a shell's pass over the folder it loaded. A cell whose hook
+refuses is said on *ERROR-OUTPUT* and stepped over. => the keys that laid one."
+  (loop for cell in (nlk:cells)
+        when (and (eq :loaded (nlk::cell-state cell)) (nlk:cell-folder-on-p cell))
+          append (loop for system in (nlk::cell-systems cell)
+                       for key = (string-downcase system)
+                       when (handler-case (show-cell key config)
+                              (error (condition)
+                                (format *error-output* "~&cell ~a: its calls' words not laid in the shell: ~a~%"
+                                        (nlk::cell-name cell) condition)
+                                nil))
+                         collect key)))
+
 (defmacro define-cell (name &body clauses)
   "Declare the cell NAME: its config section, the typed values it runs
 on, everything it contributes, and — derived from that, not restated — how
@@ -168,7 +218,8 @@ all of it comes back off."
   ;;       (SET-HELP-TOPIC); stop takes the topic off.
   ;;   (:hook NAME FN)   HOOK on a point (:tool, :frame, :credential) or a
   ;;       function name,
-  ;;       under the cell's key; stop unhooks it.
+  ;;       under the cell's key; stop unhooks it. On one of *SHELL-POINTS*
+  ;;       a shell lays it too, starting nothing (SHOW-CELLS).
   ;;   (:route PATH FN &key public)   ROUTE: PATH answered on the gateway's
   ;;       own port to the operator's token, to anyone under PUBLIC, a PATH
   ;;       ending in / everything under it; stop takes it back.
@@ -191,6 +242,7 @@ all of it comes back off."
          (start-cell (intern "START-CELL" package))
          (stop-cell (intern "STOP-CELL" package))
          (settings (gensym "SETTINGS"))
+         (hooks '())
          (path nil)
          (section nil)
          (custom nil)
@@ -234,6 +286,7 @@ all of it comes back off."
                            `(set-help-topic ,it nil))))
             (:hook
              (destructuring-bind (point fn &aux (it (gensym "POINT"))) arguments
+               (push `(lambda () (values ,point ,fn)) hooks)
                (contribute `((,it ,point)) `(hook ,it ,key ,fn) `(unhook ,it ,key))))
             (:route
              (destructuring-bind (at fn &key public &aux (it (gensym "PATH"))) arguments
@@ -247,6 +300,8 @@ all of it comes back off."
        ;; load, not compile: a DEFPACKAGE in the same file re-runs at load, and
        ;; must not find a symbol exported that it does not list.
        (export ',start-cell ,(package-name package))
+       ;; What a shell lays of it, in a process that starts nothing (SHOW-CELLS).
+       (note-cell-hooks ,key ',path (list ,@(reverse hooks)))
        (defvar ,variable nil
          "The settings the cell runs on, or NIL while it is not started.")
        (defvar ,stop-variable nil

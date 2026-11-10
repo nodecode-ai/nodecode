@@ -516,7 +516,8 @@ Too wide for its row, the line gives way inside, never its end (FITTED-TAIL-LLIN
   ;; ground the ember warms (EMBER-OVERLAY).
   (memoized (tail-llines row)
     (width row.tool-name row.tool-args (length (or row.tool-args "")) row.tool-status row.tool-exit-code
-     row.metadata row.error-p (row-load-errors row) row.text row.text-rev (first receipts) (length receipts))
+     row.metadata row.error-p (row-load-errors row) row.text row.text-rev (first receipts) (length receipts)
+     *hooks*)
     ;; Opened, a run lists these lines where it showed Eval and Mutate cards
     ;; a receipt names its file after its comment, and a call
     ;; that changed files counts the lines.
@@ -939,7 +940,8 @@ the state's live execs, shows what it has written under it."
                          listing))
           (compose)
           (memoized (tool-group-block group) (title width *palette* *color-profile* hover disclosure
-                                                    (and listing *hover-row*) (and listing *expanded-tool-call*))
+                                                    (and listing *hover-row*) (and listing *expanded-tool-call*)
+                                                    *hooks*)
             (compose))))))
 
 (defun project-state (state &key (width 80) start end prompt)

@@ -554,7 +554,8 @@ for a row that is no tool call, or a tool that module has no words for."
   ;; the change signal.
   (when (eq :tool-call row.kind)
     (let ((name row.tool-name) (args row.tool-args) (metadata row.metadata) (error-p row.error-p))
-      (memoized (row-activity-cache row) (name args metadata error-p)
+      ;; The hooks too: the folder's (SHOW-CELLS) can land after a row is worded.
+      (memoized (row-activity-cache row) (name args metadata error-p *hooks*)
         (tool-arguments-activity name args :metadata metadata :error-p error-p)))))
 
 (nlk:define-side-table row-load-errors (:weakness :key)
