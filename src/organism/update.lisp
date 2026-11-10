@@ -309,11 +309,68 @@ verified, probed where it lies; `current' untouched. => its directory."
 this runs. Nothing restarts."
   (run-installer "link" version "linking"))
 
+;;; --- the release this image reads itself from -------------------------------
+;;;
+;;; A hot update moves this image's own tree -- *SOURCE-ROOT*, what every
+;;; later release is read against -- into the release it took, while the
+;;; process still runs from the build it launched. The installer removes
+;;; every older release nothing runs from or holds open (install.sh
+;;; prune_releases, install.ps1 Remove-OldReleases), so that release read as
+;;; unused: on a machine where another home installs or links one, it went
+;;; under the image, and every update after it died at its first read of
+;;; the tree, unsaid, for days. Held open -- its executable, as a warm image
+;;; holds its origin (HOLD-ORIGIN) -- it reads as in use while the tree is
+;;; this image's; removed anyway, it is laid out again before a release is
+;;; read against it.
+
+(defvar *source-hold* nil
+  "(PATH . STREAM): the executable of the release this image's own tree lies
+in, open while it is held, or NIL.")
+
+(defun source-release-label (&optional (root nlk:*source-root*))
+  "The release whose folder under *RELEASE-DIRECTORY* holds ROOT as its
+src/src/, or NIL: a checkout's tree, or a build outside the installer's layout."
+  (let* ((directory (and root (pathname-directory root)))
+         (label (car (last directory 3)))
+         (releases (ignore-errors (truename *release-directory*))))
+    (and releases (release-label-p label)
+         (equal (last directory 2) '("src" "src"))
+         (equal (namestring (merge-pathnames (format nil "~a/src/src/" label) releases))
+                (namestring root))
+         label)))
+
+(defun hold-source-release (&optional (root nlk:*source-root*))
+  "Hold open the executable of the release ROOT lies in, letting go of the
+one held before; a ROOT no release holds lets go of it. => the stream, or NIL."
+  (let* ((label (source-release-label root))
+         (path (and label (probe-file (merge-pathnames (if (eq (nlk:platform) :windows) "nodecode.exe" "nodecode")
+                                                         (release-version-directory label))))))
+    (unless (and path *source-hold* (equal (namestring path) (namestring (car *source-hold*))))
+      (when *source-hold* (ignore-errors (close (cdr *source-hold*))))
+      (setf *source-hold*
+            (when-let (stream (and path (ignore-errors (open path :element-type '(unsigned-byte 8)))))
+              (cons path stream))))
+    (cdr *source-hold*)))
+
+(defun own-source-tree (&aux (root nlk:*source-root*))
+  "This image's own tree, held (HOLD-SOURCE-RELEASE): *SOURCE-ROOT*, laid out
+again from the release host when it was a release's and is gone. NIL when
+the image carries none; refuses (UPGRADE-REFUSAL) when it is gone for good."
+  (when root
+    (unless (probe-file root)
+      (let ((label (source-release-label root)))
+        (unless label
+          (nlk::upgrade-fail "this image's own source tree, ~a, is gone, so no release can be read against it"
+                             (uiop:native-namestring root)))
+        (stage-release label)))
+    (hold-source-release root)
+    root))
+
 ;;; --- the plans -------------------------------------------------------------
 
 (defun release-plans-at (directory &aux (core-new (merge-pathnames "src/src/" directory))
                                         (cells-new (merge-pathnames "src/cells/" directory))
-                                        (core-old nlk:*source-root*)
+                                        (core-old (own-source-tree))
                                         (cells-old (ignore-errors (nlk::shipped-cells-directory))))
   "What the release laid out at DIRECTORY means for this image: the core
 tree against this image's own, and the shipped cells tree when both sides
@@ -645,6 +702,7 @@ layer's overrides the release now stands over."
                                     :allow-held allow-held
                                     :check (lambda () (providers-lost serving))))
              :idle idle)
+          (hold-source-release)
           (values count files nil (set-difference (stale-overrides) stale :test #'string=)))
       (nlk:upgrade-refusal (refusal) (values 0 0 (nlk:upgrade-refusal-detail refusal) nil)))))
 
@@ -708,8 +766,13 @@ else the update, applied in `auto' mode, staged and said in `ask' mode."
              (update-note :info "~a is out; this build, ~a, is ~:[newer~;one no channel published~], ~
                                  so it stays: ~:[`nodecode update ~a' goes back to it and holds there~;`nodecode update' takes ~a~]"
                           latest (effective-label) (eq way :local) (eq way :local) latest))
+            ;; Any other failure is said as well: the poller and the feed
+            ;; both ask through IGNORE-ERRORS, and a gateway whose every
+            ;; update failed that way sat on one build for days, its board
+            ;; and its journal saying nothing.
             (t (handler-case (upgrade-organism :version latest :apply (string= mode "auto") :idle t)
-                 (nlk:upgrade-refusal (condition) (update-note :warning "~a" condition))))))))
+                 (nlk:upgrade-refusal (condition) (update-note :warning "~a" condition))
+                 (error (condition) (update-note :warning "~a could not be taken: ~a" latest condition))))))))
 
 ;;; --- the release feed -------------------------------------------------------
 ;;;
@@ -1176,6 +1239,7 @@ can. => the line the shell shows, or NIL when there is nothing to say."
                (verdict (plans-verdict plans))
                ((count files) (nlk::converge plans :version version :source-root root
                                                    :allow-held (eq verdict :restart))))
+          (hold-source-release)
           (ecase verdict
             (:same "same definitions; now reading itself from the new tree")
             (:hot (format nil "~d definition~:p across ~d file~:p now live" count files))
