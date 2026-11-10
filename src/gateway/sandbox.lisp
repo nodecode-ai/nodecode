@@ -3,33 +3,33 @@
 ;;;;
 ;;;; SPDX-License-Identifier: MIT
 ;;;;
-;;;; The jail is Anthropic's sandbox-runtime (`srt': bubblewrap, seccomp and a
-;;;; domain-allowlisting proxy on Linux). The shell cannot run inside it --
-;;;; bubblewrap gives the jail no controlling terminal -- so a sandboxed
-;;;; launch keeps the shell on the host, pristine (the binary alone, so no
-;;;; code the jailed organism writes into the layer runs outside the jail),
-;;;; and fronts a `serve' that srt wraps (FRONT-ORGANISM). The jail has its own
-;;;; network namespace: the gateway inside it binds a port the launcher chose
-;;;; (NODECODE_GATEWAY_PORT), the shell listens on that same loopback port on
-;;;; the host and hands the listening socket to the jail as its stdout, and a
-;;;; socat inside accepts on it and forwards each connection to the gateway --
-;;;; so the shell's ordinary attach, by the port the store's holder sidecar
-;;;; names, reaches the jailed gateway. The jail never makes a unix socket of
-;;;; its own: srt's seccomp filter stays on and refuses every one, and the
-;;;; jail's /tmp is a private one, so no socket of the host's -- a tmux
-;;;; server's, an agent's, a desktop's -- is a way out of it.
-;;;; Every secret file under secrets/ (providers.<id>.api_key, Fork B's
-;;;; convention) is masked: inside the jail the file reads as a sentinel, and
-;;;; the proxy swaps the real key back only on egress to that provider's host.
+;;;; nodecode jails the organism itself, with no runtime of anyone else's:
+;;;; on Linux bubblewrap and a seccomp filter built here (sandbox-linux.lisp).
+;;;; The shell cannot run inside the jail -- the jail has no controlling
+;;;; terminal -- so a sandboxed launch keeps the shell on the host, pristine
+;;;; (the binary alone, so no code the jailed organism writes into the layer
+;;;; runs outside the jail), and fronts a `serve' it runs jailed
+;;;; (FRONT-ORGANISM). The jail has its own network namespace: the gateway
+;;;; inside it binds a port the launcher chose (NODECODE_GATEWAY_PORT) on the
+;;;; jail's loopback, the shell listens on that same port on the host's and
+;;;; hands the listening socket in, and the jailed organism carries each
+;;;; connection on it to its gateway -- so the shell's ordinary attach, by
+;;;; the port the store's holder sidecar names, reaches the jailed gateway.
+;;;; The way out is the egress proxy, outside the jail: the jail hands the
+;;;; launcher a listener on its own loopback and the launcher answers on it.
+;;;; The home's keys (auth.json, secrets/) are not in the jail at all; the
+;;;; proxy outside adds them on a provider's own calls. The jail makes no
+;;;; unix socket, and its /tmp is a private one, so no socket of the host's --
+;;;; a tmux server's, an agent's, a desktop's -- is a way out of it.
 ;;;;
 ;;;; What the jail writes must not run outside it later. The home's layer and
 ;;;; cells are the jail's to write, so a home that has run sandboxed carries a
 ;;;; mark (<home>/sandbox/jailed.json, written outside the jail and
-;;;; write-denied inside it): a launch that would load the folder unjailed
+;;;; read-only inside it): a launch that would load the folder unjailed
 ;;;; refuses until `nodecode sandbox review' has been read and `release --yes'
 ;;;; lifts it. What the launcher itself reads -- config.jsonc (the providers,
-;;;; hence the hosts a real key is injected toward), sandbox.jsonc, secrets/ --
-;;;; is write-denied in the jail, and the jail keeps a cache of its own, so the
+;;;; hence the hosts a real key is added toward), sandbox.jsonc -- is
+;;;; read-only in the jail, and the jail keeps a cache of its own, so the
 ;;;; catalog and the warm images every launch on this machine reads are not
 ;;;; its to write.
 
@@ -48,29 +48,14 @@ models catalog, and the cells repository.")
   "What a jailed organism never reads: other agents' homes and credential
 stores, and the sockets that are a way out of a jail (docker, X11).")
 
-(defparameter +sandbox-settings-name+ "srt-settings.json"
-  "The generated srt settings file's name under <home>/sandbox/.")
-
 (defun sandbox-home-path (home relative)
   "RELATIVE under HOME as a native namestring."
   (uiop:native-namestring (merge-pathnames relative (uiop:ensure-directory-pathname home))))
 
-(defun sandbox-srt-temporary-directory (home)
-  "Where srt keeps what it makes for one jail of HOME -- its proxy sockets and
-the stand-ins it masks secrets with: srt's TMPDIR, write-denied inside the
-jail. Not /tmp, which the jail sees as an empty one of its own and where
-srt's sockets would be hidden from it with the rest."
-  (merge-pathnames "sandbox/srt/" (uiop:ensure-directory-pathname home)))
-
 (defun sandbox-jail-temporary-directory (home)
-  "The temporary directory srt hands the jail as TMPDIR (CLAUDE_CODE_TMPDIR):
-under HOME, the jail's own, never shared with another sandbox on the host."
+  "The jail's TMPDIR: under HOME, on disk, the jail's own, never shared
+with another sandbox on the host."
   (merge-pathnames "sandbox/tmp/" (uiop:ensure-directory-pathname home)))
-
-(defparameter +sandbox-socket-path-room+ 72
-  "How long srt's temporary directory's name may be: srt names its proxy
-sockets claude-socks-<16 hex>.sock under it, and a unix socket's whole path
-fits in 107 bytes.")
 
 (defun sandbox-expand (entry)
   "ENTRY with a leading ~/ expanded to the user's home directory."
@@ -87,8 +72,10 @@ must not reach: XDG_RUNTIME_DIR, else /run/user/<uid>."
 
 (defun sandbox-policy (home)
   "The operator's additions from <HOME>/sandbox.jsonc as a plist --
-(:allowed-domains LIST :deny-read LIST :allow-read LIST :allow-write LIST) -- or NIL when
-there is no file; a file that does not parse is an error naming it."
+(:allowed-domains LIST :deny-read LIST :allow-read LIST :allow-write LIST
+:network WORD) -- or NIL when there is no file; a file that does not parse is
+an error naming it. :NETWORK is \"internet\" when the jail may reach every
+public host, else NIL: only the hosts allowed."
   (let ((path (merge-pathnames "sandbox.jsonc" (uiop:ensure-directory-pathname home))))
     (when (probe-file path)
       (let ((object (handler-case (nlk:decode-json (nlk::normalize-jsonc (uiop:read-file-string path)))
@@ -97,7 +84,9 @@ there is no file; a file that does not parse is an error naming it."
           (list :allowed-domains (strings "allowed_domains")
                 :deny-read (strings "deny_read")
                 :allow-read (strings "allow_read")
-                :allow-write (strings "allow_write")))))))
+                :allow-write (strings "allow_write")
+                :network (let ((word (ignore-errors (json-value object :text "network"))))
+                           (and word (string-equal (nlk:trimmed word) "internet") "internet"))))))))
 
 (defparameter +sandbox-home-read+
   '("~/.gitconfig" "~/.config/git/config" "~/.config/git/ignore")
@@ -131,84 +120,6 @@ names, and the account's own (its passwd entry) when $HOME names another."
                         (sb-posix:passwd-dir (sb-posix:getpwuid (sb-posix:getuid))))))))
    :test #'string= :from-end t))
 
-(defun sandbox-settings (&key home folder binary srt-dir policy secret-files provider-hosts
-                              hidden (deny-home t)
-                              (exists #'probe-file) (run-directory (sandbox-run-directory)))
-  "The srt settings object for a jail around HOME's organism working in
-FOLDER: a JSON object ready for NLK:ENCODE-JSON-OBJECT. BINARY is the
-executable the jail runs and SRT-DIR where srt is installed (both
-write-denied, so nothing inside can rewrite what runs it, and read-allowed);
-POLICY the operator's additions (SANDBOX-POLICY); SECRET-FILES an alist of
-(PATH . HOST), each masked and injected only toward HOST; PROVIDER-HOSTS the
-hosts the configured providers are served at; HIDDEN the files of HOME it
-must not read (SANDBOX-HIDDEN-FILES). With DENY-HOME the user's whole home
-directory is read-denied and only the folder, HOME, the cache, the binary's
-and srt's trees and +SANDBOX-HOME-READ+ read back. EXISTS decides which
-entries are mounted (srt refuses a path that is not there)."
-  (let* ((home-dir (uiop:native-namestring (uiop:ensure-directory-pathname home)))
-         (folder-dir (uiop:native-namestring (uiop:ensure-directory-pathname folder)))
-         (binary-dir (and binary (uiop:native-namestring (uiop:pathname-directory-pathname binary))))
-         (string-list (lambda (items) (coerce (remove-duplicates (remove nil items) :test #'string= :from-end t) 'vector)))
-         (present (lambda (paths) (remove-if-not (lambda (path) (and path (ignore-errors (funcall exists path)))) paths)))
-         (domains (funcall string-list (append provider-hosts +sandbox-default-domains+
-                                               (getf policy :allowed-domains))))
-         (deny-read (funcall string-list
-                             (funcall present
-                                      (append (and deny-home (sandbox-user-homes))
-                                              ;; the host's /tmp, whose sockets (tmux, agents, a
-                                              ;; desktop's input) are ways out: the jail's /tmp is
-                                              ;; an empty one of its own
-                                              (list "/tmp")
-                                              (mapcar #'sandbox-expand +sandbox-default-deny-read+)
-                                              (and run-directory (list run-directory))
-                                              hidden
-                                              (mapcar #'sandbox-expand (getf policy :deny-read))))))
-         (allow-read (funcall string-list
-                              (and deny-home
-                                   (funcall present
-                                            (append (list folder-dir home-dir binary-dir
-                                                          (and srt-dir (uiop:native-namestring srt-dir)))
-                                                    (mapcar #'sandbox-expand +sandbox-home-read+)
-                                                    (mapcar #'sandbox-expand (getf policy :allow-read))
-                                                    (mapcar #'sandbox-expand (getf policy :allow-write)))))))
-         (allow-write (funcall string-list
-                               (append (list folder-dir home-dir)
-                                       (mapcar #'sandbox-expand (getf policy :allow-write)))))
-         (deny-write (funcall string-list
-                              (list (sandbox-home-path home "sandbox.jsonc")
-                                    (sandbox-home-path home "config.jsonc")
-                                    (sandbox-home-path home (format nil "sandbox/~a" +sandbox-settings-name+))
-                                    (sandbox-home-path home (format nil "sandbox/~a" +sandbox-mark-name+))
-                                    ;; srt's own temporary directory: its proxy sockets
-                                    ;; and the stand-ins it masks secrets with
-                                    (uiop:native-namestring (sandbox-srt-temporary-directory home))
-                                    (sandbox-home-path home "secrets/")
-                                    (and binary (uiop:native-namestring binary))
-                                    (and srt-dir (uiop:native-namestring srt-dir)))))
-         (masks (loop for (path . host) in secret-files
-                      ;; Only the key's own span is masked: a whole-file mask
-                      ;; carries the file's trailing newline back into the
-                      ;; header it is substituted into, which the proxy then
-                      ;; refuses to forward. No key found: the file is denied.
-                      collect (nlk:make-json-object "path" (uiop:native-namestring path)
-                                                    "mode" "mask"
-                                                    "extract" "^\\s*(\\S+)"
-                                                    "onExtractNoMatch" "deny"
-                                                    "injectHosts" (vector host))))
-         ;; No allowAllUnixSockets: it would turn srt's seccomp filter off, and
-         ;; with it the jail could reach every unix socket it can see.
-         (network (nlk:make-json-object "allowedDomains" domains
-                                        "deniedDomains" (vector))))
-    (when masks
-      (setf (gethash "tlsTerminate" network) (nlk:make-json-object)))
-    (nlk:make-json-object
-     "network" network
-     "filesystem" (nlk:make-json-object "denyRead" deny-read
-                                        "allowRead" allow-read
-                                        "allowWrite" allow-write
-                                        "denyWrite" deny-write)
-     "credentials" (nlk:make-json-object "files" (coerce masks 'vector)))))
-
 (defun sandbox-provider-hosts ()
   "The hosts the configured providers are served at, loopback and other
 machines of the operator's own left out (they are not reachable from the
@@ -221,47 +132,17 @@ jail anyway)."
           (pushnew host hosts :test #'string-equal))))
     (sort hosts #'string<)))
 
-(defun sandbox-secret-files ()
-  "An alist of (PATH . HOST): every providers.<id>.api_key under the secrets
-directory whose provider has a host to inject it toward."
-  (loop for path in (ignore-errors (directory (merge-pathnames "providers.*.api_key" *secrets-directory*)))
-        for name = (file-namestring path)
-        for id = (and (> (length name) (length "providers..api_key"))
-                      (subseq name (length "providers.") (- (length name) (length ".api_key"))))
-        for base = (and id (ignore-errors (provider-base-url id)))
-        for host = (and base (ignore-errors (quri:uri-host (quri:uri base))))
-        when (and host (plusp (length host)))
-          collect (cons path host)))
-
-(defun srt-program ()
-  "The srt executable, as the namestring the jail's argv carries:
-$NODECODE_SRT, else `srt' on PATH; NIL when neither."
-  ;; The PATH lookup answers a truename -- npm's link resolved to dist/cli.js
-  ;; -- and a pathname in an argv is refused by the spawn.
-  (let ((named (nlk:trimmed (or (uiop:getenv "NODECODE_SRT") ""))))
-    (cond ((plusp (length named)) (and (probe-file named) named))
-          (t (when-let (found (nlk::executable-on-path "srt"))
-               (uiop:native-namestring found))))))
-
 (defun sandbox-ensure-launcher-files (home)
   "Make HOME's sandbox.jsonc and config.jsonc, empty, when either is absent:
 the launcher reads both (the policy; the providers, hence the hosts a real
-key is injected toward), so the jail must never be the one to create them.
-srt write-denies an absent path by binding a placeholder over it, which the
-jailed organism could not read its config through. => the files made."
+key is added toward), so the jail must never be the one to create them:
+the jail sees each read-only, which a path that is not there cannot be.
+=> the files made."
   (loop for name in '("sandbox.jsonc" "config.jsonc")
         for path = (merge-pathnames name (uiop:ensure-directory-pathname home))
         unless (probe-file path)
           do (nlk::write-file-atomically path (format nil "{}~%") :mode #o600 :directory-mode #o700)
           and collect path))
-
-(defun sandbox-unsplit-keys (&optional (auth-path *auth-file-path*))
-  "The provider ids auth.json still holds an API key for: keys a jail could
-only be given whole, so --sandbox asks for `nodecode secrets split' first."
-  (let ((auth (ignore-errors (read-auth-file auth-path))))
-    (and (hash-table-p auth)
-         (let ((keys (json-value auth :object "api_keys")))
-           (and (hash-table-p keys) (sort (alexandria:hash-table-keys keys) #'string<))))))
 
 ;;; --- the mark: a home that has run sandboxed ----------------------------------
 
@@ -394,142 +275,9 @@ jail."
                     (values "released: this home launches outside the jail again (the hub cache is dropped and fetched afresh)" 0 :output))))
           (t (values "nodecode sandbox review | release [--yes]" 2 :error)))))
 
-(defun sandbox-srt-tree (srt)
-  "The installed srt package SRT runs from -- its bin link resolved and two
-levels up from dist/cli.js -- which the jail reads (its seccomp helper runs
-inside) and never writes; NIL when it cannot be named."
-  (ignore-errors
-   (let ((real (truename srt)))
-     (loop for dir = (uiop:pathname-directory-pathname real) then (uiop:pathname-parent-directory-pathname dir)
-           repeat 4
-           when (probe-file (merge-pathnames "package.json" dir)) return dir
-           finally (return (uiop:pathname-directory-pathname real))))))
-
-(defun sandbox-requirements (store-path)
-  "Why `--sandbox' cannot run here, as one sentence, or NIL when it can."
-  (cond #-linux
-        (t "--sandbox runs on Linux for now; macOS and Windows jails are not yet wired")
-        ((null (srt-program))
-         "--sandbox needs srt, Anthropic's sandbox runtime: npm install -g @anthropic-ai/sandbox-runtime (or set NODECODE_SRT to it)")
-        ((null (nlk::executable-on-path "bwrap"))
-         "--sandbox needs bubblewrap: install bwrap")
-        ((null (nlk::executable-on-path "socat"))
-         "--sandbox needs socat")
-        ((not (socat-accepts-a-descriptor-p))
-         "--sandbox needs socat 1.7.4 or later: the jail takes its one way in as a listening socket (socat's ACCEPT-FD)")
-        ((> (length (uiop:native-namestring (sandbox-srt-temporary-directory (nlk:home))))
-            +sandbox-socket-path-room+)
-         (format nil "this home's path is too long for srt's sockets under it (~a): use -p NAME for a home with a shorter one"
-                 (uiop:native-namestring (sandbox-srt-temporary-directory (nlk:home)))))
-        ((ignore-errors (gateway-supervises-p store-path))
-         "the background gateway serves this home unsandboxed: `nodecode gateway off' first, or use -p NAME for another home")
-        ((ignore-errors (nlk::store-lease-held-p store-path))
-         "an organism already runs this home unsandboxed: quit its shells or `nodecode gateway off', or use -p NAME for another home")
-        ((sandbox-unsplit-keys)
-         (format nil "auth.json still holds the API key~p of ~{~a~^, ~}: `nodecode secrets split' moves each into a file of its own, which the jail sees only as a stand-in"
-                 (length (sandbox-unsplit-keys)) (sandbox-unsplit-keys)))))
-
-(defun sandbox-launch-preflight (store-path)
-  "Prepare a sandboxed launch of STORE-PATH's home: refuse with a sentence
-when it cannot run (SANDBOX-REQUIREMENTS), else write the srt settings under
-<home>/sandbox/, pick the loopback port the jailed gateway binds, set
-*SANDBOX-PLAN* for FRONT-ORGANISM and answer NIL."
-  (let ((store (merge-pathnames (or store-path nlk::*default-store-path*))))
-    (or (sandbox-requirements store)
-        (let* ((home (nlk:home))
-               (srt (srt-program))
-               (run (merge-pathnames "sandbox/run/" (uiop:ensure-directory-pathname home)))
-               (cache (merge-pathnames "sandbox/cache/" (uiop:ensure-directory-pathname home)))
-               ;; An absent policy or config file would be the jail's to
-               ;; create, and the next launch would read it: each is made here,
-               ;; empty, and the jail sees it write-denied. The mark goes down
-               ;; before the settings that deny writing it.
-               (_ (progn (sandbox-ensure-launcher-files home)
-                         (sandbox-mark home)))
-               (settings (merge-pathnames +sandbox-settings-name+
-                                          (merge-pathnames "sandbox/" (uiop:ensure-directory-pathname home))))
-               (srt-temporary (sandbox-srt-temporary-directory home))
-               (jail-temporary (sandbox-jail-temporary-directory home))
-               (port (local-port 0))
-               (secret-files (sandbox-secret-files))
-               (object (sandbox-settings
-                        :home home :folder (uiop:getcwd)
-                        :binary (ignore-errors (truename (nlk::origin-pathname)))
-                        :srt-dir (sandbox-srt-tree srt)
-                        :policy (sandbox-policy home)
-                        :secret-files secret-files
-                        :hidden (sandbox-hidden-files home (mapcar #'car secret-files))
-                        :provider-hosts (sandbox-provider-hosts))))
-          (declare (ignore _))
-          ;; The jailed gateway and this shell share a token minted for this
-          ;; launch: the home's operator-token is read-denied in the jail.
-          (nlk::set-environment-variable "NODECODE_GATEWAY_OPERATOR_TOKEN"
-                                         (format nil "~(~{~2,'0x~}~)" (coerce (nlk:random-bytes 32) 'list)))
-          (dolist (directory (list run cache srt-temporary jail-temporary))
-            (ensure-directories-exist directory)
-            #-win32 (ignore-errors (sb-posix:chmod (uiop:native-namestring directory) #o700)))
-          (nlk::write-file-atomically settings (nlk:encode-json-object object) :mode #o600 :directory-mode #o700)
-          (setf *sandbox-plan* (list :srt srt :settings settings :port port :run run :cache cache
-                                     :srt-temporary srt-temporary :jail-temporary jail-temporary)
-                *sandboxed-shell* t)
-          nil))))
-
-(defparameter +sandbox-jail-script+
-  "exec 3>&1 1>&2
-if ! grep -q '^Seccomp:[[:space:]]*2' /proc/self/status; then
-  echo 'nodecode: --sandbox found no seccomp filter on the jail, so it could reach the unix sockets of the host; it does not run without one (srt applies it on x64 and arm64)' >&2
-  exit 78
-fi
-socat ACCEPT-FD:3,fork TCP4:127.0.0.1:\"$0\" &
-exec 3>&- \"$@\""
-  "What runs first inside the jail, under srt's seccomp filter: the listening
-socket the shell handed in on stdout moves to descriptor 3 and stdout goes
-back to the log; a jail without the filter (an architecture srt has no
-helper for, a host that refuses it) stops here, before anything of the
-folder loads; a socat accepts each connection on the socket and forwards it
-to the gateway's port inside the jail; the serve runs with the socket
-closed. $0 is the port, the rest the serve argv.")
-
-(defun sandbox-wrap (argv &key srt settings port run cache srt-temporary jail-temporary)
-  "ARGV, the serve's own, as the command line that runs it jailed: env sets
-the gateway port the jail binds, a runtime directory and a cache it may
-write, srt's own temporary directory (SRT-TEMPORARY) and the one it hands
-the jail (JAIL-TEMPORARY), and takes the shell's pristine marker away (the
-shell stands on the binary alone; the organism loads its folder); srt jails
-the rest, and +SANDBOX-JAIL-SCRIPT+ runs first inside it. The serve's stdout
-must be the host-side listener on PORT (CALL-WITH-SANDBOX-STDOUT)."
-  ;; `sh -c SCRIPT A B ...' binds A to $0 and the rest to $1...: the port is
-  ;; $0 and the serve argv is "$@" whole, so a word in it with a space (a
-  ;; store path) stays one word. srt's `--' is what keeps the words apart:
-  ;; without it srt joins them into one string for bash.
-  (flet ((directory-word (name directory)
-           (format nil "~a=~a" name (string-right-trim "/" (uiop:native-namestring directory)))))
-    (append (list* "env" "-u" "NODECODE_PRISTINE" "NODECODE_SANDBOXED=1"
-                   (format nil "NODECODE_GATEWAY_PORT=~d" port)
-                   (directory-word "XDG_RUNTIME_DIR" run)
-                   (directory-word "XDG_CACHE_HOME"
-                                   (or cache (merge-pathnames "cache/" (uiop:pathname-parent-directory-pathname run))))
-                   (append (and srt-temporary (list (directory-word "TMPDIR" srt-temporary)))
-                           (and jail-temporary (list (directory-word "CLAUDE_CODE_TMPDIR" jail-temporary)))
-                           (list srt "--settings" (uiop:native-namestring settings) "--" "sh" "-c"
-                                 +sandbox-jail-script+ (princ-to-string port))))
-            argv)))
-
-(defun sandbox-wrap-command (command)
-  "COMMAND, a serve argv, as this shell spawns it: unchanged outside a
-sandboxed shell; inside one, jailed (SANDBOX-WRAP), to be spawned with
-the plan's listener as its stdout (CALL-WITH-SANDBOX-STDOUT)."
-  (let ((plan *sandbox-plan*))
-    (if (and plan command)
-        (sandbox-wrap command :srt (getf plan :srt) :settings (getf plan :settings)
-                              :port (getf plan :port) :run (getf plan :run) :cache (getf plan :cache)
-                              :srt-temporary (getf plan :srt-temporary)
-                              :jail-temporary (getf plan :jail-temporary))
-        command)))
-
 (defun sandbox-listener (port)
   "A socket listening on the host's loopback PORT: the jail's one way in,
-which its socat accepts on (+SANDBOX-JAIL-SCRIPT+)."
+which the jailed organism accepts on (SANDBOX-BRIDGE-INBOUND)."
   (let ((socket (make-instance 'sb-bsd-sockets:inet-socket :type :stream :protocol :tcp))
         (listening nil))
     (unwind-protect
@@ -540,23 +288,251 @@ which its socat accepts on (+SANDBOX-JAIL-SCRIPT+)."
                 socket)
       (unless listening (ignore-errors (sb-bsd-sockets:socket-close socket))))))
 
-(defun call-with-sandbox-stdout (function)
-  "Call FUNCTION with the descriptor a jailed serve's stdout must be -- a
-listener on the plan's loopback port (SANDBOX-LISTENER) -- or with NIL
-outside a sandboxed shell, and answer what it answers. This shell's own
-copy of the listener closes once FUNCTION returns: the jail alone holds it,
-so the port refuses once the jail is gone."
+
+(defun sandbox-requirements (store-path)
+  "Why `--sandbox' cannot run here, as one sentence, or NIL when it can."
+  (cond #-linux
+        (t "--sandbox runs on Linux for now; macOS and Windows jails are not yet wired")
+        #+linux
+        ((sandbox-bwrap-requirements))
+        ((ignore-errors (gateway-supervises-p store-path))
+         "the background gateway serves this home unsandboxed: `nodecode gateway off' first, or use -p NAME for another home")
+        ((ignore-errors (nlk::store-lease-held-p store-path))
+         "an organism already runs this home unsandboxed: quit its shells or `nodecode gateway off', or use -p NAME for another home")))
+
+(defun sandbox-egress-hosts (home)
+  "The hosts a jailed organism of HOME may reach through the proxy: the
+configured providers', nodecode's own and the operator's additions."
+  (remove-duplicates (append (sandbox-provider-hosts) +sandbox-default-domains+
+                             (getf (sandbox-policy home) :allowed-domains))
+                     :test #'string-equal :from-end t))
+
+;;; --- the keys outside, the stand-ins inside ----------------------------------------
+;;; The jail reads no key. Where the home keeps one -- auth.json, secrets/,
+;;; config.jsonc, the launcher's environment -- the jail reads a stand-in
+;;; (SANDBOX-KEY-STAND-IN) in the same place, so its providers list and
+;;; resolve as they would outside; the broker outside swaps a stand-in for the
+;;; key (sandbox-egress.lisp), toward that provider's own address alone.
+
+(defun sandbox-key-candidates (&optional (environment (sb-ext:posix-environ)))
+  "The providers a key may be kept for outside the jail: the inventory's
+(auth.json, secrets/, config.jsonc), the listable ones, and each one an
+<ID>_API_KEY of ENVIRONMENT names, anthropic for ANTHROPIC_AUTH_TOKEN."
+  (remove-duplicates
+   (append (ignore-errors (configured-provider-inventory))
+           (ignore-errors (listable-provider-ids))
+           (loop for entry in environment
+                 for at = (position #\= entry)
+                 for name = (and at (subseq entry 0 at))
+                 when (and name (> (length name) (length "_API_KEY")) (uiop:string-suffix-p name "_API_KEY")
+                           (plusp (length (nlk:trimmed (subseq entry (1+ at))))))
+                   collect (substitute #\- #\_ (string-downcase (subseq name 0 (- (length name) (length "_API_KEY"))))))
+           (and (find-if (lambda (entry) (uiop:string-prefix-p "ANTHROPIC_AUTH_TOKEN=" entry)) environment)
+                '("anthropic")))
+   :test #'string-equal :from-end t))
+
+(defun sandbox-provider-table (&optional (ids (sandbox-key-candidates)))
+  "Each of IDS the launcher knows an address for, as a plist: :ID, :ORIGINS
+the origins its endpoint and base are served at (NLK:URL-ORIGIN), :KEYED
+true when a key is kept for it outside the jail."
+  (let ((auth (ignore-errors (read-auth-file *auth-file-path*))))
+    (loop for id in ids
+          for origins = (remove-duplicates
+                         (remove nil (list (ignore-errors (nlk:url-origin (provider-endpoint id)))
+                                           (ignore-errors (nlk:url-origin (provider-base-url id)))))
+                         :test #'string= :from-end t)
+          when origins
+            collect (list :id id :origins origins :keyed (and (sandbox-key-kept-p id auth) t)))))
+
+(defun sandbox-key-kept-p (id auth)
+  "Whether a key is kept for the provider ID outside the jail: its chain
+answers one from config.jsonc, secrets/, AUTH (the parsed auth.json) or the
+environment -- each tier asked on its own too, so a provider whose lane is
+not known yet (a catalog not loaded, a cell's) is not missed."
+  (let ((credential (ignore-errors (resolve-provider-credential id :probe t))))
+    (or (and credential (member (credential-source credential) '(:config :secret-file :api-key :env)))
+        (ignore-errors (provider-secret-key id :probe t))
+        (and auth (auth-api-key auth id))
+        (provider-env-key id)
+        (ignore-errors (trimmed-config-string (configured-provider-entry id) "api_key")))))
+
+(defun sandbox-stand-in-auth (auth providers)
+  "The auth.json the jail reads in place of AUTH, the parsed real one: each
+keyed one of PROVIDERS (SANDBOX-PROVIDER-TABLE) under api_keys, its key a
+stand-in and the vars of its address kept; nothing else of AUTH (a machine's
+link, a sign-in). NIL when no provider is keyed."
+  (let ((keys (nlk:make-json-object)))
+    (dolist (provider providers)
+      (when (getf provider :keyed)
+        (let* ((id (getf provider :id))
+               (entry (nlk:make-json-object "key" (sandbox-key-stand-in id)))
+               (vars (ignore-errors (json-value auth :object "api_keys" id "vars"))))
+          (when (hash-table-p vars) (setf (gethash "vars" entry) vars))
+          (setf (gethash id keys) entry))))
+    (when (plusp (hash-table-count keys))
+      (nlk:encode-json-object (nlk:make-json-object "api_keys" keys)))))
+
+(defun sandbox-stand-in-config (text)
+  "TEXT, a config.jsonc, as the jail reads it when a provider's api_key is
+in it -- each such key a stand-in -- or NIL when none is."
+  (let* ((config (ignore-errors (nlk:decode-json (nlk::normalize-jsonc text))))
+         (providers (and (hash-table-p config) (gethash "providers" config)))
+         (swapped nil))
+    (when (hash-table-p providers)
+      (maphash (lambda (id entry)
+                 (when (and (hash-table-p entry) (stringp (gethash "api_key" entry))
+                            (plusp (length (nlk:trimmed (gethash "api_key" entry)))))
+                   (setf (gethash "api_key" entry) (sandbox-key-stand-in id)
+                         swapped t)))
+               providers))
+    (and swapped (nlk:encode-json-object config))))
+
+(defun sandbox-stand-ins (home providers)
+  "Write the files the jail of HOME reads in place of the real ones under
+<HOME>/sandbox/stand-in/ and answer them as an alist (REAL . STAND-IN), native
+names: auth.json when it holds a key, config.jsonc when a provider's api_key
+is in it."
+  (let* ((dir (merge-pathnames "sandbox/stand-in/" (uiop:ensure-directory-pathname home)))
+         (auth-path (merge-pathnames "auth.json" (uiop:ensure-directory-pathname home)))
+         (config-path (merge-pathnames "config.jsonc" (uiop:ensure-directory-pathname home)))
+         (auth (and (probe-file auth-path) (ignore-errors (read-auth-file auth-path))))
+         (auth-text (and (probe-file auth-path) (sandbox-stand-in-auth auth providers)))
+         (config-text (and (probe-file config-path)
+                           (sandbox-stand-in-config (uiop:read-file-string config-path))))
+         (pairs '()))
+    (loop for (real text name) in (list (list auth-path auth-text "auth.json")
+                                        (list config-path config-text "config.jsonc"))
+          for path = (merge-pathnames name dir)
+          do (if text
+                 (progn (nlk::write-file-atomically path text :mode #o600 :directory-mode #o700)
+                        (push (cons (uiop:native-namestring real) (uiop:native-namestring path)) pairs))
+                 (ignore-errors (delete-file path))))
+    (nreverse pairs)))
+
+(defun sandbox-jail-environment (providers)
+  "The variables the jail gets for PROVIDERS (SANDBOX-PROVIDER-TABLE), as
+NAME VALUE ...: each keyed provider's own <ID>_API_KEY, its stand-in (the
+key of the environment, or of secrets/, is in no file the jail reads), and
+NODECODE_SANDBOX_HOST_ORIGINS, the origins on this host or its networks the
+broker reaches for it (NLK:JAIL-BROKERED-URL)."
+  (let ((local (remove-duplicates
+                (loop for provider in providers
+                      append (remove-if-not #'local-endpoint-p (getf provider :origins)))
+                :test #'string=)))
+    (append (loop for provider in providers
+                  when (getf provider :keyed)
+                    append (list (format nil "~a_API_KEY" (substitute #\_ #\- (string-upcase (getf provider :id))))
+                                 (sandbox-key-stand-in (getf provider :id))))
+            (and local (list "NODECODE_SANDBOX_HOST_ORIGINS" (format nil "~{~a~^,~}" local))))))
+
+(defun sandbox-egress-plan (home providers)
+  "What the egress outside HOME's jail answers under (SANDBOX-EGRESS-START):
+:HOSTS, :INTERNET, :PROVIDERS and :LOG."
+  (list :hosts (sandbox-egress-hosts home)
+        :internet (and (getf (sandbox-policy home) :network) t)
+        :providers providers
+        :log (uiop:native-namestring (merge-pathnames "sandbox/egress.log" (uiop:ensure-directory-pathname home)))))
+
+(defun sandbox-launch-preflight (store-path)
+  "Prepare a sandboxed launch of STORE-PATH's home: refuse with a sentence
+when it cannot run (SANDBOX-REQUIREMENTS), else make what the jail needs
+under <home>/sandbox/, pick the loopback port the jailed gateway binds, set
+*SANDBOX-PLAN* for FRONT-ORGANISM and answer NIL."
+  (let ((store (merge-pathnames (or store-path nlk::*default-store-path*))))
+    (or (sandbox-requirements store)
+        (let* ((home (nlk:home))
+               (sandbox (merge-pathnames "sandbox/" (uiop:ensure-directory-pathname home)))
+               (run (merge-pathnames "run/" sandbox))
+               (cache (merge-pathnames "cache/" sandbox))
+               (temporary (sandbox-jail-temporary-directory home))
+               (port (local-port 0)))
+          ;; An absent policy, config or secrets/ would be the jail's to
+          ;; create, and the next launch would read it: each is made here,
+          ;; and the jail sees it read-only or not at all. The mark goes down
+          ;; before the jail that may not write it.
+          (sandbox-ensure-launcher-files home)
+          (sandbox-mark home)
+          ;; The jailed gateway and this shell share a token minted for this
+          ;; launch: the home's operator-token is hidden in the jail.
+          (nlk::set-environment-variable "NODECODE_GATEWAY_OPERATOR_TOKEN"
+                                         (format nil "~(~{~2,'0x~}~)" (coerce (nlk:random-bytes 32) 'list)))
+          (dolist (directory (list run cache temporary (merge-pathnames "secrets/" (uiop:ensure-directory-pathname home))))
+            (ensure-directories-exist directory)
+            #-win32 (ignore-errors (sb-posix:chmod (uiop:native-namestring directory) #o700)))
+          (setf *sandbox-plan*
+                (sandbox-launch-plan home store run cache temporary port)
+                *sandboxed-shell* t)
+          nil))))
+
+(defun sandbox-launch-plan (home store run cache temporary port)
+  "The plan of HOME's jail FRONT-ORGANISM runs (*SANDBOX-PLAN*): what it
+mounts, the ports in and out, the stand-ins and the egress it answers under."
+  (let* ((providers (sandbox-provider-table))
+         (log (merge-pathnames "sandbox/egress.log" (uiop:ensure-directory-pathname home))))
+    ;; the egress log is the launcher's: made here, read-only in the jail
+    (unless (probe-file log)
+      (nlk::write-file-atomically log "" :mode #o600 :directory-mode #o700))
+    (list :home (uiop:native-namestring (uiop:ensure-directory-pathname home))
+          :folder (uiop:getcwd)
+          :binary (uiop:native-namestring (truename (nlk::origin-pathname)))
+          :store (uiop:native-namestring store)
+          :policy (sandbox-policy home)
+          :hidden (cons (sandbox-home-path home "secrets/") (sandbox-hidden-files home))
+          :stand-ins (sandbox-stand-ins home providers)
+          :jail-environment (sandbox-jail-environment providers)
+          :run run :cache cache :temporary temporary
+          :port port
+          ;; the jail's own loopback is empty: any port but the gateway's
+          :egress-port (if (= port 3128) 3129 3128)
+          :egress (sandbox-egress-plan home providers)
+          #+linux :disable-userns
+          #+linux (sandbox-bwrap-disables-userns-p
+                   (uiop:native-namestring (nlk::executable-on-path "bwrap"))))))
+
+(defun sandbox-wrap-command (command)
+  "COMMAND, a serve argv, as this shell spawns it: unchanged outside a
+sandboxed shell; inside one, jailed (SANDBOX-BWRAP-ARGV), its program the
+binary the jail mounts, to be spawned with the plan's descriptors
+(CALL-WITH-SANDBOX-DESCRIPTORS)."
+  (let ((plan *sandbox-plan*))
+    (if (and plan command)
+        (sandbox-bwrap-argv (cons (getf plan :binary) (rest command))
+                            :bwrap (uiop:native-namestring (nlk::executable-on-path "bwrap"))
+                            :home (getf plan :home) :folder (getf plan :folder)
+                            :binary (getf plan :binary) :store (getf plan :store)
+                            :policy (getf plan :policy) :hidden (getf plan :hidden)
+                            :run (getf plan :run) :cache (getf plan :cache)
+                            :temporary (getf plan :temporary)
+                            :port (getf plan :port) :egress-port (getf plan :egress-port)
+                            :stand-ins (getf plan :stand-ins)
+                            :jail-environment (getf plan :jail-environment)
+                            :disable-userns (getf plan :disable-userns))
+        command)))
+
+(defun call-with-sandbox-descriptors (function)
+  "Call FUNCTION with the descriptors a jailed serve is spawned with -- the
+listener on the plan's loopback port (its way in), the jail's end of a
+socketpair (its way out) and the seccomp program, to be its 3, 4 and 5 --
+or with NIL outside a sandboxed shell, and answer what it answers. Once
+FUNCTION has spawned the jail, this shell's copies close -- the jail alone
+holds the listener, so the port refuses once the jail is gone -- and its end
+of the socketpair waits for the jail's egress listener
+(SANDBOX-RECEIVE-EGRESS)."
   (let ((plan *sandbox-plan*))
     (if (null plan)
         (funcall function nil)
-        (let ((listener (sandbox-listener (getf plan :port))))
-          (unwind-protect (funcall function (sb-bsd-sockets:socket-file-descriptor listener))
-            (ignore-errors (sb-bsd-sockets:socket-close listener)))))))
-
-(defun socat-accepts-a-descriptor-p ()
-  "Whether the socat on PATH takes a listening socket it is handed (its
-ACCEPT-FD address, socat 1.7.4 and later)."
-  (search "ACCEPT-FD" (or (ignore-errors (uiop:run-program (list "socat" "-h") :output :string
-                                                                                  :error-output nil
-                                                                                  :ignore-error-status t))
-                          "")))
+        #-linux (error "no jail is wired on this system")
+        #+linux
+        (let ((listener (sandbox-listener (getf plan :port)))
+              (outside nil) (inside nil) (seccomp nil) (spawned nil))
+          (unwind-protect
+               (progn
+                 (setf (values outside inside) (nlk::socket-pair)
+                       seccomp (sandbox-seccomp-descriptor))
+                 (multiple-value-prog1
+                     (funcall function (list (sb-bsd-sockets:socket-file-descriptor listener) inside seccomp))
+                   (setf spawned t)
+                   (sandbox-receive-egress outside (getf plan :egress))))
+            (ignore-errors (sb-bsd-sockets:socket-close listener))
+            (dolist (descriptor (list inside seccomp (and (not spawned) outside)))
+              (when descriptor (ignore-errors (sb-posix:close descriptor)))))))))

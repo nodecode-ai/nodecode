@@ -200,7 +200,7 @@ No. You ask in plain words, the model writes the Lisp, and your project can be i
 <summary><b>Is it safe to run?</b></summary>
 <br>
 
-Nodecode ships no sandbox. `eval` runs Lisp and shell commands with everything your user account can do. The `guard` cell refuses listed risky commands, but it is not a security boundary. A cell is code with full access to your files and keys, and a message in a chat room runs with the same authority, so allowlists decide who may send one. Run it in a container or a VM before you leave it working alone. See [Safety and trust](https://nodecode.ai/docs/security).
+By default `eval` runs Lisp and shell commands with everything your user account can do. On Linux, `nodecode --sandbox` runs the agent in a jail: it writes only the folder you started in, sees none of `~/.ssh` or your keys, and reaches only your providers through a proxy that adds each key outside the jail. The `guard` cell refuses listed risky commands, but it is not a security boundary. A cell is code with full access to your files and keys, and a message in a chat room runs with the same authority, so allowlists decide who may send one. On macOS and Windows, run it in a container or a VM before you leave it working alone. See [Safety and trust](https://nodecode.ai/docs/security).
 
 </details>
 

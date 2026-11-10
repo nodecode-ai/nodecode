@@ -1,9 +1,41 @@
 ---
 title: Safety and trust
-summary: "What protects the machine, and what Nodecode does not protect."
+summary: "What protects the machine, the opt-in jail, and what Nodecode does not protect."
 ---
 
-Nodecode has no sandbox. Read the limits before you connect a channel or run unattended.
+Nodecode runs without a sandbox unless you start it with `--sandbox`, on Linux. Read the limits before you connect a channel or run unattended.
+
+{/* source: src/gateway/sandbox.lisp */}
+## The jail: `nodecode --sandbox`
+
+`nodecode --sandbox` runs the agent in a jail: every `eval`, every shell command it runs, every cell. The terminal you type in stays outside it and loads nothing the agent writes.
+
+| What | Inside the jail |
+| --- | --- |
+| Files | The folder you started in and the home, read and write. The system, read-only. |
+| Your secrets | Not visible: `~/.ssh`, cloud credentials, other agents' homes such as `~/.claude` and `~/.codex`, the host's `/tmp`. |
+| API keys | The agent reads stand-in keys. A proxy outside the jail puts the real key back only on calls to that key's own provider. |
+| Sign-ins | Stay outside. A provider you signed in to rather than gave a key, such as the Claude Code or Codex cells, does not answer in the jail yet. |
+| Network | Only through the proxy: your configured providers, nodecode.ai, models.dev and GitHub. Never this machine's loopback or a private network. |
+| Local sockets | None. No Docker socket, no display, no desktop bus. |
+
+Every call out is a line of `~/.nodecode/sandbox/egress.log`, allowed or refused. `~/.nodecode/sandbox.jsonc` widens the jail: `allowed_domains`, `allow_write`, `deny_read`, and `"network": "internet"` for every public host.
+
+A home that ran jailed is marked, so a launch without `--sandbox` refuses it. `nodecode sandbox review` lists what the agent added under `cells/`; `nodecode sandbox release --yes` lifts the mark after you read it.
+
+| System | Jail |
+| --- | --- |
+| Linux | Needs bubblewrap (`bwrap`), user namespaces, glibc 2.34 or later, x86-64 or arm64. Without one of them `--sandbox` refuses and says which. |
+| macOS | Not yet. `--sandbox` refuses. |
+| Windows | Not yet. `--sandbox` refuses. Inside WSL2, the Linux jail works: install bubblewrap there (`sudo apt install bubblewrap`). |
+
+| The jail does not stop | Consequence |
+| --- | --- |
+| The folder is the agent's to change. | Keep it in git. |
+| Allowed hosts are reachable. | The agent can send what it reads to them, GitHub included. |
+| A chat bot's token is readable in the jail. | A prompt injection could post as that bot. |
+| Cells run inside with the agent's access. | A hub cell is someone else's code: read it first. |
+| The background gateway runs outside. | `--sandbox` refuses a home it serves: `nodecode gateway off` first, or `-p NAME` for another home. |
 
 {/* source: src/gateway/gateway.lisp */}
 ## Protections
@@ -46,7 +78,7 @@ The model can lower the kernel lock itself with `lower-floor`. The store records
 
 | Fact | Consequence |
 | --- | --- |
-| Eval has full host authority. | The model can read, write and run anything your user can. |
+| Without `--sandbox`, eval has full host authority. | The model can read, write and run anything your user can. |
 | A new process isolates a crash only. | It does not stop file or network damage. |
 | Cell folders are full-authority code. | A folder under `~/.nodecode/cells/` loads in every Nodecode process. Nothing asks first. |
 | The guard is not a sandbox. | It refuses known spellings. Any other spelling runs. |

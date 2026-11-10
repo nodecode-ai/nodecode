@@ -1009,12 +1009,12 @@ organism comes back under the unit `gateway off' stops, never beside it."
           (values nil "the service manager would not start the gateway"))
       (if-let (command (sandbox-wrap-command (serve-command store-path)))
         ;; The candidate's log lands next to the database it fought for;
-        ;; a jailed one's stdout is the listener (CALL-WITH-SANDBOX-STDOUT).
-        (call-with-sandbox-stdout
-         (lambda (listener)
+        ;; a jailed one is handed its descriptors (CALL-WITH-SANDBOX-DESCRIPTORS).
+        (call-with-sandbox-descriptors
+         (lambda (descriptors)
            (nlk::spawn-detached
             command
             (pathname (format nil "~a.resurrect.log" (namestring store-path)))
-            :stdout listener)))
+            :descriptors descriptors)))
         (values nil "this image has no serve binary to exec"))))
 

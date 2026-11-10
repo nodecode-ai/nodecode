@@ -365,6 +365,63 @@ dial in this image asks PROXY-FOR instead."
 (forget-build-proxy)
 (pushnew 'forget-build-proxy sb-ext:*init-hooks*)
 
+;;; --- a jailed dial that needs the outside -------------------------------------
+;;; A `nodecode --sandbox' jail holds no key: where its auth.json, config.jsonc
+;;; or environment had one, the jail reads a stand-in (+JAIL-KEY-PREFIX+ and
+;;; the provider's id), and a provider served on the host's loopback or a
+;;; private network is no address of the jail's own network namespace. A dial
+;;; that carries a stand-in, or names such a provider, goes to the broker
+;;; outside the jail instead, on the jail's own loopback (the egress port):
+;;; the broker swaps the stand-in for the key, only toward that provider's own
+;;; address, and makes the call itself (sandbox-egress.lisp).
+
+(defparameter +jail-key-prefix+ "nodecode-jail-key-"
+  "How a key's stand-in starts in a jail: the prefix, then its provider's id
+ in hexadecimal octets, then -x.")
+
+(defparameter +jail-broker-path+ "/.nodecode-broker/"
+  "The path a brokered dial asks the egress port for, before the scheme,
+ the host and port and the path of the address it stands for.")
+
+(defun url-origin (url)
+  "URL's origin as scheme://host:port, lower case, the port written even
+ when it is the scheme's own, an IPv6 host in brackets; NIL when URL names
+ no host."
+  (let* ((uri (ignore-errors (quri:uri url)))
+         (scheme (and uri (quri:uri-scheme uri)))
+         (host (and uri (quri:uri-host uri))))
+    (when (and scheme host (plusp (length host)))
+      (let ((host (string-downcase (string-trim "[]" host))))
+        (format nil "~(~a~)://~:[~a~;[~a]~]:~d" scheme (find #\: host) host
+                (or (quri:uri-port uri) (if (string-equal scheme "https") 443 80)))))))
+
+(defun jail-brokered-url (url &optional headers)
+  "URL as a jailed process dials it: unchanged outside a jail, and inside
+one (NODECODE_SANDBOX_EGRESS_PORT set) unchanged unless it carries a key's
+stand-in -- in itself or in one of HEADERS, an alist -- or its origin is one
+of NODECODE_SANDBOX_HOST_ORIGINS; such a URL becomes the broker's, on the
+jail's loopback egress port, the scheme, host and port and path after
++JAIL-BROKER-PATH+."
+  (let ((port (and (stringp url) (proxy-environment-value "NODECODE_SANDBOX_EGRESS_PORT"))))
+    (if (and port
+             (or (search +jail-key-prefix+ url)
+                 (some (lambda (header)
+                         (and (consp header) (stringp (cdr header)) (search +jail-key-prefix+ (cdr header))))
+                       headers)
+                 (let ((origin (url-origin url))
+                       (local (proxy-environment-value "NODECODE_SANDBOX_HOST_ORIGINS")))
+                   (and origin local (member origin (uiop:split-string local :separator ",") :test #'string=)))))
+        (let* ((uri (quri:uri url))
+               (origin (url-origin url)))
+          (format nil "http://127.0.0.1:~a~a~a~a~@[?~a~]" port +jail-broker-path+
+                  ;; scheme://host:port as scheme/host:port
+                  (let ((at (search "://" origin)))
+                    (concatenate 'string (subseq origin 0 at) "/" (subseq origin (+ at 3))))
+                  (let ((path (or (quri:uri-path uri) "")))
+                    (if (and (plusp (length path)) (char= (char path 0) #\/)) path (concatenate 'string "/" path)))
+                  (quri:uri-query uri)))
+        url)))
+
 (defun http (method url &key headers content (timeout 30) (connect-timeout (min 10 timeout))
                               max-bytes binary stream pool proxy &aux clipped)
   "One HTTP exchange that answers every status as a value. => (values BODY
@@ -389,6 +446,10 @@ STREAM, the body; past them it signals HTTP-TIMEOUT."
   ;; or mid-headers held a hub read for minutes.
   ;; Under a deadline the exchange is given what is left of it (WAIT-SECONDS),
   ;; and running out of that spends it (STEP-RAN-OUT).
+  ;; In a jail, a dial carrying a key's stand-in goes to the broker, and
+  ;; no proxy: the broker is on the jail's own loopback (JAIL-BROKERED-URL).
+  (let ((brokered (jail-brokered-url url headers)))
+    (unless (eq brokered url) (setf url brokered proxy nil)))
   (multiple-value-setq (timeout clipped) (wait-seconds timeout))
   (setf connect-timeout (min connect-timeout timeout))
   (handler-bind ((sb-sys:deadline-timeout

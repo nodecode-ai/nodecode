@@ -358,8 +358,14 @@
 
 ;;; --- what the launch holds back -------------------------------------------
 
+(deftest launch-offers-the-sandbox ()
+  ;; Offered by default: the jail is opt-in, and help names it.
+  (let ((text (nle::launch-help-text)))
+    (is (search "--sandbox" text) "help lists --sandbox by default"))
+  (is (equal '(:secrets ("list")) (second (launch-plan "secrets" "list"))) "secrets is taken by default"))
+
 (deftest launch-holds-the-sandbox-back ()
-  ;; Off by default (*OFFER-SANDBOX*): help names none of the three words,
+  ;; Off (*OFFER-SANDBOX* nil): help names none of the three words,
   ;; no refusal suggests one, and the parser refuses --sandbox and secrets.
   (let ((nle::*offer-sandbox* nil))
     (let ((text (nle::launch-help-text)))

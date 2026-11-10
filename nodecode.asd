@@ -428,6 +428,9 @@ of stacking."
      (:file "gateway/settings")
      (:file "gateway/secrets")
      (:file "gateway/sandbox")
+     (:file "gateway/sandbox-linux")
+     ;; sandbox-egress: the jail's way out, a proxy and the key broker outside it
+     (:file "gateway/sandbox-egress")
      ;; sheet: the canvas, inks, pointer targets and key-row line every
      ;; dialog in the middle of the frame paints and calls with.
      (:file "tui/sheet")
@@ -730,6 +733,7 @@ of stacking."
      (:file "gateway/settings-test")
      (:file "gateway/secrets-test")
      (:file "gateway/sandbox-test")
+     (:file "gateway/sandbox-egress-test")
      ;; Quick TUI settings gates reuse the canonical route's isolated fixture.
      (:file "tui/settings-sheet-test")
      (:file "tui/channel-setup-test")

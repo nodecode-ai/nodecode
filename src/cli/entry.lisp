@@ -346,7 +346,7 @@ Zig launcher gives the same thing."
    (nlk:make-verb "secrets" "keep each API key in a file of its own, out of auth.json"
                   :label "secrets [split | list]"
                   :arguments "split [--dry-run] | list"
-                  :detail "split moves every api_keys entry of auth.json into secrets/providers.<id>.api_key, one 0600 file per key, and leaves the rest of auth.json (sign-in tokens) where it is; --dry-run says what would move. list names the files, never a value. --sandbox needs it: a key in a file of its own is a stand-in inside the jail, and the real one is put back only on its way to that provider.")
+                  :detail "split moves every api_keys entry of auth.json into secrets/providers.<id>.api_key, one 0600 file per key, and leaves the rest of auth.json (sign-in tokens) where it is; --dry-run says what would move. list names the files, never a value. Under --sandbox a key is a stand-in inside the jail either way, in auth.json or in a file of its own, and the real one is put back only on its way to that provider.")
    (nlk:make-verb "sandbox" "review what a sandboxed organism wrote, or release the home"
                   :label "sandbox [review | release]"
                   :arguments "review | release [--yes]"
@@ -421,7 +421,7 @@ loads.")
    (nlk:make-verb "--pristine" "run generation 0: the binary alone, no folder loaded"
                   :detail "Nothing of the cell folder loads, no published image is followed, and keeps are refused while it runs: the floor to stand on when the folder itself is the problem. (generations) lists what was sealed and (rollback N) restores one, the next launch running it. A launch whose last self died before serving stands here by itself.")
    (nlk:make-verb "--sandbox" "run the organism in an OS jail; the shell stays outside"
-                  :detail "Linux, with srt (npm install -g @anthropic-ai/sandbox-runtime), bubblewrap and socat. The organism's eval, sh and file verbs can write only this folder, the home and the caches, read nothing of ~/.ssh, cloud credentials or other agents' homes, and reach only the providers configured, nodecode.ai and GitHub; a key kept in secrets/ is a stand-in inside and the real one is put back only on its way to that provider. <home>/sandbox.jsonc adds allowed_domains, deny_read and allow_write. The shell runs the binary alone, outside, and loads nothing the organism writes; it refuses a home an unsandboxed organism or the background gateway already runs.")
+                  :detail "Opt-in, on Linux, with bubblewrap (bwrap); macOS and Windows refuse it for now. The organism's eval, sh and file verbs can write only this folder, the home and the jail's own cache, see nothing of ~/.ssh, cloud credentials, other agents' homes or the host's /tmp, make no unix socket, and reach only the providers configured, nodecode.ai, models.dev and GitHub, through a proxy outside the jail, never this machine's loopback or a private network; the home's API keys are not in the jail at all: it reads stand-ins, and the proxy adds each key on its own provider's calls. Sign-ins stay outside too (auth.json's sign-in tokens, ~/.claude, ~/.codex), so a provider that signs in rather than takes a key does not answer in the jail yet. Each way out is a line of <home>/sandbox/egress.log. <home>/sandbox.jsonc adds allowed_domains, deny_read and allow_write, and \"network\": \"internet\" opens every public host. The shell runs the binary alone, outside, and loads nothing the organism writes; it refuses a home an unsandboxed organism or the background gateway already runs.")
    (nlk:make-verb "--provider" "open the shell's fresh session on provider P"
                   :arguments "P" :label "--provider P"
                   :detail "--model PROVIDER/MODEL says the same; this says it outright, for a model id whose own prefix names a provider. Alone it runs the default model only when that is P's own; another provider's default is refused, naming P's models, so name one with --model.")
@@ -444,13 +444,14 @@ loads.")
    (nlk:make-verb "--version" "the version, and the commit it was built from"))
   "The executable's options, in help's order.")
 
-(defparameter *offer-sandbox* nil
+(defparameter *offer-sandbox* t
   "Whether the launch offers `--sandbox' and the two commands that serve it,
-`sandbox' and `secrets' (WITHHELD-LAUNCH-VERB-P). Off until the jail ships:
-help and its suggestions name none of the three, and the parser refuses
-`--sandbox' and `secrets' as it does any word it does not hold. `sandbox'
-is still taken, so a home a jailed run marked on an earlier build can be
-reviewed and released. The code behind the three stays, run by its tests.")
+`sandbox' and `secrets' (WITHHELD-LAUNCH-VERB-P). On: the jail is opt-in,
+on Linux, and a system it cannot run on refuses `--sandbox' with a sentence
+saying why (SANDBOX-REQUIREMENTS). Off, help and its suggestions name none
+of the three, and the parser refuses `--sandbox' and `secrets' as it does
+any word it does not hold; `sandbox' is still taken, so a home a jailed run
+marked can be reviewed and released.")
 
 (defun withheld-launch-verb-p (verb)
   "Whether VERB, a launch command or option, is held back from help and its
@@ -1209,6 +1210,9 @@ condition's report, exit 1."
                           :loads (or (null child) serve
                                      (member (first child) '(:rpc :trial :warm :warm-dump)))))
         (print-answer-and-quit refusal 1 :error))
+      ;; A jailed serve takes its ways in and out, and checks its seccomp
+      ;; filter, before anything of the folder loads.
+      #+linux (when (and serve (sandboxed-process-p)) (sandbox-jail-enter))
       ;; The launch-cache verbs run before any folder loads: the `warm`
       ;; supervisor loads nothing itself, and `warm-dump` must load the
       ;; folder directly — never through the cache it is building.

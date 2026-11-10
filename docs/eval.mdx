@@ -165,7 +165,7 @@ The agent can lower the lock itself:
 
 All three arguments are required. An `organism.floor_lowered` event is recorded before the unlock.
 
-<Note head="No sandbox">The kernel lock is not a security boundary. `eval` has full host authority. See [Safety and trust](security.mdx).</Note>
+<Note head="Not a sandbox">The kernel lock is not a security boundary. Without `--sandbox`, `eval` has full host authority. See [Safety and trust](security.mdx).</Note>
 
 {/* source: src/organism/provisional.lisp */}
 ## Held definitions

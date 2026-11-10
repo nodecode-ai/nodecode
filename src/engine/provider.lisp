@@ -5361,16 +5361,21 @@ functions below."
               (flet ((post (whole)
                        (multiple-value-bind (content content-headers)
                            (body-wire endpoint request-json session :whole whole)
-                         (cancellable-post (request-json (or (nlk:proxy-for endpoint config.proxy) endpoint))
-                           (dex:post endpoint
-                                     ;; the lane's headers, then whatever the credential brings,
-                                     ;; then the app's name for a host that ranks apps
-                                     :headers (with-user-agent
-                                               (with-app-attribution
-                                                endpoint
-                                                (append content-headers
-                                                        headers
-                                                        (credential-attribute config :headers))))
+                         (let* (;; the lane's headers, then whatever the credential brings,
+                                ;; then the app's name for a host that ranks apps
+                                (sent (with-user-agent
+                                       (with-app-attribution
+                                        endpoint
+                                        (append content-headers
+                                                headers
+                                                (credential-attribute config :headers)))))
+                                ;; a jail's call with a key's stand-in goes to the
+                                ;; broker outside it, which adds the key
+                                (url (nlk:jail-brokered-url endpoint sent))
+                                (proxy (and (eq url endpoint) (nlk:proxy-for endpoint config.proxy))))
+                         (cancellable-post (request-json (or proxy url))
+                           (dex:post url
+                                     :headers sent
                                      :content content
                                      ;; usocket makes :READ-TIMEOUT the fd-stream's timeout,
                                      ;; which cuts a plain-http socket (a local model server)
@@ -5381,7 +5386,7 @@ functions below."
                                      ;; is gone. :CONNECT-TIMEOUT is a real deadline on the dial.
                                      :read-timeout (* 4 seconds)
                                      :connect-timeout seconds
-                                     :proxy (nlk:proxy-for endpoint config.proxy)
+                                     :proxy proxy
                                      :want-stream t
                                      ;; Octets: dexador's own character decoding fills a
                                      ;; 128-byte buffer INSIDE the POST — a park where a
@@ -5392,7 +5397,7 @@ functions below."
                                      ;; and decodes lines itself (READ-OCTET-LINE), under
                                      ;; its clock, with the socket in hand.
                                      :force-binary t
-                                     :use-connection-pool t)))))
+                                     :use-connection-pool t))))))
                 ;; A relay that no longer holds the base (restarted, or past its
                 ;; budget) says so with 412: the body goes again against nothing,
                 ;; which rebuilds from the delta alone.
