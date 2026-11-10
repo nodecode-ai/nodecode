@@ -1,0 +1,49 @@
+---
+title: Cyber v1 with Strix
+summary: "Strix's three environment variables, what a scan spends in calls, and the one place its sandbox cannot read a target from."
+---
+
+[Strix](https://strix.ai) is an open-source AI pentester: it drives the target inside a Docker sandbox, exploits what it finds, and reports only what it can prove. Its model is set by an environment variable, and any OpenAI-compatible endpoint is a valid one.
+
+## Install
+
+```sh
+curl -sSL https://strix.ai/install | bash
+```
+
+or, with uv, without the installer:
+
+```sh
+uv tool install strix-agent
+```
+
+Docker has to be running: the first scan pulls its sandbox image.
+
+## Point it at Cyber v1
+
+```sh
+export STRIX_LLM="openai/nodecode-cyber-v1"
+export LLM_API_BASE="https://api.nodecode.ai/v1"
+export LLM_API_KEY="sk-nc-..."
+
+strix --target ./app
+```
+
+`STRIX_LLM` is `<provider>/<model>`, and `openai/` is the provider that means "an OpenAI-compatible endpoint at `LLM_API_BASE`", so nothing here needs Strix to know our name. `LLM_API_KEY` is sent as the bearer token.
+
+## What a scan spends
+
+Strix reports its own usage as it runs, and an agentic loop is a very cacheable one: on a 30-line Flask app in quick mode it made 88 requests, 7.1M input tokens of which 6.9M were cache hits, and 171.7k output tokens, for about 0.36 at these prices. Nearly all of the input is the same prefix on every call, so the cached price (0.009 a million) does the work and the uncached price pays for the 200k that differed.
+
+## Where its sandbox cannot read
+
+The target is mounted into a container that runs under `container_t`, and on a host with SELinux enforcing that context cannot read every path. A target under `/tmp` (`user_tmp_t`) and one under `/data` (`default_t`) both came back as files Strix could `stat` but not `open`, and its own report says so instead of pretending it looked. A target in your home is the ordinary case and works.
+
+## Bounding it
+
+```sh
+strix --target ./app --instruction "Find the SQL injection and prove it with a live request." \
+      -m quick --max-turns 60 --max-budget 1.00
+```
+
+A reasoning model spends tokens before it answers, so a turn limit in the single digits ends a scan in the middle of the reconnaissance. `--max-budget` is in dollars and stops it there.

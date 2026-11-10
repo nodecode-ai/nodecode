@@ -1,0 +1,55 @@
+---
+title: Cyber v1
+summary: "Calling Nodecode's abliterated model: a key, a base URL, the three wire shapes it answers, and the one thing that goes wrong with a reasoning model."
+---
+
+Cyber v1 is `nodecode-cyber-v1`: DeepSeek V4.1 Flash 1017 with its refusal direction abliterated, 1,048,576 tokens of context, served on machines Foresight Labs runs in Europe with zero data retention.
+
+## A key
+
+Make one at [nodecode.ai/account/keys](https://nodecode.ai/account/keys). It starts `sk-nc-`, and it is shown once. A balance is topped up at [Top up](https://nodecode.ai/account/top-up); `nodecode login --api` writes the key into `~/.nodecode/config.jsonc` so the CLI spends it, and leaves it where any curl can read it too.
+
+## The first call
+
+```sh
+curl https://api.nodecode.ai/v1/chat/completions \
+  -H "Authorization: Bearer $NODECODE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "nodecode-cyber-v1",
+    "messages": [{"role": "user", "content": "22/tcp and 8080/tcp are open. What next, in order?"}],
+    "max_tokens": 600
+  }'
+```
+
+## Three wires
+
+One model, three shapes of request. A client that speaks any of them points here with a base URL and a key, and needs nothing else.
+
+| Wire | Path | Clients that speak it |
+| --- | --- | --- |
+| OpenAI chat completions | `/v1/chat/completions` | OpenAI SDK, LiteLLM, LangChain, Strix |
+| OpenAI Responses | `/v1/responses` | Codex CLI |
+| Anthropic Messages | `/v1/messages` | Anthropic SDK, Claude Code |
+
+All three answered on 2026-11-10 against this endpoint.
+
+## A reasoning model
+
+It thinks first, and `max_tokens` covers the thinking. A call given 100 tokens spends them reasoning and returns an empty `content` with `finish_reason: "length"`, which reads like a refusal and is not one: give a call a few hundred tokens.
+
+| Wire | Where the thinking arrives |
+| --- | --- |
+| chat completions | `message.reasoning`, with the answer in `message.content` |
+| Responses | an `output` item of `type: "reasoning"`, before the `message` |
+| Messages | a `thinking` block, before the `text` block |
+
+## What it costs
+
+Per token, from a balance: 0.009 a million cached input, 0.33 a million input, 1.32 a million output, the same number in euros or dollars. Every Friday to Sunday, Amsterdam time, half of that. A call over 262,144 tokens of input pays four times the cached price for its cached input. [Pricing](https://nodecode.ai/pricing#api) carries the live figure, spot machines included.
+
+## With your agent
+
+- [Cyber v1 with Strix](cyber-strix.mdx)
+- [Cyber v1 with PentAGI](cyber-pentagi.mdx)
+- [Cyber v1 with PentestGPT](cyber-pentestgpt.mdx)

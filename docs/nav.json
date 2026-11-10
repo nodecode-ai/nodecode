@@ -31,6 +31,15 @@
       ]
     },
     {
+      "name": "Cyber v1",
+      "pages": [
+        "cyber",
+        "cyber-strix",
+        "cyber-pentagi",
+        "cyber-pentestgpt"
+      ]
+    },
+    {
       "name": "Cells",
       "pages": [
         "cells"
