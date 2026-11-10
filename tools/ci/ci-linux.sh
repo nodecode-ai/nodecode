@@ -89,6 +89,7 @@ done_step install
 step release
 bash tools/release/release-test.sh
 bash tools/release/publish-test.sh
+bash tools/release/publish-hub-test.sh
 done_step release
 
 # The release build and the suite run on one SBCL and quicklisp, whose cache

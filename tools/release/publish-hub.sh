@@ -41,7 +41,11 @@ bash "$work/repo/.github/check.sh" "$binary" || {
 # from near by instead of the repository from GitHub (HUB-ARCHIVE-CHECKOUT).
 # An archive already on the host is never rewritten -- the sha256 an index
 # names never changes under an edge's copy -- and the index names only an
-# archive whose served bytes were just read back to that sha256.
+# archive whose served bytes were read back to that sha256: just now, or by
+# the publish that wrote the index the host serves, which names it at the same
+# address with the same sha256. So a publish reads back only the archives that
+# index does not name, side by side, and a read that stalls or drops is read
+# again before the publish stops.
 NODECODE_HUB_WORK="$work" python3 - <<'PY'
 import hashlib, json, os, subprocess
 work = os.environ["NODECODE_HUB_WORK"]
@@ -68,25 +72,55 @@ if [ -d "$work/archives" ]; then
   chmod -R u=rwX,go=rX "$work/archives"
   tar -C "$work/archives" -cf - . | ssh -o BatchMode=yes "$host" "mkdir -p '$remote_dir' && tar -C '$remote_dir' --skip-old-files -xf -"
   ssh -o BatchMode=yes "$host" "cd '$remote_dir' && find . -mindepth 2 -maxdepth 2 -name '*.tar.gz' -exec sha256sum {} +" > "$work/sums"
+  ssh -o BatchMode=yes "$host" "cat '$remote_dir/index.json' 2>/dev/null || true" > "$work/served-index.json"
 fi
 NODECODE_HUB_WORK="$work" NODECODE_HUB_BASE="${base_url%/}" python3 - <<'PY'
-import hashlib, json, os, urllib.request
+import concurrent.futures, hashlib, http.client, json, os, sys, time, urllib.request
 work, base = os.environ["NODECODE_HUB_WORK"], os.environ["NODECODE_HUB_BASE"]
+timeout = float(os.environ.get("NODECODE_HUB_READ_TIMEOUT", "60"))
 sums = {}
 if os.path.exists(f"{work}/sums"):
     for line in open(f"{work}/sums"):
         digest, name = line.split(None, 1)
         sums[name.strip().removeprefix("./")] = digest
+# What the index the host serves names was read back when it was written.
+try:
+    proved = {(e.get("archive"), e.get("sha256")) for e in json.load(open(f"{work}/served-index.json"))["cells"]}
+except (OSError, ValueError, LookupError, TypeError, AttributeError):
+    proved = set()
 index = json.load(open(f"{work}/repo/index.json"))
+reads, named = {}, 0
 for e in index["cells"]:
     file = f"{e['commit']}/{e['name']}.tar.gz"
     if e.get("path") and file in sums:
         url = f"{base}/dl/cells/{file}"
-        request = urllib.request.Request(url, headers={"User-Agent": "nodecode-publish-hub"})
-        served = hashlib.sha256(urllib.request.urlopen(request, timeout=60).read()).hexdigest()
-        if served != sums[file]:
-            raise SystemExit(f"publish-hub: {url} serves {served}, not the host's {sums[file]}")
         e["archive"], e["sha256"] = url, sums[file]
+        named += 1
+        if (url, sums[file]) not in proved:
+            reads[url] = sums[file]
+
+def read_back(url):
+    """The sha256 of URL's served bytes and None, or None and why four reads gave none."""
+    request = urllib.request.Request(url, headers={"User-Agent": "nodecode-publish-hub"})
+    for wait in (1, 2, 4, None):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return hashlib.sha256(response.read()).hexdigest(), None
+        except (OSError, http.client.HTTPException) as error:
+            if wait is None:
+                return None, error
+            time.sleep(wait)
+
+wrong = []
+with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
+    for (url, want), (served, error) in zip(reads.items(), pool.map(read_back, reads)):
+        if error is not None:
+            wrong.append(f"publish-hub: {url} gave no bytes in four reads: {error}")
+        elif served != want:
+            wrong.append(f"publish-hub: {url} serves {served}, not the host's {want}")
+if wrong:
+    raise SystemExit("\n".join(wrong))
+print(f"publish-hub: {len(reads)} archives read back, {named - len(reads)} named as the served index proved them", file=sys.stderr)
 with open(f"{work}/index.json", "w") as out:
     json.dump(index, out, indent=2, ensure_ascii=False)
     out.write("\n")
