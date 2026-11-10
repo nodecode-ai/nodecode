@@ -2431,6 +2431,24 @@ Ambient like *CURRENT-DURABLE-TURN* rather than an argument: CALL-PROVIDER's
 lambda list is a stubbing seam (test doubles) and the round
 is turn-loop state, not caller input.")
 
+(defvar *standing-on-handoff* nil
+  "True while AGENT-LOOP asks for the round after one that left work running
+in the background (its HANDOFF-P), bound around that one provider call.
+Ambient like *PROVIDER-ROUND*, for the same stubbing seam.")
+
+(defun silent-handoff-end-p (message &aux (turn *current-durable-turn*))
+  "True when MESSAGE, empty (ASSISTANT-MESSAGE-EMPTY-P), is the model ending
+its turn on a handoff (*STANDING-ON-HANDOFF*) while the turn's own background
+work is still unread (TURN-BACKGROUND-PENDING). The running eval's result
+told it to end its turn, and one that ends it may say nothing: that is a
+handoff, not a broken answer. It is not re-asked and not kept as history;
+the turn completes waiting on the work, whose exit wake carries the value."
+  (and *standing-on-handoff* turn
+       (assistant-message-empty-p message)
+       (turn-background-pending (nlk:durable-turn-session-id turn)
+                                (nlk:durable-turn-turn-id turn))
+       t))
+
 (defvar *previous-request-json* nil
   "The exact serialized body of the turn's previous provider round, as the
 UTF-8 octets that went out, or NIL at round zero, which reads the session's
@@ -3282,13 +3300,18 @@ did not say."
                     ;; words were reasoning_content would complete a turn
                     ;; the room could never show.
                     (when (assistant-message-empty-p message)
-                      ;; A refusal said nothing on purpose: the verdict stands, never re-asked.
-                      (if (member finish-reason '("refusal" "content_filter") :test #'equal)
-                          (error 'provider-refused
-                                 :detail (format nil "the provider refused to answer (finish reason ~a)"
-                                                 finish-reason))
-                          (error 'provider-empty-response
-                                 :detail "provider returned an empty assistant message")))
+                      (cond
+                        ;; A refusal said nothing on purpose: the verdict stands, never re-asked.
+                        ((member finish-reason '("refusal" "content_filter") :test #'equal)
+                         (error 'provider-refused
+                                :detail (format nil "the provider refused to answer (finish reason ~a)"
+                                                finish-reason)))
+                        ;; Silence right after a handoff is the model ending
+                        ;; its turn as the running eval's result told it to:
+                        ;; re-asked, it would only end it again.
+                        ((silent-handoff-end-p message))
+                        (t (error 'provider-empty-response
+                                  :detail "provider returned an empty assistant message"))))
                     ;; Lanes return the exact serialized request, its UTF-8
                     ;; octets, as a fourth value; a test stub that returns three
                     ;; leaves REQUEST-JSON nil and simply records no fact.
@@ -4393,7 +4416,8 @@ and where a terminal answer would end the turn."
                                active-context)
            (if prefill
                (values prefill nil nil nil nil)
-               (let ((*provider-round* round))
+               (let ((*provider-round* round)
+                     (*standing-on-handoff* handoff-p))
                  (call-provider context)))
          ;; A failover this round performed is the round's own identity: every
          ;; fact below — the usage fact's provider/model, the next round's
@@ -4405,20 +4429,25 @@ and where a terminal answer would end the turn."
          ;; Cancelling between the provider's return and the fact commit
          ;; used to lose the text AND the usage while still paying for
          ;; both — and boot resume then re-billed the identical round.
-         (append-message session message)
+         ;; An empty message is a silent end on a handoff, the only one
+         ;; CALL-PROVIDER lets through (SILENT-HANDOFF-END-P): no history,
+         ;; as no wire takes an empty turn back. Its usage still bills below.
+         (unless (assistant-message-empty-p message)
+           (append-message session message))
          ;; The round into the turn's meter: the context it filled is read
          ;; against the budget this round's lane believed (the learned window).
          (note-round (string/= "" (content-text (gethash "content" message)))
                      usage
                      (effective-context-budget context.provider-config))
          (when *current-durable-turn*
-           (nlk:record-assistant-message
-            *current-durable-turn* message
-            :continued-from (getf response-metadata :continued-from)
-            ;; The pictures the answer names, read now for the transcript to
-            ;; draw: the operator's, never a provider's.
-            :metadata (when-let (images (answer-images (content-text (gethash "content" message))))
-                        (json-object "images" images)))
+           (unless (assistant-message-empty-p message)
+             (nlk:record-assistant-message
+              *current-durable-turn* message
+              :continued-from (getf response-metadata :continued-from)
+              ;; The pictures the answer names, read now for the transcript to
+              ;; draw: the operator's, never a provider's.
+              :metadata (when-let (images (answer-images (content-text (gethash "content" message))))
+                          (json-object "images" images))))
            ;; finish_reason and usage are round evidence, not message content:
            ;; the message replays to the provider verbatim, the fact does not.
            (when (or usage finish-reason)
