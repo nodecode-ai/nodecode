@@ -54,7 +54,7 @@ falls back to, NIL where nothing folds."
   (dolist (mode '(:standard :developer))
     (with-frame-model (model 90 30 :session-id "tool-title-pin" :tool-detail mode
                        :state (disclosure-anchor-state))
-      (let* ((title (if (open-live-run model :tool-call) "Ran 1 command" "probe"))
+      (let* ((title (if (open-live-run model :tool-call) "Made 1 tool call" "probe"))
              (window (progn (click-at model 6 (frame-row-carrying model "probe")) (nle::chat-model-band model)))
              (header (row-index-of title (nle::chat-model-line-plain model) :required t))
              (owner (nle::transcript-item-at-line model header)))

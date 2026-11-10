@@ -619,6 +619,10 @@ diff names from the session's directory: the same, behind a ./, or whole."
          (or (string= source path)
              (uiop:string-suffix-p source (concatenate 'string "/" path))))))
 
+(defparameter *shell-tool-names*
+  '("snippet" "run" "bash" "shell" "sh" "exec_command" "evolved_shell")
+  "The tool names whose command string is a shell command, not a snippet.")
+
 (defun tool-call-activity (name command &key metadata error-p)
   "The ACTIVITY of one tool call NAME."
   ;; COMMAND is the call's executable text — the eval snippet, or a shell tool's
@@ -690,8 +694,7 @@ diff names from the session's directory: the same, behind a ./, or whole."
             :note (snippet-note (or command ""))
             :head (snippet-head-line command)
             :error-p error-p))))
-      ;; tool names whose command string is a shell command, not a snippet
-      ((member name '("snippet" "run" "bash" "shell" "sh" "exec_command" "evolved_shell") :test #'equal)
+      ((member name *shell-tool-names* :test #'equal)
        ;; A line the split names nothing for (an echo, a cd, a test, a lone
        ;; false) still ran a command: it is one command, named by its line as
        ;; `git status' is, never the eval snippet's family. A blank line has
