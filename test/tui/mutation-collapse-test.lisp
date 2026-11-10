@@ -173,8 +173,12 @@
 
 (deftest mutation-turn-attribution-reaches-the-attached-peer-unsequenced ()
   (with-gateway-session (port "mutation-owner-peer")
-    (let* ((frames (frames-while (ws port :subscribe '("mutation-owner-peer") :pid 424245)
-                     (await (:tries 50) (nle::attached-shells))
+    ;; The load publishes in-process, so the body waits until the gateway
+    ;; holds the subscription (AWAIT-SUBSCRIPTION): an attached shell alone
+    ;; can still be ahead of its session's subscribe, and the live-only
+    ;; frame then goes out to no one.
+    (let* ((frames (frames-while (ws port :subscribe '("mutation-owner-peer") :pid 424245
+                                          :await-subscription t)
                      (let ((nle::*current-durable-turn*
                              (nlk::%make-durable-turn :session-id "mutation-owner-peer" :turn-id "explicit-turn"
                                 :command-id "c" :definition-revision "base")))
