@@ -55,8 +55,15 @@ function Find-Sbcl {
 
 # One SBCL from the tree's root, its output to LOG (and LOG.err), waited on
 # by itself: a test's child left running must not hold the shard.
+# Each thread gets the control stack a release ships (build-windows.ps1) and
+# `just test' runs at. On Windows SBCL commits a thread's whole stack as the
+# thread starts, twice: its thread block and the stack _beginthreadex takes.
+# At 64MB that is ~130 MB of commit charge a thread (~18 MB at 8MB), the two
+# runners' shards share the guest's commit limit, and a thread that finds none
+# left kills its shard: `GC invariant lost, file "win32-os.c", line 648'
+# (os_alloc_gc_space), read as `<test> KILLED'.
 function Start-Sbcl([string]$sbcl, [string]$log) {
-  $argv = @('--core', "`"$script:sbclCore`"", '--dynamic-space-size', '3072', '--control-stack-size', '64MB', '--noinform', '--non-interactive',
+  $argv = @('--core', "`"$script:sbclCore`"", '--dynamic-space-size', '3072', '--control-stack-size', '8MB', '--noinform', '--non-interactive',
             '--load', "`"$(Join-Path $tree 'tools\ci\windows-suite.lisp')`"")
   $p = Start-Process -FilePath $sbcl -ArgumentList $argv -WorkingDirectory $tree -NoNewWindow -PassThru `
     -RedirectStandardOutput $log -RedirectStandardError "$log.err"
