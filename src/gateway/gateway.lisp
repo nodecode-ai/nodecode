@@ -539,8 +539,15 @@ its subscriptions and rows views. NIL is quiet."
      (stop-gw-peer ws) (remove-peer (car ws.subscriptions) ws) (close-rows-views ws))
     (t (ignore-errors (wsd:close-connection ws)))))
 
-(defun enqueue-peer-frame (peer item &key session-id cursor cursor-present-p encoder &aux accepted)
-  "Enqueue one bounded writer item, sequencing session frames per peer."
+(defun enqueue-peer-frame (peer item &key session-id cursor cursor-present-p encoder attach
+                                &aux accepted)
+  "Enqueue one bounded writer item, sequencing session frames per peer.
+ATTACH marks the peer attached in the same step that queues ITEM."
+  ;; ATTACH is for the connect ack. The writer pops under the same lock, so
+  ;; the ack reaches the wire only after the peer is attached and every
+  ;; FANOUT-FRAME reaches a client that has read its ack. Marked after the
+  ;; ack instead, a frame broadcast in that gap skipped a client that was
+  ;; already acting on the ack.
   ;;
   ;; ITEM is a pre-encoded string for unsequenced control frames, a replay job,
   ;; or a function of the writer's peer state, called when its turn comes.
@@ -589,6 +596,7 @@ its subscriptions and rows views. NIL is quiet."
                (when (and session-id cursor-present-p)
                  (setf (gethash session-id state.durable-cursors)
                        cursor))
+               (when attach (setf state.attached-p t))
                (setf accepted t))
               (t (tombstone-peer-queue
                   state (nlk::encode-sync-protocol-error
@@ -4393,9 +4401,9 @@ the longest directory's (a path ending in /) that URI lies under."
                                    handshake-complete t)
                              (enqueue-peer-frame
                               ws (nlk:encode-gateway-connect-ack accepted-scopes
-                                                              :version (effective-version)))
-                             (nlk:note-boot-phase "ws-acked")
-                             (mark-peer-attached ws))))))
+                                                              :version (effective-version))
+                              :attach t)
+                             (nlk:note-boot-phase "ws-acked"))))))
            (wsd:on :close ws
                    (lambda (&key &allow-other-keys)
                      (stop-gw-peer ws)
