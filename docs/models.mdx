@@ -251,11 +251,16 @@ The ladder, weakest first: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `
 | Row | Does |
 | --- | --- |
 | A rung | Sets the effort for this session and every new session. Applies from the next turn. |
+| `auto` | Offered while a decider is pinned. The decider picks each turn's rung. |
 | Default | Uses the model's own reasoning. |
+
+With `auto`, the [decider](#models) reads each turn's ask before its first round and picks one of the model's own rungs, never `off`. That rung binds the whole turn, the same as a `/think` pick. If no decider is pinned, or it fails or takes more than 10 seconds, the turn runs at the default effort instead, or the model's own reasoning when the default is `auto` too. The failure stays in `/status` until a call succeeds. `auto` can also be set as `general.default_model.effort`.
+
+While a turn runs, the footer shows the effort its requests carry: `(auto: high)` after the decider picked `high`, or the rung a `:round` hook moved it to. Between turns it shows the pick.
 
 | Source | Detail |
 | --- | --- |
-| `general.default_model.effort` | The default effort. `/think` writes it when `default_model` is set. |
+| `general.default_model.effort` | The default effort: a rung, or `auto`. `/think` writes it when `default_model` is set. |
 | `NODECODE_REASONING_EFFORT` | Outranks the config default. |
 | A session's `/think` pick | Outranks both. |
 

@@ -162,6 +162,9 @@ thread reads it and clears this place.")
               (refresh-sessions-dialog model))
             (refresh-status-dialog model :activity t))
            ((string= kind "organism.notices")
+            ;; The whole board: the hooks it says are skipped are the
+            ;; footer's chip (SKIPPED-HOOK-SEGS).
+            (note-skipped-hooks model payload)
             (refresh-status-dialog model :board payload))
            ((string= kind "organism.notice")
             ;; The organism speaking to every attached shell (NLE:NOTICE):

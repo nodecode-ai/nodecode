@@ -74,6 +74,34 @@
       (is (signals-error nle::effort-refusal (nle:slash "/think bogus" :session-id "think-off")))
       (is (equal "off" (session-effort "think-off")) "a refused pick leaves the disable intact"))))
 
+(deftest think-auto-rides-the-gateway-while-a-decider-is-pinned ()
+  ;; nodecode#421: auto is a pick beside the rungs while a decider is pinned
+  ;; to resolve it, and the target says what a running turn sends.
+  (with-saved-globals
+      ((nle::*reasoning-effort* "high")
+       (nle::*model-capability-overrides*
+         '(("native-reasoner" . (:effort-levels ("low" "high")))))
+       (nle::*models-catalog-path* nil))
+    (with-gateway-frame (model "think-auto" "openai-responses" "native-reasoner")
+      (with-stubbed-fdefinition (nle::decider-model () (values "djev" "dgemma" "http://127.0.0.1:8011" nil))
+        (let ((target (nle::gateway-target-json :session-id "think-auto")))
+          (is (equalp #("off" "low" "high" "auto") (gethash "efforts" target)))
+          (is (eq :null (gethash "running" target)) "no turn runs, so nothing is in flight"))
+        (nle:slash "/think auto" :session-id "think-auto")
+        (is (equal "auto" (session-effort "think-auto")))
+        (is (equal '("/think default" "/think off" "/think low" "/think high" "/think auto")
+                   (map 'list (lambda (row) (nlk:json-value row :text "run" "enter"))
+                        (nle::json-array (nth-value 1 (nle:slash "/think" :session-id "think-auto")) "rows"))))
+        (nlk:with-cleanup ((nle::note-turn-effort "think-auto" nil :endp t))
+          (nle::note-turn-effort "think-auto" "high")
+          (is (equal "high" (nlk:json-value (nle::gateway-target-json :session-id "think-auto")
+                                            :string "running" "effort")))
+          (is (equal "auto" (nlk:json-value (nle::gateway-target-json :session-id "think-auto")
+                                            :string "effort")) "the pick stays auto"))
+        (is (eq :null (gethash "running" (nle::gateway-target-json :session-id "think-auto")))))
+      (with-stubbed-fdefinition (nle::decider-model () nil)
+        (is (signals-error nle::effort-refusal (nle:slash "/think auto" :session-id "think-auto")))))))
+
 (deftest think-off-rides-the-frozen-turn-config (with-session-store ("think-off-run"))
   (let ((nle::*models-catalog-path* nil)
         (nle::*model* "native-reasoner")

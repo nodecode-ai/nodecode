@@ -583,7 +583,13 @@
             "provider": { "$ref": "#/$defs/MaybeString" },
             "model": { "$ref": "#/$defs/MaybeString" },
             "effort": { "$ref": "#/$defs/MaybeString" },
-            "efforts": { "type": "array", "items": { "type": "string" } }
+            "efforts": { "type": "array", "items": { "type": "string" } },
+            "running": {
+              "oneOf": [
+                { "type": "null" },
+                { "type": "object", "properties": { "effort": { "$ref": "#/$defs/MaybeString" } } }
+              ]
+            }
           }
         },
         "pending_prompts": { "type": "array" }
