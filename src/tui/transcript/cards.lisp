@@ -787,7 +787,7 @@ block's padding included when its viewport policy owns any."
      row.hydrated row.error-p
      row.evicted-p row.voided
      row.thought-ms row.reasoning-tokens
-     row.text-rev)
+     row.text-rev *hooks*)
     (let* ((fill (row-block-fill row))
            (body (row-body-llines row width))
            ;; The block's own padding rows. Padding is a property of the block, not of the

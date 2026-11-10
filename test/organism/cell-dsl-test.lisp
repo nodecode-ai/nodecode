@@ -252,6 +252,47 @@ registry saved around it and the two counters zeroed."
       (is (null (nle::find-registered-command "declared")))
       (is (null (assoc :declared nle::*help-topics*))))))
 
+(deftest a-shell-lays-a-cells-words-for-its-calls-and-starts-nothing (with-cell-fixture (root))
+  ;; Given a folder whose cell words its own calls with a hook on
+  ;; TOOL-ARGUMENTS-ACTIVITY (an acp call is the command its agent ran), loaded
+  ;; the way a shell loads its folder -- beside an organism in another process,
+  ;; nothing started -- then the shell's pass lays that hook and nothing else
+  ;; of the cell: the call reads as its command, the start never ran, the hook
+  ;; on :frame is not laid; and a vetoed section lays nothing.
+  (write-cell-folder
+   root "nl-shown"
+   '(("cell" . "(defpackage #:nl-shown (:use #:cl) (:export #:start-cell #:*starts*))
+(in-package #:nl-shown)
+(defvar *starts* 0)
+(nodecode.kernel:define-peripheral shown :not-running t)
+(defun words (next name arguments &rest keys)
+  (if (equal name \"shown\")
+      (let ((command (nodecode.evolved::tool-argument-text arguments '(\"command\"))))
+        (nodecode.evolved::activity-from-entries (nodecode.evolved::shell-command-entries command)
+                                                 :head command))
+      (apply next name arguments keys)))
+(nodecode.evolved:define-cell shown
+  (:section (\"nl-shown\")
+    (\"mode\" :string :doc \"unread\"))
+  (:hook 'nodecode.evolved::tool-arguments-activity #'words)
+  (:hook :frame (lambda (op next) (funcall next op)))
+  (:start (lambda () (incf *starts*))))")))
+  (let ((record (first (load-cell-fixture root)))
+        (starts (uiop:find-symbol* '#:*starts* '#:nl-shown))
+        (arguments "{\"command\":\"git status\"}"))
+    (nlk:with-cleanup ((nle:unhook 'nle::tool-arguments-activity "nl-shown"))
+      (is-present record "the folder loaded")
+      (is (null (nle::tool-arguments-activity "shown" arguments)) "before the pass the call has no words")
+      (is (null (nle::show-cells (nlk:json-object "nl-shown" (nlk:make-json-object "enabled" nil)))) "a vetoed section lays nothing")
+      (is (null (nle::tool-arguments-activity "shown" arguments)))
+      (is (equal '("nl-shown") (nle::show-cells (nlk:make-json-object))) "the pass lays the cell's words")
+      (is-present (activity (nle::tool-arguments-activity "shown" arguments)) "the call reads as its command"
+        (is (search "git status" (nle::activity-title activity))))
+      (is (search "git status" (nle::tool-activity-verb "shown" arguments)) "and the live band says it too")
+      (is (zerop (symbol-value starts)) "the cell's start never ran")
+      (is (null (nlk:cell-started-p record)))
+      (is (null (cell-hook "nl-shown" :frame)) "a hook on a point the shell does not word with is not laid"))))
+
 (deftest cell-declaration-reads-is-quoted-data ()
   ;; Given a :command whose :reads is written as the docs once showed it,
   ;; unquoted, when the declaration expands, then it refuses there and says
