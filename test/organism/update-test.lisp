@@ -752,6 +752,31 @@ asks again after a pause -- and stops the moment the image has caught up."
       (setf nlk::*effective-version* "no-such")
       (is (equal "9.0.1+no-such" (nle::effective-version))))))
 
+(deftest update-an-image-on-another-build-than-current-tells-the-model-both ()
+  ;; A gateway four days on 0.1.11 under a 0.1.13 install: its notices said
+  ;; `nodecode updated to 0.1.11', `nodecode --version' said 0.1.13, and the
+  ;; model called the true notice text pasted into the ask. The model reads
+  ;; both builds where it reads the notices; an image on `current', and one
+  ;; that is not laid out by the installer, read nothing.
+  (with-release-host (dist (list (cons "tv1" (numbered-release-files "9.0.1"))
+                                 (cons "tv2" (numbered-release-files "9.0.2"))))
+    (nle::stage-release "tv1")
+    (nle::stage-release "tv2")
+    (nle::link-release "tv2")
+    (flet ((build () (cdr (assoc "build" (nle::read-live-sections nil) :test #'string=))))
+      (with-saved-globals ((nle::*user-agent-version* "9.0.1+tv1")
+                           (nlk::*effective-version* "tv1"))
+        (with-stubbed-fdefinition (nle::installed-release-root () nle::*release-directory*)
+          (is-carrying (text (build))
+            ("This image runs nodecode 9.0.1+tv1" "the build this image's definitions are at")
+            ("current build is 9.0.2+tv2" "the install's, spelled as --version spells it")
+            ("`nodecode --version' answers that one" "the check a model makes, named"))
+          (setf nlk::*effective-version* "tv2")
+          (is (null (build)) "an image on `current' is told nothing"))
+        (setf nlk::*effective-version* "tv1")
+        (with-stubbed-fdefinition (nle::installed-release-root () nil)
+          (is (null (build)) "nor one the installer did not lay out: a checkout's"))))))
+
 (deftest update-a-window-whose-path-predates-the-update-is-told-why ()
   ;; Windows puts the version's own folder on the user PATH, and a window keeps
   ;; the PATH it opened with: after `nodecode update' there, `nodecode' still
