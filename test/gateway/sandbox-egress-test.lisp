@@ -24,6 +24,7 @@
     (is (null (nle::sandbox-key-stand-in-providers (format nil "~a6f" nlk:+jail-key-prefix+))) "a prefix without its end names nothing")
     (is (string= "Bearer sk-real" (nle::sandbox-swap-stand-ins (format nil "Bearer ~a" openai) '(("openai" . "sk-real")))) "the swap puts the key where its stand-in was")))
 
+#-win32
 (deftest sandbox-egress-private-addresses ()
   (dolist (text '("127.0.0.1" "10.1.2.3" "172.16.0.1" "172.31.255.255" "192.168.1.1" "169.254.169.254"
                   "100.64.0.1" "0.0.0.0" "224.0.0.1" "::1" "::" "fd00::1" "fe80::1" "::ffff:127.0.0.1"))
@@ -99,6 +100,7 @@
     (is (string= (nle::sandbox-key-stand-in "fake") (nle::json-value (nlk:decode-json config) :text "providers" "fake" "api_key"))))
   (is (null (nle::sandbox-stand-in-config "{\"providers\": {\"x\": {\"base_url\": \"http://h\"}}}")) "a config.jsonc with no key is the jail's as it is"))
 
+#-win32
 (deftest sandbox-egress-argv-mounts-the-stand-ins ()
   (let ((argv (nle::sandbox-bwrap-argv '("/opt/nc/nodecode" "serve")
                                        :home "/h/.nodecode/" :folder "/w/proj/" :binary "/opt/nc/nodecode"

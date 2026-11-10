@@ -40,6 +40,7 @@
     (is (equal '("--" "/opt/nc/nodecode" "serve" "--store" "/h/a b/store.db") (last argv 5)) "the serve argv word for word, a store path with a space one word")
     (is (not (find-if (lambda (word) (or (search "srt" word) (search "socat" word))) argv)) "no srt, no socat")))
 
+#-win32
 (deftest sandbox-jail-mounts-the-work-and-nothing-of-the-home ()
   (let ((argv (sandbox-test-argv)))
     (is (sandbox-test-mount argv "--bind" "/w/proj") "the folder is written")
@@ -56,6 +57,7 @@
       (is (< (sandbox-test-mount argv "--bind" "/w/proj") root) "after the mounts"))
     (is (equal "/w/proj" (second (member "--chdir" argv :test #'string=))) "it works in the folder")))
 
+#-win32
 (deftest sandbox-jail-never-takes-a-home-as-its-folder ()
   (let ((homes '("/home/u/")))
     (is (null (nle::sandbox-work-folder "/home/u/" homes)) "the user's home is no work folder")
@@ -66,6 +68,7 @@
     (is (not (sandbox-test-mount argv "--bind" "/home/u")) "launched in the home, the jail gets no folder")
     (is (equal "/h/.nodecode" (second (member "--chdir" argv :test #'string=))) "and works in its own home")))
 
+#-win32
 (deftest sandbox-jail-hides-the-keys-and-guards-the-launchers-files ()
   (let* ((argv (sandbox-test-argv :hidden '("/h/.nodecode/auth.json" "/h/.nodecode/secrets/"
                                             "/h/.nodecode/secrets/providers.x.api_key" "/h/.nodecode/backups/")
@@ -80,6 +83,7 @@
         (is (and at (< home at)) (format nil "~a is read-only, over the written home" file))))
     (is (< home (search '("--ro-bind" "/dev/null" "/h/.nodecode/auth.json") argv :test #'equal)) "the hiding goes over the home")))
 
+#-win32
 (deftest sandbox-jail-keeps-a-binary-in-its-folder-read-only ()
   ;; ./nodecode --sandbox in a checkout: the folder is written, the binary in
   ;; it is not, and the rest of the checkout stays the folder's.
@@ -87,12 +91,14 @@
     (is (not (sandbox-test-mount argv "--ro-bind" "/w/proj")) "the folder is not made read-only")
     (is (< (sandbox-test-mount argv "--bind" "/w/proj") (sandbox-test-mount argv "--ro-bind" "/w/proj/nodecode")) "the binary alone is, after it")))
 
+#-win32
 (deftest sandbox-jail-merges-the-operators-policy ()
   (let ((argv (sandbox-test-argv :policy '(:allow-write ("/data") :allow-read ("/srv/docs") :deny-read ("/w/proj/.env")))))
     (is (sandbox-test-mount argv "--bind" "/data") "allow_write is written")
     (is (sandbox-test-mount argv "--ro-bind" "/srv/docs") "allow_read is read")
     (is (search '("--ro-bind" "/dev/null" "/w/proj/.env") argv :test #'equal) "deny_read inside the folder is hidden")))
 
+#-win32
 (deftest sandbox-jail-gets-only-the-safe-environment ()
   (let ((argv (sandbox-test-argv :environment '("PATH=/usr/bin:/home/u/bin:/opt/nc" "HOME=/home/u" "NODECODE_HOME=/h/.nodecode"
                                                 "NODECODE_API_KEY=sk-x" "OPENAI_API_KEY=sk-y" "SSH_AUTH_SOCK=/run/user/1/ssh"
