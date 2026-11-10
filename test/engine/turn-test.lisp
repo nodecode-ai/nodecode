@@ -1528,6 +1528,76 @@ SESSION-ID, in log order."
           (is-present (completion (first payloads)) "the turn completed"
             (is (null (gethash "background-pending" completion)))))))))
 
+(defun silent-handoff-post (posts args &key (eval-form "(sh \"sleep 30\")") (silent-delay 0))
+  "The stream the POSTS-th request of a silent handoff reads: the model hands
+EVAL-FORM off to the background, then ends its turn saying nothing (after
+SILENT-DELAY seconds), then answers with the value it was read. ARGS are
+dex:post's, unused."
+  (declare (ignore args))
+  (case posts
+    (1 (make-sse-stream (tool-call-chunk-json
+                         0 "c1" "eval"
+                         (format nil "{\"form\": ~s, \"yield_time_ms\": 200}" eval-form))))
+    (2 (sleep silent-delay)
+       (make-sse-stream (chunk-json nil :finish-reason "stop")))
+    (t (make-sse-stream (chunk-json "it woke" :finish-reason "stop")))))
+
+(deftest a-turn-that-ends-silent-on-its-handoff-completes-waiting-on-it ()
+  ;; The running eval's result tells the model to end its turn, and a model
+  ;; that ends it may say nothing. That silence read as a broken answer: it
+  ;; was asked again five times, silent each time, the turn failed, and a
+  ;; failed turn's exits never wake its session, so the ask died unanswered.
+  ;; Asked once, the turn completes waiting on the eval and keeps no empty
+  ;; message.
+  (with-session-store ("bg-silent")
+    (let ((posts 0) (nle::*retry-base-delay* 0))
+      (with-stubbed-fdefinition (dex:post (url &rest args)
+                                 (declare (ignore url))
+                                 ;; Silent every time it is asked after the handoff.
+                                 (values (silent-handoff-post (min 2 (incf posts)) args) 200))
+        (nlk:with-cleanup ((dolist (entry (nle::list-evals))
+                             (ignore-errors (nle::eval-interrupt (getf entry :id) :force t))))
+          (nlk:with-handlers ((error () nil))
+            (nle:run "dig" :session (nle:intern-session "bg-silent")
+                           :command-id "bg-silent-command"))
+          (is (= 2 posts) "the silence is asked once, never again")
+          (let ((completions (nlk:events :session-id "bg-silent" :kind nlk::+kind-turn-completed+
+                                         :order :newest :as :payloads))
+                (messages (session-events "bg-silent" :type 'nlk::assistant-message)))
+            (is-present (completion (first completions)) "the turn completed"
+              (is (eql 1 (gethash "background-pending" completion)) "waiting on the eval"))
+            (is (= 1 (length messages)) "the silence is no message")))))))
+
+(deftest a-silent-end-whose-work-exits-meanwhile-reads-it-and-answers ()
+  ;; The handed-off eval exits while the silent round streams: the turn reads
+  ;; the exit in a round of its own and asks again, the value in hand.
+  (with-session-store ("bg-silent-read")
+    (let ((posts 0) (third-body nil) (nle::*retry-base-delay* 0))
+      (with-stubbed-fdefinition (dex:post (url &rest args)
+                                 (declare (ignore url))
+                                 (when (= 3 (incf posts))
+                                   (let ((content (getf args :content)))
+                                     (setf third-body
+                                           (if (stringp content)
+                                               content
+                                               (sb-ext:octets-to-string
+                                                (coerce content '(vector (unsigned-byte 8)))
+                                                :external-format :utf-8)))))
+                                 (values (silent-handoff-post posts args
+                                                              :eval-form "(progn (sleep 0.5) :woke)"
+                                                              :silent-delay 2.5)
+                                         200))
+        (let ((answer (nlk:with-handlers ((error () nil))
+                        (nle:run "dig" :session (nle:intern-session "bg-silent-read")
+                                       :command-id "bg-silent-read-command"))))
+          (is (equal "it woke" answer) "the model answers once the value is read")
+          (is (= 3 posts) "the silence is asked once, the read round after it")
+          (is (search "WOKE" (or third-body "")) "the next round carries the eval's value")
+          (let ((completions (nlk:events :session-id "bg-silent-read" :kind nlk::+kind-turn-completed+
+                                         :order :newest :as :payloads)))
+            (is-present (completion (first completions)) "the turn completed"
+              (is (null (gethash "background-pending" completion)) "its answer is the ask's"))))))))
+
 (deftest loop-runs-a-tool-then-recurs (let ((session (nle::make-session))))
   (nle:admit session "compute")
   (with-stub-provider ((wire-message "assistant"
