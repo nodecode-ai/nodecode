@@ -192,16 +192,26 @@ listener's publication to the end of its start pass
 (START-CELLS-BEHIND-THE-LISTENER). A provider a cell serves has no lane
 before then, so what asks for one meanwhile waits rather than refuses.")
 
+(defun cell-folder-on-p (cell &aux (path (cell-path cell)))
+  "Whether CELL's folder is one a start may start: still there and not
+parked (/cells off). A record with no folder is."
+  ;; /cells off on the operator's own folder parks it and keeps the record
+  ;; loaded until a restart: the folder stays, so presence alone read it as
+  ;; on, and a bare (restart-cells) started it again (2026-11-10).
+  (or (null path)
+      (and (probe-file path) (not (folder-parked-p path)))))
+
 (defun cell-start-pending-p (cell)
-  "Whether CELL is a loaded peripheral, present, that the start pass under
-way (*CELLS-STARTING*) has still to start, and that refused none."
+  "Whether CELL is a loaded peripheral, on (CELL-FOLDER-ON-P), that the
+start pass under way (*CELLS-STARTING*) has still to start, and that
+refused none."
   (and *cells-starting*
        cell
        (eq (cell-state cell) :loaded)
        (cell-start cell)
        (not (cell-started-p cell))
        (not (cell-refusal cell))
-       (or (null (cell-path cell)) (probe-file (cell-path cell)))
+       (cell-folder-on-p cell)
        t))
 
 (defun system-cell (system)

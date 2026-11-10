@@ -4641,12 +4641,13 @@ start: what a retry tries again."
   (and cell cell.refusal (cell-startable-p cell)))
 
 (defun cell-startable-p (cell)
-  "Whether CELL is a loaded peripheral not started, still present: what a
-start starts."
-  ;; A folder taken out of the one folder (control.lisp's off) keeps its code
-  ;; until a restart, never its start: presence is consent.
+  "Whether CELL is a loaded peripheral not started, its folder still on
+(NLK:CELL-FOLDER-ON-P): what a start starts."
+  ;; A folder taken out of the one folder or parked (control.lisp's off)
+  ;; keeps its code until a restart, never its start: presence is consent,
+  ;; and a parked folder has taken it back.
   (and (eq cell.state :loaded) cell.start (not cell.started-p)
-       (or (null cell.path) (probe-file cell.path))))
+       (nlk:cell-folder-on-p cell)))
 
 (defun retry-cell-start (name &aux (handler *gateway-handler*))
   "Try the folder NAME's start again on a thread of its own, after each wait

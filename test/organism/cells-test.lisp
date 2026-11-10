@@ -270,6 +270,29 @@ is not EQ to the one a later eval interns — names compare, symbols do not."
         (nle::restart-cells)
         (is (null (board-line "shared config")) "the nested spelling clears it")))))
 
+(deftest cells-restart-starts-no-folder-cells-turned-off (with-cell-fixture (root))
+  ;; /cells off parks the operator's own folder and stops its peripheral; the
+  ;; record stays loaded until a restart. A bare (restart-cells), what a lane
+  ;; runs after any config change, started it again while /cells showed it
+  ;; off (2026-11-10).
+  (write-peripheral-folder root "nl-parkoff" :start "(declare (ignore config)) (lambda () nil)")
+  (with-saved-globals ((nlk::*cells-directory* root))
+    (let ((record (first (load-cell-fixture root))))
+      (nle::start-cells)
+      (is (nlk:cell-started-p record) "the folder starts while it is on")
+      (is (search "nl-parkoff is off" (nle::switch-cell-off "nl-parkoff")) "/cells turns it off")
+      (is (nlk:cell-parked-p "nl-parkoff"))
+      (is (null (nlk:cell-started-p record)))
+      (let ((answer (nle:restart-cells)))
+        (is (null (nlk:cell-started-p record)) "a bare restart starts no folder /cells turned off")
+        (is (not (search "nl-parkoff: peripheral, 0 definitions, started" answer)) "nor says it started"))
+      (nle::start-cells)
+      (is (null (nlk:cell-started-p record)) "nor does a start of every cell")
+      (nlk:unpark-cell "nl-parkoff")
+      (nle:restart-cells)
+      (is (nlk:cell-started-p record) "and the next restart starts it")
+      (nle::stop-cells))))
+
 (deftest cells-restart-starts-a-refused-peripheral (with-cell-fixture (root))
   ;; The onboarding shape: a peripheral refuses its config at boot, the
   ;; refusal stands on the record and the board, the operator fixes the
