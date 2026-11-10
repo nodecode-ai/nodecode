@@ -992,19 +992,21 @@ folder laid out within the hour. Windows' installer reads no age."
   ;; This image took 2b2b2b2 hot under a build that held nothing, and the
   ;; release went since -- by hand, or by an installer that saw no hold. It
   ;; is laid out again from the release host before the next one is read
-  ;; against it.
+  ;; against it. Once the image is on the next, the link may prune it again
+  ;; (Windows' installer reads no age), so what was laid out is recorded.
   (setf nlk::*source-root* (truename (merge-pathnames "src/src/" (nle::stage-release "2b2b2b2"))))
   (uiop:delete-directory-tree (nle::release-version-directory "2b2b2b2") :validate t)
-  (is (eq :hot (getf (nle::upgrade-organism :version "3c3c3c3" :apply t) :applied)))
-  (is (eql 3 (funcall 'nodecode.evolved::upg-route-f)) "the next release goes live")
-  (is (probe-file (merge-pathnames "src/src/a.lisp" (nle::release-version-directory "2b2b2b2"))) "the release it was read against is laid out again"))
+  (let ((stage (fdefinition 'nle::stage-release)) (staged '()))
+    (with-stubbed-fdefinition (nle::stage-release (label &rest args) (push label staged) (apply stage label args))
+      (is (eq :hot (getf (nle::upgrade-organism :version "3c3c3c3" :apply t) :applied))))
+    (is (eql 3 (funcall 'nodecode.evolved::upg-route-f)) "the next release goes live")
+    (is (member "2b2b2b2" staged :test #'equal) "the release it was read against is laid out again")))
 
 (deftest update-a-look-says-an-update-that-failed (let ((asked 0)))
   ;; The poller and the feed both ask through IGNORE-ERRORS: an update that
   ;; fails with no refusal of its own is said on the board all the same.
   (with-stubbed-fdefinitions ((nle::start-release-feed () nil)
                               (nle::upgrade-organism (&rest args)
-                                (declare (ignore args))
                                 (incf asked)
                                 (error "the tree tv5 was read from is gone")))
     (with-saved-globals ((nlk::*effective-version* "tv5") (nle::*release-list* nil)
