@@ -42,16 +42,21 @@
   (let ((parsed (ignore-errors (let ((*read-eval* nil)) (read-from-string (uiop:getenv name))))))
     (and (typep parsed type) parsed)))
 
+(defparameter +image-target+ '("openai-completions" "deepseek-v4-flash-free")
+  "The (PROVIDER MODEL) this image starts on when nothing names one: no
+NODECODE_* override, no general.default_model pin applied, no pick. Nobody
+chose it and no provider was connected for it, so a turn never runs on it
+unchosen (DEFAULT-TARGET-CHOSEN-P).")
+
 (define-startup-parameter *provider*
-  (or (uiop:getenv "NODECODE_PROVIDER") "openai-completions")
+  (or (uiop:getenv "NODECODE_PROVIDER") (first +image-target+))
   "Lane name selecting the provider dialect. See *PROVIDER-LANES*.")
 
 (define-startup-parameter *endpoint* (uiop:getenv "NODECODE_ENDPOINT")
   "Explicit endpoint override, or NIL to use the selected lane's default.")
 
 (define-startup-parameter *model*
-  (or (uiop:getenv "NODECODE_MODEL")
-      "deepseek-v4-flash-free")
+  (or (uiop:getenv "NODECODE_MODEL") (second +image-target+))
   "Model id passed to the provider.")
 
 ;;; Seeded from general.auxiliary_model at every store open
@@ -3348,6 +3353,21 @@ and every store open seeds from."
                (credential-env "NODECODE_MODEL"))
            t)
       (and (shared-model-pin) t)))
+
+(defun default-target-chosen-p ()
+  "Whether a turn that follows this process's default runs a target the
+operator chose: DEFAULT-MODEL-CONFIGURED-P, except while the process still
+holds the image's own target (+IMAGE-TARGET+) because its seed refused the
+config's pin."
+  ;; The pin is read again at every ask and can read clean where its seed
+  ;; refused it -- a cell's lane, unknown at boot, is known by the first
+  ;; turn -- so the file names a model while the process holds the image's,
+  ;; which no provider was connected for and which answers nobody. A pick
+  ;; moves the process off it (SELECT-DEFAULT-MODEL), and a seed that applies
+  ;; the pin clears the refusal.
+  (and (default-model-configured-p)
+       (not (and *model-config-refusal*
+                 (equal (list *provider* *model*) +image-target+)))))
 
 ;;; --- the auxiliary target ---------------------------------------------------
 ;;; Side work — a naming call, a recap, a summary: anything a session did not

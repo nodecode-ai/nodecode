@@ -4573,10 +4573,13 @@ outranks the default effort the same way while the turn's effective
             ;; A home that chose no model has only the target the image was
             ;; built with, which nobody connected: its turn fails with the
             ;; far end's refusal as raw JSON (OpenCode's free tier now answers
-            ;; only OpenCode). It fails here, saying what to do.
-            (unless (or session-provider (default-model-configured-p))
+            ;; only OpenCode). It fails here, saying what to do -- and so does a
+            ;; home whose pin the seed refused, which holds that same target.
+            (unless (or session-provider (default-target-chosen-p))
               (error 'provider-config-error
-                     :detail "no model is chosen yet: /setup connects a provider and picks one"))
+                     :detail (if *model-config-refusal*
+                                 (format nil "no model is chosen: ~a" *model-config-refusal*)
+                                 "no model is chosen yet: /setup connects a provider and picks one")))
             ;; A provider a cell serves has no lane until the cells start,
             ;; behind a cold boot's listener: the turn waits for them.
             (await-cells-starting *provider*)

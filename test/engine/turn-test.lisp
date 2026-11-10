@@ -9190,6 +9190,26 @@ thinking types DECLARED (a list, :UNDECLARED, or NIL for never asked)."
     (is-present (failed (session-event "no-model" :type 'nlk:turn-failed)) "the turn failed durably"
       (is (search "no model is chosen yet: /setup" (nlk:turn-failed-detail failed))))))
 
+(deftest a-pin-its-seed-refused-runs-no-image-target-in-its-place (with-session-store ("refused-pin"))
+  ;; The seed refused the config's pin, so this process still holds the target
+  ;; the image was built with, while the pin reads clean by the turn (a cell's
+  ;; lane is known by then). The turn ran that target -- a model OpenCode Zen
+  ;; no longer serves -- and failed 400 "Model is unavailable". It fails before
+  ;; any dial, saying why the pin was not applied.
+  (let ((turn (nlk:admit-turn "refused-pin" "rp-cmd" "hello"))
+        (dialed nil))
+    (with-temp-shared-config ("{\"general\":{\"default_model\":{\"provider\":\"openai-completions\",\"model\":\"m-1\"}}}")
+      (with-saved-globals ((nle::*provider* (first nle::+image-target+)) (nle::*model* (second nle::+image-target+))
+                           (nle::*endpoint* nil) (nle::*model-config-refusal* "config refusal: general.default_model: m-1 was refused at boot"))
+        (is (nle::default-model-configured-p) "the pin reads clean by the turn")
+        (with-provider-stub (nil (setf dialed t) (wire-message "assistant" :content "no"))
+          (nlk:with-handlers ((error () nil))
+            (nle:run "hello" :session (nle:intern-session "refused-pin")
+                     :command-id "rp-cmd" :admitted-turn turn)))))
+    (is (not dialed) "no provider was dialed")
+    (is-present (failed (session-event "refused-pin" :type 'nlk:turn-failed)) "the turn failed durably"
+      (is-carrying (detail (nlk:turn-failed-detail failed)) "no model is chosen" "general.default_model: m-1 was refused at boot"))))
+
 (deftest failure-body-drains-a-binary-keep-alive-stream ()
   ;; Every DeepSeek 400 answers application/octet-stream through CloudFront;
   ;; dexador leaves that body a binary KEEP-ALIVE-STREAM with no line
