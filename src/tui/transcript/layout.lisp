@@ -752,35 +752,17 @@ activity's title. NIL for a call with none."
               (format nil "~d files" (length files)))))
       (and activity (activity-title activity))))
 
-(defun tool-call-detail (row)
-  "What call ROW was handed, for a call no words name: the first three
-string values of its arguments, in the order the call gave them, each on one
-line and cut at 60 columns, joined by spaces. A value under a secret's name
-(SECRET-KEY-P) is never one, and a URL's credentials are cut out. NIL for a
-call handed none, or whose arguments are still streaming."
-  ;; A cell's tool (spotify_search, any hub cell's own) has no family and no
-  ;; note: without this it read as its bare name, `spotify_search', four of
-  ;; them under `Ran 4 commands', nothing saying what one looked for or did.
-  ;; Its leading strings are the call's own words for that: `Discovery Daft
-  ;; Punk album', `play spotify:album:...'.
-  (let ((args (and (stringp row.tool-args) (plusp (length row.tool-args))
-                   (ignore-errors (nlk:decode-json row.tool-args)))))
-    (when (hash-table-p args)
-      (let ((texts (loop for key being the hash-keys of args using (hash-value value)
-                         for text = (and (stringp value) (not (secret-key-p key))
-                                         (nlk:one-line (redact-url-credentials value)))
-                         when (and text (plusp (length text)))
-                           collect (clip-text-to-width text 60) into texts
-                         until (= 3 (length texts))
-                         finally (return texts))))
-        (and texts (format nil "~{~a~^ ~}" texts))))))
-
 (defun tool-call-words (row &aux (name (json-value row.tool-name :text)))
   "What a listed call ROW reads as: its words (TOOL-SUMMARY-WORDS), else its
-name and what it was handed (TOOL-CALL-DETAIL), else its name."
+name as words, the action its arguments take and their subject
+(TOOL-ARGUMENTS-WORDS), else its name."
+  ;; A cell's tool (spotify_search, any hub cell's own) has no family and no
+  ;; note: without this it read as its bare name, `spotify_search', nothing
+  ;; saying what it looked for or did. It reads `Spotify search: album
+  ;; 'Discovery Daft Punk'', `Spotify playback: play spotify:album:...'.
   (or (tool-summary-words row)
-      (let ((detail (tool-call-detail row)))
-        (if (and name detail) (format nil "~a · ~a" name detail) name))))
+      (tool-arguments-words name row.tool-args)
+      name))
 
 (defun command-call-p (row &aux (name (json-value row.tool-name :text)))
   "Whether call ROW ran a command: an eval snippet or a shell line, by its
@@ -795,7 +777,7 @@ none (a search, a play) is a tool call."
 edits; a call no words name, its name and what it was handed."
   (let* ((name (or (json-value row.tool-name :text) "…"))
          (title (title-phrases-lline (list (list (if (equal name "eval") "Eval" name) "" nil nil))))
-         (summary (or (tool-summary-words row) (tool-call-detail row))))
+         (summary (or (tool-summary-words row) (tool-arguments-detail row.tool-args))))
     (append-title-detail title summary)
     (append-status-text title (if (row-load-errors row) "error" row.tool-status)
                         (tool-failure-text row)

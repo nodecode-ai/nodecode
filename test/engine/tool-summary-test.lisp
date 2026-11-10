@@ -218,6 +218,49 @@
     ("browser_click" "{}" :default "a tool with no words keeps the pulse")
     (nil nil :default "and so does a call not yet named")))
 
+(deftest a-cell-tool-reads-as-its-name-and-what-its-arguments-say ()
+  ;; A cell's own tool has no family: an opened run listed `spotify_search'
+  ;; and `spotify_playback', the names the model calls them by, and nothing
+  ;; said what the call searched or played.
+  (is-each (nle::tool-arguments-words)
+    ("spotify_search" "{\"query\":\"Discovery Daft Punk\",\"type\":\"album\",\"limit\":3}"
+     "Spotify search: album 'Discovery Daft Punk'" "a query is the subject, quoted, ahead of the rest")
+    ("spotify_search" "{\"query\":\"Discovery Daft Punk\",\"limit\":3}"
+     "Spotify search 'Discovery Daft Punk'" "and of a number")
+    ("mermail_send" "{\"mailbox_id\":\"mb_7f3a\",\"to\":\"ann@example.com\",\"subject\":\"Hi\"}"
+     "Mermail send ann@example.com" "an id says which, not what: the first text past it")
+    ("tg_business" "{\"draftId\":\"d_91\",\"text\":\"See you at 5\"}"
+     "Tg business See you at 5" "and so does a camelCase id")
+    ("spotify_playlists" "{\"action\":\"get\",\"playlist_id\":\"37i9dQZF1DX\"}"
+     "Spotify playlists: get 37i9dQZF1DX" "an id when no other text says more")
+    ("twenty_rest" "{\"method\":\"GET\",\"path\":\"/people\"}"
+     "Twenty rest: get /people" "one word under method, kind, mode or type is the action")
+    ("cashdesk_reply" "{\"customer_id\":\"c_12\",\"kind\":\"dispute\",\"text\":\"Refund sent\"}"
+     "Cashdesk reply: dispute Refund sent" "wherever it stands")
+    ("spotify_library" "{\"action\":\"list\",\"kind\":\"tracks\"}"
+     "Spotify library: list tracks" "behind an action, a kind is the subject")
+    ("notes_save" "{\"title\":\"Plan\",\"type\":\"text/markdown\"}"
+     "Notes save Plan" "more than one word is no action")
+    ("spotify_playback" "{\"action\":\"play\",\"context_uri\":\"spotify:album:2noRn2Aes5\"}"
+     "Spotify playback: play spotify:album:2noRn2Aes5" "an action in words, then the first text")
+    ("spotify_playback" "{\"action\":\"get_currently_playing\"}"
+     "Spotify playback: get currently playing" "an action alone")
+    ("spotify_playback" "{\"action\":\"set_volume\",\"volume_percent\":40}"
+     "Spotify playback: set volume 40" "a number when no text says more")
+    ("spotify_queue" "{\"action\":\"add\",\"uris\":[\"spotify:track:a\",\"spotify:track:b\"]}"
+     "Spotify queue: add spotify:track:a +1" "a list by its first and how many more")
+    ("vault_put" "{\"api_key\":\"sk-live-123\",\"name\":\"github\"}"
+     "Vault put github" "a secret's value is never the subject")
+    ("vault_put" "{\"api_key\":\"sk-live-123\"}"
+     "Vault put" "not even alone")
+    ("rss_add" "{\"url\":\"https://ann:hunter2@feeds.example.com/x\"}"
+     "Rss add https://[set]@feeds.example.com/x" "nor a URL's credentials")
+    ("browser_click" "{}" "Browser click" "no arguments: the name as words")
+    ("spotify_search" "{\"query\":\"Disc" "Spotify search" "arguments still streaming: the name until they are whole")
+    ("eval" "{\"form\":\"(+ 1 2)\"}" nil "eval has words of its own")
+    ("bash" "{\"command\":\"ls\"}" nil "and so does a shell tool")
+    (nil "{}" nil "and a call not yet named")))
+
 (deftest a-shell-command-no-family-names-runs-as-its-line ()
   ;; An echo, a cd, a test name nothing the split reads, lists or searches,
   ;; but a shell tool's call still ran a command: it runs as `running echo
