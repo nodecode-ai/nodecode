@@ -6428,6 +6428,36 @@ and the DELIVERY its handler declares."
     (let ((nle::*expanded-tool-call* "generic-note"))
       (is (find "page content" (nle::row-llines row 100) :key #'nle::lline-text :test #'equal)))))
 
+(deftest viewport-standard-opens-a-worded-call-without-its-raw-arguments ()
+  ;; Given a call its words already name and that ran no command (an acp
+  ;; read: `Read limiter.py'), when it is opened in Standard, then the card
+  ;; is its title and what it returned, never the tool's name and the call's
+  ;; JSON under the title; a call with no words keeps its raw arguments open,
+  ;; and Developer keeps the call as it went.
+  (flet ((words (next name arguments &rest keys)
+           (if (equal name "readish")
+               (nle::activity-from-entries (list (list :read "limiter.py" nil)))
+               (apply next name arguments keys))))
+    (nle:hook 'nle::tool-arguments-activity "test-worded-call" #'words)
+    (nlk:with-cleanup ((nle:unhook 'nle::tool-arguments-activity "test-worded-call"))
+      (let* ((nle::*tool-detail* :standard)
+             (args "{\"title\":\"Read limiter.py\",\"kind\":\"read\",\"path\":\"limiter.py\"}")
+             (row (tool-row "readish" args :tool-call-id "worded" :tool-status "complete" :text "import time"))
+             (bare (tool-row "plain" "{\"q\":1}" :tool-call-id "bare" :tool-status "complete" :text "ok")))
+        (is-present (nle::row-activity row) "the call has words")
+        (let* ((nle::*expanded-tool-call* "worded")
+               (texts (mapcar #'nle::lline-text (nle::row-llines row 100))))
+          (is (some (lambda (text) (search "limiter.py" text)) texts) "the opened card keeps its title")
+          (is (some (lambda (text) (search "import time" text)) texts) "and shows what the call returned")
+          (is (notany (lambda (text) (search "\"kind\"" text)) texts) "but no raw arguments under the title"))
+        (let* ((nle::*expanded-tool-call* "bare")
+               (texts (mapcar #'nle::lline-text (nle::row-llines bare 100))))
+          (is (some (lambda (text) (search "{\"q\":1}" text)) texts) "a call with no words keeps its arguments open"))
+        (let* ((nle::*tool-detail* :developer)
+               (nle::*expanded-tool-call* "worded")
+               (texts (mapcar #'nle::lline-text (nle::row-llines row 100))))
+          (is (some (lambda (text) (search "\"kind\"" text)) texts) "Developer keeps the call as it went"))))))
+
 (deftest user-block-boundaries-own-a-canvas-separator ()
   (dolist (profile '(:none :truecolor :ansi256 :ansi))
     (dolist (width '(40 100))

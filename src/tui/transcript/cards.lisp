@@ -644,7 +644,7 @@ mark: its metadata says `bare'."
                    (cons (image-card-title-lline image row) (image-band-llines image row width))))
                 (t
                  (append (if (eq *tool-detail* :standard)
-                             (cons (tool-summary-lline row) (tool-command-llines row))
+                             (cons (tool-summary-lline row) (opened-call-llines row))
                              (tool-header-llines row))
                          (fork-tree-llines row width :indent 2)
                          (tool-output-llines row width)))))
