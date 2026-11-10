@@ -204,6 +204,6 @@ PIN-WHAT-A-CLONE-CARRIES  # Windows copies where Linux links (make-symlink): jun
 SH-CHILDREN-LEAD-THEIR-OWN-SESSIONS  # cannot exist on Windows: no POSIX sessions or setsid
 STOPPED-CHILD-TREE-COLLAPSES-WITH-A-VERDICT  # cannot exist on Windows: no job-control stop, and the scan reads Linux's /proc
 TERMINAL-SIZE-READS-BOTH-DIMENSIONS-OFF-A-REAL-TERMINAL  # cannot exist on Windows: no pseudo-terminals
-TWO-THOUSAND-APPENDS-UNDER-250MS  # the disk, not a Windows path: commit median 0.05 ms, WAL checkpoint flushes 11-16 ms on NTFS; Linux tmpfs 61 ms, btrfs 200 ms
+TWO-THOUSAND-APPENDS-UNDER-250MS  # over the CPU gate on the 8-core guest: 359 ms CPU, user and kernel (556 ms wall); Linux btrfs 87-117 ms CPU
 UPDATE-EXIT-FOR-RESTART-EXECS-IN-PLACE-WITH-NO-UNIT  # cannot exist on Windows: no exec
 UPDATE-FEED-SESSION-ENDS-WHEN-THE-CONNECTION-GOES-SILENT skip  # a deadline does not end a read on a Windows pipe: it waits out the test timeout
