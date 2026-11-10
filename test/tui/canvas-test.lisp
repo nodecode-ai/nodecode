@@ -84,7 +84,12 @@ stands on a ground of its own."
               (long (words-end "## The verdict on the whole table and its client adapter")))
           (is (= (1+ short) (band-end "## The verdict")) "a heading's band ends two past its words")
           (is (= (1+ long) (band-end "## The verdict on the whole table and its client adapter")) "a longer sentence's band is that much longer")
-          (is (= (1+ short) (band-end "**The verdict** and the prose that follows it")) "a lead run's band is its run's, never under the prose after it"))))))
+          ;; A heading's tail falls past the end of its own line. A lead run
+          ;; shares its line with the prose, so the same tail would land on
+          ;; the words after it: the row paints a mark and a hang first (three
+          ;; cells), and the band stops on the run's last one.
+          (let ((lead "**The verdict** and the prose that follows it"))
+            (is (= (+ 2 (nle::text-display-width "The verdict")) (band-end lead)) "a lead run's band ends on its last word, never under the prose after it")))))))
 
 ;;; Issue #1: a theme drawn for the dark, on a terminal that is not.
 ;;; Tungstene leaves its canvas to the terminal; on a cream one its

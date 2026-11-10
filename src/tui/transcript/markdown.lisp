@@ -690,12 +690,15 @@ reasoning bodies."
                   :spans (cons (mspan 0 (length bars) :tone :markdown-bar)
                                (prose text (length bars))))))
          ;; A paragraph that opens on a strong run leads with it: the run
-         ;; in the heading's tone on a heading's band (LEAD-SPANS).
+         ;; in the heading's tone on a heading's band (LEAD-SPANS). The band
+         ;; ends with the run's words: LEAD is their display width, they start
+         ;; past the two-cell mark and hang, and the closing ** markers are
+         ;; hidden, so they cost no column the band could cover.
          (t
           (multiple-value-bind (spans lead) (if shadow (prose line 0) (lead-spans line (prose line 0)))
             (if lead
                 (emit :text line :role :heading :hang 2 :gutter-tone :subheading
-                      :ground (list :heading-band 1 (+ 3 lead 2) 36) :spans spans)
+                      :ground (list :heading-band 1 (+ 3 lead) 36) :spans spans)
                 (emit :text line :spans spans)))))))))
    ;; Explicit colors carry long hidden tags. Finalize their visible text
    ;; before wrapping, memoization and EQ-keyed link/copy metadata. Other
