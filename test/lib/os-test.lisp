@@ -1009,13 +1009,15 @@ corrupt, or owner thread exited without unlocking')."
          (thread (bt2:make-thread (lambda () (loop until stop do (c-malloc-and-free (+ 2048 (random 60000)))))
                                   :name "spins in malloc"))
          (runs 0) (unsafe 0) (in-c 0) (deliveries 0)
-         ;; At least 300 deliveries; past them, more until one has landed
-         ;; inside malloc, bounded in time: on a loaded runner the spinner can
-         ;; spend 300 straight landings in its Lisp loop, which says nothing
-         ;; about the classifier.
+         ;; At least 300 deliveries; where the landing inside malloc is
+         ;; asserted, more until one has landed there, bounded in time: on a
+         ;; loaded runner the spinner can spend 300 straight landings in its
+         ;; Lisp loop, which says nothing about the classifier.
+         #+(or (and linux x86-64) (and darwin arm64))
          (deadline (+ (get-internal-real-time) (* 20 internal-time-units-per-second))))
     (unwind-protect
          (loop while (or (< deliveries 300)
+                         #+(or (and linux x86-64) (and darwin arm64))
                          (and (zerop in-c) (< (get-internal-real-time) deadline)))
                do (incf deliveries)
            (nlk:interrupt-thread-safely thread (lambda ()
