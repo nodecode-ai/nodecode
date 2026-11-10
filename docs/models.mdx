@@ -114,9 +114,10 @@ A sign-in never changes your default model. Pick one in `/models`: nodecode, the
 | Fact | Value |
 | --- | --- |
 | Keys | Start with `sk-nc-`. A key made at https://nodecode.ai/account/keys works the same. Any other key answers 401 `invalid_api_key`: run `nodecode login` again. |
-| Routes | `POST /v1/chat/completions`, `POST /v1/responses` (OpenAI's Responses API), `POST /v1/messages` and `POST /v1/messages/count_tokens` (Anthropic's Messages API), `POST /v1/images/generations`, `GET /v1/models`, `GET /v1/models/ID`, `GET /v1/usage`. |
 | Who pays | The topped-up balance, per token; a plan the account already holds pays first. With neither, a call answers 402. A [free key](#free-key) pays nothing. See [Pricing](pricing.mdx). |
 | What is left | `GET /v1/usage`: the plan's requests left, its reset and seats, the credit. The shell's footer and `/usage` show it. |
+
+Calling these models from outside Nodecode is on a page of its own: the [API quickstart](cyber.mdx) has the routes, a first call, and Claude Code, Codex and the pentest agents on Cyber v1.
 
 ### Free key
 
@@ -163,33 +164,6 @@ export NODECODE_FREE_API_KEY=sk-nc-...
 ```
 
 `general.default_model` makes the free Cyber v1 the default, as a sign-in with a free key does. Leave it out to pick it in `/models` instead.
-
-### Claude Code
-
-```sh
-export ANTHROPIC_BASE_URL=https://api.nodecode.ai
-export ANTHROPIC_AUTH_TOKEN=sk-nc-...
-export ANTHROPIC_MODEL=nodecode-cyber-v1
-claude
-```
-
-https://nodecode.ai/account/keys shows the same lines.
-
-### Codex CLI
-
-Add this to `~/.codex/config.toml`, then `export NODECODE_API_KEY=sk-nc-...` and run `codex`:
-
-```toml
-model = "nodecode-cyber-v1"
-model_provider = "nodecode"
-
-[model_providers.nodecode]
-name = "Nodecode"
-base_url = "https://api.nodecode.ai/v1"
-env_key = "NODECODE_API_KEY"
-```
-
-Codex opens with "Model metadata for `nodecode-cyber-v1` not found": that is harmless.
 
 ## Default and auxiliary model
 

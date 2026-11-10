@@ -15,6 +15,15 @@
       ]
     },
     {
+      "name": "Cyber v1",
+      "pages": [
+        "cyber",
+        "cyber-strix",
+        "cyber-pentagi",
+        "cyber-pentestgpt"
+      ]
+    },
+    {
       "name": "Use",
       "pages": [
         { "fold": "Shell", "pages": ["shell", "sessions", "slash-commands", "cli"] },
@@ -28,15 +37,6 @@
         "organism",
         "eval",
         "context"
-      ]
-    },
-    {
-      "name": "Cyber v1",
-      "pages": [
-        "cyber",
-        "cyber-strix",
-        "cyber-pentagi",
-        "cyber-pentestgpt"
       ]
     },
     {

@@ -1,6 +1,7 @@
 ---
-title: Cyber v1 with Strix
-summary: "Strix's three environment variables, what a scan spends in calls, and the one place its sandbox cannot read a target from."
+title: Strix with an abliterated LLM
+rail: Strix
+summary: "Running Strix on Cyber v1, Nodecode's abliterated model: its three environment variables, what a scan spends in calls, and the one place its sandbox cannot read a target from."
 ---
 
 [Strix](https://strix.ai) is an open-source AI pentester: it drives the target inside a Docker sandbox, exploits what it finds, and reports only what it can prove. Its model is set by an environment variable, and any OpenAI-compatible endpoint is a valid one.
@@ -33,7 +34,7 @@ strix --target ./app
 
 ## What a scan spends
 
-Strix reports its own usage as it runs, and an agentic loop is a very cacheable one: on a 30-line Flask app in quick mode it made 88 requests, 7.1M input tokens of which 6.9M were cache hits, and 171.7k output tokens, for about 0.36 at these prices. Nearly all of the input is the same prefix on every call, so the cached price (0.009 a million) does the work and the uncached price pays for the 200k that differed.
+Strix reports its own usage as it runs, and an agentic loop is a very cacheable one: on a 30-line Flask app in quick mode it made 88 requests, 7.1M input tokens of which 6.9M were cache hits, and 171.7k output tokens. On 2026-11-10, a weekday, that came to about 0.36 at [Cyber v1's prices](pricing.mdx#what-a-call-costs). Nearly all of the input is the same prefix on every call, so the cached-input price does the work and the full input price pays for the 200k that differed.
 
 ## Where its sandbox cannot read
 
