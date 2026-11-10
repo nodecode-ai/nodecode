@@ -60,9 +60,34 @@ value is the chord."
   (multiple-value-bind (payload ended) (%read-until-st stream)
     (if ended
         payload
-        (progn (when (plusp (length payload)) (%hold-keys tty payload))
-               (values nil (make-key-press-msg :code introducer :mod +mod-alt+
-                                               :text (string introducer)))))))
+        (values nil (%introducer-chord tty introducer payload)))))
+
+(defun %introducer-chord (tty introducer bytes)
+  "Alt and INTRODUCER's key, a person's chord or Esc and a fast key: BYTES,
+what was read after INTRODUCER, go back to TTY as keys."
+  (when (plusp (length bytes)) (%hold-keys tty bytes))
+  (make-key-press-msg :code introducer :mod +mod-alt+ :text (string introducer)))
+
+(defun %read-sequence (stream)
+  "The bytes of the control sequence an introducer opened on STREAM, each
+within +SEQUENCE-GAP+ of the one before, up to its final, and whether a
+final ended them. A byte no sequence holds ends the read, kept."
+  ;; ECMA-48's grammar: parameter bytes 0x30-0x3F and intermediates 0x20-0x2F,
+  ;; then one final 0x40-0x7E. A terminal writes a sequence whole, so the
+  ;; window passing, the stream ending or a byte outside the grammar (a
+  ;; control, DEL, a letter past ASCII) is a person, and the bytes are keys.
+  (let ((text (make-array 8 :element-type 'character :adjustable t :fill-pointer 0)))
+    (loop for ch = (and (or (nlk:wait-until (lambda () (listen stream))
+                                            (nlk:deadline-after +sequence-gap+))
+                            (listen stream))
+                        (read-char stream nil nil))
+          while ch
+          do (vector-push-extend ch text)
+             (let ((code (char-code ch)))
+               (cond ((<= #x40 code #x7e)
+                      (return-from %read-sequence (values (coerce text 'simple-string) t)))
+                     ((not (<= #x20 code #x3f)) (return)))))
+    (values (coerce text 'simple-string) nil)))
 
 (defun %read-key (stream tty eof)
   "READ-KEY's decode of STREAM, TTY's held keys ahead of TTY."
@@ -80,14 +105,20 @@ value is the chord."
                     (code (and char (char-code char))))
                (cond
                  ((null char) (unless waiting (make-key-press-msg :code :escape)))
-                 ((char= char #\[) (parse-csi-sequence stream))
+                 ((char= char #\[) (parse-csi-sequence stream tty))
                  ;; SS3 and one byte: arrows, Home, End in application mode,
                  ;; F1-F4 in every mode (an R here is F3, never a report).
+                 ;; What no final ends in the window is Alt+Shift+O or Esc
+                 ;; and a fast O: read as SS3, it waited for the next key
+                 ;; and ate it.
                  ((char= char #\O)
-                  (let ((final (read-char stream nil nil)))
-                    (make-key-press-msg :code (or (%final-byte-key final)
-                                                  (and (eql final #\R) :f3)
-                                                  :unknown))))
+                  (multiple-value-bind (bytes ended) (%read-sequence stream)
+                    (cond ((not ended) (%introducer-chord tty char bytes))
+                          ((= (length bytes) 1)
+                           (make-key-press-msg :code (or (%final-byte-key (char bytes 0))
+                                                         (and (char= (char bytes 0) #\R) :f3)
+                                                         :unknown)))
+                          (t (make-key-press-msg :code :unknown)))))
                  ;; OSC: the background query's answer, `11;rgb:R/G/B' with
                  ;; one to four hex digits a channel, is a BACKGROUND-MSG;
                  ;; the replies the shell never asked for are consumed.
@@ -203,12 +234,22 @@ stream ran out)."
                    (t (close-group) (setf final c) (return)))))
   (values (nreverse groups) final))
 
-(defun parse-csi-sequence (stream &aux (ch (read-char stream nil nil)))
+(defun parse-csi-sequence (stream tty)
   "The message for ESC [ and what follows on STREAM: SGR mouse, arrows,
 Home/End, backtab, the numbered keys (Delete, Insert, PgUp, PgDn, F1-F12),
-modified arrows, kitty CSI-u keys, and bracketed paste."
+modified arrows, kitty CSI-u keys, and bracketed paste; Alt+[ when no final
+ends what follows in the window, its bytes handed back to TTY as keys."
+  (multiple-value-bind (bytes ended) (%read-sequence stream)
+    (if ended
+        (%csi-message (make-string-input-stream bytes) stream)
+        (%introducer-chord tty #\[ bytes))))
+
+(defun %csi-message (sequence stream &aux (ch (read-char sequence nil nil)))
+  "The message for the CSI sequence SEQUENCE holds whole, STREAM holding
+the tty's bytes after it: a paste's text, or the raw bytes a sequence
+trails."
   (cond
-    ((eql ch #\<) (parse-mouse-sequence stream))
+    ((eql ch #\<) (parse-mouse-sequence sequence))
     ;; Backtab is a CSI final byte too, but it is not a cursor key.
     ((eql ch #\Z) (make-key-press-msg :code :tab :mod +mod-shift+))
     ((%final-byte-key ch) (make-key-press-msg :code (%final-byte-key ch)))
@@ -219,7 +260,7 @@ modified arrows, kitty CSI-u keys, and bracketed paste."
     ((member ch '(#\I #\O)) nil)
     ((eql ch #\?)
      (let ((reply (with-output-to-string (out)
-                    (loop for c = (read-char stream nil nil)
+                    (loop for c = (read-char sequence nil nil)
                           while c
                           do (write-char c out)
                           until (alpha-char-p c)))))
@@ -231,7 +272,7 @@ modified arrows, kitty CSI-u keys, and bracketed paste."
               :attributes (mapcar #'parse-integer
                                   (ppcre:all-matches-as-strings "[0-9]+" attributes)))))))
     ((and ch (digit-char-p ch))
-     (nlk:bind (((groups term) (%read-parameters stream (digit-char-p ch)))
+     (nlk:bind (((groups term) (%read-parameters sequence (digit-char-p ch)))
                 (params (mapcar #'first groups))
                 (key (case (first params)
                        (2 :insert) (3 :delete) (5 :page-up) (6 :page-down)
@@ -254,9 +295,19 @@ modified arrows, kitty CSI-u keys, and bracketed paste."
          ((and (eql term #\t) (eql (first params) 6) (= (length params) 3))
           (make-cell-size-msg :height (second params) :width (third params)))
          (t (make-key-press-msg :code :unknown)))))
-    (t
-     (loop while (listen stream) do (read-char-no-hang stream nil nil))
-     (make-key-press-msg :code :unknown))))
+    ;; X10 mouse, CSI M and three raw bytes from a terminal deaf to 1006, and
+    ;; the Linux console's F1-F5, CSI [ and a letter, trail bytes past their
+    ;; final: the sequence's, never keys.
+    ((member ch '(#\M #\[))
+     (loop repeat (if (eql ch #\M) 3 1)
+           while (or (nlk:wait-until (lambda () (listen stream))
+                                     (nlk:deadline-after +sequence-gap+))
+                     (listen stream))
+           do (read-char stream nil nil))
+     (make-key-press-msg :code :unknown))
+    ;; Any other sequence its final ends is the terminal's, and only its own
+    ;; bytes are read: draining what waited behind it ate the keys typed after.
+    (t (make-key-press-msg :code :unknown))))
 
 ;;; --- the kitty keyboard protocol -----------------------------------------
 
