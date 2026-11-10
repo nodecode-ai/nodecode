@@ -554,6 +554,14 @@ mark: its metadata says `bare'."
   (and (transcript-row-p row) (eq :system-notice (transcript-row-kind row))
        (json-value (transcript-row-metadata row) :boolean "bare")))
 
+(defun row-notice-wake-p (row)
+  "Whether ROW is the line that opens a turn an exit woke (INGEST-WAKE-NOTICE):
+its metadata carries the `wake' entries."
+  (and (transcript-row-p row) (eq :system-notice (transcript-row-kind row))
+       (not (transcript-row-error-p row))
+       (json-value (transcript-row-metadata row) :array "wake")
+       t))
+
 (defun row-llines (row width)
   "The logical lines for ROW under the Zig row-chrome table."
   (unless (redundant-finish-divider-p row)
@@ -676,7 +684,7 @@ mark: its metadata says `bare'."
                               collect (make-lline :text line :tone :system :italic t
                                                   :role :system-cont
                                                   :spans (notice-url-spans line)))
-                        (system-notice-llines text row.error-p))))))
+                        (system-notice-llines text row.error-p :quiet (row-notice-wake-p row)))))))
              ;; The two divider rows are one row shape; the evicted side of the fold
              ;; seam is the dimmed one.
              ;; A wrapped row goes on under its words, past the gutter's mark.
@@ -717,7 +725,9 @@ rows, NIL when the block sits on the canvas."
   ;; user prompts keep their own fill; assistant prose, reasoning and tool
   ;; blocks stay on canvas (reasoning's shadow is over text, not a fill).
   (when (transcript-row-p item)
-    (cond ((or (row-notice-summary item) (row-notice-label item) (row-notice-bare-p item)) nil)
+    (cond ((or (row-notice-summary item) (row-notice-label item) (row-notice-bare-p item)
+               (row-notice-wake-p item))
+           nil)
           ((eq item.kind :system-notice) (if item.error-p :diagnostic-block :system-block))
           ((or (not (eq item.kind :text)) (equal item.role "assistant")) nil)
           ((equal item.role "user") :user-block)

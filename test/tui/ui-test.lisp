@@ -417,6 +417,23 @@ box: its rows less the day headings over them."
       (is (= 3 (search "second" (fourth lines)))))
     (is (= 7 (length (two-blocks "user"))))))
 
+(deftest a-wake-notice-reads-dimmed-on-the-canvas ()
+  ;; The line that opens a turn an exit woke says only why the turn opened.
+  ;; As a ■ band it stood out like an answer to read; it reads at the
+  ;; muted grey on the canvas, its ■ kept, and every other notice keeps
+  ;; its band.
+  (let* ((wake (nle::make-transcript-row
+                :kind :system-notice :role "system" :text "woke: eval 1000 done"
+                :metadata (nlk:make-json-object
+                           "wake" (vector (nlk:make-json-object "eval_id" 1000 "end" "done")))))
+         (plain (nle::make-transcript-row :kind :system-notice :role "system" :text "notice"))
+         (lines (nle::row-llines wake 60)))
+    (is (null (nle::row-block-fill wake)) "no band behind the wake line")
+    (flet ((quiet-p (line) (and (eq :muted (nle::lline-tone line)) (null (nle::lline-fill line)))))
+      (is (every #'quiet-p lines) "its words and mark in the muted tone, on the canvas"))
+    (is (eq :system (nle::lline-role (first lines))) "it keeps the notice's ■")
+    (is (eq :system-block (nle::row-block-fill plain)) "another notice keeps its band")))
+
 (deftest bodiless-rows-own-no-rhythm (let ((nle::*tool-detail* :developer)))
   ;; Padding is a property of a body. A round whose `reasoning_content` is
   ;; whitespace (deepseek-v4-pro emits a bare " " between tool rounds) folds
