@@ -410,6 +410,22 @@ size, write-date) identity moved since the parse MEMO holds."
   ;; accept or refuse, not ours to rewrite.
   (if (and rank limit (> rank limit)) ceiling effort))
 
+;;; auto is no rung. A pick or the default that says it hands each turn's
+;;; effort to general.decider_model (ROUTE-TURN-EFFORT), which answers one of
+;;; the target's own rungs before the turn's first round; no request ever
+;;; carries the word (WIRE-EFFORT).
+(defparameter +auto-effort+ "auto"
+  "The effort that names no rung: the decider picks each turn's.")
+
+(defun auto-effort-p (value)
+  "Whether VALUE is the auto effort, the decider's to resolve per turn."
+  (and (stringp value) (string-equal value +auto-effort+)))
+
+(defun wire-effort (effort)
+  "EFFORT as a request may carry it: auto, which only the decider resolves,
+is the model's own reasoning (NIL)."
+  (unless (auto-effort-p effort) effort))
+
 ;;; --- model capability: catalog, overrides, and request shaping -------------
 ;;; One resolution seam (the lisp mirror of src/providers/model_metadata.zig +
 ;;; src/ai/model_controls.zig): the organism's own learned overrides outrank
@@ -2321,28 +2337,50 @@ first, or NIL when the catalog says the model does not reason."
 (define-refusal effort-refusal refuse-effort "~a"
   "CHECK-EFFORT refused a pick before anything moved.")
 
-(defun check-effort (provider model effort &aux (ladder (effort-ladder provider model)))
-  "Refuse EFFORT unless it is NIL, which clears a pick, or a rung of the
-(PROVIDER, MODEL) target's own ladder. => EFFORT."
+(defun effort-choices (provider model &aux (ladder (effort-ladder provider model)))
+  "What an effort pick on the (PROVIDER, MODEL) target may name: its ladder,
+then auto while a decider is pinned to resolve it (ROUTE-TURN-EFFORT)."
+  (if (and ladder (decider-model))
+      (append ladder (list +auto-effort+))
+      ladder))
+
+(defun check-effort (provider model effort &key (auto t)
+                     &aux (ladder (effort-ladder provider model)))
+  "Refuse EFFORT unless it is NIL, which clears a pick, a rung of the
+(PROVIDER, MODEL) target's own ladder, or -- AUTO true and a decider pinned
+-- auto. => EFFORT."
   ;; Every /think pick, the HTTP effort route and the model-facing
   ;; SELECT-EFFORT are checked here before anything is written, so a refusal
-  ;; leaves no half-moved state (SET-SESSION-EFFORT).
+  ;; leaves no half-moved state (SET-SESSION-EFFORT). auto is refused while no
+  ;; decider is pinned: a pick that could only ever fall back would read as
+  ;; routing that never routes. The auxiliary model's pick takes no auto
+  ;; (AUTO NIL): its side calls have no ask of their own to route.
   (cond ((null effort))
         ((null ladder)
          (refuse-effort "~a/~a does not reason: it has no effort to pick" provider model))
+        ((and (auto-effort-p effort) auto)
+         (unless (decider-model)
+           (refuse-effort "auto lets the decider pick each turn's effort, and none is pinned: ~
+                           /models' Decider tab picks one (general.decider_model)")))
         ((not (member effort ladder :test #'equal))
          (refuse-effort "~s is not a reasoning effort ~a/~a offers; the ladder: ~{~a~^ ~}"
-                        effort provider model ladder)))
+                        effort provider model
+                        (if auto (effort-choices provider model) ladder))))
   effort)
 
 (defun admitted-effort (effort provider model)
   "EFFORT, a session's pick, while the (PROVIDER, MODEL) target admits it,
-else NIL."
+else NIL. auto is admitted wherever the target reasons."
   ;; A pick made on one target outlives a change of target: a session that
   ;; follows the default keeps its reasoning when the default moves. A rung
   ;; the new target lacks reads as no pick, so the default effort binds
-  ;; (EFFECTIVE-EFFORT), instead of a request the endpoint refuses.
-  (and effort (member effort (effort-ladder provider model) :test #'equal) effort))
+  ;; (EFFECTIVE-EFFORT), instead of a request the endpoint refuses. auto
+  ;; names no rung, so any ladder admits it; a turn resolves it to one of
+  ;; that ladder's own (ROUTE-TURN-EFFORT).
+  (let ((ladder (effort-ladder provider model)))
+    (and effort
+         (if (auto-effort-p effort) ladder (member effort ladder :test #'equal))
+         effort)))
 
 (defun effective-effort (pick provider model)
   "The effort a turn on the (PROVIDER, MODEL) target binds: PICK, a session's
@@ -2904,7 +2942,7 @@ or with NIL the lightest it offers (AUXILIARY-MODEL)."
         (check-model-id next model)
         (provider-endpoint next)
         (check-model-offered next model)
-        (when effort-p (check-effort next model effort))
+        (when effort-p (check-effort next model effort :auto nil))
         (setf *auxiliary-model*
               (list :provider next :model model
                     :effort (if effort-p effort (getf *auxiliary-model* :effort))))
@@ -2964,6 +3002,111 @@ takes the pin out. An ID no decider has is refused before anything moves.
         (multiple-value-call #'values (first decider) (or model (getf (rest decider) :model))
           (persist-shared-model-pin "decider_model" (first decider)
                                     (or model (getf (rest decider) :model)))))))
+
+(defparameter +decider-timeout+ 10
+  "Seconds one decider call may take before its caller goes on without it.")
+
+(defun decider-ask (state questions &key (timeout +decider-timeout+))
+  "Ask the decider general.decider_model pins QUESTIONS, a table of id ->
+question, about STATE, a text. => the answers, a table of id -> answer; an
+error naming why when no decider is pinned, it cannot be reached, it
+refuses, or it answers no answers."
+  ;; The one decider client in core: POST <base>/v1/systemone with {state,
+  ;; model, questions}, the request shape the decider pin documents. A
+  ;; decider runs on a machine of the operator's own, so a call goes once
+  ;; and a slow one is given up after TIMEOUT: its caller has a fallback
+  ;; and a turn is waiting.
+  (multiple-value-bind (id model base proxy) (decider-model)
+    (unless id
+      (error "no decider is pinned: /models' Decider tab picks one (general.decider_model)"))
+    (let ((url (format nil "~a/v1/systemone" (string-right-trim "/" base))))
+      (multiple-value-bind (body status)
+          (handler-case
+              (nlk:http :post url :timeout timeout :proxy proxy
+                                  :headers (with-user-agent '(("accept" . "application/json")
+                                                              ("content-type" . "application/json")))
+                                  :content (shasht:write-json
+                                            (json-object "state" state "model" model
+                                                         "questions" questions)
+                                            nil))
+            (error (condition)
+              (error "decider ~a/~a at ~a could not be reached: ~a" id model base condition)))
+        (let ((text (and body (nlk:body-text body))))
+          (unless (and status (<= 200 status 299))
+            (error "decider ~a/~a answered ~a: ~a" id model status
+                   (nlk:clip (nlk:one-line (or text "")) 200)))
+          (let ((answers (json-value (ignore-errors (nlk:decode-json text)) :object "answers")))
+            (or answers (error "decider ~a/~a answered no answers" id model))))))))
+
+;;; --- effort routing: the decider picks a turn's effort -----------------------
+;;; An effort of auto -- general.default_model.effort, or a session's /think
+;;; pick -- is the decider's to resolve: before a turn's first round, RUN asks
+;;; it one choice question about the ask over the target's own rungs
+;;; (DECIDER-EFFORT), and the rung it answers binds the whole turn exactly as a
+;;; session pick does. With no decider pinned, or one that fails, the default
+;;; effort binds instead -- the model's own reasoning when the default is auto
+;;; itself -- and the failure stands on the board until a call succeeds, so
+;;; routing is never silently off.
+
+(defparameter +effort-rubrics+
+  '(("minimal" . "A greeting, a thanks, a yes or no: nothing to work out.")
+    ("low" . "A quick routine ask with an obvious path: a lookup, a rename, a one-line fix, a short answer from what is at hand.")
+    ("medium" . "Ordinary work of a few steps: a small feature, a script, an explanation that needs checking.")
+    ("high" . "Work that needs care over many steps: debugging an unknown failure, a change across several files, a design choice with tradeoffs.")
+    ("xhigh" . "Hard reasoning: a subtle concurrency or security bug, a proof, an architecture decision where a wrong call is expensive.")
+    ("max" . "The hardest asks: open, research-grade problems where every step of reasoning counts."))
+  "Each rung's rubric for the decider; a rung not here goes by its label alone.")
+
+(defparameter +effort-ask-chars+ 8000
+  "How much of a turn's ask the decider reads: its opening, where the ask is.")
+
+(defun decider-effort (ask provider model)
+  "The rung of the (PROVIDER, MODEL) target's ladder the pinned decider picks
+for ASK, a turn's text: never off, which disables reasoning rather than
+sizing it. A ladder of one rung is that rung, asked of no one. => the rung,
+or an error naming why there is none."
+  (let ((rungs (remove "off" (effort-ladder provider model) :test #'equal)))
+    (cond ((null rungs) (error "~a/~a does not reason: it has no effort to pick" provider model))
+          ((null (rest rungs)) (first rungs))
+          (t
+           (let ((criteria (make-hash-table :test #'equal)))
+             (dolist (rung rungs)
+               (setf (gethash rung criteria)
+                     (or (cdr (assoc rung +effort-rubrics+ :test #'string-equal)) :null)))
+             (let* ((answers (decider-ask
+                              (subseq ask 0 (min (length ask) +effort-ask-chars+))
+                              (json-object
+                               "effort" (json-object
+                                         "type" "choice"
+                                         "instructions" "How much reasoning does a coding agent need to answer this ask well? Pick the lightest level that is still enough."
+                                         "criteria" criteria))))
+                    (choice (json-value answers :string "effort" "choice")))
+               (or (find choice rungs :test #'equal)
+                   (error "the decider answered ~s, no rung of ~a/~a's ladder"
+                          choice provider model))))))))
+
+(defun note-effort-routing (text)
+  "Stand TEXT on the board as why auto fell back, or with NIL clear it."
+  (ignore-errors (notice text :level :warning :key "effort-auto")))
+
+(defun route-turn-effort (ask provider model fallback)
+  "The effort a turn on (PROVIDER, MODEL) binds when its pick is auto: the
+rung the decider picks for ASK, else FALLBACK, the default effort -- the
+model's own (NIL) when that is auto as well. => (values EFFORT ROUTED-P)."
+  ;; A blank ask (a harness wake) has nothing to read: it runs at the
+  ;; fallback and says nothing. Anything else that keeps the decider from
+  ;; answering is said once on the board and cleared by the next answer.
+  (let ((fallback (wire-effort fallback)))
+    (if (zerop (length (nlk:trimmed (or ask ""))))
+        (values fallback nil)
+        (handler-case
+            (multiple-value-prog1 (values (decider-effort ask provider model) t)
+              (note-effort-routing nil))
+          (error (condition)
+            (note-effort-routing
+             (format nil "effort auto fell back to ~a: ~a"
+                     (or fallback "the model's own") condition))
+            (values fallback nil))))))
 
 ;;; --- the model-facing pair ---------------------------------------------
 ;;; Two forms the model reaches through eval, over the one reader and
@@ -3813,7 +3956,9 @@ the compiled context carries for the whole turn."
                 :top-p *top-p*
                 :max-completion-tokens *max-completion-tokens*
                 :tool-choice (copied *tool-choice*)
-                :reasoning-effort (copied *reasoning-effort*)
+                ;; auto is resolved before a turn's first round (RUN); one
+                ;; that reached here unresolved asks the model's own.
+                :reasoning-effort (copied (wire-effort *reasoning-effort*))
                 :reasoning-summary (let ((asked (trimmed-config-string entry "reasoning_summary")))
                                      (cond ((null asked) "auto")
                                            ((member asked '("off" "none" "false")

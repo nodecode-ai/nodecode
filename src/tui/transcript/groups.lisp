@@ -542,11 +542,7 @@ Too wide for its row, the line gives way inside, never its end (FITTED-TAIL-LLIN
            (append-status-text line (if (row-load-errors row) "error" row.tool-status)
                                (tool-failure-text row) (row-exit-document row))
            line))
-       ;; A cell's own tool reads by what it did: `Spotify search 'Discovery'',
-       ;; where the name the model calls it by said only `spotify_search'.
-       (nlk:one-line (or (tool-summary-words row)
-                         (tool-arguments-words (json-value row.tool-name :text) row.tool-args)
-                         (json-value row.tool-name :text) "…"))
+       (nlk:one-line (or (tool-call-words row) "…"))
        (kept-files-text receipts) width))))
 
 (defun paragraph-start (text end &aux (line-end end))
@@ -777,21 +773,25 @@ the state's live execs, shows what it has written under it."
                    ;; commands' and would read as nothing happening.
                    ;; A call that changed files counts as the files it
                    ;; edited, not as a command: `Edited 2 files +4 -2'.
+                   ;; One that ran no command, a cell's search or play,
+                   ;; is a tool call: `Made 4 tool calls' (COMMAND-CALL-P).
                    (let* ((mutations (count-if #'row-notice-summary group.members))
                           (mutated (if (plusp mutations) (format nil ", Mutated ~d time~:p" mutations) ""))
                           (edited (remove-if-not #'row-edited-p calls))
                           (files (loop for row in edited
                                        append (loop for file across (json-array row.metadata "workspace_diff" "files")
                                                     collect (json-value file :text "path"))))
-                          (commands (- (length calls) (length edited)))
-                          (line (make-lline :text (cond ((and edited files)
-                                                         (format nil "~:[Edited~;Ran ~:*~d command~:p, edited~] ~d file~:p~a~:[~;…~]"
-                                                                 (and (plusp commands) commands)
-                                                                 (length (remove-duplicates files :test #'equal))
-                                                                 mutated running))
-                                                        ((or calls (plusp mutations))
-                                                         (format nil "Ran ~d command~:p~a~:[~;…~]" (length calls)
-                                                                 mutated running))
+                          (unedited (if files (set-difference calls edited) calls))
+                          (tools (count-if-not #'command-call-p unedited))
+                          (commands (- (length unedited) tools))
+                          (counts (remove nil (list (and (or (plusp commands) (and (zerop tools) (null files)))
+                                                         (format nil "ran ~d command~:p" commands))
+                                                    (and (plusp tools) (format nil "made ~d tool call~:p" tools))
+                                                    (and files (format nil "edited ~d file~:p"
+                                                                       (length (remove-duplicates files :test #'equal)))))))
+                          (line (make-lline :text (cond ((or calls (plusp mutations))
+                                                         (format nil "~@(~a~)~{, ~a~}~a~:[~;…~]"
+                                                                 (first counts) (rest counts) mutated running))
                                                         ((some (lambda (row) (and (eq :reasoning row.kind) (thinking-p row)))
                                                                group.members)
                                                          "Thinking…")

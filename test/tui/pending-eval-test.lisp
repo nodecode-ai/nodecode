@@ -142,5 +142,5 @@
                      when (eq :tool-call (nle::transcript-row-kind row))
                        collect (list (nle::transcript-row-tool-call-id row)
                                      (nle::transcript-row-tool-name row)))) "each call keeps its own row")
-    (is (rows-carry-p "Ran 2 commands" (loop for block in (tool-blocks state)
+    (is (rows-carry-p "Ran 1 command, made 1 tool call" (loop for block in (tool-blocks state)
                                               append (nle::display-block-plain-lines block))) "and its run counts both")))

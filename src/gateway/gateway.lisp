@@ -539,8 +539,15 @@ its subscriptions and rows views. NIL is quiet."
      (stop-gw-peer ws) (remove-peer (car ws.subscriptions) ws) (close-rows-views ws))
     (t (ignore-errors (wsd:close-connection ws)))))
 
-(defun enqueue-peer-frame (peer item &key session-id cursor cursor-present-p encoder &aux accepted)
-  "Enqueue one bounded writer item, sequencing session frames per peer."
+(defun enqueue-peer-frame (peer item &key session-id cursor cursor-present-p encoder attach
+                                &aux accepted)
+  "Enqueue one bounded writer item, sequencing session frames per peer.
+ATTACH marks the peer attached in the same step that queues ITEM."
+  ;; ATTACH is for the connect ack. The writer pops under the same lock, so
+  ;; the ack reaches the wire only after the peer is attached and every
+  ;; FANOUT-FRAME reaches a client that has read its ack. Marked after the
+  ;; ack instead, a frame broadcast in that gap skipped a client that was
+  ;; already acting on the ack.
   ;;
   ;; ITEM is a pre-encoded string for unsequenced control frames, a replay job,
   ;; or a function of the writer's peer state, called when its turn comes.
@@ -589,6 +596,7 @@ its subscriptions and rows views. NIL is quiet."
                (when (and session-id cursor-present-p)
                  (setf (gethash session-id state.durable-cursors)
                        cursor))
+               (when attach (setf state.attached-p t))
                (setf accepted t))
               (t (tombstone-peer-queue
                   state (nlk::encode-sync-protocol-error
@@ -3155,7 +3163,12 @@ AIM-PROVIDER or AIM-MODEL and no session, that target over the gateway's."
      ;; admits it, else the default — and the rungs it admits, weakest
      ;; first: empty for a model that does not reason.
      "effort" (or (effective-effort effort provider model) :null)
-     "efforts" (coerce (effort-ladder provider model) 'vector)
+     "efforts" (coerce (effort-choices provider model) 'vector)
+     ;; While a turn runs on SESSION-ID, the effort its latest round sent
+     ;; (NOTE-TURN-EFFORT): auto's routed rung, or what a :ROUND hook moved
+     ;; it to, which the pick above never says. NULL between turns.
+     "running" (multiple-value-bind (sent running-p) (running-turn-effort session-id)
+                 (if running-p (json-object "effort" (or sent :null)) :null))
      ;; Why the target cannot serve a turn, when it cannot (an entry
      ;; naming no sdk), else why the config's own pin was not applied
      ;; (the retired flat keys, a pin missing its lane): the attached
@@ -4393,9 +4406,9 @@ the longest directory's (a path ending in /) that URI lies under."
                                    handshake-complete t)
                              (enqueue-peer-frame
                               ws (nlk:encode-gateway-connect-ack accepted-scopes
-                                                              :version (effective-version)))
-                             (nlk:note-boot-phase "ws-acked")
-                             (mark-peer-attached ws))))))
+                                                              :version (effective-version))
+                              :attach t)
+                             (nlk:note-boot-phase "ws-acked"))))))
            (wsd:on :close ws
                    (lambda (&key &allow-other-keys)
                      (stop-gw-peer ws)
@@ -5154,6 +5167,13 @@ update poller and the folder's peripherals, TRIM as START-GATEWAY takes it.
               (announce-loaded path definitions)))
   ;; A hook an isolated chain stepped over is said to every attached shell
   ;; and stands on the board until it is registered again or unhooked.
+  ;; The effort a running turn sends moved, or its turn ended: every footer
+  ;; on that session reads the target again (GATEWAY-TARGET-JSON's running).
+  (nlk:hook 'note-turn-effort "gateway-footer"
+            (lambda (next session-id effort &rest options)
+              (let ((moved (apply next session-id effort options)))
+                (when moved (ignore-errors (broadcast-model-changed session-id)))
+                moved)))
   (nlk:hook 'nlk::note-hook-failure "gateway-notice"
             (lambda (next name key condition)
               (declare (ignore next))
@@ -5323,6 +5343,7 @@ back after them (NLK:TRIM-MEMORY)."
     (set-help-topic :image nil)
     (nlk:unhook 'nlk:source-loaded "gateway-loaded")
     (nlk:unhook 'nlk::note-hook-failure "gateway-notice")
+    (nlk:unhook 'note-turn-effort "gateway-footer")
     (setf *gateway-handler* nil
           *gateway-bound-port* nil
           *gateway-started-at* nil

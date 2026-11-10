@@ -233,7 +233,7 @@ back. => true when there was one."
   ;; model with no ladder leaves the command its own answer, which says so.
   (unless model
     (bind (((provider model-id _ _ _ effort) (gateway-target (and (stringp session-id) session-id)))
-           (ladder (effort-ladder provider model-id))
+           (ladder (effort-choices provider model-id))
            (now (and ladder (effective-effort effort provider model-id))))
       (flet ((row (label line detail current)
                (run-row label line :detail detail :mark (if current "●" "") :mark-tone :accent)))
@@ -244,5 +244,7 @@ back. => true when there was one."
                        :rows (cons (row "Default" "/think default" "the model's own" (null now))
                                    (loop for rung in ladder
                                          collect (row rung (format nil "/think ~a" rung)
-                                                      (if (equal rung "off") "answer without reasoning" "")
+                                                      (cond ((equal rung "off") "answer without reasoning")
+                                                            ((auto-effort-p rung) "the decider picks the rung per turn")
+                                                            (t ""))
                                                       (equal rung now))))))))))

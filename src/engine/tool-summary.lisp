@@ -619,7 +619,7 @@ diff names from the session's directory: the same, behind a ./, or whole."
          (or (string= source path)
              (uiop:string-suffix-p source (concatenate 'string "/" path))))))
 
-(defparameter +shell-tool-names+
+(defparameter *shell-tool-names*
   '("snippet" "run" "bash" "shell" "sh" "exec_command" "evolved_shell")
   "The tool names whose command string is a shell command, not a snippet.")
 
@@ -694,7 +694,7 @@ diff names from the session's directory: the same, behind a ./, or whole."
             :note (snippet-note (or command ""))
             :head (snippet-head-line command)
             :error-p error-p))))
-      ((member name +shell-tool-names+ :test #'equal)
+      ((member name *shell-tool-names* :test #'equal)
        ;; A line the split names nothing for (an echo, a cd, a test, a lone
        ;; false) still ran a command: it is one command, named by its line as
        ;; `git status' is, never the eval snippet's family. A blank line has
@@ -796,18 +796,24 @@ is under: any text under *TOOL-ACTION-KEYS*, else one word under
   "The subject of a call's argument object ROOT, as a title prints it: the
 first query quoted, else the first other text that is no id, else an id, else
 the first number; an array by its first member and how many more. The text
-under ACTION-KEY, the call's action, is never its subject. NIL for none."
+under ACTION-KEY, the call's action, is never its subject, nor is a value
+under a secret's name (SECRET-KEY-P), and a URL's credentials are cut out.
+NIL for none."
+  ;; A cell's vault_put {api_key, name} reads `github', never the key.
   (labels ((text (value)
            (typecase value
              (string (let ((line (string-trim '(#\Space #\Tab #\Newline #\Return)
-                                              (substitute #\Space #\Newline value))))
+                                              (substitute #\Space #\Newline
+                                                          (redact-url-credentials value)))))
                        (and (plusp (length line)) (stub-clip line *activity-source-limit*))))
              (vector (let ((first (and (plusp (length value)) (stringp (aref value 0)) (aref value 0))))
                        (when-let (line (and first (text first)))
                          (if (> (length value) 1)
                              (format nil "~a +~d" line (1- (length value)))
                              line))))))
-         (keys () (let (keys) (maphash (lambda (key value) (declare (ignore value)) (push key keys)) root)
+         (keys () (let (keys) (maphash (lambda (key value) (declare (ignore value))
+                                         (unless (secret-key-p key) (push key keys)))
+                                       root)
                     (nreverse keys))))
     (or (loop for key in *tool-query-keys*
               for line = (text (gethash key root))
@@ -831,14 +837,29 @@ name alone while ARGUMENTS are not yet whole. NIL for eval, a shell tool and
 a call not yet named, which have words of their own."
   (when (and (stringp name) (plusp (length name))
              (not (equal name "eval"))
-             (not (member name +shell-tool-names+ :test #'equal)))
-    (let* ((root (and (stringp arguments)
-                      (uiop:string-suffix-p (string-right-trim '(#\Space #\Newline #\Return #\Tab) arguments) "}")
-                      (ignore-errors (nlk:decode-json arguments))))
-           (root (and (hash-table-p root) root)))
-      (multiple-value-bind (action action-key) (and root (tool-argument-action root))
-        (format nil "~a~@[: ~a~]~@[ ~a~]" (tool-name-words name) action
-                (and root (tool-argument-subject root action-key)))))))
+             (not (member name *shell-tool-names* :test #'equal)))
+    (multiple-value-bind (action subject) (tool-arguments-parts arguments)
+      (format nil "~a~@[: ~a~]~@[ ~a~]" (tool-name-words name) action subject))))
+
+(defun tool-arguments-parts (arguments)
+  "The action a call's ARGUMENTS JSON takes and their subject, each in words
+(TOOL-ARGUMENT-ACTION, TOOL-ARGUMENT-SUBJECT). => (values ACTION SUBJECT),
+NIL for either while ARGUMENTS are not yet whole or say none."
+  (let* ((root (and (stringp arguments)
+                    (uiop:string-suffix-p (string-right-trim '(#\Space #\Newline #\Return #\Tab) arguments) "}")
+                    (ignore-errors (nlk:decode-json arguments))))
+         (root (and (hash-table-p root) root)))
+    (if root
+        (multiple-value-bind (action action-key) (tool-argument-action root)
+          (values action (tool-argument-subject root action-key)))
+        (values nil nil))))
+
+(defun tool-arguments-detail (arguments)
+  "What a call was handed, as a card's title prints it after the tool's own
+name: the action its ARGUMENTS take and their subject, `add
+spotify:track:2VEZ'. NIL for none."
+  (multiple-value-bind (action subject) (tool-arguments-parts arguments)
+    (and (or action subject) (format nil "~@[~a~]~:[~; ~]~@[~a~]" action (and action subject) subject))))
 
 ;;; --- words -------------------------------------------------------------------
 

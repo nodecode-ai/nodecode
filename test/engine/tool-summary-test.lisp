@@ -249,6 +249,12 @@
      "Spotify playback: set volume 40" "a number when no text says more")
     ("spotify_queue" "{\"action\":\"add\",\"uris\":[\"spotify:track:a\",\"spotify:track:b\"]}"
      "Spotify queue: add spotify:track:a +1" "a list by its first and how many more")
+    ("vault_put" "{\"api_key\":\"sk-live-123\",\"name\":\"github\"}"
+     "Vault put github" "a secret's value is never the subject")
+    ("vault_put" "{\"api_key\":\"sk-live-123\"}"
+     "Vault put" "not even alone")
+    ("rss_add" "{\"url\":\"https://ann:hunter2@feeds.example.com/x\"}"
+     "Rss add https://[set]@feeds.example.com/x" "nor a URL's credentials")
     ("browser_click" "{}" "Browser click" "no arguments: the name as words")
     ("spotify_search" "{\"query\":\"Disc" "Spotify search" "arguments still streaming: the name until they are whole")
     ("eval" "{\"form\":\"(+ 1 2)\"}" nil "eval has words of its own")

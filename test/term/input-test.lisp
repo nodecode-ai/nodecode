@@ -204,3 +204,108 @@ it, the decoder looks once more and answers Escape."
   (let ((msg (key-from-string (format nil "~C_Gi=1;ENOTSUPPORTED~C\\" #\Escape #\Escape))))
     (is (and (nlt:kitty-graphics-msg-p msg) (null (nlt:kitty-graphics-msg-ok-p msg)))))
   (is (null (key-from-string (format nil "~C_Xother~C\\" #\Escape #\Escape)))))
+(defclass typing-tty (sb-gray:fundamental-character-input-stream)
+  ((bursts :initarg :bursts) (text :initform "") (opened :initform (get-internal-real-time)))
+  (:documentation "A tty a person types on: each of BURSTS, (SECONDS . TEXT),
+arrives SECONDS after the tty opened, and a read with nothing arrived waits
+for the next."))
+
+(defun %typing-arrived (tty)
+  (with-slots (bursts text opened) tty
+    (loop while (and bursts (>= (nlk:elapsed-ms opened) (* 1000 (car (first bursts)))))
+          do (setf text (concatenate 'string text (cdr (pop bursts)))))
+    text))
+
+(defun %typing-take (tty)
+  (with-slots (text) tty
+    (prog1 (char text 0) (setf text (subseq text 1)))))
+
+(defmethod sb-gray:stream-read-char ((tty typing-tty))
+  (loop (cond ((plusp (length (%typing-arrived tty))) (return (%typing-take tty)))
+              ((null (slot-value tty 'bursts)) (return :eof))
+              (t (sleep 0.005)))))
+
+(defmethod sb-gray:stream-read-char-no-hang ((tty typing-tty))
+  (cond ((plusp (length (%typing-arrived tty))) (%typing-take tty))
+        ((null (slot-value tty 'bursts)) :eof)))
+
+(defmethod sb-gray:stream-listen ((tty typing-tty))
+  (plusp (length (%typing-arrived tty))))
+
+(defun %typed (stream count)
+  "The text of the next COUNT key presses READ-KEY answers on STREAM."
+  (with-output-to-string (out)
+    (loop repeat count
+          for msg = (nlt:read-key stream)
+          do (write-string (or (and (nlt:key-press-msg-p msg) (nlt:key-event-text msg)) "?") out))))
+
+(deftest an-introducer-no-terminator-ends-is-a-key-and-swallows-none ()
+  "ESC P, ESC ] or ESC _ that no ST or BEL ends in the window is a person:
+Esc and a fast P, or an Alt chord. The introducer is Alt and its key, and
+every byte after it is read again as keys; read as a reply, every key after
+it was swallowed until an ST came, and the shell looked frozen."
+  (let ((tty (make-string-input-stream (format nil "~CPlease say hi~C" #\Escape #\Return))))
+    (is (key-is (nlt:read-key tty) #\P :mod nlt:+mod-alt+) "Esc then P in one burst is Alt+P")
+    (is (equal "lease say hi" (%typed tty 12)) "and the sentence after it is typed")
+    (is (key-is (nlt:read-key tty) :enter) "its Enter too")
+    (is (null (nlt:read-key tty)) "and nothing more"))
+  (dolist (introducer '(#\] #\_))
+    (let ((tty (make-string-input-stream (format nil "~C~Cok~C[A" #\Escape introducer #\Escape))))
+      (is (key-is (nlt:read-key tty) introducer :mod nlt:+mod-alt+) "Alt+] or Alt+_ is its chord")
+      (is (equal "ok" (%typed tty 2)) "the keys after the chord are typed")
+      (is (key-is (nlt:read-key tty) :up) "and a sequence among them still decodes")))
+  (let* ((tty (make-instance 'typing-tty :bursts (list (cons 0 (format nil "~CP" #\Escape)) (cons 3/10 "ok"))))
+         (start (get-internal-real-time))
+         (chord (nlt:read-key tty)))
+    (is (key-is chord #\P :mod nlt:+mod-alt+) "Alt+Shift+P alone is Alt+P")
+    (is (< (nlk:elapsed-ms start) 200) "answered in the window, not when the next key comes")
+    (sleep 4/10)
+    (is (equal "ok" (%typed tty 2)) "and the keys typed later are read"))
+  (let ((tty (make-instance 'stalling-tty :inner (make-string-input-stream
+                                                   (format nil "~CP>|xt~C\\z" #\Escape #\Escape)))))
+    (is (equal "xt" (nlt:terminal-version-msg-name (nlt:read-key tty))) "a whole reply still parses when a collection stops the reader past the window")
+    (is (key-is (nlt:read-key tty) #\z) "and the key after it decodes")))
+
+
+(deftest a-csi-or-ss3-no-final-ends-is-a-chord-and-swallows-none ()
+  "ESC [ or ESC O that no final byte ends in the window is a person: Alt+[
+or Alt+Shift+O, or Esc and a fast [ or O. The chord is Alt and the
+introducer's key, and every byte after it is read again as keys. A sequence
+its final does end keeps its own bytes and no more: read before, the CSI
+fallback drained every key waiting, and SS3 waited for the next key and ate
+it."
+  (let ((tty (make-string-input-stream (format nil "~C[xhello" #\Escape))))
+    (is (key-is (nlt:read-key tty) :unknown) "CSI x is one sequence its final ends")
+    (is (equal "hello" (%typed tty 5)) "and the keys waiting after it are typed, not drained"))
+  (let ((tty (make-string-input-stream (format nil "~COkok" #\Escape))))
+    (is (key-is (nlt:read-key tty) :unknown) "SS3 k is one sequence its final ends")
+    (is (equal "ok" (%typed tty 2)) "and the keys after it are typed"))
+  (dolist (introducer '(#\[ #\O))
+    (let* ((tty (make-instance 'typing-tty :bursts (list (cons 0 (format nil "~C~C" #\Escape introducer))
+                                                         (cons 3/10 "kok"))))
+           (start (get-internal-real-time))
+           (chord (nlt:read-key tty)))
+      (is (key-is chord introducer :mod nlt:+mod-alt+ :text (string introducer)) "Alt+[ or Alt+Shift+O alone is its chord")
+      (is (< (nlk:elapsed-ms start) 200) "answered in the window, not when the next key comes")
+      (sleep 4/10)
+      (is (equal "kok" (%typed tty 3)) "and the keys typed after it are read, the first one too")))
+  (let ((tty (make-string-input-stream (format nil "~C[12" #\Escape))))
+    (is (key-is (nlt:read-key tty) #\[ :mod nlt:+mod-alt+) "parameters no final ends are a person's")
+    (is (equal "12" (%typed tty 2)) "and are typed"))
+  (let ((tty (make-string-input-stream (format nil "~C[~Cok" #\Escape #\Return))))
+    (is (key-is (nlt:read-key tty) #\[ :mod nlt:+mod-alt+) "a control byte ends no sequence: Alt+[")
+    (is (key-is (nlt:read-key tty) :enter) "its Enter is read")
+    (is (equal "ok" (%typed tty 2)) "and the keys after it"))
+  (let ((tty (make-string-input-stream (format nil "~CO~C[A" #\Escape #\Escape))))
+    (is (key-is (nlt:read-key tty) #\O :mod nlt:+mod-alt+) "an Esc ends no SS3: Alt+O")
+    (is (key-is (nlt:read-key tty) :up) "and the sequence it starts decodes"))
+  (let ((tty (make-string-input-stream (format nil "~C[<0;3;4Mz~C[M #$z~C[[Az" #\Escape #\Escape #\Escape))))
+    (is (typep (nlt:read-key tty) 'nlt::mouse-click-msg) "an SGR click still decodes")
+    (is (key-is (nlt:read-key tty) #\z) "and the key after it")
+    (is (key-is (nlt:read-key tty) :unknown) "an X10 mouse report, CSI M and three bytes, is one sequence")
+    (is (key-is (nlt:read-key tty) #\z) "its three bytes are never typed")
+    (is (key-is (nlt:read-key tty) :unknown) "the Linux console's F1, CSI [ A, is one sequence")
+    (is (key-is (nlt:read-key tty) #\z) "its A is never typed"))
+  (let ((tty (make-instance 'stalling-tty :inner (make-string-input-stream (format nil "~C[1;5Cz" #\Escape)))))
+    (is (key-is (nlt:read-key tty) :right :mod nlt:+mod-ctrl+) "a whole sequence still decodes when a collection stops the reader past the window")
+    (is (key-is (nlt:read-key tty) #\z) "and the key after it decodes")))

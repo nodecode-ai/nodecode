@@ -14,6 +14,12 @@
                        :metadata (nlk:json-object "summary" (nlk:json-object "name" "Mutate" "comment" "Anchor receipt"))))))
     state))
 
+(defun probe-title (mode)
+  "The words the fixture's probe call reads by in MODE: Standard lists a call
+no family names by its name as words (TOOL-ARGUMENTS-WORDS), Developer's
+card by the name itself."
+  (if (eq mode :standard) "Probe" "probe"))
+
 (defun open-live-run (model kind)
   "Standard folds a live turn's work into a run, which stands folded until it
 is opened to its calls and receipts: open it. Answers the key a closed member
@@ -32,7 +38,7 @@ falls back to, NIL where nothing folds."
         (with-frame-model (model 90 30 :session-id "disclosure-anchor" :tool-detail mode
                            :state (disclosure-anchor-state :kind kind :prompt prompt :prefix (if prompt 4 0)))
           (let* ((run (open-live-run model kind))
-                 (needle (if (eq kind :tool-call) "probe" "Anchor receipt"))
+                 (needle (if (eq kind :tool-call) (probe-title mode) "Anchor receipt"))
                  (y (frame-row-carrying model needle))
                  (owner (nle::transcript-item-at-line model (nle::frame-transcript-position model 6 y))))
             (is owner)
@@ -54,8 +60,8 @@ falls back to, NIL where nothing folds."
   (dolist (mode '(:standard :developer))
     (with-frame-model (model 90 30 :session-id "tool-title-pin" :tool-detail mode
                        :state (disclosure-anchor-state))
-      (let* ((title (if (open-live-run model :tool-call) "Ran 1 command" "probe"))
-             (window (progn (click-at model 6 (frame-row-carrying model "probe")) (nle::chat-model-band model)))
+      (let* ((title (if (open-live-run model :tool-call) "Made 1 tool call" "probe"))
+             (window (progn (click-at model 6 (frame-row-carrying model (probe-title mode))) (nle::chat-model-band model)))
              (header (row-index-of title (nle::chat-model-line-plain model) :required t))
              (owner (nle::transcript-item-at-line model header)))
         (dolist (offset '(12 40 80))
@@ -99,7 +105,7 @@ falls back to, NIL where nothing folds."
     (with-frame-model (model 90 30 :session-id "anchor-boundary" :tool-detail mode
                        :state (disclosure-anchor-state))
       (open-live-run model :tool-call)
-      (click-at model 6 (frame-row-carrying model "probe"))
+      (click-at model 6 (frame-row-carrying model (probe-title mode)))
       (setf (nle::chat-model-state model)
             (nle::ingest-message-fact (nle::chat-model-state model) "assistant" (numbered-body "after-output" 35) :turn-id "anchor"))
       (nle::render-state model)
@@ -110,6 +116,6 @@ falls back to, NIL where nothing folds."
                               (setf (nle::band-window-offset model.band) offset)
                               (rows-carry-p "output 119" (remove-if-not #'stringp (band-row-texts model))))) "final output remains reachable")
           (setf (nle::band-window-offset model.band) (second span))
-          (is (not (rows-carry-p "probe" (remove-if-not #'stringp (band-row-texts model)))) "the title belongs only to its own output")
+          (is (not (rows-carry-p (probe-title mode) (remove-if-not #'stringp (band-row-texts model)))) "the title belongs only to its own output")
           (nle::scroll-transcript model :end)
           (is (rows-carry-p "after-output 34" (remove-if-not #'stringp (band-row-texts model)))))))))

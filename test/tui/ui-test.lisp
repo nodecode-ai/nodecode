@@ -6010,23 +6010,6 @@ and the DELIVERY its handler declares."
         (is (notany (lambda (id) (rows-carry-p (format nil "Step ~a" id) rows)) '("s1" "s2" "s3")) "a turn no answer followed folds too, its call cut off with it")
         (is (not (rows-carry-p "Step c1" rows)) "as does the answered one")))))
 
-(deftest an-opened-run-lists-a-cell-tools-call-by-what-it-did ()
-  ;; A Spotify search listed as `spotify_search' in the Standard view: the
-  ;; name the model calls the tool by, and not what it searched.
-  (let ((nle::*tool-detail* :standard) (nle::*expanded-tool-call* '(:process "live")) (state nil))
-    (setf state (nle::ingest-tool-call-fact state "s1" "spotify_search" "{\"query\":\"Discovery Daft Punk\",\"type\":\"album\"}"
-                                            :turn-id "live")
-          state (nle::ingest-tool-result-fact state "s1" "spotify_search" "{\"success\":true}" :turn-id "live")
-          state (nle::ingest-tool-call-fact state "s2" "spotify_playback" "{\"action\":\"play\",\"context_uri\":\"spotify:album:2noRn\"}"
-                                            :turn-id "live")
-          state (nle::ingest-tool-result-fact state "s2" "spotify_playback" "{\"success\":true}" :turn-id "live"))
-    (let ((rows (mapcan (lambda (block) (copy-list (nle::display-block-plain-lines block)))
-                        (nle:project-state state :width 100))))
-      (is (rows-carry-p "Ran 2 commands" rows))
-      (is (rows-carry-p "Spotify search: album 'Discovery Daft Punk'" rows) "a search by what it searched")
-      (is (rows-carry-p "Spotify playback: play spotify:album:2noRn" rows) "an action by what it did")
-      (is (not (rows-carry-p "spotify_" rows)) "never by the name the model calls the tool by"))))
-
 (deftest a-runs-arrow-says-what-it-lists-and-a-click-folds-or-opens-it ()
   ;; `▸ Ran 11 commands' over the calls it listed read as shut; ▾ is a run
   ;; listing its whole trail, and a click folds it, a live one too. A run
@@ -6474,6 +6457,55 @@ and the DELIVERY its handler declares."
                (nle::*expanded-tool-call* "worded")
                (texts (mapcar #'nle::lline-text (nle::row-llines row 100))))
           (is (some (lambda (text) (search "\"kind\"" text)) texts) "Developer keeps the call as it went"))))))
+
+(deftest a-cell-call-reads-by-its-arguments-and-counts-as-a-tool-call ()
+  ;; Given a turn whose calls are a cell's tools (spotify_search,
+  ;; spotify_playback), which no family and no note words, when Standard
+  ;; draws its run, then the run counts tool calls, never commands, and each
+  ;; call reads as its name and what it was handed, never its bare name; an
+  ;; eval beside them is still a command. A cell's call stood as
+  ;; `Ran 4 commands' over `spotify_search' `spotify_playback' ..., nothing
+  ;; saying what each did.
+  (labels ((call (state id name args)
+             (let* ((state (nle::ingest-stream-tool state 0 name args :turn-id "t1"))
+                    (state (nle::ingest-tool-call-fact state id name args :turn-id "t1")))
+               (nle::ingest-tool-result-fact state id name "ok" :turn-id "t1")))
+           (run-rows (state &optional open)
+             (let* ((nle::*tool-detail* :standard)
+                    (group (find-if #'nle::tool-group-p
+                                    (mapcar #'nle::display-block-row (nle:project-state state :width 100))))
+                    (nle::*expanded-tool-call* (and open (nle::tool-group-key group)))
+                    (run (find-if (lambda (block) (nle::tool-group-p (nle::display-block-row block)))
+                                  (nle:project-state state :width 100))))
+               (and run (nle::display-block-plain-lines run))))
+           (turn (&rest calls)
+             (let ((state (nle::ingest-message-fact nil "user" "play Discovery" :turn-id "t1")))
+               (loop for (id name args) in calls
+                     do (setf state (call state id name args)))
+               (nle::ingest-turn-terminal state "completed" :turn-id "t1"))))
+    (let ((state (turn '("a" "spotify_search" "{\"query\":\"Discovery Daft Punk\",\"type\":\"album\",\"limit\":1}")
+                       '("b" "spotify_playback" "{\"action\":\"play\",\"context_uri\":\"spotify:album:2noRn\"}"))))
+      (let ((shut (run-rows state)))
+        (is (rows-carry-p "Made 2 tool calls" shut) "the run counts tool calls")
+        (is (not (rows-carry-p "command" shut)) "never commands"))
+      (let ((open (run-rows state t)))
+        (is (rows-carry-p "Spotify search: album 'Discovery Daft Punk'" open) "a search reads as what it looked for")
+        (is (rows-carry-p "Spotify playback: play spotify:album:2noRn" open) "a play as what it played")
+        (is (not (rows-carry-p "spotify_" open)) "never by the name the model calls the tool by")))
+    (let ((shut (run-rows (turn (list "e" "eval" (eval-args (format nil ";; Count~%(+ 1 1)")))
+                                '("q" "spotify_queue" "{\"action\":\"add\",\"uri\":\"spotify:track:2VEZ\"}")))))
+      (is (rows-carry-p "Ran 1 command, made 1 tool call" shut) "an eval beside a cell's call is still a command"))
+    (let* ((nle::*tool-detail* :standard)
+           (row (tool-row "spotify_queue" "{\"action\":\"add\",\"uri\":\"spotify:track:2VEZ\"}"
+                          :tool-call-id "lone" :tool-status "complete" :text "queued"))
+           (title (nle::lline-text (first (nle::row-llines row 100)))))
+      (is (search "spotify_queue · add spotify:track:2VEZ" title) "a lone card's title reads the same"))
+    (let* ((nle::*tool-detail* :standard)
+           (row (tool-row "vault_put" "{\"api_key\":\"sk-live-123\",\"name\":\"github\"}"
+                          :tool-call-id "secret" :tool-status "complete" :text "stored"))
+           (title (nle::lline-text (first (nle::row-llines row 100)))))
+      (is (search "vault_put · github" title) "a call reads its other arguments")
+      (is (not (search "sk-live" title)) "never a secret's value"))))
 
 (deftest user-block-boundaries-own-a-canvas-separator ()
   (dolist (profile '(:none :truecolor :ansi256 :ansi))

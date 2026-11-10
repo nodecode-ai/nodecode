@@ -4984,6 +4984,22 @@ preview under a picker highlighting it; reads behind it come out of the store."
   (nlk:create-session :id "unprompted")
   (is (null (replay-title (subscribed-frames port "unprompted"))) "no prompt, no name to carry"))
 
+(deftest a-frame-broadcast-once-a-shell-reads-its-ack-reaches-that-shell (with-temp-gateway (port))
+  ;; The gateway's reader holds at its "ws-acked" landmark, past the ack and
+  ;; before anything after it, until the shell, acting on its ack, has named a
+  ;; session. A peer marked attached only after that landmark was skipped by
+  ;; the very name it had just given.
+  (seed-usage-turn "named" "fix the flaky parser test in the lexer" "done")
+  (let* ((named (bt2:make-semaphore :name "named"))
+         (frames (with-stubbed-fdefinition (nlk:note-boot-phase (label &optional detail)
+                   (when (equal label "ws-acked")
+                     (bt2:wait-on-semaphore named :timeout 2))
+                   (funcall original label detail))
+                   (frames-while (ws port)
+                     (nle::set-session-title "named" "Lexer flake")
+                     (bt2:signal-semaphore named)))))
+    (is (equal '(("named" . "Lexer flake")) (titled-names frames)) "the name given on the ack reaches the shell that gave it")))
+
 (deftest the-header-wears-the-name-a-session-is-given (with-temp-store ())
   (seed-usage-turn "s-attached" "attached ask" "ok" :in 100 :out 10)
   (let ((model (make-frame-model 120 30 :http-port 1 :session-id "s-attached"))
