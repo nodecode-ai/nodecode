@@ -150,7 +150,8 @@ event type at 0, bKeyDown at 4, wRepeatCount at 8, uChar at 14."
     ("2J" "no screen erase") ("3J" "no scrollback erase") ("H" "no cursor home")
     ("?1049h" "the alternate screen is the first frame's to enter"))
   (is (search (csi "?2004h") out) "bracketed paste on")
-  (is (search (csi "?2031h") out) "colour-scheme reports on"))
+  (is (search (csi "?2031h") out) "colour-scheme reports on")
+  (is (search (csi "?1004h") out) "focus reports on"))
 
 (defun without-cursor-shape (string)
   "STRING with its DECSCUSR (ESC [ N SP q) cursor-shape sequences taken out."
@@ -163,6 +164,7 @@ event type at 0, bKeyDown at 4, wRepeatCount at 8, uChar at 14."
   (is (listp (dec-private-modes (without-cursor-shape out))) "the rest of the epilogue is modes only")
   (is (search (csi "?2004l") out) "bracketed paste off")
   (is (search (csi "?2031l") out) "colour-scheme reports off")
+  (is (search (csi "?1004l") out) "focus reports off")
   (is (and show (= (+ show (length (csi "?25h"))) (length out))) "cursor shown last"))
 
 (deftest every-mode-the-prelude-sets-the-epilogue-clears ()
@@ -455,6 +457,28 @@ as a window title, the empty string included."
           (before (next-fd)))
       (is (nlt:terminal-present-p) "a device that opens is a terminal to draw on")
       (is (= before (next-fd)) "the probe leaves no descriptor behind"))))
+
+;;; VS Code's restored terminal reports the mouse in the legacy encoding, a
+;;; column past 95 as one raw byte that is not UTF-8. The strict decoder
+;;; signalled on that byte and never got past it: the input loop failed on it
+;;; for good and no key was read again.
+#-win32
+(deftest the-terminal-reads-past-a-byte-that-is-not-utf-8 ()
+  (let ((path (format nil "/tmp/nodecode-stray-byte-~d" (sb-posix:getpid))))
+    (unwind-protect
+         (progn
+           (with-open-file (out path :direction :output :element-type '(unsigned-byte 8)
+                                     :if-exists :supersede)
+             (write-sequence #(27 91 77 67 131 59 122) out))
+           (let* ((nlt::*terminal-device* path)
+                  (nlt::*tty-stream* nil)
+                  (tty (nlt::open-tty)))
+             (unwind-protect
+                  (let ((report (nlt:read-key tty)) (key (nlt:read-key tty)))
+                    (is (nlt::screen-lost-msg-p report) "the legacy report reads, its raw column byte and all")
+                    (is (and (nlt:key-press-msg-p key) (eql #\z (nlt:key-event-code key))) "and the key after it reads"))
+               (close tty))))
+      (ignore-errors (delete-file path)))))
 
 ;;; --- the truecolor probe ---------------------------------------------------
 

@@ -398,7 +398,16 @@ none (cron, a container run without -t, a shell tool, setsid)."))
                                    :input t :output t
                                    :element-type 'character
                                    :buffering :line
-                                   :external-format :utf-8
+                                   ;; A byte that is not UTF-8 reads as U+FFFD
+                                   ;; rather than failing the read. Strict, the
+                                   ;; decoder signalled on it and never got past
+                                   ;; it: one stray byte -- a legacy mouse
+                                   ;; report's column past 95, which VS Code's
+                                   ;; restored terminal sends raw -- left the
+                                   ;; input loop failing on it for good (13.7
+                                   ;; million reports in a minute) and no key
+                                   ;; was read again.
+                                   :external-format '(:utf-8 :replacement #\REPLACEMENT_CHARACTER)
                                    ;; A terminal's read and write sides are
                                    ;; independent channels. Without this a
                                    ;; bidirectional fd-stream gets SBCL's
@@ -677,18 +686,21 @@ environment cannot say for sure (ssh forwards TERM but strips COLORTERM).")
   "Ask the terminal the colour of its own background (OSC 11): what a theme
 that leaves the canvas to the terminal stands on.")
 
-(define-escape (enter-modes :flush t) ("[?25l" "[?2004h" "[?2031h")
+(define-escape (enter-modes :flush t) ("[?25l" "[?2004h" "[?2031h" "[?1004h")
   ;; Modes only: nothing here erases or positions. The alternate screen and
   ;; mouse tracking are the view-state's, switched by the frames. A terminal
-  ;; that does not know 2031 ignores it, as DECSET does any mode it lacks.
-  "The modes a session runs under: cursor hidden, bracketed paste, and the
+  ;; that does not know 2031 or 1004 ignores it, as DECSET does any mode it
+  ;; lacks. Setting them again is harmless, which RETAKE-SCREEN leans on.
+  "The modes a session runs under: cursor hidden, bracketed paste, the
 colour-scheme report (DEC 2031): a terminal that follows the desktop between
-light and dark says when it turns, and the shell asks its background again.")
+light and dark says when it turns, and the shell asks its background again;
+and focus reports (DEC 1004): focus coming back repaints the whole frame, over
+whatever a terminal that rebuilt its screen meanwhile shows.")
 
-(define-escape (exit-modes :flush t) ("[?2031l" "[?2004l" "[0 q" "[?25h")
-  "Undo ENTER-MODES in reverse: the colour-scheme report and bracketed paste
-off, the terminal's own cursor shape back (DECSCUSR 0, over the blinking
-block the frames set), the cursor shown last.")
+(define-escape (exit-modes :flush t) ("[?1004l" "[?2031l" "[?2004l" "[0 q" "[?25h")
+  "Undo ENTER-MODES in reverse: focus reports, the colour-scheme report and
+bracketed paste off, the terminal's own cursor shape back (DECSCUSR 0, over
+the blinking block the frames set), the cursor shown last.")
 
 (defun apply-terminal-transitions (previous current stream &aux (was (or previous (make-view '()))))
   "Write to STREAM the mode changes between view-states PREVIOUS (NIL for

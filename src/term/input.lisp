@@ -206,17 +206,32 @@ stream ran out)."
 (defun parse-csi-sequence (stream &aux (ch (read-char stream nil nil)))
   "The message for ESC [ and what follows on STREAM: SGR mouse, arrows,
 Home/End, backtab, the numbered keys (Delete, Insert, PgUp, PgDn, F1-F12),
-modified arrows, kitty CSI-u keys, and bracketed paste."
+modified arrows, kitty CSI-u keys, and bracketed paste; focus coming back
+and a legacy mouse report are a SCREEN-LOST-MSG."
   (cond
     ((eql ch #\<) (parse-mouse-sequence stream))
     ;; Backtab is a CSI final byte too, but it is not a cursor key.
     ((eql ch #\Z) (make-key-press-msg :code :tab :mod +mod-shift+))
     ((%final-byte-key ch) (make-key-press-msg :code (%final-byte-key ch)))
-    ;; Focus reports and query answers (CSI I, CSI O, CSI ? ...): the
-    ;; shell enables none of them; consumed. One CSI ? reply is asked for:
-    ;; DEC 2031's colour-scheme report, ? 997 ; 1 n dark and ; 2 n light,
-    ;; which ENTER-MODES switches on.
-    ((member ch '(#\I #\O)) nil)
+    ;; Focus reports (DEC 1004, which ENTER-MODES switches on): focus
+    ;; coming back is when a terminal that rebuilt its screen behind the
+    ;; painter is looked at again, so it asks for the whole frame; focus
+    ;; leaving asks for nothing.
+    ((eql ch #\I) (make-screen-lost-msg))
+    ((eql ch #\O) nil)
+    ;; A mouse report in the legacy encoding, CSI M and three bytes (button,
+    ;; column, row, each offset by 32): the shell asks for SGR reports (1006)
+    ;; only, so this one comes from a terminal that forgot that mode -- VS
+    ;; Code's, after it restored a session -- and its screen may be a stale
+    ;; copy too. The report itself is dropped: the next one is SGR again.
+    ;; Read as exactly its three bytes; the catch-all below drained whatever
+    ;; was typed after it.
+    ((eql ch #\M)
+     (loop repeat 3 do (read-char stream nil nil))
+     (make-screen-lost-msg))
+    ;; Query answers (CSI ? ...). One is asked for: DEC 2031's colour-scheme
+    ;; report, ? 997 ; 1 n dark and ; 2 n light, which ENTER-MODES switches
+    ;; on.
     ((eql ch #\?)
      (let ((reply (with-output-to-string (out)
                     (loop for c = (read-char stream nil nil)
