@@ -166,7 +166,7 @@ the mounted TREES, then the system's own directories."
                                :test #'string= :from-end t))))
 
 (defun sandbox-bwrap-argv (argv &key (bwrap "bwrap") home folder binary store policy hidden
-                                     run cache temporary port egress-port
+                                     run cache temporary port egress-port stand-ins jail-environment
                                      (environment (sb-ext:posix-environ))
                                      (exists #'probe-file) (link #'sandbox-link-target)
                                      (directory-p #'uiop:directory-exists-p)
@@ -178,8 +178,11 @@ outside HOME, POLICY's grants (SANDBOX-POLICY), HIDDEN's paths unreadable
 (a directory an empty read-only one, a file the null device), the
 launcher's files read-only; RUN, CACHE and TEMPORARY the jail's runtime
 directory, cache and TMPDIR; PORT the gateway's port on the jail's loopback
-and EGRESS-PORT the proxy's. ENVIRONMENT is the launcher's, which the jail
-keeps only the safe part of; EXISTS decides which optional paths are
+and EGRESS-PORT the proxy's. STAND-INS, an alist (REAL . STAND-IN), puts
+each STAND-IN read-only where REAL, a launcher's or a hidden file, would be
+(SANDBOX-STAND-INS); JAIL-ENVIRONMENT, NAME VALUE ..., is set in the jail
+last. ENVIRONMENT is the launcher's, which the jail keeps only the safe part
+of; EXISTS decides which optional paths are
 mounted, LINK answers a top-level link's target (or NIL for a directory).
 The serve gets descriptors 3 and 4 (the way in and out), bwrap reads the
 filter from 5."
@@ -206,7 +209,7 @@ filter from 5."
                                  :test #'string=)))
          (launcher-files (remove-if-not present
                                         (mapcar (lambda (relative) (sandbox-home-path home relative))
-                                                (list "config.jsonc" "sandbox.jsonc"
+                                                (list "config.jsonc" "sandbox.jsonc" "sandbox/egress.log"
                                                       (format nil "sandbox/~a" +sandbox-mark-name+)))))
          (variables (mapcar (lambda (entry)
                               (let ((at (position #\= entry)))
@@ -237,11 +240,16 @@ filter from 5."
                                                   :directory-p directory-p)
                                   #'< :key (lambda (mount) (count #\/ (second mount)))))
         (destructuring-bind (kind path) mount
-          (ecase kind
-            (:write (emit "--bind" path path))
-            (:read (emit "--ro-bind" path path))
-            (:hide-directory (emit "--tmpfs" path "--remount-ro" path))
-            (:hide-file (emit "--ro-bind" "/dev/null" path)))))
+          (let ((stand-in (and (member kind '(:read :hide-file))
+                               (cdr (assoc path stand-ins :test #'string=)))))
+            (if stand-in
+                ;; the file the jail reads in its place: a key's stand-in, never the key
+                (emit "--ro-bind" stand-in path)
+                (ecase kind
+                  (:write (emit "--bind" path path))
+                  (:read (emit "--ro-bind" path path))
+                  (:hide-directory (emit "--tmpfs" path "--remount-ro" path))
+                  (:hide-file (emit "--ro-bind" "/dev/null" path)))))))
       ;; The empty root bwrap builds on -- and the parents it made for every
       ;; mount, a skeleton of the host's home among them -- is not the
       ;; jail's to write: only what was mounted written, and its own /tmp.
@@ -261,6 +269,8 @@ filter from 5."
       (setenv "XDG_RUNTIME_DIR" (sandbox-directory-name run))
       (setenv "XDG_CACHE_HOME" (sandbox-directory-name cache))
       (setenv "TMPDIR" (sandbox-directory-name temporary))
+      ;; the keys' stand-ins and the host-side providers' origins
+      (loop for (name value) on jail-environment by #'cddr do (setenv name value))
       (emit "--seccomp" "5" "--")
       (append (nreverse out) argv))))
 
@@ -333,20 +343,18 @@ reads it from there."
     read))
 
 #+linux
-(defun sandbox-receive-egress (channel hosts)
+(defun sandbox-receive-egress (channel egress)
   "Wait, on a thread of its own, for the listening socket the jail sends
-over CHANNEL (SANDBOX-HAND-OUT-EGRESS), and serve the proxy on it for HOSTS;
-CHANNEL is closed once that is done, or once the jail ends without one."
+over CHANNEL (SANDBOX-HAND-OUT-EGRESS), and answer the jail's way out on it
+under EGRESS (SANDBOX-EGRESS-START); CHANNEL is closed once that is done, or
+once the jail ends without one."
   (spawn "sandbox-egress-receive"
     (unwind-protect
          (when-let (descriptor (ignore-errors (nlk::receive-descriptor channel)))
-           (let ((listener (make-instance 'sb-bsd-sockets:inet-socket :type :stream :protocol :tcp
-                                                                      :descriptor descriptor)))
-             ;; The proxy (sandbox-egress.lisp) answers on it; without one the
-             ;; listener closes and every way out of the jail is refused.
-             (if (fboundp 'sandbox-egress-start)
-                 (funcall 'sandbox-egress-start :listener listener :hosts hosts)
-                 (sb-bsd-sockets:socket-close listener))))
+           (sandbox-egress-start
+            :listener (make-instance 'sb-bsd-sockets:inet-socket :type :stream :protocol :tcp
+                                                                 :descriptor descriptor)
+            :egress egress))
       (ignore-errors (sb-posix:close channel)))))
 
 ;;; --- inside the jail ------------------------------------------------------

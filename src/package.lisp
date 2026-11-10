@@ -160,7 +160,7 @@ renderer, the program loop.")
    #:with-folder-lock #:replace-file #:gzip-file #:random-bytes #:with-output-file #:stat-write-time
    #:call-with-severed-stdio
    ;; --- reaching a peer by name (dial.lisp) ---
-   #:*dial-stagger-seconds* #:dial-order #:dial #:http #:proxy-for #:body-text #:decode-octets #:read-events
+   #:*dial-stagger-seconds* #:dial-order #:dial #:http #:proxy-for #:url-origin #:jail-brokered-url #:+jail-key-prefix+ #:+jail-broker-path+ #:body-text #:decode-octets #:read-events
    #:sever-websocket
    ;; --- wire-value waist, both directions (json.lisp) ---
    #:octets #:decode-json #:json-value #:json-array #:with-json

@@ -72,8 +72,10 @@ must not reach: XDG_RUNTIME_DIR, else /run/user/<uid>."
 
 (defun sandbox-policy (home)
   "The operator's additions from <HOME>/sandbox.jsonc as a plist --
-(:allowed-domains LIST :deny-read LIST :allow-read LIST :allow-write LIST) -- or NIL when
-there is no file; a file that does not parse is an error naming it."
+(:allowed-domains LIST :deny-read LIST :allow-read LIST :allow-write LIST
+:network WORD) -- or NIL when there is no file; a file that does not parse is
+an error naming it. :NETWORK is \"internet\" when the jail may reach every
+public host, else NIL: only the hosts allowed."
   (let ((path (merge-pathnames "sandbox.jsonc" (uiop:ensure-directory-pathname home))))
     (when (probe-file path)
       (let ((object (handler-case (nlk:decode-json (nlk::normalize-jsonc (uiop:read-file-string path)))
@@ -82,7 +84,9 @@ there is no file; a file that does not parse is an error naming it."
           (list :allowed-domains (strings "allowed_domains")
                 :deny-read (strings "deny_read")
                 :allow-read (strings "allow_read")
-                :allow-write (strings "allow_write")))))))
+                :allow-write (strings "allow_write")
+                :network (let ((word (ignore-errors (json-value object :text "network"))))
+                           (and word (string-equal (nlk:trimmed word) "internet") "internet"))))))))
 
 (defparameter +sandbox-home-read+
   '("~/.gitconfig" "~/.config/git/config" "~/.config/git/ignore")
@@ -303,6 +307,132 @@ configured providers', nodecode's own and the operator's additions."
                              (getf (sandbox-policy home) :allowed-domains))
                      :test #'string-equal :from-end t))
 
+;;; --- the keys outside, the stand-ins inside ----------------------------------------
+;;; The jail reads no key. Where the home keeps one -- auth.json, secrets/,
+;;; config.jsonc, the launcher's environment -- the jail reads a stand-in
+;;; (SANDBOX-KEY-STAND-IN) in the same place, so its providers list and
+;;; resolve as they would outside; the broker outside swaps a stand-in for the
+;;; key (sandbox-egress.lisp), toward that provider's own address alone.
+
+(defun sandbox-key-candidates (&optional (environment (sb-ext:posix-environ)))
+  "The providers a key may be kept for outside the jail: the inventory's
+(auth.json, secrets/, config.jsonc), the listable ones, and each one an
+<ID>_API_KEY of ENVIRONMENT names, anthropic for ANTHROPIC_AUTH_TOKEN."
+  (remove-duplicates
+   (append (ignore-errors (configured-provider-inventory))
+           (ignore-errors (listable-provider-ids))
+           (loop for entry in environment
+                 for at = (position #\= entry)
+                 for name = (and at (subseq entry 0 at))
+                 when (and name (> (length name) (length "_API_KEY")) (uiop:string-suffix-p name "_API_KEY")
+                           (plusp (length (nlk:trimmed (subseq entry (1+ at))))))
+                   collect (substitute #\- #\_ (string-downcase (subseq name 0 (- (length name) (length "_API_KEY"))))))
+           (and (find-if (lambda (entry) (uiop:string-prefix-p "ANTHROPIC_AUTH_TOKEN=" entry)) environment)
+                '("anthropic")))
+   :test #'string-equal :from-end t))
+
+(defun sandbox-provider-table (&optional (ids (sandbox-key-candidates)))
+  "Each of IDS the launcher knows an address for, as a plist: :ID, :ORIGINS
+the origins its endpoint and base are served at (NLK:URL-ORIGIN), :KEYED
+true when a key is kept for it outside the jail."
+  (let ((auth (ignore-errors (read-auth-file *auth-file-path*))))
+    (loop for id in ids
+          for origins = (remove-duplicates
+                         (remove nil (list (ignore-errors (nlk:url-origin (provider-endpoint id)))
+                                           (ignore-errors (nlk:url-origin (provider-base-url id)))))
+                         :test #'string= :from-end t)
+          when origins
+            collect (list :id id :origins origins :keyed (and (sandbox-key-kept-p id auth) t)))))
+
+(defun sandbox-key-kept-p (id auth)
+  "Whether a key is kept for the provider ID outside the jail: its chain
+answers one from config.jsonc, secrets/, AUTH (the parsed auth.json) or the
+environment -- each tier asked on its own too, so a provider whose lane is
+not known yet (a catalog not loaded, a cell's) is not missed."
+  (let ((credential (ignore-errors (resolve-provider-credential id :probe t))))
+    (or (and credential (member (credential-source credential) '(:config :secret-file :api-key :env)))
+        (ignore-errors (provider-secret-key id :probe t))
+        (and auth (auth-api-key auth id))
+        (provider-env-key id)
+        (ignore-errors (trimmed-config-string (configured-provider-entry id) "api_key")))))
+
+(defun sandbox-stand-in-auth (auth providers)
+  "The auth.json the jail reads in place of AUTH, the parsed real one: each
+keyed one of PROVIDERS (SANDBOX-PROVIDER-TABLE) under api_keys, its key a
+stand-in and the vars of its address kept; nothing else of AUTH (a machine's
+link, a sign-in). NIL when no provider is keyed."
+  (let ((keys (nlk:make-json-object)))
+    (dolist (provider providers)
+      (when (getf provider :keyed)
+        (let* ((id (getf provider :id))
+               (entry (nlk:make-json-object "key" (sandbox-key-stand-in id)))
+               (vars (ignore-errors (json-value auth :object "api_keys" id "vars"))))
+          (when (hash-table-p vars) (setf (gethash "vars" entry) vars))
+          (setf (gethash id keys) entry))))
+    (when (plusp (hash-table-count keys))
+      (nlk:encode-json-object (nlk:make-json-object "api_keys" keys)))))
+
+(defun sandbox-stand-in-config (text)
+  "TEXT, a config.jsonc, as the jail reads it when a provider's api_key is
+in it -- each such key a stand-in -- or NIL when none is."
+  (let* ((config (ignore-errors (nlk:decode-json (nlk::normalize-jsonc text))))
+         (providers (and (hash-table-p config) (gethash "providers" config)))
+         (swapped nil))
+    (when (hash-table-p providers)
+      (maphash (lambda (id entry)
+                 (when (and (hash-table-p entry) (stringp (gethash "api_key" entry))
+                            (plusp (length (nlk:trimmed (gethash "api_key" entry)))))
+                   (setf (gethash "api_key" entry) (sandbox-key-stand-in id)
+                         swapped t)))
+               providers))
+    (and swapped (nlk:encode-json-object config))))
+
+(defun sandbox-stand-ins (home providers)
+  "Write the files the jail of HOME reads in place of the real ones under
+<HOME>/sandbox/stand-in/ and answer them as an alist (REAL . STAND-IN), native
+names: auth.json when it holds a key, config.jsonc when a provider's api_key
+is in it."
+  (let* ((dir (merge-pathnames "sandbox/stand-in/" (uiop:ensure-directory-pathname home)))
+         (auth-path (merge-pathnames "auth.json" (uiop:ensure-directory-pathname home)))
+         (config-path (merge-pathnames "config.jsonc" (uiop:ensure-directory-pathname home)))
+         (auth (and (probe-file auth-path) (ignore-errors (read-auth-file auth-path))))
+         (auth-text (and (probe-file auth-path) (sandbox-stand-in-auth auth providers)))
+         (config-text (and (probe-file config-path)
+                           (sandbox-stand-in-config (uiop:read-file-string config-path))))
+         (pairs '()))
+    (loop for (real text name) in (list (list auth-path auth-text "auth.json")
+                                        (list config-path config-text "config.jsonc"))
+          for path = (merge-pathnames name dir)
+          do (if text
+                 (progn (nlk::write-file-atomically path text :mode #o600 :directory-mode #o700)
+                        (push (cons (uiop:native-namestring real) (uiop:native-namestring path)) pairs))
+                 (ignore-errors (delete-file path))))
+    (nreverse pairs)))
+
+(defun sandbox-jail-environment (providers)
+  "The variables the jail gets for PROVIDERS (SANDBOX-PROVIDER-TABLE), as
+NAME VALUE ...: each keyed provider's own <ID>_API_KEY, its stand-in (the
+key of the environment, or of secrets/, is in no file the jail reads), and
+NODECODE_SANDBOX_HOST_ORIGINS, the origins on this host or its networks the
+broker reaches for it (NLK:JAIL-BROKERED-URL)."
+  (let ((local (remove-duplicates
+                (loop for provider in providers
+                      append (remove-if-not #'local-endpoint-p (getf provider :origins)))
+                :test #'string=)))
+    (append (loop for provider in providers
+                  when (getf provider :keyed)
+                    append (list (format nil "~a_API_KEY" (substitute #\_ #\- (string-upcase (getf provider :id))))
+                                 (sandbox-key-stand-in (getf provider :id))))
+            (and local (list "NODECODE_SANDBOX_HOST_ORIGINS" (format nil "~{~a~^,~}" local))))))
+
+(defun sandbox-egress-plan (home providers)
+  "What the egress outside HOME's jail answers under (SANDBOX-EGRESS-START):
+:HOSTS, :INTERNET, :PROVIDERS and :LOG."
+  (list :hosts (sandbox-egress-hosts home)
+        :internet (and (getf (sandbox-policy home) :network) t)
+        :providers providers
+        :log (uiop:native-namestring (merge-pathnames "sandbox/egress.log" (uiop:ensure-directory-pathname home)))))
+
 (defun sandbox-launch-preflight (store-path)
   "Prepare a sandboxed launch of STORE-PATH's home: refuse with a sentence
 when it cannot run (SANDBOX-REQUIREMENTS), else make what the jail needs
@@ -330,22 +460,34 @@ under <home>/sandbox/, pick the loopback port the jailed gateway binds, set
             (ensure-directories-exist directory)
             #-win32 (ignore-errors (sb-posix:chmod (uiop:native-namestring directory) #o700)))
           (setf *sandbox-plan*
-                (list :home (uiop:native-namestring (uiop:ensure-directory-pathname home))
-                      :folder (uiop:getcwd)
-                      :binary (uiop:native-namestring (truename (nlk::origin-pathname)))
-                      :store (uiop:native-namestring store)
-                      :policy (sandbox-policy home)
-                      :hidden (cons (sandbox-home-path home "secrets/") (sandbox-hidden-files home))
-                      :run run :cache cache :temporary temporary
-                      :port port
-                      ;; the jail's own loopback is empty: any port but the gateway's
-                      :egress-port (if (= port 3128) 3129 3128)
-                      :hosts (sandbox-egress-hosts home)
-                      #+linux :disable-userns
-                      #+linux (sandbox-bwrap-disables-userns-p
-                               (uiop:native-namestring (nlk::executable-on-path "bwrap"))))
+                (sandbox-launch-plan home store run cache temporary port)
                 *sandboxed-shell* t)
           nil))))
+
+(defun sandbox-launch-plan (home store run cache temporary port)
+  "The plan of HOME's jail FRONT-ORGANISM runs (*SANDBOX-PLAN*): what it
+mounts, the ports in and out, the stand-ins and the egress it answers under."
+  (let* ((providers (sandbox-provider-table))
+         (log (merge-pathnames "sandbox/egress.log" (uiop:ensure-directory-pathname home))))
+    ;; the egress log is the launcher's: made here, read-only in the jail
+    (unless (probe-file log)
+      (nlk::write-file-atomically log "" :mode #o600 :directory-mode #o700))
+    (list :home (uiop:native-namestring (uiop:ensure-directory-pathname home))
+          :folder (uiop:getcwd)
+          :binary (uiop:native-namestring (truename (nlk::origin-pathname)))
+          :store (uiop:native-namestring store)
+          :policy (sandbox-policy home)
+          :hidden (cons (sandbox-home-path home "secrets/") (sandbox-hidden-files home))
+          :stand-ins (sandbox-stand-ins home providers)
+          :jail-environment (sandbox-jail-environment providers)
+          :run run :cache cache :temporary temporary
+          :port port
+          ;; the jail's own loopback is empty: any port but the gateway's
+          :egress-port (if (= port 3128) 3129 3128)
+          :egress (sandbox-egress-plan home providers)
+          #+linux :disable-userns
+          #+linux (sandbox-bwrap-disables-userns-p
+                   (uiop:native-namestring (nlk::executable-on-path "bwrap"))))))
 
 (defun sandbox-wrap-command (command)
   "COMMAND, a serve argv, as this shell spawns it: unchanged outside a
@@ -362,6 +504,8 @@ binary the jail mounts, to be spawned with the plan's descriptors
                             :run (getf plan :run) :cache (getf plan :cache)
                             :temporary (getf plan :temporary)
                             :port (getf plan :port) :egress-port (getf plan :egress-port)
+                            :stand-ins (getf plan :stand-ins)
+                            :jail-environment (getf plan :jail-environment)
                             :disable-userns (getf plan :disable-userns))
         command)))
 
@@ -388,7 +532,7 @@ of the socketpair waits for the jail's egress listener
                  (multiple-value-prog1
                      (funcall function (list (sb-bsd-sockets:socket-file-descriptor listener) inside seccomp))
                    (setf spawned t)
-                   (sandbox-receive-egress outside (getf plan :hosts))))
+                   (sandbox-receive-egress outside (getf plan :egress))))
             (ignore-errors (sb-bsd-sockets:socket-close listener))
             (dolist (descriptor (list inside seccomp (and (not spawned) outside)))
               (when descriptor (ignore-errors (sb-posix:close descriptor)))))))))
