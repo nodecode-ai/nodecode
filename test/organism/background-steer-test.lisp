@@ -144,6 +144,63 @@ request past it."
     ;; The work the word stood on was read: nothing is pending.
     (is (null (gethash "background-pending" (steer-completion "bg-steer-final"))))))
 
+(defun stand-or-answer (text)
+  "A provider round as CALL-PROVIDER answers it: a silent final under
+*STANDING-ON-HANDOFF* comes back as a stand; TEXT otherwise."
+  (if nle::*standing-on-handoff*
+      (values (wire-message "assistant") nil "stop" (list :handoff-stand t))
+      (wire-message "assistant" :content text)))
+
+(deftest bg-silent-end-on-a-handoff-ends-the-turn-waiting (with-exec-registry (registry))
+  ;; Claude, told its eval went to the background and to end its turn, ended
+  ;; it with nothing said. That silence was re-asked five times as an empty
+  ;; response, the turn failed, and a failed turn's exits are never read: the
+  ;; work finished a second later and nothing came back. A silent stand ends
+  ;; the turn on the handoff, the way a word would, and records no message.
+  (with-steered-turn ("bg-stand" asked
+                      ((wire-message "assistant" :tool-calls (vector (gated-eval-call "c-bg"))))
+                      ((stand-or-answer "not a stand")))
+    (nle:run "go" :session (nle:intern-session "bg-stand") :command-id "bg-stand-command")
+    (is (= 2 (length asked)) "the stand was asked once")
+    ;; The turn completed waiting on its work, and the stand is not history:
+    ;; only the eval call's round is.
+    (is (eql 1 (gethash "background-pending" (steer-completion "bg-stand"))))
+    (is (= 1 (length (session-events "bg-stand" :type 'nlk::assistant-message))))
+    ;; The work exits after the turn: its spawner completed, so the exit
+    ;; still owes the session the wake that reads it.
+    (is (eq :exited (open-steer-gate "c-bg")))
+    (let ((ids (nle::claim-exit-wakes registry "bg-stand")))
+      (is (= 1 (length ids)) "the idle wake claims the exit")
+      (nle::release-exit-wakes registry ids))))
+
+(deftest bg-silent-end-as-the-work-exits-reads-it-in-the-turn (with-exec-registry (registry))
+  ;; The work exited while the model stood on it: the turn reads the exit
+  ;; where the stand would have ended it, and the model answers in the same
+  ;; turn.
+  (with-steered-turn ("bg-stand-exit" asked
+                      ((wire-message "assistant" :tool-calls (vector (gated-eval-call "c-bg"))))
+                      ((open-steer-gate "c-bg")
+                       (stand-or-answer "not a stand"))
+                      ((wire-message "assistant" :content "the answer is 4242")))
+    (is (equal "the answer is 4242"
+               (nle:run "go" :session (nle:intern-session "bg-stand-exit")
+                             :command-id "bg-stand-exit-command")))
+    (is (= 3 (length asked)))
+    (is (= 1 (steer-reads (first asked) "4242")) "the request after the stand reads the exit")
+    (is (= 1 (length (steer-turn-ids "bg-stand-exit"))) "no wake turn")
+    (is (null (steer-due-ids registry "bg-stand-exit")))
+    (is (null (gethash "background-pending" (steer-completion "bg-stand-exit"))))))
+
+(deftest bg-silent-end-after-work-read-in-the-call-is-no-stand ()
+  ;; Work that finished inside its call handed nothing off: silence after it
+  ;; is an empty response, as before.
+  (with-steered-turn ("bg-no-stand" asked
+                      ((wire-message "assistant" :tool-calls
+                                     (vector (wire-tool-call "c-1" "eval" (eval-args "(+ 20 22)")))))
+                      ((stand-or-answer "42")))
+    (is (equal "42" (nle:run "go" :session (nle:intern-session "bg-no-stand")
+                                  :command-id "bg-no-stand-command")))))
+
 (deftest bg-exit-of-a-completed-turn-steers-the-running-turn (with-exec-registry (registry))
   ;; Work a completed turn handed off belongs to the session, and a turn
   ;; running when it exits is where it is read: one that exited before the

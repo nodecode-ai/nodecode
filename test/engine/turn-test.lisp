@@ -2330,6 +2330,23 @@ defaulted its numbers could not state it."
       (is (equal "substance" (gethash "content" message)))))
   (is (= 2 calls) "the reasoning-only final consumed exactly one retry"))
 
+(deftest call-provider-answers-a-silent-final-on-a-handoff-once (let ((calls 0)
+                                                                      (nle::*retry-base-delay* 0)))
+  ;; Silence right after work went to the background is the model waiting on
+  ;; it, as the handoff told it to. Without this, the same request went out
+  ;; five more times, waited five more times, and failed the turn with its
+  ;; work still running.
+  (with-stubbed-fdefinition (dex:post (&rest args)
+                             (incf calls)
+                             (values (make-sse-stream) 200))
+    (let ((nle::*standing-on-handoff* t))
+      (multiple-value-bind (message usage finish-reason metadata)
+          (nle::call-provider (user-context))
+        (declare (ignore usage finish-reason))
+        (is (nle::assistant-message-empty-p message) "the stand says nothing")
+        (is (getf metadata :handoff-stand) "and comes back marked as one"))))
+  (is (= 1 calls) "a stand is never re-asked"))
+
 (deftest call-provider-never-resends-a-refusal (let ((calls 0)
                                                      (nle::*retry-base-delay* 0)))
   ;; A "refusal" stop_reason with no content block is read as an empty

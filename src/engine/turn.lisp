@@ -2431,6 +2431,14 @@ Ambient like *CURRENT-DURABLE-TURN* rather than an argument: CALL-PROVIDER's
 lambda list is a stubbing seam (test doubles) and the round
 is turn-loop state, not caller input.")
 
+(defvar *standing-on-handoff* nil
+  "True while AGENT-LOOP asks for a round that stands on the turn's own
+handed-off work: the round before it left an evaluation running in the
+background, and the model has not read it yet. A silent final is then the
+model ending its turn to wait, as the handoff told it to, and CALL-PROVIDER
+answers it as a stand rather than an empty response. Ambient like
+*PROVIDER-ROUND*, for the same reason.")
+
 (defvar *previous-request-json* nil
   "The exact serialized body of the turn's previous provider round, as the
 UTF-8 octets that went out, or NIL at round zero, which reads the session's
@@ -2633,7 +2641,8 @@ Returns (values MESSAGE USAGE FINISH-REASON RESPONSE-METADATA), where
 RESPONSE-METADATA is the (:model :effort) plist the winning attempt's
 :response-metadata part carried — what the provider says it ANSWERED with,
 as opposed to what the request asked for. NIL entries mean the stream did
-not say.
+not say. Its :HANDOFF-STAND is true when MESSAGE is a silent final under
+*STANDING-ON-HANDOFF*: billed as a voided round, never history.
 
 One context overflow is recovered by evicting one whole turn. Transient
 failures retry under the dual budget (the providers/attempt.zig reducer):
@@ -2644,7 +2653,8 @@ is honored first; each retry is journaled as a durable turn.provider_retry
 fact when a durable turn is executing. An assistant message with no content,
 no tool calls, and no reasoning is a contract error fed back into the retry
 loop rather than recorded as history; so is one carrying a tool call with no
-name.
+name. Under *STANDING-ON-HANDOFF* a silent final is the model waiting on its
+background work instead: it is answered once, as a stand, never re-asked.
 
 A successful round leaves a durable turn.provider_request fact — which exact
 request went out (body sha256, message count, frozen context estimate) and
@@ -3282,13 +3292,31 @@ did not say."
                     ;; words were reasoning_content would complete a turn
                     ;; the room could never show.
                     (when (assistant-message-empty-p message)
-                      ;; A refusal said nothing on purpose: the verdict stands, never re-asked.
-                      (if (member finish-reason '("refusal" "content_filter") :test #'equal)
-                          (error 'provider-refused
-                                 :detail (format nil "the provider refused to answer (finish reason ~a)"
-                                                 finish-reason))
-                          (error 'provider-empty-response
-                                 :detail "provider returned an empty assistant message")))
+                      (cond
+                        ;; A refusal said nothing on purpose: the verdict stands, never re-asked.
+                        ((member finish-reason '("refusal" "content_filter") :test #'equal)
+                         (error 'provider-refused
+                                :detail (format nil "the provider refused to answer (finish reason ~a)"
+                                                finish-reason)))
+                        ;; Silence right after work went to the background is
+                        ;; the model ending its turn to wait on it, as the
+                        ;; handoff told it to. Re-asked, it waits again, and
+                        ;; the turn would fail with its work still running and
+                        ;; no wake to come back through. The stand is no
+                        ;; history either: its spend bills as a voided round,
+                        ;; what streamed is sealed, and AGENT-LOOP ends the
+                        ;; turn on the handoff, for the exit wake to carry the
+                        ;; result in.
+                        (*standing-on-handoff*
+                         (when (and *current-durable-turn* (or usage finish-reason))
+                           (apply #'record-round-usage *current-durable-turn* :finish-reason finish-reason :voided t
+                                  (append (round-identity) (provider-usage-fact-args usage)))
+                           (notify-turn-facts-committed))
+                         (seal-streamed-attempt "the model ended its turn to wait on its background work"
+                                                "stood" :estimate-p nil))
+                        (t
+                         (error 'provider-empty-response
+                                :detail "provider returned an empty assistant message"))))
                     ;; Lanes return the exact serialized request, its UTF-8
                     ;; octets, as a fourth value; a test stub that returns three
                     ;; leaves REQUEST-JSON nil and simply records no fact.
@@ -3346,6 +3374,8 @@ did not say."
                     (return (values message usage finish-reason
                                     (list :model response-model
                                           :effort response-effort
+                                          ;; Only a stand reaches here silent.
+                                          :handoff-stand (assistant-message-empty-p message)
                                           :continued-from continued-from
                                           :resume-provider-config (and refusal-fallback-p
                                                                        selection-config))
@@ -4326,7 +4356,9 @@ round's message, T as a second value when a parked steer ended the turn at a
 boundary it would otherwise have continued past (COMPLETE-TURN :STEERED),
 and T as a third when the terminal message is the model's first word after a
 round that left work running in the background (HANDOFF-P): the word is
-status, not the ask's answer, and the exit wake carries the result in.
+status, not the ask's answer, and the exit wake carries the result in. A
+silent final there is the same handoff with no word (*STANDING-ON-HANDOFF*):
+it ends the turn the same way and records no message.
 PREFILL, when given, is this round's assistant message already decided --
 a harness turn's calls (an exit wake's reads) -- and no provider is asked
 for it: it is recorded and its calls run exactly as a provider's would be.
@@ -4393,7 +4425,15 @@ and where a terminal answer would end the turn."
                                active-context)
            (if prefill
                (values prefill nil nil nil nil)
-               (let ((*provider-round* round))
+               (let ((*provider-round* round)
+                     ;; The turn's own handed-off work still unread: a silent
+                     ;; final is the model waiting on it (CALL-PROVIDER).
+                     (*standing-on-handoff*
+                       (and handoff-p *current-durable-turn*
+                            (turn-background-pending
+                             (session-id session)
+                             (nlk:durable-turn-turn-id *current-durable-turn*))
+                            t)))
                  (call-provider context)))
          ;; A failover this round performed is the round's own identity: every
          ;; fact below — the usage fact's provider/model, the next round's
@@ -4405,13 +4445,17 @@ and where a terminal answer would end the turn."
          ;; Cancelling between the provider's return and the fact commit
          ;; used to lose the text AND the usage while still paying for
          ;; both — and boot resume then re-billed the identical round.
-         (append-message session message)
+         ;; A stand on handed-off work is not history: CALL-PROVIDER
+         ;; already billed it as a voided round, and the terminal arm below
+         ;; ends the turn on the handoff with nothing said.
+         (unless (getf response-metadata :handoff-stand)
+           (append-message session message))
          ;; The round into the turn's meter: the context it filled is read
          ;; against the budget this round's lane believed (the learned window).
          (note-round (string/= "" (content-text (gethash "content" message)))
                      usage
                      (effective-context-budget context.provider-config))
-         (when *current-durable-turn*
+         (when (and *current-durable-turn* (not (getf response-metadata :handoff-stand)))
            (nlk:record-assistant-message
             *current-durable-turn* message
             :continued-from (getf response-metadata :continued-from)
