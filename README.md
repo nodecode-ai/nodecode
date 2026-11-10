@@ -18,6 +18,9 @@
   <a href="https://discord.gg/cujGhaGCnS">Discord</a>
 </p>
 
+<p align="center"><b>Cyber v1:</b> code <code>2XCYBER</code> doubles your first top-up, up to $50, until 13 Nov.<br>
+  <a href="https://nodecode.ai/account/top-up">Top up</a> &nbsp;·&nbsp; <a href="https://x.com/pomterree/status/2120076697169178631">Announcement</a></p>
+
 <br>
 
 <picture>
