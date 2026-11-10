@@ -52,8 +52,12 @@ for e in json.load(open(f"{work}/repo/index.json"))["cells"]:
     git = f"{work}/git/{hashlib.sha1(e['git'].encode()).hexdigest()[:16]}"
     if not os.path.isdir(git):
         subprocess.run(["git", "init", "-q", "--bare", git], check=True)
+    # One shallow fetch per pin adds one pack each; past gc.autoPackLimit git starts a detached auto gc
+    # that rewrites `shallow` under the next fetch ("shallow file has changed since we read it", exit
+    # 128, at about 50 distinct pins). This throwaway repo never needs a gc.
     if (git, e["commit"]) not in fetched:
-        subprocess.run(["git", "-C", git, "fetch", "-q", "--depth", "1", "--no-tags", "--", e["git"],
+        subprocess.run(["git", "-c", "gc.auto=0", "-c", "maintenance.auto=false", "-C", git,
+                        "fetch", "-q", "--depth", "1", "--no-tags", "--", e["git"],
                         f"+{e['commit']}:refs/pins/{e['commit']}"], check=True)
         fetched.add((git, e["commit"]))
     os.makedirs(f"{work}/archives/{e['commit']}", exist_ok=True)
