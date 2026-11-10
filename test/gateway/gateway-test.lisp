@@ -3166,6 +3166,31 @@ request."
           (is (= 0 calls) "neither admitted a turn")
           (is-model-pin "pin-refused" nil nil "and neither pinned" "the session"))))))
 
+(deftest a-provider-named-alone-runs-no-model-of-another-provider
+    (with-session-store ("alone"))
+  ;; A start_turn naming a provider and no model: the default's model rides
+  ;; along only when the default is that provider's. Another provider's id
+  ;; would reach the named one and come back as its 404 on every turn, so the
+  ;; target is refused by name before anything is pinned or admitted.
+  (with-model-selection-config
+      (path "{\"general\": {\"default_model\": {\"provider\": \"openai-completions\", \"model\": \"boot-model\"}}}")
+    (setf nle::*provider* "openai-completions"
+          nle::*model* "boot-model")
+    (let ((seen '()))
+      (with-silent-peer (peer state :alone-peer)
+        (with-provider-stub (nil (push (list nle::*provider* nle::*model*) seen)
+                                 (wire-message "assistant" :content "ok"))
+          (%drive-start-turn peer "alone" "alone-1" "provider" "anthropic")
+          (let ((refusal (row-carrying "unknown_provider" (%peer-frames state))))
+            (is refusal "another provider named alone is refused")
+            (is (search "anthropic was named without a model" (princ-to-string refusal)) "saying it named no model"))
+          (is-model-pin "alone" nil nil "nothing is pinned" "on the session")
+          (%drive-start-turn peer "alone" "alone-2" "provider" "openai-completions")
+          (is-eventually (= 1 (length seen)) "the default's own provider named alone runs")
+          (is-eventually (not (nlk:active-turn-p "alone")) "to its end")))
+      (is (equal '(("openai-completions" "boot-model")) seen) "on the default's model, and no turn ran on anthropic/boot-model")
+      (is-model-pin "alone" "openai-completions" "boot-model" "pinned to its own lane's model" "as a pair"))))
+
 (deftest a-session-created-on-a-target-runs-on-it-alone ()
   ;; A launch's --model: the create pins the new session alone, and a target
   ;; refused mints no session.
@@ -3189,6 +3214,9 @@ request."
       (is-route (port :post "/api/gateway/sessions"
                       :body "{\"session_id\":\"off\",\"provider\":\"no-such-lane\",\"model\":\"m\"}")
                 400 "an unknown provider is refused" "unknown_provider")
+      (is-route (port :post "/api/gateway/sessions"
+                      :body "{\"session_id\":\"off\",\"provider\":\"anthropic\"}")
+                400 "as is a provider named alone, the default's model another's" "unknown_provider")
       (is-route (port :post "/api/gateway/sessions"
                       :body "{\"session_id\":\"off\",\"model\":\"cheap-model\",\"effort\":\"turbo\"}")
                 400 "as is a rung the model lacks" "effort_unsupported")

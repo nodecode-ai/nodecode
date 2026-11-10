@@ -1897,11 +1897,33 @@ prefix would otherwise send the prompt to with no key of the home's."
            (member (ignore-errors (provider-auth-state name)) '(:config :api-key :oauth :env)))
        t))
 
+(defun lane-own-model (provider &optional pinned-provider pinned-model)
+  "The model a target naming PROVIDER and no model runs on: the session's
+pinned model when its pin rides PROVIDER, else the default's when the
+default rides it -- or NIL. Never a model of another provider, which
+PROVIDER would answer only with its 404."
+  (cond ((and pinned-model (equal provider pinned-provider)) pinned-model)
+        ((equal provider *provider*) *model*)))
+
+(defun unnamed-model-detail (provider)
+  "Why a target naming PROVIDER and no model runs nowhere, in words: the
+model it would take is another provider's, or none is chosen -- with the ids
+PROVIDER's listing offers, when it answers (OFFERED-MODEL-IDS)."
+  (let* ((ids (sort (copy-list (ignore-errors (offered-model-ids provider))) #'string<))
+         (shown (subseq ids 0 (min 12 (length ids)))))
+    (format nil "provider ~a was named without a model~:[, and no model is chosen yet~;, and the default model ~:*~a is another provider's~]: name one of ~a's models as well~@[, such as ~{~a~^, ~}~]~@[ and ~d more~]"
+            provider
+            (and *model* (not (equal provider *provider*)) (format nil "~a/~a" *provider* *model*))
+            provider shown (and (> (length ids) 12) (- (length ids) 12)))))
+
 (defun target-refusal (provider model effort)
   "Why a session cannot run on PROVIDER, MODEL and EFFORT, as a (CODE
 MESSAGE) list -- unknown_provider for a provider or a model the lane refuses,
+or for no model at all (LANE-OWN-MODEL found none of PROVIDER's),
 effort_unsupported for an effort the model does not take -- or NIL when it
 can. Reads and writes nothing."
+  (unless (and (stringp model) (plusp (length (nlk:trimmed model))))
+    (return-from target-refusal (list "unknown_provider" (unnamed-model-detail provider))))
   (handler-case
       (progn
         (check-model-id provider model)
@@ -1947,7 +1969,9 @@ written."
     (bind (((pinned-provider pinned-model) (nlk:session-model-selection session-id))
            (picked-effort (nlk:session-model-effort session-id))
            (target-provider (or provider pinned-provider *provider*))
-           (target-model (or model pinned-model *model*)))
+           ;; A provider named alone runs its own lane's model, never the
+           ;; default's when that is another provider's (LANE-OWN-MODEL).
+           (target-model (or model (lane-own-model target-provider pinned-provider pinned-model))))
       (when (and pinned-provider pinned-model)
         (return-from pin-start-turn-target
           (if (and (equal target-provider pinned-provider) (equal target-model pinned-model)
@@ -3683,7 +3707,7 @@ go and deletes nothing)."
                  (first target) (or (first target) *provider*))
            (when-let (refusal (and given
                                    (destructuring-bind (provider model effort) target
-                                     (target-refusal provider (or model *model*) effort))))
+                                     (target-refusal provider (or model (lane-own-model provider)) effort))))
              (return-from handle-gateway-sessions-http
                (gateway-error-response 400 (first refusal) (second refusal))))
            ;; A new session is minted standing by (standby.lisp): the shell's
