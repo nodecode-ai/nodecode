@@ -218,6 +218,26 @@
     ("browser_click" "{}" :default "a tool with no words keeps the pulse")
     (nil nil :default "and so does a call not yet named")))
 
+(deftest a-shell-command-no-family-names-runs-as-its-line ()
+  ;; An echo, a cd, a test name nothing the split reads, lists or searches,
+  ;; but a shell tool's call still ran a command: it runs as `running echo
+  ;; rotation ok' beside the command's mark, as `git status' does, never as an
+  ;; eval snippet's `evaluating' and its mark.
+  (flet ((args (command) (format nil "{\"command\":~s}" command)))
+    (is-each ((lambda (command) (multiple-value-list (nle::tool-activity-verb "bash" (args command)))))
+      ("echo rotation ok" '("running echo rotation ok" :command) "an echo runs as its line")
+      ("false" '("running false" :command) "so does a lone false")
+      ("cd /tmp && export X=1" '("running cd /tmp && export X=1" :command) "and a line of them, whole")
+      ("git status" '("running git status" :command) "as any command does")
+      ("ls -la" '("listing the folder" :list) "a line the split names keeps its words"))
+    (is-each ((lambda (command running) (nle::activity-title (nle::tool-arguments-activity "bash" (args command))
+                                                             :running running)))
+      ("echo rotation ok" t "Running echo rotation ok" "its card runs as its line")
+      ("echo rotation ok" nil "Ran echo rotation ok" "and lands as the line it ran"))
+    (is-each ((lambda (arguments) (multiple-value-list (nle::tool-activity-verb "bash" arguments))))
+      ("{\"command\":\"" '("running bash" :default) "a command not yet streamed is the tool's, not a snippet's")
+      ("{\"command\":\"  " '("running bash" :default) "and so is one of blanks"))))
+
 (deftest a-tool-call-stamps-its-verbs-on-its-result-fact (with-session-store ("act-rec"))
   ;; The durable seam: a snippet whose read is nested inside a binding still
   ;; lands the call on the result fact, and the fold carries it to the row

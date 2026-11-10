@@ -692,10 +692,17 @@ diff names from the session's directory: the same, behind a ./, or whole."
             :error-p error-p))))
       ;; tool names whose command string is a shell command, not a snippet
       ((member name '("snippet" "run" "bash" "shell" "sh" "exec_command" "evolved_shell") :test #'equal)
-       (activity-from-entries
-        (with-diff (shell-command-entries (or command "")))
-        :head (snippet-head-line command)
-        :error-p error-p)))))
+       ;; A line the split names nothing for (an echo, a cd, a test, a lone
+       ;; false) still ran a command: it is one command, named by its line as
+       ;; `git status' is, never the eval snippet's family. A blank line has
+       ;; not yet said what it runs.
+       (let ((line (string-trim '(#\Space #\Tab #\Newline #\Return) command)))
+         (when (plusp (length line))
+           (activity-from-entries
+            (with-diff (or (shell-command-entries command)
+                           (list (list :command line nil))))
+            :head (snippet-head-line command)
+            :error-p error-p)))))))
 
 (defun tool-argument-text (arguments keys)
   "The string value of the first of KEYS that tool ARGUMENTS — the call's
