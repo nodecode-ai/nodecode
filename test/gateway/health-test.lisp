@@ -220,6 +220,24 @@
       (is-present (fact (health-fact-named :config (nle::config-facts))) "a config that does not parse"
         (is (eq :danger (nle::health-fact-tone fact)))))))
 
+(deftest doctor-names-a-member-spelled-with-dots-that-nothing-reads ()
+  ;; "goal.check_seconds": 1920 at the top level parses, and the goal cell,
+  ;; which reads check_seconds inside "goal", ran on its 600 s default with no
+  ;; word anywhere: the doctor names the member and the nesting it meant.
+  (with-temp-shared-config ("{\"goal.check_seconds\": 1920, \"general.theme\": \"T\", \"general\": {}}")
+    (let ((facts (nle::config-facts)))
+      (flet ((named (label) (find label facts :key #'nle::health-fact-label :test #'equal)))
+        (is-present (fact (named "goal.check_seconds")) "the dotted member has its own fact"
+          (is (eq :warn (nle::health-fact-tone fact)))
+          (is (search "read by nothing" (nle::health-fact-detail fact)))
+          (is (search "\"goal\": {\"check_seconds\": 1920}" (nle::health-fact-remedy fact)) "spelled nested"))
+        (is-present (fact (named "general.theme")) "each one does"
+          (is (search "\"general\": {\"theme\": \"T\"}" (nle::health-fact-remedy fact))))
+        (is (not (named "general")) "a nested member is not one"))))
+  (with-temp-shared-config ("{\"goal\": {\"check_seconds\": 1920}}")
+    (let ((misplaced (remove :misplaced-key (nle::config-facts) :key #'nle::health-fact-key :test-not #'eq)))
+      (is (null misplaced) "the nested spelling says nothing"))))
+
 (deftest doctor-says-whether-the-default-provider-has-a-key ()
   (with-temp-shared-config ((format nil "{\"general\": {\"default_model\": {\"provider\": \"lane-d\", \"model\": \"m\"}}, ~
                                         \"providers\": {\"lane-d\": {\"base_url\": \"http://127.0.0.1:9/v1\", ~

@@ -2512,6 +2512,57 @@ why."
                                    (nlk::normalize-jsonc
                                     (sb-ext:octets-to-string octets :external-format :utf-8))))))
 
+(defun misplaced-config-key-p (name)
+  "Whether NAME, a top-level member of the shared config, names a nested
+member with dots in place of nesting -- \"goal.check_seconds\" -- and so is
+read by nothing. A name a declared section roots at is read, dots or not."
+  (and (find #\. name)
+       (not (find name (nlk:sections) :key (lambda (section) (first (nlk:section-path section)))
+                                       :test #'equal))))
+
+(defun misplaced-config-keys (config)
+  "Every top-level member of CONFIG that MISPLACED-CONFIG-KEY-P, by name, as
+(NAME . PATH): PATH is the member it meant, (\"goal\" \"check_seconds\")."
+  ;; JSON nests by object, never by name: the goal cell reads check_seconds
+  ;; inside "goal", and a member named "goal.check_seconds" beside it parses
+  ;; and is never read. The docs and CONFIG-SET's receipts spell a nested
+  ;; member with dots, so the flat spelling is the one an operator or a model
+  ;; writes by mistake -- a setting that silently is not one unless the reader
+  ;; says so (%START-CELLS's notice, CONFIG-FACTS).
+  (when (hash-table-p config)
+    (sort (loop for name being the hash-keys of config
+                when (misplaced-config-key-p name)
+                  collect (cons name (remove "" (uiop:split-string name :separator ".")
+                                             :test #'string=)))
+          #'string< :key #'car)))
+
+(defun nested-config-spelling (path value)
+  "The member at PATH holding VALUE as config.jsonc spells it nested:
+\"goal\": {\"check_seconds\": 1920}."
+  ;; A long object or array stands as {...} or [...]: the line says where the
+  ;; member goes, the file already holds what it says.
+  (let ((leaf (case value
+                ((nil) "false")
+                (:null "null")
+                (t (let ((text (nlk:encode-json-object value)))
+                     (cond ((<= (length text) 60) text)
+                           ((hash-table-p value) "{...}")
+                           (t "[...]")))))))
+    (labels ((spell (path)
+               (format nil "~a: ~:[~a~;{~a}~]" (nlk:encode-json-object (first path)) (rest path)
+                       (if (rest path) (spell (rest path)) leaf))))
+      (spell (or path (list ""))))))
+
+(defun misplaced-config-text (config)
+  "One line naming each misplaced member of CONFIG (MISPLACED-CONFIG-KEYS)
+and the nested member it meant, or NIL when there is none."
+  (when-let (misplaced (misplaced-config-keys config))
+    (format nil "config.jsonc: ~{~a~^; ~}"
+            (loop for (name . path) in misplaced
+                  collect (format nil "~a is read by nothing, since a dot does not nest a key: write ~a"
+                                  (nlk:encode-json-object name)
+                                  (nested-config-spelling path (gethash name config)))))))
+
 (defparameter *shared-config-write-lock*
   (bt2:make-lock :name "shared-config-write"))
 
@@ -2906,10 +2957,19 @@ takes the pin out. An ID no decider has is refused before anything moves.
 ;;; form is what the eval snippet renders as an error the model reads and
 ;;; corrects; the outcome vocabulary stays with the writer.
 
-(defun config-path (path)
+(defun config-path (path &optional config)
   "PATH as a list of key strings: a list as it is, a string as one key."
+  ;; A string naming a nested member with dots, "goal.check_seconds", is one
+  ;; top-level member nothing reads (MISPLACED-CONFIG-KEY-P): refused, naming
+  ;; the list that was meant, unless CONFIG already holds a member of that
+  ;; name, so a stray one can still be read and taken out.
   (cond ((and (consp path) (every #'stringp path)) path)
-        ((stringp path) (list path))
+        ((stringp path)
+         (when (and (misplaced-config-key-p path)
+                    (not (and (hash-table-p config) (nth-value 1 (gethash path config)))))
+           (error "~s would be one top-level member named with dots, and nothing reads it: a dot does not nest a key. A path is a list of keys: '(~{~s~^ ~})"
+                  path (remove "" (uiop:split-string path :separator ".") :test #'string=)))
+         (list path))
         ((null path) '())
         (t (error "a config path is a list of member keys, not ~s" path))))
 
@@ -2940,7 +3000,7 @@ nothing is there."
   (multiple-value-bind (config error-text) (read-shared-config)
     (when error-text
       (error "the shared config does not read: ~a" error-text))
-    (let ((steps (config-path path)))
+    (let ((steps (config-path path config)))
       (nlk:json-plist (redact-secrets (apply #'json-value config :any steps) steps)))))
 
 (defun config-set (path value)
@@ -2957,12 +3017,13 @@ added, 0 replaced)'."
   ;; through a member that is not an object, or a value that would write a
   ;; secret's `[set]' back over the secret signals instead of guessing, and
   ;; nothing is written.
-  (multiple-value-bind (outcome detail)
-      (persist-shared-config (config-path path) value)
-    (ecase outcome
-      (:written detail)
-      (:disabled (error "the shared config is not writable in this process (no config path)"))
-      (:failed (error "config-set ~{~a~^.~}: ~a" (config-path path) detail)))))
+  (let ((steps (config-path path (ignore-errors (read-shared-config)))))
+    (multiple-value-bind (outcome detail)
+        (persist-shared-config steps value)
+      (ecase outcome
+        (:written detail)
+        (:disabled (error "the shared config is not writable in this process (no config path)"))
+        (:failed (error "config-set ~{~a~^.~}: ~a" steps detail))))))
 
 (defvar *default-target-shadowed* nil
   "True where *PROVIDER*, *MODEL* and *REASONING-EFFORT* are bound to a turn's
