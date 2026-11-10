@@ -6023,7 +6023,7 @@ and the DELIVERY its handler declares."
     (let ((rows (mapcan (lambda (block) (copy-list (nle::display-block-plain-lines block)))
                         (nle:project-state state :width 100))))
       (is (rows-carry-p "Ran 2 commands" rows))
-      (is (rows-carry-p "Spotify search 'Discovery Daft Punk'" rows) "a search by what it searched")
+      (is (rows-carry-p "Spotify search: album 'Discovery Daft Punk'" rows) "a search by what it searched")
       (is (rows-carry-p "Spotify playback: play spotify:album:2noRn" rows) "an action by what it did")
       (is (not (rows-carry-p "spotify_" rows)) "never by the name the model calls the tool by"))))
 

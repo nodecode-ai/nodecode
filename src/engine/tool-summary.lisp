@@ -748,6 +748,11 @@ or :DEFAULT for a call with no words."
 (defparameter *tool-action-keys* '("action" "operation" "op")
   "The argument keys whose value names which of a tool's actions a call takes.")
 
+(defparameter *tool-qualifier-keys* '("method" "kind" "mode" "type")
+  "The argument keys whose value, when it is one word, names what sort of call
+this is - `GET' under method, `reply' under kind - read as its action when no
+key of *TOOL-ACTION-KEYS* says one.")
+
 (defparameter *tool-query-keys*
   '("query" "q" "search" "search_query" "keywords" "keyword" "prompt" "question")
   "The argument keys whose value is what a call searches for or asks: the
@@ -761,10 +766,37 @@ subject ahead of any other argument, printed quoted.")
         (concatenate 'string (string-upcase (subseq words 0 1)) (subseq words 1))
         name)))
 
-(defun tool-argument-subject (root)
+(defun tool-id-key-p (key)
+  "Whether argument KEY holds an id - `id', `playlist_id', `trackIds', `uuid',
+`cursor' - which says what a call took but not what that is."
+  (let ((length (length key)))
+    (or (member key '("id" "ids" "uuid" "guid" "cursor") :test #'string-equal)
+        (loop for suffix in '("_id" "_ids" "-id" "-ids" "_uuid")
+              for start = (- length (length suffix))
+              thereis (and (plusp start) (string-equal suffix key :start2 start)))
+        (loop for suffix in '("Id" "Ids" "ID" "IDs")
+              for start = (- length (length suffix))
+              thereis (and (plusp start) (string= suffix key :start2 start)
+                           (lower-case-p (char key (1- start))))))))
+
+(defun tool-argument-action (root)
+  "The action a call's argument object ROOT takes, in words, and the key it
+is under: any text under *TOOL-ACTION-KEYS*, else one word under
+*TOOL-QUALIFIER-KEYS*. => (values WORDS KEY), NIL for none."
+  (loop for key in (append *tool-action-keys* *tool-qualifier-keys*)
+        for value = (gethash key root)
+        for text = (and (stringp value) (string-trim " " value))
+        when (and text (plusp (length text))
+                  (or (member key *tool-action-keys* :test #'string=)
+                      (and (<= (length text) 24) (alpha-char-p (char text 0))
+                           (every (lambda (char) (or (alphanumericp char) (find char "_-"))) text))))
+          return (values (string-downcase (substitute #\Space #\_ text)) key)))
+
+(defun tool-argument-subject (root &optional action-key)
   "The subject of a call's argument object ROOT, as a title prints it: the
-first query quoted, else the first other text, else the first number; an
-array by its first member and how many more. NIL for none."
+first query quoted, else the first other text that is no id, else an id, else
+the first number; an array by its first member and how many more. The text
+under ACTION-KEY, the call's action, is never its subject. NIL for none."
   (labels ((text (value)
            (typecase value
              (string (let ((line (string-trim '(#\Space #\Tab #\Newline #\Return)
@@ -781,8 +813,11 @@ array by its first member and how many more. NIL for none."
               for line = (text (gethash key root))
               when line return (format nil "'~a'" line))
         (loop for key in (keys)
-              for line = (and (not (member key *tool-action-keys* :test #'string=))
+              for line = (and (not (equal key action-key)) (not (tool-id-key-p key))
                               (text (gethash key root)))
+              when line return line)
+        (loop for key in (keys)
+              for line = (and (not (equal key action-key)) (text (gethash key root)))
               when line return line)
         (loop for key in (keys)
               for value = (gethash key root)
@@ -800,13 +835,10 @@ a call not yet named, which have words of their own."
     (let* ((root (and (stringp arguments)
                       (uiop:string-suffix-p (string-right-trim '(#\Space #\Newline #\Return #\Tab) arguments) "}")
                       (ignore-errors (nlk:decode-json arguments))))
-           (root (and (hash-table-p root) root))
-           (action (and root (loop for key in *tool-action-keys*
-                                   for value = (gethash key root)
-                                   when (and (stringp value) (plusp (length (string-trim " " value))))
-                                     return (string-downcase (substitute #\Space #\_ (string-trim " " value))))))
-           (subject (and root (tool-argument-subject root))))
-      (format nil "~a~@[: ~a~]~@[ ~a~]" (tool-name-words name) action subject))))
+           (root (and (hash-table-p root) root)))
+      (multiple-value-bind (action action-key) (and root (tool-argument-action root))
+        (format nil "~a~@[: ~a~]~@[ ~a~]" (tool-name-words name) action
+                (and root (tool-argument-subject root action-key)))))))
 
 ;;; --- words -------------------------------------------------------------------
 

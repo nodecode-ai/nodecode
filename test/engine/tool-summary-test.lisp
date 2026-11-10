@@ -224,7 +224,23 @@
   ;; said what the call searched or played.
   (is-each (nle::tool-arguments-words)
     ("spotify_search" "{\"query\":\"Discovery Daft Punk\",\"type\":\"album\",\"limit\":3}"
-     "Spotify search 'Discovery Daft Punk'" "a query is the subject, quoted, ahead of the rest")
+     "Spotify search: album 'Discovery Daft Punk'" "a query is the subject, quoted, ahead of the rest")
+    ("spotify_search" "{\"query\":\"Discovery Daft Punk\",\"limit\":3}"
+     "Spotify search 'Discovery Daft Punk'" "and of a number")
+    ("mermail_send" "{\"mailbox_id\":\"mb_7f3a\",\"to\":\"ann@example.com\",\"subject\":\"Hi\"}"
+     "Mermail send ann@example.com" "an id says which, not what: the first text past it")
+    ("tg_business" "{\"draftId\":\"d_91\",\"text\":\"See you at 5\"}"
+     "Tg business See you at 5" "and so does a camelCase id")
+    ("spotify_playlists" "{\"action\":\"get\",\"playlist_id\":\"37i9dQZF1DX\"}"
+     "Spotify playlists: get 37i9dQZF1DX" "an id when no other text says more")
+    ("twenty_rest" "{\"method\":\"GET\",\"path\":\"/people\"}"
+     "Twenty rest: get /people" "one word under method, kind, mode or type is the action")
+    ("cashdesk_reply" "{\"customer_id\":\"c_12\",\"kind\":\"dispute\",\"text\":\"Refund sent\"}"
+     "Cashdesk reply: dispute Refund sent" "wherever it stands")
+    ("spotify_library" "{\"action\":\"list\",\"kind\":\"tracks\"}"
+     "Spotify library: list tracks" "behind an action, a kind is the subject")
+    ("notes_save" "{\"title\":\"Plan\",\"type\":\"text/markdown\"}"
+     "Notes save Plan" "more than one word is no action")
     ("spotify_playback" "{\"action\":\"play\",\"context_uri\":\"spotify:album:2noRn2Aes5\"}"
      "Spotify playback: play spotify:album:2noRn2Aes5" "an action in words, then the first text")
     ("spotify_playback" "{\"action\":\"get_currently_playing\"}"
