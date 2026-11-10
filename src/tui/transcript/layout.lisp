@@ -635,6 +635,18 @@ last line."
                         (json-value row.metadata :object "background_shell"))
     llines))
 
+(defun opened-call-llines (row)
+  "What a card opened in Standard shows of its call under its title:
+TOOL-COMMAND-LLINES -- the eval snippet or the command it ran, or for a call
+with no words its name and raw arguments. A call its words already name that
+ran no command (a cell's read, search or subagent) shows none of it."
+  ;; Without this, an opened acp read stood as `Read limiter.py' over
+  ;; `acp {"agent":"Claude Code","title":"Read limiter.py",...}': the title
+  ;; again, as the call's JSON. Developer keeps the call as it went
+  ;; (TOOL-HEADER-LLINES).
+  (unless (and (row-activity row) (null (tool-command-string row.tool-args)))
+    (tool-command-llines row)))
+
 (defun command-llines (command &key dim)
   "COMMAND one lline per line, each painted by its own syntax spans: an eval
 snippet as its card shows it, and an exec's command in the band and its view."
