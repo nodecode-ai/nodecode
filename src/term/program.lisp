@@ -142,6 +142,40 @@ through POST — SEND, or %DEFER from a signal handler. => (WIDTH . HEIGHT)."
     (funcall post program (make-window-size-msg :width width :height height))
     (cons width height)))
 
+(defvar *screen-retaken-at* nil
+  "The internal real time RETAKE-SCREEN last set the modes again, or NIL.")
+
+(defparameter *screen-retake-interval-seconds* 1/2
+  "The least time between two retakes: a terminal that speaks only the legacy
+mouse encoding sends one with every motion, and each is a whole frame.")
+
+(defun retake-screen (program &aux (renderer program.renderer)
+                                   (stream (or program.tty-stream renderer.output-stream))
+                                   (vs renderer.last-view-state)
+                                   (now (get-internal-real-time)))
+  "Set the terminal's modes again and owe a whole frame: the next paint writes
+every cell instead of the ones that changed. => T, or NIL when the last
+retake was under *SCREEN-RETAKE-INTERVAL-SECONDS* ago."
+  ;; The painter's diff is against the last frame it wrote, not against the
+  ;; screen: a terminal that rebuilt the screen behind it (VS Code's restored
+  ;; terminal, a copy a row off) kept every cell that never changes wrong --
+  ;; the footer stayed blank but for what moved since. Only the modes that
+  ;; are safe to set twice go out: the alternate screen is not entered
+  ;; again (that clears it), nor the kitty flags pushed (they stack). The
+  ;; frame itself needs no erase: every cell is written, so nothing blinks.
+  (when (or (null *screen-retaken-at*)
+            (>= (- now *screen-retaken-at*)
+                (* *screen-retake-interval-seconds* internal-time-units-per-second)))
+    (setf *screen-retaken-at* now)
+    (enter-modes stream)
+    (when vs
+      (when vs.alt-screen (format stream "~C[?7l" #\Escape))
+      (when vs.mouse-mode (enable-mouse stream vs.mouse-mode))
+      (when vs.cursor (format stream "~C[1 q" #\Escape)))
+    (force-output stream)
+    (setf renderer.last-buffer nil)
+    t))
+
 (defun write-clipboard (program text &optional report)
   "Put TEXT on the system clipboard without waiting behind the worker: the
 helper chain (wl-copy, xclip, xsel) runs on a thread of its own, and when
@@ -243,6 +277,10 @@ COUNT the number folded."
        (setf renderer.last-view-state nil renderer.last-buffer nil renderer.last-images '())
        (resize-program program)
        (setf updated t))
+      ((screen-lost-msg-p msg)
+       ;; The model never sees it: a frame is owed, painted whole.
+       (when (retake-screen program)
+         (setf updated t)))
       ((terminal-io-msg-p msg)
        (let ((stream (or program.tty-stream renderer.output-stream)))
          (nlk:with-handlers ((error (e) (%report program :terminal-io e)))

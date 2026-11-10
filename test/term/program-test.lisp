@@ -149,6 +149,29 @@ stopped and the thread joined however BODY leaves."
     (is (= 1 (length (seen-of-type model 'nlt:window-size-msg))) "the model saw the size")
     (is (= 1 (probe-frames model)) "one frame was painted for the batch")))
 
+;;; The painter writes only what changed since its last frame, so a screen the
+;;; terminal rebuilt behind it stayed wrong wherever nothing changes: VS Code's
+;;; reloaded terminal kept the footer blank. A lost screen sets the modes again
+;;; and the next paint writes every cell -- once per interval, since a
+;;; terminal that speaks only legacy mouse reports sends one per motion.
+(deftest a-lost-screen-sets-the-modes-again-and-paints-every-cell
+    (with-saved-globals (nlt::*screen-retaken-at*))
+  (let* ((program (make-probe-program))
+         (out (nlt:renderer-output-stream program.renderer)))
+    (setf nlt::*screen-retaken-at* nil)
+    (nlt:handle-messages program (list (nlt:make-tick-msg)))
+    (is (search "probe" (get-output-stream-string out)) "the first frame paints")
+    (nlt:handle-messages program (list (nlt:make-tick-msg)))
+    (is (not (search "probe" (get-output-stream-string out))) "an unchanged frame writes no cell")
+    (is (nlt:handle-messages program (list (nlt::make-screen-lost-msg))) "a lost screen owes a frame")
+    (let ((written (get-output-stream-string out)))
+      (is (search (format nil "~C[?1004h" #\Escape) written) "the modes are set again")
+      (is (search "probe" written) "and every cell is written, the unchanged ones too")
+      (is (not (search (format nil "~C[2J" #\Escape) written)) "over the screen, never erasing it first"))
+    (is (null (seen-of-type program.model 'nlt::screen-lost-msg)) "the model never sees it")
+    (let ((again (nlt:handle-messages program (list (nlt::make-screen-lost-msg)))))
+      (is (not again) "a second one inside the interval owes nothing"))))
+
 (deftest worker-runs-commands-in-order-and-joins-on-stop ()
   (let* ((program (make-probe-program))
          (order '())

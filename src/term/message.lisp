@@ -189,6 +189,20 @@ NAME ST): NAME as it wrote it, `VTE(8401)' or `kitty(0.47.1)'.")
   :documentation "The terminal's report that its colour scheme turned (DEC
 2031, CSI ? 997 ; 1 n or 2 n): SCHEME, :DARK or :LIGHT.")
 
+;;; The painter writes only the cells that changed since the last frame, so
+;;; it trusts the terminal to still hold that frame. A terminal that rebuilt
+;;; its screen without saying so -- VS Code's integrated terminal after a
+;;; window reload or a remote reconnect replays a copy of it, a row off, its
+;;; links and SGR mouse mode gone -- keeps every cell that never changes
+;;; wrong for the rest of the session: the footer blank, all but the part
+;;; that moved since.
+(defmessage screen-lost-msg ()
+  :documentation "The terminal's screen may no longer be the last frame painted
+on it: the window took focus back (CSI I, focus reporting on), or a mouse
+report came in the legacy encoding (CSI M) a terminal falls back to once it
+forgot the SGR mode asked of it. The loop answers by setting its modes again
+and painting every cell.")
+
 ;;; A command that must write escape bytes (the clipboard fallback, the
 ;;; graphics query) answers this so the write is serialized with rendering
 ;;; instead of racing it from the worker.
@@ -204,7 +218,8 @@ thread.")
   key-press-msg paste-msg window-size-msg
   mouse-click-msg mouse-release-msg mouse-motion-msg mouse-wheel-msg
   tick-msg quit-msg kitty-graphics-msg truecolor-msg background-msg color-scheme-msg
-  device-attributes-msg cell-size-msg terminal-version-msg terminal-io-msg)
+  device-attributes-msg cell-size-msg terminal-version-msg terminal-io-msg
+  screen-lost-msg)
 
 ;;; --- the declarative view ------------------------------------------------
 

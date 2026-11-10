@@ -119,11 +119,10 @@ it, the decoder looks once more and answers Escape."
 (deftest decoder-consumes-the-replies-the-shell-never-asks-for ()
   (let ((stream (make-string-input-stream
                  (concatenate 'string
-                              (csi "I") (csi "O") (csi "?1u")
+                              (csi "O") (csi "?1u")
                               (format nil "~C]11;rgb:0000/0000/0000~C\\" #\Escape #\Escape)
                               (format nil "~CP>|xterm(370)~C\\" #\Escape #\Escape)
                               "z"))))
-    (is (null (nlt:read-key stream)) "a focus-in report is nothing")
     (is (null (nlt:read-key stream)) "a focus-out report is nothing")
     (is (null (nlt:read-key stream)) "a kitty keyboard query answer is nothing")
     ;; The background report is one the shell asks for (NLT:REQUEST-BACKGROUND):
@@ -133,6 +132,20 @@ it, the decoder looks once more and answers Escape."
     ;; its name, never keys.
     (is (equal "xterm(370)" (nlt:terminal-version-msg-name (nlt:read-key stream))) "a DCS version report is its name")
     (is (key-is (nlt:read-key stream) #\z) "and the key after them still decodes")))
+
+;;; VS Code restores a terminal it reloaded from a copy of its screen that can
+;;; be a row off, and forgets the SGR mouse mode: nothing but focus coming back
+;;; and a mouse report in the legacy encoding says the screen was lost.
+(deftest decoder-reads-a-lost-screen-from-focus-and-legacy-mouse ()
+  (let ((stream (make-string-input-stream
+                 (concatenate 'string (csi "I") (csi "O") (csi "MCk=")
+                              ;; A column past 95 is a raw byte, read as U+FFFD.
+                              (csi "M ") (string #\REPLACEMENT_CHARACTER) "=" "z"))))
+    (is (nlt::screen-lost-msg-p (nlt:read-key stream)) "focus coming back is a lost screen")
+    (is (null (nlt:read-key stream)) "focus leaving is nothing")
+    (is (nlt::screen-lost-msg-p (nlt:read-key stream)) "a legacy motion report is a lost screen")
+    (is (nlt::screen-lost-msg-p (nlt:read-key stream)) "and so is a legacy press, read as its three bytes")
+    (is (key-is (nlt:read-key stream) #\z) "so the key typed after them still decodes")))
 
 (deftest decoder-reads-the-colour-scheme-report ()
   ;; DEC 2031, which NLT:ENTER-MODES switches on: a terminal that follows the
