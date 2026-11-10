@@ -671,6 +671,15 @@ back under the limit; NIL outside one.")
 ;;; back under the limit. A form that takes the verdict in its own
 ;;; HANDLER-CASE and climbs again before any probe saw it shallow still gets
 ;;; one at the hard mark, half way from the limit to the end of the stack.
+;;;
+;;; A verdict that names nothing waits for one that does. On Windows a probe
+;;; can land in POST-GC, which the allocator runs on the recursion's own
+;;; thread from under its MAKE-ARRAY: the walk from the interruption's context
+;;; reaches POST-GC and stops at the allocator's C frames, short of the
+;;; recursion, so the verdict named nothing on 4 verdicts in 260 on the CI
+;;; guest, each one in FINALIZER-THREAD-NOTIFY under POST-GC. Below the hard mark such a probe lets its pass go; the next one
+;;; lands in the recursion and names it. At the hard mark the stack comes
+;;; first and the verdict is raised unnamed.
 (defun eval-runaway-thread-probe ()
   "The interruption body for a thread evaluating a snippet in place: signal the
 verdict when there is one."
@@ -679,19 +688,20 @@ verdict when there is one."
   (when-let (verdict (ignore-errors
                       (bind (((used span) (control-stack-usage))
                              (limit (min (* 16 1024 1024) (floor span 2)))
+                             (hard (+ limit (floor (- span limit) 2)))
                              (climb *runaway-climb*)
                              (heap (sb-kernel:dynamic-usage)) (cap (sb-ext:dynamic-space-size)))
                         (when (and climb (car climb) (<= used limit))
                           (setf (car climb) nil))
-                        (cond ((> used (if (and climb (car climb))
-                                           (+ limit (floor (- span limit) 2))
-                                           limit))
-                               (when climb (setf (car climb) t))
-                               (format nil "control stack runaway: ~:d KB of frames on a ~:d KB stack~@[, deepest in ~a~] — a recursion that does not bottom out, unwound before the guard page (an overflow inside an allocation there kills the whole image). Iterate, or bound the depth."
-                                       (floor used 1024) (floor span 1024) (runaway-frame-name)))
-                              ((> heap (* *eval-heap-soft-fraction* cap))
-                               (format nil "heap runaway: ~:d MB of ~:d MB in use during this evaluation — unwound before heap exhaustion, which is fatal inside a collection. Hold less at once."
-                                       (floor heap 1048576) (floor cap 1048576)))))))
+                        (let* ((past (> used (if (and climb (car climb)) hard limit)))
+                               (name (and past (runaway-frame-name))))
+                          (cond ((and past (or name (> used hard)))
+                                 (when climb (setf (car climb) t))
+                                 (format nil "control stack runaway: ~:d KB of frames on a ~:d KB stack~@[, deepest in ~a~] — a recursion that does not bottom out, unwound before the guard page (an overflow inside an allocation there kills the whole image). Iterate, or bound the depth."
+                                         (floor used 1024) (floor span 1024) name))
+                                ((> heap (* *eval-heap-soft-fraction* cap))
+                                 (format nil "heap runaway: ~:d MB of ~:d MB in use during this evaluation — unwound before heap exhaustion, which is fatal inside a collection. Hold less at once."
+                                         (floor heap 1048576) (floor cap 1048576))))))))
     (error 'eval-runaway :what verdict)))
 
 ;;; --- the guard covers every evaluation, and needs no gateway ----------------
