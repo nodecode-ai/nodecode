@@ -273,8 +273,9 @@ grow and to be copied whole by a backup."
                        :remedy "free some space: the store grows with every turn, and a backup writes a copy of it"))))))
 
 (defun config-facts ()
-  "Whether config.jsonc parses, then every declared section it leaves wanting,
-each in the words /settings shows (SECTION-NEEDS)."
+  "Whether config.jsonc parses, then every member it holds that nothing reads
+(MISPLACED-CONFIG-KEYS) and every declared section it leaves wanting, each
+in the words /settings shows (SECTION-NEEDS)."
   ;; A section the config vetoes (\"enabled\": false) wants nothing, and one
   ;; with no required member is whole however absent (SECTION-NEEDS-SETUP-P).
   ;; A section's own CHECK is not run: it dials the platform the section is
@@ -291,12 +292,18 @@ each in the words /settings shows (SECTION-NEEDS)."
                                                     (length wanting) (length (nlk:sections))))
                                    (t (format nil "parses · ~d declared section~:p, all complete"
                                               (length (nlk:sections))))))
-                (mapcar (lambda (section &aux (key (nlk:section-key (nlk:section-path section))))
-                          (health-fact :section key
-                                       (nlk:section-needs section (nlk:section-table config (nlk:section-path section)))
-                                       :tone :warn :section key
-                                       :remedy "/settings sets it; or set it in config.jsonc and restart its cell"))
-                        wanting))))))
+                (append
+                 (loop for (name . path) in (misplaced-config-keys config)
+                       collect (health-fact :misplaced-key name "read by nothing: a dot does not nest a key"
+                                            :tone :warn
+                                            :remedy (format nil "write it nested: ~a"
+                                                            (nested-config-spelling path (gethash name config)))))
+                 (mapcar (lambda (section &aux (key (nlk:section-key (nlk:section-path section))))
+                           (health-fact :section key
+                                        (nlk:section-needs section (nlk:section-table config (nlk:section-path section)))
+                                        :tone :warn :section key
+                                        :remedy "/settings sets it; or set it in config.jsonc and restart its cell"))
+                         wanting)))))))
 
 (defun credential-fact (&aux (config (ignore-errors (read-shared-config))))
   "Whether the default model's provider has a key, and, for a key of its

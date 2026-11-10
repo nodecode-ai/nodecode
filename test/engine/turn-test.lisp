@@ -6611,6 +6611,32 @@ cloudflare-workers-ai's and databricks' do: one in the path, one the host.")
   (is (handler-case (progn (nle:config-set '("a") 1) nil)
         (error (e) (search "not writable" (princ-to-string e))))))
 
+(deftest config-set-refuses-a-dotted-name-nothing-would-read ()
+  ;; A model asked to raise goal.check_seconds wrote (config-set
+  ;; "goal.check_seconds" 1920): one top-level member named with dots, which
+  ;; the goal cell never reads, answered as `goal.check_seconds: added', so
+  ;; every goal check went on being killed at the default 600 s. A dot does not
+  ;; nest: the write is refused with the list that was meant.
+  (with-temp-shared-config ("{\"goal\": {\"turns\": 3}}" path)
+    (let ((before (uiop:read-file-string path))
+          (write (handler-case (progn (nle:config-set "goal.check_seconds" 1920) nil)
+                   (error (e) (princ-to-string e))))
+          (read (handler-case (progn (nle:config-get "goal.check_seconds") nil)
+                  (error (e) (princ-to-string e)))))
+      (is-present write "the dotted name is refused"
+        (is (search "'(\"goal\" \"check_seconds\")" write) "naming the path that was meant"))
+      (is (equal before (uiop:read-file-string path)) "and nothing is written")
+      (is-present read "a read of it is refused the same way, never an absent NIL"
+        (is (search "a dot does not nest" read))))
+    (is (equal "goal.check_seconds: added"
+               (nle:config-set '("goal" "check_seconds") 1920)))
+    (is (eql 1920 (nle:config-get '("goal" "check_seconds"))) "the list form nests")
+    (is (equal "turns: 3" (format nil "turns: ~a" (nle:config-get '("goal" "turns")))) "beside what was there"))
+  (with-temp-shared-config ("{\"goal.check_seconds\": 1920}" path)
+    (is (eql 1920 (nle:config-get "goal.check_seconds")) "a stray one the file holds still reads")
+    (nle:config-set "goal.check_seconds" :remove)
+    (is (null (search "check_seconds" (uiop:read-file-string path))) "and can be taken out")))
+
 (deftest shared-config-write-refuses-to-write-a-secret-back-as-its-redaction ()
   ;; If a section read by CONFIG-GET is written back after dropping one
   ;; member, every api_key in it has already been replaced with the sentinel,

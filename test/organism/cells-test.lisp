@@ -250,6 +250,26 @@ is not EQ to the one a later eval interns — names compare, symbols do not."
       (nle::stop-cells)
       (is (member "commands_changed" kinds :test #'equal)))))
 
+(deftest cells-start-says-a-member-spelled-with-dots-is-read-by-nothing (with-cell-fixture (root))
+  ;; The cell a dotted member was meant for starts on its default: the start
+  ;; is where the config is read, so the board says it there, in the words
+  ;; the model reads in its notices block and a shell puts up -- and a
+  ;; restart over the nested spelling takes it down.
+  (write-peripheral-folder root "nl-dotted")
+  (load-cell-fixture root)
+  (with-temp-file (path :contents "{\"goal.check_seconds\": 1920}" :type "jsonc")
+    (let ((nle::*shared-config-path* path)
+          (nle::*shared-config-memo* nil))
+      (nlk:with-cleanup ((nle::stop-cells) (nle::notice nil :key "shared config"))
+        (nle::start-cells)
+        (is-present (line (board-line "shared config")) "the start puts it on the board"
+          (is (search "\"goal.check_seconds\" is read by nothing" line))
+          (is (search "\"goal\": {\"check_seconds\": 1920}" line) "with the nesting it meant"))
+        (with-open-file (out path :direction :output :if-exists :supersede)
+          (write-string "{\"goal\": {\"check_seconds\": 1920}}" out))
+        (nle::restart-cells)
+        (is (null (board-line "shared config")) "the nested spelling clears it")))))
+
 (deftest cells-restart-starts-a-refused-peripheral (with-cell-fixture (root))
   ;; The onboarding shape: a peripheral refuses its config at boot, the
   ;; refusal stands on the record and the board, the operator fixes the

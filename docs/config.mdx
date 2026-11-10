@@ -12,6 +12,7 @@ summary: "The config file, how to change it, and every core key with type and de
 | Format | JSONC: JSON with comments. |
 | Scope | One per home. The home is `~/.nodecode/`, or a profile's folder. |
 | Missing file | Allowed. Every key has a default or is optional. |
+| Dotted names | These pages name a nested key with dots: `goal.check_seconds` is `"goal": {"check_seconds": 600}` in the file. A top-level key with a dot in it is read by nothing. When cells start, a notice names it with the nesting it meant, and `/doctor` lists it. |
 
 The other files of the home are listed in [Files](files.mdx).
 
@@ -29,7 +30,7 @@ Edit the file, or use eval. See [Eval](eval.mdx).
 | Form | Does |
 | --- | --- |
 | `(config-get)` | Returns the whole config. |
-| `(config-get PATH)` | Returns the value at PATH. PATH is a list of keys, or one key. |
+| `(config-get PATH)` | Returns the value at PATH. PATH is a list of keys, or one key. A dot does not nest: `"goal.check_seconds"` is refused, and the path is `'("goal" "check_seconds")`. |
 | `(config-set PATH VALUE)` | Writes VALUE at PATH. Returns the change as one line. |
 | `(config-set PATH :remove)` | Removes the member at PATH. |
 

@@ -4675,8 +4675,12 @@ One thread per folder; none outside a serving gateway."
 
 (defun %start-cells (names)
   (multiple-value-bind (config error-text) (read-shared-config)
-    (notice (and error-text
-                 (format nil "cells started without shared config: ~a" error-text))
+    ;; A member the file holds and nothing reads -- a nested one spelled with
+    ;; dots at the top level -- stands here too: it parses, so the cell it
+    ;; was meant for starts on its default and says nothing.
+    (notice (if error-text
+                (format nil "cells started without shared config: ~a" error-text)
+                (misplaced-config-text config))
             :level :warning :key "shared config")
     (dolist (cell (nlk:cells))
       (when (and (cell-selected-p cell names)
