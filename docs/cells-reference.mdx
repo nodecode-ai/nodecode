@@ -125,7 +125,7 @@ To keep the folder but start nothing, set `"enabled": false` in its config secti
 "NAME": { "enabled": false }
 ```
 
-After a config change, run `(restart-cells)` through `eval`, or `(restart-cells "NAME")` for one folder.
+After a config change, run `(restart-cells)` through `eval`, or `(restart-cells "NAME")` for one folder: its folder's name (`nodecode-goal`) or the name `/cells` shows (`goal`). A folder that is off is refused as off: turning it on in `/cells` starts it.
 
 {/* source: src/organism/cells.lisp */}
 ## Hub

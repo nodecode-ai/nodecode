@@ -4745,17 +4745,47 @@ clear their refusals."
     (%stop-cells names))
   (refresh-attached-command-catalogs))
 
-(defun restart-cells (&optional name &aux (names (and name (list name))))
-  "Stop every started peripheral — or folder NAME alone — re-read the
+(defun restart-cell-folder (name &aux (prefixed (format nil "nodecode-~a" name))
+                                      (record (or (nlk:find-cell name) (nlk:find-cell prefixed))))
+  "The folder RESTART-CELLS restarts for NAME: its own name, or the label
+/cells shows it by (`goal' for nodecode-goal). Refused, saying what is so,
+when NAME names a folder that is off, one this organism has not loaded, or
+none at all."
+  ;; /cells drops the shipped prefix, and the refusal said `no cell folder
+  ;; named goal' for a folder that runs: a lane read it as a bundled cell no
+  ;; restart re-reads, and an off one read as missing too (2026-11-10).
+  (let* ((folder (cond (record (nlk:cell-name record))
+                       ((nlk:installed-cell-p name) name)
+                       ((nlk:installed-cell-p prefixed) prefixed)
+                       (t (when-let (offer (or (nlk:find-offer name) (nlk:find-offer prefixed)))
+                            (nlk:offer-name offer)))))
+         (path (and record (nlk:cell-path record)))
+         ;; a loaded folder taken out or parked since keeps its record, never its start
+         (off (if record
+                  (and path (or (not (probe-file path)) (nlk::folder-parked-p path)))
+                  (and folder (or (not (nlk:installed-cell-p folder)) (nlk:cell-parked-p folder))))))
+    (cond ((null folder)
+           (error "no cell folder named ~a~@[; did you mean ~{~a~#[~; or ~:;, ~]~}?~]" name
+                  (nlk:nearest-words name (mapcar (lambda (cell) (cell-label (nlk:cell-name cell)))
+                                                  (nlk:cells)))))
+          (off
+           (error "~a is off: turning it on in /cells starts it" (cell-label folder)))
+          ((null record)
+           (error "~a is on, but this organism has not loaded its folder: a restart of nodecode loads it"
+                  (cell-label folder)))
+          (t folder))))
+
+(defun restart-cells (&optional name &aux (names (and name (list (restart-cell-folder name)))))
+  "Stop every started peripheral — or the folder NAME names alone, by its
+own name or the label /cells shows (`goal' for nodecode-goal) — re-read the
 shared config, and start again: what the operator or the model says after a
 config change instead of relaunching."
   ;; The same stops and starts the gateway runs at its own boot and unwind;
   ;; nothing new in the lifecycle. Answers the report — the records' lines
   ;; with their start state, then the board — so the eval snippet shows what
   ;; happened. Blocks on the caller's thread for as long as the stops and
-  ;; starts take.
-  (when (and name (not (nlk:find-cell name)))
-    (error "no cell folder named ~a" name))
+  ;; starts take. A NAME that names no loaded folder is refused before
+  ;; anything stops (RESTART-CELL-FOLDER).
   (bt2:with-lock-held (*cells-lifecycle-lock*)
     (%stop-cells names)
     ;; The reader's memo keys on size and mtime, second-granular: an edit

@@ -90,6 +90,7 @@ secret.
 (nle:notice nil :key "nodecode-chrome")     ; clear it
 (restart-cells)                            ; every peripheral, from the config as it is now
 (restart-cells "nodecode-channel-kit")     ; one folder
+(restart-cells "goal")                     ; one folder, by the name /cells shows
 ```
 
 `nle:notice` is the one way a part says something to the operator: every
