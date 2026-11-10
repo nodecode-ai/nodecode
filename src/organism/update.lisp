@@ -126,6 +126,31 @@ what a launch through it runs -- or NIL when there is none."
   (when-let (folder (nlk::real-path (merge-pathnames "current/" *release-directory*)))
     (car (last (pathname-directory folder)))))
 
+;;; An image can run another release than the one `current' names: an
+;;; update this image refused live and linked for its next start, a gateway
+;;; nobody restarted, an update look that lands nowhere. Every check a model
+;;; can make from a shell -- `nodecode --version', the version folder
+;;; `current' names -- reads the install, so the board's release note about
+;;; this image read as false beside it, and the model took a true notice
+;;; for text pasted into the ask (2026-11-10: a gateway four days on 0.1.11
+;;; under a 0.1.13 install). Said where the model reads the notices, the
+;;; two agree.
+
+(defun install-version (label)
+  "LABEL as `nodecode --version' spells the release laid out here:
+0.1.13+268e629c5, or LABEL alone when none is."
+  (format nil "~@[~a+~]~a" (release-number label) label))
+
+(defun build-skew-text (&aux (current (and (installed-release-root) (current-label))))
+  "The `build' live section: when this image runs from the installer's
+layout and its live definitions are at another release than `current'
+names -- what `nodecode --version' answers and the next start runs -- a
+line naming both; else NIL."
+  (when (and current (string/= current (effective-label)))
+    (format nil "This image runs nodecode ~a. The install's current build is ~a: ~
+                 `nodecode --version' answers that one, and this image's next start runs it."
+            (effective-version) (install-version current))))
+
 (defun current-release-directory (label)
   "LABEL's folder when `current' names it and it is laid out -- the
 executable and its source tree -- for an update to take as it lies, else NIL."
