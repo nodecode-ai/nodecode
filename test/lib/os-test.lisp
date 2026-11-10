@@ -950,20 +950,27 @@ process's own, or NIL."
 
 (defun spin-in-malloc ()
   "Call malloc and free forever, at sizes past glibc's thread cache, so that
-every call takes its arena's lock."
-  (loop (c-malloc-and-free (+ 2048 (random 60000)))))
+every call takes its arena's lock; on Darwin at large sizes, which take xzone
+malloc's segment group lock."
+  (loop (c-malloc-and-free #-darwin (+ 2048 (random 60000))
+                           #+darwin (+ 65536 (random 1000000)))))
 
 (defun every-arena-answers-p ()
   "Whether malloc_trim, which takes every arena's lock in turn, returns within
 five seconds on a thread of its own. Windows' C library has no malloc_trim:
 there a thousand mallocs and frees over the sizes the spinner asks return in
-that time, each size class's lock taken."
+that time, each size class's lock taken. Nor has Darwin's: there a thousand
+large ones take the segment group lock, which a thread unwound out of malloc
+left held as it exited -- and the process aborts on it (`os_unfair_lock is
+corrupt, or owner thread exited without unlocking')."
   (eq :ok (nlk::%join-bounded
            (bt2:make-thread (lambda ()
-                              #-win32
+                              #+linux
                               (sb-alien:alien-funcall (sb-alien:extern-alien "malloc_trim" (function sb-alien:int sb-alien:unsigned-long)) 0)
                               #+win32
                               (loop for size from 2048 below 62048 by 60 do (c-malloc-and-free size))
+                              #+darwin
+                              (loop for size from 65536 below 1065536 by 1000 do (c-malloc-and-free size))
                               :ok)
                             :name "arena probe")
            5)))
@@ -1017,7 +1024,7 @@ that time, each size class's lock taken."
       (nlk::%join-bounded thread 5))
     (is (= 300 runs) "each delivery ran")
     (is (zerop unsafe) "none ran inside C code")
-    #+(and linux x86-64)
+    #+(or (and linux x86-64) (and darwin arm64))
     (is (plusp in-c) "the spinning thread was found inside malloc")))
 
 (deftest a-parked-thread-still-takes-an-unwinding-interruption ()

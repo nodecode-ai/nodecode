@@ -2323,8 +2323,9 @@ page comes back alone when next touched."
 ;;; found. The parked case is what a stop is for (a turn waiting on its
 ;;; provider, an evaluation in SLEEP or SH), so it stays reachable; the
 ;;; classification reads the interrupted context's pc and result register.
-;;; Where that reading is not written (only x86-64 Linux is), every landing
-;;; counts as safe, as it did before; Windows interrupts at safepoints only.
+;;; Where that reading is not written (x86-64 Linux and arm64 Darwin have
+;;; it), every landing counts as safe, as it did before; Windows interrupts at
+;;; safepoints only.
 
 #+(and linux x86-64)
 (defparameter +waiting-syscalls+
@@ -2335,7 +2336,19 @@ pause, nanosleep, connect, accept, sendto, recvfrom, sendmsg, recvmsg, wait4,
 fcntl, flock, futex, clock_nanosleep, epoll_wait, waitid, pselect6, ppoll,
 epoll_pwait, accept4.")
 
-#+(and linux x86-64)
+#+(and darwin arm64)
+(defparameter +waiting-syscalls+
+  '(3 4 7 27 28 29 30 92 93 98 111 120 121 131 133 153 154 173 230 334 363 369 374
+    394 395 396 397 400 401 402 403 404 406 407 409 410 411 412 413 414 415 416 417 423
+    515 544)
+  "arm64 Darwin system calls, by the number svc reads from x16, a thread parks in
+while it waits on something outside it: read, write, wait4, recvmsg, sendmsg,
+recvfrom, accept, fcntl, select, connect, sigsuspend, readv, writev, flock,
+sendto, pread, pwrite, waitid, poll, __semwait_signal (nanosleep's), kevent,
+kevent64, kevent_qos, pselect and the _nocancel twin of each; then __ulock_wait
+and __ulock_wait2, the futex.")
+
+#+(or (and linux x86-64) (and darwin arm64))
 (defun %pc-function-name (pc)
   "The name of the exported C function PC is in, or NIL."
   (sb-alien:with-alien ((info (sb-alien:array sb-sys:system-area-pointer 4)))
@@ -2376,7 +2389,39 @@ call that waits (+WAITING-SYSCALLS+)."
                    (syscall-at 0)
                    (or (/= result 202)
                        (equal (%pc-function-name pc) "syscall")))))))
-  #-(and linux x86-64)
+  ;; arm64 Darwin: `svc #0x80' (D4001001) traps with the call's number in x16.
+  ;; A wait the signal broke returns past it with EINTR, the carry flag set and
+  ;; errno in x0 -- the ulock waits answer -EINTR in x0 instead; a wait the
+  ;; kernel will restart has pc back on the svc. A ulock wait only from the
+  ;; runtime's futex_wait, which is how it sleeps, named by lr since the stub is
+  ;; a leaf: os_unfair_lock waits there too, malloc's among them, inside
+  ;; whatever lock its caller holds.
+  #+(and darwin arm64)
+  (or (null context)                    ; run outside a signal: Lisp
+      (let* ((context (sb-alien:sap-alien context (* sb-sys:os-context-t)))
+             (pc (sb-vm:context-pc context))
+             (address (sb-sys:sap-int pc))
+             (call (sb-vm:context-register context 16))
+             (result (sb-vm:context-register context 0))
+             (ulock (member call '(515 544))))
+        (flet ((svc-at (offset)
+                 ;; the four bytes of `svc #0x80', read only inside pc's page
+                 (let ((byte (+ (logand address #xfff) offset)))
+                   (and (<= 0 byte) (<= (+ byte 4) #x1000)
+                        (= #xd4001001 (sb-sys:sap-ref-32 pc offset))))))
+          (or (and (sb-di::code-header-from-pc pc) t)
+              (and (member call +waiting-syscalls+)
+                   (or (and (svc-at -4)
+                            (if ulock
+                                (= result (- (ash 1 64) 4))
+                                (and (= result 4)
+                                     (nth-value 1 (sb-vm::context-overflow-carry-flags context)))))
+                       (svc-at 0))
+                   (or (not ulock)
+                       (equal (%pc-function-name
+                               (sb-sys:int-sap (sb-vm:context-register context sb-vm::lr-offset)))
+                              "futex_wait")))))))
+  #-(or (and linux x86-64) (and darwin arm64))
   (progn context t))
 
 (defparameter *interrupt-resend-seconds* 0.001
