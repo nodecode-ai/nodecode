@@ -937,8 +937,9 @@ and whatever PREPARE, called with the folder, puts beside it, committed.
                                          (merge-pathnames (format nil "~a/" folder) parent)))))
     (flet ((git (&rest args)
              (string-trim '(#\Newline)
-                          (nlk::run-checked (list* "git" "-C" native "-c" "user.name=nl" "-c" "user.email=nl@nl"
-                                                   "-c" "commit.gpgsign=false" args)
+                          (nlk::run-checked (append (list "git" "-C" native "-c" "user.name=nl" "-c" "user.email=nl@nl"
+                                                          "-c" "commit.gpgsign=false")
+                                                    *fixture-git-config* args)
                                             (lambda (err) (error "git ~a: ~a" (first args) err))))))
       (git "init" "--quiet")
       (git "add" "-A")
@@ -1029,8 +1030,9 @@ from GIT at COMMIT; KEYS come first, so they win."
       (multiple-value-bind (git old) (hub-fixture-repository remote name)
         (let* ((new (flet ((git (&rest args)
                              (string-trim '(#\Newline)
-                                          (nlk::run-checked (list* "git" "-C" git "-c" "user.name=nl" "-c" "user.email=nl@nl"
-                                                                   "-c" "commit.gpgsign=false" args)
+                                          (nlk::run-checked (append (list "git" "-C" git "-c" "user.name=nl" "-c" "user.email=nl@nl"
+                                                                          "-c" "commit.gpgsign=false")
+                                                                    *fixture-git-config* args)
                                                             (lambda (err) (error "git ~a: ~a" (first args) err))))))
                       (alexandria:write-string-into-file
                        "the fix" (merge-pathnames "fixed.txt" (uiop:ensure-directory-pathname git)))

@@ -230,10 +230,11 @@
   "Commit everything in HOME's cells/vise/ as MESSAGE, a repository made first under INIT."
   ;; git's own argv, no shell around it: the test runs where git does.
   (let ((directory (merge-pathnames "cells/vise/" home)))
-    (when init (uiop:run-program (list "git" "init" "-q") :directory directory))
-    (uiop:run-program (list "git" "add" "-A") :directory directory)
-    (uiop:run-program (list "git" "-c" "user.email=t@t" "-c" "user.name=t" "commit" "-qm" message)
-                      :directory directory)))
+    (flet ((git (&rest arguments)
+             (uiop:run-program (append (list "git") *fixture-git-config* arguments) :directory directory)))
+      (when init (git "init" "-q"))
+      (git "add" "-A")
+      (git "-c" "user.email=t@t" "-c" "user.name=t" "commit" "-qm" message))))
 
 (defun sandbox-test-home ()
   "A scratch home with one cells/ folder under git, one commit in it."
@@ -257,6 +258,18 @@
              (nle::sandbox-mark home)
              (is (equal first (uiop:read-file-string (nle::sandbox-mark-path home))) "a later sandboxed launch never moves the mark")))
       (uiop:delete-directory-tree home :validate t :if-does-not-exist :ignore))))
+
+(deftest a-fixture-commit-starts-no-git-maintenance-to-outlive-it ()
+  ;; The test above deletes its home right after a commit: a detached `git
+  ;; maintenance run' still holding objects/maintenance.lock failed that delete.
+  (with-temp-trees ((home "sbx-home") (traces "sbx-trace"))
+    (let ((trace (merge-pathnames "trace2.log" (ensure-directories-exist traces))))
+      (ensure-directories-exist (merge-pathnames "cells/vise/" home))
+      (alexandria:write-string-into-file "(defun a () 1)" (merge-pathnames "cells/vise/a.lisp" home))
+      (with-env-var ("GIT_TRACE2" (uiop:native-namestring trace))
+        (sandbox-commit home "one" :init t))
+      (is (search "commit" (uiop:read-file-string trace)) "the commit ran under the trace")
+      (is (not (git-trace-starts-maintenance-p trace)) "and started no maintenance run that outlives it"))))
 
 (deftest sandbox-mark-refuses-an-unjailed-load ()
   (let ((home (sandbox-test-home)))
