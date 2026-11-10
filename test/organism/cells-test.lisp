@@ -1830,6 +1830,21 @@ except OSError:
             (is (equal (mapcar #'nlk:offer-missing (nlk:shipped-cells))
                        (mapcar #'nlk:offer-missing entries)))))))))
 
+(deftest cells-the-release-image-carries-the-whole-of-ironclad (with-saved-globals (nlk::*image-systems*))
+  ;; The released image is the only Lisp a user's machine has. A system it
+  ;; registered but never loaded is answered by its .asd under the build
+  ;; host's Quicklisp, which is there on the build host alone: everywhere else
+  ;; a hub cell that names one is refused, `needs ironclad, which this image
+  ;; cannot find' -- six hub cells name "ironclad" itself (airlock, clack,
+  ;; github-app, podcast, protonmail, vault), and the image carried only the
+  ;; three systems of it the shipped cells name. nodecode/bin stands on the
+  ;; whole, so every system of it is loaded in the image.
+  (let ((nlk::*image-systems* '(("ironclad" nil #p"/nonexistent/build-host/ironclad.asd"))))
+    ;; registered, not loaded, its build host's file gone: a user's machine refuses it
+    (is (equal '("ironclad") (nlk::unavailable-systems '("ironclad")))))
+  ;; so the release image stands on the whole of ironclad
+  (is (member "ironclad" (asdf:system-depends-on (asdf:find-system "nodecode/bin")) :test #'equal)))
+
 (deftest cells-a-load-waits-while-another-process-compiles-into-its-cache (with-cell-fixture (root))
   ;; The cure for ip-02 is the compile lock LOAD-CELL-FOLDERS takes around a
   ;; peripheral's ASDF load: several nodecodes starting cold on one cache lost
