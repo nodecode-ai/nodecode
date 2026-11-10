@@ -933,15 +933,26 @@ lands behind the first frame."
     (let ((workspace (uiop:getcwd)))
       (spawn "nodecode-composer-catalogs"
         (when (and delay (plusp delay)) (sleep delay))
-        (with-cleanup ((bt2:with-lock-held (*composer-catalog-walks-lock*)
-                         (remhash model *composer-catalog-walks*)))
-          (let ((result (read-composer-catalogs workspace)))
-            ;; The cache is what the next process paints its first `@'
-            ;; from; written here, on the walk's own thread.
-            (write-composer-catalog-cache workspace result)
-            (bt2:with-lock-held (*composer-catalog-walks-lock*)
-              (setf (gethash model *composer-catalog-results*) result))
-            (nlt:send program (nlt:make-tick-msg))))))
+        ;; The walk gives up its in-flight mark in the same hold that hands
+        ;; its result over, before the tick. Given up after the tick, as it
+        ;; was, a token the landing frame asked for in that gap was refused
+        ;; as one already walking and never asked again, so the file written
+        ;; since was not offered; a slow runner read the mark still set. The
+        ;; cleanup frees the mark only for a walk that died before handing
+        ;; over: past that, the mark may be the next walk's.
+        (let ((handed nil))
+          (with-cleanup ((unless handed
+                           (bt2:with-lock-held (*composer-catalog-walks-lock*)
+                             (remhash model *composer-catalog-walks*))))
+            (let ((result (read-composer-catalogs workspace)))
+              ;; The cache is what the next process paints its first `@'
+              ;; from; written here, on the walk's own thread.
+              (write-composer-catalog-cache workspace result)
+              (bt2:with-lock-held (*composer-catalog-walks-lock*)
+                (setf (gethash model *composer-catalog-results*) result)
+                (remhash model *composer-catalog-walks*)
+                (setf handed t))
+              (nlt:send program (nlt:make-tick-msg)))))))
     t))
 
 (defun refresh-composer-catalogs-behind-the-frame (model)
