@@ -533,14 +533,14 @@ collectTranscriptRows)."
 (defun system-notice-llines (text error-p &key quiet
                              &aux (tone (cond (error-p :diagnostic-block) (quiet :muted) (t :system-block))))
   "TEXT as a notice's lines: a ■ band, an error's red one, or with QUIET the
-same ■ and words in the muted tone on the canvas, no band."
+agent's ✦ (the :wake gutter) and words in the muted tone on the canvas, no band."
   ;; QUIET is the harness's own bookkeeping (ROW-NOTICE-WAKE-P): a band says
   ;; something stands there to read, and a wake line only says why a turn
   ;; opened, so it reads at the finish divider's grey.
   (loop for line in (or (split-lines text) (list ""))
         for firstp = t then nil
         collect (make-lline :text line :tone tone :italic t
-                            :role (if firstp (if error-p :diagnostic :system) :system-cont)
+                            :role (if firstp (cond (error-p :diagnostic) (quiet :wake) (t :system)) :system-cont)
                             :gutter-tone tone :gutter-italic t
                             :spans (notice-url-spans line)
                             :hang (or (list-marker-end line)

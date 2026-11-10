@@ -719,6 +719,10 @@ after its last , - / _ or . instead of where the row runs out."
     ;; sit one column in from those rails, a grid of their own.
     (:system        " "    "■ "        3  3)
     (:system-cont   "   "  ""          3  3)
+    ;; The line that opens a turn an exit woke (ROW-NOTICE-WAKE-P): the agent
+    ;; taking its own work up again, so it opens on the agent's mark (the ✦ an
+    ;; agent change carries in /generations), not a notice's ■.
+    (:wake          " "    "✦ "        3  3)
     (:diagnostic    " "    "■ Error: " 10 3)
     (:tool          "   "  "⎿ "        5  5)
     ;; The inline image band: blank rows a terminal draws an image over, so
