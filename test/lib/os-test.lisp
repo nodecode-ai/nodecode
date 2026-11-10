@@ -1008,9 +1008,16 @@ corrupt, or owner thread exited without unlocking')."
   (let* ((stop nil)
          (thread (bt2:make-thread (lambda () (loop until stop do (c-malloc-and-free (+ 2048 (random 60000)))))
                                   :name "spins in malloc"))
-         (runs 0) (unsafe 0) (in-c 0))
+         (runs 0) (unsafe 0) (in-c 0) (deliveries 0)
+         ;; At least 300 deliveries; past them, more until one has landed
+         ;; inside malloc, bounded in time: on a loaded runner the spinner can
+         ;; spend 300 straight landings in its Lisp loop, which says nothing
+         ;; about the classifier.
+         (deadline (+ (get-internal-real-time) (* 20 internal-time-units-per-second))))
     (unwind-protect
-         (dotimes (i 300)
+         (loop while (or (< deliveries 300)
+                         (and (zerop in-c) (< (get-internal-real-time) deadline)))
+               do (incf deliveries)
            (nlk:interrupt-thread-safely thread (lambda ()
                                                  (incf runs)
                                                  (unless (nlk:interruption-may-unwind-p) (incf unsafe))))
@@ -1022,7 +1029,7 @@ corrupt, or owner thread exited without unlocking')."
              (unless (car where) (incf in-c))))
       (setf stop t)
       (nlk::%join-bounded thread 5))
-    (is (= 300 runs) "each delivery ran")
+    (is (= deliveries runs) "each delivery ran")
     (is (zerop unsafe) "none ran inside C code")
     #+(or (and linux x86-64) (and darwin arm64))
     (is (plusp in-c) "the spinning thread was found inside malloc")))
