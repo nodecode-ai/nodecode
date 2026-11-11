@@ -2143,7 +2143,8 @@ from ARGUMENTS, the text bound as TEXT."
                 (let ((dialog model.dialog))
                   (is (equal "Frequently used" (nle::picker-row-label (first (nle::picker-dialog-rows dialog)))))
                   (is (equal '("zeta" "z-2") (picker-selected-value dialog)))
-                  (is (equal "Models (5)" (nle::picker-dialog-title dialog)))
+                  ;; four models: locked's failed-listing row is none
+                  (is (equal "Models (4)" (nle::picker-dialog-title dialog)))
                   (dialog-after model "z-2")
                   (is (notany #'nle::picker-row-heading (nle::picker-visible-rows dialog)))
                   (nle::install-refreshed-models model)
