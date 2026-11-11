@@ -3085,18 +3085,34 @@ retry, no chain, no turn's facts) and answers what each said, in chain order."
                     (failover-chain))))
 
 (define-gateway-route handle-gateway-provider-models-refresh-http (env)
-  "POST /api/gateway/provider-models/refresh {ids} fetches those providers'
+  "POST /api/gateway/provider-models/refresh {ids, stale} fetches those providers'
 listings into the shared cache file (REFRESH-PROVIDER-MODELS) and answers
-the ids it wrote."
+the ids it wrote. With stale true, the listings this image holds stale or
+never fetched are fetched beside IDS, which may then be empty."
   ;; The fetch runs in this image, not in the shell that asked: this is the
   ;; image whose cells are started, so a hook on LIST-PROVIDER-MODELS, or on
   ;; the credential a listing sends, runs for every listing. An attached shell
   ;; loads the folder and starts nothing; it reads the file this writes.
+  ;; Which listings are stale is this image's word for the same reason: a
+  ;; provider a cell makes listable (LISTABLE-PROVIDER-IDS advice) is listable
+  ;; here alone, and a shell that named only the stale ids it knew never had
+  ;; claude-code's listing fetched -- first-run setup's model step read
+  ;; `Models (0) claude-code' over a logged-in CLI (2026-11-11).
   (:route :post "/api/gateway/provider-models/refresh" "provider listing refresh")
-  (let ((ids (json-value (gateway-request-json env) :array "ids")))
-    (unless (and ids (plusp (length ids)) (every #'stringp ids))
-      (nlk::protocol-refuse :invalid_request "ids must be a non-empty array of provider ids"))
-    (json-object "refreshed" (coerce (refresh-provider-models (coerce ids 'list)) 'vector))))
+  (let* ((request (gateway-request-json env))
+         (ids (or (json-value request :array "ids") #()))
+         (stale (eq t (json-value request :boolean "stale"))))
+    (unless (and (every #'stringp ids) (or stale (plusp (length ids))))
+      (nlk::protocol-refuse :invalid_request
+                            "ids must be a non-empty array of provider ids, unless stale is true"))
+    (json-object "refreshed"
+                 (coerce (refresh-provider-models
+                          (remove-duplicates
+                           (append (coerce ids 'list)
+                                   (and stale (append (stale-listable-provider-ids)
+                                                      (stale-local-runtime-ids))))
+                           :test #'string-equal :from-end t))
+                         'vector))))
 
 ;;; --- the target a turn binds -------------------------------------------------
 ;;; What a turn on a session would run on: the session's pin over the gateway's
