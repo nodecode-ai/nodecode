@@ -18,9 +18,10 @@ CHECK YOUR BOX FIRST — LINUX
     test -e /etc/ssl/certs/ca-certificates.crt && echo present || echo MISSING
     printf '%-18s ' git; command -v git >/dev/null && echo present || echo MISSING
 
-  glibc must be 2.38 or newer. Ubuntu 24.04+, Fedora 39+, Debian 13, Arch
-  are fine. Ubuntu 22.04 (2.35) and Debian 12 (2.36) will NOT run this
-  build at all, and there is no workaround short of a newer distro.
+  glibc must be 2.34 or newer. Ubuntu 22.04+, Debian 12+, RHEL/Alma/Rocky
+  9+, Amazon Linux 2023, Fedora 35+ and Arch are fine. Ubuntu 20.04,
+  Debian 11 and RHEL 8 will NOT run this build at all, and there is no
+  workaround short of a newer distro.
 
   ca-certificates is not optional and its absence is quiet: without it the
   first-run provider list comes up EMPTY with no error on screen, because
