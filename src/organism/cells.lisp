@@ -2830,9 +2830,10 @@ runs, as OFFER records by name, each marked as listed by INDEX."
                         (shipped (shipped-cells)) max-age)
   "The hub's entries this platform runs, as OFFER records by name: Nodecode's
 own (the index at URL), then the community's (at COMMUNITY) less any name
-Nodecode's lists; and as a second value why an index was read from its kept
-copy, or NIL. NIL when both are NIL; a signal naming the reason when no
-index asked for can be read. With MAX-AGE, an index whose kept copy a read
+Nodecode's lists; as a second value why an index was read from its kept
+copy, or NIL; and as a third why an index that has no kept copy could not
+be read while the other was, or NIL. NIL when both are NIL; a signal naming
+the reason when no index asked for can be read. With MAX-AGE, an index whose kept copy a read
 wrote under MAX-AGE seconds ago is that copy, unread."
   ;; Each index answers for itself: one that cannot be read leaves the other's
   ;; entries on offer rather than hiding them, and only when every index asked
@@ -2874,8 +2875,14 @@ wrote under MAX-AGE seconds ago is that copy, unread."
                                 (entries community "community"))))
         (when (and (plusp asked) (= (length failed) asked))
           (error (first (last failed))))
+        ;; One index unread and the other read offers what was read, and says
+        ;; why the rest is missing: a name only the unread index lists is not
+        ;; known to be absent, and `nodecode add' said it was (`no cell
+        ;; "claude-code" is shipped or on the hub' when Nodecode's index
+        ;; outran its 10 s, 2026-11-11).
         (values (append own theirs)
-                (and stale (format nil "~{~a~^; ~}" (reverse stale))))))))
+                (and stale (format nil "~{~a~^; ~}" (reverse stale)))
+                (and failed (format nil "~{~a~^; ~}" (reverse failed))))))))
 
 (defun repository-links (directory)
   "The symbolic links under DIRECTORY, .git/ passed over, as `find' prints
