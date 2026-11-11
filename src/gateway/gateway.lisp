@@ -1867,6 +1867,11 @@ turns started -- forks, team seats -- each running in a session of its own."
   "Serializes PIN-START-TURN-TARGET's read and write, so two start_turns
 racing on one session not yet begun cannot both find it unpinned.")
 
+(defparameter *target-cells-wait-seconds* 20
+  "The longest a target naming a provider a cell serves waits for that cell's
+start (AWAIT-CELLS-STARTING): inside the 30 s a shell's session create waits
+for its answer.")
+
 (defun target-from-spec (provider model effort &key (lane *provider*))
   "PROVIDER, MODEL and EFFORT as a session's target, MODEL read as a spec
 `[PROVIDER/]MODEL[:EFFORT]' for each member not given on its own:
@@ -1887,6 +1892,13 @@ PROVIDER MODEL EFFORT)."
     (let ((slash (position #\/ model)))
       (when (and slash (plusp slash) (< (1+ slash) (length model))
                  (not (model-listed-p lane model))
+                 ;; A provider a cell serves has no lane before that cell
+                 ;; starts, behind a cold boot's listener: a launch's
+                 ;; `--model claude-code/claude-sonnet-5-5' stayed whole
+                 ;; and ran on the default's lane, `Model is unavailable'.
+                 (progn (await-cells-starting (subseq model 0 slash)
+                                              :seconds *target-cells-wait-seconds*)
+                        t)
                  (ridden-provider-p (subseq model 0 slash)))
         (setf provider (subseq model 0 slash) model (subseq model (1+ slash))))))
   (when (and (stringp model) (null effort))
@@ -1929,7 +1941,12 @@ PROVIDER's listing offers, when it answers (OFFERED-MODEL-IDS)."
 MESSAGE) list -- unknown_provider for a provider or a model the lane refuses,
 or for no model at all (LANE-OWN-MODEL found none of PROVIDER's),
 effort_unsupported for an effort the model does not take -- or NIL when it
-can. Reads and writes nothing."
+can. Writes nothing; a provider a cell still to start serves is read once
+that cell has started (AWAIT-CELLS-STARTING)."
+  ;; A cold launch's `--provider claude-code' was refused, `provider
+  ;; claude-code is not one this box knows', read before its cell started.
+  (when (stringp provider)
+    (await-cells-starting provider :seconds *target-cells-wait-seconds*))
   (unless (and (stringp model) (plusp (length (nlk:trimmed model))))
     (return-from target-refusal (list "unknown_provider" (unnamed-model-detail provider))))
   (handler-case

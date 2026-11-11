@@ -2074,12 +2074,12 @@ its own) — or NIL when it resolves a lane and an endpoint."
 (defparameter *cells-starting-wait-seconds* 60
   "The longest AWAIT-CELLS-STARTING waits for the cells still to start.")
 
-(defun await-cells-starting (provider &aux (deadline (+ (get-internal-real-time)
-                                                         (* *cells-starting-wait-seconds*
-                                                            internal-time-units-per-second))))
+(defun await-cells-starting (provider &key (seconds *cells-starting-wait-seconds*)
+                                      &aux (deadline (+ (get-internal-real-time)
+                                                        (* seconds internal-time-units-per-second))))
   "While PROVIDER resolves no lane (SELECTION-REFUSAL) and a cell that serves
 it is still to start (NLK::STARTING-CELLS-SERVING), wait for that start, at
-most *CELLS-STARTING-WAIT-SECONDS*. => T when it waited."
+most SECONDS (*CELLS-STARTING-WAIT-SECONDS*). => T when it waited."
   ;; A cold boot starts its cells behind its listener: a prompt sent in its
   ;; first moments on claude-code/... failed at once, `provider claude-code is
   ;; not one this box knows' (a home on claude-code alone, 2026-10-31).

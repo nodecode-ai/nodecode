@@ -3242,6 +3242,55 @@ request."
         ('("openai-completions" "openai-completions/m" nil) "openai-completions" "openai-completions/m" nil)
         ('(nil "m:high" "low") nil "m:high" "low")))))
 
+(deftest a-launch-target-on-a-cell-still-to-start-waits-for-its-lane ()
+  ;; A cold launch's target is read before its gateway's cells start, behind
+  ;; the listener: `--model claude-code/claude-sonnet-5-5' stayed whole and
+  ;; ran on the default's lane (`Model is unavailable'), and `--provider
+  ;; claude-code' was refused, `provider claude-code is not one this box
+  ;; knows'. The create waits for the start of the cell that serves the
+  ;; provider it names, as a turn does; one no cell still to start serves is
+  ;; read at once.
+  (with-selection-gateway (path port "cell-target" :pinned t)
+    ;; Globals, not bindings: the create is read on the gateway's own thread.
+    (let ((cell (nlk::make-cell :name "nl-cell" :kind :peripheral :start (lambda (config) config nil))))
+      (with-saved-globals ((nlk::*cells* (list cell)) (nlk::*cells-starting* :a-start-pass))
+        (with-stubbed-fdefinitions ((nlk::cell-served-providers (served) (and (eq served cell) '("nl-cell-lane")))
+                                    (nle::configured-provider-lane (name)
+                                      (if (equal name "nl-cell-lane")
+                                          (and (nlk:cell-started-p cell) name)
+                                          (funcall original name)))
+                                    (nle::provider-auth-state (provider &rest options)
+                                      (if (equal provider "nl-cell-lane") :oauth (apply original provider options)))
+                                    (nle::provider-endpoint (provider)
+                                      (cond ((not (equal provider "nl-cell-lane")) (funcall original provider))
+                                            ((nlk:cell-started-p cell) "http://127.0.0.1:9/v1/messages")
+                                            (t (error 'nle::provider-config-error
+                                                      :detail "provider nl-cell-lane is not one this box knows")))))
+          (flet ((create (json)
+                   ;; The cell starts 0.3 s into the create.
+                   (setf (nlk:cell-started-p cell) nil)
+                   (let ((starter (bt2:make-thread (lambda () (sleep 0.3) (setf (nlk:cell-started-p cell) t))
+                                                   :name "cell-started")))
+                     (unwind-protect
+                          (with-gateway-http (port :post "/api/gateway/sessions" :body json)
+                            (list status (and (hash-table-p body) (gethash "target" body))))
+                       (bt2:join-thread starter)))))
+            (destructuring-bind (status target)
+                (create "{\"session_id\":\"spec\",\"model\":\"nl-cell-lane/m\"}")
+              (is (= 200 status) "a --model spec naming the cell's provider is created")
+              (is (equalp (nle::json-object "provider" "nl-cell-lane" "model" "m") target) "split on the cell's provider once its lane is up, not run whole on the default's"))
+            (is-model-pin "spec" "nl-cell-lane" "m" "pinned to the cell's provider" "its own model")
+            (destructuring-bind (status target) (create "{\"session_id\":\"named\",\"provider\":\"nl-cell-lane\",\"model\":\"m\"}")
+              (is (= 200 status) "--provider naming the cell's provider is not refused while it starts")
+              (is (equalp (nle::json-object "provider" "nl-cell-lane" "model" "m") target)))
+            (is-model-pin "named" "nl-cell-lane" "m" "pinned to the provider it named" "and its model")
+            (setf (nlk:cell-started-p cell) nil)
+            (let ((start (get-internal-real-time)))
+              (is-route (port :post "/api/gateway/sessions"
+                              :body "{\"session_id\":\"off\",\"provider\":\"no-such-lane\",\"model\":\"m\"}")
+                        400 "a provider no cell serves is refused" "unknown_provider")
+              (is (< (- (get-internal-real-time) start) (* 0.25 internal-time-units-per-second)) "at once, waiting on no cell"))))))))
+
 (deftest an-admission-refused-after-the-pin-takes-the-pin-back
     (with-session-store ("pin-undo"))
   ;; The pin lands before admission; an admission refused after it leaves the
