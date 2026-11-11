@@ -1249,19 +1249,65 @@ can. => the line the shell shows, or NIL when there is nothing to say."
 
 ;;; --- the verb --------------------------------------------------------------
 
-(defun update-locally (version check &aux (installed (current-label))
-                                          (result (upgrade-organism :version version :check t))
-                                          (to (getf result :to)))
+(defun unpacked-folder ()
+  "This binary's folder when it runs outside the installer's layout from a
+release's unpacked tarball -- the installer the release carries lies beside
+it -- else NIL: an installed build, or a checkout's."
+  (let ((runtime (nlk:runtime-directory)))
+    (and runtime (not *installed-build*)
+         (probe-file (merge-pathnames (if (eq (nlk:platform) :windows) "install.ps1" "install.sh")
+                                      runtime))
+         runtime)))
+
+(defun installer-command (folder)
+  "How a person runs the installer an unpacked release carries in FOLDER."
+  (if (eq (nlk:platform) :windows)
+      (format nil "powershell -ExecutionPolicy Bypass -File ~ainstall.ps1" (uiop:native-namestring folder))
+      (format nil "sh ~ainstall.sh" (uiop:native-namestring folder))))
+
+(defun outside-install-text ()
+  "What this binary is, run from no install, beside the answer of an update
+that moved an install other than it: it stays the build it is."
+  (if-let (folder (unpacked-folder))
+    (format nil "unpacked at ~a, outside an install, so it stays this build (`~a' installs nodecode)"
+            (uiop:native-namestring folder) (installer-command folder))
+    "a checkout build (`just release' rebuilds it)"))
+
+(defun no-install-text (version)
+  "The answer of `nodecode update' typed to a binary that runs from no
+install when no install lies where it would lay a release out: nothing to
+move, and how to install."
+  (let ((folder (unpacked-folder))
+        (build (effective-version)))
+    (if folder
+        (format nil "this nodecode runs unpacked from ~a, outside an install, so no update reaches it: it stays ~a.~%~
+                     Install it with `~a'~:[, and the installed nodecode updates itself~;, then run `nodecode update ~:*~a'~]."
+                (uiop:native-namestring folder) build (installer-command folder) version)
+        (format nil "this nodecode is a checkout build, ~a, outside an install, so no update reaches it: `just release' rebuilds it."
+                build))))
+
+(defun update-locally (version check &aux (installed (current-label)))
   "`nodecode update' with no organism serving: stage, classify, link."
-  ;; The next launch runs the release -- whole, so what the classifier made of
-  ;; it is no news here -- unless the window this was typed in keeps an older
-  ;; PATH, which UPDATE-TEXT says instead.
-  (cond ((or check (eq :current (getf result :applied))) (update-answer-text result))
-        (t (link-release to)
-           ;; the hold the organism's own update takes (UPGRADE-ORGANISM :HOLD)
-           (if version (hold-release to) (lift-hold))
-           (format nil "~:[updated to ~a~;~a is installed already~]~:[: the next launch runs it~;~]"
-                   (equal installed to) (release-name to) (stale-window-text)))))
+  ;; A binary outside the installer's layout -- an unpacked tarball, a
+  ;; checkout -- never runs what this links: its own folder is its build. Run
+  ;; from there, the update used to lay a release out under the default
+  ;; folder, link `current' there with no launcher on PATH, and say `the next
+  ;; launch runs it' while ./nodecode stayed the build it was. With no install
+  ;; there it lays nothing out; with one, it moves that install and the
+  ;; answer says this binary is not it (UPDATE-TEXT).
+  (if (and (not *installed-build*) (not installed))
+      (no-install-text version)
+      (let* ((result (upgrade-organism :version version :check t))
+             (to (getf result :to)))
+        ;; The next launch runs the release -- whole, so what the classifier
+        ;; made of it is no news here -- unless the window this was typed in
+        ;; keeps an older PATH, which UPDATE-TEXT says instead.
+        (cond ((or check (eq :current (getf result :applied))) (update-answer-text result))
+              (t (link-release to)
+                 ;; the hold the organism's own update takes (UPGRADE-ORGANISM :HOLD)
+                 (if version (hold-release to) (lift-hold))
+                 (format nil "~:[updated to ~a~;~a is installed already~]~:[: the next launch runs it~;~]"
+                         (equal installed to) (release-name to) (stale-window-text)))))))
 
 (defun update-text (words)
   "`nodecode update [VERSION] [--check]': the organism serving this home
@@ -1290,11 +1336,19 @@ when one serves, else by staging and linking here for the next launch."
               (let ((stale (stale-window-text)))
                 (cond (stale (format nil "~a~%~a" text stale))
                       ((and organism (not (equal organism binary)))
-                       (format nil "this home's organism: ~a~%this binary: ~a~:[~;, a checkout build (`just release' rebuilds it)~]"
-                               text binary (not *installed-build*)))
+                       (format nil "this home's organism: ~a~%this binary: ~a~:[~;, ~a~]"
+                               text binary (not *installed-build*) (outside-install-text)))
                       (t text))))
-            ;; read once the update has linked: the window's PATH against it
-            (format nil "~a~@[~%~a~]" (update-locally version check) (stale-window-text))))))
+            (let ((install (and (not *installed-build*) (current-label)
+                                (uiop:native-namestring *release-directory*)))
+                  ;; read once the update has linked: the window's PATH against it
+                  (text (format nil "~a~@[~%~a~]" (update-locally version check) (stale-window-text))))
+              ;; A binary outside an install moved the one under the default
+              ;; folder: the answer is that install's, and says so.
+              (if install
+                  (format nil "the install at ~a: ~a~%this binary: ~a, ~a"
+                          install text (effective-version) (outside-install-text))
+                  text))))))
 
 ;;; --- the route -------------------------------------------------------------
 

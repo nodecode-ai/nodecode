@@ -815,16 +815,77 @@ asks again after a pause -- and stops the moment the image has caught up."
   ;; used to fetch and lay out the release `current' already named, and say
   ;; "tv2 is current" -- which reads as nothing to do -- beside the classifier's
   ;; line, which says nothing to a person whose next launch runs the build whole.
+  ;; An installed build's: one run from no install is told it stays (below).
   (with-stubbed-fdefinitions ((nle::organism-port () nil)
                               (nle::window-release () nil))
-    (is (equal "updated to tv2: the next launch runs it" (nle::update-text '("tv2"))))
-    (is (equal "tv2" (nle::current-label)))
-    (with-stubbed-fdefinition (nle::stage-release (version) (error "~a was staged again" version))
-      (is (equal "tv2 is installed already: the next launch runs it" (nle::update-text '("tv2"))))
-      (with-stubbed-fdefinition (nle::window-release () "tv1")
-        (is (equal (format nil "tv2 is installed already~%~
-                                this window still runs tv1: its PATH is from before the update. Open a new terminal or tab to run tv2")
-                   (nle::update-text '("tv2"))))))))
+    (with-saved-globals ((nle::*installed-build* t))
+      (is (equal "updated to tv2: the next launch runs it" (nle::update-text '("tv2"))))
+      (is (equal "tv2" (nle::current-label)))
+      (with-stubbed-fdefinition (nle::stage-release (version) (error "~a was staged again" version))
+        (is (equal "tv2 is installed already: the next launch runs it" (nle::update-text '("tv2"))))
+        (with-stubbed-fdefinition (nle::window-release () "tv1")
+          (is (equal (format nil "tv2 is installed already~%~
+                                  this window still runs tv1: its PATH is from before the update. Open a new terminal or tab to run tv2")
+                     (nle::update-text '("tv2")))))))))
+
+(defmacro with-unpacked-binary ((folder) &body body)
+  "This binary run from FOLDER, a release tarball unpacked outside any
+install -- the installer it carries beside it -- for BODY."
+  `(with-temp-trees ((,folder "unpacked"))
+     (ensure-directories-exist ,folder)
+     (with-open-file (out (merge-pathnames (installer-name) ,folder) :direction :output :if-exists :supersede)
+       (write-line "# the installer the tarball carries" out))
+     (with-stubbed-fdefinitions ((nlk:runtime-directory () ,folder)
+                                 (nle::organism-port () nil))
+       (with-saved-globals ((nle::*installed-build* nil))
+         ,@body))))
+
+(defun installer-name ()
+  (if (eq (nlk:platform) :windows) "install.ps1" "install.sh"))
+
+(deftest update-from-an-unpacked-tarball-lays-nothing-out-and-says-it-stays (with-organism-tree ("tv2" (upg-source 2 "a")))
+  ;; ./nodecode update tv2 in a release tarball's unpacked folder laid tv2 out
+  ;; under the default folder, linked `current' there with no launcher on
+  ;; PATH, and said "updated to tv2: the next launch runs it" -- while every
+  ;; launch of ./nodecode stayed the build it was. With no install there,
+  ;; nothing is laid out, and the answer says how to install.
+  (with-unpacked-binary (folder)
+    (let ((answer (nle::update-text '("tv2"))))
+      (is (search (uiop:native-namestring folder) answer) "the answer names the folder this binary runs from")
+      (is (search "no update reaches it" answer) "and that no update reaches it there")
+      (is (search (format nil "~a~a" (uiop:native-namestring folder) (installer-name)) answer) "the installer it carries is the way to an install")
+      (is (search "`nodecode update tv2'" answer) "and the version asked for is the update after it")
+      (is (not (search "next launch" answer)) "it never promises a launch it does not run"))
+    (is (null (nle::current-label)) "no `current' is linked")
+    (is (null (directory (merge-pathnames "*/" nle::*release-directory*))) "nor any release laid out")))
+
+(deftest update-from-an-unpacked-tarball-moves-the-install-there-and-says-whose (with-organism-tree ("tv2" (upg-source 2 "a")))
+  ;; An install under the default folder is what the update moves; the answer
+  ;; is that install's, and the binary typed is said apart from it.
+  (write-release-tarball dist "tv1" (release-files *update-old-a*))
+  (nle::stage-release "tv1")
+  (nle::link-release "tv1")
+  (with-unpacked-binary (folder)
+    (let ((answer (nle::update-text '("tv2"))))
+      (is (equal "tv2" (nle::current-label)) "the install moved")
+      (is (search (format nil "the install at ~a: updated to tv2" (uiop:native-namestring nle::*release-directory*)) answer) "the answer is the install's, named")
+      (is (search (format nil "this binary: ~a, unpacked at ~a" (nle::effective-version) (uiop:native-namestring folder)) answer) "and the binary typed is said apart")
+      (is (search "it stays this build" answer) "with what it stays"))))
+
+(deftest update-answer-says-an-unpacked-tarball-is-no-checkout ()
+  ;; Through the organism, the binary typed was called a checkout build that
+  ;; `just release' rebuilds -- never true of an unpacked tarball's.
+  (with-unpacked-binary (folder)
+    (with-stubbed-fdefinitions
+        ((nle::organism-port () 4321)
+         (nle::gateway-configured-operator-token () "token")
+         (nle::gateway-http-session-request (&rest args)
+           (declare (ignore args))
+           (nlk:json-object "text" "already at tv9" "from" "tv9" "to" "tv9"))
+         (nle::effective-label () "tv1"))
+      (let ((answer (nle::update-text '("--check"))))
+        (is (search (format nil "this binary: tv1, unpacked at ~a" (uiop:native-namestring folder)) answer) "the binary is the unpacked folder it runs from")
+        (is (not (search "checkout" answer)) "never a checkout build")))))
 
 ;;; --- the note a new release says -------------------------------------------
 
