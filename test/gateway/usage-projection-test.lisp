@@ -74,3 +74,44 @@
       (is (= 4 (rounds)))
       (is (= 2 (spans)))
       (is-shape (totals) ("calls" = 4) ("input" = 40) ("turns" = 2)))))
+
+(deftest a-side-call-is-billed-in-usage-beside-the-turns-rounds ()
+  ;; A side call -- a session's title, the organism's note -- is no round of
+  ;; any turn: it left no turn.usage, so the provider billed it and /usage
+  ;; never counted it. Its own fact counts it in the totals and shows it apart;
+  ;; the organism's own is charged to no session.
+  (with-restartable-store (path "side-calls" :cwd (fixture-workspace))
+    (with-durable-turn (turn "side-calls" :command-id "side-a" :input "ask" :complete t)
+      (nlk:record-turn-usage turn :provider "vendor" :model "a" :input-tokens 2000 :output-tokens 60))
+    (with-provider-stub (nil (values (wire-message "assistant" :content "Pelican nest survey")
+                                     (nle::make-provider-usage :input-tokens 169 :output-tokens 123)
+                                     "stop" nil))
+      (is (equal "Pelican nest survey"
+                 (nle::name-session "side-calls" "count the pelican nests along the north shore today")))
+      (is (equal "Pelican nest survey" (nle:complete "Say it." "hello"))))
+    (flet ((facts ()
+             (nlk:events :kind "side_call.usage" :order :oldest :as :rows
+                         :columns '("session_id" "json_extract(payload, '$.purpose')"
+                                    "json_extract(payload, '$.\"input-tokens\"')"
+                                    "json_extract(payload, '$.\"output-tokens\"')")))
+           (totals () (gethash "totals" (nle::usage-json "all")))
+           (rounds () (sqlite:execute-single (nlk::require-open-store)
+                                             "select coalesce(sum(rounds), 0) from usage_rollup")))
+      (is (equal '(("side-calls" "title" 169 123) (nil "side" 169 123)) (facts)) "each side call's usage, what it was for and whom it served")
+      (is (= 1 (length (nlk:events :session-id "side-calls" :kind "turn.usage" :as :instances))) "a side call is no round of the turn")
+      (let ((usage (nle::usage-json "all")))
+        (is-shape (gethash "totals" usage) ("calls" = 3) ("input" = 2338) ("output" = 306)
+          ("sessions" = 1) ("turns" = 1))
+        (is-shape (gethash "side_calls" usage) ("calls" = 2) ("input" = 338) ("output" = 246))
+        (is (equal '("side-calls") (map 'list (lambda (s) (gethash "id" s)) (gethash "sessions" usage))) "the organism's own call lists as no session")
+        (is (find-if (lambda (line) (search "2 calls were side work, a session's title or a note" line))
+                     (nle::usage-sentences usage)) "/usage says how many calls were side work"))
+      ;; Derived again from the log, the side calls are summed again.
+      (nlk:close-store)
+      (sqlite:with-open-database (db path)
+        (sqlite:execute-non-query db "drop trigger if exists usage_rollup_follows_the_log")
+        (sqlite:execute-non-query db "drop table usage_rollup")
+        (sqlite:execute-non-query db "create table usage_rollup (obsolete text)"))
+      (nlk:open-store :path path)
+      (is (= 3 (rounds)))
+      (is-shape (totals) ("calls" = 3) ("input" = 2338)))))

@@ -98,6 +98,9 @@
   :owner admit-active-turn-input :evidence t)
 ;; turn.usage is no evidence: a resumed client must show its last usage, not an empty lane
 (define-kind +kind-turn-usage+ "turn.usage")
+;; A side call's spend -- a session's title, the organism's note: a call no
+;; round of any turn made, so no turn.usage. Billing evidence, never replayed.
+(define-kind +kind-side-call-usage+ "side_call.usage" :owner record-side-call-usage :evidence t)
 ;; Chrome, not evidence: a shell folds each retry into its turn's resting line,
 ;; live and on a resume replay alike.
 (define-kind +kind-provider-retry+ "turn.provider_retry")
@@ -171,6 +174,9 @@ own configuration and the marks a shell puts on it.")
   ;; configuration and now waits on its record, in which case the caller
   ;; appends nothing.
   (cond
+    ;; A fact of another aggregate that names no session at all: the
+    ;; organism's own, attributed to nothing.
+    ((and (null session-id) (not (equal aggregate-type "session"))) nil)
     ;; The identity itself, and a session that is durable already.
     ((string= kind +kind-session-created+) nil)
     ((session-created-fact-p session-id) nil)
@@ -1985,6 +1991,53 @@ will run."
   ;; round is not durable history. ESTIMATED marks counts the organism
   ;; estimated because a cancel cut the stream before the provider reported.
   "Durably record one provider round's usage evidence against TURN.")
+
+(define-event side-call-usage-event +kind-side-call-usage+
+  "One side call's usage: a call on the side-work model that no turn's round
+made -- a session's title, the organism's note, a (complete ...) of the
+model's own. PURPOSE says which."
+  ((purpose :string "purpose" :default "")
+   (input-tokens :integer "input-tokens")
+   (output-tokens :integer "output-tokens")
+   (cached-input-tokens :integer "cached-input-tokens")
+   (total-tokens :integer "total-tokens")
+   (reasoning-tokens :integer "reasoning-tokens")
+   (cache-write-tokens :integer "cache-write-tokens")
+   (cache-write-5m-tokens :integer "cache-write-5m-tokens")
+   (cache-write-1h-tokens :integer "cache-write-1h-tokens")
+   (cost-known :boolean "cost_known" :default nil)
+   (cost-usd :number "cost_usd" :default 0.0)
+   (finish-reason :string "finish-reason")
+   (model :string "model" :default "")
+   (provider :string "provider" :default "")
+   (response-model :string "response-model")
+   (reasoning-effort :string "reasoning-effort")))
+
+(defun record-side-call-usage (session-id purpose &rest usage
+                               &key input-tokens output-tokens cached-input-tokens total-tokens
+                               reasoning-tokens cache-write-tokens cache-write-5m-tokens
+                               cache-write-1h-tokens cost-known cost-usd finish-reason
+                               model provider response-model reasoning-effort)
+  "Durably record one side call's usage: PURPOSE what it was for, SESSION-ID
+the session it served -- NIL for the organism's own, on the organism's
+aggregate -- and USAGE its counts, price and identity, TURN-USAGE-EVENT's
+keywords. A number the provider did not say stays out, never a zero."
+  (declare (ignore input-tokens output-tokens cached-input-tokens total-tokens reasoning-tokens
+                   cache-write-tokens cache-write-5m-tokens cache-write-1h-tokens finish-reason
+                   response-model reasoning-effort))
+  (check-type session-id (or null string))
+  (check-type purpose string)
+  (let ((payload (list* :purpose purpose :model (or model "") :provider (or provider "")
+                        :cost_known (and cost-known t)
+                        (nconc (and cost-known (realp cost-usd) (list :cost_usd cost-usd))
+                               (loop for (key value) on usage by #'cddr
+                                     unless (member key '(:model :provider :cost-known :cost-usd))
+                                       when (or (integerp value) (and (stringp value) (plusp (length value))))
+                                         nconc (list key value))))))
+    (with-store-transaction (handle)
+      (with-event-owner 'record-side-call-usage
+        (apply #'append-event-row handle session-id +kind-side-call-usage+ payload
+               (and (null session-id) (list :aggregate-type "organism" :aggregate-id "organism")))))))
 
 (define-event (attempt-voided-event :record (record-attempt-voided :check ((disposition string))))
     +kind-attempt-voided+

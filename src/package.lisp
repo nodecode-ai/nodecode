@@ -220,7 +220,7 @@ renderer, the program loop.")
    #:encode-delta
    ;; --- event log: canonical command/event envelope ---
    ;; EVENT and its envelope readers are exported at the declaration.
-   #:unknown-event #:record-event #:adopt-event #:+event-envelope-columns+
+   #:unknown-event #:record-event #:record-side-call-usage #:adopt-event #:+event-envelope-columns+
    #:make-durable-id
    ;; the clock and the hash every folder stamps with (events.lisp)
    #:iso-now #:sha256-text #:short-digest #:events #:page-events #:page-events-before

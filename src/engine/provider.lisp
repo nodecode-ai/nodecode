@@ -3562,7 +3562,30 @@ run it — SNAPSHOT-EFFECTIVE-PROVIDER-CONFIG reads these three."
              (*endpoint* (if ,configured nil *endpoint*)))
          ,@body))))
 
-(defun complete (system user &key session-id max-tokens (fallback-p t))
+(defun record-side-call (purpose session-id config usage finish-reason metadata)
+  "Record one side call's usage fact (NLK:RECORD-SIDE-CALL-USAGE): PURPOSE what
+it was for, SESSION-ID the session it served or NIL, CONFIG the frozen provider
+config it ran on, USAGE, FINISH-REASON and METADATA what CALL-PROVIDER
+answered -- priced as a round is (RECORD-ROUND-USAGE)."
+  ;; The call is the work, its record is not: a store that refuses the fact
+  ;; costs the caller nothing but the log line.
+  (when (and (or usage finish-reason) (nlk:store-open-p))
+    (handler-case
+        (let* ((model (effective-provider-config-model config))
+               (provider (effective-provider-config-provider config))
+               (counts (provider-usage-fact-args usage))
+               (cost (apply #'round-cost (model-price model provider) counts)))
+          (apply #'nlk:record-side-call-usage session-id purpose
+                 :model model :provider provider
+                 :response-model (getf metadata :model)
+                 :reasoning-effort (or (getf metadata :effort)
+                                       (effective-provider-config-reasoning-effort config))
+                 :finish-reason finish-reason
+                 (append (and cost (list :cost-known t :cost-usd cost)) counts)))
+      (error (condition)
+        (format *error-output* "~&;; side call: its usage went unrecorded (~a)~%" condition)))))
+
+(defun complete (system user &key session-id max-tokens (fallback-p t) (purpose "side"))
   "One side call: SYSTEM as the whole instruction, USER as the single
 message, no tools and no history — the answer's own text."
   ;;
@@ -3573,18 +3596,29 @@ message, no tools and no history — the answer's own text."
   ;; MAX-TOKENS is this call's completion ceiling, else the ambient
   ;; *MAX-COMPLETION-TOKENS*. A provider failure signals, the way the same call
   ;; inside a turn would: whether a nicety may pass is the caller's decision.
+  ;;
+  ;; Its spend is a side_call.usage fact, PURPOSE what it was for ("title",
+  ;; "note"; "side" unless the caller says), charged to SESSION-ID, else to
+  ;; the session whose turn made the call, else to the organism: no round of
+  ;; a turn, but billed all the same, so /usage counts it.
   (labels ((ask ()
              (with-auxiliary-model (:session-id session-id)
-               (let ((*max-completion-tokens* (or max-tokens *max-completion-tokens*)))
-                 (message-content
-                  (call-provider (compile-turn-context
-                                  (make-context-request
-                                   :session-id session-id
-                                   :provider-config (snapshot-effective-provider-config)
-                                   :base-system-prompt (or system "")
-                                   :messages (list (json-object "role" "user"
-                                                                "content" user))))
-                                 :on-part nil))))))
+               (let* ((*max-completion-tokens* (or max-tokens *max-completion-tokens*))
+                      (context (compile-turn-context
+                                (make-context-request
+                                 :session-id session-id
+                                 :provider-config (snapshot-effective-provider-config)
+                                 :base-system-prompt (or system "")
+                                 :messages (list (json-object "role" "user"
+                                                              "content" user))))))
+                 (multiple-value-bind (message usage finish-reason metadata)
+                     (call-provider context :on-part nil)
+                   (record-side-call purpose
+                                     (or session-id
+                                         (and *current-durable-turn*
+                                              (nlk:durable-turn-session-id *current-durable-turn*)))
+                                     context.provider-config usage finish-reason metadata)
+                   (message-content message))))))
     (handler-case (ask)
       (error (condition)
         ;; A side call is not the work, and a target that is configured but
