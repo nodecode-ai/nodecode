@@ -340,6 +340,90 @@ ASK its terminal: (TEXT CODE STREAM PREVIEW), PREVIEW what it printed first."
           (is (search "the hub moved nl-sw-hubbed" (nlk:json-value body :string "error" "message"))))
         (is (not (nlk:installed-cell-p "nodecode-nl-sw-hubbed")))))))
 
+(deftest control-cells-add-moves-a-hub-cell-on-to-the-pin-its-index-moved-to
+    (with-switch-fixture (port base top))
+  ;; A cell installed from the hub stays at the commit it was cloned at; when
+  ;; Nodecode's index moves its pin, `nodecode add' of it showed nothing and
+  ;; answered `already installed', so a published fix never came in short of
+  ;; deleting the folder. Now it shows the move, and on a yes replaces the
+  ;; folder at the new pin: here with no organism, then through one -- a
+  ;; folder it had not loaded loads at once, one it had runs on until the
+  ;; next restart -- and a move that fails leaves the folder where it was.
+  (with-temp-trees ((remote "add-move-remote"))
+    (let* ((name (format nil "nl-sw-moving-~36r" (random (expt 36 6))))
+           (folder (merge-pathnames (format nil "~a/" name) nlk::*cells-directory*))
+           (pins '()))
+      (multiple-value-bind (git first-pin) (hub-fixture-repository remote name)
+        (push first-pin pins)
+        (labels ((commit (file)
+                   (flet ((git (&rest args)
+                            (string-trim '(#\Newline)
+                                         (nlk::run-checked (append (list "git" "-C" git "-c" "user.name=nl" "-c" "user.email=nl@nl"
+                                                                         "-c" "commit.gpgsign=false")
+                                                                   *fixture-git-config* args)
+                                                           (lambda (err) (error "git ~a: ~a" (first args) err))))))
+                     (alexandria:write-string-into-file
+                      file (merge-pathnames file (uiop:ensure-directory-pathname git)))
+                     (git "add" "-A")
+                     (git "commit" "--quiet" "-m" file)
+                     (push (git "rev-parse" "HEAD") pins)
+                     (first pins)))
+                 (pin () (second (uiop:read-file-lines (merge-pathnames ".hub" folder))))
+                 (short (commit) (subseq commit 0 9))
+                 (never (question) (error "asked ~a" question)))
+          (with-stubbed-fdefinition (nlk:hub-cells (&rest arguments)
+                                      (declare (ignore arguments))
+                                      (list (hub-offer name git (first pins))))
+            (is (zerop (second (add-answer nil #'never name "--yes"))))
+            (is (equal first-pin (pin)))
+            (is (search "already installed" (first (add-answer nil #'never name))) "an unmoved pin moves nothing")
+            (let ((fix (commit "fix-one.txt")))
+              ;; shown, and asked; a no and no terminal both move nothing
+              (destructuring-bind (text code stream preview) (add-answer nil (constantly "n") name)
+                (is (= 1 code)) (is (eq :error stream))
+                (is (equal (format nil "nothing was moved: ~a stays at ~a" name (short first-pin)) text))
+                (is (search (format nil "commit  ~a" fix) preview))
+                (is (search (format nil "now at  ~a: this replaces that folder" first-pin) preview)))
+              (is (search "nothing was moved; add --yes to move it" (first (add-answer nil (constantly nil) name))))
+              (is (equal first-pin (pin)))
+              ;; no organism: the folder moves for the next launch
+              (destructuring-bind (text code &rest more)
+                  (add-answer nil (lambda (question)
+                                    (is (equal (format nil "Move ~a to ~a? [y/N]" name (short fix)) question))
+                                    "y")
+                              (format nil "nc://~a" name))
+                (declare (ignore more))
+                (is (= 0 code))
+                (is (equal (format nil "~a moved from ~a to ~a; nodecode is not running, so it loads at the next launch"
+                                   name (short first-pin) (short fix))
+                           text)))
+              (is (equal fix (pin)))
+              (is (probe-file (merge-pathnames "fix-one.txt" folder)) "the new commit's files")
+              (is (null (nlk:find-cell name)) "nothing loaded in this image")
+              ;; through the organism: a folder it has not loaded comes on at the new pin
+              (let ((next (commit "fix-two.txt")))
+                (destructuring-bind (text code &rest more) (add-answer port #'never name "--yes")
+                  (declare (ignore more))
+                  (is (= 0 code))
+                  (is (equal (format nil "~a moved from ~a to ~a; ~a is on" name (short fix) (short next) name) text)))
+                (is (equal next (pin)))
+                (is (eq :loaded (nlk::cell-state (nlk:find-cell name))) "loaded in the organism")
+                ;; one it has loaded moves, and runs the code it loaded until a restart
+                (let ((last (commit "fix-three.txt")))
+                  (is (search (format nil "~a moved from ~a to ~a; ~a is on; it runs ~a until the next restart"
+                                      name (short next) (short last) name (short next))
+                              (first (add-answer port #'never name "--yes"))))
+                  (is (equal last (pin)))
+                  (is (probe-file (merge-pathnames "fix-three.txt" folder)))
+                  ;; a pin the repository lacks: refused, and the folder stays as it was
+                  (push (make-string 40 :initial-element #\0) pins)
+                  (is (search (format nil "~a stays at ~a: " name (short last))
+                              (refusal-text nle::gateway-http-error (add-answer port #'never name "--yes"))))
+                  (is (equal last (pin)))
+                  (is (probe-file (merge-pathnames "fix-three.txt" folder)))
+                  (let ((home (uiop:pathname-parent-directory-pathname nlk::*cells-directory*)))
+                    (is (null (probe-file (merge-pathnames ".cell-staging/" home))) "nothing is left aside")))))))))))
+
 (deftest control-cells-add-says-a-wait-that-lasts-and-not-one-that-ends-sooner ()
   ;; `nodecode add' says on stderr what it waits on once that has lasted
   ;; AFTER seconds, with its bound; a wait that ends sooner says nothing, so
