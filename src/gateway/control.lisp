@@ -519,14 +519,16 @@ FAILURES FRESH), as INSTALL-AND-LOAD-CELL answers."
                                collect (format nil "FAILED ~@[~a: ~]~a" file text)))
             (or records (not (nlk:find-cell name))))))
 
-(defun switch-cell-on (name &key commit (seconds nlk:*cell-switch-seconds*)
+(defun switch-cell-on (name &key commit move (seconds nlk:*cell-switch-seconds*)
                        &aux (offers (nlk:shipped-cells)) (given (nlk:cell-switch-deadline seconds))
-                       (names '()) (failures '()) (done '()) (unread nil))
+                       (names '()) (failures '()) (done '()) (unread nil) (moved nil))
   "Turn the cell NAME on: every offered folder its closure names installed
 and loaded into this image now, then started, for a waiter that waits
-SECONDS for the answer. => what came of it, in a sentence. Refused when
-COMMIT, the pin a person read, is not the hub's now, and when the reads
-and the installs do not fit the deadline SECONDS leaves them."
+SECONDS for the answer. => what came of it, in a sentence. With MOVE, a
+hub install of NAME at another commit of the same repository and folder
+moves on to COMMIT first (NLK:MOVE-HUB-CLONE). Refused when COMMIT, the
+pin a person read, is not the hub's now, and when the reads and the
+installs do not fit the deadline SECONDS leaves them."
   ;; A name the release does not ship is looked for on the hub (HUB-OFFERS-FOR).
   ;; INSTALL-CELL refuses a name on offer from neither and a folder whose
   ;; dependencies this image cannot find. The operator's own folder off was
@@ -558,7 +560,17 @@ and the installs do not fit the deadline SECONDS leaves them."
           (let ((entry (nlk:find-offer name offers)))
             (when (and commit entry (not (equal commit (nlk:offer-commit entry))))
               (nlk::protocol-refuse :refused "the hub moved ~a from ~a~@[ to ~a~] since it was read: nothing was installed; read it again"
-                                    (cell-label name) commit (nlk:offer-commit entry))))
+                                    (cell-label name) commit (nlk:offer-commit entry)))
+            ;; `nodecode add' of a hub cell installed at an older pin: the
+            ;; clone moves on to the pin the person read, and a loaded one
+            ;; runs the code it loaded until the next restart, as a move the
+            ;; update makes does (REFRESH-HUB-INSTALLS)
+            (when-let (from (and move commit entry (nlk:hub-clone-behind name entry)))
+              (let ((record (nlk:find-cell name)))
+                (handler-case (nlk:move-hub-clone entry)
+                  (error (condition)
+                    (nlk::protocol-refuse :refused "~a stays at ~a: ~a" (cell-label name) (short-pin from) condition)))
+                (setf moved (list from commit (and record (eq record.state :loaded) t))))))
           (setf names (or (nlk:offer-closure (list name) offers)
                           (if unread
                               (error "no cell named ~a is shipped, and the hub could not be read to look for it: ~a" name unread)
@@ -571,9 +583,16 @@ and the installs do not fit the deadline SECONDS leaves them."
   (start-cells names)
   (broadcast-organism "organism.cells" (json-object "names" (coerce names 'vector)))
   (let ((record (nlk:find-cell name)))
-    (format nil "~a is on~@[, with ~{~a~^, ~}~]~:[~;; ~:*~{~a~^; ~}; the next restart loads it again~]~@[; it did not start: ~a~]"
-            (cell-label name) (mapcar #'cell-label (remove name names :test #'string=))
-            failures (and record record.refusal (first-line (princ-to-string record.refusal))))))
+    (destructuring-bind (&optional from to loaded) moved
+      (format nil "~@[~{~a moved from ~a to ~a~}; ~]~a is on~@[, with ~{~a~^, ~}~]~:[~;; ~:*~{~a~^; ~}; the next restart loads it again~]~@[; it did not start: ~a~]~@[; it runs ~a until the next restart~]"
+              (and moved (list (cell-label name) (short-pin from) (short-pin to)))
+              (cell-label name) (mapcar #'cell-label (remove name names :test #'string=))
+              failures (and record record.refusal (first-line (princ-to-string record.refusal)))
+              (and loaded (short-pin from))))))
+
+(defun short-pin (commit)
+  "COMMIT, a hub pin, as a sentence names it: its first nine hex digits."
+  (subseq commit 0 (min 9 (length commit))))
 
 (defun switch-cell-off (name)
   "Turn the cell NAME off: its folder out of the one folder, its peripheral
@@ -604,7 +623,8 @@ says none."
 (define-gateway-route handle-gateway-cells-http (env)
   "GET /api/gateway/cells — CELLS-JSON. POST {name, on} turns that cell
 on or off (SWITCH-CELL-ON, SWITCH-CELL-OFF), on refused when a commit
-rides with it and the hub pins another; POST {name} starts its
+rides with it and the hub pins another, and with move a hub install at
+an older pin moved on to that commit first; POST {name} starts its
 peripheral again on config.jsonc as it is now (RESTART-CELLS). A POST
 answers the listing, with what came of it as text when it switched."
   (:route nil "/api/gateway/cells")
@@ -616,6 +636,7 @@ answers the listing, with what came of it as text when it switched."
        (multiple-value-bind (on switch) (json-value request :boolean "on")
          (cond ((not switch) (restart-cells name) nil)
                (on (switch-cell-on name :commit (json-value request :string "commit")
+                                        :move (eq t (json-value request :boolean "move"))
                                         :seconds (request-wait-seconds request)))
                (t (switch-cell-off name))))))))
 
@@ -943,52 +964,75 @@ organism on PORT, PID, when one serves this home -- within SECONDS
                (label (cell-label name))
                (fresh (remove-if #'nlk:installed-cell-p (nlk:offer-closure (list name) offers)))
                (brings (mapcar #'cell-label (remove name fresh :test #'string=)))
-               (pin (and (nlk:offer-git entry) (member name fresh :test #'string=) (nlk:offer-commit entry))))
+               ;; Installed from the hub at a commit its index has moved on
+               ;; from: the add moves the folder to the pin it shows, where it
+               ;; once answered `already installed' and left the old code.
+               (from (and (not (member name fresh :test #'string=)) (nlk:hub-clone-behind name entry)))
+               (pin (and (nlk:offer-git entry) (or from (member name fresh :test #'string=))
+                         (nlk:offer-commit entry))))
           (when pin
             ;; A community entry says so: somebody other than Nodecode wrote it,
-            ;; and a person at Nodecode read it at this commit.
-            (format t "~a: ~a~%  from    ~a~@[ (~a/)~]~%  commit  ~a~%~@[  index   ~a~%~]~@[  brings  ~{~a~^, ~}~%~]~
+            ;; and a person at Nodecode read it at this commit. A move says
+            ;; what it replaces: the folder at the old pin, as it stands.
+            (format t "~a: ~a~%  from    ~a~@[ (~a/)~]~%  commit  ~a~%~
+                       ~@[  now at  ~a: this replaces that folder, and any change made in it~%~]~
+                       ~@[  index   ~a~%~]~@[  brings  ~{~a~^, ~}~%~]~
                        It runs inside Nodecode with full access to your files and keys.~%"
-                    label (nlk:offer-description entry) (nlk:offer-git entry) (nlk:offer-path entry) pin
+                    label (nlk:offer-description entry) (nlk:offer-git entry) (nlk:offer-path entry) pin from
                     (and (equal "community" (nlk:offer-index entry)) "community, read at this commit by Nodecode")
                     brings)
             (finish-output)
             (unless yes
-              (let ((reply (funcall ask (format nil "Install ~a? [y/N]" label))))
+              (let ((reply (funcall ask (if from
+                                            (format nil "Move ~a to ~a? [y/N]" label (short-pin pin))
+                                            (format nil "Install ~a? [y/N]" label)))))
                 (unless (yes-answer-p reply)
                   (return-from add-text
-                    (values (if reply
-                                "nothing was installed"
-                                (format nil "~a is code from the hub and there is no terminal to ask: nothing was installed; add --yes to install it"
-                                        label))
+                    (values (cond ((and reply from)
+                                   (format nil "nothing was moved: ~a stays at ~a" label (short-pin from)))
+                                  (reply "nothing was installed")
+                                  (t (format nil "~a is code from the hub and there is no terminal to ask: ~
+                                                  nothing was ~:[installed~;moved~]; add --yes to ~:*~:[install~;move~] it"
+                                             label from)))
                             1 :error))))))
           (values (cond (port
                          ;; the organism installs it and turns it on, minutes on a slow network: a wait said
                          ;; as it lasts, which it is told of, so that it gives the work no more than that
-                         (format nil "~:[~a was already installed; ~;~*~]~a" fresh label
+                         (format nil "~:[~a was already installed; ~;~*~]~a~@[; ~a~]" (or fresh from) label
                                  (json-value
                                   (handler-case
                                       (nlk:with-named-wait (wait "waiting for the nodecode serving this home~@[ (pid ~d)~] to turn ~a on"
                                                             pid label)
                                         (gateway-http-session-request
                                          port :post "/api/gateway/cells"
-                                         (json-object "name" name "on" t :opt "commit" pin "seconds" wait)
+                                         (json-object "name" name "on" t :opt "commit" pin :opt "move" (and from t)
+                                                      "seconds" wait)
                                          token :read-timeout wait))
                                     (nlk::http-timeout ()
                                       (error "the nodecode serving this home~@[ (pid ~d)~] did not answer within ~d s; ~a may still be coming on there"
                                              pid wait label)))
-                                  :string "text")))
-                        (fresh
+                                  :string "text")
+                                 ;; read back: an organism from before the move
+                                 ;; turns the cell on and leaves its folder
+                                 (and from (equal from (nlk:hub-clone-behind name entry))
+                                      (format nil "it stays at ~a: the nodecode serving this home moves no hub cell; ~
+                                                   restart it, then add again" (short-pin from)))))
+                        ((or fresh from)
                          ;; here, as there, the installs have the deadline the wait leaves them
                          (let ((given (nlk:cell-switch-deadline wait)))
                            (nlk:with-wait-deadline (given)
                              (handler-bind ((error (lambda (condition)
                                                      (when (nlk:wait-deadline-passed-p)
-                                                       (error "~a was not installed within ~d s~@[: ~a~]"
-                                                              label given (nlk:wait-deadline-reason condition))))))
+                                                       (error "~a was not ~:[installed~;moved~] within ~d s~@[: ~a~]"
+                                                              label from given (nlk:wait-deadline-reason condition))))))
+                               (when from
+                                 (handler-case (nlk:move-hub-clone entry)
+                                   (error (condition)
+                                     (error "~a stays at ~a: ~a" label (short-pin from) condition))))
                                (dolist (each fresh) (nlk:install-cell each :offers offers)))))
-                         (format nil "~a is installed~@[, with ~{~a~^, ~}~]; nodecode is not running, so it loads at the next launch"
-                                 label brings))
+                         (format nil "~a ~:[is installed~*~;moved from ~:*~a to ~a~]~@[, with ~{~a~^, ~}~]; ~
+                                      nodecode is not running, so it loads at the next launch"
+                                 label (and from (short-pin from)) (and from (short-pin pin)) brings))
                         (t (format nil "~a is already installed; it loads at the next launch" label)))
                   0 :output))))))
 

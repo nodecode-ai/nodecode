@@ -3108,6 +3108,24 @@ installer's. => TARGET."
                                                           root))))
     (subseq (append (marker-lines marker) (list nil nil nil)) 0 3)))
 
+(defun hub-clone-behind (name entry &optional (root *cells-directory*))
+  "The commit the hub install NAME under ROOT stands at when ENTRY, an offer
+from an index, names its repository and folder pinned at another: what the
+clone was made at before that index moved on. NIL for any other folder, and
+for a clone at ENTRY's pin."
+  (when-let (pin (and entry (offer-git entry) (hub-pin name root)))
+    (destructuring-bind (git commit path) pin
+      (and (equal git (offer-git entry))
+           (equal path (offer-path entry))
+           (not (equal commit (offer-commit entry)))
+           commit))))
+
+(defun move-hub-clone (entry &optional (root *cells-directory*))
+  "Put ENTRY's folder, cloned at its commit (CLONE-INSTALL), in place of the
+hub install of its name under ROOT: the clone there is set aside while it
+goes in and put back when that fails (REPLACE-HUB-CLONE). => NIL."
+  (replace-hub-clone (offer-name entry) root (lambda (target) (clone-install entry target))))
+
 (defun refresh-hub-clones (&key (root *cells-directory*) (shipped (shipped-cells)) hub (apply t))
   "Move each hub clone under ROOT on to what stands for it now: this image's
 own folder when this image ships one of its name (SHIPPED), else the commit
@@ -3136,27 +3154,24 @@ folder and its pin moved. With APPLY NIL nothing moves.
         (when-let (pin (hub-pin name root))
           (with-handlers ((error (condition)
                             (push (cons name (princ-to-string condition)) failed)))
-            (destructuring-bind (git commit path) pin
-              (let* ((own (find-if (lambda (offer) (and (string= name (offer-name offer))
-                                                        (null (offer-git offer))))
-                                   shipped))
-                     (entry (and (not own)
-                                 (find-offer name (if (functionp hub) (setf hub (funcall hub)) hub))))
-                     (next (and entry
-                                (equal "hub" (offer-index entry))
-                                (equal git (offer-git entry))
-                                (equal path (offer-path entry))
-                                (not (equal commit (offer-commit entry)))
-                                entry)))
-                (when (or own next)
-                  (when apply
-                    (replace-hub-clone name root
-                                       (if own
-                                           (lambda (target)
-                                             (declare (ignore target))
-                                             (install-cell name :root root :offers (list own)))
-                                           (lambda (target) (clone-install next target)))))
-                  (push name moved))))))))
+            (let* ((own (find-if (lambda (offer) (and (string= name (offer-name offer))
+                                                      (null (offer-git offer))))
+                                 shipped))
+                   (entry (and (not own)
+                               (find-offer name (if (functionp hub) (setf hub (funcall hub)) hub))))
+                   (next (and entry
+                              (equal "hub" (offer-index entry))
+                              (hub-clone-behind name entry root)
+                              entry)))
+              (when (or own next)
+                (when apply
+                  (if own
+                      (replace-hub-clone name root
+                                         (lambda (target)
+                                           (declare (ignore target))
+                                           (install-cell name :root root :offers (list own))))
+                      (move-hub-clone next root)))
+                (push name moved)))))))
     (values (nreverse moved) (nreverse failed))))
 
 (defun replace-hub-clone (name root install)
