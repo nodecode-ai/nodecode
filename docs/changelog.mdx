@@ -6,7 +6,7 @@ summary: "The release each platform runs on the stable channel, how to see your 
 {/* source: tools/release/publish.sh */}
 ## Stable today
 
-Linux x86_64, Windows x86_64 and macOS Apple Silicon run the same release: the newest one below. The installer and the updater read it from a pointer at `https://nodecode.ai/dl/`, one for each platform, and the pointer names the build it serves:
+Linux x86_64 and macOS Apple Silicon run the newest release below. Windows x86_64 stays on 0.1.13 until Windows builds are signed. The installer and the updater read it from a pointer at `https://nodecode.ai/dl/`, one for each platform, and the pointer names the build it serves:
 
 ```sh
 curl -fsSL https://nodecode.ai/dl/stable-x86_64-linux
@@ -30,6 +30,45 @@ nodecode 0.1.7+2629050e1
 ```
 
 The version comes first and the build label, the commit the release was built from, follows the `+`. An installed build moves to a new release by itself, between turns. `nodecode update` moves it now. See [Updates](updates.mdx).
+
+{/* source: tools/release/publish.sh */}
+## 0.1.14
+
+Linux and macOS. Changes since 0.1.13 (`98dd6dc80`).
+
+Windows is held back until Windows builds are signed: this release ships no Windows build, so Windows installs and updates stay on 0.1.13 (`98dd6dc80`).
+
+- `/models` lists Anthropic's models from Anthropic's own Models API, so a model it ships today is offered before any catalog carries it.
+- `/models` finds a running Ollama with no config entry and lists its models under Local.
+- A provider's `models[]` entry can declare its effort ladder with `reasoning_options`, for a gateway that refuses a thinking budget.
+- Web search can use DeepSeek's own search, with a DeepSeek key.
+- `@` finds workspace files by fuzzy match, and offers files written during the session.
+- The draft marks text with Shift and the arrows, Home or End (Ctrl for words), or a drag. Typing or pasting replaces the mark, and it copies.
+- A drag over your own prompt selects and copies it. A click still opens the session tree.
+- Effort `auto`, offered when a decider is pinned, lets the decider pick each turn's effort from the model's levels. A decider that does not answer leaves the turn on the default effort, and `/status` says why.
+- The footer shows the effort a turn really sends, such as `(auto: high)` or the level a `:round` hook set, and a skipped hook as `1 hook skipped`. The `:round` hook is handed `:turn-id`.
+- A cell's own tool reads as what it did, such as `Spotify search: album 'Discovery Daft Punk'`, not its bare name, and a run of them counts tool calls, not commands.
+- An acp call reads as its command, not `acp`, and a shell command no family names reads as its own line. An opened card whose title already names the call shows no raw arguments under it.
+- A written file holding a Rust closure such as `spawn(|| 1)` no longer freezes the screen.
+- After a model or effort change, the footer no longer stays on `setting up…`.
+- A model that ends its turn silently while its own background command still runs ends the turn waiting on that command, and the command's result starts the next turn. Before, it was asked again five times and the turn failed.
+- A `general.default_model` that names a cell's model, such as `acp/claude-code`, is no longer refused at boot. A session whose pin was refused stops before any request and says why, instead of sending the image's own model and failing with a 400.
+- A provider picked without a model no longer runs the previous provider's model.
+- After Esc then P, ], _, [ or O, the input reads the keys that follow instead of freezing.
+- A hub cell that needs ironclad (nodecode-vault, airlock, clack, github-app, podcast, protonmail) installs on any machine, not only the build host.
+- A gateway that took a release live keeps updating after another home's install prunes that release, and a failed update says so.
+- Running the installer again restarts only the gateways this install runs, each in its own home, config root and folder.
+- When an image runs another build than the install's current one, the model is told both, so a true update notice no longer reads as a forgery.
+- On Apple Silicon, stopping a thread no longer leaves malloc's lock held, which later killed the process.
+- `@` completion no longer drops a lookup on a slow machine.
+- An account with no plan or credit to meter reads Unlimited ∞ in the footer, `/usage` and at sign-in.
+- A kept variable holding a process, thread, socket or open stream keeps its name alone, so a boot no longer starts that process again.
+- A snippet can no longer delete or rename a package nodecode runs on. That took down every session until a restart.
+- A home with many generations boots faster: the boot line reads the newest one first.
+- `config-set` and `config-get` refuse a dotted name such as `"goal.check_seconds"`, which nothing reads. `/doctor` and the cell start name such a member and the nesting it meant.
+- `restart-cells` takes the name `/cells` shows and says when a cell is off. A bare `restart-cells` starts no cell `/cells` turned off.
+- A channel card whose picture Discord refuses to upload still updates its words.
+- `nck:answer-file` refuses a file too large for the answer, so the turn can post it on its own.
 
 {/* source: tools/release/publish.sh */}
 ## 0.1.13
