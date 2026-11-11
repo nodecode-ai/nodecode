@@ -162,7 +162,7 @@ release: cells-pull
       if [ -z "${NODECODE_BUILD_COMMIT:-}" ]; then \
         rm -rf fasl; \
         tools/build/compile-cells.sh ./nodecode cells fasl || \
-          printf 'release: a shipped cell did not compile; a launch compiles what is missing\n' >&2; \
+          printf 'release: the shipped cells did not all compile (compile-cells says why above); a launch compiles what is missing\n' >&2; \
         ./nodecode warm; \
       fi
 

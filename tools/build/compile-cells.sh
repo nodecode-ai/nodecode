@@ -19,6 +19,10 @@
 # set and not merely left to HOME, since LOCATE-HOME reads it first and the
 # operator's shell carries one. Without this, the gate would judge the
 # operator's own layer, which no release contains.
+#
+# Exit 0 when every folder loaded, 1 when a folder failed (named on stderr),
+# 3 when the trial itself died before it gave a score -- the runtime crashed
+# or the image would not boot -- so no cell was judged and none is to blame.
 set -euo pipefail
 
 binary="$1"
@@ -40,6 +44,9 @@ done
 # The form answers the score and writes WHICH folder failed beside it: the
 # trial silences a form's own output, so a bare `score 0' would leave the
 # failing cell to be guessed at.
+# The trial's own exit is kept, not left to errexit: a trial that dies leaves
+# no score, and that is this build failing, never a shipped cell.
+trial_status=0
 score="$(printf '%s' '(progn
   (let ((o (open (uiop:getenv "NODECODE_PACK_DIAGNOSTICS") :direction :output
                  :if-exists :supersede :if-does-not-exist :create)))
@@ -57,7 +64,12 @@ score="$(printf '%s' '(progn
     XDG_CACHE_HOME="$home/.cache" XDG_DATA_HOME="$home/.local/share" \
     XDG_CONFIG_HOME="$home/.config" \
     NODECODE_PACK_DIAGNOSTICS="$diagnostics" \
-    "$binary" trial | sed -n 's/^nodecode-trial-score //p')"
+    "$binary" trial | sed -n 's/^nodecode-trial-score //p')" || trial_status=$?
+
+if [ -z "$score" ]; then
+  echo "compile-cells: the trial died before it judged any cell (exit $trial_status): $binary itself failed, not a shipped cell; its own error is above" >&2
+  exit 3
+fi
 
 compiled="$(find "$fasl" -name '*.fasl' | wc -l | tr -d ' ')"
 if [ "$score" != 1 ]; then
@@ -65,7 +77,7 @@ if [ "$score" != 1 ]; then
   if [ -s "$diagnostics" ]; then
     sed 's/^/compile-cells: /' "$diagnostics" >&2
   else
-    echo "compile-cells: (no cell named its failure; the trial died before it could ask)" >&2
+    echo "compile-cells: (the trial scored ${score} but no cell named its failure)" >&2
   fi
   exit 1
 fi
