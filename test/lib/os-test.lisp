@@ -1060,3 +1060,63 @@ corrupt, or owner thread exited without unlocking')."
       (sleep 0.2)
       (is (eq :ran (nlk:interrupt-thread-safely thread (lambda () (throw 'stopped :stopped)))))
       (is (eq :stopped (nlk::%join-bounded thread 5)) "and unwound it out of its wait"))))
+
+;;; --- the shared objects a saved image opens again --------------------------
+
+(deftest a-library-the-machine-lacks-is-one-line-and-exit-status-1 ()
+  ;; A saved image opens its shared objects again at its start. One the machine
+  ;; lacked was SBCL's error and a whole backtrace before any of the image's
+  ;; code ran, `--version' included (a bare ubuntu:22.04 without
+  ;; libsqlite3.so.0). It is one line that names it, and exit status 1.
+  (let* ((absent (if (eq (nlk:platform) :windows)
+                     "libnodecode-absent.dll"
+                     "libnodecode-absent.so.0"))
+         (nlk::*image-libraries* (list (pathname absent)))
+         (objects (copy-list sb-sys:*shared-objects*))
+         (code nil)
+         (said (with-output-to-string (*error-output*)
+                 (is (null (nlk::open-image-libraries :exit (lambda (status) (setf code status)))) "not every one opened"))))
+    (is (eql 1 code) "exit status 1")
+    (is (= 1 (count #\Newline said)) "one line")
+    (is (eql 0 (search "nodecode: cannot start: " said)) "it says nodecode cannot start")
+    (is (search absent said) "it names the library")
+    (is (not (search "Backtrace" said)) "no backtrace")
+    (is (equal objects sb-sys:*shared-objects*) "the failed open leaves SBCL's list as it was")))
+
+(deftest a-missing-library-line-says-the-package-that-carries-it ()
+  ;; SBCL's error carries the loader's own words; the line keeps them, and on
+  ;; Linux names the package each distribution carries the library in.
+  (let ((line (nlk::missing-library-line
+               #p"libsqlite3.so.0"
+               (make-condition 'simple-error
+                               :format-control "Error opening shared object ~S:~%  ~A."
+                               :format-arguments (list "libsqlite3.so.0" "libsqlite3.so.0: cannot open shared object file: No such file or directory")))))
+    (is (eql 0 (search "nodecode: cannot start: libsqlite3.so.0: cannot open shared object file: No such file or directory." line)) "the loader's words, once")
+    (is (not (find #\Newline line)) "one line")
+    (when (eq (nlk:platform) :linux)
+      (is (search "Install it: apt install libsqlite3-0 (Debian, Ubuntu) or dnf install sqlite-libs (Fedora, RHEL)." line) "the package, per distribution"))))
+
+(deftest a-save-hands-the-image-libraries-to-the-first-init-hook ()
+  ;; SBCL would open them again before any init hook, and a missing one would
+  ;; stop the start in its debugger: the save takes each one off SBCL's reopen,
+  ;; in order, and puts OPEN-IMAGE-LIBRARIES first among the init hooks.
+  (let* ((flags (mapcar (lambda (object) (cons object (sb-alien::shared-object-dont-save object)))
+                        sb-sys:*shared-objects*))
+         (reopened (loop for (object . dont-save) in flags
+                         unless dont-save collect (sb-alien::shared-object-pathname object)))
+         (hooks sb-ext:*init-hooks*))
+    (unwind-protect
+         (let ((nlk::*image-libraries* '()))
+           ;; A global, never bound: set here and given back below.
+           (setf sb-ext:*init-hooks* (list 'nlk:resolve-startup-parameters 'nlk::open-image-libraries))
+           (is (member 'nlk::hand-over-image-libraries sb-ext:*save-hooks*) "a save hook")
+           (nlk::hand-over-image-libraries)
+           (is (equal reopened nlk::*image-libraries*) "every library SBCL would reopen, in order")
+           (is (find "libsqlite3" nlk::*image-libraries* :key #'namestring :test #'search) "libsqlite3 among them")
+           (is (every #'sb-alien::shared-object-dont-save sb-sys:*shared-objects*) "none left to SBCL's reopen")
+           (is (equal '(nlk::open-image-libraries nlk:resolve-startup-parameters) sb-ext:*init-hooks*) "first, and once")
+           (nlk::hand-over-image-libraries)
+           (is (equal reopened nlk::*image-libraries*) "a save after one that did not finish still hands them all over"))
+      (setf sb-ext:*init-hooks* hooks)
+      (loop for (object . dont-save) in flags
+            do (setf (sb-alien::shared-object-dont-save object) dont-save)))))
