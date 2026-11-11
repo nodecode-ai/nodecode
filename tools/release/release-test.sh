@@ -324,3 +324,19 @@ release || fail "a tag behind the nightly was refused: $(cat "$root/check-out")"
 grep -qx 'nightly_follows=false' "$root/gh-output" || fail 'a tag behind the nightly would move it back'
 git -C "$work" checkout -q main
 say 'a tag carries the nightly only when the nightly is behind it'
+
+# --- the tarball's README says how to install and update ----------------------
+# pack.sh ships install.sh beside the binary, an installed build updates
+# itself, and `nodecode update' moves it on. 0.1.14's README.txt, the first
+# thing a tarball's reader meets, still said "There is no installer and no
+# update path yet: a new build arrives as a new tarball."
+readme="$repo/tools/release/README.alpha.txt"
+# shellcheck disable=SC2016 # pack.sh's own text, its $ meant literally
+grep -q '"\$stage/install.sh"' "$repo/tools/release/pack.sh" \
+  || fail 'pack.sh no longer ships install.sh beside the binary'
+if grep -qiE 'no installer|no update path' "$readme"; then
+  fail 'README.alpha.txt says the tarball has no installer or update path'
+fi
+grep -qF 'sh install.sh' "$readme" || fail 'README.alpha.txt does not name the install.sh the tarball carries'
+grep -qF 'nodecode update' "$readme" || fail 'README.alpha.txt does not say how an installed build updates'
+say 'README.txt names the installer the tarball carries and how a build updates'
