@@ -2136,9 +2136,18 @@ left (BEFORE for the first) against OWNERS. => the records, in load order."
   (let* ((folders (stable-sort (copy-list folders) #'string<
                                :key (lambda (folder)
                                       (if (some #'declared-system-layer folder.systems) "1" "0"))))
+         ;; (SYSTEM . FOLDER) for each system a sibling's :depends-on may wait on.
+         ;; A system this image already carries is no sibling's: a dependency on
+         ;; the core is met before any folder loads, whatever folder also declares
+         ;; its name -- the layer of an operator whose git name is nodecode is the
+         ;; folder nodecode declaring the system nodecode, and as the home of the
+         ;; nodecode every peripheral depends on it loaded ahead of them all, its
+         ;; advice on a peripheral's function unreadable (#420).
+         (carried (asdf:already-loaded-systems))
          (homes (loop for folder in folders
-                      append (mapcar (lambda (declared) (cons declared.name folder.name))
-                                     folder.systems)))
+                      append (loop for declared in folder.systems
+                                   unless (member declared.name carried :test #'string-equal)
+                                     collect (cons declared.name folder.name))))
          ;; (FOLDER . the sibling folders its systems depend on)
          (pending (mapcar (lambda (folder)
                             (cons folder (remove-duplicates
