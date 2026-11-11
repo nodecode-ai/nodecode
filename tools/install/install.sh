@@ -492,22 +492,65 @@ prune_releases
 # a stopped gateway starts on the new build whenever it next starts. Rewriting
 # an active unit also upgrades older Type=simple units to the watchdog contract
 # before the restart below.
+#
+# Only a gateway this install runs: one whose unit names this install's
+# `current', or a release folder of it. A gateway another install runs -- the
+# account's own, seen from an install into a scratch NODECODE_HOME -- or a
+# build tree runs is that one's to move, and is left as it is: such an install
+# once restarted every gateway on the machine onto its own scratch build.
+#
+# The restart writes the unit again from the environment it is handed, so it
+# is handed the unit's own and never this installer's: the unit's HOME, else
+# the account's -- the one the service manager runs it with, whatever $HOME
+# ran this script -- its config root, and its own folder to run from.
+true_folder() { (cd "$1" 2>/dev/null && pwd -P) || true; }
+install_root="$(true_folder "$HOME_DIR")"
+runs_this_install() { # PROGRAM: the executable a unit or an agent runs
+  [ -n "$1" ] && [ -n "$install_root" ] &&
+    [ "$(true_folder "$(dirname "$(dirname "$1")")")" = "$install_root" ]
+}
+account_home="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)" || account_home=''
+if [ -z "$account_home" ]; then
+  # macOS has no getent: the shell's own ~USER asks the same password database
+  account_user="$(id -un 2>/dev/null)" || account_user=''
+  case "$account_user" in
+    ''|*[!A-Za-z0-9._-]*) ;;
+    *) account_home="$(eval "printf '%s' ~$account_user")" ;;
+  esac
+fi
+case "$account_home" in /*) ;; *) account_home="$HOME" ;; esac
+
 units="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 if have systemctl && [ -d "$units" ]; then
+  units_true="$(true_folder "$units")"
   for unit in "$units"/nodecode-gateway*.service; do
     [ -f "$unit" ] || continue
     head -n 1 "$unit" | grep -q '^# nodecode gateway: ' || continue
     unit_name="$(basename "$unit")"
     if systemctl --user is-active --quiet "$unit_name" 2>/dev/null; then
+      # ExecStart's program, unquoted the way gateway-unit-text quotes it
+      unit_program="$(sed -n -e 's/^ExecStart="\(.*\)" gateway run$/\1/p' \
+                             -e 's/^ExecStart=\([^" ][^ ]*\) gateway run$/\1/p' "$unit" |
+                        head -n 1 | sed -e 's/\\\(.\)/\1/g' -e 's/%%/%/g' -e 's/[$][$]/$/g')"
+      if ! runs_this_install "$unit_program"; then
+        say "left active gateway $unit_name as it is: it runs ${unit_program:-no program this installer reads}, not this install"
+        continue
+      fi
       unit_home="$(sed -n 's/^# nodecode gateway: //p' "$unit" | head -n 1)"
       unit_home="${unit_home%/}"
       unit_user_home="$(sed -n 's/^Environment="HOME=\(.*\)"$/\1/p' "$unit" | head -n 1)"
-      unit_user_home="${unit_user_home:-$HOME}"
-      # The unit's folder is authoritative even when the old unit did not
-      # carry XDG_CONFIG_HOME. Passing the config root makes gateway restart
-      # find and rewrite this unit instead of creating a second one under the
-      # installer's current environment.
-      unit_config_home="$(dirname "$(dirname "$units")")"
+      unit_user_home="${unit_user_home:-$account_home}"
+      # The unit's config root -- its own line, else its HOME's .config -- while
+      # that holds the folder the unit was found in. Otherwise that folder is
+      # authoritative: passing its root makes gateway restart find and rewrite
+      # this unit instead of creating a second one.
+      unit_config_home="$(sed -n 's/^Environment="XDG_CONFIG_HOME=\(.*\)"$/\1/p' "$unit" | head -n 1)"
+      [ "$(true_folder "${unit_config_home:-$unit_user_home/.config}/systemd/user")" = "$units_true" ] ||
+        unit_config_home="$(dirname "$(dirname "$units")")"
+      # gateway restart writes WorkingDirectory as the folder it runs in
+      unit_folder="$(sed -n 's/^WorkingDirectory=-*//p' "$unit" | head -n 1 | sed 's/%%/%/g')"
+      [ -n "$unit_folder" ] && [ -d "$unit_folder" ] || unit_folder="$unit_user_home"
+      [ -d "$unit_folder" ] || unit_folder=/
       say "refreshing active gateway $unit_name"
       unit_cache_home="$(sed -n 's/^Environment="XDG_CACHE_HOME=\(.*\)"$/\1/p' "$unit" | head -n 1)"
       unit_data_home="$(sed -n 's/^Environment="XDG_DATA_HOME=\(.*\)"$/\1/p' "$unit" | head -n 1)"
@@ -517,11 +560,12 @@ if have systemctl && [ -d "$units" ]; then
       # agent updating its own gateway from that gateway's shell included. A
       # build from before the flag refuses the word (exit 2): asked plainly.
       restart_gateway() {
-        NODECODE_HOME="$unit_home" HOME="$unit_user_home" \
+        (cd "$unit_folder" &&
+          NODECODE_HOME="$unit_home" HOME="$unit_user_home" \
           XDG_CONFIG_HOME="$unit_config_home" \
           XDG_CACHE_HOME="$unit_cache_home" XDG_DATA_HOME="$unit_data_home" \
           PATH="$unit_path" \
-          "$HOME_DIR/current/nodecode" gateway restart "$@" >/dev/null 2>&1
+          "$install_root/current/nodecode" gateway restart "$@" >/dev/null 2>&1)
       }
       if restart_gateway --force || { [ $? -eq 2 ] && restart_gateway; }; then
         say "refreshed and restarted $unit_name on $VERSION"
@@ -534,8 +578,8 @@ fi
 
 # The same for a gateway under launchd: an agent nodecode wrote — the marker
 # on its second line, after the XML declaration — that launchd reports as
-# running is restarted on this build through the same verb, which rewrites
-# the agent and bootstraps it again.
+# running, and that runs this install, is restarted on this build through the
+# same verb, which rewrites the agent and bootstraps it again.
 agents="$HOME/Library/LaunchAgents"
 if [ "$platform" = darwin ] && have launchctl && [ -d "$agents" ]; then
   for agent in "$agents"/nodecode-gateway*.plist; do
@@ -543,15 +587,26 @@ if [ "$platform" = darwin ] && have launchctl && [ -d "$agents" ]; then
     sed -n '2p' "$agent" | grep -q '^<!-- nodecode gateway: ' || continue
     label="$(basename "$agent" .plist)"
     if launchctl print "gui/$(id -u)/$label" 2>/dev/null | grep -q 'state = running'; then
+      # the program: ProgramArguments' word before `gateway run', XML unescaped
+      unit_program="$(awk '/<key>ProgramArguments<\/key>/ { p = 1; next }
+                           p && /<\/array>/ { exit }
+                           p && /<string>/ { w = $0; sub(/^[^<]*<string>/, "", w); sub(/<\/string>.*$/, "", w)
+                                             if (w == "gateway") { print prev; exit }
+                                             prev = w }' "$agent" |
+                        sed -e 's/&lt;/</g' -e 's/&gt;/>/g' -e 's/&quot;/"/g' -e 's/&amp;/\&/g')"
+      if ! runs_this_install "$unit_program"; then
+        say "left running gateway $label as it is: it runs ${unit_program:-no program this installer reads}, not this install"
+        continue
+      fi
       unit_home="$(sed -n '2s/^<!-- nodecode gateway: \(.*\) -->$/\1/p' "$agent")"
       unit_home="${unit_home%/}"
       unit_user_home="$(sed -n 's/.*<key>HOME<\/key><string>\(.*\)<\/string>.*/\1/p' "$agent" | head -n 1)"
-      unit_user_home="${unit_user_home:-$HOME}"
+      unit_user_home="${unit_user_home:-$account_home}"
       unit_path="$(sed -n 's/.*<key>PATH<\/key><string>\(.*\)<\/string>.*/\1/p' "$agent" | head -n 1)"
       unit_path="${unit_path:-$PATH}"
       restart_agent() {
         NODECODE_HOME="$unit_home" HOME="$unit_user_home" PATH="$unit_path" \
-          "$HOME_DIR/current/nodecode" gateway restart "$@" >/dev/null 2>&1
+          "$install_root/current/nodecode" gateway restart "$@" >/dev/null 2>&1
       }
       if restart_agent --force || { [ $? -eq 2 ] && restart_agent; }; then
         say "restarted $label on $VERSION"
@@ -561,7 +616,6 @@ if [ "$platform" = darwin ] && have launchctl && [ -d "$agents" ]; then
     fi
   done
 fi
-
 # Proving the absolute path runs proves nothing about the name the operator
 # will type. An earlier `nodecode' on PATH — an older install under another
 # name, a system copy — shadows the link laid down above, and the install
