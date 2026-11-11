@@ -199,7 +199,15 @@ find "$stage/src/cells" -type d -name test -prune -exec rm -rf {} +
 # fasl directory made, every shipped folder linked into a scratch home, the
 # image's `trial' verb run there -- its load is the compile, and its score is
 # the gate: a folder that fails to load does not ship.
-if ! "$tools/build/compile-cells.sh" "$stage/nodecode" "$stage/src/cells" "$stage/src/fasl"; then
+# Its exit 3 is the build dying before any cell was judged (an SBCL fatal
+# error, an image that will not boot): that is said as such, so nobody goes
+# looking through the cells for it.
+cells_status=0
+"$tools/build/compile-cells.sh" "$stage/nodecode" "$stage/src/cells" "$stage/src/fasl" || cells_status=$?
+if [ "$cells_status" -eq 3 ]; then
+  echo "pack: refusing, this build died while loading its shipped cells, before any cell was judged (its error is above)" >&2
+  exit 1
+elif [ "$cells_status" -ne 0 ]; then
   echo "pack: refusing, a shipped cell does not load against this build" >&2
   exit 1
 fi

@@ -123,6 +123,9 @@ sbcl --version
 step 'the stack scrub'
 sbcl --control-stack-size 8MB --non-interactive --no-sysinit --no-userinit --load "$sys"/tools/build/sbcl/stack-check.lisp
 
+step 'code loads under signals'
+sbcl --non-interactive --no-sysinit --no-userinit --load "$sys"/tools/build/sbcl/load-signal-check.lisp
+
 step 'quicklisp on the pinned dist'
 dist=2026-01-01
 if [ ! -f "$HOME/quicklisp/setup.lisp" ]; then

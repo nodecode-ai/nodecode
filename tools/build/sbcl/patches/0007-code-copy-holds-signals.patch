@@ -1,0 +1,43 @@
+Loading code holds the blockable signals while its pages are writable.
+
+On Apple silicon a thread's JIT pages are either writable or executable to
+it, never both. FOP-LOAD-CODE builds each code object off-heap and copies it
+in through jit_copy_code_insts, which flips the thread to writable for the
+copy -- with interrupts enabled, since Lisp reaches it by alien-funcall. A
+deferrable signal landing in that window (SIGCHLD, SIGALRM, SIGINT, ...) runs
+its Lisp handler at once, on a thread that cannot execute dynamic space: the
+handler faults on its first instruction and the runtime dies with "misuse of
+mprotect() on dynamic space @ <the handler's pc>". The release's macOS check
+boot died that way while loading its shipped cells, and a Mac launch loads
+the same fasls the same way.
+
+jit_copy_code_insts now blocks the blockable signals around its window, as
+jit_copy_code_constants and jit_patch_code in the same file already do; a
+signal that arrives meanwhile is delivered when the mask is restored, with
+the pages executable again. tools/build/sbcl/load-signal-check.lisp is the
+proof: it loads a fasl of 400 functions 300 times while another thread
+signals the loader every 0.2 ms, and dies on an unpatched runtime.
+
+--- a/src/runtime/arm64-darwin-os.c
++++ b/src/runtime/arm64-darwin-os.c
+@@ -31,11 +31,20 @@
+     struct code* code = (struct code*)(dst-OTHER_POINTER_LOWTAG);
+     int nwords = code_total_nwords(code);
+     gc_assert(code_total_nwords((struct code*)aligned_src));
++    /* While this thread's JIT pages are writable they are not executable to
++     * it, so a Lisp signal handler run inside the window faults on its own
++     * first instruction ("misuse of mprotect() on dynamic space"). Lisp
++     * calls this with interrupts enabled (WITH-WRITABLE-CODE-INSTRUCTIONS),
++     * so hold the blockable signals until the pages are executable again,
++     * as jit_copy_code_constants and jit_patch_code already do. */
++    sigset_t mask;
++    block_blockable_signals(&mask);
+     THREAD_JIT_WP(0);
+     // Leave the header word alone
+     memcpy(&code->boxed_size, aligned_src + 1, (nwords-1)<<WORD_SHIFT);
+     for_each_simple_fun(i, fun, code, 1, { fun->self = fun_self_from_baseptr(fun); })
+     THREAD_JIT_WP(1);
++    thread_sigmask(SIG_SETMASK, &mask, 0);
+     free(src);
+     // FINISH-FIXUPS didn't call SB-VM:SANCTIFY-FOR-EXECUTION
+     // because the copy of the code on which it operates was only temporary.
