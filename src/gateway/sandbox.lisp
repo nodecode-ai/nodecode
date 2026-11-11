@@ -4,7 +4,10 @@
 ;;;; SPDX-License-Identifier: MIT
 ;;;;
 ;;;; nodecode jails the organism itself, with no runtime of anyone else's:
-;;;; on Linux bubblewrap and a seccomp filter built here (sandbox-linux.lisp).
+;;;; on Linux bubblewrap and a seccomp filter built here (sandbox-linux.lisp),
+;;;; on macOS Seatbelt, under a profile written here (sandbox-macos.lisp). What
+;;;; follows is the Linux jail's shape; macOS keeps it where it can and says
+;;;; where it cannot at the head of its own file.
 ;;;; The shell cannot run inside the jail -- the jail has no controlling
 ;;;; terminal -- so a sandboxed launch keeps the shell on the host, pristine
 ;;;; (the binary alone, so no code the jailed organism writes into the layer
@@ -291,10 +294,12 @@ which the jailed organism accepts on (SANDBOX-BRIDGE-INBOUND)."
 
 (defun sandbox-requirements (store-path)
   "Why `--sandbox' cannot run here, as one sentence, or NIL when it can."
-  (cond #-linux
-        (t "--sandbox runs on Linux for now; macOS and Windows jails are not yet wired")
+  (cond #-(or linux darwin)
+        (t "--sandbox runs on Linux and macOS for now; on Windows, run nodecode inside WSL2, where the Linux jail works")
         #+linux
         ((sandbox-bwrap-requirements))
+        #+darwin
+        ((sandbox-seatbelt-requirements))
         ((ignore-errors (gateway-supervises-p store-path))
          "the background gateway serves this home unsandboxed: `nodecode gateway off' first, or use -p NAME for another home")
         ((ignore-errors (nlk::store-lease-held-p store-path))
@@ -460,7 +465,11 @@ under <home>/sandbox/, pick the loopback port the jailed gateway binds, set
             (ensure-directories-exist directory)
             #-win32 (ignore-errors (sb-posix:chmod (uiop:native-namestring directory) #o700)))
           (setf *sandbox-plan*
-                (sandbox-launch-plan home store run cache temporary port)
+                (let ((plan (sandbox-launch-plan home store run cache temporary port)))
+                  ;; Seatbelt's jail shares the host's loopback: its way out
+                  ;; is a listener here, and its profile is written now
+                  #+darwin (sandbox-seatbelt-plan plan)
+                  #-darwin plan)
                 *sandboxed-shell* t)
           nil))))
 
@@ -496,6 +505,20 @@ binary the jail mounts, to be spawned with the plan's descriptors
 (CALL-WITH-SANDBOX-DESCRIPTORS)."
   (let ((plan *sandbox-plan*))
     (if (and plan command)
+        #+darwin
+        (sandbox-seatbelt-argv (cons (getf plan :binary) (rest command))
+                               :profile (getf plan :profile)
+                               :home (getf plan :home) :folder (getf plan :folder)
+                               :port (getf plan :port) :egress-port (getf plan :egress-port)
+                               :token (getf (getf plan :egress) :token)
+                               :run (getf plan :run) :cache (getf plan :cache)
+                               :temporary (getf plan :temporary)
+                               :stand-ins (getf plan :stand-ins)
+                               :jail-environment (getf plan :jail-environment)
+                               :read-trees (list (getf plan :folder) (getf plan :home)
+                                                 (uiop:native-namestring
+                                                  (uiop:pathname-directory-pathname (getf plan :binary)))))
+        #-darwin
         (sandbox-bwrap-argv (cons (getf plan :binary) (rest command))
                             :bwrap (uiop:native-namestring (nlk::executable-on-path "bwrap"))
                             :home (getf plan :home) :folder (getf plan :folder)
@@ -521,7 +544,10 @@ of the socketpair waits for the jail's egress listener
   (let ((plan *sandbox-plan*))
     (if (null plan)
         (funcall function nil)
-        #-linux (error "no jail is wired on this system")
+        #-(or linux darwin) (error "no jail is wired on this system")
+        ;; Seatbelt's jail binds its own port and dials the launcher's
+        ;; listener: it is handed no descriptor
+        #+darwin (progn (sandbox-seatbelt-egress plan) (funcall function nil))
         #+linux
         (let ((listener (sandbox-listener (getf plan :port)))
               (outside nil) (inside nil) (seccomp nil) (spawned nil))

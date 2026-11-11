@@ -2540,7 +2540,7 @@ scopeName strings)."
 ;;; Resolved at process start: a release binary under another $HOME reads THAT
 ;;; home's config, never the builder's.
 (define-startup-parameter *shared-config-path*
-  (home "config.jsonc")
+  (nlk:jail-stand-in (home "config.jsonc"))
   "The shared operator config (config.zig buildLocalPaths).")
 
 (defun read-shared-config ()
@@ -3618,7 +3618,7 @@ message, no tools and no history — the answer's own text."
 failed, or the auth file is corrupt or ambiguous."))
 
 (define-startup-parameter *auth-file-path*
-  (home "auth.json")
+  (nlk:jail-stand-in (home "auth.json"))
   "The credential store shared with the Zig gateway (auth/root.zig).")
 
 (defparameter +credential-command-timeout-seconds+ 10

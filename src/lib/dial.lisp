@@ -395,13 +395,32 @@ dial in this image asks PROXY-FOR instead."
         (format nil "~(~a~)://~:[~a~;[~a]~]:~d" scheme (find #\: host) host
                 (or (quri:uri-port uri) (if (string-equal scheme "https") 443 80)))))))
 
+(defun jail-stand-in (path)
+  "PATH, a file or directory of the home, as a jailed process reads it: the
+stand-in NODECODE_SANDBOX_STAND_INS names for it -- a line REAL<tab>STAND-IN
+each, set where the jail can refuse the real file but put nothing in its
+place (Seatbelt, on macOS) -- or PATH itself. Outside a jail, PATH always."
+  (let ((lines (and path (equal (uiop:getenv "NODECODE_SANDBOXED") "1")
+                    (proxy-environment-value "NODECODE_SANDBOX_STAND_INS"))))
+    (or (and lines
+             (let ((name (string-right-trim "/" (uiop:native-namestring path))))
+               (loop for line in (uiop:split-string lines :separator '(#\Newline))
+                     for tab = (position #\Tab line)
+                     when (and tab (plusp tab) (string= name (string-right-trim "/" (subseq line 0 tab))))
+                       return (let ((stand-in (uiop:parse-native-namestring (subseq line (1+ tab)))))
+                                (if (uiop:directory-pathname-p path)
+                                    (uiop:ensure-directory-pathname stand-in)
+                                    stand-in)))))
+        path)))
+
 (defun jail-brokered-url (url &optional headers)
   "URL as a jailed process dials it: unchanged outside a jail, and inside
 one (NODECODE_SANDBOX_EGRESS_PORT set) unchanged unless it carries a key's
 stand-in -- in itself or in one of HEADERS, an alist -- or its origin is one
 of NODECODE_SANDBOX_HOST_ORIGINS; such a URL becomes the broker's, on the
 jail's loopback egress port, the scheme, host and port and path after
-+JAIL-BROKER-PATH+."
++JAIL-BROKER-PATH+ -- and before them NODECODE_SANDBOX_EGRESS_TOKEN, when the
+jail was handed one (an egress on the host's loopback answers it alone)."
   (let ((port (and (stringp url) (proxy-environment-value "NODECODE_SANDBOX_EGRESS_PORT"))))
     (if (and port
              (or (search +jail-key-prefix+ url)
@@ -413,7 +432,8 @@ jail's loopback egress port, the scheme, host and port and path after
                    (and origin local (member origin (uiop:split-string local :separator ",") :test #'string=)))))
         (let* ((uri (quri:uri url))
                (origin (url-origin url)))
-          (format nil "http://127.0.0.1:~a~a~a~a~@[?~a~]" port +jail-broker-path+
+          (format nil "http://127.0.0.1:~a~a~@[~a/~]~a~a~@[?~a~]" port +jail-broker-path+
+                  (proxy-environment-value "NODECODE_SANDBOX_EGRESS_TOKEN")
                   ;; scheme://host:port as scheme/host:port
                   (let ((at (search "://" origin)))
                     (concatenate 'string (subseq origin 0 at) "/" (subseq origin (+ at 3))))

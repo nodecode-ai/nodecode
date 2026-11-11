@@ -3,7 +3,7 @@ title: Safety and trust
 summary: "What protects the machine, the opt-in jail, and what Nodecode does not protect."
 ---
 
-Nodecode runs without a sandbox unless you start it with `--sandbox`, on Linux. Read the limits before you connect a channel or run unattended.
+Nodecode runs without a sandbox unless you start it with `--sandbox`, on Linux or macOS. Read the limits before you connect a channel or run unattended.
 
 {/* source: src/gateway/sandbox.lisp */}
 ## The jail: `nodecode --sandbox`
@@ -13,7 +13,7 @@ Nodecode runs without a sandbox unless you start it with `--sandbox`, on Linux. 
 | What | Inside the jail |
 | --- | --- |
 | Files | The folder you started in and the home, read and write. The system, read-only. |
-| Your secrets | Not visible: `~/.ssh`, cloud credentials, other agents' homes such as `~/.claude` and `~/.codex`, the host's `/tmp`. |
+| Your secrets | Not visible: `~/.ssh`, cloud credentials, other agents' homes such as `~/.claude` and `~/.codex`, the host's `/tmp`, and on a Mac `~/Library` (keychains, mail, cookies). |
 | API keys | The agent reads stand-in keys. A proxy outside the jail puts the real key back only on calls to that key's own provider. |
 | Sign-ins | Stay outside. A provider you signed in to rather than gave a key, such as the Claude Code or Codex cells, does not answer in the jail yet. |
 | Network | Only through the proxy: your configured providers, nodecode.ai, models.dev and GitHub. Never this machine's loopback or a private network. |
@@ -26,7 +26,7 @@ A home that ran jailed is marked, so a launch without `--sandbox` refuses it. `n
 | System | Jail |
 | --- | --- |
 | Linux | Needs bubblewrap (`bwrap`), user namespaces, glibc 2.34 or later, x86-64 or arm64. Without one of them `--sandbox` refuses and says which. |
-| macOS | Not yet. `--sandbox` refuses. |
+| macOS | Uses Seatbelt (`sandbox-exec`), built into macOS: nothing to install. The jail shares this machine's loopback: its gateway listens on one port there, and the only other port it reaches is the proxy's, which answers only calls carrying a token made for that launch. A server the agent starts inside the jail on another port cannot be reached. |
 | Windows | Not yet. `--sandbox` refuses. Inside WSL2, the Linux jail works: install bubblewrap there (`sudo apt install bubblewrap`). |
 
 | The jail does not stop | Consequence |
