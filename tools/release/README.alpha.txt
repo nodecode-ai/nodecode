@@ -62,9 +62,19 @@ RUN IT
   First launch opens a setup wizard: pick a provider, paste its key, pick a
   model, choose which cells to install. State lives under ~/.nodecode.
 
-  Put it on your PATH if you like — link the binary, do not move it away
-  from its src/ directory:
-    ln -s "$PWD/nodecode" ~/.local/bin/nodecode
+  Run from this folder, nodecode stays the build you unpacked: it does not
+  update itself. Keep the binary beside its src/ directory. To put it on
+  your PATH and keep it current, install it instead.
+
+INSTALL AND UPDATE
+  The installer travels in this folder:
+    sh install.sh
+
+  It fetches the newest stable release from nodecode.ai, checks its sha256,
+  lays it out under ~/.local/share/nodecode and links ~/.local/bin/nodecode
+  to it, the same as `curl -fsSL https://nodecode.ai/install.sh | sh'. An
+  installed build updates itself by default, and `nodecode update' moves it
+  to the newest release at any time.
 
 TRY IT WITHOUT TOUCHING ANYTHING
   ./nodecode --ephemeral
@@ -72,5 +82,4 @@ TRY IT WITHOUT TOUCHING ANYTHING
   it does in that session survives the exit.
 
 KNOWN, EXPECTED
-  This is a pre-release build off an internal commit. There is no installer
-  and no update path yet: a new build arrives as a new tarball.
+  This is a pre-release build off an internal commit.
