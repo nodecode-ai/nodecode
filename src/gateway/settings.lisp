@@ -29,7 +29,7 @@
 
 ;;; The core never reads it; the folder that declared the field reads the file
 ;;; at its start.
-(define-startup-parameter *secrets-directory* (nlk:home "secrets/")
+(define-startup-parameter *secrets-directory* (nlk:jail-stand-in (nlk:home "secrets/"))
   "Where a secret the operator pastes rather than names is kept: one 0600
 file per field, referenced from the section by its <base>_file member.")
 

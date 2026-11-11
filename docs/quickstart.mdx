@@ -301,13 +301,13 @@ A shell opened later attaches to it. Its footer shows <Term screen="footer" spot
 {/* source: src/cli/entry.lisp */}
 ## Before you leave it alone
 
-Without `--sandbox`, eval can read, write and run anything your user can. On Linux, `nodecode --sandbox` runs the agent in a jail. See [Safety and trust](security.mdx).
+Without `--sandbox`, eval can read, write and run anything your user can. On Linux and macOS, `nodecode --sandbox` runs the agent in a jail. See [Safety and trust](security.mdx).
 
 <Mistakes>
 <Mistake>
 <What>Treating the guard cell as a sandbox</What>
 <Why>It refuses known spellings. Any other spelling runs.</Why>
-<Instead>Start it with `nodecode --sandbox` on Linux, or run it in a container, before you let it change things unattended.</Instead>
+<Instead>Start it with `nodecode --sandbox` on Linux or macOS, or run it in a container, before you let it change things unattended.</Instead>
 </Mistake>
 <Mistake>
 <What>Trusting `--ephemeral` to protect the machine</What>

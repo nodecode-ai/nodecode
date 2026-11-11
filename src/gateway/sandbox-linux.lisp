@@ -148,10 +148,12 @@ home -- a jail given that would hold ~/.ssh and every other agent's home."
     (unless (some (lambda (home) (sandbox-path-under-p (sandbox-directory-name home) name)) homes)
       name)))
 
-(defun sandbox-proxy-environment (port)
+(defun sandbox-proxy-environment (port &optional token)
   "The variables that send the jail's web traffic to the egress proxy on
-its own loopback PORT, and the jail's own loopback around it."
-  (let ((proxy (format nil "http://127.0.0.1:~d" port))
+loopback PORT, and the loopback around it. With TOKEN the proxy's address
+carries it as its password, which every client sends as Proxy-Authorization
+(a proxy on the host's loopback, SANDBOX-EGRESS-ADMITTED)."
+  (let ((proxy (format nil "http://~@[nodecode:~a@~]127.0.0.1:~d" token port))
         (direct "localhost,127.0.0.1,::1"))
     (list "HTTP_PROXY" proxy "HTTPS_PROXY" proxy "http_proxy" proxy "https_proxy" proxy
           "NO_PROXY" direct "no_proxy" direct)))

@@ -206,12 +206,49 @@ request line."
     (when (and (plusp (length host)) (integerp port) (< 0 port 65536))
       (values host port))))
 
+(defun sandbox-egress-token-p (text token)
+  "Whether TEXT is TOKEN, compared in a time that does not tell where they
+differ."
+  (and (stringp text) (stringp token) (= (length text) (length token))
+       (zerop (loop for a across text for b across token
+                    sum (logxor (char-code a) (char-code b))))))
+
+(defun sandbox-proxy-authorization-token (value)
+  "The password of VALUE, a Proxy-Authorization header's Basic credentials,
+or NIL."
+  (let* ((value (and value (nlk:trimmed value)))
+         (space (and value (position #\Space value)))
+         (decoded (and space (string-equal "basic" (subseq value 0 space))
+                       (ignore-errors (cl-base64:base64-string-to-string (nlk:trimmed (subseq value space))))))
+         (colon (and decoded (position #\: decoded))))
+    (and colon (subseq decoded (1+ colon)))))
+
+(defun sandbox-egress-admitted (target headers egress)
+  "TARGET as the egress serves it, or NIL when it may not be served. Under an
+EGRESS with no :TOKEN -- a jail with a loopback of its own, which nothing
+else reaches -- every request, TARGET as it is. With one -- a jail on the
+host's loopback (macOS), where every program of the machine reaches the
+port -- only the requests the jail was handed the token for: a broker path
+that begins with it, TARGET with it taken out, and a proxy request whose
+Proxy-Authorization carries it."
+  (let ((token (getf egress :token)))
+    (cond ((null token) target)
+          ((uiop:string-prefix-p nlk:+jail-broker-path+ target)
+           (let* ((after (subseq target (length nlk:+jail-broker-path+)))
+                  (slash (position #\/ after)))
+             (and slash (sandbox-egress-token-p (subseq after 0 slash) token)
+                  (concatenate 'string nlk:+jail-broker-path+ (subseq after (1+ slash))))))
+          ((sandbox-egress-token-p
+            (sandbox-proxy-authorization-token (sandbox-header headers "proxy-authorization")) token)
+           target))))
+
 (defun sandbox-egress-refuse (socket status reason)
   "Answer the jail's request on SOCKET with STATUS and REASON, and close."
   (let ((body (format nil "nodecode --sandbox: ~a~%" reason)))
     (ignore-errors
      (sandbox-send-text socket (format nil "HTTP/1.1 ~d ~a~c~cContent-Type: text/plain; charset=utf-8~c~cContent-Length: ~d~c~cConnection: close~c~c~c~c~a"
-                                       status (case status (400 "Bad Request") (403 "Forbidden") (411 "Length Required") (t "Bad Gateway"))
+                                       status (case status (400 "Bad Request") (403 "Forbidden") (407 "Proxy Authentication Required")
+                                         (411 "Length Required") (t "Bad Gateway"))
                                        #\Return #\Newline #\Return #\Newline
                                        (length (sb-ext:string-to-octets body :external-format :utf-8))
                                        #\Return #\Newline #\Return #\Newline #\Return #\Newline body)))))
@@ -460,14 +497,19 @@ closing first cuts the call."
              (let ((request (and head (sandbox-parse-head head))))
                (cond ((null head))
                      ((null request) (sandbox-egress-refuse client 400 "no request line"))
-                     (t (destructuring-bind (method target headers) request
-                          (cond ((string-equal method "CONNECT")
-                                 (sandbox-egress-tunnel client target rest egress))
-                                ((uiop:string-prefix-p nlk:+jail-broker-path+ target)
-                                 (sandbox-egress-broker client method target headers rest egress))
-                                ((uiop:string-prefix-p "http://" (string-downcase target))
-                                 (sandbox-egress-forward client method target headers rest egress))
-                                (t (sandbox-egress-refuse client 400 (format nil "~a ~a is no proxy request" method target)))))))))
+                     (t (destructuring-bind (method sent headers) request
+                          ;; a jail on the host's loopback is answered by its token alone
+                          (let ((target (sandbox-egress-admitted sent headers egress)))
+                            (cond ((null target)
+                                   (sandbox-egress-log egress "refuse ~a: no token" method)
+                                   (sandbox-egress-refuse client 407 "this proxy answers its own jail alone"))
+                                  ((string-equal method "CONNECT")
+                                   (sandbox-egress-tunnel client target rest egress))
+                                  ((uiop:string-prefix-p nlk:+jail-broker-path+ target)
+                                   (sandbox-egress-broker client method target headers rest egress))
+                                  ((uiop:string-prefix-p "http://" (string-downcase target))
+                                   (sandbox-egress-forward client method target headers rest egress))
+                                  (t (sandbox-egress-refuse client 400 (format nil "~a ~a is no proxy request" method target))))))))))
          (error (condition)
            (sandbox-egress-log egress "error ~a" condition)))
     ;; shut down first: a thread still reading it (the broker's watch) holds
