@@ -2529,7 +2529,7 @@ had time to send anything more: a row sent twice arrives after the match."
   ;; fewer is its own name and costs no call.
   (let ((nle::*session-naming* :inline)
         (asked '()))
-    (with-stubbed-fdefinition (nle:complete (system user &key session-id max-tokens fallback-p)
+    (with-stubbed-fdefinition (nle:complete (system user &key session-id max-tokens fallback-p purpose)
                                 (push (list session-id user) asked)
                                 (when (equal session-id "gw-given")
                                   (nle:set-session-title session-id "Given meanwhile"))
@@ -2586,7 +2586,7 @@ had time to send anything more: a row sent twice arrives after the match."
   ;; nothing: the session keeps its prompt's line, and no title is recorded
   ;; for a channel to wear.
   (let ((nle::*session-naming* :inline))
-    (with-stubbed-fdefinition (nle:complete (system user &key session-id max-tokens fallback-p)
+    (with-stubbed-fdefinition (nle:complete (system user &key session-id max-tokens fallback-p purpose)
                                 "<tool_call><function=youtube_search_videos><parameter=query>indydevdan</parameter></function></tool_call>")
       (with-provider-stub (nil (wire-message "assistant" :content "ok"))
         (ensure-durable-session "gw-acted")

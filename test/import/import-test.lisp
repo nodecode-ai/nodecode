@@ -586,7 +586,7 @@
               (princ-to-string (signals-error nik:import-error (nik::run-slash "nosuchworld"))))))
 
 (defmacro with-complete-stub ((&body stub) &body body)
-  `(with-stubbed-fdefinitions ((nle:complete (system user &key session-id max-tokens fallback-p)
+  `(with-stubbed-fdefinitions ((nle:complete (system user &key session-id max-tokens fallback-p purpose)
                                 ,@stub))
      ,@body))
 

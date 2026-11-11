@@ -4266,7 +4266,8 @@ COMPLETE's does."
                    (written-title (complete +title-instruction+
                                             (title-request (clip text 1000 :ellipsis ""))
                                             :session-id session-id
-                                            :max-tokens +title-max-tokens+)))))
+                                            :max-tokens +title-max-tokens+
+                                            :purpose "title")))))
     (when (and title (not (nlk:events :session-id session-id :kind nlk::+kind-session-title+
                                       :as :exists)))
       (set-session-title session-id title))))
@@ -4572,7 +4573,8 @@ or no model answered."
                     (with-handlers ((error (condition)
                                       (warn "the organism's note went unsaid: ~a" condition)
                                       nil))
-                      (let ((written (complete +note-instruction+ note :max-tokens +note-max-tokens+)))
+                      (let ((written (complete +note-instruction+ note :max-tokens +note-max-tokens+
+                                                      :purpose "note")))
                         (and (stringp written) (nlk:trimmed written)))))))
     (when (plusp (length words))
       (setf *organism-note* (cons words (get-universal-time)))

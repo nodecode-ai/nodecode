@@ -536,16 +536,21 @@ fact's transaction, including late reflection/source facts and rollback.")
   (let ((value (first (payload-columns key))))
     (format nil "case when typeof(~a) in ('integer', 'real') then ~a else ~a end" value value default)))
 
+(defparameter +usage-kinds+
+  (list nlk::+kind-turn-usage+ nlk::+kind-side-call-usage+)
+  "The facts a call's spend is recorded in: a turn's round, and a side call
+-- a session's title, the organism's note -- that no round made.")
+
 (defun usage-rollup-fill-sql (source)
-  "Add the turn.usage facts SOURCE names -- a FROM-clause term with columns
-OCCURRED_AT, SESSION_ID and PAYLOAD -- into usage_rollup, each number as
-USAGE-JSON counts it: a token count that is no number counts 0, a cost only
-when it is known."
+  "Add the usage facts SOURCE names -- a FROM-clause term with columns
+OCCURRED_AT, SESSION_ID, PAYLOAD and SIDE, true for a side call's -- into
+usage_rollup, each number as USAGE-JSON counts it: a token count that is no
+number counts 0, a cost only when it is known."
   (format nil "insert into usage_rollup
-                 (bucket, session_id, model, provider, voided, priced, band,
+                 (bucket, session_id, model, provider, voided, priced, band, side,
                   rounds, input, cached, write, output, cost)
       select bucket, session_id, model, provider, voided, cost is not null,
-             (select count(*) from usage_tier_sizes where size < input + cached + write),
+             (select count(*) from usage_tier_sizes where size < input + cached + write), side,
              count(*), sum(input), sum(cached), sum(write), sum(output), sum(cost)
         from (select substr(occurred_at, 1, 14)
                        || printf('%02d', cast(substr(occurred_at, 15, 2) as integer) / 15 * 15) bucket,
@@ -553,10 +558,11 @@ when it is known."
                      coalesce(~a, '') model, coalesce(~a, '') provider,
                      ~a input, ~a cached, ~a write, ~a output,
                      case when json_extract(payload, '$.cost_known') = 1 then ~a end cost,
-                     coalesce(json_extract(payload, '$.voided') = 1, 0) voided
+                     coalesce(json_extract(payload, '$.voided') = 1, 0) voided,
+                     coalesce(side, 0) <> 0 side
                 from ~a)
-       where true group by 1, 2, 3, 4, 5, 6, 7
-      on conflict (bucket, session_id, model, provider, voided, priced, band) do update
+       where true group by 1, 2, 3, 4, 5, 6, 7, 8
+      on conflict (bucket, session_id, model, provider, voided, priced, band, side) do update
          set rounds = rounds + excluded.rounds, input = input + excluded.input,
              cached = cached + excluded.cached, write = write + excluded.write,
              output = output + excluded.output, cost = cost + excluded.cost"
@@ -607,9 +613,11 @@ each request's wait for its first token and the time it spent writing."
          "create table usage_rollup (
             bucket text not null, session_id text not null, model text not null,
             provider text not null, voided integer not null, priced integer not null,
-            band integer not null, rounds integer not null, input integer not null,
-            cached integer not null, write integer not null, output integer not null, cost,
-            primary key (bucket, session_id, model, provider, voided, priced, band)) without rowid")
+            band integer not null, side integer not null, rounds integer not null,
+            input integer not null, cached integer not null, write integer not null,
+            output integer not null, cost,
+            primary key (bucket, session_id, model, provider, voided, priced, band, side))
+            without rowid")
    (list "table" "request_timings"
          "create table request_timings (
             occurred_at text not null, log_position integer not null,
@@ -621,7 +629,10 @@ each request's wait for its first token and the time it spent writing."
          "create index request_timings_by_model on request_timings (model, provider, ttft, streamed)")
    (log-trigger "usage_rollup_follows_the_log" nlk::+kind-turn-usage+
                 (usage-rollup-fill-sql "(select new.occurred_at occurred_at, new.session_id session_id,
-                                                 new.payload payload)"))
+                                                 new.payload payload, 0 side)"))
+   (log-trigger "usage_rollup_follows_side_calls" nlk::+kind-side-call-usage+
+                (usage-rollup-fill-sql "(select new.occurred_at occurred_at, new.session_id session_id,
+                                                 new.payload payload, 1 side)"))
    (log-trigger "request_timings_follow_the_log" nlk::+kind-provider-request+
                 (request-timings-fill-sql "log_position = new.log_position"))
    ;; Each turn's start and end, and whether it was a reflection: what the
@@ -661,9 +672,9 @@ ascending; PRICES memoizes MODEL-PRICE by (MODEL . PROVIDER)."
     (sqlite:execute-non-query handle "insert into usage_tier_sizes (size) values (?)" size))
   (sqlite:execute-non-query handle "delete from usage_rollup")
   (sqlite:execute-non-query handle (usage-rollup-fill-sql
-                                    (format nil "(select occurred_at, session_id, payload from events
-                                                   where kind = '~a')"
-                                            nlk::+kind-turn-usage+))))
+                                    (format nil "(select occurred_at, session_id, payload, kind = '~a' side
+                                                    from events where kind in (~{'~a'~^, ~}))"
+                                            nlk::+kind-side-call-usage+ +usage-kinds+))))
 
 (defun open-usage-rounds ()
   "Install the usage projection and derive it once from the log."
@@ -674,9 +685,9 @@ ascending; PRICES memoizes MODEL-PRICE by (MODEL . PROVIDER)."
     (when (install-projection handle *usage-rounds-schema*)
       (derive-usage-rollup handle (tier-sizes-of
                                    (nlk::sql-rows handle (format nil "select distinct ~{~a~^, ~} from events
-                                                                       where kind = '~a'"
+                                                                       where kind in (~{'~a'~^, ~})"
                                                                  (payload-columns "model" "provider")
-                                                                 nlk::+kind-turn-usage+))))
+                                                                 +usage-kinds+))))
       (sqlite:execute-non-query handle (request-timings-fill-sql))
       (sqlite:execute-non-query handle (turn-starts-fill-sql
                                         (format nil "(select turn_id, session_id, occurred_at from events
@@ -721,7 +732,7 @@ PRICES memoizes MODEL-PRICE as TIER-SIZES-OF does."
 
 (defparameter +usage-sums-sql+
   "sum(rounds), sum(priced * rounds), sum(cost), sum(input), sum(cached), sum(write),
-   sum(output), count(distinct root)"
+   sum(output), count(distinct nullif(root, ''))"
   "What a group of ROUNDS (USAGE-SPEND-SQL) adds up to, in USAGE-SUM-OF's order.")
 
 (defun usage-spend-sql (body)
@@ -765,7 +776,7 @@ no note session's turn, no reflection."
 (defun usage-spend (since)
   "What every session spent since the clock SINCE (all when \"\"), summed in
 SQL in one statement: a plist of :TOTAL (a row of +USAGE-SUMS-SQL+), :VOIDED
-(the voided attempts' cost), :MODELS (each MODEL PROVIDER, its sums, and its
+(the voided attempts' cost), :SIDE (the side calls' row, a part of :TOTAL), :MODELS (each MODEL PROVIDER, its sums, and its
 rounds the nodecode.ai account paid), :BANDS (each MODEL PROVIDER BAND INPUT
 CACHED WRITE), :DAYS (each local DAY and its sums), :FOLDERS (each FOLDER and
 its sums) and :SESSIONS (the costliest eight, then the busiest: each ID TITLE
@@ -782,6 +793,8 @@ last)."
                      select 'voided', null, null, null, sum(cost), null, null, null, null, null, null, null, null
                        from usage_rollup where bucket >= substr(?2, 1, 16) and voided = 1
                      union all
+                     select 'side', null, null, null, ~:*~a, null from rounds where side <> 0
+                     union all
                      select 'model', model, provider, null, ~:*~a,
                             sum(case when priced = 0 and provider = 'nodecode' then rounds else 0 end)
                        from rounds group by model, provider
@@ -793,7 +806,7 @@ last)."
                      select 'day', date(bucket, 'localtime'), null, null, ~:*~a, null from rounds group by 2
                      union all
                      select 'folder', coalesce(d.cwd, ''), null, null, sum(s.calls), sum(s.priced), sum(s.cost),
-                            sum(s.input), sum(s.cached), sum(s.write), sum(s.output), count(*), null
+                            sum(s.input), sum(s.cached), sum(s.write), sum(s.output), count(nullif(s.root, '')), null
                        from spent s left join session_directory d
                          on d.session_id = s.root and d.created_at is not null
                       group by 2
@@ -805,6 +818,7 @@ last)."
                                group by 1 having sum(~:*~:*~a) is not null),
                             ranked (root, calls, priced, cost, input, cached, write, output, sessions) as (
                               select root, calls, priced, cost, input, cached, write, output, 1 from spent
+                               where root <> ''
                               union all
                               select session_id, 0, 0, null, 0, 0, 0, 0, 0 from timed
                                where session_id not in (select root from spent)),
@@ -817,12 +831,13 @@ last)."
                                 on d.session_id = top.root and d.created_at is not null)"
                           +usage-sums-sql+ +turn-ms-sql+ (asked-turns-sql)))
                  nlk::+note-source+ since)))
-        (spend (list :total nil :voided nil :models '() :bands '() :days '() :folders '()
-                     :sessions '())))
+        (spend (list :total nil :voided nil :side nil :models '() :bands '() :days '()
+                     :folders '() :sessions '())))
     (loop for (tag k1 k2 k3 . numbers) in rows
           do (dispatch tag equal
                ("total" (setf (getf spend :total) (butlast numbers)))
                ("voided" (setf (getf spend :voided) (first numbers)))
+               ("side" (setf (getf spend :side) (butlast numbers)))
                ("model" (push (list* k1 k2 numbers) (getf spend :models)))
                ("band" (push (list* k1 k2 k3 (subseq numbers 0 3)) (getf spend :bands)))
                ("day" (push (cons k1 (butlast numbers)) (getf spend :days)))
@@ -974,6 +989,9 @@ and the costliest sessions."
                                       "saved_usd" (float saved 1d0)
                                       "turns" started
                                       "failed_turns" failed)
+             ;; The calls no turn's round made -- titles, notes -- counted in
+             ;; the totals above and shown apart here.
+             "side_calls" (usage-sum-json (usage-sum-of (getf spend :side)))
              :opt "wait_p50_ms" wait-p50
              :opt "wait_p90_ms" wait-p90
              "days" (loop-vector for day in (if start
@@ -1333,6 +1351,13 @@ and the sessions."
 failed turns -- each only when it says something."
   (remove nil
           (list (and cost (format nil "~a." (counted calls "model call")))
+                (let* ((side (usage-field usage "side_calls"))
+                       (count (or (usage-field side "calls") 0)))
+                  (and (realp count) (plusp count)
+                       (format nil "~a side work, a session's title or a note~@[, ~a~]."
+                               (if (eql count 1) "1 call was" (format nil "~:d calls were" count))
+                               (let ((spent (usage-field side "cost_usd")))
+                                 (and (realp spent) (usd-text spent))))))
                 (cond ((and (realp saved) (> saved 0.005))
                        (format nil "Reusing the prompt from cache saved about ~a." (usd-text saved)))
                       ((and (realp saved) (< saved -0.005))
