@@ -467,6 +467,30 @@ is not EQ to the one a later eval interns — names compare, symbols do not."
                (funcall (uiop:find-symbol* '#:greet '#:nl-zzz-peri) :x)))
     (nlk:unhook (uiop:find-symbol* '#:greet '#:nl-zzz-peri) "layer")))
 
+(deftest cells-a-layer-named-nodecode-loads-after-peripherals (with-cell-fixture (root))
+  ;; An operator whose git name is nodecode has the layer folder nodecode,
+  ;; declaring the system nodecode: the name every peripheral's :depends-on
+  ;; gives the core. That dependency is the image's own, never a wait on the
+  ;; layer, so the peripheral still loads first and the layer's advice on it
+  ;; reads its package (#420).
+  (write-layer-folder
+   root "nodecode"
+   '(("greet-hook" . "(define-hook nl-named-peri:greet \"layer\" (next who) (list :advised (funcall next who)))"))
+   :depends-on '("nodecode"))
+  (write-cell-folder
+   root "nl-named-peri"
+   '(("cell" . "(defpackage #:nl-named-peri (:use #:cl) (:export #:greet))
+(in-package #:nl-named-peri)
+(defun greet (who) (list :hello who))"))
+   :depends-on '("nodecode"))
+  (let ((records (load-cell-fixture root)))
+    (is (equal '("nl-named-peri" "nodecode")
+               (mapcar #'nlk:cell-name records)))
+    (is (every (lambda (record) (eq :loaded record.state)) records))
+    (is (equal '(:advised (:hello :x))
+               (funcall (uiop:find-symbol* '#:greet '#:nl-named-peri) :x)))
+    (nlk:unhook (uiop:find-symbol* '#:greet '#:nl-named-peri) "layer")))
+
 ;;; --- the layer cache: compiled once per image, keyed on the text ----------
 
 (defmacro with-layer-cache ((cache stamp) &body body)
