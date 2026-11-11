@@ -2080,6 +2080,91 @@ through the plugins nsswitch.conf lists."
                 (sb-alien:alien-funcall get0 asn1-string))))
       :get0)))
 
+;;; The shared objects a saved image opens again. The image opens libcrypto,
+;;; libssl and libsqlite3 (on a Mac openssl@3 and zstd by their Homebrew
+;;; paths, on Windows the DLLs the release carries beside nodecode.exe), and
+;;; SBCL opens each one again at the start of a saved image, before any of the
+;;; image's own code runs. A machine that lacked one stopped right there in
+;;; SBCL's error and a full backtrace, `--version' included: "Error opening
+;;; shared object "libsqlite3.so.0"" on a bare ubuntu:22.04, the kind of
+;;; minimal container a benchmark task runs in (2026-11-11). So the image
+;;; opens them itself: a save hands the list to *IMAGE-LIBRARIES* and takes
+;;; each one off SBCL's reopen, and the first init hook opens them again in
+;;; the same order. A library this machine lacks is one line, what the loader
+;;; said and the package that carries it, and exit status 1.
+
+(defvar *image-libraries* '()
+  "The shared objects the image opens at its start, in the order it first
+opened them: the pathnames the last save took off SB-SYS:*SHARED-OBJECTS*.")
+
+(defun hand-over-image-libraries ()
+  "Save hook: take the image's shared objects off SBCL's reopen and onto
+OPEN-IMAGE-LIBRARIES, the first init hook."
+  ;; One a library loaded as DONT-SAVE itself stays SBCL's to drop; one an
+  ;; earlier save marked and then did not finish is still the image's.
+  (setf *image-libraries*
+        (loop for object in sb-sys:*shared-objects*
+              for pathname = (sb-alien::shared-object-pathname object)
+              when (or (not (sb-alien::shared-object-dont-save object))
+                       (member pathname *image-libraries* :test #'equal))
+                collect pathname
+                and do (setf (sb-alien::shared-object-dont-save object) t)))
+  ;; First: every other init hook may reach into a library.
+  (setf sb-ext:*init-hooks*
+        (cons 'open-image-libraries (remove 'open-image-libraries sb-ext:*init-hooks*))))
+
+(pushnew 'hand-over-image-libraries sb-ext:*save-hooks*)
+
+(defun library-install-hint (name)
+  "How a person gets the shared object NAME onto this platform, or NIL."
+  (flet ((named (&rest prefixes)
+           (some (lambda (prefix) (eql 0 (search prefix name))) prefixes)))
+    (case (platform)
+      (:linux
+       (cond ((named "libsqlite3")
+              "apt install libsqlite3-0 (Debian, Ubuntu) or dnf install sqlite-libs (Fedora, RHEL)")
+             ((named "libssl" "libcrypto")
+              "apt install openssl (Debian, Ubuntu) or dnf install openssl-libs (Fedora, RHEL)")))
+      (:darwin
+       (cond ((named "libssl" "libcrypto") "brew install openssl@3")
+             ((named "libzstd") "brew install zstd")))
+      (:windows
+       (when (named "libsqlite3" "libssl" "libcrypto")
+         "install the release again, which carries it beside nodecode.exe")))))
+
+(defun missing-library-line (pathname condition)
+  "The line a start that could not open PATHNAME says: what the loader said,
+and how to install it here."
+  ;; SBCL's error carries the name and the loader's own words (dlerror,
+  ;; LoadLibrary's message) as its two arguments; the words alone say it.
+  (let* ((name (file-namestring pathname))
+         (arguments (and (typep condition 'simple-condition)
+                         (simple-condition-format-arguments condition)))
+         (said (string-trim '(#\Space #\. #\Newline #\Return)
+                            (substitute #\Space #\Newline
+                                        (if (stringp (second arguments))
+                                            (second arguments)
+                                            (princ-to-string condition)))))
+         (hint (library-install-hint name)))
+    (format nil "nodecode: cannot start: ~@[~a: ~]~a.~@[ Install it: ~a.~]"
+            (unless (search name said) name) said hint)))
+
+(defun open-image-libraries (&key (exit (lambda (code) (sb-ext:exit :code code :abort t))))
+  "Init hook: open *IMAGE-LIBRARIES* again, in order. => T when every one
+opened; else one line each for the ones this machine lacks, and EXIT gets 1."
+  ;; Every one is tried, so one start names all a person must install.
+  (let ((lines (loop for pathname in *image-libraries*
+                     for line = (handler-case
+                                    (progn (sb-alien:load-shared-object pathname) nil)
+                                  (error (condition)
+                                    (missing-library-line pathname condition)))
+                     when line collect line)))
+    (when lines
+      (format *error-output* "~{~a~%~}" lines)
+      (finish-output *error-output*)
+      (funcall exit 1))
+    (null lines)))
+
 ;;; The open-file limit. Every descriptor the organism holds -- a socket, a
 ;;; pipe, the store, a log -- counts against its soft limit, and past it
 ;;; nothing opens: no connection, and no name resolves either. macOS starts
