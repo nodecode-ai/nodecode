@@ -2508,7 +2508,7 @@ failed: a reset, or a TLS session that died under the request."
 (defun retry-scope-name (scope)
   "The wire name of a retry scope keyword (the retry_classifier.zig
 scopeName strings)."
-  (format nil "provider_~(~a~)" (if (member scope '(:request :contract)) scope :stream)))
+  (format nil "provider_~(~a~)" (if (member scope '(:request :contract :relearn)) scope :stream)))
 
 (defun provider-retry-delay (attempt base-delay &key retry-after status)
   "Seconds to sleep before per-scope retry number ATTEMPT (1-based)."

@@ -3013,15 +3013,17 @@ did not say."
                  (notify-turn-facts-committed))
                ;; The provider's own sentence rides too: `retrying 4/4
                ;; in 38s' over a 503 may say nothing of the high demand
-               ;; behind it.
+               ;; behind it. A relearned request is no retry to wait on:
+               ;; its reset voids the attempt and heads the bar with nothing.
                (emit-stream-part on-part :stream-retry
-                                 :payload (list :attempt attempt
+                                 :payload (unless (eq scope :relearn)
+                                            (list :attempt attempt
                                                 :limit limit
                                                 :delay-seconds (float delay)
                                                 :continuation continuation
                                                 :status (provider-error-status e)
                                                 :provider (provider-error-provider e)
-                                                :reason (provider-said (provider-error-detail e)))))
+                                                :reason (provider-said (provider-error-detail e))))))
              (evict-and-retarget (&optional (reason "provider_rejected"))
                ;; One shared recovery eviction step (context.lisp owns the
                ;; policy): true when the context was re-aimed at the thinned
@@ -3052,11 +3054,12 @@ did not say."
                                                    :boundary boundary :history-turns turns
                                                    :floors floors :visible-images images))
                t)
-             (rerun-at-once (e detail)
+             (rerun-at-once (e detail &optional (scope :request))
                ;; The failed attempt sealed and journaled as a retry with no
-               ;; wait and no ladder climbed, DETAIL naming why: => T.
+               ;; wait and no ladder climbed, DETAIL naming why, SCOPE the
+               ;; budget it spent: => T.
                (seal-streamed-attempt (provider-error-detail e) "rerun")
-               (announce-retry e :request 0 detail nil nil nil)
+               (announce-retry e scope 0 detail nil nil nil)
                (incf provider-attempt)
                (void-partial-stream)
                t)
@@ -3121,13 +3124,20 @@ did not say."
                ;; is the lane's lesson, not the round's verdict
                ;; (RELEARNED-REQUEST): the lane keeps it, and the round goes
                ;; again at once, rebuilt the way the model takes. Sealed and
-               ;; journaled as a retry with no wait, as a withholding is.
-               ;; => T when the round goes again.
+               ;; journaled with no wait, as a withholding is, but in its own
+               ;; scope, provider_relearn: the endpoint declaring what it
+               ;; takes is no failure, and a shell shows it as none -- the
+               ;; first turn on claude-code/claude-sonnet-5-5 left `Waited
+               ;; 0.0s through 1 retry · claude-code 400' under its answer,
+               ;; where a Models API would have said the same beforehand
+               ;; with nothing shown (2026-11-11). => T when the round goes
+               ;; again.
                (when-let (lesson (and (< relearnings +max-relearnings+)
                                       (relearned-request e config)))
                  (incf relearnings)
                  (rerun-at-once e (format nil "~a, after: ~a" lesson
-                                          (provider-said (provider-error-detail e))))))
+                                          (provider-said (provider-error-detail e)))
+                                :relearn)))
              (withhold-images-and-retarget (e)
                ;; The other recovery step: the request carried images and
                ;; failed, so the round is re-sent without them, a note
