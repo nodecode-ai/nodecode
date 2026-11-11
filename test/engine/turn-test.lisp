@@ -8501,6 +8501,44 @@ thinking types DECLARED (a list, :UNDECLARED, or NIL for never asked)."
                    (nlk::provider-retry-event-detail (first retries))) "what was learned, then the provider's own words")
         (is (zerop (nlk::provider-retry-event-delay-seconds (first retries))) "with no wait")))))
 
+(deftest a-relearned-thinking-spelling-shows-no-retry (with-session-store ("off-relearned"))
+  ;; Claude Code's login serves no Models API, so the first Sonnet 5.5 turn
+  ;; with thinking off sends "disabled", and the 400 names between_tools. The
+  ;; round goes again that way, and the turn rested under `Waited 0.0s through
+  ;; 1 retry · claude-code 400' while the live bar flashed the refusal: the
+  ;; endpoint saying how its model takes the request is no failure, and a
+  ;; Models API says the same beforehand with nothing shown (2026-11-11).
+  (let ((parts '()))
+    (with-durable-turn (turn "off-relearned" :command-id "off-relearned-cmd" :input "x"
+                             :current t :retry-delay 0 :complete t)
+      (nlk:bind ((nle::*models-catalog-path* nil) (nle::*model* "claude-adaptive-test")
+                 (nle::*model-capability-overrides*
+                   '(("claude-adaptive-test"
+                      . (:effort-levels ("low" "medium" "high" "xhigh" "max")))))
+                 (nle::*reasoning-effort* nil)
+                 (nle::*anthropic-thinking-types* (make-hash-table :test #'equal))
+                 (nle::*provider-models-cache-path* nil))
+        (with-stubbed-fdefinition (dex:post (endpoint &rest args)
+                                   (if (equal "disabled" (gethash "type" (gethash "thinking" (posted-json args))))
+                                       (error 'dex:http-request-failed
+                                              :body (anthropic-refusal-body *sonnet-refuses-disabled*)
+                                              :status 400 :headers (make-hash-table :test #'equal)
+                                              :uri (quri:uri endpoint) :method :post)
+                                       (values (make-anthropic-stream) 200)))
+          (is (equal "the answer"
+                     (gethash "content" (nle::call-provider (anthropic-user-context)
+                                                            :on-part (lambda (part) (push part parts))))))))
+      (nlk:record-assistant-message turn (nlk:json-object "role" "assistant" "content" "the answer")))
+    (let ((resets (remove :stream-retry parts :key #'nle::stream-part-kind :test-not #'eq)))
+      (is (= 1 (length resets)) "the refused attempt is still voided live")
+      (is (null (nle::stream-part-payload (first resets))) "with no retry to head the bar"))
+    (let ((retries (remove-if-not (lambda (event) (typep event 'nlk:provider-retry-event))
+                                  (nle::collect-session-events "off-relearned"))))
+      (is (equal '("provider_relearn") (mapcar #'nlk::provider-retry-event-scope retries)) "the lesson stays on the record, in its own scope"))
+    (let ((rows (nle::transcript-rows (nle::fold-log :session-id "off-relearned"))))
+      (is (find "the answer" rows :key #'nle::transcript-row-text :test #'equal) "the turn answered")
+      (is (null (find-if (lambda (row) (search "Waited" (nle::transcript-row-text row))) rows)) "and leaves no retry line under it"))))
+
 (deftest anthropic-budget-thinking-survives-a-ladder-that-stops-at-high ()
   (nlk:bind ((nle::*models-catalog-path* nil) (nle::*model* "claude-budget-test")
              (nle::*model-capability-overrides*

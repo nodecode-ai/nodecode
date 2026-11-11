@@ -127,22 +127,28 @@ them failed and is being retried or allowed to stand."
       (setf (gethash "retry_status" st) retry-status)
       (remhash "retry_status" st)))
 
-(define-ingest ingest-provider-retry-fact (st &key turn-id delay-seconds status provider detail)
+(define-ingest ingest-provider-retry-fact (st &key turn-id delay-seconds status provider detail scope)
   "Fold one turn.provider_retry fact into its turn's tally: how many retries,
 the backoff they waited, and the newest STATUS and PROVIDER with what it said
-in DETAIL. The turn leaves it as one line when it ends (RETRY-TALLY-TEXT)."
+in DETAIL. The turn leaves it as one line when it ends (RETRY-TALLY-TEXT).
+A request the lane relearned (SCOPE provider_relearn) is no retry: the
+endpoint said how its model takes the request, and the round asked again."
   ;; The bar's countdown is live-only and leaves with the stream's next
   ;; delta: without this, a turn that sits on 503s and then answers would
-  ;; rest like any other, with nothing saying why it was slow.
-  (let* ((tally (gethash "turn_retries" st))
-         (same (equal turn-id (getf tally :turn-id))))
-    (setf (gethash "turn_retries" st)
-          (list :turn-id turn-id
-                :count (1+ (if same (getf tally :count) 0))
-                :waited (+ (or delay-seconds 0) (if same (getf tally :waited) 0))
-                :status status
-                :provider (and (plusp (length provider)) provider)
-                :reason (and detail (provider-said detail))))))
+  ;; rest like any other, with nothing saying why it was slow. A relearned
+  ;; request is what a Models API says beforehand with nothing shown: tallied,
+  ;; claude-code's first Sonnet 5.5 turn rested under `Waited 0.0s through 1
+  ;; retry · claude-code 400' (2026-11-11).
+  (unless (equal scope "provider_relearn")
+    (let* ((tally (gethash "turn_retries" st))
+           (same (equal turn-id (getf tally :turn-id))))
+      (setf (gethash "turn_retries" st)
+            (list :turn-id turn-id
+                  :count (1+ (if same (getf tally :count) 0))
+                  :waited (+ (or delay-seconds 0) (if same (getf tally :waited) 0))
+                  :status status
+                  :provider (and (plusp (length provider)) provider)
+                  :reason (and detail (provider-said detail)))))))
 
 (defun retry-tally-text (tally)
   "INGEST-PROVIDER-RETRY-FACT's TALLY as the line its turn leaves:
@@ -959,7 +965,7 @@ how it ended (EXEC-END), for a surface that draws the words itself."
   (:turn-id (nlk::event-turn-id event)))
 
 (define-fold nlk:provider-retry-event ingest-provider-retry-fact ()
-  delay-seconds status provider detail (:turn-id (nlk::event-turn-id event)))
+  delay-seconds status provider detail scope (:turn-id (nlk::event-turn-id event)))
 
 ;;; --- fold ---------------------------------------------------------------
 ;;; fold-log walks the event log page by page and reduces it through apply-event,

@@ -2017,7 +2017,9 @@ class over.")
   "One transient provider failure that will be retried."
   ;; STATUS NIL means the failure carried no HTTP status (timeout, truncation,
   ;; in-stream error). SCOPE names the budget the failure spent
-  ;; (provider_request, provider_stream, or provider_contract); STREAM-ATTEMPT
+  ;; (provider_request, provider_stream, or provider_contract), or
+  ;; provider_relearn for a refusal that named how the model takes the
+  ;; request, which the round then asks again (RELEARNED-REQUEST); STREAM-ATTEMPT
   ;; and REQUEST-RETRIES-USED are the dual budget reducer state when the
   ;; failure was recorded.
   ((attempt :integer "attempt" :default 1)
