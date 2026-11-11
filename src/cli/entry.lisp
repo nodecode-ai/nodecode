@@ -424,7 +424,7 @@ loads.")
                   :detail "Linux, with srt (npm install -g @anthropic-ai/sandbox-runtime), bubblewrap and socat. The organism's eval, sh and file verbs can write only this folder, the home and the caches, read nothing of ~/.ssh, cloud credentials or other agents' homes, and reach only the providers configured, nodecode.ai and GitHub; a key kept in secrets/ is a stand-in inside and the real one is put back only on its way to that provider. <home>/sandbox.jsonc adds allowed_domains, deny_read and allow_write. The shell runs the binary alone, outside, and loads nothing the organism writes; it refuses a home an unsandboxed organism or the background gateway already runs.")
    (nlk:make-verb "--provider" "open the shell's fresh session on provider P"
                   :arguments "P" :label "--provider P"
-                  :detail "--model PROVIDER/MODEL says the same; this says it outright, for a model id whose own prefix names a provider.")
+                  :detail "--model PROVIDER/MODEL says the same; this says it outright, for a model id whose own prefix names a provider. Alone it runs the default model only when that is P's own; another provider's default is refused, naming P's models, so name one with --model.")
    (nlk:make-verb "--model" "open the shell's fresh session on model M: [PROVIDER/]MODEL[:EFFORT]"
                   :arguments "M" :label "--model M"
                   :detail "This session alone runs on it: the default and every other session stay where they are. M is a model id as /models lists it, behind PROVIDER/ for another provider and before :EFFORT for a reasoning effort: --model openai-codex/gpt-6.1-sol:high. A prefix is the provider only when it names one, and a suffix the effort only when it names a rung and the id without it is no listed model, so ids like openrouter's deepseek/deepseek-r1:free stay whole; --provider and --effort say either part outright. The organism checks the target before the session opens; one it refuses is said in the shell, and nothing runs on the default instead.")
@@ -1030,7 +1030,10 @@ operator's first frame."
                       (if (nlt:wait-for-frames-past 0 1000)
                           (progn (nlk:note-boot-phase "exec-image")
                                  (nlk::hand-over-to-image image))
-                          "the frame never landed")))))))
+                          "the frame never landed")))
+        ;; A cell words the calls it runs with hooks its start lays, and its
+        ;; start runs in the organism's process: this one lays them itself.
+        (show-cells)))))
 
 (defun handover-give-back ()
   "Switch off what this image inherited and never took over: written when a

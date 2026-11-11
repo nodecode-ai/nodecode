@@ -84,6 +84,34 @@
       (is (and refusal (search (concatenate 'string "general." key) refusal)) "the config error identifies the pin")
       (is (and refusal (search "gemini-4-argon" refusal)) "and its actual model id"))))
 
+;;; A provider the config declares no endpoint for and the catalog does not
+;;; name -- a cell's lane, whose ids are its own (acp's agents), and which no
+;;; lane, entry or listing speaks for before its cell starts -- has no
+;;; namespace in the catalog: another provider's label is a coincidence there,
+;;; not a sign that the id is a label. Poe names its poetools/claude-code
+;;; "claude-code", which is the id of acp's Claude Code agent.
+
+(defparameter +model-id-foreign-label-catalog+
+  "{\"poe\":{\"npm\":\"@ai-sdk/openai-compatible\",\"models\":{
+      \"poetools/claude-code\":{\"name\":\"claude-code\"}}}}")
+
+(defparameter +model-id-cell-pin-config+
+  "{\"general\":{\"default_model\":{\"provider\":\"acp\",\"model\":\"claude-code\"}},
+    \"providers\":{\"relay\":{\"sdk\":\"openai-compatible\",\"base_url\":\"http://127.0.0.1:1/v1\"}}}")
+
+(deftest model-id-another-providers-label-refuses-no-id-of-an-undeclared-provider
+    (with-model-listings (:config +model-id-cell-pin-config+ :catalog +model-id-foreign-label-catalog+))
+  (is (null (model-id-refusal (lambda () (nle::check-model-id "acp" "claude-code")))) "an id no catalog entry of its own names is taken as the id it is")
+  (let ((general (nlk:json-value (nle::read-shared-config) :object "general")))
+    (is (equal '("acp" "claude-code") (subseq (multiple-value-list (nle::config-model-pin general "default_model")) 0 2)) "the config pin reads as written"))
+  (with-saved-globals ((nle::*provider* "openai-completions") (nle::*model* "image-default") (nle::*endpoint* nil)
+                       nle::*reasoning-effort* nle::*auxiliary-model* nle::*model-config-refusal*)
+    (nle::seed-model-config-from-shared-config)
+    (is (null nle::*model-config-refusal*) "the boot refuses nothing")
+    (is (equal '("acp" "claude-code") (list nle::*provider* nle::*model*)) "and seeds the operator's pin, not the image's own default"))
+  (is-carrying (refusal (model-id-refusal (lambda () (nle::check-model-id "relay" "claude-code"))))
+    "display name" "poetools/claude-code"))
+
 (deftest model-id-freeze-refuses-labels-before-a-provider-request (with-ids ())
   (is-carrying (refusal (model-id-refusal (lambda () (nle::snapshot-effective-provider-config "a6api" "Gemini 4 Argon"))))
     "display name" "gemini-4-argon"))

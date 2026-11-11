@@ -1507,12 +1507,16 @@ request."
 (defun footer-right-candidates (model &aux (port model.http-port))
   "Right-lane segment candidates, longest first. Shed workspace/profile
 before the gateway endpoint; its lifecycle is color, never a text suffix. The
-caveats a setup walk ended on (SETUP-ISSUE-SEGS) lead each and are shed last."
+hooks the organism steps over (SKIPPED-HOOK-SEGS) and the caveats a setup walk
+ended on (SETUP-ISSUE-SEGS) lead each and are shed last."
   (let* ((workspace (workspace-footer-label))
          (profile (nlk:profile-label))
          (separator (make-seg :text " · " :tone :muted))
-         ;; what the last setup walk ended on, never the first thing shed
-         (issues (setup-issue-segs model)))
+         ;; what the last setup walk ended on and the hooks the organism
+         ;; steps over, never the first thing shed
+         (issues (let ((hooks (skipped-hook-segs model))
+                       (setup (setup-issue-segs model)))
+                   (append hooks (and hooks setup (list separator)) setup))))
     (flet ((part (text target) (hover-seg model text target)))
       (let* ((lead (append (when (and profile (plusp (length profile)))
                             (list (part profile (cons :command "profiles"))))
@@ -1769,13 +1773,47 @@ mirrors the turn binding (RUN's session-selection overlay)."
         (values (getf facts :provider) (getf facts :model)
                 (if (getf facts :unconfigured) :unconfigured :configured)))))
 
-(defun footer-reasoning-effort (model)
-  "The reasoning-effort preference for the footer target, or NIL — the Zig
-footerReasoningEffort input to appendReasoningEffort. The /think choice rides
-the identity it belongs to: both came out of one target read resolved
-against this session, so the gateway shell never asks a
-store it may not own."
-  (getf (gateway-model-facts model) :effort))
+(defun footer-reasoning-effort (model &aux (facts (gateway-model-facts model))
+                                           (pick (getf facts :effort)))
+  "The reasoning effort the footer names, or NIL: while a turn runs, the effort
+its latest round sent -- after auto, `auto: RUNG', the rung the decider
+picked -- and between turns the /think pick. Both ride the identity they
+belong to, out of one target read resolved against this session, so the
+gateway shell never asks a store it may not own."
+  ;; The pick alone hid what a turn ran at: auto's rung, or a :ROUND hook's
+  ;; move (NOTE-TURN-EFFORT), showed as the pick while the request said
+  ;; otherwise.
+  (if (getf facts :running-p)
+      (let ((sent (getf facts :running-effort)))
+        (if (auto-effort-p pick)
+            (format nil "~a: ~a" pick (or sent "default"))
+            sent))
+      pick))
+
+(nlk:define-side-table skipped-hooks (:weakness :key)
+  "Live-only: a shell's model -> the board keys of the hooks the organism
+steps over (NLK::HOOK-FAILURE-KEY), from its last organism.notices frame, which
+the footer counts (SKIPPED-HOOK-SEGS) until the board stops standing them.")
+
+(defun note-skipped-hooks (model board)
+  "Keep the hooks BOARD, an organism.notices payload, says are skipped."
+  ;; A failing isolated hook stands on the board as an error until it is
+  ;; registered again or unhooked; its toast is the only other word, and
+  ;; toasts are off by default (NOTIFICATION-POPUPS-P), so without the chip a
+  ;; broken hook ran on as if it worked.
+  (setf (skipped-hooks model)
+        (loop for notice across (or (json-array board "notices") #())
+              for key = (json-value notice :text "key")
+              when (and key (equal "error" (json-value notice :text "level"))
+                        (uiop:string-prefix-p "hook " key))
+                collect key)))
+
+(defun skipped-hook-segs (model)
+  "The footer's chip for the hooks the organism steps over -- `1 hook
+skipped', linked to /status, whose Needs attention names each -- or NIL."
+  (when-let (keys (skipped-hooks model))
+    (list (hover-seg model (format nil "~d hook~:p skipped" (length keys))
+                     (cons :command "status") :danger))))
 
 (defun chat-begun-p (model)
   "Whether MODEL's chat has begun: a transcript row, a live turn, or a submit

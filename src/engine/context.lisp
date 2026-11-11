@@ -1832,7 +1832,12 @@ ones no durable row holds."
   ;;
   ;; A turn this boot picked up after a restart cut it off reads `resumed'
   ;; at the round it resumes at, and the model opens by saying it is back.
+  ;;
+  ;; An image on another release than the install's `current' reads `build'
+  ;; (update.lisp BUILD-SKEW-TEXT), so a notice about this image's release
+  ;; and `nodecode --version' never read as a contradiction.
   (append (when-let (board (nlk:standing-notices-text)) (list (cons "notices" board)))
+          (when-let (build (ignore-errors (build-skew-text))) (list (cons "build" build)))
           (when-let (resumed (and turn (equal session-id (nlk:durable-turn-session-id turn))
                                   (gethash (nlk:durable-turn-turn-id turn) *resumed-turns*)))
             (list (cons "resumed" resumed)))))

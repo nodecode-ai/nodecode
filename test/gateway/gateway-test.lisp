@@ -3166,6 +3166,31 @@ request."
           (is (= 0 calls) "neither admitted a turn")
           (is-model-pin "pin-refused" nil nil "and neither pinned" "the session"))))))
 
+(deftest a-provider-named-alone-runs-no-model-of-another-provider
+    (with-session-store ("alone"))
+  ;; A start_turn naming a provider and no model: the default's model rides
+  ;; along only when the default is that provider's. Another provider's id
+  ;; would reach the named one and come back as its 404 on every turn, so the
+  ;; target is refused by name before anything is pinned or admitted.
+  (with-model-selection-config
+      (path "{\"general\": {\"default_model\": {\"provider\": \"openai-completions\", \"model\": \"boot-model\"}}}")
+    (setf nle::*provider* "openai-completions"
+          nle::*model* "boot-model")
+    (let ((seen '()))
+      (with-silent-peer (peer state :alone-peer)
+        (with-provider-stub (nil (push (list nle::*provider* nle::*model*) seen)
+                                 (wire-message "assistant" :content "ok"))
+          (%drive-start-turn peer "alone" "alone-1" "provider" "anthropic")
+          (let ((refusal (row-carrying "unknown_provider" (%peer-frames state))))
+            (is refusal "another provider named alone is refused")
+            (is (search "anthropic was named without a model" (princ-to-string refusal)) "saying it named no model"))
+          (is-model-pin "alone" nil nil "nothing is pinned" "on the session")
+          (%drive-start-turn peer "alone" "alone-2" "provider" "openai-completions")
+          (is-eventually (= 1 (length seen)) "the default's own provider named alone runs")
+          (is-eventually (not (nlk:active-turn-p "alone")) "to its end")))
+      (is (equal '(("openai-completions" "boot-model")) seen) "on the default's model, and no turn ran on anthropic/boot-model")
+      (is-model-pin "alone" "openai-completions" "boot-model" "pinned to its own lane's model" "as a pair"))))
+
 (deftest a-session-created-on-a-target-runs-on-it-alone ()
   ;; A launch's --model: the create pins the new session alone, and a target
   ;; refused mints no session.
@@ -3189,6 +3214,9 @@ request."
       (is-route (port :post "/api/gateway/sessions"
                       :body "{\"session_id\":\"off\",\"provider\":\"no-such-lane\",\"model\":\"m\"}")
                 400 "an unknown provider is refused" "unknown_provider")
+      (is-route (port :post "/api/gateway/sessions"
+                      :body "{\"session_id\":\"off\",\"provider\":\"anthropic\"}")
+                400 "as is a provider named alone, the default's model another's" "unknown_provider")
       (is-route (port :post "/api/gateway/sessions"
                       :body "{\"session_id\":\"off\",\"model\":\"cheap-model\",\"effort\":\"turbo\"}")
                 400 "as is a rung the model lacks" "effort_unsupported")
@@ -3695,6 +3723,21 @@ request."
       (is (equal "m-x" (nth-value 1 (nle::footer-identity fresh)))))
     (is (search (format nil "session override: ~a m-x" nle::*provider*)
                 (nle::slash-models-op model '())))))
+
+(deftest a-refused-pin-leaves-the-target-unconfigured-not-the-image-target ()
+  ;; The seed refused the config's pin and the process still holds the image's
+  ;; own target; the pin reads clean by now. The footer named that target as
+  ;; though the file had chosen it: the shell says how to get a model, beside
+  ;; the refusal, and no default is offered.
+  (with-temp-shared-config ("{\"general\":{\"default_model\":{\"provider\":\"openai-completions\",\"model\":\"m-1\"}}}")
+    (with-saved-globals ((nle::*provider* (first nle::+image-target+)) (nle::*model* (second nle::+image-target+))
+                         (nle::*endpoint* nil) (nle::*model-config-refusal* "config refusal: general.default_model: m-1 was refused at boot"))
+      (let ((target (nle::gateway-target-json)))
+        (is (eq t (gethash "unconfigured" target)) "the target is unconfigured")
+        (is (eq :null (gethash "default" target)) "no default is offered")
+        (is (search "m-1 was refused at boot" (gethash "refusal" target)) "and the refusal says why"))
+      (setf nle::*model* "m-1")
+      (is (eq :false (gethash "unconfigured" (nle::gateway-target-json))) "a target the pin moved to is configured"))))
 
 (deftest attached-client-footer-reads-the-gateway-not-its-own-globals (with-temp-gateway (port))
   ;; The reported defect: a second ./nodecode attaches to the running
@@ -4940,6 +4983,22 @@ preview under a picker highlighting it; reads behind it come out of the store."
     (is (equal "Lexer flake" (replay-title (subscribed-frames port "named"))) "a later attach reads it off the replay"))
   (nlk:create-session :id "unprompted")
   (is (null (replay-title (subscribed-frames port "unprompted"))) "no prompt, no name to carry"))
+
+(deftest a-frame-broadcast-once-a-shell-reads-its-ack-reaches-that-shell (with-temp-gateway (port))
+  ;; The gateway's reader holds at its "ws-acked" landmark, past the ack and
+  ;; before anything after it, until the shell, acting on its ack, has named a
+  ;; session. A peer marked attached only after that landmark was skipped by
+  ;; the very name it had just given.
+  (seed-usage-turn "named" "fix the flaky parser test in the lexer" "done")
+  (let* ((named (bt2:make-semaphore :name "named"))
+         (frames (with-stubbed-fdefinition (nlk:note-boot-phase (label &optional detail)
+                   (when (equal label "ws-acked")
+                     (bt2:wait-on-semaphore named :timeout 2))
+                   (funcall original label detail))
+                   (frames-while (ws port)
+                     (nle::set-session-title "named" "Lexer flake")
+                     (bt2:signal-semaphore named)))))
+    (is (equal '(("named" . "Lexer flake")) (titled-names frames)) "the name given on the ack reaches the shell that gave it")))
 
 (deftest the-header-wears-the-name-a-session-is-given (with-temp-store ())
   (seed-usage-turn "s-attached" "attached ask" "ok" :in 100 :out 10)

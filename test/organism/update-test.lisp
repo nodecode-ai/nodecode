@@ -752,6 +752,31 @@ asks again after a pause -- and stops the moment the image has caught up."
       (setf nlk::*effective-version* "no-such")
       (is (equal "9.0.1+no-such" (nle::effective-version))))))
 
+(deftest update-an-image-on-another-build-than-current-tells-the-model-both ()
+  ;; A gateway four days on 0.1.11 under a 0.1.13 install: its notices said
+  ;; `nodecode updated to 0.1.11', `nodecode --version' said 0.1.13, and the
+  ;; model called the true notice text pasted into the ask. The model reads
+  ;; both builds where it reads the notices; an image on `current', and one
+  ;; that is not laid out by the installer, read nothing.
+  (with-release-host (dist (list (cons "tv1" (numbered-release-files "9.0.1"))
+                                 (cons "tv2" (numbered-release-files "9.0.2"))))
+    (nle::stage-release "tv1")
+    (nle::stage-release "tv2")
+    (nle::link-release "tv2")
+    (flet ((build () (cdr (assoc "build" (nle::read-live-sections nil) :test #'string=))))
+      (with-saved-globals ((nle::*user-agent-version* "9.0.1+tv1")
+                           (nlk::*effective-version* "tv1"))
+        (with-stubbed-fdefinition (nle::installed-release-root () nle::*release-directory*)
+          (is-carrying (text (build))
+            ("This image runs nodecode 9.0.1+tv1" "the build this image's definitions are at")
+            ("current build is 9.0.2+tv2" "the install's, spelled as --version spells it")
+            ("`nodecode --version' answers that one" "the check a model makes, named"))
+          (setf nlk::*effective-version* "tv2")
+          (is (null (build)) "an image on `current' is told nothing"))
+        (setf nlk::*effective-version* "tv1")
+        (with-stubbed-fdefinition (nle::installed-release-root () nil)
+          (is (null (build)) "nor one the installer did not lay out: a checkout's"))))))
+
 (deftest update-a-window-whose-path-predates-the-update-is-told-why ()
   ;; Windows puts the version's own folder on the user PATH, and a window keeps
   ;; the PATH it opened with: after `nodecode update' there, `nodecode' still
@@ -944,6 +969,79 @@ are LISTS ((LABEL . LINES) ...), any other list a 404."
       (cond (list (apply #'changes-list (cdr list)))
             ((search "changes-" url) (values nil "HTTP 404"))
             (t latest)))))
+
+(defmacro with-organism-releases ((&rest releases) &body body)
+  "WITH-ORGANISM-TREE's image on a release host carrying RELEASES ((LABEL
+ANSWER) ...), each's src/src/a.lisp UPG-ROUTE-F answering ANSWER; the release
+the image holds is let go after BODY."
+  `(with-release-host (dist (list ,@(loop for (label answer) in releases
+                                         collect `(cons ,label (release-files (upg-source ,answer "a"))))))
+     (with-temp-trees ((old "organism-old"))
+       (nlk:with-cleanup ((fmakunbound 'nodecode.evolved::upg-route-f))
+         (write-upgrade-tree old (list (cons "src/src/a.lisp" *update-old-a*)))
+         (eval '(defun nodecode.evolved::upg-route-f () 1))
+         (with-saved-globals ((nlk::*source-root* (truename (merge-pathnames "src/src/" old)))
+                              (nlk::*shipped-definitions* nil)
+                              (nlk::*effective-version* nil))
+           (nlk:with-cleanup ((nle::hold-source-release nil))
+             (with-stubbed-fdefinition (nle::start-release-feed () nil)
+               ,@body)))))))
+
+(defun age-release-folder (label)
+  "Set release LABEL's folder two hours back: install.sh's prune spares a
+folder laid out within the hour. Windows' installer reads no age."
+  (unless (eq (nlk:platform) :windows)
+    (multiple-value-bind (s m h d mo y) (decode-universal-time (- (get-universal-time) 7200))
+      (uiop:run-program (list "touch" "-t" (format nil "~4,'0d~2,'0d~2,'0d~2,'0d~2,'0d.~2,'0d" y mo d h m s)
+                              (string-right-trim "/" (namestring (nle::release-version-directory label))))))))
+
+(deftest update-a-hot-image-keeps-its-release-through-another-home-s-install
+    (with-organism-releases (("2b2b2b2" 2) ("1a1a1a1" 1) ("3c3c3c3" 3)))
+  ;; A hot update moved this image's tree into the release it took; the
+  ;; process still runs from the build it launched. Another home on the
+  ;; machine links its own release twice, and the installer prunes every
+  ;; older one nothing runs from or holds open. The release under the image
+  ;; is held, so it stays, and the next release is read against it and goes live.
+  (is (eq :hot (getf (nle::upgrade-organism :version "2b2b2b2" :apply t) :applied)))
+  (is (search "/2b2b2b2/" (namestring nlk::*source-root*)) "the image reads itself from the release it took")
+  (nle::stage-release "1a1a1a1")
+  (nle::link-release "1a1a1a1")
+  (age-release-folder "2b2b2b2")
+  (nle::link-release "1a1a1a1")
+  (is (probe-file nlk::*source-root*) "the installer leaves the release a live image reads itself from")
+  (is (eq :hot (getf (nle::upgrade-organism :version "3c3c3c3" :apply t) :applied)))
+  (is (eql 3 (funcall 'nodecode.evolved::upg-route-f)) "the next release goes live"))
+
+(deftest update-a-hot-image-whose-release-went-lays-it-out-again
+    (with-organism-releases (("2b2b2b2" 2) ("3c3c3c3" 3)))
+  ;; This image took 2b2b2b2 hot under a build that held nothing, and the
+  ;; release went since -- by hand, or by an installer that saw no hold. It
+  ;; is laid out again from the release host before the next one is read
+  ;; against it. Once the image is on the next, the link may prune it again
+  ;; (Windows' installer reads no age), so what was laid out is recorded.
+  (setf nlk::*source-root* (truename (merge-pathnames "src/src/" (nle::stage-release "2b2b2b2"))))
+  (uiop:delete-directory-tree (nle::release-version-directory "2b2b2b2") :validate t)
+  (let ((stage (fdefinition 'nle::stage-release)) (staged '()))
+    (with-stubbed-fdefinition (nle::stage-release (label &rest args) (push label staged) (apply stage label args))
+      (is (eq :hot (getf (nle::upgrade-organism :version "3c3c3c3" :apply t) :applied))))
+    (is (eql 3 (funcall 'nodecode.evolved::upg-route-f)) "the next release goes live")
+    (is (member "2b2b2b2" staged :test #'equal) "the release it was read against is laid out again")))
+
+(deftest update-a-look-says-an-update-that-failed (let ((asked 0)))
+  ;; The poller and the feed both ask through IGNORE-ERRORS: an update that
+  ;; fails with no refusal of its own is said on the board all the same.
+  (with-stubbed-fdefinitions ((nle::start-release-feed () nil)
+                              (nle::upgrade-organism (&rest args)
+                                (incf asked)
+                                (error "the tree tv5 was read from is gone")))
+    (with-saved-globals ((nlk::*effective-version* "tv5") (nle::*release-list* nil)
+                         (nle::*release-fetch* (changes-host '(("tv9" "tv9" "tv5")))))
+      (nlk:with-cleanup ((nlk:note-standing "update" nil :info))
+        (nle::check-for-update)
+        (is (eql 1 asked) "the release was asked for")
+        (is-carrying (text (board-line "update"))
+          ("tv9 could not be taken" "the board names the release that did not land")
+          ("the tree tv5 was read from is gone" "and why"))))))
 
 (deftest update-poller-moves-only-forward ()
   ;; The channel's latest goes live only past this build: this build on its

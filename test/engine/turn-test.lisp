@@ -1528,6 +1528,76 @@ SESSION-ID, in log order."
           (is-present (completion (first payloads)) "the turn completed"
             (is (null (gethash "background-pending" completion)))))))))
 
+(defun silent-handoff-post (posts args &key (eval-form "(sh \"sleep 30\")") (silent-delay 0))
+  "The stream the POSTS-th request of a silent handoff reads: the model hands
+EVAL-FORM off to the background, then ends its turn saying nothing (after
+SILENT-DELAY seconds), then answers with the value it was read. ARGS are
+dex:post's, unused."
+  (declare (ignore args))
+  (case posts
+    (1 (make-sse-stream (tool-call-chunk-json
+                         0 "c1" "eval"
+                         (format nil "{\"form\": ~s, \"yield_time_ms\": 200}" eval-form))))
+    (2 (sleep silent-delay)
+       (make-sse-stream (chunk-json nil :finish-reason "stop")))
+    (t (make-sse-stream (chunk-json "it woke" :finish-reason "stop")))))
+
+(deftest a-turn-that-ends-silent-on-its-handoff-completes-waiting-on-it ()
+  ;; The running eval's result tells the model to end its turn, and a model
+  ;; that ends it may say nothing. That silence read as a broken answer: it
+  ;; was asked again five times, silent each time, the turn failed, and a
+  ;; failed turn's exits never wake its session, so the ask died unanswered.
+  ;; Asked once, the turn completes waiting on the eval and keeps no empty
+  ;; message.
+  (with-session-store ("bg-silent")
+    (let ((posts 0) (nle::*retry-base-delay* 0))
+      (with-stubbed-fdefinition (dex:post (url &rest args)
+                                 (declare (ignore url))
+                                 ;; Silent every time it is asked after the handoff.
+                                 (values (silent-handoff-post (min 2 (incf posts)) args) 200))
+        (nlk:with-cleanup ((dolist (entry (nle::list-evals))
+                             (ignore-errors (nle::eval-interrupt (getf entry :id) :force t))))
+          (nlk:with-handlers ((error () nil))
+            (nle:run "dig" :session (nle:intern-session "bg-silent")
+                           :command-id "bg-silent-command"))
+          (is (= 2 posts) "the silence is asked once, never again")
+          (let ((completions (nlk:events :session-id "bg-silent" :kind nlk::+kind-turn-completed+
+                                         :order :newest :as :payloads))
+                (messages (session-events "bg-silent" :type 'nlk::assistant-message)))
+            (is-present (completion (first completions)) "the turn completed"
+              (is (eql 1 (gethash "background-pending" completion)) "waiting on the eval"))
+            (is (= 1 (length messages)) "the silence is no message")))))))
+
+(deftest a-silent-end-whose-work-exits-meanwhile-reads-it-and-answers ()
+  ;; The handed-off eval exits while the silent round streams: the turn reads
+  ;; the exit in a round of its own and asks again, the value in hand.
+  (with-session-store ("bg-silent-read")
+    (let ((posts 0) (third-body nil) (nle::*retry-base-delay* 0))
+      (with-stubbed-fdefinition (dex:post (url &rest args)
+                                 (declare (ignore url))
+                                 (when (= 3 (incf posts))
+                                   (let ((content (getf args :content)))
+                                     (setf third-body
+                                           (if (stringp content)
+                                               content
+                                               (sb-ext:octets-to-string
+                                                (coerce content '(vector (unsigned-byte 8)))
+                                                :external-format :utf-8)))))
+                                 (values (silent-handoff-post posts args
+                                                              :eval-form "(progn (sleep 0.5) :woke)"
+                                                              :silent-delay 2.5)
+                                         200))
+        (let ((answer (nlk:with-handlers ((error () nil))
+                        (nle:run "dig" :session (nle:intern-session "bg-silent-read")
+                                       :command-id "bg-silent-read-command"))))
+          (is (equal "it woke" answer) "the model answers once the value is read")
+          (is (= 3 posts) "the silence is asked once, the read round after it")
+          (is (search "WOKE" (or third-body "")) "the next round carries the eval's value")
+          (let ((completions (nlk:events :session-id "bg-silent-read" :kind nlk::+kind-turn-completed+
+                                         :order :newest :as :payloads)))
+            (is-present (completion (first completions)) "the turn completed"
+              (is (null (gethash "background-pending" completion)) "its answer is the ask's"))))))))
+
 (deftest loop-runs-a-tool-then-recurs (let ((session (nle::make-session))))
   (nle:admit session "compute")
   (with-stub-provider ((wire-message "assistant"
@@ -8510,6 +8580,147 @@ thinking types DECLARED (a list, :UNDECLARED, or NIL for never asked)."
         (let ((nle::*reasoning-effort* nil))
           (is (equal "high" (run-once "ctl-run"))))))))
 
+;;; --- effort auto: the decider picks each turn's rung ----------------------
+;;; nodecode#421: an effort of auto hands the pick to general.decider_model,
+;;; which reads the ask before the turn's first round; with no decider, or one
+;;; that fails, the default binds and the board says why.
+
+(defmacro with-decider-answering ((asked &body answer) &body body)
+  "Run BODY with djev pinned, each decider call pushed onto ASKED as (URL
+. REQUEST) and answered with the choice ANSWER evaluates to; an ANSWER that
+signals is a decider that cannot be reached. Every other call goes out."
+  `(with-stubbed-fdefinitions
+       ((nle::decider-model () (values "djev" "dgemma" "http://127.0.0.1:8011" nil))
+        (nlk:http (method url &rest args)
+          (if (search "/v1/systemone" url)
+              (progn
+                (push (cons url (nlk:decode-json (getf args :content))) ,asked)
+                (values (shasht:write-json
+                         (nlk:json-object
+                          "answers" (nlk:json-object
+                                     "effort" (nlk:json-object "type" "choice"
+                                                               "choice" (progn ,@answer))))
+                         nil)
+                        200))
+              (apply original method url args))))
+     ,@body))
+
+(deftest decider-effort-asks-one-choice-over-the-targets-rungs ()
+  (let ((nle::*models-catalog-path* nil)
+        (nle::*model-capability-overrides* '(("laddered" . (:effort-levels ("off" "low" "medium" "high")))
+                                             ("one-rung" . (:effort-levels ("high")))))
+        (asked '()))
+    (with-decider-answering (asked "high")
+      (is (equal "high" (nle::decider-effort "find the race in the scheduler" "openai-responses" "laddered")))
+      (destructuring-bind (url . request) (first asked)
+        (is (equal "http://127.0.0.1:8011/v1/systemone" url))
+        (is (equal "find the race in the scheduler" (nlk:json-value request :string "state")))
+        (is (equal "dgemma" (nlk:json-value request :string "model")))
+        (let ((question (nlk:json-value request :object "questions" "effort")))
+          (is (equal "choice" (nlk:json-value question :string "type")))
+          ;; the target's own rungs, never off
+          (is (null (set-exclusive-or '("low" "medium" "high")
+                                      (alexandria:hash-table-keys (gethash "criteria" question))
+                                      :test #'equal)))
+          (is (search "debugging" (nlk:json-value question :string "criteria" "high")) "each with its rubric")))
+      (is (equal "high" (nle::decider-effort "anything" "openai-responses" "one-rung")))
+      (is (= 1 (length asked)) "a ladder of one rung asks no one"))
+    ;; a label the ladder lacks is refused, not sent
+    (with-decider-answering (asked "max")
+      (is (search "no rung" (princ-to-string
+                             (nth-value 1 (ignore-errors
+                                           (nle::decider-effort "x" "openai-responses" "laddered")))))))))
+
+(deftest auto-is-offered-and-admitted-only-with-a-decider-pinned ()
+  (let ((nle::*models-catalog-path* nil)
+        (nle::*model-capability-overrides* '(("laddered" . (:effort-levels ("low" "high")))
+                                             ("plain-model" . (:reasoning-p nil)))))
+    (with-stubbed-fdefinition (nle::decider-model () nil)
+      (is (equal '("off" "low" "high") (nle::effort-choices "openai-responses" "laddered")))
+      ;; auto with no decider would only ever fall back
+      (is (search "none is pinned"
+                  (princ-to-string (nth-value 1 (ignore-errors
+                                                 (nle::check-effort "openai-responses" "laddered" "auto")))))))
+    (with-stubbed-fdefinition (nle::decider-model () (values "djev" "dgemma" "http://127.0.0.1:8011" nil))
+      (is (equal '("off" "low" "high" "auto") (nle::effort-choices "openai-responses" "laddered")))
+      (is (equal "auto" (nle::check-effort "openai-responses" "laddered" "auto")))
+      ;; the auxiliary model's pick takes a rung
+      (is (signals-error nle::effort-refusal
+            (nle::check-effort "openai-responses" "laddered" "auto" :auto nil)))
+      (is (null (nle::effort-choices "openai-responses" "plain-model")))
+      (is (signals-error nle::effort-refusal
+            (nle::check-effort "openai-responses" "plain-model" "auto"))))
+    (is (equal "auto" (nle::admitted-effort "auto" "openai-responses" "laddered")))
+    (is (null (nle::admitted-effort "auto" "openai-responses" "plain-model")))
+    (is (null (nle::wire-effort "auto")) "no request carries auto")
+    (is (equal "high" (nle::wire-effort "high")))))
+
+(deftest run-routes-an-auto-effort-through-the-decider (with-session-store ("auto-run"))
+  (ensure-durable-session "auto-picked")
+  (let ((nle::*models-catalog-path* nil)
+        (nle::*model-capability-overrides* '(("laddered" . (:effort-levels ("low" "medium" "high")))))
+        (nle::*provider* "openai-responses")
+        (nle::*model* "laddered")
+        (asked '())
+        (seen :unset)
+        (running nil))
+    (flet ((run-once (session-id)
+             (setf seen :unset)
+             (nle:run "fix the flaky lease test" :session (nle:intern-session session-id))
+             seen)
+           (board () (second (assoc "effort-auto" (nlk:standing-notices) :test #'equal))))
+      (nlk:with-cleanup ((nle::note-effort-routing nil))
+        (with-provider-stub
+            (context
+             (setf seen (nle::effective-provider-config-reasoning-effort context.provider-config)
+                   running (multiple-value-list (nle::running-turn-effort "auto-run")))
+             (wire-message "assistant" :content "ok"))
+          (let ((nle::*reasoning-effort* "auto"))
+            (with-decider-answering (asked "high")
+              (is (equal "high" (run-once "auto-run")) "the decider's rung binds the turn")
+              (is (equal '("high" t) running) "and is the running turn's while it runs")
+              ;; the turn's end takes it away
+              (is (equal '(nil nil) (multiple-value-list (nle::running-turn-effort "auto-run"))))
+              (is (equal "fix the flaky lease test" (nlk:json-value (cdr (first asked)) :string "state")))
+              (is (equal "auto" (nlk:session-model-effort "auto-run")) "the session keeps auto, not the rung")
+              (is (null (board))))
+            (with-decider-answering (asked (error "decider down"))
+              (is (null (run-once "auto-run")) "a failed decider under an auto default runs at the model's own")
+              (is (search "fell back to the model's own" (board)) "and the board says so")))
+          (let ((nle::*reasoning-effort* "medium"))
+            (nlk:record-session-model-selection "auto-picked" :effort "auto")
+            (with-decider-answering (asked (error "decider down"))
+              (is (equal "medium" (run-once "auto-picked")) "a session's auto falls back to the default effort"))
+            (with-decider-answering (asked "low")
+              (is (equal "low" (run-once "auto-picked")))
+              (is (null (board)) "an answer clears the fallback's word"))))))))
+
+(deftest a-round-hook-effort-move-is-what-the-running-turn-shows (with-session-store ("round-effort"))
+  ;; nodecode#421: a :ROUND hook that moves *REASONING-EFFORT* moved the
+  ;; request, while the footer kept naming the pick. The op names the turn by
+  ;; id, so a hook need not read the durable turn's fields.
+  (let ((nle::*reasoning-effort* "low")
+        (seen '())
+        (ops '()))
+    (nlk:with-cleanup ((nle:unhook :round "effort-probe"))
+      (nle:hook :round "effort-probe"
+                (lambda (op next)
+                  (push op ops)
+                  (setf nle::*reasoning-effort* "high")
+                  (funcall next op)))
+      (with-provider-stub
+          (context
+           (push (list (nle::effective-provider-config-reasoning-effort context.provider-config)
+                       (multiple-value-list (nle::running-turn-effort "round-effort")))
+                 seen)
+           (wire-message "assistant" :content "ok"))
+        (nle:run "go" :session (nle:intern-session "round-effort")))
+      (is (equal '(("high" ("high" t))) seen) "the request and the running note carry the hook's effort")
+      (let ((op (first ops)))
+        (is (equal "round-effort" (getf op :session-id)))
+        (is (stringp (getf op :turn-id)))
+        (is (equal (getf op :turn-id) (nlk:durable-turn-turn-id (getf op :turn))))))))
+
 (deftest a-session-keeps-the-model-its-first-turn-ran (with-session-store ("begun"))
   ;; A pick in one session is the default for new sessions, and a session
   ;; already begun keeps its own. The first turn pins the pair it ran and
@@ -9189,6 +9400,26 @@ thinking types DECLARED (a list, :UNDECLARED, or NIL for never asked)."
     (is (not dialed) "no provider was dialed")
     (is-present (failed (session-event "no-model" :type 'nlk:turn-failed)) "the turn failed durably"
       (is (search "no model is chosen yet: /setup" (nlk:turn-failed-detail failed))))))
+
+(deftest a-pin-its-seed-refused-runs-no-image-target-in-its-place (with-session-store ("refused-pin"))
+  ;; The seed refused the config's pin, so this process still holds the target
+  ;; the image was built with, while the pin reads clean by the turn (a cell's
+  ;; lane is known by then). The turn ran that target -- a model OpenCode Zen
+  ;; no longer serves -- and failed 400 "Model is unavailable". It fails before
+  ;; any dial, saying why the pin was not applied.
+  (let ((turn (nlk:admit-turn "refused-pin" "rp-cmd" "hello"))
+        (dialed nil))
+    (with-temp-shared-config ("{\"general\":{\"default_model\":{\"provider\":\"openai-completions\",\"model\":\"m-1\"}}}")
+      (with-saved-globals ((nle::*provider* (first nle::+image-target+)) (nle::*model* (second nle::+image-target+))
+                           (nle::*endpoint* nil) (nle::*model-config-refusal* "config refusal: general.default_model: m-1 was refused at boot"))
+        (is (nle::default-model-configured-p) "the pin reads clean by the turn")
+        (with-provider-stub (nil (setf dialed t) (wire-message "assistant" :content "no"))
+          (nlk:with-handlers ((error () nil))
+            (nle:run "hello" :session (nle:intern-session "refused-pin")
+                     :command-id "rp-cmd" :admitted-turn turn)))))
+    (is (not dialed) "no provider was dialed")
+    (is-present (failed (session-event "refused-pin" :type 'nlk:turn-failed)) "the turn failed durably"
+      (is-carrying (detail (nlk:turn-failed-detail failed)) "no model is chosen" "general.default_model: m-1 was refused at boot"))))
 
 (deftest failure-body-drains-a-binary-keep-alive-stream ()
   ;; Every DeepSeek 400 answers application/octet-stream through CloudFront;

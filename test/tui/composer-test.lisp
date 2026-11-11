@@ -339,6 +339,37 @@ ABOVE, then expires into the placeholder with the band as it was."
                      (is (equal '("2026-11-08-brief.md") (texts)) "the file written since is offered"))
                 (setf (nlt:program-running program) nil)))))))))
 
+(deftest composer-catalog-walk-gives-up-its-mark-before-its-tick ()
+  ;; The walk gave up its in-flight mark after the tick that lands it, so a
+  ;; token asked for in that gap was refused as one already walking and never
+  ;; asked again: a slow runner read the mark still set where the test above
+  ;; asserts the same token asks once. The mark is gone before the tick is
+  ;; sent, so the frame that tick lands can start the next token's walk.
+  (with-temp-workspace (dir "README.md")
+    (let ((nle::*composer-catalog-cache-path* nil)
+          (marked-at-tick :unsent)
+          (test-thread (bt2:current-thread)))
+      (uiop:with-current-directory (dir)
+        (with-frame-model (model 80 24 :session-id "at-mark")
+          (let ((program (nlt:make-program model)))
+            (setf (nlt:program-running program) t model.program program)
+            (flet ((land ()
+                     (nlt::mailbox-drain (nlt::program-mailbox program) :timeout 10)
+                     (nle::land-composer-catalog-walks model)))
+              (unwind-protect
+                   (with-stubbed-fdefinition (nlt:send (to msg)
+                                               (unless (eq (bt2:current-thread) test-thread)
+                                                 (setf marked-at-tick
+                                                       (bt2:with-lock-held (nle::*composer-catalog-walks-lock*)
+                                                         (gethash model nle::*composer-catalog-walks*))))
+                                               (funcall original to msg))
+                     (is (nle::start-composer-catalog-walk model) "the token's walk starts")
+                     (is (land) "and lands")
+                     (is (null marked-at-tick) "its mark was given up before its tick was sent")
+                     (is (nle::start-composer-catalog-walk model) "so the frame that tick lands starts the next token's walk")
+                     (is (land) "and that walk lands too"))
+                (setf (nlt:program-running program) nil)))))))))
+
 (deftest composer-at-path-token-takes-the-folder-lane ()
   ;; A token naming a root of its own leaves the workspace catalog; a bare
   ;; name, a hidden name and a workspace folder stay in it.

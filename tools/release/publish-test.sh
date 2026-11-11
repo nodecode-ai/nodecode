@@ -227,6 +227,7 @@ mkdir -p "$sandbox/tools/release" "$sandbox/tools/install" "$sandbox/marketplace
 cp "$repo/tools/release/publish.sh" "$sandbox/tools/release/publish.sh"
 cp "$repo/tools/release/publish-config.sh" "$sandbox/tools/release/publish-config.sh"
 cp "$repo/tools/release/layout.sh" "$sandbox/tools/release/layout.sh"
+cp "$repo/tools/release/platforms.sh" "$sandbox/tools/release/platforms.sh"
 cp "$repo/tools/release/mirror-installers.sh" "$sandbox/tools/release/mirror-installers.sh"
 printf '%s\n' '#!/bin/sh' '# reads the channel pointer' > "$sandbox/tools/install/install.sh"
 printf '%s\n' '#!/bin/sh' '# an older copy of the installer' > "$sandbox/marketplace/web/public/install.sh"
@@ -426,6 +427,53 @@ for platform in x86_64-linux x86_64-windows; do
     || fail "stable-$platform does not name latest999 without the Mac"
 done
 printf '%s\n' 'publish-test: leaving the Mac out is said, and ships no darwin archive or pointer'
+
+# --- holding Windows back -----------------------------------------------------
+# NODECODE_PUBLISH_SKIP_WINDOWS holds Windows on the release it runs, until its
+# builds are signed: the publish says so, boots no sandbox, and ships no
+# Windows archive or pointer -- stable or nightly, a nightly the release
+# carries included -- while Linux and the Mac move as ever. install.ps1 stays
+# the one the site serves, install.sh is mirrored alone, the releases page
+# carries no Windows asset, and its notes name the release Windows keeps.
+hold_host="$root/hold-host"
+mkdir -p "$hold_host/dl"
+printf 'heldwin01\n' > "$hold_host/dl/stable-x86_64-windows"
+printf 'olderwin2\n' > "$hold_host/dl/nightly-x86_64-windows"
+printf 'olderlnx3\n' > "$hold_host/dl/nightly-x86_64-linux"
+printf '%s\n' '# the installer Windows runs now' > "$sandbox/site-remote/web/public/install.ps1"
+printf '%s\n' '#!/bin/sh' '# an installer from before' > "$sandbox/site-remote/web/public/install.sh"
+NODECODE_PUBLISH_SKIP_WINDOWS=1 PUBLISH_TEST_WINDOWS_FAIL=1 PUBLISH_TEST_HOST="$hold_host" publish fresh-hold hold \
+  || { cat "$root/hold-errors" >&2; fail 'the publish holding Windows back failed'; }
+grep -q 'NODECODE_PUBLISH_SKIP_WINDOWS is set: no Windows arm, and every x86_64-windows pointer keeps the label it names' "$root/hold-errors" \
+  || fail "the held Windows was not said: $(cat "$root/hold-errors")"
+if grep -qiE 'windows|\.ps1' "$root/hold-scp"; then
+  fail "a publish holding Windows shipped: $(grep -iE 'windows|\.ps1' "$root/hold-scp" | tr '\n' ' ')"
+fi
+[ ! -e "$sandbox/fresh-hold/nodecode-latest999-x86_64-windows.zip" ] || fail 'a publish holding Windows booted the sandbox'
+for platform in x86_64-linux arm64-darwin; do
+  grep -q "stable-$platform points at latest999" "$root/hold-output" \
+    || fail "stable-$platform does not name latest999 while Windows is held"
+done
+grep -qx 'nightly-x86_64-linux' "$root/hold-scp" || fail 'the Linux nightly the release carries did not move'
+grep -qx '# the installer Windows runs now' "$sandbox/site-remote/web/public/install.ps1" \
+  || fail 'a publish holding Windows replaced the site install.ps1'
+grep -q -- '--path web/public/install.sh' "$root/hold-commits" || fail 'install.sh was not mirrored while Windows is held'
+! grep -q 'install.ps1' "$root/hold-commits" || fail "install.ps1 was committed while Windows is held: $(cat "$root/hold-commits")"
+grep -q 'install.sh is live at' "$root/hold-output" || fail 'install.sh was not proved while Windows is held'
+! grep -q 'install.ps1 is live at' "$root/hold-output" || fail 'install.ps1 was proved as if it moved'
+grep -q 'install.ps1 stays as it was' "$root/hold-output" || fail 'the kept install.ps1 was not said'
+grep -q 'v9.9.9 is on the releases page with 4 assets' "$root/hold-output" \
+  || fail "the release does not carry Linux and the Mac alone: $(grep 'releases page' "$root/hold-output")"
+grep -qx 'Windows is held back: this release ships no Windows build, so Windows installs and updates stay on nodecode 9.9.9 (heldwin01).' "$root/gh-state/notes" \
+  || fail "the notes do not name the release Windows keeps: $(cat "$root/gh-state/notes")"
+NODECODE_PUBLISH_SKIP_WINDOWS=1 PUBLISH_TEST_WINDOWS_FAIL=1 NODECODE_PUBLISH_CHANNEL=nightly publish fresh-hold-nightly hold-nightly \
+  || { cat "$root/hold-nightly-errors" >&2; fail 'the nightly holding Windows back failed'; }
+for platform in x86_64-linux arm64-darwin; do
+  grep -qx "nightly-$platform" "$root/hold-nightly-scp" || fail "nightly-$platform did not move while Windows is held"
+done
+! grep -qi windows "$root/hold-nightly-scp" || fail "a nightly holding Windows shipped: $(grep -i windows "$root/hold-nightly-scp" | tr '\n' ' ')"
+cp "$sandbox/tools/install/install.sh" "$sandbox/tools/install/install.ps1" "$sandbox/site-remote/web/public/"
+printf '%s\n' 'publish-test: holding Windows back ships no Windows archive, pointer or installer, and the notes name what it keeps'
 
 # --- a nightly moves the nightly pointers alone --------------------------------
 # main's newest green build, for the homes whose config follows nightly: its

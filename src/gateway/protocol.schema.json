@@ -86,7 +86,7 @@
       "anyOf": [{ "required": ["prompt"] }, { "required": ["content"] }]
     },
     "StartTurn": {
-      "description": "Start a turn; one already running queues it behind (result status queued). provider, model and effort, each optional, are the target a session not yet begun runs on, the default left where it is; a begun session takes only its own target (else rejected, session_pinned).",
+      "description": "Start a turn; one already running queues it behind (result status queued). provider, model and effort, each optional, are the target a session not yet begun runs on, the default left where it is; a begun session takes only its own target (else rejected, session_pinned). A provider named without a model runs the default model only when the default rides that provider; else it is rejected, unknown_provider, naming that provider's models.",
       "type": "object",
       "required": ["type", "request"],
       "allOf": [{ "$ref": "#/$defs/CommandIdentity" }],
@@ -583,7 +583,13 @@
             "provider": { "$ref": "#/$defs/MaybeString" },
             "model": { "$ref": "#/$defs/MaybeString" },
             "effort": { "$ref": "#/$defs/MaybeString" },
-            "efforts": { "type": "array", "items": { "type": "string" } }
+            "efforts": { "type": "array", "items": { "type": "string" } },
+            "running": {
+              "oneOf": [
+                { "type": "null" },
+                { "type": "object", "properties": { "effort": { "$ref": "#/$defs/MaybeString" } } }
+              ]
+            }
           }
         },
         "pending_prompts": { "type": "array" }

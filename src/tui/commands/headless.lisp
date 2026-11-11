@@ -158,7 +158,7 @@ together, pinning no session -- `default' taking it out."
   (cond
     ((zerop (length rung))
      (bind (((provider model _ _ _ effort) (gateway-target (and (stringp session-id) session-id)))
-            (ladder (effort-ladder provider model)))
+            (ladder (effort-choices provider model)))
        (if (null ladder)
            (format nil "~a/~a offers no reasoning control" provider model)
            (format nil "reasoning effort for ~a/~a: ~a~%ladder: ~{~a~^ ~}"

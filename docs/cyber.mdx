@@ -1,0 +1,84 @@
+---
+title: Abliterated LLM API quickstart
+rail: API quickstart
+summary: "Calling Cyber v1, Nodecode's abliterated model: a key, a base URL, the three wire shapes it answers, Claude Code and Codex on it, and the one thing that goes wrong with a reasoning model."
+---
+
+Cyber v1 is `nodecode-cyber-v1`: DeepSeek V4.1 Flash 1017 with its refusal direction abliterated, 1,048,576 tokens of context, served on machines Foresight Labs runs in Europe with zero data retention. [Its own page](https://nodecode.ai/cyber) says what it is and who it is for; this one is how to call it.
+
+## A key
+
+Make one at [nodecode.ai/account/keys](https://nodecode.ai/account/keys). It starts `sk-nc-`, and it is shown once. A balance is topped up at [Top up](https://nodecode.ai/account/top-up). The Nodecode CLI needs no pasted key: `nodecode login` signs the machine in and saves a key of its own, as [Models and providers](models.mdx#nodecodes-own-models) says.
+
+## The first call
+
+```sh
+curl https://api.nodecode.ai/v1/chat/completions \
+  -H "Authorization: Bearer $NODECODE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "nodecode-cyber-v1",
+    "messages": [{"role": "user", "content": "22/tcp and 8080/tcp are open. What next, in order?"}],
+    "max_tokens": 600
+  }'
+```
+
+## Three wires
+
+One model, three shapes of request. A client that speaks any of them points here with a base URL and a key, and needs nothing else.
+
+| Wire | Path | Clients that speak it |
+| --- | --- | --- |
+| OpenAI chat completions | `/v1/chat/completions` | OpenAI SDK, LiteLLM, LangChain, Strix |
+| OpenAI Responses | `/v1/responses` | Codex CLI |
+| Anthropic Messages | `/v1/messages` | Anthropic SDK, Claude Code |
+
+All three answered on 2026-11-10 against this endpoint. Beside them the key answers `POST /v1/messages/count_tokens`, `GET /v1/models`, `GET /v1/models/ID` and `GET /v1/usage`, which says what is left of the balance.
+
+### Claude Code
+
+```sh
+export ANTHROPIC_BASE_URL=https://api.nodecode.ai
+export ANTHROPIC_AUTH_TOKEN=sk-nc-...
+export ANTHROPIC_MODEL=nodecode-cyber-v1
+claude
+```
+
+No `/v1` on this base URL: the client adds it. [API keys](https://nodecode.ai/account/keys) shows the same lines.
+
+### Codex CLI
+
+Add this to `~/.codex/config.toml`, then `export NODECODE_API_KEY=sk-nc-...` and run `codex`:
+
+```toml
+model = "nodecode-cyber-v1"
+model_provider = "nodecode"
+
+[model_providers.nodecode]
+name = "Nodecode"
+base_url = "https://api.nodecode.ai/v1"
+env_key = "NODECODE_API_KEY"
+wire_api = "responses"
+```
+
+Codex 0.162.1 refuses `wire_api = "chat"`, so `"responses"` is the shape that works. It opens with "Model metadata for `nodecode-cyber-v1` not found": that is harmless.
+
+## A reasoning model
+
+It thinks first, and `max_tokens` covers the thinking. A call given 100 tokens spends them reasoning and returns an empty `content` with `finish_reason: "length"`, which reads like a refusal and is not one: give a call a few hundred tokens.
+
+| Wire | Where the thinking arrives |
+| --- | --- |
+| chat completions | `message.reasoning`, with the answer in `message.content` |
+| Responses | an `output` item of `type: "reasoning"`, before the `message` |
+| Messages | a `thinking` block, before the `text` block |
+
+## What it costs
+
+Per token, from a balance you top up, the same number in euros or dollars: one price for input the model had cached, one for the rest of the input, one for the output. [Pricing](pricing.mdx#what-a-call-costs) has the three figures, the weekend price and what a long prompt pays.
+
+## With your agent
+
+- [Strix](cyber-strix.mdx): three environment variables.
+- [PentAGI](cyber-pentagi.mdx): four lines of `.env`.
+- [PentestGPT](cyber-pentestgpt.mdx): a provider block for the Codex it drives.

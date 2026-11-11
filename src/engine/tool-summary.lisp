@@ -619,6 +619,10 @@ diff names from the session's directory: the same, behind a ./, or whole."
          (or (string= source path)
              (uiop:string-suffix-p source (concatenate 'string "/" path))))))
 
+(defparameter *shell-tool-names*
+  '("snippet" "run" "bash" "shell" "sh" "exec_command" "evolved_shell")
+  "The tool names whose command string is a shell command, not a snippet.")
+
 (defun tool-call-activity (name command &key metadata error-p)
   "The ACTIVITY of one tool call NAME."
   ;; COMMAND is the call's executable text — the eval snippet, or a shell tool's
@@ -690,12 +694,18 @@ diff names from the session's directory: the same, behind a ./, or whole."
             :note (snippet-note (or command ""))
             :head (snippet-head-line command)
             :error-p error-p))))
-      ;; tool names whose command string is a shell command, not a snippet
-      ((member name '("snippet" "run" "bash" "shell" "sh" "exec_command" "evolved_shell") :test #'equal)
-       (activity-from-entries
-        (with-diff (shell-command-entries (or command "")))
-        :head (snippet-head-line command)
-        :error-p error-p)))))
+      ((member name *shell-tool-names* :test #'equal)
+       ;; A line the split names nothing for (an echo, a cd, a test, a lone
+       ;; false) still ran a command: it is one command, named by its line as
+       ;; `git status' is, never the eval snippet's family. A blank line has
+       ;; not yet said what it runs.
+       (let ((line (string-trim '(#\Space #\Tab #\Newline #\Return) command)))
+         (when (plusp (length line))
+           (activity-from-entries
+            (with-diff (or (shell-command-entries command)
+                           (list (list :command line nil))))
+            :head (snippet-head-line command)
+            :error-p error-p)))))))
 
 (defun tool-argument-text (arguments keys)
   "The string value of the first of KEYS that tool ARGUMENTS — the call's
@@ -729,6 +739,127 @@ or :DEFAULT for a call with no words."
     (if activity
         (values (activity-bar-verb activity) activity.family)
         (values (format nil "running ~a" (if named name "tool")) :default))))
+
+;;; --- a tool no family names --------------------------------------------------
+;;; A cell's own tool (spotify_search, browser_click) has no family: its call
+;;; reads by its name as words and what its arguments say it did, never as
+;;; the bare name the model calls it by.
+
+(defparameter *tool-action-keys* '("action" "operation" "op")
+  "The argument keys whose value names which of a tool's actions a call takes.")
+
+(defparameter *tool-qualifier-keys* '("method" "kind" "mode" "type")
+  "The argument keys whose value, when it is one word, names what sort of call
+this is - `GET' under method, `reply' under kind - read as its action when no
+key of *TOOL-ACTION-KEYS* says one.")
+
+(defparameter *tool-query-keys*
+  '("query" "q" "search" "search_query" "keywords" "keyword" "prompt" "question")
+  "The argument keys whose value is what a call searches for or asks: the
+subject ahead of any other argument, printed quoted.")
+
+(defun tool-name-words (name)
+  "Tool NAME as words: `spotify_search' reads `Spotify search'."
+  (let ((words (format nil "~{~a~^ ~}" (remove "" (uiop:split-string name :separator "_-. ")
+                                                  :test #'string=))))
+    (if (plusp (length words))
+        (concatenate 'string (string-upcase (subseq words 0 1)) (subseq words 1))
+        name)))
+
+(defun tool-id-key-p (key)
+  "Whether argument KEY holds an id - `id', `playlist_id', `trackIds', `uuid',
+`cursor' - which says what a call took but not what that is."
+  (let ((length (length key)))
+    (or (member key '("id" "ids" "uuid" "guid" "cursor") :test #'string-equal)
+        (loop for suffix in '("_id" "_ids" "-id" "-ids" "_uuid")
+              for start = (- length (length suffix))
+              thereis (and (plusp start) (string-equal suffix key :start2 start)))
+        (loop for suffix in '("Id" "Ids" "ID" "IDs")
+              for start = (- length (length suffix))
+              thereis (and (plusp start) (string= suffix key :start2 start)
+                           (lower-case-p (char key (1- start))))))))
+
+(defun tool-argument-action (root)
+  "The action a call's argument object ROOT takes, in words, and the key it
+is under: any text under *TOOL-ACTION-KEYS*, else one word under
+*TOOL-QUALIFIER-KEYS*. => (values WORDS KEY), NIL for none."
+  (loop for key in (append *tool-action-keys* *tool-qualifier-keys*)
+        for value = (gethash key root)
+        for text = (and (stringp value) (string-trim " " value))
+        when (and text (plusp (length text))
+                  (or (member key *tool-action-keys* :test #'string=)
+                      (and (<= (length text) 24) (alpha-char-p (char text 0))
+                           (every (lambda (char) (or (alphanumericp char) (find char "_-"))) text))))
+          return (values (string-downcase (substitute #\Space #\_ text)) key)))
+
+(defun tool-argument-subject (root &optional action-key)
+  "The subject of a call's argument object ROOT, as a title prints it: the
+first query quoted, else the first other text that is no id, else an id, else
+the first number; an array by its first member and how many more. The text
+under ACTION-KEY, the call's action, is never its subject, nor is a value
+under a secret's name (SECRET-KEY-P), and a URL's credentials are cut out.
+NIL for none."
+  ;; A cell's vault_put {api_key, name} reads `github', never the key.
+  (labels ((text (value)
+           (typecase value
+             (string (let ((line (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                              (substitute #\Space #\Newline
+                                                          (redact-url-credentials value)))))
+                       (and (plusp (length line)) (stub-clip line *activity-source-limit*))))
+             (vector (let ((first (and (plusp (length value)) (stringp (aref value 0)) (aref value 0))))
+                       (when-let (line (and first (text first)))
+                         (if (> (length value) 1)
+                             (format nil "~a +~d" line (1- (length value)))
+                             line))))))
+         (keys () (let (keys) (maphash (lambda (key value) (declare (ignore value))
+                                         (unless (secret-key-p key) (push key keys)))
+                                       root)
+                    (nreverse keys))))
+    (or (loop for key in *tool-query-keys*
+              for line = (text (gethash key root))
+              when line return (format nil "'~a'" line))
+        (loop for key in (keys)
+              for line = (and (not (equal key action-key)) (not (tool-id-key-p key))
+                              (text (gethash key root)))
+              when line return line)
+        (loop for key in (keys)
+              for line = (and (not (equal key action-key)) (text (gethash key root)))
+              when line return line)
+        (loop for key in (keys)
+              for value = (gethash key root)
+              when (realp value) return (princ-to-string value)))))
+
+(defun tool-arguments-words (name arguments)
+  "What a call of tool NAME did, in words, for a tool no family names: its
+name as words, the action its ARGUMENTS take and their subject -- `Spotify
+search 'Discovery'', `Spotify playback: play spotify:album:2noRn2Aes5'. Its
+name alone while ARGUMENTS are not yet whole. NIL for eval, a shell tool and
+a call not yet named, which have words of their own."
+  (when (and (stringp name) (plusp (length name))
+             (not (equal name "eval"))
+             (not (member name *shell-tool-names* :test #'equal)))
+    (multiple-value-bind (action subject) (tool-arguments-parts arguments)
+      (format nil "~a~@[: ~a~]~@[ ~a~]" (tool-name-words name) action subject))))
+
+(defun tool-arguments-parts (arguments)
+  "The action a call's ARGUMENTS JSON takes and their subject, each in words
+(TOOL-ARGUMENT-ACTION, TOOL-ARGUMENT-SUBJECT). => (values ACTION SUBJECT),
+NIL for either while ARGUMENTS are not yet whole or say none."
+  (let* ((root (and (stringp arguments)
+                    (uiop:string-suffix-p (string-right-trim '(#\Space #\Newline #\Return #\Tab) arguments) "}")
+                    (ignore-errors (nlk:decode-json arguments))))
+         (root (and (hash-table-p root) root)))
+    (if root
+        (multiple-value-bind (action action-key) (tool-argument-action root)
+          (values action (tool-argument-subject root action-key)))
+        (values nil nil))))
+
+(defun tool-arguments-detail (arguments)
+  "What a call was handed, as a card's title prints it after the tool's own
+name: the action its ARGUMENTS take and their subject, `add
+spotify:track:2VEZ'. NIL for none."
+  (multiple-value-bind (action subject) (tool-arguments-parts arguments)
+    (and (or action subject) (format nil "~@[~a~]~:[~; ~]~@[~a~]" action (and action subject) subject))))
 
 ;;; --- words -------------------------------------------------------------------
 

@@ -30,6 +30,7 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$here/../.." && pwd)"
 . "$here/layout.sh"
+. "$here/platforms.sh"
 cd "$repo"
 
 mode="${NODECODE_RELEASE_MODE:-}"
@@ -94,16 +95,23 @@ git merge-base --is-ancestor "$commit" "$main" || {
 # A night with nothing new: every nightly pointer already names the pick. The
 # read carries a cache-buster: this is a decision, and the zone holds the
 # plain URL for hours. A pointer that does not answer (none yet, a host
-# mid-restart) is a night to publish.
+# mid-restart) is a night to publish. A platform held back (platforms.sh) is
+# not asked: its pointer stays where it is, so it never names the pick, and
+# counting it would build every night for nothing.
 if [ "$mode" = nightly ] && [ "$skip" = false ]; then
   base_url="${NODECODE_RELEASE_BASE_URL:-https://nodecode.ai}"
   base_url="${base_url%/}"
   named=0
-  for platform in x86_64-linux arm64-darwin x86_64-windows; do
+  shipped=0
+  for platform in $(release_platforms); do
+    shipped=$((shipped + 1))
     pointer="$(curl -fsS -m 20 "$base_url/dl/nightly-$platform?cb=$(date +%s)" 2>/dev/null | tr -d '[:space:]')" || pointer=''
     [ "$pointer" = "$label" ] && named=$((named + 1))
   done
-  if [ "$named" = 3 ]; then
+  for platform in $(release_held); do
+    echo "release: $(release_hold_setting "$platform") is set: nightly-$platform is held where it is, and not asked"
+  done
+  if [ "$named" = "$shipped" ]; then
     echo "release: every nightly pointer already names $label, main's newest green commit; nothing to publish"
     skip=true
   fi

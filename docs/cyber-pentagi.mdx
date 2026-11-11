@@ -1,0 +1,50 @@
+---
+title: PentAGI with an abliterated LLM
+rail: PentAGI
+summary: "Pointing PentAGI's custom LLM provider at Cyber v1, Nodecode's abliterated model: four lines of .env, and the model field that makes them work."
+---
+
+[PentAGI](https://pentagi.com) is a self-hosted multi-agent pentest system: a team of agents plans the work, runs nmap, Metasploit, sqlmap and 20 more tools inside a Docker sandbox, and keeps what it learned in PostgreSQL. It takes any OpenAI-compatible endpoint through one block of `.env`.
+
+## Install it
+
+Its installer sets up the whole stack with Docker Compose: download the archive for your architecture from [pentagi.com](https://pentagi.com), unzip it, and run the installer (it needs the Docker socket, so `sudo ./installer`).
+
+```sh
+wget -O installer.zip https://pentagi.com/downloads/linux/amd64/installer-latest.zip
+unzip installer.zip
+sudo ./installer
+```
+
+## Point it at Cyber v1
+
+The installer writes a `.env`. Its custom provider is the block that takes an arbitrary base URL, a key and a model name:
+
+```sh
+LLM_SERVER_URL=https://api.nodecode.ai/v1
+LLM_SERVER_KEY=sk-nc-...
+LLM_SERVER_MODEL=nodecode-cyber-v1
+LLM_SERVER_API_TYPE=
+```
+
+Four variables, and the empty fourth matters: `LLM_SERVER_API_TYPE` is `azure` or `azure_ad` for an Azure deployment, and empty for a plain OpenAI-compatible endpoint, which is what this is. Leave `LLM_SERVER_PROVIDER` empty too: it prefixes model names for a LiteLLM proxy (`moonshot/kimi-2.5`), and `LLM_SERVER_MODEL` is already the name the API answers to.
+
+A reasoning model keeps its thinking across turns when the request asks it to. If PentAGI's chains come back with the reasoning stripped, set `LLM_SERVER_PRESERVE_REASONING=true`, which is the switch its README names for providers that require it.
+
+Then bring the stack up again so the new `.env` is read:
+
+```sh
+docker compose up -d --force-recreate
+```
+
+## The other route
+
+PentAGI's OpenAI provider takes a base URL of its own, so `OPEN_AI_KEY=sk-nc-...` with `OPEN_AI_SERVER_URL=https://api.nodecode.ai/v1` also lands on Cyber v1. The custom provider above is the one to prefer: it names the model directly and leaves the OpenAI defaults alone.
+
+## Choosing the model per agent
+
+`LLM_SERVER_CONFIG_PATH` takes a YAML file that gives each of PentAGI's agents its own model. One model for every agent is the default, and the model to start with; a second, smaller model for the parser and the summariser is the usual first cut.
+
+## What was checked
+
+The settings above are PentAGI's own, as its README and `.env.example` give them, and the endpoint they point at answers as [the quickstart](cyber.mdx) shows. PentAGI's whole stack has not been run against it here yet.

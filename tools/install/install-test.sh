@@ -11,13 +11,14 @@ set -eu
 # of the fake home below: the refresh then hands their gateway's home to the
 # fake binary and the check on NODECODE_HOME fails.
 unset XDG_CONFIG_HOME
+here="$(cd "$(dirname "$0")" && pwd)"
 
 root="$(mktemp -d)"
 trap 'rm -rf "$root"' EXIT INT TERM
 
 release="$root/release"
 mkdir -p "$release/nodecode-test-x86_64-linux"
-printf '%s\n' '#!/bin/sh' 'case "${1:-}" in' '  --help) printf "%s\\n" "usage: nodecode" ;;' '  gateway) [ "${2:-}" = restart ] || exit 1; if [ -n "${NODECODE_INSTALL_TEST_OLD:-}" ] && [ "${3:-}" = --force ]; then exit 2; fi; printf "NODECODE_HOME=%s\\nXDG_CONFIG_HOME=%s\\nARGS=%s\\n" "${NODECODE_HOME:-}" "${XDG_CONFIG_HOME:-}" "$*" > "$NODECODE_INSTALL_TEST_TRACE" ;;' '  *) exit 1 ;;' 'esac' > "$release/nodecode-test-x86_64-linux/nodecode"
+printf '%s\n' '#!/bin/sh' 'case "${1:-}" in' '  --help) printf "%s\\n" "usage: nodecode" ;;' '  gateway) [ "${2:-}" = restart ] || exit 1; if [ -n "${NODECODE_INSTALL_TEST_OLD:-}" ] && [ "${3:-}" = --force ]; then exit 2; fi; printf "NODECODE_HOME=%s\\nHOME=%s\\nPWD=%s\\nXDG_CONFIG_HOME=%s\\nARGS=%s\\n" "${NODECODE_HOME:-}" "${HOME:-}" "$(pwd -P)" "${XDG_CONFIG_HOME:-}" "$*" >> "$NODECODE_INSTALL_TEST_TRACE" ;;' '  *) exit 1 ;;' 'esac' > "$release/nodecode-test-x86_64-linux/nodecode"
 chmod +x "$release/nodecode-test-x86_64-linux/nodecode"
 tar -czf "$release/nodecode-test-x86_64-linux.tar.gz" -C "$release" nodecode-test-x86_64-linux
 sha256sum "$release/nodecode-test-x86_64-linux.tar.gz" > "$release/nodecode-test-x86_64-linux.tar.gz.sha256"
@@ -26,9 +27,10 @@ fake_bin="$root/bin"
 mkdir -p "$fake_bin"
 cat > "$fake_bin/systemctl" <<'EOF'
 #!/bin/sh
-if [ "${2:-}" = is-active ] && [ "${3:-}" = --quiet ] &&
-   [ "${4:-}" = nodecode-gateway.service ]; then
-  exit 0
+if [ "${2:-}" = is-active ] && [ "${3:-}" = --quiet ]; then
+  case " ${NODECODE_INSTALL_TEST_ACTIVE:-nodecode-gateway.service} " in
+    *" ${4:-} "*) exit 0 ;;
+  esac
 fi
 exit 1
 EOF
@@ -40,7 +42,8 @@ printf '%s\n' \
   "# nodecode gateway: $root/organism/" \
   '[Unit]' \
   '[Service]' \
-  'Type=simple' > "$home/.config/systemd/user/nodecode-gateway.service"
+  'Type=simple' \
+  "ExecStart=\"$root/install/current/nodecode\" gateway run" > "$home/.config/systemd/user/nodecode-gateway.service"
 
 PATH="$fake_bin:$PATH" \
 HOME="$home" \
@@ -60,6 +63,8 @@ printf '%s\n' 'install-test: active gateway refresh carries the systemd config r
 # gateway's own tool shell included. A build from before --force refuses the
 # word with exit 2, and is asked again without it.
 grep -qx 'ARGS=gateway restart --force' "$root/trace"
+sed -i.bak "s|$root/install/current|$root/install-old/current|" "$home/.config/systemd/user/nodecode-gateway.service"
+rm "$home/.config/systemd/user/nodecode-gateway.service.bak"
 PATH="$fake_bin:$PATH" \
 HOME="$home" \
 NODECODE_HOME="$root/install-old" \
@@ -71,6 +76,49 @@ NODECODE_INSTALL_TEST_OLD=1 \
 grep -q 'refreshed and restarted nodecode-gateway.service on test' "$root/output-old"
 grep -qx 'ARGS=gateway restart' "$root/trace-old"
 printf '%s\n' 'install-test: the refresh forces its restart, and asks a build without --force plainly'
+
+# --- only this install's gateways, each in its own environment ----------------
+# An install into a scratch NODECODE_HOME restarted every gateway on the
+# machine onto its scratch build, each unit written again with the installer's
+# $HOME and its folder. A gateway another install or a build tree runs is left
+# as it is; this install's own are restarted with the unit's HOME, else the
+# account's, the unit's config root and its own folder.
+units="$home/.config/systemd/user"
+rm "$units/nodecode-gateway.service"
+mkdir -p "$root/own-folder" "$root/elsewhere" "$root/tree"
+gw() { # NAME PROGRAM ENVIRONMENT-LINE...
+  name=$1 program=$2; shift 2
+  { printf '%s\n' "# nodecode gateway: $root/$name/" '[Unit]' '[Service]' 'Type=notify' \
+      "ExecStart=\"$program\" gateway run" "WorkingDirectory=$root/own-folder"
+    for line; do printf 'Environment="%s"\n' "$line"; done; } > "$units/nodecode-gateway-$name.service"
+}
+gw own "$root/install-own/current/nodecode" "XDG_CONFIG_HOME=$home/.config"
+gw own-home "$root/install-own/current/nodecode" "HOME=$home"
+gw other "$root/install/current/nodecode"
+gw tree "$root/tree/nodecode"
+(cd "$root/elsewhere" &&
+  PATH="$fake_bin:$PATH" \
+  HOME="$home" \
+  NODECODE_HOME="$root/install-own" \
+  NODECODE_VERSION=test \
+  NODECODE_BASE_URL="file://$release" \
+  NODECODE_INSTALL_TEST_TRACE="$root/trace-own" \
+  NODECODE_INSTALL_TEST_ACTIVE='nodecode-gateway-own.service nodecode-gateway-own-home.service nodecode-gateway-other.service nodecode-gateway-tree.service' \
+    sh "$here/install.sh" --no-modify-path > "$root/output-own")
+ofail() { printf 'install-test: %s\n' "$1" >&2; cat "$root/output-own" "$root/trace-own" >&2; exit 1; }
+call() { awk -v h="NODECODE_HOME=$root/$1" '$0 == h { p = 1; print; next } /^NODECODE_HOME=/ { p = 0 } p' "$root/trace-own"; }
+[ "$(grep -c '^ARGS=' "$root/trace-own")" -eq 2 ] || ofail 'the refresh restarted a gateway this install does not run'
+grep -q 'left active gateway nodecode-gateway-other.service as it is' "$root/output-own" || ofail 'a gateway another install runs is not named as left'
+grep -q 'left active gateway nodecode-gateway-tree.service as it is' "$root/output-own" || ofail 'a gateway a build tree runs is not named as left'
+account="$(getent passwd "$(id -u)" | cut -d: -f6)"
+folder="$(cd "$root/own-folder" && pwd -P)"
+call own | grep -qx "HOME=$account" || ofail "a unit with no HOME was handed the installer's, not the account's"
+call own | grep -qx "PWD=$folder" || ofail "the restart ran in the installer's folder, not the unit's"
+call own | grep -qx "XDG_CONFIG_HOME=$home/.config" || ofail "the unit's own config root was not kept"
+call own-home | grep -qx "HOME=$home" || ofail "a unit's own HOME was not kept"
+call own-home | grep -qx 'XDG_CONFIG_HOME=' || ofail "a unit whose HOME holds its folder was handed a config root it never named"
+call own-home | grep -qx "PWD=$folder" || ofail "the restart ran in the installer's folder, not the unit's"
+printf '%s\n' "install-test: the refresh restarts only this install's gateways, each with its own HOME, config root and folder"
 
 # --- the channel pointer names the release ----------------------------------
 # No release is written into the installer any more: it reads

@@ -164,7 +164,7 @@ nodecode.ai's API: Nodecode's own models, at https://api.nodecode.ai/v1, OpenAI'
   (let ((*auxiliary-model* (list :provider \"nodecode\" :model \"nodecode-decide-v1\")))
     (nlk:decode-json (complete \"\" (shasht:write-json REQUEST nil) :max-tokens 1024 :fallback-p nil)))
 
-The decider pin. general.decider_model is the decider /models' Decider tab picks: djev (DJev, model dgemma) on a machine of your own, http://127.0.0.1:8011 unless providers.djev.base_url moves it, called as POST <base>/v1/systemone with the same request shape. /models' Decider tab pins it, and its None takes it out. Decide v1 is the hosted decider; the pin does not offer it.")
+The decider pin. general.decider_model is the decider /models' Decider tab picks: djev (DJev, model dgemma) on a machine of your own, http://127.0.0.1:8011 unless providers.djev.base_url moves it, called as POST <base>/v1/systemone with the same request shape. /models' Decider tab pins it, and its None takes it out. Decide v1 is the hosted decider; the pin does not offer it. With a decider pinned, an effort of auto (/think auto, (select-effort \"auto\"), or general.default_model.effort) has it pick each turn's rung from the ask before the first round; with none, or one that fails, the turn runs at the default effort and /status says why.")
     (:docs "the user reference, https://nodecode.ai/docs - what to tell a person asking how to install, sign in, pick a model, connect a channel, change a setting, update or fix Nodecode; every page as markdown at /docs/SLUG.md, the map at /docs/llms.txt" . "The user reference, https://nodecode.ai/docs: how to install, run, set up and fix Nodecode, written for the people who use it, not for its internals.
 
 When someone asks how to do something with Nodecode - install it, sign in, pick a model, connect a channel, change a setting, update, roll back, recover from a failure - read the page that answers it and answer from it, linking https://nodecode.ai/docs/SLUG so they can read on. Every page is also markdown at https://nodecode.ai/docs/SLUG.md (the overview is index.md); https://nodecode.ai/docs/llms.txt is the map and https://nodecode.ai/docs/llms-full.txt all of it in one file. (nlk:http :get URL) answers (values BODY STATUS ...). The reference follows the published release: where a page and this image disagree, this image is the truth - answer from it and say the page is behind.
@@ -2431,6 +2431,24 @@ Ambient like *CURRENT-DURABLE-TURN* rather than an argument: CALL-PROVIDER's
 lambda list is a stubbing seam (test doubles) and the round
 is turn-loop state, not caller input.")
 
+(defvar *standing-on-handoff* nil
+  "True while AGENT-LOOP asks for the round after one that left work running
+in the background (its HANDOFF-P), bound around that one provider call.
+Ambient like *PROVIDER-ROUND*, for the same stubbing seam.")
+
+(defun silent-handoff-end-p (message &aux (turn *current-durable-turn*))
+  "True when MESSAGE, empty (ASSISTANT-MESSAGE-EMPTY-P), is the model ending
+its turn on a handoff (*STANDING-ON-HANDOFF*) while the turn's own background
+work is still unread (TURN-BACKGROUND-PENDING). The running eval's result
+told it to end its turn, and one that ends it may say nothing: that is a
+handoff, not a broken answer. It is not re-asked and not kept as history;
+the turn completes waiting on the work, whose exit wake carries the value."
+  (and *standing-on-handoff* turn
+       (assistant-message-empty-p message)
+       (turn-background-pending (nlk:durable-turn-session-id turn)
+                                (nlk:durable-turn-turn-id turn))
+       t))
+
 (defvar *previous-request-json* nil
   "The exact serialized body of the turn's previous provider round, as the
 UTF-8 octets that went out, or NIL at round zero, which reads the session's
@@ -3282,13 +3300,18 @@ did not say."
                     ;; words were reasoning_content would complete a turn
                     ;; the room could never show.
                     (when (assistant-message-empty-p message)
-                      ;; A refusal said nothing on purpose: the verdict stands, never re-asked.
-                      (if (member finish-reason '("refusal" "content_filter") :test #'equal)
-                          (error 'provider-refused
-                                 :detail (format nil "the provider refused to answer (finish reason ~a)"
-                                                 finish-reason))
-                          (error 'provider-empty-response
-                                 :detail "provider returned an empty assistant message")))
+                      (cond
+                        ;; A refusal said nothing on purpose: the verdict stands, never re-asked.
+                        ((member finish-reason '("refusal" "content_filter") :test #'equal)
+                         (error 'provider-refused
+                                :detail (format nil "the provider refused to answer (finish reason ~a)"
+                                                finish-reason)))
+                        ;; Silence right after a handoff is the model ending
+                        ;; its turn as the running eval's result told it to:
+                        ;; re-asked, it would only end it again.
+                        ((silent-handoff-end-p message))
+                        (t (error 'provider-empty-response
+                                  :detail "provider returned an empty assistant message"))))
                     ;; Lanes return the exact serialized request, its UTF-8
                     ;; octets, as a fourth value; a test stub that returns three
                     ;; leaves REQUEST-JSON nil and simply records no fact.
@@ -4320,6 +4343,34 @@ read refused -- goes back, so the idle wake still carries that exit."
        (apply #'agent-loop session :prefill (exit-wake-message ids) loop-arguments)
     (release-exit-wakes (exec-registry-instance) ids)))
 
+;;; --- the effort a running turn sends ---------------------------------------
+;;; The footer's effort chip read the pick, never what the running turn sent:
+;;; auto's routed rung, or a :ROUND hook's move of *REASONING-EFFORT*, ran
+;;; unseen. Each round notes the effort its request carries as it freezes it,
+;;; and the turn's end takes the note away, so a shell shows the effort in
+;;; flight while a turn runs and the pick between turns (GATEWAY-TARGET-JSON's
+;;; running).
+
+(defvar *turn-efforts* (make-hash-table :test #'equal :synchronized t)
+  "Session id -> the effort its running turn's latest round sent, NIL for the
+model's own, while that turn runs.")
+
+(defun note-turn-effort (session-id effort &key endp)
+  "Note EFFORT as the one SESSION-ID's running turn sends, or with ENDP that
+the turn ended. => true when what a shell shows moved."
+  ;; The seam START-GATEWAY advises into a model_changed frame for
+  ;; SESSION-ID, so every attached footer reads the target again.
+  (sb-ext:with-locked-hash-table (*turn-efforts*)
+    (multiple-value-bind (old present) (gethash session-id *turn-efforts*)
+      (cond (endp (and present (remhash session-id *turn-efforts*)))
+            ((and present (equal old effort)) nil)
+            (t (setf (gethash session-id *turn-efforts*) effort) t)))))
+
+(defun running-turn-effort (session-id)
+  "=> (values EFFORT RUNNING-P): the effort SESSION-ID's running turn's latest
+round sent, and whether a turn there is running and has sent one."
+  (gethash session-id *turn-efforts*))
+
  (defun agent-loop (session &key (round 0) context handoff-p prefill)
    "Fold SESSION history through one immutable compiled turn context. => the
 round's message, T as a second value when a parked steer ended the turn at a
@@ -4351,7 +4402,10 @@ and where a terminal answer would end the turn."
    ;; The :ROUND point (hook.lisp): a fact a hook records here -- a reminder,
    ;; NLK:RECORD-TURN-CONTEXT-PROMPT's :TEXT -- is in this round's request.
    ;; Isolated: a hook's own error is said and stepped over, never the turn's.
-   (call-hooked :round (list :session-id (session-id session) :turn *current-durable-turn*
+   (call-hooked :round (list :session-id (session-id session)
+                             :turn-id (and *current-durable-turn*
+                                           (nlk:durable-turn-turn-id *current-durable-turn*))
+                             :turn *current-durable-turn*
                              :round round)
                 (constantly nil)
                 :isolate t)
@@ -4389,11 +4443,17 @@ and where a terminal answer would end the turn."
                         :messages session.messages
                         :history-turns session.history-turns
                         :history-boundary session.history-boundary)))))
+       ;; What this round sends is what a footer shows while the turn runs
+       ;; (NOTE-TURN-EFFORT): auto's rung, or a :ROUND hook's move, included.
+       (unless prefill
+         (note-turn-effort (session-id session)
+                           (effective-provider-config-reasoning-effort context.provider-config)))
        (multiple-value-bind (message usage finish-reason response-metadata
                                active-context)
            (if prefill
                (values prefill nil nil nil nil)
-               (let ((*provider-round* round))
+               (let ((*provider-round* round)
+                     (*standing-on-handoff* handoff-p))
                  (call-provider context)))
          ;; A failover this round performed is the round's own identity: every
          ;; fact below — the usage fact's provider/model, the next round's
@@ -4405,20 +4465,25 @@ and where a terminal answer would end the turn."
          ;; Cancelling between the provider's return and the fact commit
          ;; used to lose the text AND the usage while still paying for
          ;; both — and boot resume then re-billed the identical round.
-         (append-message session message)
+         ;; An empty message is a silent end on a handoff, the only one
+         ;; CALL-PROVIDER lets through (SILENT-HANDOFF-END-P): no history,
+         ;; as no wire takes an empty turn back. Its usage still bills below.
+         (unless (assistant-message-empty-p message)
+           (append-message session message))
          ;; The round into the turn's meter: the context it filled is read
          ;; against the budget this round's lane believed (the learned window).
          (note-round (string/= "" (content-text (gethash "content" message)))
                      usage
                      (effective-context-budget context.provider-config))
          (when *current-durable-turn*
-           (nlk:record-assistant-message
-            *current-durable-turn* message
-            :continued-from (getf response-metadata :continued-from)
-            ;; The pictures the answer names, read now for the transcript to
-            ;; draw: the operator's, never a provider's.
-            :metadata (when-let (images (answer-images (content-text (gethash "content" message))))
-                        (json-object "images" images)))
+           (unless (assistant-message-empty-p message)
+             (nlk:record-assistant-message
+              *current-durable-turn* message
+              :continued-from (getf response-metadata :continued-from)
+              ;; The pictures the answer names, read now for the transcript to
+              ;; draw: the operator's, never a provider's.
+              :metadata (when-let (images (answer-images (content-text (gethash "content" message))))
+                          (json-object "images" images))))
            ;; finish_reason and usage are round evidence, not message content:
            ;; the message replays to the provider verbatim, the fact does not.
            (when (or usage finish-reason)
@@ -4529,6 +4594,9 @@ outranks the default effort the same way while the turn's effective
           (values nil nil))
    (let* ((sid (session-id session))
          (session-effort (nlk:session-model-effort sid))
+         ;; The default as the image holds it, before the turn binds its
+         ;; own: what an auto pick falls back to (ROUTE-TURN-EFFORT).
+         (default-effort *reasoning-effort*)
          (turn nil)
          (turn-id nil)
          (*current-durable-turn* nil)
@@ -4550,7 +4618,8 @@ outranks the default effort the same way while the turn's effective
          ;; The turn's own tool limit, read once it is admitted.
          (*turn-tools* t)
          (*tool-choice* *tool-choice*))
-    (with-cleanup ((when turn
+    (with-cleanup ((ignore-errors (note-turn-effort sid nil :endp t))
+                   (when turn
                      (forget-turn-images turn-id)
                      ;; With the log open the working set is the next hydration's to
                      ;; rebuild, so it does not outlive the turn that folded it; the
@@ -4573,10 +4642,13 @@ outranks the default effort the same way while the turn's effective
             ;; A home that chose no model has only the target the image was
             ;; built with, which nobody connected: its turn fails with the
             ;; far end's refusal as raw JSON (OpenCode's free tier now answers
-            ;; only OpenCode). It fails here, saying what to do.
-            (unless (or session-provider (default-model-configured-p))
+            ;; only OpenCode). It fails here, saying what to do -- and so does a
+            ;; home whose pin the seed refused, which holds that same target.
+            (unless (or session-provider (default-target-chosen-p))
               (error 'provider-config-error
-                     :detail "no model is chosen yet: /setup connects a provider and picks one"))
+                     :detail (if *model-config-refusal*
+                                 (format nil "no model is chosen: ~a" *model-config-refusal*)
+                                 "no model is chosen yet: /setup connects a provider and picks one")))
             ;; A provider a cell serves has no lane until the cells start,
             ;; behind a cold boot's listener: the turn waits for them.
             (await-cells-starting *provider*)
@@ -4588,6 +4660,12 @@ outranks the default effort the same way while the turn's effective
               (nlk:record-session-model-selection sid
                                                   :provider *provider* :model *model*
                                                   :effort (or session-effort *reasoning-effort*)))
+            ;; auto is the decider's to resolve: after the pin above, which
+            ;; keeps auto for the session's turns to come, and before the
+            ;; first round freezes what it sends (ROUTE-TURN-EFFORT).
+            (when (auto-effort-p *reasoning-effort*)
+              (setf *reasoning-effort*
+                    (route-turn-effort input *provider* *model* default-effort)))
             ;; The user_message workspace checkpoint: both admission
             ;; paths (in-process and gateway pre-admitted) converge
             ;; here, after the admission facts committed and outside

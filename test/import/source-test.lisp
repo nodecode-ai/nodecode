@@ -12,9 +12,10 @@
   "git ARGUMENTS in DIRECTORY for a fixture, the operator's git config left
 out. => its output, trimmed; a failure fails the gate."
   (multiple-value-bind (out err status)
-      (nlk::run-bounded (list* "git" "-C" (uiop:native-namestring directory)
-                               "-c" "user.name=fixture" "-c" "user.email=fixture@example.invalid"
-                               "-c" "commit.gpgsign=false" "-c" "tag.gpgsign=false" arguments)
+      (nlk::run-bounded (append (list "git" "-C" (uiop:native-namestring directory)
+                                      "-c" "user.name=fixture" "-c" "user.email=fixture@example.invalid"
+                                      "-c" "commit.gpgsign=false" "-c" "tag.gpgsign=false")
+                                *fixture-git-config* arguments)
                         :seconds 60
                         :environment '("GIT_TERMINAL_PROMPT=0" "GIT_CONFIG_GLOBAL=/dev/null"
                                        "GIT_CONFIG_NOSYSTEM=1"))

@@ -539,8 +539,15 @@ its subscriptions and rows views. NIL is quiet."
      (stop-gw-peer ws) (remove-peer (car ws.subscriptions) ws) (close-rows-views ws))
     (t (ignore-errors (wsd:close-connection ws)))))
 
-(defun enqueue-peer-frame (peer item &key session-id cursor cursor-present-p encoder &aux accepted)
-  "Enqueue one bounded writer item, sequencing session frames per peer."
+(defun enqueue-peer-frame (peer item &key session-id cursor cursor-present-p encoder attach
+                                &aux accepted)
+  "Enqueue one bounded writer item, sequencing session frames per peer.
+ATTACH marks the peer attached in the same step that queues ITEM."
+  ;; ATTACH is for the connect ack. The writer pops under the same lock, so
+  ;; the ack reaches the wire only after the peer is attached and every
+  ;; FANOUT-FRAME reaches a client that has read its ack. Marked after the
+  ;; ack instead, a frame broadcast in that gap skipped a client that was
+  ;; already acting on the ack.
   ;;
   ;; ITEM is a pre-encoded string for unsequenced control frames, a replay job,
   ;; or a function of the writer's peer state, called when its turn comes.
@@ -589,6 +596,7 @@ its subscriptions and rows views. NIL is quiet."
                (when (and session-id cursor-present-p)
                  (setf (gethash session-id state.durable-cursors)
                        cursor))
+               (when attach (setf state.attached-p t))
                (setf accepted t))
               (t (tombstone-peer-queue
                   state (nlk::encode-sync-protocol-error
@@ -1897,11 +1905,33 @@ prefix would otherwise send the prompt to with no key of the home's."
            (member (ignore-errors (provider-auth-state name)) '(:config :api-key :oauth :env)))
        t))
 
+(defun lane-own-model (provider &optional pinned-provider pinned-model)
+  "The model a target naming PROVIDER and no model runs on: the session's
+pinned model when its pin rides PROVIDER, else the default's when the
+default rides it -- or NIL. Never a model of another provider, which
+PROVIDER would answer only with its 404."
+  (cond ((and pinned-model (equal provider pinned-provider)) pinned-model)
+        ((equal provider *provider*) *model*)))
+
+(defun unnamed-model-detail (provider)
+  "Why a target naming PROVIDER and no model runs nowhere, in words: the
+model it would take is another provider's, or none is chosen -- with the ids
+PROVIDER's listing offers, when it answers (OFFERED-MODEL-IDS)."
+  (let* ((ids (sort (copy-list (ignore-errors (offered-model-ids provider))) #'string<))
+         (shown (subseq ids 0 (min 12 (length ids)))))
+    (format nil "provider ~a was named without a model~:[, and no model is chosen yet~;, and the default model ~:*~a is another provider's~]: name one of ~a's models as well~@[, such as ~{~a~^, ~}~]~@[ and ~d more~]"
+            provider
+            (and *model* (not (equal provider *provider*)) (format nil "~a/~a" *provider* *model*))
+            provider shown (and (> (length ids) 12) (- (length ids) 12)))))
+
 (defun target-refusal (provider model effort)
   "Why a session cannot run on PROVIDER, MODEL and EFFORT, as a (CODE
 MESSAGE) list -- unknown_provider for a provider or a model the lane refuses,
+or for no model at all (LANE-OWN-MODEL found none of PROVIDER's),
 effort_unsupported for an effort the model does not take -- or NIL when it
 can. Reads and writes nothing."
+  (unless (and (stringp model) (plusp (length (nlk:trimmed model))))
+    (return-from target-refusal (list "unknown_provider" (unnamed-model-detail provider))))
   (handler-case
       (progn
         (check-model-id provider model)
@@ -1947,7 +1977,9 @@ written."
     (bind (((pinned-provider pinned-model) (nlk:session-model-selection session-id))
            (picked-effort (nlk:session-model-effort session-id))
            (target-provider (or provider pinned-provider *provider*))
-           (target-model (or model pinned-model *model*)))
+           ;; A provider named alone runs its own lane's model, never the
+           ;; default's when that is another provider's (LANE-OWN-MODEL).
+           (target-model (or model (lane-own-model target-provider pinned-provider pinned-model))))
       (when (and pinned-provider pinned-model)
         (return-from pin-start-turn-target
           (if (and (equal target-provider pinned-provider) (equal target-model pinned-model)
@@ -3096,7 +3128,7 @@ default, field by field — and the effort the session picked."
             (or pin-model *model*)
             pin-provider
             pin-model
-            (not (or pin-provider pin-model (default-model-configured-p)))
+            (not (or pin-provider pin-model (default-target-chosen-p)))
             (and session-id (nlk:session-model-effort session-id)))))
 
 (defun gateway-target-json (&key session-id aim-provider aim-model)
@@ -3120,7 +3152,7 @@ AIM-PROVIDER or AIM-MODEL and no session, that target over the gateway's."
      "unconfigured" (if unconfigured t :false)
      ;; What a session that follows the default runs on: a client names it
      ;; beside a pick, so the pick's scope is never a guess.
-     "default" (if (default-model-configured-p)
+     "default" (if (default-target-chosen-p)
                    (json-object "provider" *provider* "model" *model*)
                    :null)
      ;; The session's own pin; NULL when it follows the default.
@@ -3131,7 +3163,12 @@ AIM-PROVIDER or AIM-MODEL and no session, that target over the gateway's."
      ;; admits it, else the default — and the rungs it admits, weakest
      ;; first: empty for a model that does not reason.
      "effort" (or (effective-effort effort provider model) :null)
-     "efforts" (coerce (effort-ladder provider model) 'vector)
+     "efforts" (coerce (effort-choices provider model) 'vector)
+     ;; While a turn runs on SESSION-ID, the effort its latest round sent
+     ;; (NOTE-TURN-EFFORT): auto's routed rung, or what a :ROUND hook moved
+     ;; it to, which the pick above never says. NULL between turns.
+     "running" (multiple-value-bind (sent running-p) (running-turn-effort session-id)
+                 (if running-p (json-object "effort" (or sent :null)) :null))
      ;; Why the target cannot serve a turn, when it cannot (an entry
      ;; naming no sdk), else why the config's own pin was not applied
      ;; (the retired flat keys, a pin missing its lane): the attached
@@ -3683,7 +3720,7 @@ go and deletes nothing)."
                  (first target) (or (first target) *provider*))
            (when-let (refusal (and given
                                    (destructuring-bind (provider model effort) target
-                                     (target-refusal provider (or model *model*) effort))))
+                                     (target-refusal provider (or model (lane-own-model provider)) effort))))
              (return-from handle-gateway-sessions-http
                (gateway-error-response 400 (first refusal) (second refusal))))
            ;; A new session is minted standing by (standby.lisp): the shell's
@@ -4369,9 +4406,9 @@ the longest directory's (a path ending in /) that URI lies under."
                                    handshake-complete t)
                              (enqueue-peer-frame
                               ws (nlk:encode-gateway-connect-ack accepted-scopes
-                                                              :version (effective-version)))
-                             (nlk:note-boot-phase "ws-acked")
-                             (mark-peer-attached ws))))))
+                                                              :version (effective-version))
+                              :attach t)
+                             (nlk:note-boot-phase "ws-acked"))))))
            (wsd:on :close ws
                    (lambda (&key &allow-other-keys)
                      (stop-gw-peer ws)
@@ -5130,6 +5167,13 @@ update poller and the folder's peripherals, TRIM as START-GATEWAY takes it.
               (announce-loaded path definitions)))
   ;; A hook an isolated chain stepped over is said to every attached shell
   ;; and stands on the board until it is registered again or unhooked.
+  ;; The effort a running turn sends moved, or its turn ended: every footer
+  ;; on that session reads the target again (GATEWAY-TARGET-JSON's running).
+  (nlk:hook 'note-turn-effort "gateway-footer"
+            (lambda (next session-id effort &rest options)
+              (let ((moved (apply next session-id effort options)))
+                (when moved (ignore-errors (broadcast-model-changed session-id)))
+                moved)))
   (nlk:hook 'nlk::note-hook-failure "gateway-notice"
             (lambda (next name key condition)
               (declare (ignore next))
@@ -5299,6 +5343,7 @@ back after them (NLK:TRIM-MEMORY)."
     (set-help-topic :image nil)
     (nlk:unhook 'nlk:source-loaded "gateway-loaded")
     (nlk:unhook 'nlk::note-hook-failure "gateway-notice")
+    (nlk:unhook 'note-turn-effort "gateway-footer")
     (setf *gateway-handler* nil
           *gateway-bound-port* nil
           *gateway-started-at* nil

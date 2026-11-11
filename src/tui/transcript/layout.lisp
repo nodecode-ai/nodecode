@@ -554,7 +554,8 @@ for a row that is no tool call, or a tool that module has no words for."
   ;; the change signal.
   (when (eq :tool-call row.kind)
     (let ((name row.tool-name) (args row.tool-args) (metadata row.metadata) (error-p row.error-p))
-      (memoized (row-activity-cache row) (name args metadata error-p)
+      ;; The hooks too: the folder's (SHOW-CELLS) can land after a row is worded.
+      (memoized (row-activity-cache row) (name args metadata error-p *hooks*)
         (tool-arguments-activity name args :metadata metadata :error-p error-p)))))
 
 (nlk:define-side-table row-load-errors (:weakness :key)
@@ -633,6 +634,18 @@ last line."
                         status-text
                         (json-value row.metadata :object "background_shell"))
     llines))
+
+(defun opened-call-llines (row)
+  "What a card opened in Standard shows of its call under its title:
+TOOL-COMMAND-LLINES -- the eval snippet or the command it ran, or for a call
+with no words its name and raw arguments. A call its words already name that
+ran no command (a cell's read, search or subagent) shows none of it."
+  ;; Without this, an opened acp read stood as `Read limiter.py' over
+  ;; `acp {"agent":"Claude Code","title":"Read limiter.py",...}': the title
+  ;; again, as the call's JSON. Developer keeps the call as it went
+  ;; (TOOL-HEADER-LLINES).
+  (unless (and (row-activity row) (null (tool-command-string row.tool-args)))
+    (tool-command-llines row)))
 
 (defun command-llines (command &key dim)
   "COMMAND one lline per line, each painted by its own syntax spans: an eval
@@ -739,11 +752,32 @@ activity's title. NIL for a call with none."
               (format nil "~d files" (length files)))))
       (and activity (activity-title activity))))
 
+(defun tool-call-words (row &aux (name (json-value row.tool-name :text)))
+  "What a listed call ROW reads as: its words (TOOL-SUMMARY-WORDS), else its
+name as words, the action its arguments take and their subject
+(TOOL-ARGUMENTS-WORDS), else its name."
+  ;; A cell's tool (spotify_search, any hub cell's own) has no family and no
+  ;; note: without this it read as its bare name, `spotify_search', nothing
+  ;; saying what it looked for or did. It reads `Spotify search: album
+  ;; 'Discovery Daft Punk'', `Spotify playback: play spotify:album:...'.
+  (or (tool-summary-words row)
+      (tool-arguments-words name row.tool-args)
+      name))
+
+(defun command-call-p (row &aux (name (json-value row.tool-name :text)))
+  "Whether call ROW ran a command: an eval snippet or a shell line, by its
+tool's name or by the command its arguments carry. A cell's call that runs
+none (a search, a play) is a tool call."
+  (or (equal name "eval")
+      (and (member name *shell-tool-names* :test #'equal) t)
+      (and (tool-argument-text row.tool-args +tool-command-keys+) t)))
+
 (defun tool-summary-lline (row)
-  "The tool's own identity, note and status, even when its result includes edits."
+  "The tool's own identity, note and status, even when its result includes
+edits; a call no words name, its name and what it was handed."
   (let* ((name (or (json-value row.tool-name :text) "…"))
          (title (title-phrases-lline (list (list (if (equal name "eval") "Eval" name) "" nil nil))))
-         (summary (tool-summary-words row)))
+         (summary (or (tool-summary-words row) (tool-arguments-detail row.tool-args))))
     (append-title-detail title summary)
     (append-status-text title (if (row-load-errors row) "error" row.tool-status)
                         (tool-failure-text row)

@@ -176,8 +176,9 @@ last read them, then read again from the gate (DIALOG-ACCOUNT-READ)."
   "=> (values PROVIDER MODEL-ID LADDER FACTS) from the gateway's target for
 this shell's session: LADDER the effort rungs it admits, weakest first, FACTS
 the footer's plist (:provider :model :unconfigured :pinned :pin-provider
-:pin-model :effort :refusal :endpoint), and the default a new session starts on
-(:default-provider :default-model)."
+:pin-model :effort :refusal :endpoint), the default a new session starts on
+(:default-provider :default-model), and while a turn runs there the effort
+its latest round sent (:running-p :running-effort)."
   ;; One dial answers the /think picker and the chrome, and an attached client
   ;; has no store to ask instead. The scope is what makes the answer address
   ;; the target the next turn on this session will bind rather than the
@@ -189,7 +190,8 @@ the footer's plist (:provider :model :unconfigured :pinned :pin-provider
          (provider (json-value target :string "provider"))
          (model-id (json-value target :string "model"))
          (pin (json-value target :object "pin"))
-         (default (json-value target :object "default")))
+         (default (json-value target :object "default"))
+         (running (json-value target :object "running")))
     (values provider model-id
             (coerce (json-array target "efforts") 'list)
             (list :provider provider
@@ -202,7 +204,9 @@ the footer's plist (:provider :model :unconfigured :pinned :pin-provider
                   :refusal (json-value target :text "refusal")
                   :endpoint (json-value target :text "endpoint")
                   :default-provider (json-value default :text "provider")
-                  :default-model (json-value default :text "model")))))
+                  :default-model (json-value default :text "model")
+                  :running-p (and running t)
+                  :running-effort (json-value running :text "effort")))))
 
 (defun open-think-dialog (model provider model-id ladder effort on-select
                           &key (default "Use the provider default")
@@ -219,6 +223,7 @@ the footer's plist (:provider :model :unconfigured :pinned :pin-provider
                                :label rung
                                :detail (cond ((equal rung effort) "current")
                                              ((equal rung "off") "Answer without reasoning.")
+                                             ((auto-effort-p rung) "The decider picks the rung per turn.")
                                              (t ""))
                                :value rung))
                             ladder))))

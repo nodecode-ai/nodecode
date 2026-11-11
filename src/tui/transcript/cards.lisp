@@ -644,7 +644,7 @@ mark: its metadata says `bare'."
                    (cons (image-card-title-lline image row) (image-band-llines image row width))))
                 (t
                  (append (if (eq *tool-detail* :standard)
-                             (cons (tool-summary-lline row) (tool-command-llines row))
+                             (cons (tool-summary-lline row) (opened-call-llines row))
                              (tool-header-llines row))
                          (fork-tree-llines row width :indent 2)
                          (tool-output-llines row width)))))
@@ -787,7 +787,7 @@ block's padding included when its viewport policy owns any."
      row.hydrated row.error-p
      row.evicted-p row.voided
      row.thought-ms row.reasoning-tokens
-     row.text-rev)
+     row.text-rev *hooks*)
     (let* ((fill (row-block-fill row))
            (body (row-body-llines row width))
            ;; The block's own padding rows. Padding is a property of the block, not of the

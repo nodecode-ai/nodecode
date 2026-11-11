@@ -78,7 +78,7 @@ of stacking."
   ;; EVP_Digest (store/events.lisp), which cl+ssl loads for TLS at every
   ;; start (it was already in the image through dexador). No ironclad system
   ;; is named: the cells that use one name it, and nodecode/bin carries
-  ;; them.
+  ;; the whole of it.
   ;; G0 added: clack + clack-handler-hunchentoot (HTTP/WS server) and
   ;; websocket-driver (RFC-6455 framing). clack-handler-hunchentoot must be
   ;; named explicitly so clackup resolves :hunchentoot; websocket-driver
@@ -496,14 +496,18 @@ of stacking."
   ;; shipped cell's third-party system must already be in it. Without this,
   ;; ASDF would look for its source under the build host's Quicklisp and the
   ;; load would die on a missing TRUENAME. The core names no ironclad system
-  ;; (see above); the channel kit's digest and Discord voice's cipher and
-  ;; AEAD ride here, bin-only, so check and the developer image still skip
-  ;; compiling them. All three must be present; without one, that system
-  ;; would compile from Quicklisp at every launch on an empty cache. The
-  ;; context skill is a built-in cell: even an empty home or --pristine
-  ;; retains its protected standing instruction. No optional folder is required.
-  :depends-on ("nodecode" "nodecode-context" "ironclad/digest/sha256" "ironclad/cipher/aes"
-               "ironclad/aead/gcm")
+  ;; (see above); the whole of it rides here, bin-only, so check and the
+  ;; developer image still skip compiling it. Whole, not the three systems the
+  ;; shipped cells name (the channel kit's digest, Discord voice's cipher and
+  ;; AEAD): a hub cell names "ironclad" itself or any system of it (Ed25519,
+  ;; X25519, HMAC, SHA-512, SHA-1), and a system the image does not carry is
+  ;; found only on the build host, where its Quicklisp still is - on every
+  ;; other machine the install refuses, `needs ironclad, which this image
+  ;; cannot find'. The whole costs some 3 MB of heap and 11 s of compile over
+  ;; those three. The context skill is a built-in cell: even an empty home or
+  ;; --pristine retains its protected standing instruction. No optional
+  ;; folder is required.
+  :depends-on ("nodecode" "nodecode-context" "ironclad")
   ;; program-op is the same save-lisp-and-die seam A6 (heredity) builds on; the
   ;; dependency comments on the main system track which systems keep that dump
   ;; free of foreign state. build-pathname is relative to this file — and

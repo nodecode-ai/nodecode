@@ -937,8 +937,9 @@ and whatever PREPARE, called with the folder, puts beside it, committed.
                                          (merge-pathnames (format nil "~a/" folder) parent)))))
     (flet ((git (&rest args)
              (string-trim '(#\Newline)
-                          (nlk::run-checked (list* "git" "-C" native "-c" "user.name=nl" "-c" "user.email=nl@nl"
-                                                   "-c" "commit.gpgsign=false" args)
+                          (nlk::run-checked (append (list "git" "-C" native "-c" "user.name=nl" "-c" "user.email=nl@nl"
+                                                          "-c" "commit.gpgsign=false")
+                                                    *fixture-git-config* args)
                                             (lambda (err) (error "git ~a: ~a" (first args) err))))))
       (git "init" "--quiet")
       (git "add" "-A")
@@ -1029,8 +1030,9 @@ from GIT at COMMIT; KEYS come first, so they win."
       (multiple-value-bind (git old) (hub-fixture-repository remote name)
         (let* ((new (flet ((git (&rest args)
                              (string-trim '(#\Newline)
-                                          (nlk::run-checked (list* "git" "-C" git "-c" "user.name=nl" "-c" "user.email=nl@nl"
-                                                                   "-c" "commit.gpgsign=false" args)
+                                          (nlk::run-checked (append (list "git" "-C" git "-c" "user.name=nl" "-c" "user.email=nl@nl"
+                                                                          "-c" "commit.gpgsign=false")
+                                                                    *fixture-git-config* args)
                                                             (lambda (err) (error "git ~a: ~a" (first args) err))))))
                       (alexandria:write-string-into-file
                        "the fix" (merge-pathnames "fixed.txt" (uiop:ensure-directory-pathname git)))
@@ -1829,6 +1831,21 @@ except OSError:
           (let ((nlk::*image-systems* '()))
             (is (equal (mapcar #'nlk:offer-missing (nlk:shipped-cells))
                        (mapcar #'nlk:offer-missing entries)))))))))
+
+(deftest cells-the-release-image-carries-the-whole-of-ironclad (with-saved-globals (nlk::*image-systems*))
+  ;; The released image is the only Lisp a user's machine has. A system it
+  ;; registered but never loaded is answered by its .asd under the build
+  ;; host's Quicklisp, which is there on the build host alone: everywhere else
+  ;; a hub cell that names one is refused, `needs ironclad, which this image
+  ;; cannot find' -- six hub cells name "ironclad" itself (airlock, clack,
+  ;; github-app, podcast, protonmail, vault), and the image carried only the
+  ;; three systems of it the shipped cells name. nodecode/bin stands on the
+  ;; whole, so every system of it is loaded in the image.
+  (let ((nlk::*image-systems* '(("ironclad" nil #p"/nonexistent/build-host/ironclad.asd"))))
+    ;; registered, not loaded, its build host's file gone: a user's machine refuses it
+    (is (equal '("ironclad") (nlk::unavailable-systems '("ironclad")))))
+  ;; so the release image stands on the whole of ironclad
+  (is (member "ironclad" (asdf:system-depends-on (asdf:find-system "nodecode/bin")) :test #'equal)))
 
 (deftest cells-a-load-waits-while-another-process-compiles-into-its-cache (with-cell-fixture (root))
   ;; The cure for ip-02 is the compile lock LOAD-CELL-FOLDERS takes around a

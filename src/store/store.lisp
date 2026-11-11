@@ -607,18 +607,26 @@ exec, and name it in the environment for the successor (ADOPT-HANDED-LEASE)."
       (sb-posix:setenv +handed-lease-variable+ (format nil "~d ~a" lock path) 1))))
 
 #+linux
-(defun proc-locks-holder-p (pid inode)
-  "Whether /proc/locks shows PID holding a granted record lock on INODE."
-  (with-open-file (in "/proc/locks" :if-does-not-exist nil)
+(defun descriptor-lock-holder-p (fd pid inode)
+  "Whether descriptor FD's fdinfo shows PID holding a record lock on INODE
+through it."
+  ;; Asked of the descriptor, never of /proc/locks: that file lists every
+  ;; lock on the machine and is read a page at a time, so a lock any process
+  ;; drops between two pages shifts the rest up and the next page starts past
+  ;; a line -- under churn (a test runner's shards, a busy host) the one
+  ;; skipped is now and then ours, and a held lease reads as forged. A
+  ;; descriptor's fdinfo lists only the locks this process holds through it,
+  ;; all in one record.
+  (with-open-file (in (format nil "/proc/self/fdinfo/~d" fd) :if-does-not-exist nil)
     (and in
          (loop for line = (read-line in nil) while line
-               thereis (let ((words (remove "" (uiop:split-string line :separator " ")
+               thereis (let ((words (remove "" (uiop:split-string line :separator '(#\Space #\Tab))
                                             :test #'string=)))
-                         ;; ID TYPE MODE RW PID MAJ:MIN:INODE START END; a
-                         ;; waiter's line carries "->" and holds nothing.
-                         (and (= (length words) 8)
-                              (equal (nth 4 words) (princ-to-string pid))
-                              (let ((id (nth 5 words)))
+                         ;; lock: ID TYPE MODE RW PID MAJ:MIN:INODE START END
+                         (and (= (length words) 9)
+                              (equal (first words) "lock:")
+                              (equal (nth 5 words) (princ-to-string pid))
+                              (let ((id (nth 6 words)))
                                 (equal (subseq id (1+ (or (position #\: id :from-end t) -1)))
                                        (princ-to-string inode)))))))))
 
@@ -633,7 +641,7 @@ its record lock: what an exec handed on is the lease only when both hold."
             (named (sb-posix:stat path)))
         (and (= (sb-posix:stat-ino open) (sb-posix:stat-ino named))
              (= (sb-posix:stat-dev open) (sb-posix:stat-dev named))
-             #+linux (proc-locks-holder-p (sb-posix:getpid) (sb-posix:stat-ino open))
+             #+linux (descriptor-lock-holder-p fd (sb-posix:getpid) (sb-posix:stat-ino open))
              #-linux t))
     (error () nil)))
 

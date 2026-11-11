@@ -81,6 +81,48 @@
         (is (= 1 (sb-posix:fcntl lock sb-posix:f-getfd)) "and closes it at a later exec again")
         (is (null (sb-posix:getenv variable)) "no child or successor is told of it")))))
 
+#+linux
+(deftest a-handed-lease-reads-as-held-while-other-locks-come-and-go (with-temp-store (store))
+  ;; Read off /proc/locks, the machine's whole lock list taken a page per
+  ;; read, a held lease now and then read as not held: a lock dropped between
+  ;; two pages shifts the rest up past the next page's start. A test runner's
+  ;; shards made that churn on CI; here this process makes it, with a page and
+  ;; more of other locks listed ahead of the lease.
+  (let* ((path (nlk::store-path store))
+         (native (uiop:native-namestring (nlk::lock-path-for-store path)))
+         (dir (uiop:pathname-directory-pathname path))
+         (descriptors '())
+         (churners '())
+         (stop nil))
+    (flet ((open-here (name)
+             (let ((fd (sb-posix:open (uiop:native-namestring (merge-pathnames name dir))
+                                      (logior sb-posix:o-creat sb-posix:o-rdwr) #o600)))
+               (push fd descriptors)
+               fd)))
+      (nlk:close-store)
+      (let ((lock (nlk::hold-store-lease path)))
+        (unwind-protect
+             (progn
+               ;; Taken after the lease, these list ahead of it.
+               (dotimes (i 300)
+                 (sb-posix:lockf (open-here (format nil "held-~d.lock" i)) sb-posix:f-tlock 0))
+               (dotimes (k 8)
+                 (let ((files (loop for i below 32 collect (open-here (format nil "churn-~d-~d.lock" k i)))))
+                   (push (sb-thread:make-thread
+                          (lambda ()
+                            (ignore-errors
+                             (loop until stop
+                                   do (dolist (fd files) (sb-posix:lockf fd sb-posix:f-tlock 0))
+                                      (dolist (fd files) (sb-posix:lockf fd sb-posix:f-ulock 0)))))
+                          :name "lock churn")
+                         churners)))
+               (is (loop repeat 1000 always (nlk::lock-handed-to-this-process-p lock native)) "the held lease reads as held on every read while other locks come and go"))
+          (setf stop t)
+          (mapc #'sb-thread:join-thread churners)
+          (mapc #'sb-posix:close descriptors))
+        (is (nlk::store-lease-mine-p path) "and is still held after")
+        (nlk:open-store :path path)))))
+
 (deftest a-store-closed-to-become-another-heap-keeps-its-lease (with-temp-store (store))
   ;; Released and taken back, the lock was free for a moment a rival could
   ;; take; kept, it never is.

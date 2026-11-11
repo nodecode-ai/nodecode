@@ -35,6 +35,15 @@ name: Release
 # unless its config's `update.channel' does. A night whose newest green commit
 # the nightly pointers already name builds nothing (release-check.sh).
 #
+# A platform can be held back while the others release. The repository
+# variable NODECODE_PUBLISH_SKIP_WINDOWS (Settings > Secrets and variables >
+# Actions > Variables, or `gh variable set NODECODE_PUBLISH_SKIP_WINDOWS
+# --body 1') holds Windows on the release it runs for every publish, a tag's
+# and each nightly's, until the variable is deleted: no Windows archive ships,
+# every Windows pointer and install.ps1 stay where they are, and the notes say
+# so. The Windows job still builds and smokes each release; its zip is not
+# shipped (platforms.sh). Held until Windows builds are signed.
+#
 # The nightly is never behind stable: a tag's publish also moves each nightly
 # pointer that names a commit the tag carries (publish.sh), so the homes on
 # nightly take the release with everyone else, and the Linux job proves that
@@ -88,6 +97,7 @@ jobs:
         run: tools/release/release-check.sh
         env:
           NODECODE_RELEASE_MODE: ${{ github.event_name == 'push' && 'publish' || github.event_name == 'schedule' && 'nightly' || inputs.mode }}
+          NODECODE_PUBLISH_SKIP_WINDOWS: ${{ vars.NODECODE_PUBLISH_SKIP_WINDOWS }}
           GH_TOKEN: ${{ github.token }}
 
   linux:
@@ -223,6 +233,7 @@ jobs:
           PUBLISH_SSH_KEY: ${{ secrets.PUBLISH_SSH_KEY }}
           PUBLISH_KNOWN_HOSTS: ${{ secrets.PUBLISH_KNOWN_HOSTS }}
           SITE_DEPLOY_KEY: ${{ secrets.SITE_DEPLOY_KEY }}
+          NODECODE_PUBLISH_SKIP_WINDOWS: ${{ vars.NODECODE_PUBLISH_SKIP_WINDOWS }}
       - name: Clear the downloaded archives
         if: always()
         run: rm -rf "$RUNNER_TEMP/dist"

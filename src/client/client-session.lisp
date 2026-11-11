@@ -2075,9 +2075,8 @@ PORT, SID the id it painted on: what MODEL's launch asked for
              ;; Start the organism when the store is free, else attach to the live owner.
              :boot
              ;; The boot starts from the first moment, before the program is
-             ;; built; SHELL, which answers the program once it exists, it has
-             ;; no use for.
-             (lambda-ignoring (shell)
+             ;; built; SHELL answers the program once it exists.
+             (lambda (shell)
                ;; PRELUDE is the folder decision when the caller has put it off until
                ;; the shell could paint (a TUI launch): it loads the folder here, or
                ;; replaces this process with a published image, or returns having
@@ -2087,7 +2086,11 @@ PORT, SID the id it painted on: what MODEL's launch asked for
                ;; the takeover rung boots this again in a process whose folder is
                ;; long loaded, and decided again, it hands a shell to a fresh image
                ;; from behind its frame, which then boots as a launch of its own.
-               (when prelude (funcall (shiftf prelude nil)))
+               (when prelude
+                 (funcall (shiftf prelude nil))
+                 ;; A row the shell worded before the folder's cells laid their
+                 ;; words (SHOW-CELLS) is worded again on the next frame: this one.
+                 (nlt:send (funcall shell) (nlt:make-tick-msg)))
                ;; A warm image that vouched for itself answers before this shell
                ;; starts an organism from it: a stale one hands the process back.
                (nlk:await-warm-verification)

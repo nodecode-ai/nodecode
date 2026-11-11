@@ -174,6 +174,7 @@ See [Gateway](gateway.mdx) and [Operations](operations.mdx).
 | `the stable channel did not answer` notice | The release host is unreachable. | Check the network and `update.url`. |
 | `no installer travels with this build` | The build has no `install.sh` beside it. | Reinstall with the one-line installer. |
 | `LABEL runs at the next launch: this image refused it live` | A hot update failed to evaluate. | Restart Nodecode. |
+| `Gateway HTTP 400 (invalid_request): upgrade: ... is unbound` | A build from before 28 Sep 2026 cannot take a newer release live, and never moves to it on its own. | Close every Nodecode window. If `nodecode gateway status` says on, run `nodecode gateway off`. Run `nodecode update`, then `nodecode`. |
 | The new build does not start | No automatic rollback. | See [Updates](updates.mdx). |
 
 {/* source: src/engine/context.lisp */}

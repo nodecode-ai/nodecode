@@ -18,51 +18,127 @@
 
 (in-package #:nodecode.term)
 
+(defconstant +sequence-gap+ 1/25
+  "Seconds the decoder waits for the next byte of a sequence: a terminal
+writes a key's sequence or a reply whole, so a longer gap is a person.")
+
+(defvar *held-keys* (make-hash-table :test 'eq :weakness :key :synchronized t)
+  "Per tty, a string stream of what a reply read took and no terminator
+ended: a person's keys, decoded again ahead of the tty.")
+
 (defun read-key (stream &optional eof)
   "One message from the bytes waiting on STREAM, or NIL when none wait; EOF
 once STREAM has ended."
   ;; A reply the shell does not consume (a query answer) also answers NIL.
   ;; A terminal ends when it hangs up: its window closed, its ssh dropped, its
   ;; pty's master gone (T-348).
+  (let ((held (gethash stream *held-keys*)))
+    (if (null held)
+        (%read-key stream stream eof)
+        (unwind-protect (%read-key (make-concatenated-stream held stream) stream eof)
+          (when (and (eq held (gethash stream *held-keys*)) (not (listen held)))
+            (remhash stream *held-keys*))))))
+
+(defun %hold-keys (tty text)
+  "Hand TEXT back to TTY's decoder, ahead of what it still holds."
+  (let ((held (gethash tty *held-keys*)))
+    (setf (gethash tty *held-keys*)
+          (make-string-input-stream
+           (if held
+               (concatenate 'string text
+                            (with-output-to-string (rest)
+                              (loop for ch = (read-char held nil nil) while ch do (write-char ch rest))))
+               text)))))
+
+(defun %reply-or-chord (stream tty introducer)
+  "The payload of the reply INTRODUCER opened on STREAM, up to its ST or BEL;
+when none ends it in the window it was a person, Alt and INTRODUCER's key or
+Esc and a fast one: the bytes read go back to TTY as keys, and the second
+value is the chord."
+  ;; Read until an ST, every key after Esc then P, ] or _ was swallowed, and
+  ;; the shell looked frozen until one came.
+  (multiple-value-bind (payload ended) (%read-until-st stream)
+    (if ended
+        payload
+        (values nil (%introducer-chord tty introducer payload)))))
+
+(defun %introducer-chord (tty introducer bytes)
+  "Alt and INTRODUCER's key, a person's chord or Esc and a fast key: BYTES,
+what was read after INTRODUCER, go back to TTY as keys."
+  (when (plusp (length bytes)) (%hold-keys tty bytes))
+  (make-key-press-msg :code introducer :mod +mod-alt+ :text (string introducer)))
+
+(defun %read-sequence (stream)
+  "The bytes of the control sequence an introducer opened on STREAM, each
+within +SEQUENCE-GAP+ of the one before, up to its final, and whether a
+final ended them. A byte no sequence holds ends the read, kept."
+  ;; ECMA-48's grammar: parameter bytes 0x30-0x3F and intermediates 0x20-0x2F,
+  ;; then one final 0x40-0x7E. A terminal writes a sequence whole, so the
+  ;; window passing, the stream ending or a byte outside the grammar (a
+  ;; control, DEL, a letter past ASCII) is a person, and the bytes are keys.
+  (let ((text (make-array 8 :element-type 'character :adjustable t :fill-pointer 0)))
+    (loop for ch = (and (or (nlk:wait-until (lambda () (listen stream))
+                                            (nlk:deadline-after +sequence-gap+))
+                            (listen stream))
+                        (read-char stream nil nil))
+          while ch
+          do (vector-push-extend ch text)
+             (let ((code (char-code ch)))
+               (cond ((<= #x40 code #x7e)
+                      (return-from %read-sequence (values (coerce text 'simple-string) t)))
+                     ((not (<= #x20 code #x3f)) (return)))))
+    (values (coerce text 'simple-string) nil)))
+
+(defun %read-key (stream tty eof)
+  "READ-KEY's decode of STREAM, TTY's held keys ahead of TTY."
   (nlk:when-let (ch (read-char-no-hang stream nil eof))
-    (when (eq ch eof) (return-from read-key eof))
+    (when (eq ch eof) (return-from %read-key eof))
     (let ((code (char-code ch)))
       (cond ((= code 27)
              ;; up to 40 ms for the rest of a sequence; a lone ESC is Escape.
              ;; The window is the clock's, never a count of sleeps: a
              ;; collection can stop every thread for a whole pause, so counting
              ;; sleeps would hold Esc past the window.
-             (nlk:wait-until (lambda () (listen stream)) (nlk:deadline-after 1/25))
+             (nlk:wait-until (lambda () (listen stream)) (nlk:deadline-after +sequence-gap+))
              (let* ((waiting (listen stream))
                     (char (and waiting (read-char stream nil nil)))
                     (code (and char (char-code char))))
                (cond
                  ((null char) (unless waiting (make-key-press-msg :code :escape)))
-                 ((char= char #\[) (parse-csi-sequence stream))
+                 ((char= char #\[) (parse-csi-sequence stream tty))
                  ;; SS3 and one byte: arrows, Home, End in application mode,
                  ;; F1-F4 in every mode (an R here is F3, never a report).
+                 ;; What no final ends in the window is Alt+Shift+O or Esc
+                 ;; and a fast O: read as SS3, it waited for the next key
+                 ;; and ate it.
                  ((char= char #\O)
-                  (let ((final (read-char stream nil nil)))
-                    (make-key-press-msg :code (or (%final-byte-key final)
-                                                  (and (eql final #\R) :f3)
-                                                  :unknown))))
+                  (multiple-value-bind (bytes ended) (%read-sequence stream)
+                    (cond ((not ended) (%introducer-chord tty char bytes))
+                          ((= (length bytes) 1)
+                           (make-key-press-msg :code (or (%final-byte-key (char bytes 0))
+                                                         (and (char= (char bytes 0) #\R) :f3)
+                                                         :unknown)))
+                          (t (make-key-press-msg :code :unknown)))))
                  ;; OSC: the background query's answer, `11;rgb:R/G/B' with
                  ;; one to four hex digits a channel, is a BACKGROUND-MSG;
                  ;; the replies the shell never asked for are consumed.
                  ((char= char #\])
-                  (ppcre:register-groups-bind (r g b)
-                      ("^11;rgba?:([0-9a-fA-F]{1,4})/([0-9a-fA-F]{1,4})/([0-9a-fA-F]{1,4})"
-                       (%read-until-st stream))
-                    (make-background-msg
-                     :rgb (mapcar (lambda (hex)
-                                    (round (* 255 (parse-integer hex :radix 16))
-                                           (1- (expt 16 (length hex)))))
-                                  (list r g b)))))
+                  (multiple-value-bind (payload chord) (%reply-or-chord stream tty char)
+                    (or chord
+                        (ppcre:register-groups-bind (r g b)
+                            ("^11;rgba?:([0-9a-fA-F]{1,4})/([0-9a-fA-F]{1,4})/([0-9a-fA-F]{1,4})"
+                             payload)
+                          (make-background-msg
+                           :rgb (mapcar (lambda (hex)
+                                          (round (* 255 (parse-integer hex :radix 16))
+                                                 (1- (expt 16 (length hex)))))
+                                        (list r g b)))))))
                  ;; DCS: a DECRQSS SGR read-back keeping the probe's 1 2 3, XTGETTCAP
                  ;; RGB, or XTVERSION's name, which REQUEST-TERMINAL-ATTRIBUTES asks for.
                  ((char= char #\P)
-                  (let ((payload (%read-until-st stream)))
-                    (cond ((uiop:string-prefix-p ">|" payload)
+                  (multiple-value-bind (payload chord) (%reply-or-chord stream tty char)
+                    (cond (chord)
+                          ((uiop:string-prefix-p ">|" payload)
                            (make-terminal-version-msg :name (subseq payload 2)))
                           ((and (search "$r" payload) (uiop:string-suffix-p payload "m"))
                            (make-truecolor-msg :ok-p (and (or (search ":1:2:3" payload)
@@ -73,9 +149,10 @@ once STREAM has ended."
                  ;; APC: the kitty graphics reply (G ...) becomes a
                  ;; KITTY-GRAPHICS-MSG, OK when the terminal said so.
                  ((char= char #\_)
-                  (let ((payload (%read-until-st stream)))
-                    (when (and (plusp (length payload)) (char= (char payload 0) #\G))
-                      (make-kitty-graphics-msg :ok-p (and (search ";OK" payload) t)))))
+                  (multiple-value-bind (payload chord) (%reply-or-chord stream tty char)
+                    (cond (chord)
+                          ((and (plusp (length payload)) (char= (char payload 0) #\G))
+                           (make-kitty-graphics-msg :ok-p (and (search ";OK" payload) t))))))
                  ;; Alt + a graphic key.
                  ((graphic-char-p char)
                   (make-key-press-msg :code char :mod +mod-alt+ :text (string char)))
@@ -157,12 +234,22 @@ stream ran out)."
                    (t (close-group) (setf final c) (return)))))
   (values (nreverse groups) final))
 
-(defun parse-csi-sequence (stream &aux (ch (read-char stream nil nil)))
+(defun parse-csi-sequence (stream tty)
   "The message for ESC [ and what follows on STREAM: SGR mouse, arrows,
 Home/End, backtab, the numbered keys (Delete, Insert, PgUp, PgDn, F1-F12),
-modified arrows, kitty CSI-u keys, and bracketed paste."
+modified arrows, kitty CSI-u keys, and bracketed paste; Alt+[ when no final
+ends what follows in the window, its bytes handed back to TTY as keys."
+  (multiple-value-bind (bytes ended) (%read-sequence stream)
+    (if ended
+        (%csi-message (make-string-input-stream bytes) stream)
+        (%introducer-chord tty #\[ bytes))))
+
+(defun %csi-message (sequence stream &aux (ch (read-char sequence nil nil)))
+  "The message for the CSI sequence SEQUENCE holds whole, STREAM holding
+the tty's bytes after it: a paste's text, or the raw bytes a sequence
+trails."
   (cond
-    ((eql ch #\<) (parse-mouse-sequence stream))
+    ((eql ch #\<) (parse-mouse-sequence sequence))
     ;; Backtab is a CSI final byte too, but it is not a cursor key.
     ((eql ch #\Z) (make-key-press-msg :code :tab :mod +mod-shift+))
     ((%final-byte-key ch) (make-key-press-msg :code (%final-byte-key ch)))
@@ -173,7 +260,7 @@ modified arrows, kitty CSI-u keys, and bracketed paste."
     ((member ch '(#\I #\O)) nil)
     ((eql ch #\?)
      (let ((reply (with-output-to-string (out)
-                    (loop for c = (read-char stream nil nil)
+                    (loop for c = (read-char sequence nil nil)
                           while c
                           do (write-char c out)
                           until (alpha-char-p c)))))
@@ -185,7 +272,7 @@ modified arrows, kitty CSI-u keys, and bracketed paste."
               :attributes (mapcar #'parse-integer
                                   (ppcre:all-matches-as-strings "[0-9]+" attributes)))))))
     ((and ch (digit-char-p ch))
-     (nlk:bind (((groups term) (%read-parameters stream (digit-char-p ch)))
+     (nlk:bind (((groups term) (%read-parameters sequence (digit-char-p ch)))
                 (params (mapcar #'first groups))
                 (key (case (first params)
                        (2 :insert) (3 :delete) (5 :page-up) (6 :page-down)
@@ -203,14 +290,24 @@ modified arrows, kitty CSI-u keys, and bracketed paste."
           (make-key-press-msg :code key
                               :mod (if (= (length params) 2) (%modifier-mask (second params)) 0)))
          ((and (eql term #\~) (eql (first params) 200))
-          (make-paste-msg :text (%read-until stream (format nil "~C[201~~" #\Escape))))
+          (make-paste-msg :text (%read-until stream (list (format nil "~C[201~~" #\Escape)))))
          ;; XTWINOPS 16's answer: the cell's height and width in pixels.
          ((and (eql term #\t) (eql (first params) 6) (= (length params) 3))
           (make-cell-size-msg :height (second params) :width (third params)))
          (t (make-key-press-msg :code :unknown)))))
-    (t
-     (loop while (listen stream) do (read-char-no-hang stream nil nil))
-     (make-key-press-msg :code :unknown))))
+    ;; X10 mouse, CSI M and three raw bytes from a terminal deaf to 1006, and
+    ;; the Linux console's F1-F5, CSI [ and a letter, trail bytes past their
+    ;; final: the sequence's, never keys.
+    ((member ch '(#\M #\[))
+     (loop repeat (if (eql ch #\M) 3 1)
+           while (or (nlk:wait-until (lambda () (listen stream))
+                                     (nlk:deadline-after +sequence-gap+))
+                     (listen stream))
+           do (read-char stream nil nil))
+     (make-key-press-msg :code :unknown))
+    ;; Any other sequence its final ends is the terminal's, and only its own
+    ;; bytes are read: draining what waited behind it ate the keys typed after.
+    (t (make-key-press-msg :code :unknown))))
 
 ;;; --- the kitty keyboard protocol -----------------------------------------
 
@@ -278,21 +375,29 @@ GROUPS being the parameter groups."
 
 ;;; --- paste, SS3, APC, DCS ------------------------------------------------
 
-(defun %read-until (stream &rest ends &aux (text (make-array 64 :element-type 'character
-                                                                  :adjustable t :fill-pointer 0)))
+(defun %read-until (stream ends &optional gap &aux (text (make-array 64 :element-type 'character
+                                                                         :adjustable t :fill-pointer 0)))
   "The characters on STREAM up to the first of the strings ENDS, that end
-consumed and not kept; everything left when none arrives."
+consumed and not kept, and whether one came; everything left when none
+arrives. With GAP, seconds, the read also stops when no next character
+comes within GAP of the clock."
   ;; An ESC that does not start an end is kept as text, and an end right
-  ;; behind one still ends the read.
-  (loop for ch = (read-char stream nil nil)
+  ;; behind one still ends the read. The gap is waited like READ-KEY's ESC
+  ;; window, then looked at once more: a collection that stops the reader
+  ;; past it ends no reply.
+  (loop for ch = (and (or (null gap)
+                          (nlk:wait-until (lambda () (listen stream)) (nlk:deadline-after gap))
+                          (listen stream))
+                      (read-char stream nil nil))
         while ch
         do (vector-push-extend ch text)
            (nlk:when-let (end (find-if (lambda (end) (uiop:string-suffix-p text end)) ends))
              (decf (fill-pointer text) (length end))
-             (return)))
-  (coerce text 'simple-string))
+             (return-from %read-until (values (coerce text 'simple-string) t))))
+  (values (coerce text 'simple-string) nil))
 
 (defun %read-until-st (stream)
   "The bytes up to the string terminator (ESC \\ or BEL), the terminator
-consumed."
-  (%read-until stream (format nil "~C\\" #\Escape) (string #\Bel)))
+consumed, and whether one came: a reply comes whole, so a gap past
++SEQUENCE-GAP+ ends the read without one."
+  (%read-until stream (list (format nil "~C\\" #\Escape) (string #\Bel)) +sequence-gap+))
