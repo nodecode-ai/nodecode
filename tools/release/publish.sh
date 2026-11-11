@@ -48,15 +48,17 @@ case "$channel" in
   *) echo "publish: the channel is stable or nightly, not '$channel'" >&2; exit 2 ;;
 esac
 
-# Every platform rides every release. Leaving the Mac out is said, never
-# assumed: NODECODE_PUBLISH_SKIP_MACOS publishes without its arm, and its
-# pointer keeps naming the label it named (a Mac that is asleep or away is a
-# red arm, not a quiet skip).
-platforms="x86_64-linux arm64-darwin x86_64-windows"
-if [ -n "${NODECODE_PUBLISH_SKIP_MACOS:-}" ]; then
-  platforms="x86_64-linux x86_64-windows"
-  echo "publish: NODECODE_PUBLISH_SKIP_MACOS is set: no macOS arm, and $channel-arm64-darwin keeps the label it names" >&2
-fi
+# Every platform rides every release. Leaving one out is said, never assumed
+# (platforms.sh): NODECODE_PUBLISH_SKIP_MACOS publishes without the Mac's arm,
+# NODECODE_PUBLISH_SKIP_WINDOWS holds Windows on the release it runs. A
+# platform left out packs nothing, and every pointer of it keeps naming the
+# label it names.
+. "$here/platforms.sh"
+platforms="$(release_platforms)"
+held="$(release_held)"
+for platform in $held; do
+  echo "publish: $(release_hold_setting "$platform") is set: no $(release_platform_name "$platform") arm, and every $platform pointer keeps the label it names" >&2
+done
 has_platform() { case " $platforms " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 suffix_of() { case "$1" in *-windows) echo .zip ;; *) echo .tar.gz ;; esac; }
 # An arm may ship a second container under the same label. Windows carries
@@ -112,8 +114,12 @@ fi
 if [ "$channel" = stable ]; then
   authority_installer="${NODECODE_PUBLISH_INSTALLER_PATH:-$(layout_system "$repo")/tools/install/install.sh}"
   # The Windows arm is served beside the shell one and reads the same pointer,
-  # so it follows the same authority/mirror discipline.
-  authority_ps1="${NODECODE_PUBLISH_PS1_PATH:-$(layout_system "$repo")/tools/install/install.ps1}"
+  # so it follows the same authority/mirror discipline. Windows held back
+  # keeps the one the release it runs came with: none is named here, and the
+  # site's stays (mirror-installers.sh).
+  authority_ps1=''
+  has_platform x86_64-windows \
+    && authority_ps1="${NODECODE_PUBLISH_PS1_PATH:-$(layout_system "$repo")/tools/install/install.ps1}"
   site_remote="$(publish_setting NODECODE_PUBLISH_SITE_REMOTE 2> /dev/null)" || site_remote=''
   if [ -z "$site_remote" ]; then
     marketplace="$(publish_setting NODECODE_PUBLISH_MARKETPLACE_DIR)" || exit 1
@@ -125,7 +131,7 @@ if [ "$channel" = stable ]; then
   site_branch="${NODECODE_PUBLISH_SITE_BRANCH:-main}"
   web_container="$(publish_setting NODECODE_PUBLISH_WEB_CONTAINER)" || exit 1
   [ -f "$authority_installer" ] || { echo "publish: missing authority installer $authority_installer" >&2; exit 1; }
-  [ -f "$authority_ps1" ] || { echo "publish: missing authority installer $authority_ps1" >&2; exit 1; }
+  [ -z "$authority_ps1" ] || [ -f "$authority_ps1" ] || { echo "publish: missing authority installer $authority_ps1" >&2; exit 1; }
 fi
 
 work="$(mktemp -d)"
@@ -158,10 +164,12 @@ if has_platform arm64-darwin; then
     exit 1
   }
 fi
-have x86_64-windows || just windows "$commit" "$OUT" || {
-  echo "publish: the Windows arm did not pack $label; $OUT/windows-$label.log names the step. Nothing moves." >&2
-  exit 1
-}
+if has_platform x86_64-windows; then
+  have x86_64-windows || just windows "$commit" "$OUT" || {
+    echo "publish: the Windows arm did not pack $label; $OUT/windows-$label.log names the step. Nothing moves." >&2
+    exit 1
+  }
+fi
 # A zip already in OUT from before the tar.zst arm carries no tar.zst beside
 # it: pack that out of the zip (every file of one hashed out of the other)
 # rather than boot a Windows sandbox for a transport it already proved.
@@ -393,11 +401,14 @@ if [ "$channel" = stable ]; then
   }
 
   scp -q "$authority_installer" "$host:/tmp/nodecode-install-${label}.sh"
-  scp -q "$authority_ps1" "$host:/tmp/nodecode-install-${label}.ps1"
-  ssh -o BatchMode=yes "$host" \
-    "docker cp /tmp/nodecode-install-${label}.sh '$web_container:/app/public/install.sh' &&
-     docker cp /tmp/nodecode-install-${label}.ps1 '$web_container:/app/public/install.ps1' &&
-     rm -f /tmp/nodecode-install-${label}.sh /tmp/nodecode-install-${label}.ps1"
+  copy_in="docker cp /tmp/nodecode-install-${label}.sh '$web_container:/app/public/install.sh'"
+  staged="/tmp/nodecode-install-${label}.sh"
+  if [ -n "$authority_ps1" ]; then
+    scp -q "$authority_ps1" "$host:/tmp/nodecode-install-${label}.ps1"
+    copy_in="$copy_in && docker cp /tmp/nodecode-install-${label}.ps1 '$web_container:/app/public/install.ps1'"
+    staged="$staged /tmp/nodecode-install-${label}.ps1"
+  fi
+  ssh -o BatchMode=yes "$host" "$copy_in && rm -f $staged"
 fi
 
 # The pointers move LAST, once every body they name is served. The release
@@ -523,7 +534,38 @@ if [ "$channel" != stable ]; then
 fi
 
 verify_installer install.sh "$authority_installer"
-verify_installer install.ps1 "$authority_ps1"
+if [ -n "$authority_ps1" ]; then
+  verify_installer install.ps1 "$authority_ps1"
+else
+  echo "publish: install.ps1 stays as it was: Windows is held on the release stable-x86_64-windows names"
+fi
+
+# What a platform held back stays on, for the notes: its stable pointer, read
+# on the host as the nightly pointers are, and the version declared there.
+# A label this clone does not know is named alone.
+held_notes=''
+if [ -n "$held" ]; then
+  held_names=''
+  for platform in $held; do held_names="$held_names 'stable-$platform'"; done
+  held_pointers="$(ssh -o BatchMode=yes "$host" "cd '$remote_dir' && for n in $held_names; do
+      [ -f \"\$n\" ] && printf '%s %s\n' \"\$n\" \"\$(tr -d '[:space:]' < \"\$n\")\";
+    done; true")" || held_pointers=''
+  for platform in $held; do
+    name="$(release_platform_name "$platform")"
+    held_label="$(awk -v n="stable-$platform" '$1 == n { print $2 }' <<<"$held_pointers")"
+    held_version=''
+    if [ -n "$held_label" ] && held_commit="$(git rev-parse -q --verify "$held_label^{commit}" 2>/dev/null)"; then
+      held_version="$(git show "$held_commit:$(layout_asd_at "$held_commit")" 2>/dev/null \
+        | sed -n 's/^ *:version "\([0-9][0-9A-Za-z.-]*\)".*/\1/p' | head -n 1)" || held_version=''
+    fi
+    if [ -n "$held_version" ]; then on="nodecode $held_version ($held_label)"
+    elif [ -n "$held_label" ]; then on="build $held_label"
+    else on='the release it runs now'
+    fi
+    held_notes+="$(printf '%s is held back: this release ships no %s build, so %s installs and updates stay on %s.' "$name" "$name" "$name" "$on")"$'\n\n'
+    echo "publish: $name stays on $on"
+  done
+fi
 
 # The releases page, last: the tag at the commit, the notes since the release
 # before it (NODECODE_PUBLISH_NOTES_SINCE names another base), and every
@@ -544,7 +586,9 @@ fi
 {
   printf 'nodecode %s, build %s: `nodecode --version` prints %s+%s.\n\n' "$version" "$label" "$version" "$label"
   printf 'Install:\n\n    curl -fsSL %s/install.sh | sh\n    irm %s/install.ps1 | iex    # Windows PowerShell\n\n' "$base_url" "$base_url"
-  printf 'A running nodecode takes it on its own.\n\n## %s\n\n' "$heading"
+  printf 'A running nodecode takes it on its own.\n\n'
+  printf '%s' "$held_notes"
+  printf '## %s\n\n' "$heading"
   git log --no-merges --format='%H %s' "${range[@]}" | while read -r hash subject; do
     printf -- '- %s (%s)\n' "${subject%% -- *}" "${hash:0:9}"
   done

@@ -28,7 +28,7 @@ git_c -C "$work" add -A
 git_c -C "$work" commit -qm one
 git -C "$work" remote add origin "$origin"
 git -C "$work" push -q origin main
-for f in layout.sh release-check.sh release-publish.sh publish-config.sh pack-windows-zst.sh; do
+for f in layout.sh platforms.sh release-check.sh release-publish.sh publish-config.sh pack-windows-zst.sh; do
   cp "$repo/tools/release/$f" "$work/tools/release/$f"
 done
 label="$(git -C "$work" rev-parse --short=9 HEAD)"
@@ -267,8 +267,18 @@ grep -q 'every nightly pointer already names' "$root/check-out" || fail "the nig
 rm "$root/pointers/nightly-arm64-darwin"
 nightly NODECODE_RELEASE_GREEN_TREES="$(tree_of "$second")" || fail 'the nightly check failed'
 grep -qx 'skip=false' "$root/gh-output" || fail 'a nightly one platform never got was skipped'
+# A platform held back is not asked: its nightly pointer stays where it is, so
+# counting it would make every night a night to build.
+git -C "$work" rev-parse --short=9 "$second" > "$root/pointers/nightly-arm64-darwin"
+printf 'heldwin01\n' > "$root/pointers/nightly-x86_64-windows"
+nightly NODECODE_RELEASE_GREEN_TREES="$(tree_of "$second")" || fail 'the nightly check failed'
+grep -qx 'skip=false' "$root/gh-output" || fail 'a nightly Windows never got was skipped'
+nightly NODECODE_PUBLISH_SKIP_WINDOWS=1 NODECODE_RELEASE_GREEN_TREES="$(tree_of "$second")" || fail 'the nightly check holding Windows failed'
+grep -qx 'skip=true' "$root/gh-output" || fail "a night with nothing new but a held Windows was built: $(cat "$root/check-out")"
+grep -q 'NODECODE_PUBLISH_SKIP_WINDOWS is set: nightly-x86_64-windows is held where it is, and not asked' "$root/check-out" \
+  || fail "the held Windows was not said: $(cat "$root/check-out")"
 if check NODECODE_RELEASE_MODE=weekly; then fail 'an unknown mode was taken'; fi
-say 'a night with no green commit, or nothing new on every platform, builds nothing'
+say 'a night with no green commit, or nothing new on every platform it ships, builds nothing'
 
 # --- release-check.sh publish: whether the nightly follows the tag ----------------
 # A tag past the nightly carries the nightly homes with it (publish.sh), and the

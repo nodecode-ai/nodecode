@@ -18,15 +18,19 @@
 # the two files copied over, one commit through the commit helper, pushed. A
 # push that loses a race to another lane's is rebased and pushed again. A
 # branch that already carries both files byte for byte is left alone.
+#
+# An empty INSTALL_PS1 leaves the site's install.ps1 as it is: a publish that
+# holds Windows back (platforms.sh) keeps the installer of the release Windows
+# still runs, and mirrors install.sh alone.
 set -euo pipefail
 
 remote="${1:?usage: mirror-installers.sh SITE_REMOTE BRANCH INSTALL_SH INSTALL_PS1 MESSAGE}"
 branch="${2:?branch}"
 install_sh="${3:?install.sh}"
-install_ps1="${4:?install.ps1}"
+install_ps1="${4?install.ps1, or empty to keep the site copy}"
 message="${5:?message}"
 [ -s "$install_sh" ] || { echo "mirror-installers: no $install_sh" >&2; exit 1; }
-[ -s "$install_ps1" ] || { echo "mirror-installers: no $install_ps1" >&2; exit 1; }
+[ -z "$install_ps1" ] || [ -s "$install_ps1" ] || { echo "mirror-installers: no $install_ps1" >&2; exit 1; }
 
 . "$(dirname "${BASH_SOURCE[0]}")/publish-config.sh"
 commit_helper="$(publish_setting NODECODE_GIT_COMMIT_HELPER)" || exit 1
@@ -38,13 +42,18 @@ clone="$work/site"
 git clone -q --depth 50 --branch "$branch" --single-branch "$remote" "$clone"
 mkdir -p "$clone/web/public"
 
-if cmp -s "$install_sh" "$clone/web/public/install.sh" && cmp -s "$install_ps1" "$clone/web/public/install.ps1"; then
+if cmp -s "$install_sh" "$clone/web/public/install.sh" \
+   && { [ -z "$install_ps1" ] || cmp -s "$install_ps1" "$clone/web/public/install.ps1"; }; then
   echo "mirror-installers: the site's $branch already carries authority's installers"
   exit 0
 fi
 cp "$install_sh" "$clone/web/public/install.sh"
-cp "$install_ps1" "$clone/web/public/install.ps1"
-(cd "$clone" && "$commit_helper" --message "$message" --path web/public/install.sh --path web/public/install.ps1) >/dev/null
+paths=(--path web/public/install.sh)
+if [ -n "$install_ps1" ]; then
+  cp "$install_ps1" "$clone/web/public/install.ps1"
+  paths+=(--path web/public/install.ps1)
+fi
+(cd "$clone" && "$commit_helper" --message "$message" "${paths[@]}") >/dev/null
 
 for try in 1 2 3 4 5; do
   if git -C "$clone" push -q origin "HEAD:$branch"; then
