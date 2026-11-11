@@ -521,7 +521,7 @@ FAILURES FRESH), as INSTALL-AND-LOAD-CELL answers."
 
 (defun switch-cell-on (name &key commit (seconds nlk:*cell-switch-seconds*)
                        &aux (offers (nlk:shipped-cells)) (given (nlk:cell-switch-deadline seconds))
-                       (names '()) (failures '()) (done '()))
+                       (names '()) (failures '()) (done '()) (unread nil))
   "Turn the cell NAME on: every offered folder its closure names installed
 and loaded into this image now, then started, for a waiter that waits
 SECONDS for the answer. => what came of it, in a sentence. Refused when
@@ -552,13 +552,17 @@ and the installs do not fit the deadline SECONDS leaves them."
                                    (cell-label name) given (nlk:wait-deadline-reason condition)
                                    (mapcar #'cell-label (reverse done)))))))
           (unless (nlk:find-offer name offers)
-            (setf offers (append offers (hub-offers-for name commit offers))))
+            (multiple-value-bind (hub stale why) (hub-offers-for name commit offers)
+              (declare (ignore stale))
+              (setf offers (append offers hub) unread why)))
           (let ((entry (nlk:find-offer name offers)))
             (when (and commit entry (not (equal commit (nlk:offer-commit entry))))
               (nlk::protocol-refuse :refused "the hub moved ~a from ~a~@[ to ~a~] since it was read: nothing was installed; read it again"
                                     (cell-label name) commit (nlk:offer-commit entry))))
           (setf names (or (nlk:offer-closure (list name) offers)
-                          (error "no cell named ~a is shipped or on the hub" name)))
+                          (if unread
+                              (error "no cell named ~a is shipped, and the hub could not be read to look for it: ~a" name unread)
+                              (error "no cell named ~a is shipped or on the hub" name))))
           (dolist (each names)
             (setf failures (append failures
                                    (mapcar (lambda (line) (format nil "~a: ~a" (cell-label each) line))
@@ -907,7 +911,8 @@ organism on PORT, PID, when one serves this home -- within SECONDS
                                                             (subseq (first named) 5)
                                                             (first named))))))
          (shipped (nlk:shipped-cells))
-         (offers shipped))
+         (offers shipped)
+         (unread nil))
     (unless (and wait (plusp wait))
       (return-from add-text (values "--wait takes the seconds add waits, a whole number above 0" 2 :error)))
     (unless (plusp (length word))
@@ -916,12 +921,23 @@ organism on PORT, PID, when one serves this home -- within SECONDS
                                (nlk:find-offer (format nil "nodecode-~a" word) offers))))
       ;; the hub is read only for a name the release does not ship
       (let ((entry (or (named shipped)
-                       (named (setf offers (append shipped (nlk:hub-cells :shipped shipped)))))))
+                       (named (setf offers (append shipped
+                                                   (multiple-value-bind (hub stale why)
+                                                       (nlk:hub-cells :shipped shipped)
+                                                     (declare (ignore stale))
+                                                     (setf unread why)
+                                                     hub)))))))
+        ;; An index that could not be read is no answer that the name is not
+        ;; on it: that is said, not `no cell', which sent a person to look
+        ;; for a cell the hub lists (NLK:HUB-CELLS' third value).
         (unless entry
           (return-from add-text
-            (values (format nil "no cell ~s is shipped or on the hub.~@[ Did you mean ~{~s~#[~; or ~:;, ~]~}?~]"
-                            word (nlk:nearest-words word (mapcar (lambda (offer) (cell-label (nlk:offer-name offer)))
-                                                                 offers)))
+            (values (if unread
+                        (format nil "no cell ~s is shipped, and the hub could not be read to look for it: ~a. Try again once it answers."
+                                word unread)
+                        (format nil "no cell ~s is shipped or on the hub.~@[ Did you mean ~{~s~#[~; or ~:;, ~]~}?~]"
+                                word (nlk:nearest-words word (mapcar (lambda (offer) (cell-label (nlk:offer-name offer)))
+                                                                     offers))))
                     1 :error)))
         (let* ((name (nlk:offer-name entry))
                (label (cell-label name))

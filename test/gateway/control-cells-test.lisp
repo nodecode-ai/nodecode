@@ -515,6 +515,36 @@ ASK its terminal: (TEXT CODE STREAM PREVIEW), PREVIEW what it printed first."
             (is (search git theirs))
             (is (not (search "index" own)) "Nodecode's own prints as it did")))))))
 
+(deftest control-cells-add-says-an-unread-hub-and-not-a-missing-cell
+    (with-switch-fixture (port base top))
+  ;; Nodecode's own index unread -- one that outran its 10 s, here one
+  ;; answering 404 -- with the community's read: a name only Nodecode's lists
+  ;; is not known to be absent. `nodecode add nc://claude-code' said `no cell
+  ;; "claude-code" is shipped or on the hub' when the read timed out, and a
+  ;; retry installed it (2026-11-11).
+  (let ((commit (make-string 40 :initial-element #\c))
+        (git "https://127.0.0.1:9/o/nl-sw-listed.git"))
+    (flet ((at (path) (format nil "http://127.0.0.1:~d~a" port path)))
+      (serve-hub "/test-hub/community.json" (list :name "nl-sw-theirs" :git git :commit commit))
+      (nlk:with-cleanup ((nle:route "/test-hub/community.json" nil))
+        (multiple-value-bind (offers stale unread)
+            (nlk:hub-cells :url (at "/test-hub/unread.json") :community (at "/test-hub/community.json") :shipped '())
+          (is (equal '("nl-sw-theirs") (mapcar #'nlk:offer-name offers)) "the community's entries stay on offer")
+          (is (null stale))
+          (is (search "answered 404" unread) "why Nodecode's index went unread is said beside them"))
+        (with-saved-globals ((nlk:*hub-index-url* (at "/test-hub/unread.json"))
+                             (nlk:*community-index-url* (at "/test-hub/community.json")))
+          (flet ((never (question) (error "asked ~a" question)))
+            (is-values (text code) (values-list (add-answer nil #'never "nc://nl-sw-gone"))
+              (code = 1)
+              ((search "the hub could not be read" text) is)
+              ((search "answered 404" text) is)
+              ((search "is shipped or on the hub" text) null)))
+          ;; The organism's turn-on reads the hub the same way.
+          (let ((refusal (refusal-text error (nle::switch-cell-on "nl-sw-gone"))))
+            (is (search "the hub could not be read" refusal))
+            (is (search "answered 404" refusal))))))))
+
 #-win32
 (deftest control-cells-add-gives-the-turn-on-its-wait-and-hears-how-it-ended
     (with-switch-fixture (port base top))
