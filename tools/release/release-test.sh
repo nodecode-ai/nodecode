@@ -33,6 +33,24 @@ for f in layout.sh platforms.sh release-check.sh release-publish.sh publish-conf
 done
 label="$(git -C "$work" rev-parse --short=9 HEAD)"
 
+# --- the tarball's README names the glibc floor the build is held to -----------
+# pack.sh refuses a Linux image importing glibc above its floor and install.sh
+# refuses a box below it, so README.txt, the first thing a tarball's reader
+# meets, has to say the same number. 0.1.14's said 2.38 while its binary
+# needed 2.34: Ubuntu 22.04 and Debian 12 were told the build would not run
+# there at all, and it does.
+pack_floor="$(sed -n 's/^glibc_floor=\([0-9][0-9.]*\)$/\1/p' "$repo/tools/release/pack.sh")"
+[ -n "$pack_floor" ] || fail 'pack.sh names no glibc_floor'
+readme_floor="$(sed -n 's/.*glibc must be \([0-9][0-9.]*\) or newer.*/\1/p' "$repo/tools/release/README.alpha.txt")"
+[ "$readme_floor" = "$pack_floor" ] \
+  || fail "README.alpha.txt names glibc ${readme_floor:-no floor}, but pack.sh holds the build to $pack_floor"
+install_floor="$(sed -n 's/.*nodecode needs \([0-9][0-9.]*\) or newer.*/\1/p' "$repo/tools/install/install.sh")"
+[ "$install_floor" = "$pack_floor" ] \
+  || fail "install.sh names glibc ${install_floor:-no floor}, but pack.sh holds the build to $pack_floor"
+grep -qF "[ \"\$minor\" -lt ${pack_floor#*.} ]" "$repo/tools/install/install.sh" \
+  || fail "install.sh's gate compares against another minor than ${pack_floor#*.}"
+say "README.txt, install.sh and pack.sh name one glibc floor, $pack_floor"
+
 # --- every script release.yml runs by path is executable in git ------------------
 # 2522703 rewrote release-publish.sh 0644 and the next run's Publish answered
 # `Permission denied' (exit 126) before a line of it ran.
