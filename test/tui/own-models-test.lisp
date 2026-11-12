@@ -10,6 +10,9 @@
 ;;;;      list; a search for `nodecode' finds it, and Enter picks it.
 ;;;;   3. Signed out, the root opens as it always did, and a search for
 ;;;;      `nodecode' finds the one row that opens /login.
+;;;;   4. A row of ours reads in the theme's green, legible on the panel and a
+;;;;      hue away from the selection accent, until the selection is on it:
+;;;;      then it reads as the selection, as every other row does.
 ;;;;
 ;;;; Loads after slash-test: reuses WITH-MODEL-LISTINGS, ENTER-ROW and
 ;;;; DIALOG-AFTER from there.
@@ -62,6 +65,30 @@ nodecode.ai's chat and image model, and zeta's one model."
                              when (and (consp pair) (stringp (first pair))) collect pair)) "a search for nodecode finds our model, once")
             (enter-row model "nodecode/nodecode-cyber-v1")
             (is (equal '("nodecode" "nodecode-cyber-v1") picked) "Enter on it picks it")))))))
+
+(deftest own-model-rows-read-apart-from-the-selection ()
+  ;; Without this, a row of ours reads in the logo's ember, nine degrees of hue
+  ;; off Tungstene's selection accent and 3:1 on its panel, and holds that
+  ;; under the selection too: /models opens on Cyber v1 with no row in the
+  ;; accent, and nothing says which rows are ours and which one Enter takes
+  ;; (the operator, 2026-11-12).
+  (flet ((tones (row)
+           (loop for selected in '(nil t)
+                 collect (nle::seg-tone (first (nle::dialog-entry-segs row selected))))))
+    (is (equal '(:own-model :dialog-accent)
+               (tones (nle::make-picker-row :label "nodecode/nodecode-cyber-v1" :tone :own-model))) "ours, then the selection once it is on it")
+    (is (equal '(:system :dialog-accent) (tones (nle::make-picker-row :label "Alpha One"))) "as every other row reads")
+    (is (equal '(:danger :danger) (tones (nle::make-picker-row :label "error: refused" :tone :danger))) "a row saying what went wrong holds its tone on either"))
+  (dolist (name (nle:theme-catalog :user nil))
+    (let ((nle:*palette* (theme-palette name)))
+      (flet ((fg (tone) (nle::visual-style-fg (nle:style-for-tone tone))))
+        (is (equal (fg :success) (fg :own-model))
+            (format nil "~a paints our rows in its green" name))
+        (is (>= (nle::contrast-ratio-x100 (fg :own-model) (nle::visual-style-bg (nle:style-for-tone :composer))) 450)
+            (format nil "~a keeps our rows legible on the panel" name)))))
+  (let ((nle:*palette* (theme-palette "Tungstene")))
+    (flet ((hue (tone) (values (nle::rgb-hsl (nle::visual-style-fg (nle:style-for-tone tone))))))
+      (is (< 90 (abs (- (hue :own-model) (hue :dialog-accent)))) "a hue away from the selection accent, where the ember stood nine degrees off it"))))
 
 (deftest models-root-signs-in-for-own-models ()
   (with-model-listings (:config +listed-providers-config+ :cache (listed-providers-cache))

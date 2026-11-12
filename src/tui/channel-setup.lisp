@@ -529,7 +529,7 @@ row ticks it."
                                :rows (max 3 (- bottom row 3)))))
     (flet ((box (pointed ticked indent text after cursor)
              (let ((at (+ px indent)))
-               (when pointed (canvas-put canvas (- at 2) row "›" (sheet-ink :own-model :ground ground :bold t)))
+               (when pointed (canvas-put canvas (- at 2) row "›" (sheet-ink :disclosure-hover :ground ground :bold t)))
                (setf at (canvas-put canvas at row (if ticked "[x]" "[ ]") (sheet-ink (if ticked :success :muted) :ground ground :bold ticked)))
                (setf at (canvas-put canvas (1+ at) row text (sheet-ink (if pointed :foreground :system) :ground ground :bold pointed) (+ px pw)))
                (when after (canvas-put canvas (+ at 2) row after (sheet-ink :muted :ground ground) (+ px pw)))
@@ -567,7 +567,7 @@ row ticks it."
              for index from 0
              do (when (< row bottom)
                   (let ((pointed (= index setup.at)))
-                    (when pointed (canvas-put canvas px row "›" (sheet-ink :own-model :ground ground :bold t)))
+                    (when pointed (canvas-put canvas px row "›" (sheet-ink :disclosure-hover :ground ground :bold t)))
                     (let ((at (canvas-put canvas (+ px 2) row (settings-label id) (sheet-ink (if pointed :foreground :system) :ground ground :bold pointed))))
                       (canvas-put canvas (+ at 2) row (if (json-value cell :boolean "on") "on" "not installed") (sheet-ink :muted :ground ground)))
                     (incf row))))
@@ -583,7 +583,7 @@ row ticks it."
              (loop for step in steps
                    for number from 1
                    do (when (< row bottom)
-                        (canvas-put canvas (+ px 1) row (format nil "~d" number) (sheet-ink :own-model :ground ground :bold t)))
+                        (canvas-put canvas (+ px 1) row (format nil "~d" number) (sheet-ink :disclosure-hover :ground ground :bold t)))
                       (say step :indent 4))
              (gap))
            (say (string-capitalize noun :end 1) :tone :foreground :bold t)

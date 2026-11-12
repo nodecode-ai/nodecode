@@ -62,9 +62,12 @@
     ;; that box must not take the hover accent with it.
     (:dialog-accent ,(vstyle :fg '(235 238 244)) (:user-input :foreground))
     ;; nodecode.ai's own models where a list offers them (/models' Nodecode
-    ;; section): the ember of the logo, apart from the hover accent so a row of
-    ;; ours never reads as the one under the selection.
-    (:own-model ,(vstyle :fg '(232 78 14)) (:accent3 :accent2 :user-input))
+    ;; section): the green the footer names a private model in, a hue of its
+    ;; own beside the hover accent. The theme's third accent, read here
+    ;; before, is the hover accent's own hue family in every bundled theme,
+    ;; nine degrees off it in Tungstene: the rows of ours and the row under
+    ;; the selection read as one colour (the operator, 2026-11-12).
+    (:own-model ,(vstyle :fg '(130 214 176)) (:success :syntax-builtin :accent4))
     (:assistant ,(vstyle :fg '(130 214 176)) (:success :syntax-builtin :accent4))
     ;; The status green a list row's mark column asks for by name. It was a
     ;; tone nothing defined, so every `•' a picker painted fell back to
