@@ -1216,8 +1216,8 @@ cloudflare-workers-ai's carries ${CLOUDFLARE_ACCOUNT_ID}.")
       (is (member "Nodecode" labels :test #'equal) "the account's provider by its name")
       (is (member "Nodecode free" labels :test #'equal) "the free key's by its name")
       (is (member "House" labels :test #'equal) "a configured display_name still wins")
-      (is (notany (lambda (label) (member label '("nodecode" "nodecode-free") :test #'equal)) labels)
-          "no bare id is left"))
+      ;; no bare id is left
+      (is (notany (lambda (label) (member label '("nodecode" "nodecode-free") :test #'equal)) labels)))
     (is (null (nle::own-provider-name "anthropic")))))
 
 (defparameter +other-provider-catalog+
