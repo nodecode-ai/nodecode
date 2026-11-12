@@ -159,3 +159,71 @@ back, and forget its system as a new process would not know it."
             (backdate-file directory (* 3600 (- 6 n))))))
       (is (= 2 (length (uiop:subdirectories folder))) "the newest two keys stay")
       (is (= 4 (package-call "NL-CC-PRUNED" "PROBE")) "and the last text runs"))))
+
+(deftest cell-cache-a-folder-whose-text-cannot-be-read-fails-alone (with-cell-fixture (root))
+  ;; Given two peripherals, one holding a directory no one may read, and a
+  ;; third that depends on that one; when the boot loads them; then the
+  ;; readable one loads and runs, and the other two fail and say why -- never
+  ;; a boot that loads nothing, never a fasl judged by its dates.
+  (with-peripheral-cache (cache)
+    (write-peripheral-folder root "nl-cc-fine" :exports '("probe") :forms '("(defun probe () :fine)"))
+    (let ((locked (merge-pathnames "locked/" (write-peripheral-folder root "nl-cc-locked"))))
+      (write-peripheral-folder root "nl-cc-above" :depends-on '("nl-cc-locked"))
+      (ensure-directories-exist locked)
+      (sb-posix:chmod (namestring locked) 0)
+      (nlk:with-cleanup ((sb-posix:chmod (namestring locked) #o755))
+        (let ((records (load-cell-fixture root)))
+          (is-present (fine (record-named "nl-cc-fine" records)) "the readable folder has a record"
+            (is (eq :loaded (nlk:cell-state fine)))
+            (is (eq :fine (package-call "NL-CC-FINE" "PROBE")) "and runs"))
+          (dolist (name '("nl-cc-locked" "nl-cc-above"))
+            (is-present (record (record-named name records)) "each unreadable one has a record"
+              (is (eq :failed (nlk:cell-state record)) name)
+              (let ((why (format nil "~{~a~}" (mapcar #'cdr (nlk:cell-failures record)))))
+                (is (search "content key" why) name)))))))))
+
+(deftest cell-cache-the-same-text-in-two-places-keys-twice (with-temp-trees ((one "cc-one") (two "cc-two")))
+  ;; Given the same bytes in two checkouts; then each keys its own directory:
+  ;; a fasl names the file it compiled from, and a definition loaded from the
+  ;; other checkout's would lead an edit there.
+  (let ((a (write-peripheral-folder one "nl-cc-twice" :forms '("(defun probe () 1)")))
+        (b (write-peripheral-folder two "nl-cc-twice" :forms '("(defun probe () 1)"))))
+    (is (string= (nlk::folder-content-digest a) (nlk::folder-content-digest b)) "the same text")
+    (is (string/= (nlk::folder-content-key a) (nlk::folder-content-key b)) "keys apart")))
+
+(deftest cell-cache-a-dependency-outside-the-cells-moves-the-key (with-cell-fixture (root))
+  ;; Given a peripheral depending on a system outside the cells folder; when
+  ;; that system is laid down again, a new version; then the peripheral's key
+  ;; moves, so its fasls never outlive the expansions they took from it.
+  (with-temp-directory (outside "cc-outside")
+    (with-peripheral-cache (cache)
+      (let ((asdf:*central-registry* (cons (truename outside) asdf:*central-registry*)))
+        (labels ((key ()
+                   (asdf:clear-system "nl-cc-outside")
+                   (nlk::content-key (nlk::peripheral-content-keys
+                                      (mapcar #'nlk::make-cell-folder (nlk::cell-folders root)))
+                                     "nl-cc-user"))
+                 (lay (version)
+                   (write-temp-file (merge-pathnames "nl-cc-outside.asd" outside)
+                                    (format nil "(defsystem \"nl-cc-outside\" :version ~s)" version))
+                   (key)))
+          (write-peripheral-folder root "nl-cc-user" :depends-on '("nl-cc-outside"))
+          (let ((first (lay "1")))
+            (is (stringp first) "the folder keys")
+            (is (equal first (key)) "the same system keys the same")
+            (is (not (equal first (lay "2"))) "one laid down anew moves the key")))))))
+
+(deftest cell-cache-a-text-that-changes-during-its-load-keeps-no-key (with-cell-fixture (root))
+  ;; Given a peripheral whose compile writes a file into its own folder -- a
+  ;; file edited while a boot compiles; then the fasls compiled are not kept
+  ;; under the key the load began with, and the record names no key: what
+  ;; compiled is no text the disk held at any one moment.
+  (with-peripheral-cache (cache)
+    (let* ((directory (write-peripheral-folder
+                       root "nl-cc-moving"
+                       :forms '("(eval-when (:compile-toplevel) (with-open-file (out (merge-pathnames \"written.txt\" *compile-file-truename*) :direction :output :if-exists :supersede) (write-line \"compiled\" out)))")))
+           (key (nlk::folder-content-key directory)))
+      (is-present (record (record-named "nl-cc-moving" (load-cell-fixture root))) "the folder has a record"
+        (is (null (nlk::cell-content-key record)) "no key names it")
+        (let ((kept (merge-pathnames (format nil "stamp-content/nl-cc-moving/~a/" key) cache)))
+          (is (null (probe-file kept)) "and its key's directory is gone"))))))
