@@ -904,7 +904,9 @@ before its verb: Enter runs its line with the text, Esc puts it away."
          (hint (or hint (and status (not under))))
          ;; Ghost text: the top suggestion's remainder, dim, after the
          ;; cursor (the caret sits at the end whenever a ghost exists).
-         (ghost (composer-ghost-remainder model)))
+         (ghost (composer-ghost-remainder model))
+         ;; The tokens a cell's lane opens, per visible row (composer-lanes.lisp).
+         (lane-spans (and typed (composer-visible-lane-spans model))))
     (labels ((row (cols &rest segs)
                ;; The one composer row painter: SEGS laid down left to right
                ;; over the box fill, then the fill out to COLS — the docked
@@ -929,7 +931,18 @@ before its verb: Enter runs its line with the text, Esc puts it away."
                                             (make-string (composer-text-indent height)
                                                          :initial-element #\Space)
                                             line)
-                         :tone run-tone)))
+                         :tone run-tone))
+             (typed-run (line index)
+               ;; A typed row: one run, or cut where a lane's tokens paint.
+               (let ((spans (nth index lane-spans))
+                     (first t))
+                 (if (null spans)
+                     (list (run line))
+                     (lane-span-segs line spans
+                                     (lambda (text span-tone)
+                                       (if (shiftf first nil)
+                                           (run text (or span-tone tone))
+                                           (make-seg :text text :tone (or span-tone tone)))))))))
       (if (shell-footer-p height)
           (bind ((side (concatenate 'string (blank-frame-row 1 bg)
                                     (if steering
@@ -962,9 +975,10 @@ before its verb: Enter runs its line with the text, Esc puts it away."
                                                      ;; cut to the room the row leaves.
                                                      ((and ghost
                                                            (= index (1- visible-count)))
-                                                      (list (run line) (make-seg :text ghost :tone :muted
-                                                                                 :dim t)))
-                                                     (t (list (run line)))))
+                                                      (append (typed-run line index)
+                                                              (list (make-seg :text ghost :tone :muted
+                                                                              :dim t))))
+                                                     (t (typed-run line index))))
                                  ;; a held status under the draft
                                  (mapcar (lambda (line) (list (run line hint-tone))) under)
                                  (list (pad below "below")))
@@ -982,7 +996,9 @@ before its verb: Enter runs its line with the text, Esc puts it away."
                                                 (keyed (composer-box-width width) segs keys))
                                                (t (apply #'row (composer-box-width width) segs)))
                                          right))))
-          (list (row width (run (first ta-lines) (if hint hint-tone tone))))))))
+          (list (if hint
+                        (row width (run (first ta-lines) hint-tone))
+                        (apply #'row width (typed-run (first ta-lines) 0))))))))
 
 ;;; --- the frame guard --------------------------------------------------------
 ;;; The renderer boundary's check of the display authority's contract

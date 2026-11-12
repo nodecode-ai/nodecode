@@ -676,6 +676,7 @@ of stacking."
      (:file "tui/composer-test")
      (:file "tui/composer-sigils-test")
      (:file "tui/composer-lanes-test")
+     (:file "tui/composer-highlight-test")
      (:file "tui/setup-test")
      (:file "tui/setup-sign-in-test")
      (:file "tui/indentation-test")

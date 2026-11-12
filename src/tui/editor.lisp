@@ -356,6 +356,15 @@ blank past the content. Settles the window around the caret first."
                       (subseq (aref editor.lines row) start end))
                     "")))
 
+(defun editor-visible-ranges (editor &aux (visuals (%editor-settle editor)))
+  "The visible rows as EDITOR-VISIBLE-LINES lays them out, each (LINE START
+END): the logical line it shows and the span of it; NIL past the content."
+  (loop for i from 0 below (editor-height editor)
+        for vi = (+ editor.offset i)
+        collect (when (< vi (length visuals))
+                  (destructuring-bind (row start end) (aref visuals vi)
+                    (list (aref editor.lines row) start end)))))
+
 (defun editor-hidden-lines (editor &aux (visuals (%editor-settle editor))
                                         (top editor.offset)
                                         (bottom (min (1- (length visuals))

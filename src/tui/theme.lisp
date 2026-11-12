@@ -210,6 +210,10 @@
     ;; A fact that wants a look before it is a problem: the header's
     ;; occupancy nearing the eviction line, /status's attention rows.
     (:warn ,(vstyle :fg '(253 186 116)) (:info :accent1))
+    ;; A token a cell's composer lane opens (composer-lanes.lisp): green
+    ;; while the lane's rows name it, amber while they do not.
+    (:lane-recognised ,(vstyle :fg '(130 214 176)) (:success :syntax-builtin :accent4))
+    (:lane-unresolved ,(vstyle :fg '(253 186 116)) (:warning :info :accent1))
     ;; /context's grid (tui/commands/context-view.lisp +CONTEXT-PARTS+): a part's cells and its
     ;; chip, the free cells, the free cells past the eviction line, and the
     ;; other parts' under one part's view. The history part paints in
@@ -1208,7 +1212,8 @@ chooseRgb fallback chains, verbatim."
     ;; quieter than body text; a theme that already clears the floor keeps
     ;; its colour exactly. The washes above were blended from the theme's own
     ;; danger first.
-    (loop for (tones grounds) in `(((:muted :steer-preview :danger :syntax-comment)
+    (loop for (tones grounds) in `(((:muted :steer-preview :danger :syntax-comment
+                                     :lane-recognised :lane-unresolved)
                                     ,*text-grounds*)
                                    ((:diagnostic-block) (:diagnostic-block))
                                    ((:toast :toast-hover :toast-danger) (:toast :toast-hover)))

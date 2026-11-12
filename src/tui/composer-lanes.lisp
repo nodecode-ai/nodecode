@@ -109,4 +109,97 @@ any landed."
           do (setf (chat-model-lane-rows model)
                    (acons lane rows (remove lane (chat-model-lane-rows model)
                                             :key #'car :test #'string-equal))))
+    ;; Whatever landed, a lane still wanted is asked again by the next paint:
+    ;; the one fetcher answers the lane asked last, so an ask can be passed over.
+    (when landed (setf (chat-model-lane-rows-wanted model) nil))
     (and landed t)))
+
+;;; --- a lane's tokens, painted -----------------------------------------------
+;;; A token a cell's lane opens -- its sigil at a word start, then the name up
+;;; to the next blank -- paints in one of two tones: recognised while the rows
+;;; in hand name it, unresolved while they do not. The rows are the ones the
+;;; dropdown paints from; a lane whose rows are not in hand paints nothing and
+;;; asks for them from the paint, off the keystroke path, once until a fetch
+;;; lands. The file lane and the slash lane never paint here: the file lane's
+;;; @ paints as it always did, and a slash command's text is the command's.
+;;; The tone is a preview, as the rows are: what a name binds is the cell's to
+;;; decide on submit.
+
+(defun composer-gateway-sigils ()
+  "The open lanes cells offer, as (LANE . SIGIL), in table order."
+  (composer-sigil :file)
+  (loop for (lane sigil) in (cddr *composer-sigils-read*)
+        when (and sigil (not (eq lane :file))) collect (cons lane sigil)))
+
+(defun composer-lane-tokens (text)
+  "Each lane token in TEXT as (START END LANE NAME): START at its sigil, END
+past its name, trailing sentence punctuation left to the prose. NIL for a
+slash command."
+  (let ((sigils (composer-gateway-sigils)))
+    (when (and sigils (not (slash-input-p text)))
+      (loop with length = (length text)
+            for start from 0 below length
+            for lane = (car (rassoc (char text start) sigils))
+            for end = (and lane
+                           (or (zerop start) (blank-char-p (char text (1- start))))
+                           (let ((stop (or (position-if #'blank-char-p text :start start) length)))
+                             (loop while (and (> stop (1+ start))
+                                              (find (char text (1- stop)) ".,;:!?)"))
+                                   do (decf stop))
+                             stop))
+            when (and end (> end (1+ start)))
+              collect (list start end lane (subseq text (1+ start) end))))))
+
+(defun composer-lane-spans (text lane-rows)
+  "TEXT's lane tokens whose lane has rows in LANE-ROWS, as (START END STATE),
+STATE :RECOGNISED when a row's text is the name, else :UNRESOLVED."
+  (loop for (start end lane name) in (composer-lane-tokens text)
+        for rows = (assoc lane lane-rows :test #'string-equal)
+        when rows
+          collect (list start end (if (find name (cdr rows) :key #'car :test #'string-equal)
+                                      :recognised
+                                      :unresolved))))
+
+(defun composer-lanes-wanting-rows (text lane-rows)
+  "The lanes with a token in TEXT and no rows in LANE-ROWS, first seen first."
+  (loop for (nil nil lane) in (composer-lane-tokens text)
+        unless (or (assoc lane lane-rows :test #'string-equal)
+                   (member lane wanted :test #'string-equal))
+          collect lane into wanted
+        finally (return wanted)))
+
+(defun composer-visible-lane-spans (model &aux (editor (chat-model-editor model))
+                                               (rows (chat-model-lane-rows model)))
+  "For each visible composer row, the lane spans on it, (START END STATE) in
+the row's own columns; and the first lane wanting rows is asked for them."
+  (unless (chat-model-composer-ask model)
+    (let ((wanted (composer-lanes-wanting-rows (editor-value editor) rows)))
+      (when-let (lane (find-if-not (lambda (lane)
+                                     (member lane (chat-model-lane-rows-wanted model)
+                                             :test #'string-equal))
+                                   wanted))
+        (when (ask-lane-rows model lane)
+          (push lane (chat-model-lane-rows-wanted model))))))
+  (let ((slash (slash-input-p (editor-value editor))))
+    (loop for range in (editor-visible-ranges editor)
+          collect (when (and range rows (not slash) (not (chat-model-composer-ask model)))
+                    (destructuring-bind (line start end) range
+                      (loop for (from to state) in (composer-lane-spans line rows)
+                            when (and (< from end) (> to start))
+                              collect (list (- (max from start) start)
+                                            (- (min to end) start)
+                                            state)))))))
+
+(defun lane-span-segs (line spans make-run)
+  "LINE cut at SPANS into the runs MAKE-RUN builds, (TEXT TONE-OR-NIL) each:
+NIL for the plain text between, the span's tone for each span."
+  (loop with at = 0
+        for (from to state) in spans
+        when (> from at) collect (funcall make-run (subseq line at from) nil) into segs
+        collect (funcall make-run (subseq line from to)
+                         (if (eq state :recognised) :lane-recognised :lane-unresolved))
+          into segs
+        do (setf at to)
+        finally (return (if (< at (length line))
+                            (append segs (list (funcall make-run (subseq line at) nil)))
+                            segs))))

@@ -156,6 +156,9 @@ for the many bars and rows that paint one run of text in one tone."
    ;; token fetches fresh (LANE-TOKEN-SUGGESTIONS).
    (lane-rows :initform nil :accessor chat-model-lane-rows)
    (lane-asked :initform nil :accessor chat-model-lane-asked)
+   ;; The lanes the composer's paint asked rows for, to tell its tokens'
+   ;; tones apart, until a fetch lands (COMPOSER-VISIBLE-LANE-SPANS).
+   (lane-rows-wanted :initform nil :accessor chat-model-lane-rows-wanted)
    ;; The @ lane's folder listings for path tokens (`@~/', `@../', `@/'),
    ;; each (HEAD . ENTRIES), newest first and bounded, HEAD the token up to
    ;; its last separator; and the HEAD last asked for, NIL while no path
