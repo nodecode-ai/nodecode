@@ -64,15 +64,18 @@ it."
 ;;; --- the effects a command's answer carries -------------------------------
 ;;; What only this shell can do for a cell (GATEWAY.LISP EFFECTS-JSON): copy
 ;;; with its own clipboard writer, where the person sits, and set its own
-;;; draft. An effect this shell does not know is passed over; the answer's
-;;; text is the notice either way.
+;;; draft, or dismiss its picker without changing that draft. An effect this
+;;; shell does not know is passed over; the answer's text is the notice either way.
 
 (defun perform-answer-effects (model answer)
   "Do in MODEL's shell what ANSWER's effects ask, in order."
   (loop with editor = model.editor
         for effect across (or (json-value answer :array "effects") #())
         for draft = (json-value effect :string "draft")
-        do (cond ((json-value effect :string "open")
+        do (when (json-value effect :boolean "dismiss")
+             ;; Never call ON-CANCEL: an answer picker uses it to reopen its parent.
+             (dismiss-dialog model nil))
+           (cond ((json-value effect :string "open")
                   (perform-open-effect model (json-value effect :string "open")
                                        (json-value effect :string "prompt")))
                  ((json-value effect :string "clipboard")
@@ -208,18 +211,26 @@ nothing."
 the command ran: a dialog it answers opens over STACK; else what it says is a
 toast, the one line the panel leaves in sight, and STACK is read again
 (REOPEN-ANSWER-DIALOG) -- unless the answer set the draft: the composer is
-where the person goes next, so the stack stays closed. A command that reads
-the draft is handed it, as when run from a key."
+where the person goes next, so the stack stays closed. An explicit dismissal
+also retires STACK; a new dialog with it opens as a new root. A command that
+reads the draft is handed it, as when run from a key."
   (multiple-value-bind (answer failed)
       (with-slash-notice (line)
         (gateway-slash-answer model line
                               :draft (command-draft model (find-slash-command (parse-slash-input line)))))
     (unless failed (perform-answer-effects model answer))
     (cond ((and (not failed) (json-value answer :object "dialog"))
-           (open-answer-dialog model answer :line line :under stack))
+           (open-answer-dialog model answer :line line
+                               :under (unless (answer-dismisses-dialog-p answer) stack)))
           (t (show-status model (if failed answer (json-value answer :string "text")) :error-p failed)
-             (unless (and (not failed) (answer-sets-draft-p answer))
+             (unless (and (not failed)
+                          (or (answer-sets-draft-p answer) (answer-dismisses-dialog-p answer)))
                (reopen-answer-dialog model stack))))))
+
+(defun answer-dismisses-dialog-p (answer)
+  "Whether ANSWER explicitly retires the current picker and its inherited stack."
+  (some (lambda (effect) (json-value effect :boolean "dismiss"))
+        (or (json-value answer :array "effects") #())))
 
 (defun answer-sets-draft-p (answer)
   "Whether ANSWER's effects put anything in the composer."

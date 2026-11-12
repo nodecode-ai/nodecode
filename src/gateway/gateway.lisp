@@ -3373,10 +3373,11 @@ a surface that draws one wears (a room's card its edge), NIL for none."
 
 (defvar *slash-effects* nil
   "The effects the caller of the slash line being run performs, as keywords:
-(:CLIPBOARD :DRAFT), and :OPEN where it can open a tab, from a shell; NIL from a caller that names none -- eval,
-a room, the web page -- so a RUN words its text by what will happen.")
+(:CLIPBOARD :DRAFT :DISMISS), and :OPEN where it can open a tab, from a shell;
+NIL from a caller that names none -- eval, a room, the web page -- so a RUN
+words its text by what will happen.")
 
-(defparameter +effect-names+ '("clipboard" "draft" "open")
+(defparameter +effect-names+ '("clipboard" "draft" "dismiss" "open")
   "The effects there are, as a caller names them in POST /api/gateway/slash.")
 
 (defun performed-effects (names)
