@@ -163,6 +163,32 @@ model uses. => its receipt."
           (is (equal "tester-clock" (nle::slash-command-owner entry)) "under the folder's name")
           (is (equal "noon" (funcall (nle::slash-command-headless entry) "" "s-cell"))))))))
 
+(deftest made-cell-the-help-recipe-leaves-no-drift (with-made-cell-fixture ())
+  ;; the recipe (help :cells) teaches -- new-cell, the code file written whole
+  ;; with its defun and define-cell, restart-cells -- answers drift :clean t:
+  ;; what new-cell's scaffold and define-cell expand into (the peripheral's
+  ;; condition and its reader, *stop*, start-cell, stop-cell) is the file's
+  ;; own, not drift; and so it stays when cell.lisp is written again through
+  ;; the write verb, which makes it live from text with no pathname
+  (make-test-cell "tokyo")
+  (nlk:with-cleanup ((nle::stop-cells '("tester-tokyo")))
+    (write-cell-file "tokyo" "tokyo"
+                     (format nil "(in-package #:tester-tokyo)~%~%~
+                                  (defun tokyo (args session-id) (declare (ignore args session-id)) \"noon in Tokyo\")~%~%~
+                                  (define-cell tokyo (:section (\"tester-tokyo-section\")) (:command \"tester-tokyo\" 'tokyo :description \"The time.\"))~%"))
+    (let ((report (nle:restart-cells "tester-tokyo")))
+      (is (search "/tester-tokyo" report) (format nil "the restart names the command it registered: ~a" report)))
+    (let ((drift (nlk:cell-drift "tokyo")))
+      (is (null (remove "TESTER-TOKYO" (getf drift :live-only) :key #'first :test-not #'string=))
+          (format nil "nothing of the cell's own package is drift: ~s" (getf drift :live-only)))
+      (is (null (getf drift :not-live)) "and the files are live"))
+    (let ((cell (merge-pathnames "tester-tokyo/cell.lisp" nlk::*cells-directory*)))
+      (nle::write-file cell (nlk:read-text cell)))
+    (nle:restart-cells "tester-tokyo")
+    (let ((drift (nlk:cell-drift "tokyo")))
+      (is (null (remove "TESTER-TOKYO" (getf drift :live-only) :key #'first :test-not #'string=))
+          (format nil "cell.lisp written again leaves no drift either: ~s" (getf drift :live-only))))))
+
 (defun chime-code (&rest commands)
   "The made cell chime's code file: one DEFINE-CELL declaring COMMANDS."
   (format nil "(in-package #:tester-chime)~%~%(defun chime (args session-id) (declare (ignore args session-id)) \"ding\")~%~%~
