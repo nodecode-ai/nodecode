@@ -28,7 +28,11 @@ on 127.0.0.1 (discord-qa.py's), with every shipped cell on:
      gateway of CANDIDATE boots and waits for it, a process of PREVIOUS points
      the home's shipped-cell links back into its own release, and the old
      gateway lets go.
-     (b) CANDIDATE serves, and the bot answers.
+     (b) PREVIOUS's gateway serves the home CANDIDATE has served -- the step
+     back `nodecode update PREVIOUS' is, and what an old gateway restarted
+     beside the new build meets: a candidate whose usage projection left a
+     trigger 0.1.14 does not drop had every write to its log refused -- then
+     CANDIDATE serves, and the bot answers.
   4. (c) One organism serves the home, and no notice says a channel was
      refused.
 
@@ -234,6 +238,13 @@ def main():
     organism_env = dict(env, NODECODE_HOME=home, DISCORD_BOT_TOKEN="proof-token-not-a-real-one")
     run = Run(root, home, work, releases, organism_env, os.path.join(root, "gateway.log"))
     failures = []
+
+    def failed():
+        say("gateway log, last lines:\n" + run.tail())
+        for failure in failures:
+            say("FAIL: " + failure)
+        return 1
+
     try:
         try:
             candidate = up.take_tarball(os.path.abspath(args.candidate), mirror)
@@ -345,8 +356,12 @@ def main():
         run.stop(gateway)
         holder = run.start(old)
         if run.serving(previous, 180, pid=holder.pid) is None:
-            say(f"a gateway of {previous} never served for the handoff:\n{run.tail()}")
-            return 2
+            # It served this home in 1, on this box and these stand-ins: what
+            # changed since is what CANDIDATE wrote there. A failure of the
+            # candidate's, then, never a proof that could not run.
+            failures.append(f"(b) a gateway of {previous} does not serve the home {candidate} has served: "
+                            f"no step back to it, and no old gateway to take the store over from")
+            return failed()
         run.note(f"handoff: a gateway of {previous} (pid {holder.pid}) holds the store")
         since = run.log_size()
         gateway = run.start(current)
@@ -388,10 +403,7 @@ def main():
         if refused:
             failures.append("(c) a channel was refused: " + "; ".join(refused))
         if failures:
-            say("gateway log, last lines:\n" + run.tail())
-            for failure in failures:
-                say("FAIL: " + failure)
-            return 1
+            return failed()
         say(f"PASS: {previous} -> {candidate}: the bot connected again on the update and answered, in the "
             f"thread another bot opened too, and after the handoff; one organism serves, no channel was refused")
         return 0

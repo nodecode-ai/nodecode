@@ -115,3 +115,70 @@
       (nlk:open-store :path path)
       (is (= 3 (rounds)))
       (is-shape (totals) ("calls" = 3) ("input" = 2338)))))
+
+(defparameter +usage-projection-of-0.1.14+
+  '(("trigger" "turn_spans_follow_ends") ("trigger" "turn_spans_follow_starts") ("table" "turn_spans")
+    ("trigger" "request_timings_follow_the_log") ("trigger" "usage_rollup_follows_the_log")
+    ("index" "request_timings_by_model") ("index" "request_timings_by_wait")
+    ("table" "request_timings") ("table" "usage_rollup") ("table" "usage_tier_sizes"))
+  "The usage projection's entries as release 0.1.14 names them, in the order
+it drops them when it finds a shape that is not its own.")
+
+(defun usage-rounds-by-side ()
+  "Each (SIDE ROUNDS INPUT) the open store's rollup holds."
+  (sqlite:execute-to-list (nlk::require-open-store)
+                          "select side, sum(rounds), sum(input) from usage_rollup group by side order by side"))
+
+(deftest a-release-before-the-side-calls-rebuilds-the-usage-projection-and-the-log-still-takes-a-fact ()
+  ;; A build that finds another shape drops the entries it names, and only
+  ;; those, then builds its own: 0.1.14 names one usage trigger and a rollup
+  ;; with no SIDE. A second trigger of ours, for the side calls, outlived that
+  ;; and named a column the table 0.1.14 built lacks, so SQLite refused every
+  ;; write to the log and its gateway never served the store again (the
+  ;; release's upgrade proof, 2026-11-12).
+  (with-restartable-store (path "step-back" :cwd (fixture-workspace))
+    (nlk:record-side-call-usage "step-back" "title" :provider "vendor" :model "a" :input-tokens 9)
+    (is (equal '((1 1 9)) (usage-rounds-by-side)))
+    (nlk:close-store)
+    (sqlite:with-open-database (db path)
+      (loop for (type name) in +usage-projection-of-0.1.14+
+            do (sqlite:execute-non-query db (format nil "drop ~a if exists ~a" type name)))
+      (sqlite:execute-non-query db "create table usage_rollup (
+            bucket text not null, session_id text not null, model text not null,
+            provider text not null, voided integer not null, priced integer not null,
+            band integer not null, rounds integer not null, input integer not null,
+            cached integer not null, write integer not null, output integer not null, cost,
+            primary key (bucket, session_id, model, provider, voided, priced, band)) without rowid")
+      (is (equal '() (sqlite:execute-to-list db "select name from sqlite_master
+                                                  where type = 'trigger' and sql like '%usage_rollup%'"))
+          "no trigger of ours outlives the rollup it writes")
+      ;; SQLite compiles every trigger of the log into a write to it.
+      (is (equal :prepared (handler-case
+                               (progn (sqlite:finalize-statement
+                                       (sqlite:prepare-statement db "insert into events default values"))
+                                      :prepared)
+                             (sqlite:sqlite-error (refused) (sqlite:sqlite-error-message refused))))
+          "a write to the log still compiles"))
+    ;; Our build again: its own shape, the side call summed apart as before.
+    (nlk:open-store :path path)
+    (is (equal '((1 1 9)) (usage-rounds-by-side)))))
+
+(deftest a-store-that-carries-the-side-calls-own-trigger-counts-a-side-call-once ()
+  ;; Main carried a second usage trigger, for the side calls alone, for a day
+  ;; (2026-11-11). A store one of its builds opened keeps it until it is
+  ;; dropped by name, and beside the one trigger it would sum each side call
+  ;; twice.
+  (with-restartable-store (path "retired-trigger" :cwd (fixture-workspace))
+    (nlk:close-store)
+    (sqlite:with-open-database (db path)
+      (sqlite:execute-non-query
+       db (third (nle::log-trigger "usage_rollup_follows_side_calls" nlk::+kind-side-call-usage+
+                                   (nle::usage-rollup-fill-sql
+                                    "(select new.occurred_at occurred_at, new.session_id session_id,
+                                             new.payload payload, 1 side)")))))
+    (nlk:open-store :path path)
+    (is (equal '() (sqlite:execute-to-list (nlk::require-open-store)
+                                           "select name from sqlite_master
+                                             where name = 'usage_rollup_follows_side_calls'")))
+    (nlk:record-side-call-usage "retired-trigger" "title" :provider "vendor" :model "a" :input-tokens 9)
+    (is (equal '((1 1 9)) (usage-rounds-by-side)))))
