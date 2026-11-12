@@ -176,6 +176,7 @@ model uses. => its receipt."
                      (format nil "(in-package #:tester-tokyo)~%~%~
                                   (defun tokyo (args session-id) (declare (ignore args session-id)) \"noon in Tokyo\")~%~%~
                                   (define-cell tokyo (:section (\"tester-tokyo-section\")) (:command \"tester-tokyo\" 'tokyo :description \"The time.\"))~%"))
+    (is (equal (nlk:cell-directory "tokyo") (nlk:cell-directory "tester-tokyo")) "the folder's whole name finds it too")
     (let ((report (nle:restart-cells "tester-tokyo")))
       (is (search "/tester-tokyo" report) (format nil "the restart names the command it registered: ~a" report)))
     (let ((drift (nlk:cell-drift "tokyo")))
