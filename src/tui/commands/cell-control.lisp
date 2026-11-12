@@ -57,9 +57,21 @@ it."
     (with-slash-notice ((format nil "/~a" name))
       (let ((answer (gateway-slash-answer model line :draft (command-draft model entry))))
         (perform-answer-effects model answer)
-        (if (json-value answer :object "dialog")
-            (progn (open-answer-dialog model answer :line line :trigger trigger) nil)
-            (json-value answer :string "text"))))))
+        (cond ((json-value answer :object "dialog")
+               (open-answer-dialog model answer :line line :trigger trigger) nil)
+              ((answer-dismisses-dialog-p answer)
+               (show-dismissed-answer model answer))
+              (t (json-value answer :string "text")))))))
+
+(defun show-dismissed-answer (model answer)
+  "Keep a completed operation's acknowledgement under an untouched draft."
+  (show-status model (json-value answer :string "text"))
+  ;; A one-line news item normally hides behind typed text. Completion is
+  ;; an acknowledgement, not news: retain it until the draft changes, just
+  ;; like a multiline answer, without fabricating an error or editing text.
+  (when-let (status (chat-model-composer-status model))
+    (setf (composer-status-held status) t))
+  nil)
 
 ;;; --- the effects a command's answer carries -------------------------------
 ;;; What only this shell can do for a cell (GATEWAY.LISP EFFECTS-JSON): copy
@@ -222,7 +234,9 @@ reads the draft is handed it, as when run from a key."
     (cond ((and (not failed) (json-value answer :object "dialog"))
            (open-answer-dialog model answer :line line
                                :under (unless (answer-dismisses-dialog-p answer) stack)))
-          (t (show-status model (if failed answer (json-value answer :string "text")) :error-p failed)
+          (t (if (and (not failed) (answer-dismisses-dialog-p answer))
+                 (show-dismissed-answer model answer)
+                 (show-status model (if failed answer (json-value answer :string "text")) :error-p failed))
              (unless (and (not failed)
                           (or (answer-sets-draft-p answer) (answer-dismisses-dialog-p answer)))
                (reopen-answer-dialog model stack))))))

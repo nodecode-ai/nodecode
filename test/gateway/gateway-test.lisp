@@ -6196,13 +6196,23 @@ default target is PROVIDER/MODEL-ID, restored after."
               (is (null (nle::chat-model-dialog model)) "successful dismissal leaves the whole nested stack closed")
               (is (equal reads (list root-reads provider-reads)) "dismissal does not invoke cancellation or reread ancestors"))
             (is (equal "settled" (nle::status-said model)) "settlement text remains visible")
+            (multiple-value-bind (lines under status) (nle::composer-status-lines model 76)
+              (declare (ignore status))
+              (is (and under (equal '("settled") lines)) "a dismissal acknowledgement actually paints under the untouched draft"))
             (is (equal before (snapshot)) "draft, caret, selection and edit epoch remain untouched")
             ;; A direct invocation must close the current panel too, not just
             ;; suppress the row-specific ancestor reopening.
             (nested)
-            (is (equal "settled" (nle::execute-slash-command model "t-dismiss" "done")))
+            (is (null (nle::execute-slash-command model "t-dismiss" "done")) "a direct completion owns its held acknowledgement")
+            (multiple-value-bind (lines under status) (nle::composer-status-lines model 76)
+              (declare (ignore status))
+              (is (and under (equal '("settled") lines)) "direct completion also paints acknowledgement under the draft"))
             (is (null (nle::chat-model-dialog model)) "direct dismissal closes an existing picker")
             (is (equal before (snapshot)) "direct dismissal also leaves the composer alone")
+            (is (not (nle::composer-status-error-p (nle::chat-model-composer-status model))) "a successful completion is not painted as an error")
+            (nle::editor-insert editor "x")
+            (is (null (nle::active-status model)) "the completion acknowledgement retires when the draft is edited")
+            (setf before (snapshot))
             ;; False, wrong-typed, unknown and absent effects are not dismissal;
             ;; a refusal keeps the confirmation panel as a recoverable choice.
             (dolist (next '("false" "malformed" "unknown" "plain" "refuse"))
@@ -6211,6 +6221,8 @@ default target is PROVIDER/MODEL-ID, restored after."
               (dialog-keys model :enter)
               (is (and (nle::chat-model-dialog model)
                        (equal "Confirm" (nle::picker-dialog-title (nle::chat-model-dialog model)))) "a non-dismissal or refusal reopens the same confirmation")
+              (let ((status (nle::active-status model)))
+                (is (or (null status) (not (nle::composer-status-held status))) "an ordinary one-line non-dismissal remains transient news"))
               (is (equal before (snapshot)) "refused and non-dismissal results do not edit the draft"))
             ;; A replacement accompanies dismissal as a new root, not a child of
             ;; the retired operation. Esc cannot resurrect its old stack.
