@@ -1,6 +1,6 @@
 diff -ru a/src/runtime/coreparse.c b/src/runtime/coreparse.c
 --- a/src/runtime/coreparse.c	2026-11-12 21:49:08.221000762 +0100
-+++ b/src/runtime/coreparse.c	2026-11-12 21:49:28.184687182 +0100
++++ b/src/runtime/coreparse.c	2026-11-12 21:57:41.838774058 +0100
 @@ -111,6 +111,74 @@
   *
   * If an embedded core is present, this returns the offset into the
@@ -110,6 +110,14 @@ diff -ru a/src/runtime/coreparse.c b/src/runtime/coreparse.c
  #if ELFCORE && !defined(LISP_FEATURE_DARWIN)
      // Specifying "--core" as an ELF file with a lisp.core section doesn't work.
      // (There are bunch of reasons) So only search for a core section if this
+@@ -169,7 +239,6 @@
+             memsize_options->present_in_core = optarray[1] == RUNTIME_OPTIONS_WORDS ? 1 : 2;
+         }
+     }
+-lose:
+     close(fd);
+     return core_start;
+ }
 diff -ru a/src/runtime/save.c b/src/runtime/save.c
 --- a/src/runtime/save.c	2026-11-12 21:49:08.221849253 +0100
 +++ b/src/runtime/save.c	2026-11-12 21:49:36.900593504 +0100
