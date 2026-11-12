@@ -40,6 +40,7 @@
                            (uiop:print-backtrace :stream stderr :condition condition)
                            (finish-output stderr)))))
     (let ((*gateway-commands* '())
+          (*gateway-lanes* '())
           (*standard-output* (make-broadcast-stream))
           (*error-output* (make-broadcast-stream)))
       (nlk:load-cells)

@@ -275,7 +275,10 @@ text)."
 ;;; historical reading (it opens even inside a word, a@b.de); a moved one opens
 ;;; only at the start of the text or after whitespace, so a&b or costs$5 stay
 ;;; text. The document is read once per path, so a change shows at the next
-;;; launch, as keybinds.json's does.
+;;; launch, as keybinds.json's does. The lanes cells offer through the
+;;; gateway (*GATEWAY-LANES*) join the table under their names and sigils, after
+;;; the builtin ones; a sigil already taken leaves the later lane closed, so
+;;; @ stays the file lane's until sigils.json moves it.
 
 (defparameter *composer-sigils* '((:file #\@))
   "The declarative default sigil table: (LANE CHARACTER). :FILE is the lane of
@@ -287,9 +290,13 @@ workspace and folder paths (TOKEN-SUGGESTIONS-FOR).")
 one character, e.g. {\"file\": \"&\"}. NIL disables overrides; tests bind.")
 
 (define-startup-parameter *composer-sigils-read* nil
-  "(PATH . TABLE): the sigil table last read, and the path it was read from.
-Forget it at image start: a warm image may have read a table whose path is
-unchanged but whose bytes have since changed.")
+  "(PATH LANES . TABLE): the sigil table last read, and the path and gateway
+lanes it was read from. Forget it at image start: a warm image may have read
+a table whose path is unchanged but whose bytes have since changed.")
+
+(defvar *gateway-lanes* '()
+  "The composer lanes the attached gateway's cells offer, plists (:NAME
+:SIGIL :DESCRIPTION) as GET /api/gateway/lanes lists them, oldest first.")
 
 (defun composer-sigil-char-p (char)
   "Whether CHAR can open a lane: printable punctuation other than the slash
@@ -304,26 +311,51 @@ leaves the default: sigils are convenience, never worth refusing the shell over.
   (let ((document (when *composer-sigils-path*
                     (with-handlers ((error () nil))
                       (nlk:decode-json (nlk:read-text *composer-sigils-path*))))))
-    (loop for (lane default) in *composer-sigils*
-          for value = (when (hash-table-p document)
-                        (gethash (string-downcase (symbol-name lane)) document))
-          collect (list lane (if (and (stringp value) (= 1 (length value))
-                                      (composer-sigil-char-p (char value 0)))
-                                 (char value 0)
-                                 default)))))
+    (flet ((usable (value)
+             (and (stringp value) (= 1 (length value))
+                  (composer-sigil-char-p (char value 0))
+                  (char value 0))))
+      (loop with taken = '()
+            for (lane default) in (append *composer-sigils*
+                                          (loop for lane in *gateway-lanes*
+                                                collect (list (getf lane :name)
+                                                              (usable (getf lane :sigil)))))
+            for value = (when (hash-table-p document)
+                          (gethash (string-downcase (string lane)) document))
+            for sigil = (or (usable value) default)
+            unless (find lane seen :test #'string-equal)
+              collect lane into seen
+              and collect (list lane (unless (member sigil taken) (push sigil taken) sigil))
+                    into table
+            finally (return table)))))
 
 (defun composer-sigil (lane &aux (read *composer-sigils-read*))
-  "The character that opens LANE now."
-  (unless (and read (equal (car read) *composer-sigils-path*))
-    (setf read (cons *composer-sigils-path* (read-composer-sigils))
+  "The character that opens LANE now -- :FILE, or a gateway lane's name --
+or NIL while it is closed."
+  (unless (and read (equal (first read) *composer-sigils-path*)
+               (eq (second read) *gateway-lanes*))
+    (setf read (list* *composer-sigils-path* *gateway-lanes* (read-composer-sigils))
           *composer-sigils-read* read))
-  (second (assoc lane (cdr read))))
+  (second (assoc lane (cddr read) :test #'string-equal)))
+
+(defun composer-sigil-table ()
+  "The lanes open now, as (NAME . SIGIL) strings in table order: what this
+shell's composer reads, and so what a prompt it sends was written against."
+  (composer-sigil :file)
+  (loop for (lane sigil) in (cddr *composer-sigils-read*)
+        when sigil collect (cons (string-downcase (string lane)) (string sigil))))
+
+(defun composer-sigils-json ()
+  "COMPOSER-SIGIL-TABLE as the JSON object a start_turn carries."
+  (let ((object (make-json-object)))
+    (loop for (name . sigil) in (composer-sigil-table) do (setf (gethash name object) sigil))
+    object))
 
 (defun composer-lane-filter (text lane &aux (sigil (composer-sigil lane)))
   "The token LANE's sigil opens at the end of TEXT, or NIL."
-  (when-let (filter (composer-token-filter text sigil))
+  (when-let (filter (and sigil (composer-token-filter text sigil)))
     (let ((at (- (length text) (length filter) 1)))
-      (when (or (eql sigil (second (assoc lane *composer-sigils*)))
+      (when (or (eql sigil (second (assoc lane *composer-sigils* :test #'string-equal)))
                 (zerop at)
                 (blank-char-p (char text (1- at))))
         filter))))
@@ -378,24 +410,49 @@ filter and catalog."
   ;; it. A token that starts at a root of its own takes the path lane instead
   ;; (PATH-TOKEN-SUGGESTIONS); while none is typed the lane forgets its last
   ;; folder, so the next one lists fresh.
-  (let ((filter (unless (or (slash-input-p text)
-                            (not (composer-cursor-at-end-p (chat-model-editor model))))
-                  (composer-lane-filter text :file))))
-    (cond ((and filter (path-token-p filter))
-           (path-token-suggestions model filter))
+  (multiple-value-bind (lane token)
+      (unless (or (slash-input-p text)
+                  (not (composer-cursor-at-end-p (chat-model-editor model))))
+        (composer-active-lane text))
+    ;; A lane a cell offers paints from its own rows (LANE-TOKEN-SUGGESTIONS);
+    ;; the file lane's marks are dropped as when no token is typed, and the
+    ;; other way round.
+    (cond ((and lane (not (eq lane :file)))
+           (setf (chat-model-file-catalog-asked model) nil
+                 (chat-model-path-listing-asked model) nil)
+           (lane-token-suggestions model lane token text))
           (t
-           (setf (chat-model-path-listing-asked model) nil)
-           (cond ((null filter)
-                  (setf (chat-model-file-catalog-asked model) nil))
-                 (t
-                  ;; The token is known by where it starts: one typed over the
-                  ;; last with no frame between is still a new token.
-                  (let ((start (- (length text) (length filter))))
-                    (unless (and (chat-model-file-catalog-loaded model)
-                                 (eql start (chat-model-file-catalog-asked model)))
-                      (setf (chat-model-file-catalog-asked model) start)
-                      (start-composer-catalog-walk model)))
-                  (file-token-suggestions model filter)))))))
+           (setf (chat-model-lane-asked model) nil)
+           (file-lane-suggestions model token text)))))
+
+(defun composer-active-lane (text)
+  "The lane whose token TEXT ends in, and the token: of the open lanes, the
+one whose sigil sits nearest the end. => (values LANE TOKEN), or NIL."
+  (loop with best and best-token
+        for (lane) in (cddr (progn (composer-sigil :file) *composer-sigils-read*))
+        for token = (composer-lane-filter text lane)
+        when (and token (or (null best-token) (< (length token) (length best-token))))
+          do (setf best lane best-token token)
+        finally (return (values best best-token))))
+
+(defun file-lane-suggestions (model filter text)
+  "The file lane's rows for FILTER, the token after its sigil in TEXT, or
+NIL while none is typed."
+  (cond ((and filter (path-token-p filter))
+         (path-token-suggestions model filter))
+        (t
+         (setf (chat-model-path-listing-asked model) nil)
+         (cond ((null filter)
+                (setf (chat-model-file-catalog-asked model) nil))
+               (t
+                ;; The token is known by where it starts: one typed over the
+                ;; last with no frame between is still a new token.
+                (let ((start (- (length text) (length filter))))
+                  (unless (and (chat-model-file-catalog-loaded model)
+                               (eql start (chat-model-file-catalog-asked model)))
+                    (setf (chat-model-file-catalog-asked model) start)
+                    (start-composer-catalog-walk model)))
+                (file-token-suggestions model filter))))))
 
 ;;; --- the @ lane's paths outside the workspace --------------------------------
 ;;; A token that starts at a root of its own -- the home `~/', the folder `./',

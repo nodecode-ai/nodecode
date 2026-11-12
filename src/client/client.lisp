@@ -242,7 +242,8 @@ the first attach, and once the gateway or the socket hung it up."
                "prompt" prompt
                "generate_response" t
                :opt "images" images
-               (:getf target :opt "provider" "model" "effort")))
+               (:getf target :opt "provider" "model" "effort")
+               "sigils" (composer-sigils-json)))
 
 (defun start-turn-frame (prompt &key images target)
   "The frame a fresh session's start_turn carrying PROMPT, IMAGES and TARGET
@@ -292,7 +293,8 @@ exit itself arrives as the ordinary exit fact, so this shell only asks."
                         (json-object "session_id" session-id
                                      "expected_turn_id" turn-id
                                      "prompt" prompt
-                                     :opt "images" images)
+                                     :opt "images" images
+                                     "sigils" (composer-sigils-json))
                         :command-id command-id))
 
 (defun send-withdraw-prompt (ws session-id prompt-id)
