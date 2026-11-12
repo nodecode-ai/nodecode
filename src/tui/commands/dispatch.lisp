@@ -222,10 +222,12 @@ run -- builds them from MODEL-CHOICES; a shell reads them from it
   (if *serving* (ignore-errors (provider-offers)) (getf *gateway-models* :offers)))
 
 (defun picker-provider-name (id)
-  "OFFERED-PROVIDER-NAME as the serving image answers it."
-  (if *serving*
-      (ignore-errors (offered-provider-name id))
-      (cdr (assoc id (getf *gateway-models* :names) :test #'string-equal))))
+  "OFFERED-PROVIDER-NAME as the serving image answers it, else nodecode.ai's
+own name for ID (OWN-PROVIDER-NAME)."
+  (or (if *serving*
+          (ignore-errors (offered-provider-name id))
+          (cdr (assoc id (getf *gateway-models* :names) :test #'string-equal)))
+      (own-provider-name id)))
 
 (defun install-offered-cell (model offer)
   "Install OFFER's folder (PROVIDER-OFFERS) through MODEL's organism at the
@@ -336,6 +338,15 @@ So /models offers Cyber v1 twice: free (badged FREE), and paid from the plan or 
 (defun own-provider-p (id)
   "Whether provider ID is nodecode.ai's own: the account key's or the free key's."
   (and (stringp id) (or (string-equal id +own-provider+) (string-equal id +free-provider+))))
+
+(defun own-provider-name (id)
+  "The name /models lists nodecode.ai's own provider ID by, NIL for any other."
+  ;; models.dev has no row for nodecode.ai and no folder serves it, so its
+  ;; row read by its bare id: `nodecode' under Suggested, beside Anthropic
+  ;; and OpenAI and under the `Nodecode' heading.
+  (cond ((not (stringp id)) nil)
+        ((string-equal id +own-provider+) "Nodecode")
+        ((string-equal id +free-provider+) "Nodecode free")))
 
 (defun model-choices ()
   "The models a turn can run on: the models.dev cache, the configured
