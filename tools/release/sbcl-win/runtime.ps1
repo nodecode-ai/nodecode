@@ -3,8 +3,9 @@
   The runtime to run the installed SBCL's core on.
 
 .DESCRIPTION
-  Answers sbcl-2.6.8-coreviews.exe beside this script (build-runtime.sh: the
-  SBCL 2.6.8 runtime that maps its core where the stock one reads it whole)
+  Answers sbcl-2.6.8-nodecode.exe beside this script (build-runtime.sh: the
+  SBCL 2.6.8 runtime that maps its core where the stock one reads it whole,
+  and finds it in a signed executable)
   when it runs the core and contribs of the SBCL at -Sbcl, and -Sbcl itself
   otherwise: a runtime built for another SBCL refuses the core. Run the answer
   with --core <the installed SBCL's folder>\sbcl.core and SBCL_HOME at that
@@ -18,7 +19,7 @@ param([Parameter(Mandatory = $true)][string]$Sbcl)
 
 # A refusal is a line on stderr, which 'Stop' would raise
 $ErrorActionPreference = 'Continue'
-$runtime = Join-Path $PSScriptRoot 'sbcl-2.6.8-coreviews.exe'
+$runtime = Join-Path $PSScriptRoot 'sbcl-2.6.8-nodecode.exe'
 $dir = Split-Path -Parent $Sbcl
 $core = Join-Path $dir 'sbcl.core'
 if (-not (Test-Path $runtime) -or -not (Test-Path $core)) { return $Sbcl }

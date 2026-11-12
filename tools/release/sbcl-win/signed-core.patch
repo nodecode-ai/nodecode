@@ -1,0 +1,129 @@
+diff -ru a/src/runtime/coreparse.c b/src/runtime/coreparse.c
+--- a/src/runtime/coreparse.c	2026-11-12 21:49:08.221000762 +0100
++++ b/src/runtime/coreparse.c	2026-11-12 21:49:28.184687182 +0100
+@@ -111,6 +111,74 @@
+  *
+  * If an embedded core is present, this returns the offset into the
+  * file to load the core from, or -1 if no core is present. */
++/* The core's start, read from a trailer that ends at file offset END, or -1
++ * when no trailer ends there. On success the file is positioned just past
++ * the core's first word. */
++static os_vm_offset_t
++trailer_core_start(int fd, os_vm_offset_t end)
++{
++    lispobj header = 0;
++    os_vm_offset_t lispobj_size = sizeof(lispobj), core_start = -1;
++    os_vm_offset_t trailer = lispobj_size + sizeof(os_vm_offset_t);
++
++    if (end < trailer ||
++        lseek(fd, end - lispobj_size, SEEK_SET) < 0 ||
++        read(fd, &header, (size_t)lispobj_size) != lispobj_size ||
++        header != CORE_MAGIC)
++        return -1;
++    // the last word could be CORE_MAGIC by pure coincidence
++    if (lseek(fd, end - trailer, SEEK_SET) < 0 ||
++        read(fd, &core_start, sizeof(os_vm_offset_t)) != sizeof(os_vm_offset_t) ||
++        core_start < 0 || core_start > end - trailer ||
++        lseek(fd, core_start, SEEK_SET) != core_start ||
++        read(fd, &header, lispobj_size) != lispobj_size || header != CORE_MAGIC)
++        return -1;
++    return core_start;
++}
++
++#ifdef LISP_FEATURE_WIN32
++/* Where the Authenticode certificate table of the PE file FD starts, or -1
++ * when it carries none. A signer appends that table to the file, after the
++ * core's trailer, and names it in the security data directory
++ * (IMAGE_DIRECTORY_ENTRY_SECURITY, whose address is a file offset). Only a
++ * table that runs to the end of the file is taken: anything else is not
++ * the layout a signer writes. */
++static os_vm_offset_t
++signature_start(int fd)
++{
++    unsigned char b[8];
++    os_vm_offset_t end = lseek(fd, 0, SEEK_END), nt, dirs, cert, size;
++#define LE16(p) ((unsigned)(p)[0] | (unsigned)(p)[1] << 8)
++#define LE32(p) ((os_vm_offset_t)((uint32_t)LE16(p) | (uint32_t)LE16((p)+2) << 16))
++    if (end < 64 || lseek(fd, 0, SEEK_SET) != 0 || read(fd, b, 2) != 2 ||
++        b[0] != 'M' || b[1] != 'Z' ||
++        lseek(fd, 0x3c, SEEK_SET) != 0x3c || read(fd, b, 4) != 4)
++        return -1;
++    nt = LE32(b);
++    // "PE\0\0", then the 20-byte file header, then the optional header
++    if (nt <= 0 || nt > end - 24 - 2 ||
++        lseek(fd, nt, SEEK_SET) != nt || read(fd, b, 4) != 4 ||
++        b[0] != 'P' || b[1] != 'E' || b[2] || b[3] ||
++        lseek(fd, nt + 24, SEEK_SET) != nt + 24 || read(fd, b, 2) != 2)
++        return -1;
++    switch (LE16(b)) {
++    case 0x20b: dirs = nt + 24 + 112; break; // PE32+
++    case 0x10b: dirs = nt + 24 + 96; break;  // PE32
++    default: return -1;
++    }
++    // NumberOfRvaAndSizes is the word before the directories
++    if (lseek(fd, dirs - 4, SEEK_SET) != dirs - 4 || read(fd, b, 4) != 4 ||
++        LE32(b) <= 4 ||
++        lseek(fd, dirs + 4 * 8, SEEK_SET) != dirs + 4 * 8 || read(fd, b, 8) != 8)
++        return -1;
++    cert = LE32(b);
++    size = LE32(b + 4);
++#undef LE32
++#undef LE16
++    return size > 0 && cert > 0 && cert + size == end ? cert : -1;
++}
++#endif
++
+ os_vm_offset_t
+ search_for_embedded_core(char *filename, struct memsize_options *memsize_options)
+ {
+@@ -131,19 +199,21 @@
+     }
+ 
+     os_vm_offset_t core_start = -1; // invalid value
+-    if (lseek(fd, -lispobj_size, SEEK_END) < 0 ||
+-        read(fd, &header, (size_t)lispobj_size) != lispobj_size)
+-        goto lose;
+-
+-    if (header == CORE_MAGIC) {
+-        // the last word in the file could be CORE_MAGIC by pure coincidence
+-        if (lseek(fd, -(lispobj_size + sizeof(os_vm_offset_t)), SEEK_END) < 0 ||
+-            read(fd, &core_start, sizeof(os_vm_offset_t)) != sizeof(os_vm_offset_t))
+-            goto lose;
+-        if (lseek(fd, core_start, SEEK_SET) != core_start ||
+-            read(fd, &header, lispobj_size) != lispobj_size || header != CORE_MAGIC)
+-            core_start = -1; // reset to invalid
++#ifdef LISP_FEATURE_WIN32
++    /* A signed executable: the trailer ends where the certificate table
++     * starts, or up to 7 zero bytes before it, the padding a signer adds to
++     * align the table to 8 bytes. */
++    os_vm_offset_t cert = signature_start(fd);
++    for (int pad = 0; cert > 0 && pad < 8 && core_start < 0; ++pad) {
++        unsigned char byte = 0;
++        if (pad && (lseek(fd, cert - pad, SEEK_SET) != cert - pad ||
++                    read(fd, &byte, 1) != 1 || byte))
++            break;
++        core_start = trailer_core_start(fd, cert - pad);
+     }
++    if (core_start < 0)
++#endif
++    core_start = trailer_core_start(fd, lseek(fd, 0, SEEK_END));
+ #if ELFCORE && !defined(LISP_FEATURE_DARWIN)
+     // Specifying "--core" as an ELF file with a lisp.core section doesn't work.
+     // (There are bunch of reasons) So only search for a core section if this
+diff -ru a/src/runtime/save.c b/src/runtime/save.c
+--- a/src/runtime/save.c	2026-11-12 21:49:08.221849253 +0100
++++ b/src/runtime/save.c	2026-11-12 21:49:36.900593504 +0100
+@@ -589,6 +589,13 @@
+         }
+ 
+         nt_header->OptionalHeader.Subsystem = sub_system;
++        /* The runtime may come from a signed executable, whose certificate
++         * table it does not copy: the file written here carries no
++         * signature, so it names none. */
++        if (nt_header->OptionalHeader.NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_SECURITY) {
++            nt_header->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_SECURITY].VirtualAddress = 0;
++            nt_header->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_SECURITY].Size = 0;
++        }
+     }
+ #endif
+ 
