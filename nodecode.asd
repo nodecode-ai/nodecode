@@ -672,6 +672,7 @@ of stacking."
      (:file "tui/own-models-test")
      (:file "tui/profile-delete-test")
      (:file "tui/composer-test")
+     (:file "tui/composer-sigils-test")
      (:file "tui/setup-test")
      (:file "tui/setup-sign-in-test")
      (:file "tui/indentation-test")

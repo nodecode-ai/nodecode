@@ -27,7 +27,7 @@
 ;; values. Each is a startup parameter, which the image computes again at its
 ;; start.
 (dolist (name '(nlk::*cells-directory* nlk::*layer-cache-directory* *shared-config-path*
-                *theme-selection-path* *composer-history-path* *keybinds-path*
+                *theme-selection-path* *composer-history-path* *keybinds-path* *composer-sigils-path*
                 *composer-catalog-cache-path* *models-catalog-path* *provider-models-cache-path*))
   (setf (symbol-value name) nil))
 
