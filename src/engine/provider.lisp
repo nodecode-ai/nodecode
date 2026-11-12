@@ -5326,6 +5326,11 @@ of waiting for bytes off the socket."
          (error 'provider-error :scope :request
                 :detail (transport-failure-label ,e ,address))))))
 
+(defvar *replay-request-json* nil
+  "Octets WALK-PROVIDER-STREAM posts in place of the request the lane built:
+a cache refresh repeating a round's exact bytes on that round's own lane, its
+headers and transport as the round had them (REFRESH-PROMPT-CACHE).")
+
 (defun walk-provider-stream (fold &key config request-json headers on-part
                                        ;; the credential's address, else the one the config froze:
                                        ;; a lane that composed an endpoint of its own keeps it
@@ -5384,6 +5389,8 @@ functions below."
   ;; re-attach it.
   ;; Debug-only: whether this round reuses a socket or dials (the pool count
   ;; for the host, before the POST steals one).
+  (when *replay-request-json*
+    (setf request-json *replay-request-json*))
   (when (credential-env "NODECODE_PHASE_LOG")
     (note-phase "connect pooled=~d ~a"
                 (pooled-connection-count endpoint) (provider-connection-key endpoint)))
