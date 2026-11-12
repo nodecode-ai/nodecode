@@ -150,6 +150,23 @@ Nodecode keeps the exact body of each model call in the store.
 
 Past the limit the oldest bodies go.
 
+{/* source: src/engine/cache-warming.lisp */}
+## cache_warming
+
+A request with cache breakpoints, as every Anthropic call has, writes its prompt into the provider's cache for 5 minutes, or an hour when the marker says so. A session that waits longer pays to write the whole prompt again on its next call. Nodecode sends the session's last request again at 90% of that time with one output token, which keeps the entry alive at the price of a cache read.
+
+| Key | Type | Default |
+| --- | --- | --- |
+| `cache_warming.mode` | `idle`, `streaming` or `off` | `idle` |
+
+| Mode | Warms |
+| --- | --- |
+| `idle` | While a turn waits on a tool, for up to 60 minutes, and after it ends, for up to 30. |
+| `streaming` | Only while a turn waits on a tool. |
+| `off` | Never. |
+
+A refresh goes out only when it is expected to save at least $0.05: the write the next call avoids, counted in full while the turn is open and at 15% once it ended, less the refresh's own price. It stops when the session moves to another model, when a refresh fails, and for a request that thinks on a token budget. What a refresh cost is counted in the session's usage as a side call, `cache_warming`.
+
 {/* source: src/gateway/notify.lisp */}
 ## notify
 

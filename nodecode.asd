@@ -295,6 +295,8 @@ of stacking."
      ;; gif follows image-fit: it reads a GIF's first frame to the PIXELS
      ;; image-fit shrinks, named in *IMAGE-DECODERS* there for image/gif.
      (:file "engine/image/gif")
+     ;; cache-warming precedes turn: a round arms its session's refresh
+     (:file "engine/cache-warming")
      (:file "engine/turn")
      ;; shell precedes exec: the grammar of what (sh ...) runs — a command
      ;; string as its simple commands, each with words, redirects and the
@@ -619,6 +621,9 @@ of stacking."
      ;; gate reads the pool the same way.
      (:file "engine/provider-watchdog-test")
      (:file "engine/turn-test")
+     ;; cache-warming-test follows turn-test: it sends through the Messages
+     ;; lane on turn-test's canned streams and contexts.
+     (:file "engine/cache-warming-test")
      ;; meter-test follows turn-test: its budget turns drive the tool-call
      ;; seam through turn-test's wire helpers and probe schema.
      (:file "engine/meter-test")

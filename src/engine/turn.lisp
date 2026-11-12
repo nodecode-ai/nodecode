@@ -3223,9 +3223,11 @@ did not say."
                     (call-with-attempt-watch
                      (next-candidate (failover-chain-for "slow_start" fallback-tried))
                      (lambda ()
-                       (funcall lane.stream-symbol
-                                request-context
-                                :on-part observer)))))
+                       ;; a cache refresh due meanwhile waits: this round reads the prefix
+                       (with-round-in-flight ((eval-session-id))
+                         (funcall lane.stream-symbol
+                                  request-context
+                                  :on-part observer))))))
               (let* ((provider-id config.provider)
                      (model-id config.model)
                      (total (and usage usage.total-tokens))
@@ -3372,7 +3374,14 @@ did not say."
                           (nlk:durable-turn-session-id *current-durable-turn*)
                           (nlk:durable-turn-turn-id *current-durable-turn*)
                           *provider-round* request-json :cap *request-bodies-cap*))
-                       (setf *previous-request-json* request-json)))
+                       (setf *previous-request-json* request-json)
+                       ;; The cache entry this request wrote or read lives
+                       ;; minutes: keep it alive until the next round comes.
+                       (arm-cache-warming :session-id (nlk:durable-turn-session-id *current-durable-turn*)
+                                          :turn *current-durable-turn*
+                                          :lane lane.stream-symbol :context request-context
+                                          :request-json request-json :usage usage
+                                          :provider provider-id :model model-id)))
                     ;; The context rides out as a fifth value: a failover
                     ;; this call performed must hold for the turn's later
                     ;; rounds — the next turn re-snapshots the selection.
