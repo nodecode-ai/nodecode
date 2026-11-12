@@ -627,12 +627,17 @@ each request's wait for its first token and the time it spent writing."
          "create index request_timings_by_wait on request_timings (ttft) where ttft is not null")
    (list "index" "request_timings_by_model"
          "create index request_timings_by_model on request_timings (model, provider, ttft, streamed)")
-   (log-trigger "usage_rollup_follows_the_log" nlk::+kind-turn-usage+
-                (usage-rollup-fill-sql "(select new.occurred_at occurred_at, new.session_id session_id,
-                                                 new.payload payload, 0 side)"))
-   (log-trigger "usage_rollup_follows_side_calls" nlk::+kind-side-call-usage+
-                (usage-rollup-fill-sql "(select new.occurred_at occurred_at, new.session_id session_id,
-                                                 new.payload payload, 1 side)"))
+   ;; One trigger for both kinds, under the name every release has dropped
+   ;; with the table. A build that knows another shape drops the entries it
+   ;; names and no others (DROP-STALE-PROJECTION), so a second trigger for the
+   ;; side calls outlived 0.1.14's rebuild and named a column the table it
+   ;; built lacks: no fact could be written, and its gateway never served
+   ;; (the release's upgrade proof, 2026-11-12).
+   (log-trigger "usage_rollup_follows_the_log" +usage-kinds+
+                (usage-rollup-fill-sql
+                 (format nil "(select new.occurred_at occurred_at, new.session_id session_id,
+                                      new.payload payload, new.kind = '~a' side)"
+                         nlk::+kind-side-call-usage+)))
    (log-trigger "request_timings_follow_the_log" nlk::+kind-provider-request+
                 (request-timings-fill-sql "log_position = new.log_position"))
    ;; Each turn's start and end, and whether it was a reflection: what the
@@ -654,7 +659,11 @@ each request's wait for its first token and the time it spent writing."
 
 (defun prepare-usage-rounds (handle)
   "Discard a usage projection of another shape before the schema is applied."
-  (drop-stale-projection handle *usage-rounds-schema*))
+  (drop-stale-projection handle *usage-rounds-schema*)
+  ;; The side calls' own trigger, which main carried from 2026-11-11 to the
+  ;; 12th: no schema names it now, so nothing else drops it, and beside the
+  ;; one above it would count each side call twice.
+  (sqlite:execute-non-query handle "drop trigger if exists usage_rollup_follows_side_calls"))
 
 (defun tier-sizes-of (pairs &optional (prices (make-hash-table :test #'equal)))
   "Every tier size the prices of PAIRS, (MODEL PROVIDER) lists, name,
