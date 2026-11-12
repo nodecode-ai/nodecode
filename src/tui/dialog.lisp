@@ -66,7 +66,9 @@ text or the dots sitting flush against the edge.")
   ;; the paint writes as the operator reads it and clips from the middle to
   ;; the room the row leaves, so its last folder shows. TONE, when given,
   ;; paints the row's label whether or not it is selected: a line that says
-  ;; something went wrong reads so on either (the exec view's error).
+  ;; something went wrong reads so on either (the exec view's error). Only
+  ;; :OWN-MODEL gives way to the selection: it says whose the row is, and
+  ;; where the selection stands has to read on every row.
   (key "" :type string)
   (label "" :type string)
   (detail "" :type string)
@@ -1188,7 +1190,13 @@ trailing field muted, two spaces between columns."
   (let* ((key (if tabbed "" row.key))
          (label row.label)
          (detail (concatenate 'string row.detail (if selected row.suffix "")))
-         (primary (cond (row.heading :muted) (row.tone) (selected :dialog-accent) (t :system)))
+         ;; A row of ours holds its tone until the selection is on it. Holding
+         ;; it there too, /models opened on Cyber v1 with no row in the accent,
+         ;; and the arrows moved nothing the eye could follow through our rows.
+         (primary (cond (row.heading :muted)
+                        ((and selected (member row.tone '(nil :own-model))) :dialog-accent)
+                        (row.tone)
+                        (t :system)))
          (key-segs (picker-field-segs row :key key primary))
          (label-segs (picker-field-segs row :label label (if (plusp (length key)) :muted primary)))
          (key-segs (if columns (clip-segs key-segs (first columns) :mark "…") key-segs))
