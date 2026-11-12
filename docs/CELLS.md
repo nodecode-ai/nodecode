@@ -48,8 +48,10 @@ other.
 guard, a notifier. Bigger, dependency-heavy, rarely changing, compiled once:
 a shipped one at the release, into `src/fasl/` beside the shipped folders, so
 a launch only loads it; one of your own, or one from the hub, into
-`~/.cache/nodecode/peripherals/<build stamp>/` at its first load under each
-build, so no build runs the macro expansions another compiled. A peripheral
+`~/.cache/nodecode/peripherals/<build stamp>/<folder>/<content key>/` at its
+first load under each build and each text of its folder, so no build runs
+the macro expansions another compiled, and no boot runs a text its files no
+longer say -- whatever dates a checkout or a copy gave them. A peripheral
 that runs threads exports one function:
 
 ```lisp

@@ -181,7 +181,7 @@ Shipped cells follow the binary. The check runs at launch, before the folder loa
 | Folder this build no longer ships, from another release | Removed. The boot line says so. |
 | Hub cell | Left at its pinned commit. |
 
-Your own cells and hub cells compile into `~/.cache/nodecode/peripherals/<build stamp>/` at their first load under each build.
+Your own cells and hub cells compile into `~/.cache/nodecode/peripherals/<build stamp>/<folder>/<content key>/` at their first load under each build and each text of their files: the key digests the folder's visible files and the keys of the folders it depends on, so a changed file compiles again even under an older date, and a cell's record names the key it loaded (`cell-content-key`).
 
 {/* source: src/organism/cells.lisp */}
 ## Loading
