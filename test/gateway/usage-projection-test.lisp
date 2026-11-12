@@ -149,16 +149,16 @@ it drops them when it finds a shape that is not its own.")
             band integer not null, rounds integer not null, input integer not null,
             cached integer not null, write integer not null, output integer not null, cost,
             primary key (bucket, session_id, model, provider, voided, priced, band)) without rowid")
-      (is (equal '() (sqlite:execute-to-list db "select name from sqlite_master
+      (let ((orphans (sqlite:execute-to-list db "select name from sqlite_master
                                                   where type = 'trigger' and sql like '%usage_rollup%'"))
-          "no trigger of ours outlives the rollup it writes")
-      ;; SQLite compiles every trigger of the log into a write to it.
-      (is (equal :prepared (handler-case
-                               (progn (sqlite:finalize-statement
-                                       (sqlite:prepare-statement db "insert into events default values"))
-                                      :prepared)
-                             (sqlite:sqlite-error (refused) (sqlite:sqlite-error-message refused))))
-          "a write to the log still compiles"))
+            ;; SQLite compiles every trigger of the log into a write to it.
+            (fact (handler-case
+                      (progn (sqlite:finalize-statement
+                              (sqlite:prepare-statement db "insert into events default values"))
+                             :compiles)
+                    (sqlite:sqlite-error (refused) (sqlite:sqlite-error-message refused)))))
+        (is (equal '() orphans) "no trigger of ours outlives the rollup it writes")
+        (is (equal :compiles fact) "a write to the log still compiles")))
     ;; Our build again: its own shape, the side call summed apart as before.
     (nlk:open-store :path path)
     (is (equal '((1 1 9)) (usage-rounds-by-side)))))
