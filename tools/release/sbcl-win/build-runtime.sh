@@ -27,7 +27,7 @@
 #
 #   tools/release/sbcl-win/build-runtime.sh [OUT]
 #
-# OUT defaults to the checked-in sbcl-2.6.8-nodecode.exe beside this script.
+# OUT defaults to the checked-in sbcl-2.6.8-patched.exe beside this script.
 # Needs: curl, tar, patch, make, a host sbcl (genesis), x86_64-w64-mingw32-
 # gcc/dlltool/strip. The build is reproducible: the same inputs give the same
 # bytes, whatever directory it runs in (--check rebuilds and compares).
@@ -38,7 +38,9 @@ src_sha=ad5126dfdfba5db27ee77bcc25893020fe522d0b7653d45b4c4795ade3ddc23d
 build_id=MSEDGEWIN10-IEUser-2026-08-28-21-57-29   # the official 2.6.8 MSI's sbcl.core
 url=https://downloads.sourceforge.net/project/sbcl/sbcl/$ver/sbcl-$ver-source.tar.bz2
 X=x86_64-w64-mingw32
-checked_in=$here/sbcl-$ver-nodecode.exe
+# never a name with "nodecode" in it: SERVE-COMMAND takes a runtime so named
+# for the dumped organism, and the Windows suite runs on this one
+checked_in=$here/sbcl-$ver-patched.exe
 
 check=0; out=$checked_in
 case "${1:-}" in --check) check=1; out=$(mktemp);; ?*) out=$1;; esac
