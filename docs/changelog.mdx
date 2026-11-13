@@ -6,7 +6,7 @@ summary: "The release each platform runs on the stable channel, how to see your 
 {/* source: tools/release/publish.sh */}
 ## Stable today
 
-Linux x86_64 and macOS Apple Silicon run the newest release below. Windows x86_64 stays on 0.1.13 until Windows builds are signed. The installer and the updater read it from a pointer at `https://nodecode.ai/dl/`, one for each platform, and the pointer names the build it serves:
+Linux x86_64, macOS Apple Silicon and Windows x86_64 run the newest release below. The installer and the updater read it from a pointer at `https://nodecode.ai/dl/`, one for each platform, and the pointer names the build it serves:
 
 ```sh
 curl -fsSL https://nodecode.ai/dl/stable-x86_64-linux
@@ -30,6 +30,31 @@ nodecode 0.1.7+2629050e1
 ```
 
 The version comes first and the build label, the commit the release was built from, follows the `+`. An installed build moves to a new release by itself, between turns. `nodecode update` moves it now. See [Updates](updates.mdx).
+
+{/* source: tools/release/publish.sh */}
+## 0.1.15
+
+Linux, macOS and Windows. Changes since 0.1.14 (`cef1be5a3`).
+
+Windows ships again, signed: `nodecode.exe` and `nodecode-launcher.exe` carry a Foresight Labs signature with a Microsoft timestamp, so Windows installs and updates move from 0.1.13 to this release and take 0.1.14's changes with it.
+
+- A session that waits keeps its prompt cache warm: before the provider's cache runs out, a warmer refreshes the cached prompt while that costs less than writing it again on the next turn. `cache_warming.mode` is `idle`, `streaming` or `off`.
+- `/usage` counts the spend of side calls apart from the turns' own rounds.
+- Building a cell takes about a third of the tokens it did, and `restart-cells` names the commands a cell registered.
+- The manual index is shorter, so every first prompt is about 200 tokens smaller.
+- `/models` shows nodecode.ai's own models in the theme's green, the selected row reads on them, and their provider is named Nodecode.
+- `nodecode add nc://NAME` moves a hub cell installed at an older pin on to the hub's newer one, instead of saying it is already installed.
+- A hub index that cannot be read is said so, not reported as a cell the hub lacks.
+- A gateway launched with `--provider` or `--model` naming a cell's provider, such as `claude-code`, waits for that cell to start instead of refusing it or running the default model.
+- On a Claude Code login, a thinking setting resent the way the model asks no longer reads as a failed retry under the turn.
+- A channel call still running keeps its typing indicator past the silence cap, for up to an hour.
+- A route that writes the shared config no longer answers a save that worked with `shared_config_error`.
+- `/models` Test no longer breaks the next request on the same connection to the gateway.
+- `nodecode gateway run` waits for a store a shell holds before it boots, and a second gateway that loses the start to the first boots nothing and says only that.
+- A layer folder named `nodecode` loads after the cells it advises.
+- On Apple Silicon, loading compiled code no longer kills the process with "misuse of mprotect() on dynamic space".
+- A system library the machine lacks is one line at start, not a backtrace.
+- `nodecode update` in a build run from its unpacked tarball says it stays that build. The tarball's README names the installer it carries, how a build updates and the glibc 2.34 it needs.
 
 {/* source: tools/release/publish.sh */}
 ## 0.1.14
