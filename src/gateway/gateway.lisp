@@ -689,7 +689,7 @@ it: ((SESSION-ID PID-OR-NIL ...) ...), sessions in id order."
         #'string< :key #'first))
 
 (defparameter *image-help-summary*
-  "this process: its store and home, and the operator's shells, which may run in another process"
+  "this process, its store and home, the operator's shells"
   "The line the help section carries for (help :image) while the gateway
 serves. Mutable material, like the system prompt.")
 
