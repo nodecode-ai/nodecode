@@ -69,7 +69,8 @@ fi
 label="$(git rev-parse --short=9 "$REV")"
 name="nodecode-${label}-${arch}-${os}"
 work="$(mktemp -d)"
-trap 'rm -rf "$work" "${XDG_CACHE_HOME:-$HOME/.cache}"/common-lisp/*"$work"' EXIT
+stage_root=''
+trap 'rm -rf "$work" "${XDG_CACHE_HOME:-$HOME/.cache}"/common-lisp/*"$work" ${stage_root:+"$stage_root"}' EXIT
 
 # The build tree is the revision, not the checkout: `git archive' takes what is
 # committed and nothing else -- no unstaged edits, and no untracked files,
@@ -163,8 +164,14 @@ fi
 
 # Staged beside the neutral home, never inside the checkout: the cells compile
 # here and their fasls keep this path. The tree moves to OUT once it passes.
-stage="$(dirname "$HOME")/stage/$name"
-rm -rf "$stage"
+# Each pack stages in a folder of its own, the release's name inside it: two
+# packs of one commit on one build home -- CI and a Release rehearsal on
+# runners sharing a box -- name the same release, and a stage keyed by that
+# name alone was one folder for both, so the second pack's wipe deleted the
+# first one's tree while its cells compiled. The folder goes with the exit.
+mkdir -p "$(dirname "$HOME")/stage"
+stage_root="$(mktemp -d "$(dirname "$HOME")/stage/$name.XXXXXX")"
+stage="$stage_root/$name"
 mkdir -p "$stage/src"
 cp "$work/nodecode"          "$stage/nodecode"
 # macOS's gateway runs through a launcher that never moves (background.lisp):

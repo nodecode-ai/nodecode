@@ -95,6 +95,7 @@ done_step perf-gate
 step release
 bash tools/release/release-test.sh
 bash tools/build/compile-cells-test.sh
+bash tools/release/pack-stage-test.sh
 bash tools/release/publish-test.sh
 bash tools/release/publish-hub-test.sh
 done_step release
