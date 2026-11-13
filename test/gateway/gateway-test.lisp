@@ -4363,6 +4363,53 @@ request."
             (is (not (search "gateway ready" said)) "it never says it was ready"))))
       (is (not (probe-file path)) "the store is untouched"))))
 
+(deftest gateway-run-waits-for-its-store-before-it-boots ()
+  ;; `nodecode gateway run', what the gateway's unit runs, beside a shell that
+  ;; owns the store booted first and waited after: the boot pointed the
+  ;; shell's cell installs at the gateway's build, and a stop while it waited
+  ;; left a receipt the next launch read as a self that died before serving,
+  ;; so that launch ran pristine. It waits first, then boots holding the
+  ;; store, so no shell takes it between the boot and the open.
+  (with-temp-directory (dir "gateway-run-waits-before-boot")
+    (let ((path (merge-pathnames "history.db" dir))
+          (seen '())
+          (launch nil))
+      (with-stubbed-fdefinitions ((nlk:boot-cells (&rest args)
+                                    (declare (ignore args))
+                                    (push (list :boot-cells
+                                                :held-elsewhere (nlk::store-lease-held-elsewhere-p path)
+                                                :mine (and (nlk::store-lease-mine-p path) t))
+                                          seen)
+                                    nil)
+                                  (nle::follow-restore-pointer ()
+                                    (push :restore-pointer seen) nil)
+                                  (nlk:describe-cells () nil)
+                                  (nle::serve-organism-candidate (&key ready wait &allow-other-keys)
+                                    (push (list :serve :wait wait :ready ready) seen)
+                                    :stopped))
+        (nlk:with-cleanup ((let ((lease (nlk::held-lock (nlk::lock-path-for-store path))))
+                             (when lease (nlk::unlock-file lease)))
+                           (nlk::set-environment-variable nle::+gateway-ready-variable+ ""))
+          (with-lock-holder ((nlk::lock-path-for-store path))
+            (setf launch (nlk:spawn "test-gateway-run"
+                           (with-output-to-string (*standard-output*)
+                             (nle::launch-headless :wait nil nil path nil))))
+            (sleep 1.5)
+            (is (null seen) "nothing of the home is touched while the shell holds the store"))
+          ;; The shell let go: the wait ends within its pause.
+          (let ((said (bt2:join-thread launch)))
+            (is (search "gateway ready" said) "the unit heard it was ready before it waited")
+            (is (search "serving once it lets go" said) "it said whom it waited on")
+            (is (equal '(:restore-pointer
+                         (:boot-cells :held-elsewhere nil :mine t)
+                         (:serve :wait t :ready t))
+                       (reverse seen)) "it boots once the store is free, holding its lease, and the serve says no second ready")
+            ;; A published warm image its boot execs into is the same unit's
+            ;; process: it holds the lease again and says no second ready.
+            (let ((again (with-output-to-string (*standard-output*)
+                           (is (eq t (nle::take-store-before-boot path)) "an exec in the boot knows the unit heard it ready"))))
+              (is (not (search "gateway ready" again)) "and says it no second time"))))))))
+
 (deftest a-candidate-that-loses-the-election-takes-its-receipt
     (with-saved-globals ((nlk:*pristine* nil) (nlk::*pristine-reason* nil)))
   ;; A serve leaves booting.<pid> before its load (BOOT-CELLS :RECEIPT). One

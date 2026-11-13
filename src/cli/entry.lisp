@@ -1291,7 +1291,12 @@ condition's report, exit 1."
                 #'launch))
               (t (launch)))))))
 
-(defun launch-headless (serve child session-id store-path setup)
+(defun launch-headless (serve child session-id store-path setup
+                        ;; `gateway run' (:WAIT) waits for the store and takes it before
+                        ;; anything here runs (TAKE-STORE-BEFORE-BOOT): booted first, it
+                        ;; pointed a shell's cell installs at its own build and left its
+                        ;; receipt, so a stop while it waited made the next launch pristine.
+                        &aux (ready (and (eq serve :wait) (take-store-before-boot store-path))))
   "The launch of a process that paints no TUI: SERVE's headless owner, or a
 CHILD's one answer. => what that answers; :LOST for a serve that does not
 wait and found the store held."
@@ -1300,8 +1305,8 @@ wait and found the store held."
   ;; its hub clones and loads every cell, and a loser left all of that to the
   ;; owner it lost to, whose next cell load read this build's tree -- one
   ;; that may be on its way out. The lock inside OPEN-STORE still settles a
-  ;; race this look misses. `gateway run' (:WAIT) waits for the store instead
-  ;; (SERVE-ORGANISM-CANDIDATE).
+  ;; race this look misses. `gateway run' (:WAIT) has waited for the store
+  ;; instead, and holds it (READY).
   (when (and (eq serve t) (serve-election-lost-p store-path))
     (return-from launch-headless :lost))
   ;; a serve leaves its receipt before the load: a self that dies before serving is found by the launch after
@@ -1325,7 +1330,8 @@ wait and found the store held."
         (when-let (line (nlk::file-limit-line))
           (format *error-output* "~a~%" line)
           (finish-output *error-output*))
-        (serve-organism-candidate :store-path store-path :wait (eq serve :wait)))
+        (serve-organism-candidate :store-path store-path :wait (eq serve :wait)
+                                  :ready ready))
       (attach-or-own-organism :session-id session-id
                               :store-path store-path
                               :setup setup)))

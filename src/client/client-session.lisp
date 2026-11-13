@@ -1670,6 +1670,68 @@ none does."
            (sleep pause)
         finally (return looks)))
 
+(defparameter +gateway-ready-variable+ "NODECODE_GATEWAY_READY"
+  "Set while a `gateway run' that told its unit it is ready boots, for an
+exec in that boot: the same process to the unit, which hears it once.")
+
+(defun say-gateway-ready ()
+  "Tell a systemd unit this gateway is initialized, and say so on its log."
+  (nlk:systemd-ready)
+  (format t "~&[CP-ISSUE-20260912-001] gateway ready~%")
+  (finish-output))
+
+(defparameter *boot-beat-seconds* 90
+  "How long a gateway that waited for its store feeds its unit's watchdog
+while it boots: systemd's own start timeout, the one a boot before the ready
+line runs under.")
+
+(defun beat-through-the-boot (&optional (seconds *boot-beat-seconds*))
+  "Feed a systemd unit's watchdog from a thread of its own while this
+gateway, ready already, boots: until it serves, at most SECONDS."
+  ;; Once it serves, its owner thread feeds it (SERVE-ORGANISM-CANDIDATE). A
+  ;; boot that runs past SECONDS has stalled, and the watchdog takes it as it
+  ;; takes a stalled owner.
+  (when (uiop:getenv "NOTIFY_SOCKET")
+    (spawn "boot-beat"
+      (loop with deadline = (+ (get-universal-time) seconds)
+            until (or *serving* (> (get-universal-time) deadline))
+            do (nlk:systemd-watchdog)
+               (sleep (/ nlk:*gateway-watchdog-seconds* 3))))))
+
+(defun take-store-before-boot (&optional store-path)
+  "`nodecode gateway run''s first step, before anything of it boots: wait
+while another process owns the store at STORE-PATH (the home's own by
+default), then take its lease, which the store's open adopts. => T when the
+unit was told it is ready already: by this wait, or by this process before
+an exec in its boot."
+  ;; A boot points the home's cell installs at this build
+  ;; (REFRESH-INSTALLED-CELLS) and leaves its receipt (BOOT-CELLS :RECEIPT).
+  ;; Booted beside a shell that owned the store, the gateway rewrote that
+  ;; shell's links and only then waited, and a stop in that wait left a
+  ;; receipt the launch after read as a self that died before serving: it ran
+  ;; pristine. Waiting first, it has touched nothing while it waits; holding
+  ;; the lease from the wait's end, no shell takes the store between its boot
+  ;; and its open. The unit hears it is ready before the wait, as it always
+  ;; did, and the wait and the boot after it feed the watchdog. A lock that
+  ;; cannot be taken at all is left to the store's open to say.
+  (let ((path (merge-pathnames (or store-path nlk::*default-store-path*)))
+        ;; Said already, by this process before an exec in its boot (a
+        ;; published warm image): the same unit's process, past its ready.
+        (said (plusp (length (uiop:getenv +gateway-ready-variable+)))))
+    (loop
+      (when (nlk::store-lease-held-elsewhere-p path)
+        (unless said
+          (say-gateway-ready)
+          (nlk::set-environment-variable +gateway-ready-variable+ "1")
+          (setf said t))
+        (await-free-store path :tick #'nlk:systemd-watchdog))
+      ;; NIL: another process took it first, and is waited out in turn.
+      (if (handler-case (or (nlk::held-lock (nlk::lock-path-for-store path))
+                            (nlk::hold-store-lease path))
+            (error () (return said)))
+          (return (progn (when said (beat-through-the-boot)) said))
+          (sleep 0.1)))))
+
 (defvar *gateway-run* nil
   "T in the process `nodecode gateway run' serves: the one the home's unit
 runs, and brings back on `current' from any exit.")
@@ -1787,7 +1849,7 @@ and the receipt a boot left taken with this process, which did not die."
       (nlk:take-self-receipt)
       t)))
 
-(defun serve-organism-candidate (&key session-id store-path (port *gateway-port*) wait)
+(defun serve-organism-candidate (&key session-id store-path (port *gateway-port*) wait ready)
   "Boot the organism as a HEADLESS gateway owner, or lose the election
 quietly."
   ;; This is the `nodecode serve` entry and the process a client's
@@ -1815,9 +1877,12 @@ quietly."
       (return-from serve-organism-candidate :lost))
     ;; Notify before waiting for a shell-owned store: the service is initialized
     ;; even while it is intentionally idle, and the same owner thread must keep
-    ;; the watchdog alive in that wait.
-    (nlk:systemd-ready)
-    (format t "~&[CP-ISSUE-20260912-001] gateway ready~%")
+    ;; the watchdog alive in that wait. READY: the wait came before the boot
+    ;; (TAKE-STORE-BEFORE-BOOT), and said so then.
+    (if ready
+        ;; From here a restart in place says it anew, as it always did.
+        (nlk::set-environment-variable +gateway-ready-variable+ "")
+        (say-gateway-ready))
     (let ((heartbeat-noted nil))
       (loop
         ;; A candidate that does not wait looked once, above, and runs this
