@@ -69,7 +69,8 @@ fi
 label="$(git rev-parse --short=9 "$REV")"
 name="nodecode-${label}-${arch}-${os}"
 work="$(mktemp -d)"
-trap 'rm -rf "$work" "${XDG_CACHE_HOME:-$HOME/.cache}"/common-lisp/*"$work"' EXIT
+stage_root=''
+trap 'rm -rf "$work" "${XDG_CACHE_HOME:-$HOME/.cache}"/common-lisp/*"$work" ${stage_root:+"$stage_root"}' EXIT
 
 # The build tree is the revision, not the checkout: `git archive' takes what is
 # committed and nothing else -- no unstaged edits, and no untracked files,
@@ -129,7 +130,23 @@ fi
 # glibc has (patch 0006 removes the one such call). Built once per build.sh
 # and patches -- this revision's copies -- with the box's sbcl as the host,
 # tested where the patches touch the runtime, and kept under the cache.
+#
+# One pack at a time readies the build home. Its SBCL cache, quicklisp and
+# pinned dist are shared by every pack on it -- CI's Linux runners and a
+# Release rehearsal share one box and one build home -- and two packs that
+# both found the SBCL missing built into one `.new' folder: the second's wipe
+# deleted the first one's half-built SBCL, or the finished one it was already
+# building on, and quicklisp's first install and its dist had the same race.
+# The lock is held until the toolchain is whole, so a second pack waits and
+# then finds it built; the release build itself runs beside other packs.
 if [ "$os" = linux ]; then
+  command -v flock >/dev/null 2>&1 \
+    || { echo "pack: flock (util-linux) keeps two packs from readying one build home at once; install it" >&2; exit 1; }
+  exec 9> "$build_home/toolchain.lock"
+  if ! flock -n 9; then
+    echo "pack: another pack is readying the toolchain in $build_home; waiting for it" >&2
+    flock 9
+  fi
   key="$(cat "$sys/tools/build/sbcl/build.sh" "$sys"/tools/build/sbcl/patches/* | sha256sum | cut -d' ' -f1)"
   sbcl="${XDG_CACHE_HOME:-$HOME/.cache}/nodecode-sbcl/$key"
   if [ ! -x "$sbcl/bin/sbcl" ]; then
@@ -151,20 +168,30 @@ if [ "$os" = linux ]; then
     curl -fsSLo "$work/quicklisp.lisp" https://beta.quicklisp.org/quicklisp.lisp
     sbcl --noinform --non-interactive --no-userinit --load "$work/quicklisp.lisp" --eval '(quicklisp-quickstart:install)'
   fi
+  # Written whole and moved in: a pack already past the lock reads it as its
+  # SBCL starts, and a truncated file would start it without quicklisp.
   printf '%s\n' '(let ((quicklisp-init (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))' \
-    '  (when (probe-file quicklisp-init) (load quicklisp-init)))' > "$HOME/.sbclrc"
+    '  (when (probe-file quicklisp-init) (load quicklisp-init)))' > "$HOME/.sbclrc.$$"
+  mv "$HOME/.sbclrc.$$" "$HOME/.sbclrc"
   sbcl --noinform --non-interactive \
     --eval "(unless (equal (ql-dist:version (ql-dist:find-dist \"quicklisp\")) \"$dist\") (ql-dist:install-dist \"http://beta.quicklisp.org/dist/quicklisp/$dist/distinfo.txt\" :replace t :prompt nil))"
   ( cd "$sys" && sbcl --dynamic-space-size 4096 --control-stack-size 8MB --noinform --non-interactive \
       --eval '(push (truename ".") asdf:*central-registry*)' --eval '(ql:quickload "nodecode" :silent t)' >/dev/null )
+  exec 9>&-
 fi
 
 ( cd "$work" && NODECODE_BUILD_COMMIT="$label" just release )
 
 # Staged beside the neutral home, never inside the checkout: the cells compile
 # here and their fasls keep this path. The tree moves to OUT once it passes.
-stage="$(dirname "$HOME")/stage/$name"
-rm -rf "$stage"
+# Each pack stages in a folder of its own, the release's name inside it: two
+# packs of one commit on one build home -- CI and a Release rehearsal on
+# runners sharing a box -- name the same release, and a stage keyed by that
+# name alone was one folder for both, so the second pack's wipe deleted the
+# first one's tree while its cells compiled. The folder goes with the exit.
+mkdir -p "$(dirname "$HOME")/stage"
+stage_root="$(mktemp -d "$(dirname "$HOME")/stage/$name.XXXXXX")"
+stage="$stage_root/$name"
 mkdir -p "$stage/src"
 cp "$work/nodecode"          "$stage/nodecode"
 # macOS's gateway runs through a launcher that never moves (background.lisp):
