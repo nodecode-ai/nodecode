@@ -808,6 +808,11 @@ URL TOKEN), URL as http://127.0.0.1:PORT, or NIL while nothing listens."
   (when *gateway-bound-port*
     (values (format nil "http://127.0.0.1:~d" *gateway-bound-port*) *gateway-operator-token*)))
 
+(defvar *keep-running-told* nil
+  "Whether this organism has told its operator that what its cells keep
+running stops with the home's last shell, the home's gateway being theirs to
+turn on (KEEP-RUNNING).")
+
 (defun keep-running (what)
   "WHAT — \"the Discord bot\", \"2 cron jobs\" — is work that should go on
 while no shell is open."
@@ -815,31 +820,41 @@ while no shell is open."
   ;; (NLK:GATEWAY-ON :AUTO) and every shell is told: the organism a shell runs
   ;; now passes to the gateway when that shell closes, and comes up again at
   ;; every login. Nothing happens once the gateway is on, once the operator
-  ;; turned it off, in an ephemeral organism, in a home under a folder the
-  ;; system clears (NLK:TEMPORARY-HOME-P: a scratch home's unit would outlive
-  ;; it), or on a machine with no background gateway. A cell's call — the channel kit's when a bot
-  ;; starts, cron's when a job is scheduled — and it answers at once: the
-  ;; operating system is asked on a thread of its own, never on a cell's
-  ;; start. => the thread, or NIL.
-  (unless (or nlk:*ephemeral*
-              ;; Two colons: the export is new, and the image of the release
-              ;; before this one reads this file, to take it live, before the
-              ;; new DEFPACKAGE has run.
-              (nlk::temporary-home-p)
-              (null (nlk:gateway-unit-path))
-              (nlk:gateway-installed-p)
-              (nlk:gateway-off-p))
-    (spawn "gateway-on"
-      (handler-case
-          (when (nlk:gateway-state-p (nlk:gateway-on :auto t))
-            (notice (format nil "nodecode's gateway keeps ~a running after this shell closes, ~
-                                  and comes up at every login · /settings turns it off"
-                            what)))
-        (error (refusal)
-          (ignore-errors
-           (notice (format nil "gateway: ~a cannot keep running after this shell closes — ~a"
-                           what refusal)
-                   :level :warning)))))))
+  ;; turned it off, in an ephemeral organism, or on a machine with no
+  ;; background gateway. Nor in a home nodecode does not name for this account
+  ;; (NLK:GATEWAY-BY-DEFAULT-P): a $NODECODE_HOME of the operator's own, a
+  ;; proof's scratch home. A unit written for one comes up at every boot and
+  ;; update, outliving the proof that made it and the folder itself, so its
+  ;; gateway is the operator's to turn on, and the first ask says how. A
+  ;; cell's call — the channel kit's when a bot starts, cron's when a job is
+  ;; scheduled — and it answers at once: the operating system is asked on a
+  ;; thread of its own, never on a cell's start. => the thread, or NIL.
+  (cond
+    ((or nlk:*ephemeral*
+         (null (nlk:gateway-unit-path))
+         (nlk:gateway-installed-p)
+         (nlk:gateway-off-p))
+     nil)
+    ((not (nlk:gateway-by-default-p))
+     (unless *keep-running-told*
+       (setf *keep-running-told* t)
+       (notice (format nil "~a stops when this home's last shell closes: only the default home ~
+                            and named profiles keep running by themselves · `nodecode gateway on' ~
+                            keeps this one running, and at every login"
+                       what)))
+     nil)
+    (t
+     (spawn "gateway-on"
+       (handler-case
+           (when (nlk:gateway-state-p (nlk:gateway-on :auto t))
+             (notice (format nil "nodecode's gateway keeps ~a running after this shell closes, ~
+                                   and comes up at every login · /settings turns it off"
+                             what)))
+         (error (refusal)
+           (ignore-errors
+            (notice (format nil "gateway: ~a cannot keep running after this shell closes — ~a"
+                            what refusal)
+                    :level :warning))))))))
 
 (defun notice (text &key (level :info) key)
   "Say TEXT to the operator: every attached shell puts it up as a toast
