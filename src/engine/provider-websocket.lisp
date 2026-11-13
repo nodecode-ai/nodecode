@@ -30,6 +30,13 @@
 ;;;; same way every round), and whole otherwise. The server rebuilds the
 ;;;; whole body from the delta; one it no longer holds is refused as
 ;;;; `unknown_base' and the body goes again whole.
+;;;;
+;;;; A socket can go without its end of the stream ever coming: a close frame
+;;;; from a peer that then never shuts its side (SBCL's own server on
+;;;; Windows), or a link cut where neither end saw it. So a request never
+;;;; waits on a line blind: a line that left the open state, or that heard
+;;;; nothing for a while and then left its ping unanswered, is closed, and
+;;;; what was waiting on it goes again on a fresh one.
 
 (in-package #:nodecode.evolved)
 
@@ -38,6 +45,14 @@
 
 (defparameter *websocket-down-seconds* 60
   "How long a socket that failed to open is not dialled again for its key.")
+
+(defparameter *websocket-quiet-seconds* 15
+  "How long a line with a request waiting on it may hear nothing before it is
+pinged.")
+
+(defparameter *websocket-pong-seconds* 10
+  "How long a ping may go unanswered before its line is taken for gone: a
+socket half closed, or cut where neither end saw it close.")
 
 (defparameter *websocket-bases-limit* 64
   "How many sessions' bases stay: past it the longest unused goes, and that
@@ -65,7 +80,10 @@ dialled again, or T for a key the server refused: never again this process.")
   (closing nil)
   (closed nil)
   (idle-seconds 60)
-  (idle-since (get-internal-real-time)))
+  (idle-since (get-internal-real-time))
+  ;; when it last heard a frame or a pong, and when a ping still unanswered went
+  (heard (get-internal-real-time))
+  (pinged nil))
 
 (defstruct (ws-request (:copier nil))
   "One request on a line: its frames as SSE octets, in arrival order."
@@ -169,6 +187,35 @@ streaming ends where it stopped (the walk reads that as a cut stream)."
     (dolist (request requests)
       (ws-request-push request nil (if (eq (ws-request-state request) :waiting) :closed :ended)))))
 
+(defun seconds-since (time)
+  (/ (- (get-internal-real-time) time) internal-time-units-per-second))
+
+(defun websocket-line-watch (line &aux (client (ws-line-client line)))
+  "Look after LINE while a request waits on it: a socket that left the open
+state (the peer's close frame came, its end of the stream has not) or that
+left a ping unanswered is closed now, its requests with it; one quiet too
+long is pinged."
+  (unless (ws-line-closed line)
+    (let ((pinged (ws-line-pinged line)))
+      (cond
+        ((or (not (eq (wsd:ready-state client) :open))
+             (and pinged (> (seconds-since pinged) *websocket-pong-seconds*)))
+         (note-phase "ws gone state=~(~a~)~:[~; unanswered ping~]" (wsd:ready-state client) pinged)
+         (websocket-line-closed line)
+         (ignore-errors (nlk:sever-websocket client :grace-seconds 1)))
+        ((and (null pinged) (> (seconds-since (ws-line-heard line)) *websocket-quiet-seconds*))
+         (setf (ws-line-pinged line) (get-internal-real-time))
+         (bt2:with-lock-held ((ws-line-lock line))
+           (ignore-errors
+            (wsd:send-ping client nil (lambda ()
+                                        (setf (ws-line-heard line) (get-internal-real-time)
+                                              (ws-line-pinged line) nil))))))))))
+
+(defun websocket-wait (request)
+  "Park until REQUEST has news, its line looked after every second meanwhile."
+  (unless (sb-thread:wait-on-semaphore (ws-request-semaphore request) :timeout 1)
+    (websocket-line-watch (ws-request-line request))))
+
 (defun websocket-send (line octets)
   "Send OCTETS, one JSON frame, on LINE as text => true when it went."
   (and (not (ws-line-closed line))
@@ -189,6 +236,7 @@ streaming ends where it stopped (the walk reads that as a cut stream)."
   (let ((client (wsd:make-client url :additional-headers headers)))
     (setf (ws-line-client line) client)
     (wsd:on :message client (lambda (text)
+                              (setf (ws-line-heard line) (get-internal-real-time))
                               (when (stringp text)
                                 (ignore-errors (websocket-frame line text)))))
     (wsd:on :close client (lambda (&rest arguments)
@@ -367,7 +415,7 @@ forgotten there."
         (cond (next (setf buffer next position 0))
               ((member state '(:ended :closed)) (return :eof))
               ;; a park the walk's deadline and a cancel both end
-              (t (sb-thread:wait-on-semaphore (ws-request-semaphore request))))))))
+              (t (websocket-wait request)))))))
 
 (defmethod close ((stream websocket-sse-stream) &key abort)
   (declare (ignore abort))
@@ -400,7 +448,7 @@ in the state it reached."
              (ws-request-done line request :closed))
            (loop while (eq (ws-request-state request) :waiting)
                  do (nlk:with-cancellable-wait (*current-durable-turn*)
-                      (sb-thread:wait-on-semaphore (ws-request-semaphore request))))
+                      (websocket-wait request)))
            (setf started t)
            request)
       ;; A deadline or a cancel while it waited: the server stops it.

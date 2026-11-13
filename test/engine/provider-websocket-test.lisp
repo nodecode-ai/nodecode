@@ -8,8 +8,9 @@
 ;;;; rebuilds the very body HTTP would have sent; anything else about the body
 ;;;; that changed sends it whole; the walk folds a socket answer as it folds
 ;;;; an HTTP one; and every way the socket is not there -- an upgrade refused,
-;;;; a base the server lost, a socket gone before the answer -- still answers,
-;;;; on a fresh socket or over HTTP.
+;;;; a base the server lost, a socket gone before the answer, one closed by a
+;;;; frame that leaves its stream open, one gone deaf -- still answers, on a
+;;;; fresh socket or over HTTP.
 
 (in-package #:nodecode.test)
 
@@ -128,6 +129,55 @@ no line, base or down mark from before."
        (nle::close-websocket-lines)
        (clack:stop (ws-mock-handler ,mock)))))
 
+(defun deaf-websocket-answer (socket close-frame &aux (stream (usocket:socket-stream socket)))
+  "Take SOCKET's upgrade, then read whatever comes and answer nothing; with
+CLOSE-FRAME, a close frame to the first frame, and still the socket kept."
+  (ignore-errors
+   (let ((head (loop with octets = (make-array 0 :element-type '(unsigned-byte 8)
+                                                 :adjustable t :fill-pointer 0)
+                     for octet = (read-byte stream nil nil)
+                     while octet
+                     do (vector-push-extend octet octets)
+                     until (and (>= (length octets) 4)
+                                (equalp (subseq octets (- (length octets) 4)) #(13 10 13 10)))
+                     finally (return (sb-ext:octets-to-string octets :external-format :latin-1)))))
+     (write-sequence
+      (sb-ext:string-to-octets
+       (format nil "HTTP/1.1 101 Switching Protocols~c~cUpgrade: websocket~c~cConnection: Upgrade~c~cSec-WebSocket-Accept: ~a~c~c~c~c"
+               #\Return #\Newline #\Return #\Newline #\Return #\Newline
+               (websocket-driver.util:generate-accept
+                (string-trim '(#\Space #\Return)
+                             (aref (nth-value 1 (ppcre:scan-to-strings "(?i)sec-websocket-key:([^\\n]*)" head)) 0)))
+               #\Return #\Newline #\Return #\Newline)
+       :external-format :latin-1)
+      stream)
+     (force-output stream)
+     (when (and close-frame (read-byte stream nil nil))
+       (write-sequence (coerce #(#x88 2 3 232) '(vector (unsigned-byte 8))) stream)
+       (force-output stream))
+     (loop while (read-byte stream nil nil)))))
+
+(defun deaf-websocket-server (port &key close-frame &aux (listener (usocket:socket-listen "127.0.0.1" port :reuse-address t
+                                                                           :element-type '(unsigned-byte 8)))
+                                        (accepted (list 0)) (sockets '()) (stop nil))
+  "A loopback server on PORT that takes the WebSocket upgrade and then is
+deaf: it reads every frame, pings among them, answers none and never
+closes => (values STOP ACCEPTED), STOP a function that ends it, ACCEPTED a
+cons whose car counts the sockets it took."
+  (nlk:spawn "deaf websocket server"
+    (loop until stop
+          do (when (ignore-errors (usocket:wait-for-input listener :timeout 0.1 :ready-only t))
+               (let ((socket (ignore-errors (usocket:socket-accept listener))))
+                 (when socket
+                   (push socket sockets)
+                   (incf (car accepted))
+                   (nlk:spawn "deaf websocket" (deaf-websocket-answer socket close-frame)))))
+          finally (ignore-errors (usocket:socket-close listener))))
+  (values (lambda ()
+            (setf stop t)
+            (dolist (socket sockets) (ignore-errors (usocket:socket-close socket))))
+          accepted))
+
 (defun ws-mock-endpoint (mock)
   (format nil "http://127.0.0.1:~d/v1/chat/completions" (ws-mock-port mock)))
 
@@ -239,6 +289,39 @@ or NIL when the socket did not take it."
     (is (search "data: [DONE]" (ws-round mock (ws-body '("one")))) "the round is answered")
     (is (= 2 (ws-mock-upgrades mock)) "on a second socket")
     (is (zerop (ws-mock-http mock)) "not over HTTP")))
+
+(defun deaf-websocket-round (&key close-frame (quiet nle::*websocket-quiet-seconds*))
+  "One round against a deaf server => (values STREAM SOCKETS SECONDS)."
+  (let ((port (closed-loopback-port))
+        (start (get-internal-real-time)))
+    (multiple-value-bind (stop accepted) (deaf-websocket-server port :close-frame close-frame)
+      (unwind-protect
+           (let ((nle::*websocket-hosts* '("127.0.0.1"))
+                 (nle::*websocket-lines* (make-hash-table :test 'equal))
+                 (nle::*websocket-bases* (make-hash-table :test 'equal))
+                 (nle::*websocket-down* (make-hash-table :test 'equal))
+                 (nle::*websocket-quiet-seconds* quiet)
+                 (nle::*websocket-pong-seconds* 0.3)
+                 (endpoint (format nil "http://127.0.0.1:~d/v1/chat/completions" port)))
+             (unwind-protect
+                  (values (nle::websocket-post endpoint (ws-body '("one")) '(("authorization" . "Bearer k"))
+                                               (ws-config endpoint) "s1")
+                          (car accepted)
+                          (/ (- (get-internal-real-time) start) internal-time-units-per-second))
+               (nle::close-websocket-lines)))
+        (funcall stop)))))
+
+(deftest a-socket-that-goes-deaf-is-closed-and-the-round-goes-over-http ()
+  (multiple-value-bind (stream sockets seconds) (deaf-websocket-round :quiet 0.2)
+    (is (null stream) "a round no socket answers is left to HTTP")
+    (is (= 3 sockets) "after three sockets, each found deaf by its unanswered ping and closed")
+    (is (< seconds 15) "in seconds, not at the turn's deadline")))
+
+(deftest a-close-frame-closes-the-line-though-the-socket-stays ()
+  (multiple-value-bind (stream sockets seconds) (deaf-websocket-round :close-frame t)
+    (is (null stream) "a round each socket closed under is left to HTTP")
+    (is (= 3 sockets) "after three sockets")
+    (is (< seconds 10) "each closed at its close frame, with no ping to wait on")))
 
 (deftest a-stream-closed-before-its-end-cancels-it-on-the-server ()
   (with-ws-mock (mock :mode :hold)
