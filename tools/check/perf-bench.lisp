@@ -21,6 +21,9 @@
 ;;;; writes to its terminal, so a frame that repaints more than it changed
 ;;;; fails the gate even on a runner fast enough to hide it in time.
 ;;;;
+;;;; When perf-gate.py finds a run hung, it sends SIGUSR1: PERF-RUN has every
+;;;; thread print its backtrace then, so the gate can say where it stalled.
+;;;;
 ;;;; The workloads use the suite's own fixtures, so they stand on what every
 ;;;; test stands on and move with them. A fixture this file names must exist
 ;;;; in the base tree too; when it does not, the base cannot be measured and
@@ -200,11 +203,33 @@ facts and every item_delta published to the peer."
   '(("tui" . perf-tui) ("boot" . perf-boot) ("turns" . perf-turns))
   "Every workload by the name perf-gate.py asks for.")
 
+(defun perf-backtraces ()
+  "Print the backtrace of every thread to standard error, each thread its own:
+what this process is doing, for perf-gate.py when it finds the run hung."
+  (let ((lock (sb-thread:make-mutex :name "perf backtraces"))
+        (stream sb-sys:*stderr*))
+    (dolist (thread (sb-thread:list-all-threads))
+      (let ((thread thread))
+        (flet ((print-own ()
+                 (sb-thread:with-recursive-lock (lock)
+                   (format stream "~&perf: thread ~s~%" (sb-thread:thread-name thread))
+                   (sb-debug:print-backtrace :stream stream :count 40)
+                   (finish-output stream))))
+          (if (eq thread sb-thread:*current-thread*)
+              (print-own)
+              (handler-case (sb-thread:interrupt-thread thread #'print-own)
+                (error () nil))))))))
+
 (defun perf-run (name out &key ctl ack)
   "Run workload NAME and write what its spans cost to OUT, a plist; CTL and
-ACK name perf stat's control and ack fifos when it runs under one."
+ACK name perf stat's control and ack fifos when it runs under one. SIGUSR1
+prints every thread's backtrace (PERF-BACKTRACES)."
   (let ((entry (assoc name +perf-workloads+ :test #'string=)))
     (unless entry (error "perf: no workload ~s" name))
+    (sb-sys:enable-interrupt sb-unix:sigusr1
+                             (lambda (signal info context)
+                               (declare (ignore signal info context))
+                               (perf-backtraces)))
     (flet ((run ()
              (funcall (cdr entry))
              (with-open-file (s out :direction :output :if-exists :supersede)

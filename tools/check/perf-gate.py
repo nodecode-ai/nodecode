@@ -47,6 +47,13 @@ Exits 0 when the head holds, 1 when a metric regressed, 2 when it cannot
 measure (a tree that does not load, a workload that fails). Prints a table;
 under GitHub Actions the table also goes to the job summary.
 
+A run takes seconds; one still going after PERF_RUN_LIMIT seconds (default
+120) hung. The gate reads its threads' kernel states, asks its SBCL for every
+thread's backtrace (SIGUSR1, which perf-bench.lisp answers), kills the run's
+whole process group, prints all of it, and measures that run again. One hung
+run in a gate is a flake, named as a warning on the run's page; a second
+cannot measure.
+
 Trees and their compiled code are kept under PERF_HOME (default
 /var/tmp/nodecode-perf): a base is extracted once per commit (git archive)
 and compiled once, so a second run against the same base pays only the
@@ -60,6 +67,7 @@ import fcntl
 import json
 import os
 import shutil
+import signal
 import statistics
 import subprocess
 import sys
@@ -78,10 +86,16 @@ FLOORS = {"instructions": (0.03, 0), "consed": (0.03, 256 * 1024),
           "bytes": (0.01, 0), "frames": (0.0, 0)}
 SPAN_KEYS = {"WALL-NS", "CPU-NS", "CONSED", "SPANS"}
 PERF_HOME = os.environ.get("PERF_HOME", "/var/tmp/nodecode-perf")
+# A measured run takes seconds; one still going after this many has hung.
+RUN_LIMIT = int(os.environ.get("PERF_RUN_LIMIT", "120"))
 
 
 class CannotMeasure(Exception):
     pass
+
+
+class Hung(CannotMeasure):
+    """A run still going after RUN_LIMIT seconds, killed; says what it was doing."""
 
 
 def git(*args, cwd=REPO):
@@ -213,11 +227,23 @@ def run_one(tree, workload, scratch, use_perf):
     # folder up, and a tree's parents differ (a checkout under a home with its
     # own AGENTS.md against a base under PERF_HOME), so the same work would
     # carry a different prompt in each.
-    r = subprocess.run(command, cwd=d, env=environment(d),
-                       capture_output=True, text=True, timeout=900)
-    if r.returncode != 0 or not os.path.exists(out):
+    output_path = os.path.join(d, "output")
+    with open(output_path, "w") as output:
+        # Its own session: perf, its SBCL and whatever that SBCL starts are
+        # one process group, killed as one when the run hangs.
+        run = subprocess.Popen(command, cwd=d, env=environment(d), stdout=output,
+                               stderr=subprocess.STDOUT, start_new_session=True)
+    try:
+        returncode = run.wait(timeout=RUN_LIMIT)
+    except subprocess.TimeoutExpired:
+        raise Hung("workload %s of the %s (%s) was still running after %d s; killed it.\n%s"
+                   % (workload, side(tree), tree, RUN_LIMIT, stalled(run, use_perf, output_path)))
+    except BaseException:
+        kill_group(run)
+        raise
+    if returncode != 0 or not os.path.exists(out):
         raise CannotMeasure("workload %s in %s exited %s:\n%s"
-                            % (workload, tree, r.returncode, (r.stdout + r.stderr)[-2000:]))
+                            % (workload, tree, returncode, tail(output_path, 2000)))
     spans = read_plist(open(out).read())
     result = {"consed": spans["CONSED"], "cpu": spans["CPU-NS"], "wall": spans["WALL-NS"]}
     # every other key is a count the workload reported (PERF-COUNT)
@@ -232,6 +258,135 @@ def run_one(tree, workload, scratch, use_perf):
                                 % (workload, open(counts).read()[-800:]))
     shutil.rmtree(d, ignore_errors=True)
     return result
+
+
+def side(tree):
+    return "head" if tree == REPO else "base"
+
+
+def tail(path, chars):
+    with open(path, errors="replace") as f:
+        return f.read()[-chars:]
+
+
+def proc_fields(pid):
+    """/proc/PID/stat's fields after the name: state, ppid, ...; None when gone."""
+    try:
+        with open("/proc/%s/stat" % pid) as f:
+            stat = f.read()
+    except OSError:
+        return None
+    return stat[stat.rindex(")") + 2:].split()
+
+
+def children(pid):
+    found = []
+    for entry in os.listdir("/proc") if os.path.isdir("/proc") else []:
+        fields = entry.isdigit() and proc_fields(entry)
+        if fields and int(fields[1]) == pid:
+            found.append(int(entry))
+    return sorted(found)
+
+
+def threads(pid):
+    """Each thread of PID as the kernel sees it: tid, name, state, and the
+    kernel function it sleeps in."""
+    lines = []
+    try:
+        tids = sorted(os.listdir("/proc/%d/task" % pid), key=int)
+    except OSError:
+        return ""
+    for tid in tids:
+        task = "/proc/%d/task/%s/" % (pid, tid)
+        fields = proc_fields("%d/task/%s" % (pid, tid))
+        try:
+            with open(task + "comm") as f:
+                name = f.read().strip()
+            with open(task + "wchan") as f:
+                wchan = f.read().strip()
+        except OSError:
+            continue
+        if fields:
+            lines.append("  %s %s %s %s\n" % (tid, name, fields[0], wchan or "-"))
+    return "".join(lines)
+
+
+def settle(path, quiet=1.5, most=10.0):
+    """Wait until PATH has not grown for QUIET seconds, at most MOST."""
+    deadline = time.time() + most
+    size, since = -1, time.time()
+    while time.time() < deadline:
+        now = os.path.getsize(path)
+        if now != size:
+            size, since = now, time.time()
+        elif time.time() - since >= quiet:
+            return
+        time.sleep(0.1)
+
+
+def kill_group(run):
+    """Kill RUN's whole process group; RUN not yet reaped, so the group is still its own."""
+    try:
+        os.killpg(run.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def stalled(run, use_perf, output_path):
+    """What the hung RUN was doing, then RUN killed: each thread of perf and
+    of its SBCL as the kernel sees it, the run's output, and the backtrace of
+    every Lisp thread, which perf-bench.lisp prints when sent SIGUSR1."""
+    try:
+        lisp = run.pid
+        if use_perf:
+            lisp = next(iter(children(run.pid)), None)
+        states = "".join("process %d:\n%s" % (pid, threads(pid))
+                         for pid in dict.fromkeys([run.pid, lisp]) if pid)
+        before = os.path.getsize(output_path)
+        if lisp:
+            try:
+                os.kill(lisp, signal.SIGUSR1)
+            except ProcessLookupError:
+                pass
+            settle(output_path)
+    finally:
+        kill_group(run)
+    run.wait()
+    with open(output_path, errors="replace") as f:
+        output = f.read()
+    return ("Its threads (tid name state wchan):\n%s"
+            "Its output, the last of it:\n%s\n"
+            "Its backtraces, asked for with SIGUSR1:\n%s"
+            % (states or "  (no /proc here)\n", output[:before][-3000:] or "  (none)",
+               output[before:][:60000] or "  (none: it did not answer)"))
+
+
+def annotate(message):
+    """A warning on the run's page, under GitHub Actions."""
+    if os.environ.get("GITHUB_ACTIONS"):
+        print("::warning title=perf-gate::%s"
+              % message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A"), flush=True)
+
+
+def run_counted(tree, workload, scratch, use_perf, hangs):
+    """RUN_ONE, measured again when it hangs. One hung run in a gate is a
+    flake, named as a warning; a second, of any workload on either side, is
+    no flake and cannot measure. HANGS collects every hang of the gate."""
+    while True:
+        try:
+            return run_one(tree, workload, scratch, use_perf)
+        except Hung as hung:
+            hangs.append({"workload": workload, "side": side(tree), "report": str(hung)})
+            print("perf-gate: %s" % hung, file=sys.stderr)
+            if len(hangs) > 1:
+                raise CannotMeasure(
+                    "%d runs hung past %d s (%s): a hang that comes back is no flake"
+                    % (len(hangs), RUN_LIMIT, ", ".join("%s of the %s" % (h["workload"], h["side"])
+                                                         for h in hangs)))
+            annotate("workload %s of the %s hung past %d s; killed it and measured it again. "
+                     "Its threads and backtraces are in this step's log."
+                     % (workload, side(tree), RUN_LIMIT))
+            print("perf-gate: measuring %s of the %s again" % (workload, side(tree)), file=sys.stderr)
 
 
 def read_plist(text):
@@ -337,6 +492,7 @@ def main():
         started = time.time()
         for tree in (base_path, REPO):
             compile_tree(tree, scratch)
+        hangs = []
         def measure(names):
             base, head = {w: [] for w in names}, {w: [] for w in names}
             for rep in range(args.reps):
@@ -345,7 +501,7 @@ def main():
                     order.reverse()
                 for workload in names:
                     for tree, sink in order:
-                        sink[workload].append(run_one(tree, workload, scratch, use_perf))
+                        sink[workload].append(run_counted(tree, workload, scratch, use_perf, hangs))
             return base, head
 
         base, head = measure(workloads)
@@ -367,6 +523,9 @@ def main():
             for w in flagged:
                 base[w + " (again)"], head[w + " (again)"] = again_base[w], again_head[w]
         report = table(rows, base_sha, head_label, args.reps)
+        if hangs:
+            report += ("\n\nA run hung past %d s, was killed and measured again: %s of the %s."
+                       % (RUN_LIMIT, hangs[0]["workload"], hangs[0]["side"]))
         print(report)
         print("\n%.0f s" % (time.time() - started))
         if os.environ.get("GITHUB_STEP_SUMMARY"):
@@ -374,7 +533,7 @@ def main():
                 summary.write(report + "\n")
         if args.json:
             with open(args.json, "w") as f:
-                json.dump({"base": base_sha, "head": head_sha, "rows": rows,
+                json.dump({"base": base_sha, "head": head_sha, "rows": rows, "hangs": hangs,
                            "runs": {"base": base, "head": head}}, f, indent=1)
         regressed = [r for r in rows if r["regressed"]]
         for r in regressed:
