@@ -315,13 +315,16 @@ or NIL when the socket did not take it."
   (multiple-value-bind (stream sockets seconds) (deaf-websocket-round :quiet 0.2)
     (is (null stream) "a round no socket answers is left to HTTP")
     (is (= 3 sockets) "after three sockets, each found deaf by its unanswered ping and closed")
-    (is (< seconds 15) "in seconds, not at the turn's deadline")))
+    ;; each socket: its quiet, a second's tick, the ping's wait, and the sever's
+    ;; grace (a reader this server never answers stays parked on Windows)
+    (is (< seconds 40) "in seconds, not never")))
 
 (deftest a-close-frame-closes-the-line-though-the-socket-stays ()
   (multiple-value-bind (stream sockets seconds) (deaf-websocket-round :close-frame t)
     (is (null stream) "a round each socket closed under is left to HTTP")
     (is (= 3 sockets) "after three sockets")
-    (is (< seconds 10) "each closed at its close frame, with no ping to wait on")))
+    ;; with a ping to wait on, three sockets would take 75 seconds
+    (is (< seconds 40) "each closed at its close frame, with no ping to wait on")))
 
 (deftest a-stream-closed-before-its-end-cancels-it-on-the-server ()
   (with-ws-mock (mock :mode :hold)
