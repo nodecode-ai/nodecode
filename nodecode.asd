@@ -264,6 +264,9 @@ of stacking."
      ;; provider precedes turn: the stream-part waist, lane registry, and
      ;; frozen-config structs are the layer the turn loop folds policy over.
      (:file "engine/provider")
+     ;; provider-websocket follows provider: the WebSocket the walk asks before
+     ;; its POST, for nodecode.ai's own chat lane.
+     (:file "engine/provider-websocket")
      ;; engine/providers/ follows provider: one file per provider dialect, each written
      ;; in DEFINE-PROVIDER-LANE and registered into the registry provider owns.
      (:file "engine/providers/openai-completions")
@@ -620,6 +623,9 @@ of stacking."
      ;; provider-watchdog-test follows provider-pool-test: its cut-socket
      ;; gate reads the pool the same way.
      (:file "engine/provider-watchdog-test")
+     ;; provider-websocket-test follows provider-watchdog-test: its mock answers
+     ;; in that suite's chat delta lines.
+     (:file "engine/provider-websocket-test")
      (:file "engine/turn-test")
      ;; cache-warming-test follows turn-test: it sends through the Messages
      ;; lane on turn-test's canned streams and contexts.

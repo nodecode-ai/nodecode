@@ -172,6 +172,48 @@ when the handshake does not answer -- an error, a deadline, an interrupt."
 
 (defvar *client-contexts-lock* (bt2:make-lock :name "tls client contexts"))
 
+;;; On Windows OpenSSL's default location is a directory nobody fills: the
+;;; machine's roots are in its certificate store, so a context that verifies
+;;; there trusted nothing and refused every peer (a TLS socket of the image's
+;;; own, as the WebSocket API's, where dexador's HTTP speaks WinHTTP). Each
+;;; shared context takes the store's ROOT and CA certificates, as Python's
+;;; ssl.load_default_certs does.
+
+#+win32
+(defun add-windows-system-certificates (context)
+  "Add the certificates of Windows' ROOT and CA system stores to CONTEXT's
+store => how many it took."
+  (cffi:load-foreign-library "crypt32.dll")
+  (let ((store (cffi:foreign-funcall "SSL_CTX_get_cert_store" :pointer context :pointer))
+        (added 0))
+    (dolist (name '("ROOT" "CA") added)
+      (let ((system (cffi:with-foreign-string (wide name :encoding :utf-16le)
+                      (cffi:foreign-funcall "CertOpenSystemStoreW" :pointer (cffi:null-pointer)
+                                                                   :pointer wide :pointer))))
+        (unless (cffi:null-pointer-p system)
+          (unwind-protect
+               (cffi:with-foreign-object (cursor :pointer)
+                 ;; CERT_CONTEXT: dwCertEncodingType, then pbCertEncoded and
+                 ;; cbCertEncoded at pointer alignment
+                 (loop for certificate = (cffi:foreign-funcall "CertEnumCertificatesInStore"
+                                                              :pointer system :pointer (or certificate (cffi:null-pointer))
+                                                              :pointer)
+                       until (cffi:null-pointer-p certificate)
+                       when (logtest 1 (cffi:mem-ref certificate :uint32)) ; X509_ASN_ENCODING
+                         do (setf (cffi:mem-ref cursor :pointer)
+                                  (cffi:mem-ref certificate :pointer (cffi:foreign-type-size :pointer)))
+                            (let ((x509 (cffi:foreign-funcall "d2i_X509" :pointer (cffi:null-pointer) :pointer cursor
+                                                              :long (cffi:mem-ref certificate :uint32
+                                                                                  (* 2 (cffi:foreign-type-size :pointer)))
+                                                              :pointer)))
+                              (unless (cffi:null-pointer-p x509)
+                                (when (= 1 (cffi:foreign-funcall "X509_STORE_add_cert" :pointer store :pointer x509 :int))
+                                  (incf added))
+                                (cffi:foreign-funcall "X509_free" :pointer x509 :void)))))
+            (cffi:foreign-funcall "CertCloseStore" :pointer system :uint32 0 :int)
+            ;; a certificate the store held already left an error queued
+            (cffi:foreign-funcall "ERR_clear_error" :void)))))))
+
 (defun shared-client-context (next &rest args &key (verify-location :default) &allow-other-keys)
   "CL+SSL:MAKE-CONTEXT's advice: a context asked for by verify mode and the
 system's default location alone is that mode's shared one, with a reference
@@ -185,7 +227,9 @@ of its own for the caller to free; any other ask is NEXT's, a fresh context."
       (bt2:with-lock-held (*client-contexts-lock*)
         (let* ((mode (getf args :verify-mode))
                (context (or (cdr (assoc mode *client-contexts*))
-                            (cdar (push (cons mode (apply next args)) *client-contexts*)))))
+                            (let ((fresh (apply next args)))
+                              #+win32 (ignore-errors (add-windows-system-certificates fresh))
+                              (cdar (push (cons mode fresh) *client-contexts*))))))
           (cffi:foreign-funcall "SSL_CTX_up_ref" :pointer context :int)
           context))))
 
