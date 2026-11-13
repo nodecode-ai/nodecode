@@ -86,6 +86,12 @@ done_step install
 
 # The publisher's own checks, hermetic (no host, no network): which commit a
 # release or a nightly builds, and what each publish moves and leaves alone.
+# The perf gate's own handling of a run that hangs: killed whole, said, and
+# measured again once (no SBCL, no perf).
+step perf-gate
+python3 tools/check/perf-gate-test.py
+done_step perf-gate
+
 step release
 bash tools/release/release-test.sh
 bash tools/build/compile-cells-test.sh

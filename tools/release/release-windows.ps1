@@ -111,6 +111,13 @@ try {
   if ($LASTEXITCODE -ne 0) { throw "build-windows.ps1 failed ($LASTEXITCODE)" }
 } finally { Pop-Location }
 
+# --- the signature -------------------------------------------------------------
+# Before any smoke, so each one runs the bytes a user gets: a release
+# (NODECODE_SIGN=azure) signs nodecode.exe and the launcher as Foresight Labs;
+# any other run proves a signed copy of nodecode.exe still finds its image.
+Write-Host 'release-windows: === sign ==='
+& (Join-Path $sys 'tools\release\sign-windows.ps1') -Tree $tree
+
 # --- a user's environment is not ASCII ---------------------------------------
 # Every smoke below runs with one variable a code page cannot hold whole: a
 # u-umlaut (in the ANSI page, where a UTF-8 decode of its byte signals) and a

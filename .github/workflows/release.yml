@@ -42,7 +42,12 @@ name: Release
 # and each nightly's, until the variable is deleted: no Windows archive ships,
 # every Windows pointer and install.ps1 stay where they are, and the notes say
 # so. The Windows job still builds and smokes each release; its zip is not
-# shipped (platforms.sh). Held until Windows builds are signed.
+# shipped (platforms.sh).
+#
+# The Windows job signs nodecode.exe and its launcher as Foresight Labs
+# before it smokes and zips them (sign-windows.ps1: Azure Artifact Signing,
+# through the release environment's OIDC identity). Signing is what the
+# Windows hold waited on; the variable still decides when it lifts.
 #
 # The nightly is never behind stable: a tag's publish also moves each nightly
 # pointer that names a commit the tag carries (publish.sh), so the homes on
@@ -51,7 +56,8 @@ name: Release
 #
 # The publish job's credentials are the `release' environment's secrets,
 # which that environment hands only to a v* tag or to main: a pull request's
-# code runs the build jobs at most, and those hold no secret.
+# code runs the build jobs at most, and those hold no secret. The Windows job
+# takes the same environment for its signing identity, and no secret with it.
 on:
   push:
     tags: ['v*']
@@ -177,13 +183,24 @@ jobs:
     if: needs.check.outputs.skip != 'true'
     runs-on: [self-hosted, nc-windows]
     timeout-minutes: 45
+    # The release environment holds the signing identity (no key, no
+    # password: Azure trusts this job's GitHub OIDC token), and hands it only
+    # to main and v* tags.
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.check.outputs.commit }}
-      - name: Build, smoke and zip the Windows release (release-windows.ps1)
+      - name: Build, sign, smoke and zip the Windows release (release-windows.ps1)
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\ci\ci-windows.ps1 -Root "$env:RUNNER_TEMP\nodecode-release"
+        env:
+          NODECODE_SIGN: azure
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
       - uses: actions/upload-artifact@v4
         with:
           name: release-x86_64-windows
