@@ -1282,32 +1282,7 @@ condition's report, exit 1."
                                                 :prelude (lambda ()
                                                            (decide-folder-behind-the-frame
                                                             store-path))))
-                       (t
-                        ;; a serve leaves its receipt before the load: a self that dies before serving is found by the launch after
-                        ;; a serve that will own the organism boots the saved heap a restore asked for, before any folder loads (images.lisp)
-                        (when serve (follow-restore-pointer))
-                        (nlk:boot-cells :spawn (null child) :receipt (and serve t))
-                        ;; A child prints its own report on stdout; the boot line
-                        ;; would be noise the parent has to skip.
-                        (when (eq (first child) :trial)
-                          (nlk::trial-main))
-                        (nlk:describe-cells)
-                        (if serve
-                            ;; Headless owner-or-nothing: the resurrection candidate a
-                            ;; client's reconnect ladder spawns, and the manual way to run
-                            ;; a gateway with no TUI. Losing the ownership election is a
-                            ;; normal exit — the winner is serving, which is what the
-                            ;; invoker wanted ensured. `gateway run' (:WAIT), what the
-                            ;; gateway's unit runs, never loses: it waits for the store.
-                            (progn
-                              ;; Configured and effective, once, in the gateway's log.
-                              (when-let (line (nlk::file-limit-line))
-                                (format *error-output* "~a~%" line)
-                                (finish-output *error-output*))
-                              (serve-organism-candidate :store-path store-path :wait (eq serve :wait)))
-                            (attach-or-own-organism :session-id session-id
-                                                    :store-path store-path
-                                                    :setup setup))))))
+                       (t (launch-headless serve child session-id store-path setup)))))
         (setf *handover-launch* (and (handover-launch-p) (null child) (not serve)))
         (cond (*handover-launch*
                (setf nlt:*inherit-screen* t)
@@ -1315,6 +1290,45 @@ condition's report, exit 1."
                 (stdio-log-path (or store-path nlk::*default-store-path*))
                 #'launch))
               (t (launch)))))))
+
+(defun launch-headless (serve child session-id store-path setup)
+  "The launch of a process that paints no TUI: SERVE's headless owner, or a
+CHILD's one answer. => what that answers; :LOST for a serve that does not
+wait and found the store held."
+  ;; A serve that loses the election loses before its boot: the boot points
+  ;; the home's cell installs at this build (REFRESH-INSTALLED-CELLS), moves
+  ;; its hub clones and loads every cell, and a loser left all of that to the
+  ;; owner it lost to, whose next cell load read this build's tree -- one
+  ;; that may be on its way out. The lock inside OPEN-STORE still settles a
+  ;; race this look misses. `gateway run' (:WAIT) waits for the store instead
+  ;; (SERVE-ORGANISM-CANDIDATE).
+  (when (and (eq serve t) (serve-election-lost-p store-path))
+    (return-from launch-headless :lost))
+  ;; a serve leaves its receipt before the load: a self that dies before serving is found by the launch after
+  ;; a serve that will own the organism boots the saved heap a restore asked for, before any folder loads (images.lisp)
+  (when serve (follow-restore-pointer))
+  (nlk:boot-cells :spawn (null child) :receipt (and serve t))
+  ;; A child prints its own report on stdout; the boot line
+  ;; would be noise the parent has to skip.
+  (when (eq (first child) :trial)
+    (nlk::trial-main))
+  (nlk:describe-cells)
+  (if serve
+      ;; Headless owner-or-nothing: the resurrection candidate a
+      ;; client's reconnect ladder spawns, and the manual way to run
+      ;; a gateway with no TUI. Losing the ownership election is a
+      ;; normal exit -- the winner is serving, which is what the
+      ;; invoker wanted ensured. `gateway run' (:WAIT), what the
+      ;; gateway's unit runs, never loses: it waits for the store.
+      (progn
+        ;; Configured and effective, once, in the gateway's log.
+        (when-let (line (nlk::file-limit-line))
+          (format *error-output* "~a~%" line)
+          (finish-output *error-output*))
+        (serve-organism-candidate :store-path store-path :wait (eq serve :wait)))
+      (attach-or-own-organism :session-id session-id
+                              :store-path store-path
+                              :setup setup)))
 
 (defun usage-refusal-text (detail)
   "What a refused command line prints: DETAIL, and where the commands are."

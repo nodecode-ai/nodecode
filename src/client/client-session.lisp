@@ -1767,6 +1767,26 @@ one that lands while it already stops cuts it short."
                                      (spawn "serve-sigterm"
                                        (if *stopping* (cut-short) (serve-next :stop))))))
 
+(defun serve-election-lost-p (&optional store-path)
+  "Whether another live process holds the store at STORE-PATH (the home's
+own by default), said as a lost election is: the holder named on stdout,
+and the receipt a boot left taken with this process, which did not die."
+  (let ((path (merge-pathnames (or store-path nlk::*default-store-path*))))
+    (when (nlk::store-lease-held-elsewhere-p path)
+      ;; Said, as the lock's refusal is: a candidate that lost to an owner on
+      ;; its way out left no line, and the shell that started it looked hung
+      ;; (#226).
+      (format t "~&election lost: pid ~a holds ~a~%"
+              (or (ignore-errors (nlk::read-store-holder path)) "?") (namestring path))
+      (finish-output)
+      ;; A candidate that loses did not die: a receipt BOOT-CELLS left before
+      ;; its load goes with it, or the launch after reads a self that died
+      ;; before serving and runs pristine -- no cell, so no cell's command.
+      ;; Most visible on Windows, where every serve loads directly and so
+      ;; leaves one.
+      (nlk:take-self-receipt)
+      t)))
+
 (defun serve-organism-candidate (&key session-id store-path (port *gateway-port*) wait)
   "Boot the organism as a HEADLESS gateway owner, or lose the election
 quietly."
@@ -1789,6 +1809,10 @@ quietly."
   (setf *gateway-run* (and wait t))
   (let ((path (merge-pathnames (or store-path nlk::*default-store-path*)))
         (session-id (or session-id (and wait +gateway-session-id+))))
+    ;; A candidate that loses says that and nothing else: a ready line before
+    ;; it read as a gateway that came up and went.
+    (when (and (not wait) (serve-election-lost-p path))
+      (return-from serve-organism-candidate :lost))
     ;; Notify before waiting for a shell-owned store: the service is initialized
     ;; even while it is intentionally idle, and the same owner thread must keep
     ;; the watchdog alive in that wait.
@@ -1796,22 +1820,10 @@ quietly."
     (format t "~&[CP-ISSUE-20260912-001] gateway ready~%")
     (let ((heartbeat-noted nil))
       (loop
-        ;; A candidate that loses did not die: the receipt BOOT-CELLS left
-        ;; before its load goes with it, or the launch after reads a self that
-        ;; died before serving and runs pristine -- no cell, so no cell's
-        ;; command. Most visible on Windows, where every serve loads directly
-        ;; and so leaves one.
-        (if wait
-            (await-free-store path :tick #'nlk:systemd-watchdog)
-            (when (nlk::store-lease-held-elsewhere-p path)
-              ;; Said, as the lock's refusal below is: a candidate that lost
-              ;; to an owner on its way out left no line, and the shell that
-              ;; started it looked hung (#226).
-              (format t "~&election lost: pid ~a holds ~a~%"
-                      (or (ignore-errors (nlk::read-store-holder path)) "?") (namestring path))
-              (finish-output)
-              (nlk:take-self-receipt)
-              (return :lost)))
+        ;; A candidate that does not wait looked once, above, and runs this
+        ;; loop once: every way out of it below returns.
+        (when wait
+          (await-free-store path :tick #'nlk:systemd-watchdog))
         (with-handlers ((nlk::store-in-use (refusal)
                           (format t "~&election lost: ~a~%" refusal)
                           (finish-output)
