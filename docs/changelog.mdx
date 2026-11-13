@@ -32,6 +32,15 @@ nodecode 0.1.7+2629050e1
 The version comes first and the build label, the commit the release was built from, follows the `+`. An installed build moves to a new release by itself, between turns. `nodecode update` moves it now. See [Updates](updates.mdx).
 
 {/* source: tools/release/publish.sh */}
+## 0.1.16
+
+Linux, macOS and Windows. Changes since 0.1.15 (`572814a28`).
+
+- The Windows installer works on Windows 10 again: its `tar.exe` cannot unpack zstd, so the installer takes the zip there instead of stopping at `Can't initialize filter; unable to run program "zstd -d -qq"`. A Windows 10 install on an earlier release updates with the installer it carries, so it runs `irm https://nodecode.ai/install.ps1 | iex` once instead.
+- Rounds to nodecode.ai's own models ride a WebSocket by default, sending only the new messages after the first, and fall back to HTTP when the socket is refused or fails. `NODECODE_WEBSOCKET=0` turns it off. On Windows the TLS connection trusts the system's certificate store.
+- A cell's keep-running no longer turns a gateway on for a home nodecode does not name, such as a test's scratch home.
+
+{/* source: tools/release/publish.sh */}
 ## 0.1.15
 
 Linux, macOS and Windows. Changes since 0.1.14 (`cef1be5a3`).
