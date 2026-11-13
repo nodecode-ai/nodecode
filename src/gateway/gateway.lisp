@@ -4910,6 +4910,35 @@ organism's log (LOG-SOURCE), never to the *ERROR-OUTPUT* it was made under."
   ;; the gateway's unit.
   (setf (hunchentoot:acceptor-message-log-destination acceptor) sb-sys:*stderr*))
 
+(defun drain-request-body (request)
+  "Read what is left of REQUEST's body, so the next request on its connection
+starts at its own first byte. A request that says no length and is not
+chunked has no body to read."
+  ;; Hunchentoot reads a body its handler left before it answers (START-OUTPUT
+  ;; calls RAW-POST-DATA), but clack takes the body as a stream (:RAW-BODY),
+  ;; and once a stream was handed out that call reads nothing. So a route that
+  ;; never reads its body -- /models' Test posts `{}' and asks nothing of it --
+  ;; left those bytes on a keep-alive connection, where the next request was
+  ;; read from them: `{}GET /api/... HTTP/1.1' is a 400, and an HTTP/1.0 one,
+  ;; which PowerShell takes for a protocol violation. The stream is bound to
+  ;; the declared length (or ends with the last chunk), so reading it to its
+  ;; end reads this request's bytes and no further. A client that hangs up or
+  ;; stalls mid-body ends its own connection, as it would have on the next read.
+  (when (or (hunchentoot:header-in :content-length request)
+            (search "chunked" (or (hunchentoot:header-in :transfer-encoding request) "")
+                    :test #'char-equal))
+    (let ((body (hunchentoot:raw-post-data :request request :want-stream t)))
+      (when (and (streamp body) (open-stream-p body))
+        (ignore-errors
+         (loop with buffer = (make-array 8192 :element-type '(unsigned-byte 8))
+               while (plusp (read-sequence buffer body))))))))
+
+(defmethod hunchentoot:acceptor-dispatch-request :after
+    ((acceptor clack.handler.hunchentoot::clack-acceptor) request)
+  "Every request the gateway's acceptor answers leaves none of its body on
+the connection (DRAIN-REQUEST-BODY), whether its route read it or not."
+  (drain-request-body request))
+
 ;;; The listen latch. A clack acceptor says so the moment its socket
 ;;; listens, and the caller that just started one waits for that word before
 ;;; it connects at all. Probing with connects alone cost Windows half a
