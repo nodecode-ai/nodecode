@@ -211,10 +211,13 @@ what this process is doing, for perf-gate.py when it finds the run hung."
     (dolist (thread (sb-thread:list-all-threads))
       (let ((thread thread))
         (flet ((print-own ()
-                 (sb-thread:with-recursive-lock (lock)
-                   (format stream "~&perf: thread ~s~%" (sb-thread:thread-name thread))
-                   (sb-debug:print-backtrace :stream stream :count 40)
-                   (finish-output stream))))
+                 ;; Run in the thread's own dynamic bindings, whatever printer
+                 ;; settings it has bound: print plain text all the same.
+                 (let ((*print-readably* nil) (*print-pretty* nil))
+                   (sb-thread:with-recursive-lock (lock)
+                     (format stream "~&perf: thread ~a~%" (sb-thread:thread-name thread))
+                     (sb-debug:print-backtrace :stream stream :count 40)
+                     (finish-output stream)))))
           (if (eq thread sb-thread:*current-thread*)
               (print-own)
               (handler-case (sb-thread:interrupt-thread thread #'print-own)
