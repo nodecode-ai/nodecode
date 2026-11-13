@@ -2820,13 +2820,16 @@ it, provider and model NULL when none is, and every decider /models offers."
 
 (defun config-outcome (object outcome detail)
   "OBJECT, a JSON object, with what writing the shared config came to: OUTCOME
-as shared_config, and DETAIL, why it failed, as shared_config_error; a
+as shared_config, and, when it failed, DETAIL, why, as shared_config_error; a
 failure is also warned."
   ;; Config is the only durability now, so a write that did not land has to
   ;; be visible rather than warned about into a log nobody is reading.
   (warn-unsaved-config outcome detail)
   (when outcome (setf (gethash "shared_config" object) (string-downcase outcome)))
-  (when detail (setf (gethash "shared_config_error" object) detail))
+  ;; A write answers a DETAIL too, its diff (`general.theme: unchanged'),
+  ;; and that is no error: a client reads the field as a save that failed.
+  (when (and detail (eq outcome :failed))
+    (setf (gethash "shared_config_error" object) detail))
   object)
 
 (defun warn-unsaved-config (outcome detail)
@@ -4126,7 +4129,8 @@ SELECT-SESSION-MODEL contract); sessions already begun keep their own."
                    "selected_provider" provider
                    "selected_model" model
                    :opt "shared_config" (and outcome (string-downcase outcome))
-                   :opt "shared_config_error" detail))))
+                   ;; only a failure's DETAIL is an error (CONFIG-OUTCOME)
+                   :opt "shared_config_error" (and (eq outcome :failed) detail)))))
 
 (define-gateway-route handle-gateway-session-effort-http (env session-id)
   "POST /api/gateway/sessions/<id>/effort {\"effort\": rung | null} — the
