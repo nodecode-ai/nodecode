@@ -7,7 +7,7 @@ summary: "The same API over one WebSocket: many requests on one socket, and a tu
 
 ## Connect
 
-Open the socket with the key in `Authorization: Bearer sk-nc-...`. The first frame states the socket's limits:
+Open the socket with a paid key in `Authorization: Bearer sk-nc-...`; a free key is refused with 403. The first frame states the socket's limits:
 
 ```json
 {"type": "open", "idle_secs": 60, "max_age_secs": 3600, "max_running": 16, "keep_bytes": 67108864}
