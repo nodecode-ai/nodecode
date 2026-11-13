@@ -18,6 +18,7 @@
       "name": "Cyber v1",
       "pages": [
         "cyber",
+        "websocket",
         "cyber-strix",
         "cyber-pentagi",
         "cyber-pentestgpt"

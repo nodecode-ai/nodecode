@@ -1,0 +1,50 @@
+---
+title: WebSocket API
+summary: "The same API over one WebSocket: many requests on one socket, and a turn that sends only its new messages."
+---
+
+`wss://api.nodecode.ai/v1/ws` carries the same three routes as HTTP over one socket, with the same key, limits and prices. It pays off in a long agent loop: each turn sends only its new messages, not the whole conversation again. On a 20 Mbit/s link an 818k-token chat took 1.5 s to first token this way, against 3.4 s over HTTP.
+
+## Connect
+
+Open the socket with a paid key in `Authorization: Bearer sk-nc-...`; a free key is refused with 403. The first frame states the socket's limits:
+
+```json
+{"type": "open", "idle_secs": 60, "max_age_secs": 3600, "max_running": 16, "keep_bytes": 67108864}
+```
+
+## A request
+
+Every frame is one JSON object, sent as text. A request carries an `id` you pick, the route in `path` (`/v1/chat/completions` when left out, or `/v1/messages`, `/v1/responses`) and the body you would POST there:
+
+```json
+{"type": "request", "id": "t1", "path": "/v1/chat/completions",
+ "body": {"model": "nodecode-cyber-v1", "stream": true, "messages": [{"role": "user", "content": "Hi"}]}}
+```
+
+The answer comes back under the same `id`:
+
+| Frame | Means |
+| --- | --- |
+| `start` | A streamed answer begins: `status`, `request_id`. |
+| `event` | One SSE event of it, in `data`, `[DONE]` included. |
+| `end` | The stream ended, or was cancelled. |
+| `response` | A whole answer, streamed or not: `status`, `body`. Errors such as 402 come this way. |
+| `error` | The frame itself was refused: `error.code`, `error.message`. |
+
+Up to 16 requests run at once on one socket. `{"type": "cancel", "id": "t1"}` stops one.
+
+## Only the new messages
+
+`extends` names an earlier request on the same socket. Its body is taken whole, this request's fields are laid over it, and its `messages` (`input` on `/v1/responses`) are appended rather than replaced. A field set to `null` is dropped.
+
+```json
+{"type": "request", "id": "t2", "extends": "t1",
+ "body": {"messages": [{"role": "assistant", "content": "Hello"}, {"role": "user", "content": "Go on"}]}}
+```
+
+The socket keeps each request's body in memory, never on disk, until the socket closes, `{"type": "forget", "id": "t1"}` drops it, or 64 MiB is reached and the oldest go. `"keep": false` on a request keeps nothing. An `extends` the socket no longer holds is refused as `unknown_base`: send the whole body.
+
+## When it closes
+
+A socket closes 60 s after its last request ended; pings do not hold it open. It closes after an hour in any case, and during a deploy. Each time it first sends `{"type": "closing", "reason": "idle" | "max_age" | "draining"}` and lets running requests finish. Open a new one and send the whole body again.
