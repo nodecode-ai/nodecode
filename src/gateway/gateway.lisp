@@ -4860,7 +4860,13 @@ config change instead of relaunching."
     (%start-cells names))
   (refresh-attached-command-catalogs)
   (broadcast-model-changed)
-  (or (nlk:cells-report-text names) "no cells"))
+  ;; A folder named alone also says the commands it registered, so that its
+  ;; maker reads the proof here and does not go looking for the table.
+  (let ((commands (and names (loop for command in *registered-commands*
+                                   when (member (slash-command-owner command) names :test #'equal)
+                                     collect (slash-command-name command)))))
+    (format nil "~a~@[~%~{/~a~^, ~}: the commands it registered, each answering as typed~]"
+            (or (nlk:cells-report-text names) "no cells") commands)))
 
 (defun stop-clack-handler (handler &key (timeout 5))
   "Stop HANDLER's acceptor and wait for it to be gone."

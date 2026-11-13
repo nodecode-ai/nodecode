@@ -26,9 +26,14 @@
 
 (defun cell-directory (name)
   "The made cell NAME's folder under *CELLS-DIRECTORY*: <identity>-NAME/, as
-the organism's own knowledge cell is <identity>-memory. Nothing is created
-here."
-  (merge-pathnames (format nil "~a-~a/" (layer-name) name) *cells-directory*))
+the organism's own knowledge cell is <identity>-memory -- or NAME/ itself
+when NAME is already a made folder's whole name, as new-cell's output line
+writes it and no <identity>-NAME/ stands. Nothing is created here."
+  (let ((prefixed (merge-pathnames (format nil "~a-~a/" (layer-name) name) *cells-directory*))
+        (whole (and (stringp name)
+                    (uiop:string-prefix-p (format nil "~a-" (layer-name)) name)
+                    (merge-pathnames (format nil "~a/" name) *cells-directory*))))
+    (if (and whole (not (probe-file prefixed)) (probe-file whole)) whole prefixed)))
 
 (defun made-cell-name (name)
   "NAME, a made cell's name, checked: lowercase letters and digits in words

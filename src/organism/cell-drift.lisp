@@ -48,14 +48,59 @@ under the cells folder (through its links)."
      (lambda (d) (dolist (f (uiop:directory-files d "*.lisp")) (push f files))))
     files))
 
+(defun drift-expanded-keys (form)
+  "The DEFINITION-KEYs of what FORM, a toplevel form, defines once its macros
+are expanded: a DEFINE-CELL's START-CELL and SETTING, a DEFINE-PERIPHERAL's
+*STOP* and its condition's reader -- what a file defines though it never
+writes the name down."
+  ;; Walks special forms and expands macros; a call's arguments are not
+  ;; walked, nor anything quoted. Bounded, and NIL for whatever does not
+  ;; expand here: the index only ever gains names.
+  (let ((budget 2000) found)
+    (labels ((walk (form depth)
+               (when (and (consp form) (symbolp (first form)) (plusp (decf budget)) (< depth 24))
+                 (let* ((head (first form))
+                        (operator (symbol-name head)))
+                   (cond ((member head '(quote function)))
+                         ((member operator *defining-operators* :test #'string=)
+                          (when-let (key (definition-key form)) (push key found))
+                          (walk-all (cddr form) depth))
+                         ((special-operator-p head) (walk-all (rest form) depth))
+                         ((macro-function head)
+                          (multiple-value-bind (expansion expanded) (ignore-errors (macroexpand-1 form))
+                            (when expanded
+                              (when-let (key (definition-key form)) (push key found))
+                              (walk expansion (1+ depth)))))))))
+             (walk-all (forms depth)
+               (loop for tail on forms while (consp tail)
+                     do (walk (car tail) (1+ depth)))))
+      (walk form 0))
+    found))
+
+(defun drift-file-expansion-keys (file entries)
+  "The DEFINITION-KEYs that ENTRIES, FILE's (KEY START END PACKAGE), define
+through their macros' expansions; only an entry whose operator is no standard
+definition is read again."
+  (let ((text nil))
+    (loop for (key start end package) in entries
+          when (and (packagep package)
+                    (not (member (getf key :operator) *defining-operators* :test #'string=)))
+            append (ignore-errors
+                    (let ((form (let ((*package* package) (*read-eval* nil))
+                                  (read-from-string (or text (setf text (uiop:read-file-string file)))
+                                                    t nil :start start :end end))))
+                      (drift-expanded-keys form))))))
+
 (defun drift-kept-index (roots)
   "Every definition a file under ROOTS or the shipped source defines, as a
-hash of DRIFT-KEY-STRINGs."
+hash of DRIFT-KEY-STRINGs -- what a file's defining macros expand into
+included."
   (let ((index (make-hash-table :test 'equal)))
     (dolist (root roots)
       (dolist (file (ignore-errors (drift-lisp-files root)))
-        (dolist (entry (ignore-errors (file-definitions file)))
-          (dolist (s (drift-entry-strings (first entry))) (setf (gethash s index) t)))))
+        (let ((entries (ignore-errors (file-definitions file))))
+          (dolist (key (append (mapcar #'first entries) (drift-file-expansion-keys file entries)))
+            (dolist (s (drift-entry-strings key)) (setf (gethash s index) t))))))
     (let ((shipped (ignore-errors (shipped-definitions))))
       (when (hash-table-p shipped)
         (maphash (lambda (name entries)
