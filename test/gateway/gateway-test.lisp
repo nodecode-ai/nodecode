@@ -5668,39 +5668,57 @@ symbol the test's own START-GATEWAY reference reads."
   (is (zerop (nle::await-free-store #p"/tmp/nodecode-no-store/history.db"
                                     :held-p (constantly nil) :pause 0))))
 
-(deftest keep-running-writes-no-unit-for-a-home-the-system-clears (with-scripted-systemd (fake))
-  ;; A script's scratch home under /tmp started a bot, and the unit written
-  ;; for it went on running `current' in a folder long gone.
-  (with-saved-globals ((nlk:*ephemeral* nil)
-                       (nlk::*temporary-roots* (list (uiop:pathname-parent-directory-pathname
-                                                      (uiop:ensure-directory-pathname nlk:*home*)))))
-    (is (nlk:temporary-home-p) "this home reads as one the system clears")
-    (with-stubbed-fdefinition (nlk:organism-binary () "/opt/nodecode/current/nodecode")
-      (is (null (nle:keep-running "the Fake bot")) "nothing is asked of the service manager"))
-    (is (not (nlk:gateway-installed-p)) "and no unit is written")
-    (is (null (fake-systemd-calls fake)) "systemctl is never called"))
-  (with-saved-globals ((nlk::*temporary-roots* '()))
-    (is (not (nlk:temporary-home-p)) "with no such folder above it, it is a home like any")))
+(deftest keep-running-writes-no-unit-for-a-home-nodecode-does-not-name (with-scripted-systemd (fake))
+  ;; A proof's scratch home on a data disk, no folder the system clears,
+  ;; started a bot, and the unit written for it came up at every boot and
+  ;; update for a week after the proof, on a fake provider; another's went on
+  ;; answering Discord from a home its session had deleted. Only the homes
+  ;; nodecode names for the account come on by themselves.
+  (dolist (home (list #p"/srv/nodecode-proof/home-c27/" nlk:*home*))
+    (with-saved-globals ((nlk:*ephemeral* nil) (nlk:*home* home)
+                         (nle::*keep-running-told* nil))
+      (let ((said '()))
+        (nle:hook :frame "keep-running-test"
+                  (lambda (op next)
+                    (when (equal (getf op :kind) "organism.notice")
+                      (push (gethash "text" (getf op :payload)) said))
+                    (funcall next op)))
+        (is (not (nlk:gateway-by-default-p)) "a folder $NODECODE_HOME names, or the suite's own scratch home")
+        (with-stubbed-fdefinition (nlk:organism-binary () "/opt/nodecode/current/nodecode")
+          (let ((first (nle:keep-running "the Fake bot"))
+                (second (nle:keep-running "2 cron jobs")))
+            (dolist (thread (list first second))
+              (when thread (bt2:join-thread thread)))
+            (is (null first) "nothing is asked of the service manager")
+            (is (null second) "nor at a second cell's ask")))
+        (is (not (nlk:gateway-installed-p)) "no unit is written")
+        (is (null (fake-systemd-calls fake)) "systemctl is never called")
+        (is (= 1 (count-if (lambda (text) (search "nodecode gateway on" text)) said)) "the operator is told once how to keep it running")
+        (is (row-carrying "the Fake bot stops when this home's last shell closes" said))))))
 
 (deftest keep-running-turns-the-gateway-on-once-and-never-over-an-off (with-scripted-systemd (fake))
-  (with-saved-globals ((nlk:*ephemeral* t) (nlk::*temporary-roots* '()))
+  (with-saved-globals ((nlk:*ephemeral* t))
     (let ((said '()))
       (nle:hook :frame "keep-running-test"
                 (lambda (op next)
                   (when (equal (getf op :kind) "organism.notice")
                     (push (gethash "text" (getf op :payload)) said))
                   (funcall next op)))
-      (is (null (nle:keep-running "the Fake bot")) "an ephemeral organism keeps nothing running")
-      (setf nlk:*ephemeral* nil)
-      (with-stubbed-fdefinition (nlk:organism-binary () "/opt/nodecode/current/nodecode")
-        (let ((thread (nle:keep-running "the Fake bot")))
-          (is thread "the first ask turns it on, on a thread of its own")
-          (when thread (bt2:join-thread thread))))
-      (is (nlk:gateway-installed-p) "the gateway is on")
-      (is (row-carrying "keeps the Fake bot running after this shell closes" said))
-      (is (null (nle:keep-running "the Fake bot")) "once: a gateway already on is left be")
-      (nlk:gateway-off)
-      (is (null (nle:keep-running "the Fake bot")) "and never over the operator's off"))))
+      ;; the suite's scratch home standing in for one nodecode names
+      (with-stubbed-fdefinition (nlk:gateway-by-default-p (&optional home)
+                                  (declare (ignore home))
+                                  t)
+        (is (null (nle:keep-running "the Fake bot")) "an ephemeral organism keeps nothing running")
+        (setf nlk:*ephemeral* nil)
+        (with-stubbed-fdefinition (nlk:organism-binary () "/opt/nodecode/current/nodecode")
+          (let ((thread (nle:keep-running "the Fake bot")))
+            (is thread "the first ask turns it on, on a thread of its own")
+            (when thread (bt2:join-thread thread))))
+        (is (nlk:gateway-installed-p) "the gateway is on")
+        (is (row-carrying "keeps the Fake bot running after this shell closes" said))
+        (is (null (nle:keep-running "the Fake bot")) "once: a gateway already on is left be")
+        (nlk:gateway-off)
+        (is (null (nle:keep-running "the Fake bot")) "and never over the operator's off")))))
 
 (deftest resurrection-asks-systemd-when-the-gateway-supervises-the-store ()
   ;; A dirty death under the gateway is systemd's to repair: the organism
