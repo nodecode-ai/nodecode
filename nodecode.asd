@@ -782,7 +782,9 @@ of stacking."
      (:file "import/source-test")
      (:file "engine/model-id-test")
      ;; The structural lint is a script; its gates run it as `just lint' does.
-     (:file "tools/lint-structure-test"))))
+     (:file "tools/lint-structure-test")
+     ;; The Perf gate's workloads, loaded and run as perf-gate.py runs them.
+     (:file "tools/perf-bench-test"))))
   ;; Resolved at run time: the package does not exist when this form is read.
   ;; RUN-ALL is defined by support, the first file above.
   :perform (test-op (operation component)

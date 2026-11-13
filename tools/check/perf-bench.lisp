@@ -25,9 +25,13 @@
 ;;;; thread print its backtrace then, so the gate can say where it stalled.
 ;;;;
 ;;;; The workloads use the suite's own fixtures, so they stand on what every
-;;;; test stands on and move with them. A fixture this file names must exist
-;;;; in the base tree too; when it does not, the base cannot be measured and
-;;;; the gate says so (exit 2) rather than guessing.
+;;;; test stands on and move with them. A Perf process starts outside RUN-ALL,
+;;;; so PERF-RUN gives each workload the suite's posture itself
+;;;; (CALL-WITH-HERMETIC-MACHINE-STATE): no workload reads this host's caches
+;;;; or reaches the network, so no measured span carries a download. A
+;;;; fixture this file names must exist in the base tree too; when it does
+;;;; not, the base cannot be measured and the gate says so (exit 2) rather
+;;;; than guessing.
 
 (in-package #:nodecode.test)
 
@@ -135,25 +139,29 @@ HANDLE-MESSAGES, the event loop's own fold-then-paint, painting into a
 terminal that counts what it is sent. Then sit still for
 +PERF-IDLE-SECONDS+ while the frame clock ticks, outside the measured spans:
 an idle shell owes its terminal nothing."
-  (with-frame-model (model 120 40 :session-id "perf-tui")
-    (seed-long-transcript model 4000)
-    (let ((program (nlt:make-program model))
-          (terminal (make-instance 'perf-terminal)))
-      (flet ((press (code) (nlt::handle-messages program (list (nlt:make-key-press-msg :code code)))))
-        (setf (nlt::renderer-output-stream (nlt::program-renderer program)) terminal)
-        (nlt::handle-messages program (list (nlt:make-window-size-msg :width 120 :height 40)))
-        (measured
-          (with-terminal-counted (terminal :keys)
-            (map nil #'press +perf-typed+))
-          (with-terminal-counted (terminal :scroll)
-            (dotimes (i 20) (press :page-up))
-            (dotimes (i 20) (press :page-down))))
-        ;; The frame clock's own pace (RUN-FRAME-CLOCK), each tick one batch.
-        (with-terminal-counted (terminal :idle)
-          (let ((period (float nle::*frame-clock-period-seconds* 1d0)))
-            (dotimes (i (round +perf-idle-seconds+ period))
-              (sleep period)
-              (nlt::handle-messages program (list (nlt:make-tick-msg))))))))))
+  ;; A terminal's own profile, whatever the runner's TERM: what the TUI is
+  ;; held to includes the colour it paints, under a posture whose :NONE
+  ;; would hide a frame that repaints its SGR.
+  (let ((nle::*color-profile* :truecolor))
+    (with-frame-model (model 120 40 :session-id "perf-tui")
+      (seed-long-transcript model 4000)
+      (let ((program (nlt:make-program model))
+            (terminal (make-instance 'perf-terminal)))
+        (flet ((press (code) (nlt::handle-messages program (list (nlt:make-key-press-msg :code code)))))
+          (setf (nlt::renderer-output-stream (nlt::program-renderer program)) terminal)
+          (nlt::handle-messages program (list (nlt:make-window-size-msg :width 120 :height 40)))
+          (measured
+            (with-terminal-counted (terminal :keys)
+              (map nil #'press +perf-typed+))
+            (with-terminal-counted (terminal :scroll)
+              (dotimes (i 20) (press :page-up))
+              (dotimes (i 20) (press :page-down))))
+          ;; The frame clock's own pace (RUN-FRAME-CLOCK), each tick one batch.
+          (with-terminal-counted (terminal :idle)
+            (let ((period (float nle::*frame-clock-period-seconds* 1d0)))
+              (dotimes (i (round +perf-idle-seconds+ period))
+                (sleep period)
+                (nlt::handle-messages program (list (nlt:make-tick-msg)))))))))))
 
 ;;; --- the gateway: starting it, and turns streamed through it ---------------
 
@@ -234,7 +242,9 @@ prints every thread's backtrace (PERF-BACKTRACES)."
                                (declare (ignore signal info context))
                                (perf-backtraces)))
     (flet ((run ()
-             (funcall (cdr entry))
+             ;; Outside it a stale models.dev cache under PERF_HOME made the
+             ;; turns workload's first turn start a fetch in its measured span.
+             (call-with-hermetic-machine-state (cdr entry))
              (with-open-file (s out :direction :output :if-exists :supersede)
                (with-standard-io-syntax (prin1 *perf-spans* s) (terpri s)))))
       (if ctl
