@@ -194,6 +194,20 @@ LISTEN-HOST took, both closed on the way out."
                 (is (typep outcome 'sb-sys:deadline-timeout) "a deadline's handler takes it too")
                 (is (< (nlk:elapsed-ms start) 3000) "cut at its one second, not the peer's five")))))))))
 
+#+win32
+(deftest dial-a-default-context-on-windows-trusts-the-systems-roots ()
+  ;; OpenSSL's default location on Windows is empty: the roots come from the
+  ;; system store, or a socket of the image's own verifies against nothing.
+  (cl+ssl:ensure-initialized)
+  (with-saved-globals ((nlk::*client-contexts* '()))
+    (let* ((context (cl+ssl:make-context :verify-mode cl+ssl:+ssl-verify-peer+ :verify-location :default))
+           (objects (cffi:foreign-funcall "X509_STORE_get0_objects"
+                                          :pointer (cffi:foreign-funcall "SSL_CTX_get_cert_store"
+                                                                         :pointer context :pointer)
+                                          :pointer)))
+      (is (> (cffi:foreign-funcall "OPENSSL_sk_num" :pointer objects :int) 10) "the store holds the system's roots")
+      (cl+ssl::ssl-ctx-free context))))
+
 (deftest dial-client-contexts-share-one-store-per-verify-mode ()
   ;; Every HTTPS connection dexador opens asks for a context: at the default
   ;; location it is one per verify mode, and a caller's free leaves it whole.

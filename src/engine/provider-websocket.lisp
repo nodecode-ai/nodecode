@@ -245,7 +245,9 @@ long is pinged."
     (handler-case (progn (wsd:start-connection client) line)
       (error (condition)
         (let ((status (websocket-refusal-status condition)))
-          (note-phase "ws down status=~a ~a" status url)
+          (note-phase "ws down status=~a ~a ~a" status url
+                      (let ((text (remove #\Newline (princ-to-string condition))))
+                        (subseq text 0 (min 160 (length text)))))
           (setf (gethash key *websocket-down*)
                 (if (member status '(401 403 404))
                     t
