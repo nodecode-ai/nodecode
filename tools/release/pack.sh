@@ -130,7 +130,23 @@ fi
 # glibc has (patch 0006 removes the one such call). Built once per build.sh
 # and patches -- this revision's copies -- with the box's sbcl as the host,
 # tested where the patches touch the runtime, and kept under the cache.
+#
+# One pack at a time readies the build home. Its SBCL cache, quicklisp and
+# pinned dist are shared by every pack on it -- CI's Linux runners and a
+# Release rehearsal share one box and one build home -- and two packs that
+# both found the SBCL missing built into one `.new' folder: the second's wipe
+# deleted the first one's half-built SBCL, or the finished one it was already
+# building on, and quicklisp's first install and its dist had the same race.
+# The lock is held until the toolchain is whole, so a second pack waits and
+# then finds it built; the release build itself runs beside other packs.
 if [ "$os" = linux ]; then
+  command -v flock >/dev/null 2>&1 \
+    || { echo "pack: flock (util-linux) keeps two packs from readying one build home at once; install it" >&2; exit 1; }
+  exec 9> "$build_home/toolchain.lock"
+  if ! flock -n 9; then
+    echo "pack: another pack is readying the toolchain in $build_home; waiting for it" >&2
+    flock 9
+  fi
   key="$(cat "$sys/tools/build/sbcl/build.sh" "$sys"/tools/build/sbcl/patches/* | sha256sum | cut -d' ' -f1)"
   sbcl="${XDG_CACHE_HOME:-$HOME/.cache}/nodecode-sbcl/$key"
   if [ ! -x "$sbcl/bin/sbcl" ]; then
@@ -152,12 +168,16 @@ if [ "$os" = linux ]; then
     curl -fsSLo "$work/quicklisp.lisp" https://beta.quicklisp.org/quicklisp.lisp
     sbcl --noinform --non-interactive --no-userinit --load "$work/quicklisp.lisp" --eval '(quicklisp-quickstart:install)'
   fi
+  # Written whole and moved in: a pack already past the lock reads it as its
+  # SBCL starts, and a truncated file would start it without quicklisp.
   printf '%s\n' '(let ((quicklisp-init (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))' \
-    '  (when (probe-file quicklisp-init) (load quicklisp-init)))' > "$HOME/.sbclrc"
+    '  (when (probe-file quicklisp-init) (load quicklisp-init)))' > "$HOME/.sbclrc.$$"
+  mv "$HOME/.sbclrc.$$" "$HOME/.sbclrc"
   sbcl --noinform --non-interactive \
     --eval "(unless (equal (ql-dist:version (ql-dist:find-dist \"quicklisp\")) \"$dist\") (ql-dist:install-dist \"http://beta.quicklisp.org/dist/quicklisp/$dist/distinfo.txt\" :replace t :prompt nil))"
   ( cd "$sys" && sbcl --dynamic-space-size 4096 --control-stack-size 8MB --noinform --non-interactive \
       --eval '(push (truename ".") asdf:*central-registry*)' --eval '(ql:quickload "nodecode" :silent t)' >/dev/null )
+  exec 9>&-
 fi
 
 ( cd "$work" && NODECODE_BUILD_COMMIT="$label" just release )
