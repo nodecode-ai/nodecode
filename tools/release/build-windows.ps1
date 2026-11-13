@@ -5,7 +5,8 @@
 .DESCRIPTION
   Run from anywhere on a Windows machine with SBCL (x86-64) on PATH and Git
   for Windows installed. With SBCL 2.6.8 the image is dumped on that
-  release's runtime patched to map its core (sbcl-win\build-runtime.sh).
+  release's runtime patched to map its core and to find it in a signed
+  executable (sbcl-win\build-runtime.sh).
   Installs quicklisp for the current user when it is missing, fetches libsqlite3.dll beside the tree when it is missing, loads
   tools/release/windows-release.lisp in a fresh SBCL with the release heap
   settings, then lays the three DLLs the image loads at run time beside the
