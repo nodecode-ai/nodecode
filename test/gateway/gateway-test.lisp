@@ -3596,6 +3596,39 @@ request."
       (is-route (port :post "/api/gateway/auxiliary-model" :body "{}") 400
                 "an absent model is no clear" "invalid_request"))))
 
+(deftest a-pick-the-config-says-answers-no-shared-config-error ()
+  ;; A pick that landed in the shared config answers "written" and no
+  ;; shared_config_error. PERSIST-SHARED-CONFIG answers a write with its diff
+  ;; as one line -- `general.auxiliary_model: unchanged' when the file said
+  ;; it already -- and the routes put that line in the error field whatever
+  ;; the outcome, so every save that worked read as one that failed. Only a
+  ;; write that did not land says why there.
+  (with-saved-globals (nle::*auxiliary-model*)
+    (with-selection-gateway (path port "noop-shell")
+      (let ((routes '("/api/gateway/auxiliary-model" "/api/gateway/model"
+                      "/api/gateway/sessions/noop-shell/model"))
+            (pick "{\"provider\":\"openai-completions\",\"model\":\"picked\"}")
+            (answers '()))
+        ;; each route twice: the first pick moves the file, the second finds it saying so
+        (dolist (route routes)
+          (dotimes (_ 2)
+            (with-gateway-http (port :post route :body pick :status 200)
+              (push (list route (gethash "shared_config" body)
+                          (gethash "shared_config_error" body))
+                    answers))))
+        (is (every (lambda (answer) (equal "written" (second answer))) answers) "every pick is written")
+        (is (null (remove nil answers :key #'third)) "and none answers a shared_config_error")
+        (is (equal "picked" (config-pin path "auxiliary_model" "model")))
+        ;; a write that did not land still says why, on every route
+        (with-stubbed-fdefinitions
+            ((nle::persist-shared-config (keys value &key file)
+               (declare (ignore keys value file))
+               (values :failed "the disk is full")))
+          (dolist (route routes)
+            (with-gateway-http (port :post route :body pick :status 200)
+              (is-shape body ("shared_config" "failed")
+                ("shared_config_error" "the disk is full")))))))))
+
 (deftest gateway-decider-model-pins-general-decider-model ()
   ;; The Decider tab and /models decider land one fact through one route:
   ;; general.decider_model, the {provider, model} pin naming a decider. An id
