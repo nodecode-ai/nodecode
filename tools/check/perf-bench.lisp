@@ -29,8 +29,9 @@
 ;;;; so PERF-RUN gives each workload the suite's posture itself
 ;;;; (CALL-WITH-HERMETIC-MACHINE-STATE): no workload reads this host's caches
 ;;;; or reaches the network, so no measured span carries a download. A
-;;;; fixture this file names must exist in the base tree too; when it does not, the base cannot be measured and
-;;;; the gate says so (exit 2) rather than guessing.
+;;;; fixture this file names must exist in the base tree too; when it does
+;;;; not, the base cannot be measured and the gate says so (exit 2) rather
+;;;; than guessing.
 
 (in-package #:nodecode.test)
 
