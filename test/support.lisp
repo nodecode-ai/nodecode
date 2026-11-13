@@ -71,6 +71,9 @@ operator file."
         ;; also what keeps a /models test from spawning a fetch thread.
         (nodecode.evolved::*provider-models-cache-path* nil)
         (nodecode.evolved::*context-tokens-env-override* nil)
+        ;; nodecode.ai's chat lane dials its WebSocket: no test reaches the
+        ;; real host; a WebSocket test binds its loopback mock's.
+        (nodecode.evolved::*websocket-hosts* '())
         ;; The frame guard signals instead of repairing: every gate that
         ;; composes a frame asserts the display authority's contract (every
         ;; row exactly the terminal width, no ESC the shell did not write).

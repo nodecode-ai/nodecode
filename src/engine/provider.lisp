@@ -5326,6 +5326,8 @@ of waiting for bytes off the socket."
          (error 'provider-error :scope :request
                 :detail (transport-failure-label ,e ,address))))))
 
+(declaim (ftype function websocket-post))
+
 (defvar *replay-request-json* nil
   "Octets WALK-PROVIDER-STREAM posts in place of the request the lane built:
 a cache refresh repeating a round's exact bytes on that round's own lane, its
@@ -5399,6 +5401,7 @@ functions below."
     (multiple-value-bind (stream status response-headers)
         (with-idle-cut (seconds)
             (with-read-deadline (seconds)
+             (block post-or-socket
               (flet ((post (whole)
                        (multiple-value-bind (content content-headers)
                            (body-wire endpoint request-json session :whole whole)
@@ -5434,6 +5437,16 @@ functions below."
                                      ;; its clock, with the socket in hand.
                                      :force-binary t
                                      :use-connection-pool t)))))
+                ;; nodecode.ai's own API rides its WebSocket when the socket is
+                ;; there for it (provider-websocket.lisp), and HTTP otherwise.
+                (multiple-value-bind (stream status response-headers)
+                    (websocket-post endpoint request-json
+                                    (with-user-agent
+                                     (with-app-attribution
+                                      endpoint (append headers (credential-attribute config :headers))))
+                                    config session)
+                  (when stream
+                    (return-from post-or-socket (values stream status response-headers))))
                 ;; A relay that no longer holds the base (restarted, or past its
                 ;; budget) says so with 412: the body goes again against nothing,
                 ;; which rebuilds from the delta alone.
@@ -5445,7 +5458,7 @@ functions below."
                             (post t)
                             (error e))))
                   (note-body-wire endpoint request-json session response-headers)
-                  (values stream status response-headers))))
+                  (values stream status response-headers)))))
           (error (or (attempt-cut-condition :scope :request
                                             :evidence-request-body (bounded-evidence request-json))
                      (make-condition 'provider-error :scope :request
