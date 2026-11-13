@@ -127,8 +127,23 @@ if ($Version -and $Version -cnotmatch '^[A-Za-z0-9_+-][A-Za-z0-9._+-]{0,62}$') {
 # in a fifth of the time over a quarter less wire, and the zip every release
 # before that one carries - and that an installer older than this one reads.
 # Get-Release tries them in that order and says which it took.
+# The tar.zst is tried only where tar.exe reads zstd itself. Windows 10's
+# bsdtar (3.5.2) carries no libzstd: it hands the archive to a `zstd -d -qq`
+# that Windows does not ship, and the one-liner stopped at "Can't initialize
+# filter; unable to run program" (2026-11-13). Windows 11's tar names
+# libzstd in its banner; anything else - an older bsdtar, a GNU tar earlier
+# on the PATH, no tar at all - takes the zip, which .NET unpacks everywhere.
+function Test-TarReadsZstd {
+  if (-not (Get-Command tar.exe -ErrorAction SilentlyContinue)) { return $false }
+  try { $banner = (& tar.exe --version 2>$null) | Out-String } catch { return $false }
+  return $banner -match 'libzstd/'
+}
+
 function Get-ArchiveNames([string]$label) {
-  return @("nodecode-$label-x86_64-windows.tar.zst", "nodecode-$label-x86_64-windows.zip")
+  $zip = "nodecode-$label-x86_64-windows.zip"
+  if (Test-TarReadsZstd) { return @("nodecode-$label-x86_64-windows.tar.zst", $zip) }
+  Say "this Windows' tar.exe reads no zstd; taking the zip"
+  return @($zip)
 }
 
 function Say([string]$text) { Write-Host "nodecode: $text" }
