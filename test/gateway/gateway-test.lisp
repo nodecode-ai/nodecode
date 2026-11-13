@@ -1234,6 +1234,50 @@ gate can send any Host, or none."
         (is (= 200 (raw-gateway-status port "/t-big" (format nil "Host: 127.0.0.1:~d" port)))))
       (is-route (port :get "/healthz" :token nil) 200 "and the gateway still answers"))))
 
+(defun raw-gateway-call (stream method path body &rest headers)
+  "Send one request carrying BODY and HEADERS on STREAM, a connection that
+stays open, and read its whole answer => its status, or :CLOSED when the
+gateway hung up instead."
+  (let ((crlf (coerce '(#\Return #\Newline) 'string)))
+    (handler-case
+        (progn
+          (format stream "~a ~a HTTP/1.1~a~{~a~a~}Content-Length: ~d~a~a~a"
+                  method path crlf (loop for header in headers append (list header crlf))
+                  (length body) crlf crlf body)
+          (force-output stream)
+          (let ((status (parse-integer (second (uiop:split-string (read-line stream) :separator " "))))
+                (length 0))
+            (loop for line = (string-right-trim '(#\Return) (read-line stream))
+                  until (zerop (length line))
+                  do (when (uiop:string-prefix-p "content-length:" (string-downcase line))
+                       (setf length (parse-integer line :start 15))))
+            (read-sequence (make-string length) stream)
+            status))
+      ((or stream-error end-of-file) () :closed))))
+
+(deftest a-body-its-route-never-reads-leaves-the-connection-to-the-next-request
+    (with-temp-gateway (port))
+  ;; /models' Test posts `{}' and its route reads none of it. Those bytes
+  ;; stayed on the keep-alive connection and the next request was read from
+  ;; them: the second call on it answered an HTTP/1.0 400, which PowerShell
+  ;; reports as a protocol violation.
+  (nlk:with-cleanup ((nle:route "/t-ignores-its-body" nil))
+    (nle:route "/t-ignores-its-body" (lambda (env) (declare (ignore env)) (nlk:json-object "ok" t))
+               :public t)
+    (let ((socket (usocket:socket-connect "127.0.0.1" port :element-type 'character)))
+      (nlk:with-cleanup ((usocket:socket-close socket))
+        (flet ((call (method path &optional (body ""))
+                 (raw-gateway-call (usocket:socket-stream socket) method path body
+                                   (format nil "Host: 127.0.0.1:~d" port)
+                                   "Authorization: Bearer test-token"
+                                   "Content-Type: application/json")))
+          (is (eql 200 (call "POST" "/api/gateway/failover/test" "{}")))
+          (is (eql 200 (call "GET" "/api/gateway/auxiliary-model")) "the next request on the connection is read from its own first byte")
+          (is (eql 200 (call "POST" "/t-ignores-its-body" (make-string 100000 :initial-element #\x))))
+          (is (eql 200 (call "GET" "/healthz")) "and a body many reads long")
+          (is (eql 400 (call "POST" "/api/gateway/auxiliary-model" "{\"provider\":\"nope\"}")) "a route that reads its body still answers from it")
+          (is (eql 200 (call "GET" "/healthz")) "and the connection serves on"))))))
+
 (deftest the-gateway-logs-to-standard-error-never-the-stream-it-started-under ()
   ;; A cold cell compile on a connection's thread ends in `undefined
   ;; variable' warnings, and hunchentoot logged each one to the stream the
