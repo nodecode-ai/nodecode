@@ -146,3 +146,12 @@
     (is (equal '(:kinds ("a" "b") :bare nil) (settings "{}")))
     (is (equal '(:kinds ("c") :bare ("d")) (settings "{\"kinds\": [\"c\"], \"bare\": [\"d\"]}")))
     (is (equal '(:kinds nil :bare nil) (settings "{\"kinds\": []}")))))
+
+(deftest index-section-takes-a-names-only-hot-budget ()
+  ;; A small index is a choice, not a fault.  The section is fresh bytes at the
+  ;; head of every conversation, and a refused budget costs the operator the
+  ;; whole index -- PIN-INDEX-SECTION errors and the round runs without one --
+  ;; rather than the names-only section asked for.
+  (is (= 120 (getf (nlk:section-settings (nlk:find-section '("index"))
+                                         (shasht:read-json "{\"hot_budget\": 120}"))
+                   :hot-budget))))
