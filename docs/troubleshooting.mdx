@@ -99,6 +99,8 @@ nodecode gateway                 # state, pid, port, uptime, build
 | `waiting for another install into ...` | A second install into the same home is running. | Wait. It goes on when the first ends. |
 | `another install still holds ... (pid ...); remove it if none runs` | An install left its lock behind. | If no install runs, remove `~/.local/share/nodecode/.install-lock`. |
 | `nodecode-LABEL-x86_64-windows.tar.zst is not published for this release` on Windows | The release has only the zip. | None. It goes on with the zip. |
+| `this Windows' tar.exe reads no zstd; taking the zip` | Windows 10's tar cannot unpack the tar.zst. | None. It goes on with the zip. |
+| `Can't initialize filter; unable to run program "zstd -d -qq"` on Windows | An installer through 0.1.15 took the tar.zst on Windows 10, whose tar cannot unpack it. `nodecode update` runs the installer the installed build carries, so it fails the same way. | Run `irm https://nodecode.ai/install.ps1 \| iex` again. The current installer takes the zip there. |
 | `no stable release is published for ...` | The channel pointer did not answer. | Check the network and `NODECODE_BASE_URL`. |
 | `'nodecode' on your PATH is NOT the build just installed` | An older `nodecode` comes first on PATH. | Remove it, or put `~/.local/bin` ahead of it. |
 | `nodecode: command not found` after install | `~/.local/bin` is not on PATH. | Add the line the installer printed. Open a new shell. |
