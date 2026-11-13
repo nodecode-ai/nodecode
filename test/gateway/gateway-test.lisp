@@ -4338,9 +4338,30 @@ request."
         (let ((said (with-output-to-string (*standard-output*)
                       (is (eq :lost (nle:serve-organism-candidate :store-path path))))))
           ;; Quietly is no error, never no word: silent, it read as a hang (#226).
-          (is (search "election lost: pid" said) "the store's log says why it did not serve"))
+          (is (search "election lost: pid" said) "the store's log says why it did not serve")
+          (is (not (search "gateway ready" said)) "a loser never says it was ready"))
         (is (not (probe-file (nlk::lease-path-for-store path))))
         (is (not (probe-file path)))))))
+
+(deftest a-serve-that-loses-the-election-boots-nothing ()
+  ;; `nodecode serve' beside a live owner loses before its boot. Booted first,
+  ;; it pointed the home's cell installs at its own build
+  ;; (REFRESH-INSTALLED-CELLS), said it was ready, and only then lost: the
+  ;; owner's next cell load read another build's tree.
+  (with-temp-directory (dir "serve-lost-boots-nothing")
+    (let ((path (merge-pathnames "history.db" dir))
+          (touched '()))
+      (with-lock-holder ((nlk::lock-path-for-store path))
+        (with-stubbed-fdefinitions ((nlk:boot-cells (&rest args)
+                                      (push :boot-cells touched) nil)
+                                    (nle::follow-restore-pointer ()
+                                      (push :restore-pointer touched) nil))
+          (let ((said (with-output-to-string (*standard-output*)
+                        (is (eq :lost (nle::launch-headless t nil nil path nil))))))
+            (is (null touched) "the loser touches nothing of the home")
+            (is (search "election lost: pid" said) "it says why it did not serve")
+            (is (not (search "gateway ready" said)) "it never says it was ready"))))
+      (is (not (probe-file path)) "the store is untouched"))))
 
 (deftest a-candidate-that-loses-the-election-takes-its-receipt
     (with-saved-globals ((nlk:*pristine* nil) (nlk::*pristine-reason* nil)))
