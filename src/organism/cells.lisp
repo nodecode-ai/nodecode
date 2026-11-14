@@ -2516,7 +2516,7 @@ directory down: <source>/../fasl/, beside the folders they compile from."
         (error "Not a regular file for content key: ~a" path))
       (let ((in (sb-sys:make-fd-stream fd :input t :element-type '(unsigned-byte 8)
                                         :buffering :full :auto-close nil)))
-        (alexandria:read-stream-content-into-byte-vector in :initial-size (max 1 (file-length in))))))
+        (alexandria:read-stream-content-into-byte-vector in))))
   #+win32
   (or (file-octets path) (error "Cannot read file for content key: ~a" path)))
 
