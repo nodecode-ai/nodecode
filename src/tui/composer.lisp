@@ -286,8 +286,10 @@ workspace and folder paths (TOKEN-SUGGESTIONS-FOR).")
   "Where a profile moves a lane to another sigil: a JSON object of lane name to
 one character, e.g. {\"file\": \"&\"}. NIL disables overrides; tests bind.")
 
-(defvar *composer-sigils-read* nil
-  "(PATH . TABLE): the sigil table last read, and the path it was read from.")
+(define-startup-parameter *composer-sigils-read* nil
+  "(PATH . TABLE): the sigil table last read, and the path it was read from.
+Forget it at image start: a warm image may have read a table whose path is
+unchanged but whose bytes have since changed.")
 
 (defun composer-sigil-char-p (char)
   "Whether CHAR can open a lane: printable punctuation other than the slash

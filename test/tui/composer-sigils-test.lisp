@@ -11,6 +11,7 @@
 ;;;;   4. An unusable override (several characters, a letter, a digit,
 ;;;;      whitespace, the slash lane's /, an unknown lane, broken JSON) leaves
 ;;;;      the default in force.
+;;;;   5. Every image start discards a cached table, even at the same path.
 
 (in-package #:nodecode.test)
 
@@ -65,3 +66,27 @@
                    (mapcar #'nle::composer-suggestion-text (nle::token-suggestions-for model))))
         (press model :tab)
         (is-composer model "mail a@sr &src/main.lisp " "Tab completes the token after the moved sigil")))))
+
+(deftest composer-sigils-cached-table-is-fresh-at-every-image-start ()
+  ;; A cell can populate the table before a warm image is saved. Its path
+  ;; may stay the same on restart; its bytes need not. Run only this startup
+  ;; parameter here so the test's private home/path bindings remain in force.
+  (with-temp-file (nle::*composer-sigils-path* :contents "{\"file\": \"&\"}")
+    (let ((nlk::*startup-parameters*
+            (remove-if-not (lambda (entry) (eq (car entry) 'nle::*composer-sigils-read*))
+                           nlk::*startup-parameters*)))
+      (is (= 1 (length nlk::*startup-parameters*)) "the cache has one startup reset")
+      (is (eql #\& (nle::composer-sigil :file)))
+      (write-temp-file nle::*composer-sigils-path* "{\"file\": \"^\"}")
+      (is (eql #\& (nle::composer-sigil :file)) "a running shell keeps its table")
+      (nlk:resolve-startup-parameters)
+      (is (null nle::*composer-sigils-read*) "a restored image forgets the saved table")
+      (is (eql #\^ (nle::composer-sigil :file)) "next launch reads changed bytes at the same path")
+      (delete-file nle::*composer-sigils-path*)
+      (nlk:resolve-startup-parameters)
+      (is (eql #\@ (nle::composer-sigil :file)) "removing the override restores the default"))))
+
+(deftest composer-sigils-moved-lane-opens-after-all-whitespace ()
+  (with-temp-file (nle::*composer-sigils-path* :contents "{\"file\": \"&\"}")
+    (dolist (separator '(#\Space #\Tab #\Newline #\Return))
+      (is (equal "src" (nle::composer-lane-filter (format nil "see~c&src" separator) :file))))))
