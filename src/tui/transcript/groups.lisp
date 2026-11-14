@@ -171,9 +171,38 @@ otherwise."
        (some #'row-image-plist round)
        round))
 
-(defun group-rows (rows &optional (context rows) backgrounds)
+(nlk:define-side-table group-rows-memo (:weakness :key)
+  "Weak memo: CONTEXT's own list cells (TRANSCRIPT-ROWS' ALL, kept EQ by
+TRANSCRIPT-ROWS-MEMO across a streamed delta) -> (GROWTH ENDED NEWEST
+NEWEST-CALL), GROUP-ROWS' last walk of CONTEXT for a NEWEST-ROW-GROWTH-MARK
+and the (ENDED NEWEST NEWEST-CALL) it found, so a render whose CONTEXT and
+live growth are both unchanged answers them again rather than walk every
+row of a transcript long past its tail window for the same three facts.")
+
+(defun newest-row-growth-mark (state)
+  "An object EQ only while STATE's newest tail row has streamed no further:
+the row itself consed with its TEXT-REV, read from the bounded (<=16) tail
+window, never from a walk of history. A streamed delta whose first words are
+blank (a leading space or newline, which models send often) leaves CONTEXT's
+own list cells EQ and never earns a place in NEWEST on the render that saw
+only the blank, since ASSISTANT-TEXT-P's BLANK-CHAR-P guard skips it; later
+deltas then grow that same row in place, and CONTEXT stays EQ, so
+GROUP-ROWS-MEMO must see the growth some other way, or it serves the walk
+that found no words forever. The row's own TEXT-REV (bumped on every
+in-place append, INGEST-STREAM-BODY) is that other way: consed with the row
+itself so a new newest row (a fresh tail row opened, which also changes
+CONTEXT's own identity, since APPEND-TAIL-ROW rebuilds TAIL_ROWS) is never
+mistaken for the old one's growth."
+  (when (hash-table-p state)
+    (let ((newest (car (last (gethash "tail_rows" state '())))))
+      (and newest (cons newest (transcript-row-text-rev newest))))))
+
+(defun group-rows (rows &optional (context rows) backgrounds state)
   "ROWS as projection items, in order: a row, or a TOOL-GROUP for each run
-of routine calls. Reflection recaps appear only in the Developer viewport."
+of routine calls. Reflection recaps appear only in the Developer viewport.
+STATE, when given, is where the live tail's newest row is read from for the
+in-place-growth memo guard (NEWEST-ROW-GROWTH-MARK); without it (a caller
+holding only rows, e.g. a test) the memo still answers the EQ guard alone."
   ;; A Developer run holds consecutive calls of one turn that group
   ;; (ACTIVITY-GROUPABLE-P) and, while thoughts are folded, the thoughts between them;
   ;; a thought after a run's last call stays its own item. Anything else breaks
@@ -199,25 +228,44 @@ of routine calls. Reflection recaps appear only in the Developer viewport."
   ;; the turn runs, its newest finished thought stands under the live bar
   ;; (the THOUGHT the run holds, LIVE-THOUGHT-ROWS). CONTEXT carries the
   ;; turns' ends and words even for a partial projection.
-  (let ((standard (eq *tool-detail* :standard))
-        (items '())
-        (run '())
-        (held '())
-        (aside '())
-        (recap nil)
-        ;; ENDED: the turns that have. NEWEST: each turn's newest words.
-        (ended (make-hash-table :test #'equal))
-        (newest (make-hash-table :test #'equal))
-        ;; The newest call made: an ended turn's round that holds it keeps
-        ;; standing while a picture stands in it (PICTURE-ROUND).
-        (newest-call (and (eq *tool-detail* :standard)
-                          (find :tool-call context :key #'transcript-row-kind :from-end t))))
-    (when standard
+  (let* ((standard (eq *tool-detail* :standard))
+         (items '())
+         (run '())
+         (held '())
+         (aside '())
+         (recap nil)
+         ;; ENDED, NEWEST and NEWEST-CALL are CONTEXT's alone -- which turns
+         ;; have ended, each turn's newest words, the newest call made -- so a
+         ;; render whose CONTEXT is EQ to the last one standard projected (a
+         ;; streamed delta grows a row's text in place, never CONTEXT's own
+         ;; list cells: TRANSCRIPT-ROWS-MEMO) answers the very tables that
+         ;; walk found rather than pay to walk every row of a transcript long
+         ;; past its tail window again for the same answer. A row whose
+         ;; outcome or turn-id changed changes no row CONTEXT already holds in
+         ;; place (a fact lands as a new row, PROMOTE or EVICT moves CONTEXT's
+         ;; own cons cells) -- but a row already CONTEXT's newest can still
+         ;; grow its own TEXT in place without ever entering NEWEST (its first
+         ;; delta was blank, so ASSISTANT-TEXT-P's guard skipped it then), so
+         ;; CONTEXT's identity alone is not quite the guard: the live growth
+         ;; mark below is, read from STATE's own tail window (bounded, never
+         ;; a walk of CONTEXT). A caller with no STATE to give (a test
+         ;; reading rows straight) gets no fast path rather than a guard that
+         ;; cannot tell NIL-because-no-state from NIL-because-no-tail-row.
+         (growth (and standard state (newest-row-growth-mark state)))
+         (memo (and standard state (group-rows-memo context)))
+         (memo (and memo (equal growth (first memo)) memo))
+         (ended (if memo (second memo) (make-hash-table :test #'equal)))
+         (newest (if memo (third memo) (make-hash-table :test #'equal)))
+         (newest-call (if memo (fourth memo)
+                          (and standard
+                               (find :tool-call context :key #'transcript-row-kind :from-end t)))))
+    (when (and standard (not memo))
       (dolist (row context)
         (when-let (turn row.turn-id)
           (cond (row.outcome (setf (gethash turn ended) t))
                 ((and (assistant-text-p row) (position-if-not #'blank-char-p row.text))
-                 (setf (gethash turn newest) row))))))
+                 (setf (gethash turn newest) row)))))
+      (setf (group-rows-memo context) (list growth ended newest newest-call)))
     (labels ((alone (row) (close-run) (forget-row-groups row) (push row items))
              (close-run ()
                (when run
@@ -962,7 +1010,7 @@ without a call row remain live-only blocks, in their registry order."
          (rows (loop for row in selected until (eq row end)
                      unless (eq :pending-input (transcript-row-kind row)) collect row)))
     (append
-     (loop for item in (group-rows rows all backgrounds)
+     (loop for item in (group-rows rows all backgrounds state)
            for exec = (transcript-background-row item backgrounds)
            for block = (if (tool-group-p item) (tool-group-display-block item width backgrounds)
                            (row-display-block (or exec item) :width width))

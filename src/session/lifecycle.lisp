@@ -406,11 +406,65 @@ order."
         do (setf (gethash turn-id set) t)
         finally (return set)))
 
+(defun turn-started-parent-id (session-id turn-id)
+  "TURN-ID's own PARENT-TURN-ID, one indexed TURN.STARTED row — NIL at root,
+NIL (indistinguishable) when TURN-ID is a version-1 row or carries none."
+  ;; :AS :PAYLOAD already decodes the payload column (EVENTS); a second
+  ;; DECODE-EVENT-PAYLOAD-OBJECT here would hand it an object, not the text
+  ;; it reads.
+  (if-let (payload (events :session-id session-id :turn-id turn-id
+                           :kind +kind-turn-started+ :as :payload))
+    (json-value payload :string "parent-turn-id")))
+
+(defvar *turn-chain-depth-memo* (make-hash-table :test #'equal :synchronized t)
+  "SESSION-ID -> (TURN-ID . DEPTH) of the last TURN-CHAIN-DEPTH answered for
+it: process-local, never the answer itself — a miss or a mismatched parent
+falls to the real walk below, so a cold cache, a session another process
+just as soon wrote a turn to, or an actual branch costs nothing but that
+walk, same as before this existed.
+
+Nothing here runs inside a store transaction to serialize access for us —
+ADMIT-TURN takes one for the log append, but TURN-CHAIN-DEPTH is called
+afterwards, by both call sites (COMPLETE-TURN; APPEND-TURN-TERMINAL-ROWS),
+outside that transaction, and this process alone may run either from more
+than one thread — so every read and write below takes the table's own lock
+(SB-EXT:WITH-LOCKED-HASH-TABLE, :SYNCHRONIZED for), the same discipline
+SESSION-VISIBLE-TURN-SET's *VISIBLE-TURN-SETS* already uses: a lock around
+each operation, not a transaction around the read-check-write, since a
+race there costs at worst a discarded answer and the full walk, same as a
+cold cache.
+
+Never pruned:
+it holds exactly one cons per session this process has completed a turn
+of, so it grows with how many sessions a long-lived process serves, not
+with any session's own length — the same bound *GATEWAY-SESSIONS* and its
+kin already live with.")
+
 (defun turn-chain-depth (session-id turn-id)
   "Count of turns on TURN-ID's ancestor chain, TURN-ID inclusive."
-  ;; The chain set IS the chain, so its count is the depth.
-  (hash-table-count
-   (chain-set-from (session-turn-parents session-id) turn-id)))
+  ;; Admitting a session's Nth turn walks all N-1 before it (SESSION-TURN-
+  ;; PARENTS reads every TURN.STARTED) to answer what is, on the hot path
+  ;; both call sites take — completing the very turn ADMIT-TURN just admitted
+  ;; — one more than the depth already known: nothing else can have admitted
+  ;; a turn to this session since (the single-active-turn invariant), so
+  ;; TURN-ID's own PARENT-TURN-ID is the cached entry exactly when the chain
+  ;; grew by one plain step, verified by the one indexed read
+  ;; TURN-STARTED-PARENT-ID already costs — never trusted on the cache's say
+  ;; alone. Anything else (a branch, a retry, a cold cache, a sibling
+  ;; process) misses and pays the full walk, same as always.
+  (let ((memo (sb-ext:with-locked-hash-table (*turn-chain-depth-memo*)
+                (gethash session-id *turn-chain-depth-memo*))))
+    (if (and memo (equal (turn-started-parent-id session-id turn-id) (car memo)))
+        (let ((depth (1+ (cdr memo))))
+          (sb-ext:with-locked-hash-table (*turn-chain-depth-memo*)
+            (setf (gethash session-id *turn-chain-depth-memo*) (cons turn-id depth)))
+          depth)
+        ;; The chain set IS the chain, so its count is the depth.
+        (let ((depth (hash-table-count
+                      (chain-set-from (session-turn-parents session-id) turn-id))))
+          (sb-ext:with-locked-hash-table (*turn-chain-depth-memo*)
+            (setf (gethash session-id *turn-chain-depth-memo*) (cons turn-id depth)))
+          depth))))
 
 (defun snapshot-pending-prompts (payload)
   "The pending prompt vector inside one decoded TURN.QUEUE_SNAPSHOT PAYLOAD,
@@ -809,7 +863,17 @@ only called tools, or no answer yet."
        ;; A session minted before its first block is standing by: this block
        ;; materializes the identity — and whatever waited on it — in this same
        ;; transaction, so the log never holds a block without one.
-       (when (events :session-id session-id :command-id command-id
+       ;;
+       ;; Filtered by AGGREGATE-TYPE/AGGREGATE-ID rather than SESSION-ID: a
+       ;; TURN.STARTED row's aggregate is always ("session" . SESSION-ID)
+       ;; (APPEND-EVENT-ROW's default, never overridden here), so this reads
+       ;; through TURN-STARTED-BY-COMMAND, the unique index already shaped
+       ;; for exactly this lookup -- SESSION-ID instead would read through
+       ;; EVENTS-BY-SESSION-KIND, which has no COMMAND_ID column and so
+       ;; scans every TURN.STARTED row of the session to find or rule this
+       ;; one out, a cost that grew with the session (perf/scaling.lisp's
+       ;; own known breach: "ADMIT-TURN scans").
+       (when (events :aggregate-type "session" :aggregate-id session-id :command-id command-id
                   :kind +kind-turn-started+ :as :exists)
          (error 'duplicate-turn-command :session-id session-id
                 :command-id command-id))

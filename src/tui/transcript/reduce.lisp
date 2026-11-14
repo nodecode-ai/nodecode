@@ -137,27 +137,6 @@ the in-place append buffer streaming rows carry as their text."
     (replace buf seed)
     buf))
 
-(defun transcript-rows (state)
-  "All rows in display order: promoted history first, then the live tail."
-  (when (hash-table-p state)
-    (append (gethash "history_rows" state '())
-            (gethash "tail_rows" state '()))))
-
-(defun find-transcript-row (predicate state)
-  "The first row in display order PREDICATE answers, or NIL: TRANSCRIPT-ROWS
-read in place, for a question asked every frame -- the copy it hands out is
-the whole history."
-  (when (hash-table-p state)
-    (or (find-if predicate (gethash "history_rows" state '()))
-        (find-if predicate (gethash "tail_rows" state '())))))
-
-(defun remove-transcript-rows (state predicate)
-  "Drop every row PREDICATE answers from both of STATE's lanes. => STATE."
-  (when (hash-table-p state)
-    (dolist (key '("tail_rows" "history_rows"))
-      (setf (gethash key state) (remove-if predicate (gethash key state '())))))
-  state)
-
 ;;; A long session's history lane is thousands of rows, and two things touch
 ;;; it on every fact a fold takes: a promoted row goes on its end, and the
 ;;; rows the fact produced get its log position (STAMP-UNPOSITIONED-ROWS).
@@ -186,6 +165,16 @@ lane, or a fresh one when the lane is a new list."
         mark
         (setf (gethash state *lane-marks*) (make-lane-mark head)))))
 
+(defun history-lane-growth-mark (state)
+  "An object EQ only while STATE's history lane has grown no further: the
+mark's own LAST cons once something has been appended, its HEAD (the lane
+itself) while it is still empty. APPEND-HISTORY-ROWS keeps HISTORY_ROWS EQ
+while it grows the lane in place (SETF of its last cons's CDR), so EQ on
+the lane alone does not see a growth; this does, since LAST is rebound to
+a fresh cons -- the one the growth just appended -- every time."
+  (let ((mark (history-lane-mark state)))
+    (or (lane-mark-last mark) (lane-mark-head mark))))
+
 (defun append-history-rows (state rows)
   "Put ROWS, a fresh list, on the end of STATE's history lane, in place. => STATE."
   (when rows
@@ -196,6 +185,59 @@ lane, or a fresh one when the lane is a new list."
           ;; LAST from the mark's end walks only what was put on behind it.
           (setf (cdr (last (or (lane-mark-last mark) (lane-mark-head mark)))) rows))
       (setf (lane-mark-last (gethash state *lane-marks*)) (last rows))))
+  state)
+
+(nlk:define-side-table transcript-rows-memo (:weakness :key)
+  "STATE's last (HISTORY-LANE TAIL-LANE GROWTH-MARK . ALL): the two lanes'
+own list cells as TRANSCRIPT-ROWS last appended them, the lane's growth
+mark at that point (HISTORY-LANE-GROWTH-MARK), and the append. A streamed
+delta mutates the live tail's own last row in place and leaves both lanes
+EQ (APPEND-TAIL-ROW only rebuilds TAIL_ROWS on a new row); but
+APPEND-HISTORY-ROWS also keeps HISTORY_ROWS EQ while it grows the history
+lane in place behind its lane mark (promoting a tail row onto the end),
+so the lane's own identity cannot be the guard -- the growth mark is
+what actually changes the moment that happens, and TRANSCRIPT-ROWS
+answers this ALL again only while it has not.")
+
+(defun transcript-rows (state)
+  "All rows in display order: promoted history first, then the live tail."
+  ;; APPEND always copies its first argument's conses fresh, so this was
+  ;; O(history length) on every call, streamed delta or not — most of a
+  ;; render's PROJECT-STATE cost for a transcript long past its tail window
+  ;; (dfb3610's own gate run: a streamed word still n^0.43 after its fix,
+  ;; bytes flat; this and GROUP-ROWS-MEMO are the two walks that were still
+  ;; paying for history on every delta). TAIL_ROWS is never mutated in place
+  ;; once handed out, but HISTORY_ROWS is -- APPEND-HISTORY-ROWS grows it
+  ;; behind its lane mark without ever rebinding the hash entry, so EQ on
+  ;; the lane alone would serve a stale ALL once a tail row has promoted
+  ;; into history since. The growth mark catches that: it is a fresh cons
+  ;; the instant the lane grows, so the memo answers exactly what a fresh
+  ;; APPEND would while both lanes stand, and have grown, exactly as they were.
+  (when (hash-table-p state)
+    (let ((history (gethash "history_rows" state '()))
+          (tail (gethash "tail_rows" state '()))
+          (growth (history-lane-growth-mark state))
+          (memo (transcript-rows-memo state)))
+      (if (and memo (eq (first memo) history) (eq (second memo) tail)
+               (eq (third memo) growth))
+          (cdddr memo)
+          (let ((all (append history tail)))
+            (setf (transcript-rows-memo state) (list* history tail growth all))
+            all)))))
+
+(defun find-transcript-row (predicate state)
+  "The first row in display order PREDICATE answers, or NIL: TRANSCRIPT-ROWS
+read in place, for a question asked every frame -- the copy it hands out is
+the whole history."
+  (when (hash-table-p state)
+    (or (find-if predicate (gethash "history_rows" state '()))
+        (find-if predicate (gethash "tail_rows" state '())))))
+
+(defun remove-transcript-rows (state predicate)
+  "Drop every row PREDICATE answers from both of STATE's lanes. => STATE."
+  (when (hash-table-p state)
+    (dolist (key '("tail_rows" "history_rows"))
+      (setf (gethash key state) (remove-if predicate (gethash key state '())))))
   state)
 
 (defun append-tail-row (state row)

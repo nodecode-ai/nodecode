@@ -54,6 +54,21 @@ for the many bars and rows that paint one run of text in one tone."
    ;; NIL for its first. A state the window has not grown into projects its
    ;; tail (TRANSCRIPT-PROJECTION-START). Live-only.
    (projection-start :initform nil :accessor chat-model-projection-start)
+   ;; NIL, or PROJECTION-START-TAIL-KEY's answer at the render where
+   ;; PROJECTION-START's tail was last chosen while following the bottom:
+   ;; TAIL_ROWS's identity and the geometry that answer also depends on
+   ;; (width, band height, preview standing, term height). Streamed text
+   ;; appends into the live tail's last row in place and leaves TAIL_ROWS
+   ;; EQ, so a render whose key still matches element for element
+   ;; (PROJECTION-START-TAIL-FAST-P) knows no row opened, closed or moved
+   ;; lanes and nothing it was laid out at has changed, so the tail already
+   ;; chosen is still the right one (TRANSCRIPT-PROJECTION-START). Cleared
+   ;; the moment PROJECTION-START's own cdr is set to anything other than
+   ;; this branch's own answer (the found-block pin; GROW-TRANSCRIPT-
+   ;; PROJECTION's read-up), so a later render cannot find a stale key
+   ;; whose TAIL_ROWS happens to still match and reuse a start that was
+   ;; never the tail's. Live-only.
+   (projection-start-tail :initform nil :accessor chat-model-projection-start-tail)
    ;; A boot's composer catalog refresh, put off until the frame the attach
    ;; is for (REFRESH-COMPOSER-CATALOGS-BEHIND-THE-FRAME). Live-only.
    (catalog-refresh-due :initform nil :accessor chat-model-catalog-refresh-due)

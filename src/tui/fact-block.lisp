@@ -299,6 +299,31 @@ the detail level and its chord, the open card, the hover, the image mode."
          (*image-protocol* (image-protocol ,model)))
      ,@body))
 
+(defun projection-start-tail-key (model state width)
+  "The inputs TAIL-PROJECTION-START's answer for STATE depends on, besides
+STATE's own rows, while MODEL follows the bottom: TAIL_ROWS's identity, and
+every other thing the call below passes or reads -- WIDTH, the band's
+height (a dialog docked over it leaves fewer rows, so a resize or a dialog
+opening or closing must retry), whether a preview is standing in for STATE,
+and the terminal height the no-preview branch falls back to. EQ/EQL on
+every element is the reuse guard (PROJECTION-START-TAIL-FAST-P): any of
+these changing means TAIL-PROJECTION-START could answer differently now."
+  (let ((band (chat-model-band model))
+        (preview (chat-model-transcript-preview model)))
+    (list (and (hash-table-p state) (gethash "tail_rows" state))
+          width
+          (and band (band-window-height band))
+          (and preview (eq state (cdr preview)))
+          (chat-model-term-height model))))
+
+(defun projection-start-tail-fast-p (model key)
+  "Whether KEY (PROJECTION-START-TAIL-KEY) matches the one the cached
+follow-bottom projection start was last chosen under, element for element.
+A KEY with no tail row list (TAIL_ROWS NIL) never matches: an empty tail is
+no different, EQL-wise, from one PROJECTION-START-TAIL hasn't been set for."
+  (let ((cached (chat-model-projection-start-tail model)))
+    (and cached (first key) (every #'eql key cached))))
+
 (defun transcript-projection-start (model state width)
   "The row MODEL projects STATE from: the tail while the window follows it;
 where the window stood or grew to while it reads STATE's history; the first
@@ -308,9 +333,32 @@ under a found-block pin, which rests on a line of the whole table."
   ;; would otherwise pin the start of the few rows folded so far.
   (let ((entry (chat-model-projection-start model)))
     (cond ((transcript-pins model)
-           (setf (chat-model-projection-start model) (cons state nil))
+           (setf (chat-model-projection-start model) (cons state nil)
+                 (chat-model-projection-start-tail model) nil)
            nil)
           ((and entry (eq (car entry) state) (not (chat-model-follow-bottom model)))
+           (cdr entry))
+          ;; Following the bottom while a streamed delta appends into the
+          ;; live tail's last row in place leaves TAIL_ROWS the very list
+          ;; object it was: no row opened, closed, voided or moved lanes, so
+          ;; the run TAIL-PROJECTION-START last chose to start at is still a
+          ;; run after it groups the same way -- reprojecting it from WIDTH
+          ;; picks up every row the fold added since, word included, same as
+          ;; a fresh walk would, without paying to walk back and relay out
+          ;; runs nothing moved. A changed TAIL_ROWS (a new row, a promotion,
+          ;; a reset, an eviction) falls to the walk below, same as ever --
+          ;; and so does a changed WIDTH, band height, preview standing or
+          ;; term height, every one of which TAIL-PROJECTION-START's answer
+          ;; depends on as much as the rows do (PROJECTION-START-TAIL-KEY).
+          ;; The cached entry itself must also be this very branch's own
+          ;; answer: reading up away from the tail (GROW-TRANSCRIPT-PROJECTION)
+          ;; and then paging back to it (:END) re-pins FOLLOW-BOTTOM without
+          ;; ever touching ENTRY, which still holds the deep-history start
+          ;; the read-up grew to -- so the key is cleared the moment the
+          ;; entry stops being this branch's to trust (below), and a stale
+          ;; one here can never read as fresh.
+          ((and entry (eq (car entry) state) (chat-model-follow-bottom model)
+                (projection-start-tail-fast-p model (projection-start-tail-key model state width)))
            (cdr entry))
           ;; A preview under a dialog is looked at rather than read back, and a
           ;; held arrow lays one out a row: its first projection is one window.
@@ -319,6 +367,9 @@ under a found-block pin, which rests on a line of the whole table."
           ;; few, and a tail chosen under it outlives the dialog.
           (t (let ((band (chat-model-band model))
                    (preview (chat-model-transcript-preview model)))
+               (setf (chat-model-projection-start-tail model)
+                     (and (chat-model-follow-bottom model)
+                          (projection-start-tail-key model state width)))
                (cdr (setf (chat-model-projection-start model)
                           (cons state
                                 (tail-projection-start
@@ -344,7 +395,13 @@ window on the rows it shows."
                (or whole (< (band-window-offset window) window.height)))
       (let ((before window.count))
         ;; The look lays out rows as the render will, so the render reuses
-        ;; every block it memoized.
+        ;; every block it memoized. This ENTRY is no longer the follow-bottom
+        ;; tail start the PROJECTION-START-TAIL key was taken for -- clear it,
+        ;; so a later render that re-pins the bottom (:END) without any other
+        ;; change (TAIL_ROWS included: reading up never touches the tail
+        ;; lane) cannot find that stale key still matching and reuse this
+        ;; deep-history start as if it were the tail's.
+        (setf (chat-model-projection-start-tail model) nil)
         (setf (cdr entry)
               (and (not whole)
                    (with-render-scope (model)
