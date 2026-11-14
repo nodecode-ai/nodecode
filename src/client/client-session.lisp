@@ -2055,8 +2055,11 @@ quietly."
         ;; a signal deferred across handoff still exits through its old record.
         (when (or (eq *serve-next* :stop) (gateway-stop-requested-p))
           (return (finish-stopped-gateway path)))
-        (unless (gateway-stop-handoff *gateway-stop-supervisor*)
-          (return (finish-stopped-gateway path)))
+        ;; A lost store election retries with the same live supervisor. Only
+        ;; an actual exec/image request crosses the handoff boundary.
+        (when (member *serve-next* '(:restart :image :switch))
+          (unless (gateway-stop-handoff *gateway-stop-supervisor*)
+            (return (finish-stopped-gateway path))))
         (case *serve-next*
           (:stop (return (finish-stopped-gateway path)))
           (:restart

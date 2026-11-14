@@ -6690,3 +6690,27 @@ scratch runtime directory."
       (is (null (nle::shell-presence-path 42)))
       (sb-posix:unsetenv "XDG_RUNTIME_DIR")
       (is (null (nle::shell-presence-path 42)) "no runtime directory, no record"))))
+(deftest shutdown-election-retry-keeps-its-supervisor-alive
+    (with-temp-directory (dir "shutdown-election-retry"))
+  (let ((attempts 0) (path (merge-pathnames "history.db" dir)))
+    (with-saved-globals ((nle::*gateway-stop-supervisor* nil) (nle::*gateway-run* nil)
+                        (nle::*serve-next* nil) (nle::*stopping* nil) (nle::*serving* nil))
+      (with-stubbed-fdefinitions
+          ((nle::stop-on-sigterm (state) (declare (ignore state)))
+           (nle::say-gateway-ready () nil)
+           (nle::await-free-store (&rest args) (declare (ignore args)))
+           (nle::models-catalog-table () nil)
+           (nle::boot-owned-organism (&rest args)
+             (declare (ignore args))
+             (if (= 1 (incf attempts))
+                 (error 'nlk::store-in-use :path path :owner-pid 424242)
+                 (let ((state nle::*gateway-stop-supervisor*))
+                   (is (eq :running (nle::gateway-stop-supervisor-state state)))
+                   (is (bt2:thread-alive-p (nle::gateway-stop-supervisor-thread state)))
+                   (is (integerp (nle::request-gateway-stop state)))
+                   ;; End this fixture's admitted deadline before its nonlocal return.
+                   (nle::finish-gateway-stop-supervisor state)
+                   (throw 'observed :observed)))))
+        (is (eq :observed (catch 'observed
+                            (nle:serve-organism-candidate :wait t :store-path path))))
+        (is (= attempts 2))))))
