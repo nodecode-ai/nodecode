@@ -726,6 +726,30 @@ tailnet address.")
                                    collect (nle::picker-row-label row))
                              #'string<)) "over the models Ollama has")))))))
 
+(deftest provider-models-refresh-asks-the-gateway-what-it-holds-stale ()
+  ;; A shell loads the cells' folder and starts nothing, so a provider a cell
+  ;; makes listable (claude-code) is never stale here: the shell asks the
+  ;; gateway to fetch what its own image holds stale, on every open. Before,
+  ;; with nothing stale here, it asked for nothing, and first-run setup's
+  ;; model step read `Models (0) claude-code' over a logged-in CLI
+  ;; (2026-11-11).
+  (with-model-listings (:config "{}")
+    (with-frame-model (model 100 40 :session-id "models-refresh-stale")
+      (let ((asked '())
+            (nle::*provider-models-refresh-thread* nil))
+        (with-stubbed-fdefinitions
+            ((nle::stale-listable-provider-ids () '())
+             (nle::stale-local-runtime-ids () '())
+             (nle::off-loop (model thunk continuation) (funcall thunk) nil)
+             (nle::fetch-gateway-models (model) (push :list asked) nil)
+             (nle::gateway-model-http-call (model method path body)
+               (push (list method path (nlk:encode-json-object body)) asked)
+               nil))
+          (setf (nle::chat-model-program model) t)
+          (is (null (nle::start-provider-models-refresh model)) "nothing this shell knows is fetching")
+          (is (equal '((:post "/api/gateway/provider-models/refresh" "{\"ids\":[],\"stale\":true}") :list)
+                     (reverse asked)) "the gateway is asked for its own stale listings, then its list is read"))))))
+
 (deftest slash-models-backup-tab-reads-and-writes-the-chain ()
   ;; /models' fourth tab, Backup, is the failover chain every session and room
   ;; share: each backup in order with what history says of it, Add, the
@@ -832,7 +856,8 @@ tailnet address.")
     (with-frame-model (model 80 24 :session-id "models-fetched")
       (with-model-detail-dialog (dialog model) "bare /models opens silently"
         (is (eq :models (nle::picker-dialog-kind dialog)))
-        (is (equal "Models (5)" (nle::picker-dialog-title dialog)))
+        ;; The title counts models: locked's failed-listing row is none.
+        (is (equal "Models (4)" (nle::picker-dialog-title dialog)))
         ;; Narrow to zeta and rest on z-2, then let a refresh land
         ;; that adds a model ahead of it: the search text stays
         ;; and the selection follows its value.
@@ -2142,7 +2167,8 @@ from ARGUMENTS, the text bound as TEXT."
                 (let ((dialog model.dialog))
                   (is (equal "Frequently used" (nle::picker-row-label (first (nle::picker-dialog-rows dialog)))))
                   (is (equal '("zeta" "z-2") (picker-selected-value dialog)))
-                  (is (equal "Models (5)" (nle::picker-dialog-title dialog)))
+                  ;; four models: locked's failed-listing row is none
+                  (is (equal "Models (4)" (nle::picker-dialog-title dialog)))
                   (dialog-after model "z-2")
                   (is (notany #'nle::picker-row-heading (nle::picker-visible-rows dialog)))
                   (nle::install-refreshed-models model)

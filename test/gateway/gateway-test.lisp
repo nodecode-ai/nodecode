@@ -1659,7 +1659,24 @@ it is still open SECONDS later."
       (is (equal '("cline-pass" "openai") asked) "every id asked is fetched")
       (is-route (port :post "/api/gateway/provider-models/refresh" :body "{\"ids\":[]}") 400
                 "an empty ask is refused" "invalid_request")
-      (is-route (port :get "/api/gateway/provider-models/refresh") 405 "the op is a POST"))))
+      (is-route (port :get "/api/gateway/provider-models/refresh") 405 "the op is a POST")
+      ;; stale true: what THIS image holds stale is fetched too. A provider a
+      ;; cell makes listable is listable here alone, so a shell's ids never
+      ;; named claude-code and its setup step listed 0 models (2026-11-11).
+      (with-stubbed-fdefinitions ((nle::stale-listable-provider-ids () '("claude-code" "openai"))
+                                  (nle::stale-local-runtime-ids () '("ollama")))
+        (with-gateway-http (port :post "/api/gateway/provider-models/refresh"
+                            :body "{\"ids\":[],\"stale\":true}" :status 200)
+          (is (equalp #("claude-code") (gethash "refreshed" body))))
+        (is (equal '("claude-code" "openai" "ollama") asked) "an empty ask with stale fetches what the gateway holds stale")
+        (with-gateway-http (port :post "/api/gateway/provider-models/refresh"
+                            :body "{\"ids\":[\"openai\",\"cline-pass\"],\"stale\":true}" :status 200))
+        (is (equal '("openai" "cline-pass" "claude-code" "ollama") asked) "the ids asked first, each once")
+        (with-gateway-http (port :post "/api/gateway/provider-models/refresh"
+                            :body "{\"ids\":[\"openai\"]}" :status 200))
+        (is (equal '("openai") asked) "without stale, the ids asked alone")
+        (is-route (port :post "/api/gateway/provider-models/refresh" :body "{\"ids\":[1],\"stale\":true}") 400
+                  "an id that is no string is refused" "invalid_request")))))
 
 (defun is-model-pin (session-id provider model provider-why model-why)
   "Assert SESSION-ID's durable model pin reads back as PROVIDER and MODEL, NIL
