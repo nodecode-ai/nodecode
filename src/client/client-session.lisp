@@ -1931,14 +1931,14 @@ quietly."
                 ;; Park; the gateway runs on hunchentoot threads and this
                 ;; process lives until killed or asked (SERVE-NEXT). The
                 ;; heartbeat is deliberately on this owner thread.
-                (loop
-                  (nlk:systemd-watchdog)
-                  (unless heartbeat-noted
+                (loop for window = (nlk::systemd-watchdog-window)
+                      for healthy = (or (null window) (gateway-watchdog-pulse window)) do
+                  (when (and healthy (not heartbeat-noted))
                     (setf heartbeat-noted t)
                     (format t "~&[CP-ISSUE-20260912-002] gateway heartbeat~%"))
                   (when *serve-next* (return))
                   (bt2:wait-on-semaphore *serve-wake*
-                                         :timeout (/ nlk:*gateway-watchdog-seconds* 3)))))))
+                                         :timeout (/ (or window nlk:*gateway-watchdog-seconds*) 3)))))))
         ;; The store is let go by now: an exec keeps every open descriptor,
         ;; and a lease still held would be inherited into a deadlock. So
         ;; would a connection a page still holds, read by nobody after.

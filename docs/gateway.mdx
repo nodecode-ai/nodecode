@@ -69,6 +69,17 @@ The home is `~/.nodecode/` unless a profile or `NODECODE_HOME` names another. Yo
 | Stop timeout | 60 s | 60 s |
 | Log | The user journal | `~/Library/Logs/nodecode/nodecode-gateway.log` |
 
+While serving on Linux under an armed systemd watchdog, each heartbeat requires a successful local
+`/healthz` response without redirects, a read through the shared store connection and a newly
+completed background watcher pass. An idle gateway is healthy: no new tokens,
+messages or events are required. A blocked store or watcher stops the heartbeat.
+A failed HTTP probe stops heartbeats until restart, rather than accumulating
+requests against a stuck listener. The check does not contact a model provider.
+The systemd watchdog, not a forced unwind of a native call, bounds a stuck check.
+Foreground serving and a notification socket without an armed watchdog do not
+run these probes. A retired watcher's late completion cannot count for its successor.
+Waiting for another process to release the store retains its waiting heartbeat.
+
 On macOS the launcher is copied once to `~/Library/Application Support/nodecode/launcher/1/nodecode`.
 
 `on` refuses to overwrite a unit file of that name that Nodecode did not write. `off` leaves such a file alone.
