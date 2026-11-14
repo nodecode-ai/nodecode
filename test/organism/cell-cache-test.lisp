@@ -160,6 +160,7 @@ back, and forget its system as a new process would not know it."
       (is (= 2 (length (uiop:subdirectories folder))) "the newest two keys stay")
       (is (= 4 (package-call "NL-CC-PRUNED" "PROBE")) "and the last text runs"))))
 
+#-win32
 (deftest cell-cache-a-folder-whose-text-cannot-be-read-fails-alone (with-cell-fixture (root))
   ;; Given two peripherals, one holding a directory no one may read, and a
   ;; third that depends on that one; when the boot loads them; then the
@@ -227,3 +228,88 @@ back, and forget its system as a new process would not know it."
         (is (null (nlk::cell-content-key record)) "no key names it")
         (let ((kept (merge-pathnames (format nil "stamp-content/nl-cc-moving/~a/" key) cache)))
           (is (null (probe-file kept)) "and its key's directory is gone"))))))
+
+#-win32
+(deftest cell-cache-an-unreadable-file-is-not-empty (with-cell-fixture (root))
+  ;; Given a cell already cached with an empty ancillary file; when that
+  ;; regular file cannot be read; then neither it nor its dependent loads
+  ;; from that cache, while an unrelated cell still loads and runs.
+  (with-peripheral-cache (cache)
+    (let* ((directory (write-peripheral-folder root "nl-cc-denied"))
+           (file (merge-pathnames "notes.txt" directory)))
+      (write-temp-file file "")
+      (write-peripheral-folder root "nl-cc-denied-user" :depends-on '("nl-cc-denied"))
+      (write-peripheral-folder root "nl-cc-readable" :exports '("probe") :forms '("(defun probe () :fine)"))
+      (reload-fixture root "nl-cc-denied" "nl-cc-denied-user" "nl-cc-readable")
+      (is (= 1 (length (peripheral-fasls cache "nl-cc-denied"))) "the empty file was cached")
+      (is (equalp #() (nlk::file-octets file)) "a readable empty file returns bytes")
+      (sb-posix:chmod (namestring file) 0)
+      (nlk:with-cleanup ((sb-posix:chmod (namestring file) #o600))
+        ;; No simulated reader: this assertion fails if root capabilities
+        ;; bypass the fixture's permissions. Run without CAP_DAC_OVERRIDE.
+        (is (null (nlk::file-octets file)) "the test process really cannot read the file")
+        (let ((records (reload-fixture root "nl-cc-denied" "nl-cc-denied-user" "nl-cc-readable")))
+          (dolist (name '("nl-cc-denied" "nl-cc-denied-user"))
+            (is-present (record (record-named name records)) "the denied cell has a record"
+              (is (eq :failed (nlk:cell-state record)) name)
+              (is (null (nlk::cell-content-key record)))
+              (is (search "content key" (format nil "~{~a~}" (mapcar #'cdr (nlk:cell-failures record)))) name)))
+          (is (eq :loaded (nlk:cell-state (record-named "nl-cc-readable" records))))
+          (is (eq :fine (package-call "NL-CC-READABLE" "PROBE"))))))))
+
+#-win32
+(defun digest-refuses-promptly (directory)
+  "Whether DIRECTORY's digest refuses, rather than reads a special file or waits."
+  (handler-case
+      (sb-ext:with-timeout 1
+        (nlk::folder-content-digest directory)
+        nil)
+    (sb-ext:timeout () nil)
+    (error (condition)
+      (not (null (search "Not a regular file for content key:" (princ-to-string condition)))))))
+
+#-win32
+(deftest cell-cache-special-files-are-not-content (with-temp-directory (root "cc-special"))
+  ;; Given a visible FIFO, socket or device link; when its folder is keyed;
+  ;; then it is refused promptly, never read as empty bytes or waited on.
+  (let ((path (namestring (merge-pathnames "entry" root))))
+    (sb-posix:mkfifo path #o600)
+    (nlk:with-cleanup ((delete-file path))
+      (is (digest-refuses-promptly root) "a FIFO with no writer is refused"))
+    (let ((socket (make-instance 'sb-bsd-sockets:local-socket :type :datagram)))
+      (nlk:with-cleanup ((sb-bsd-sockets:socket-close socket) (ignore-errors (delete-file path)))
+        (sb-bsd-sockets:socket-bind socket path)
+        (is (digest-refuses-promptly root) "a socket is refused")))
+    (sb-posix:symlink "/dev/null" path)
+    (nlk:with-cleanup ((delete-file path))
+      (is (digest-refuses-promptly root) "a device link is refused, not hashed as empty"))))
+
+#-win32
+(deftest cell-cache-a-file-replaced-after-the-walk-cannot-wait (with-temp-directory (root "cc-replaced"))
+  ;; Given a regular file found by the real walk; when it becomes a FIFO
+  ;; before the later read; then the descriptor check refuses without waiting.
+  (let ((path (namestring (merge-pathnames "entry" root))))
+    (write-temp-file path "")
+    (nlk:with-cleanup ((delete-file path))
+      (with-stubbed-fdefinition (nlk::map-visible-file-tree (directory callback)
+                                 (funcall original directory callback)
+                                 (delete-file path)
+                                 (sb-posix:mkfifo path #o600))
+        (is (digest-refuses-promptly root) "a replaced FIFO is refused, not waited on")))))
+
+#-win32
+(deftest cell-cache-file-links-keep-the-walker-contract (with-temp-trees ((root "cc-links") (outside "cc-target")))
+  ;; Given links to a regular file and a missing target; when their folder is
+  ;; keyed; then regular target bytes matter and the dangling link is skipped.
+  (let ((target (merge-pathnames "text" outside))
+        (link (namestring (merge-pathnames "entry" root))))
+    (ensure-directories-exist root)
+    (write-temp-file target "one")
+    (sb-posix:symlink (namestring target) link)
+    (let ((before (nlk::folder-content-digest root)))
+      (write-temp-file target "two")
+      (is (not (equal before (nlk::folder-content-digest root))) "a regular link's bytes are keyed"))
+    (delete-file target)
+    (let ((dangling (nlk::folder-content-digest root)))
+      (delete-file link)
+      (is (equal dangling (nlk::folder-content-digest root)) "the inherited walk skips dangling links"))))

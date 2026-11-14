@@ -2505,6 +2505,21 @@ directory down: <source>/../fasl/, beside the folders they compile from."
   (when shipped
     (probe-file (merge-pathnames "../fasl/" shipped))))
 
+(defun content-file-octets (path)
+  "PATH's bytes, or an error when it cannot be read as a regular file."
+  ;; The walk's stat is not the file we open: a replacement FIFO must not
+  ;; wait for a writer. Open nonblocking, then check that same descriptor.
+  #-win32
+  (let ((fd (sb-posix:open path (logior sb-posix:o-rdonly sb-posix:o-nonblock sb-posix:o-noctty))))
+    (with-cleanup ((sb-posix:close fd))
+      (unless (= (logand (sb-posix:stat-mode (sb-posix:fstat fd)) sb-posix:s-ifmt) sb-posix:s-ifreg)
+        (error "Not a regular file for content key: ~a" path))
+      (let ((in (sb-sys:make-fd-stream fd :input t :element-type '(unsigned-byte 8)
+                                        :buffering :full :auto-close nil)))
+        (alexandria:read-stream-content-into-byte-vector in :initial-size (max 1 (file-length in))))))
+  #+win32
+  (or (file-octets path) (error "Cannot read file for content key: ~a" path)))
+
 (defun folder-content-digest (directory &aux (entries '())
                                              (start (length (namestring (uiop:ensure-directory-pathname directory)))))
   "sha256: of what DIRECTORY's files say: every visible file under it, as
@@ -2516,13 +2531,14 @@ DIRECTORY and its bytes, in name order."
   ;; from. Every file, not the .lisp ones alone: a form may read a file beside
   ;; it as it compiles, and an .asd may name a file of any type.
   (map-visible-file-tree directory (lambda (path stat)
-                                     (declare (ignore stat))
+                                     (unless (= (logand (sb-posix:stat-mode stat) sb-posix:s-ifmt) sb-posix:s-ifreg)
+                                       (error "Not a regular file for content key: ~a" path))
                                      (push (cons (subseq path start) path) entries)))
   (sha256-text
    (with-output-to-string (out)
      (loop for (name . path) in (sort entries #'string< :key #'car)
            do (format out "~a~c~a~%" name (code-char 0)
-                      (sha256-text (or (file-octets path) #())))))))
+                      (sha256-text (content-file-octets path)))))))
 
 (defun folder-content-key (directory &optional inputs)
   "The name of the directory DIRECTORY's peripheral compiles into, 16 hex
