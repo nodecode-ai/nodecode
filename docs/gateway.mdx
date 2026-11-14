@@ -153,3 +153,27 @@ The unit names the installer's `current` link. A restart runs the build installe
 | `nodecode gateway restart` | Rewrites the unit first if the binary path or `PATH` changed. |
 
 The installer restarts only units that Nodecode wrote. See [Updates](updates.mdx).
+
+{/* source: src/client/client-session.lisp, src/cli/entry.lisp */}
+## Bounded headless shutdown
+
+A headless gateway starts its stop supervisor before waiting for the store or
+loading cells. If that thread cannot start, the gateway refuses startup. SIGTERM
+records a three-second monotonic deadline without creating another thread. The
+owner does normal cleanup; the already-running supervisor enforces the deadline
+even when endpoint publication or cleanup is blocked. Repeated ordinary stop
+requests do not extend it. A second SIGTERM asks for immediate exit.
+
+The deadline exits directly, without unwinding, flushing output, or walking child
+processes. In-flight work may be lost; the kernel releases this process's store
+lock. The external service manager owns child cleanup and restart policy. A stop
+already admitted takes precedence over restart or image handoff. Before a saved
+image is made, the supervisor joins cooperatively; a signal during handoff exits
+as soon as Lisp dispatches its handler, and a new launch acquires a fresh
+supervisor. During snapshot/exec handoff the worker has joined: a blocked foreign
+call can defer that handler, so only external supervision bounds that span.
+A manually run, unsupervised gateway may leave child processes after forced exit.
+
+This is not a substitute for external supervision: if all Lisp execution or GC
+is wedged, the in-process deadline may not run. No service-unit limits or restart
+policy are changed by this code.
