@@ -162,7 +162,9 @@ loading cells. If that thread cannot start, the gateway refuses startup. SIGTERM
 records a three-second monotonic deadline without creating another thread. The
 owner does normal cleanup; the already-running supervisor enforces the deadline
 even when endpoint publication or cleanup is blocked. Repeated ordinary stop
-requests do not extend it. A second SIGTERM asks for immediate exit.
+requests do not extend it. A second SIGTERM asks for immediate exit. An error
+unwinding an already stopping owner exits directly before error reporting, rather
+than disarming the deadline while reporting might block.
 
 The deadline exits directly, without unwinding, flushing output, or walking child
 processes. In-flight work may be lost; the kernel releases this process's store

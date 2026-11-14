@@ -4723,6 +4723,27 @@ request."
           (let ((lock (nlk::held-lock (nlk::lock-path-for-store path))))
             (when lock (nlk::unlock-file lock))))))))
 
+(deftest shutdown-error-after-stop-exits-before-disarming-the-deadline ()
+  (let ((cut 0) (armed nil) (caught nil))
+    (with-saved-globals ((nle::*gateway-stop-supervisor* nil))
+      (with-stubbed-fdefinitions
+          ((nle::stop-on-sigterm (supervisor) (declare (ignore supervisor)))
+           (nle::cut-short ()
+             (incf cut)
+             (setf armed
+                   (and (nle::gateway-stop-requested-p)
+                        (bt2:thread-alive-p
+                         (nle::gateway-stop-supervisor-thread nle::*gateway-stop-supervisor*))))))
+        (handler-case
+            (nle::call-with-gateway-stop-supervisor
+             (lambda ()
+               (nle::request-gateway-stop nle::*gateway-stop-supervisor*)
+               (error "fixture: owner unwinds while stopping")))
+          (error () (setf caught t)))
+        (is caught)
+        (is (= cut 1) "forced exit precedes top-level error reporting")
+        (is armed "the original deadline stays armed through the exit request")))))
+
 (deftest shutdown-handoff-joins-and-a-new-entry-gets-a-fresh-record ()
   (let ((first nil) (second nil) (cut 0))
     (with-saved-globals ((nle::*gateway-stop-supervisor* nil))

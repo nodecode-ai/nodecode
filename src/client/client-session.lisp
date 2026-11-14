@@ -1807,8 +1807,14 @@ its captured record still makes a deferred signal exit, not vanish."
              (return))
            (sleep 0.01)))
 
-(defun finish-gateway-stop-supervisor (supervisor)
-  "Join our worker cooperatively. Never terminate it for an image snapshot."
+(defun finish-gateway-stop-supervisor (supervisor &optional exceptional)
+  "Join cooperatively. An error must not disarm a stop before error reporting."
+  (when exceptional
+    (let ((old (sb-ext:compare-and-swap
+                 (gateway-stop-supervisor-state supervisor) :running :finished)))
+      ;; A signal either won before this CAS, or sees :FINISHED and exits in
+      ;; its captured handler. It cannot disappear between a check and a store.
+      (when (or (integerp old) (eq old :force)) (cut-short))))
   (setf (gateway-stop-supervisor-state supervisor) :finished)
   (when (gateway-stop-supervisor-thread supervisor)
     (bt2:join-thread (gateway-stop-supervisor-thread supervisor))))
@@ -1834,15 +1840,17 @@ nested serve shares it; a fresh process/image launch never reuses a deadline."
                  (gateway-stop-supervisor-thread *gateway-stop-supervisor*))
           (error "The gateway stop supervisor is no longer running"))
         (funcall function))
-      (let ((supervisor (make-gateway-stop-supervisor)))
+      (let ((supervisor (make-gateway-stop-supervisor)) (returned nil))
         (setf (gateway-stop-supervisor-thread supervisor)
               (bt2:make-thread (lambda () (run-gateway-stop-supervisor supervisor))
                                :name "gateway-stop-supervisor")
               *gateway-stop-supervisor* supervisor
               *serve-next* nil *stopping* nil)
         (unwind-protect
-             (progn (stop-on-sigterm supervisor) (funcall function))
-          (finish-gateway-stop-supervisor supervisor)
+             (progn
+               (stop-on-sigterm supervisor)
+               (multiple-value-prog1 (funcall function) (setf returned t)))
+          (finish-gateway-stop-supervisor supervisor (not returned))
           (setf *gateway-stop-supervisor* nil)))))
 
 (defun serve-next (what)
