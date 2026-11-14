@@ -498,3 +498,30 @@ as a window title, the empty string included."
       (tcap is "XTGETTCAP asks for the RGB capability")
       ((and sentinel readback (< sentinel readback)) is)
       ((search (csi "0m") out :start2 (or readback 0)) is))))
+
+;;; --- the Windows clipboard and console font ---------------------------------
+
+(deftest windows-clipboard-text-ends-lines-as-windows-pastes-them ()
+  (is (string= (format nil "a~C~%b" #\Return) (nlt::crlf-text (format nil "a~%b"))) "a bare newline gains its CR")
+  (let ((crlf (format nil "a~C~%b" #\Return)))
+    (is (string= crlf (nlt::crlf-text crlf)) "a CR LF stays one line end"))
+  (is (string= "ab" (nlt::crlf-text "ab"))))
+
+(deftest a-copy-over-ssh-leaves-the-far-clipboard-alone ()
+  ;; Windows 10's console host takes no OSC 52, so Windows copies through the
+  ;; clipboard API; over ssh that clipboard is the far machine's.
+  (is (nlt::over-ssh-p :getenv (lambda (name)
+                                 (and (equal name "SSH_CONNECTION") "10.0.0.2 50000 10.0.0.1 22"))))
+  (is (nlt::over-ssh-p :getenv (lambda (name) (and (equal name "SSH_CLIENT") "10.0.0.2 50000 22"))))
+  (is (not (nlt::over-ssh-p :getenv (constantly nil))))
+  (is (not (nlt::over-ssh-p :getenv (constantly ""))) "an empty variable names no session")
+  #-win32 (is (null (nlt::windows-clipboard-write "x")) "off Windows there is no clipboard API"))
+
+(deftest a-console-font-that-cannot-be-asked-is-taken-as-code-page-437 ()
+  (let ((drawn-p (nlt::console-glyph-predicate :face nil)))
+    (is (funcall drawn-p #\a))
+    (is (funcall drawn-p #\┤) "a box glyph of code page 437")
+    (is (not (funcall drawn-p #\✓)) "✓ is not one")
+    (is (not (funcall drawn-p (code-char #x283f))) "nor is braille"))
+  #-win32 (let ((nlt::*glyph-stand-ins* nil))
+            (is (null (nlt::measure-glyph-stand-ins)) "off Windows nothing is measured")))

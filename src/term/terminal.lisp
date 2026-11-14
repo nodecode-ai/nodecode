@@ -118,7 +118,40 @@ two console modes and two code pages — restored on exit.")
     (name (sb-alien:c-string :external-format :ucs-2)))
   (sb-alien:define-alien-routine ("GetProcAddress" %get-proc-address) sb-sys:system-area-pointer
     (module sb-sys:system-area-pointer)
-    (name sb-alien:c-string)))
+    (name sb-alien:c-string))
+  ;; user32 and gdi32 are reached the same way, loaded first: the clipboard
+  ;; and the console font's glyphs (see "the console's window").
+  (sb-alien:define-alien-routine ("LoadLibraryW" %load-library) sb-sys:system-area-pointer
+    (name (sb-alien:c-string :external-format :ucs-2)))
+  (sb-alien:define-alien-routine ("GetConsoleWindow" %get-console-window)
+      sb-sys:system-area-pointer)
+  (sb-alien:define-alien-routine ("GetCurrentConsoleFontEx" %get-current-console-font-ex)
+      sb-alien:int
+    (handle (sb-alien:signed 64))
+    (maximum-window sb-alien:int)
+    (info sb-sys:system-area-pointer))
+  (sb-alien:define-alien-routine ("GlobalAlloc" %global-alloc) sb-sys:system-area-pointer
+    (flags (sb-alien:unsigned 32))
+    (bytes (sb-alien:unsigned 64)))
+  (sb-alien:define-alien-routine ("GlobalLock" %global-lock) sb-sys:system-area-pointer
+    (memory sb-sys:system-area-pointer))
+  (sb-alien:define-alien-routine ("GlobalUnlock" %global-unlock) sb-alien:int
+    (memory sb-sys:system-area-pointer))
+  (sb-alien:define-alien-routine ("GlobalFree" %global-free) sb-sys:system-area-pointer
+    (memory sb-sys:system-area-pointer))
+
+  (defmacro %win32-call (library name result (&rest argument-types) &rest arguments)
+    "Call NAME, an export of LIBRARY (loaded here when the process has not),
+RESULT and ARGUMENT-TYPES its alien signature; signals when it is missing."
+    `(let* ((module (%load-library ,library))
+            (proc (if (zerop (sb-sys:sap-int module))
+                      module
+                      (%get-proc-address module ,name))))
+       (when (zerop (sb-sys:sap-int proc))
+         (error "~a has no ~a" ,library ,name))
+       (sb-alien:alien-funcall
+        (sb-alien:sap-alien proc (function ,result ,@argument-types))
+        ,@arguments))))
 
 ;;; --- console input ---------------------------------------------------------
 ;;; SBCL's own console reader cannot carry a raw terminal. It drops every CR
@@ -525,7 +558,10 @@ attributes raw mode saved — closing what it owns."
                                +enable-virtual-terminal-processing+
                                +disable-newline-auto-return+))
     (%set-console-cp +utf-8-code-page+)
-    (%set-console-output-cp +utf-8-code-page+)))
+    (%set-console-output-cp +utf-8-code-page+)
+    ;; The console window's font, read on each entry: its user may have
+    ;; changed it while the program was suspended.
+    (measure-glyph-stand-ins)))
 
 (defun exit-raw-mode ()
   "Restore the attributes ENTER-RAW-MODE saved and release the descriptors."
@@ -716,6 +752,125 @@ console host parses them, stands in front."
       (>= windows-build +control-string-host-build+)
       (plusp (length (funcall getenv "WT_SESSION")))))
 
+;;; --- the console's window -------------------------------------------------
+;;; Where the console host draws its own window, its font is the whole of
+;;; what a cell can show (screen.lisp, "glyph stand-ins"), so that font is
+;;; asked, through GDI, which glyphs it has. Behind a pseudoconsole -- Windows
+;;; Terminal, an editor's terminal -- the console's window is a hidden stand-in
+;;; and the terminal in front falls back across fonts: nothing is asked there.
+
+(defconstant +console-font-info-bytes+ 84
+  "sizeof (CONSOLE_FONT_INFOEX): cbSize, nFont, dwFontSize, FontFamily and
+FontWeight, four bytes each, then the 32 UTF-16 units of FaceName.")
+
+(defun console-draws-own-window-p ()
+  "Whether this process's console is drawn by its host's own window, which
+falls back to no other font: a visible console window."
+  #-win32 nil
+  #+win32
+  (ignore-errors
+   (let ((window (%get-console-window)))
+     (and (/= 0 (sb-sys:sap-int window))
+          (/= 0 (%win32-call "user32.dll" "IsWindowVisible" sb-alien:int
+                             (sb-sys:system-area-pointer) window))))))
+
+(defun console-font-face ()
+  "The face name of the font the console window draws in, or NIL."
+  #-win32 nil
+  #+win32
+  (ignore-errors
+   (sb-alien:with-alien ((info (array (sb-alien:unsigned 8) 84)))
+     (let ((sap (sb-alien:alien-sap info)))
+       (dotimes (i +console-font-info-bytes+) (setf (sb-sys:sap-ref-8 sap i) 0))
+       (setf (sb-sys:sap-ref-32 sap 0) +console-font-info-bytes+)
+       (unless (zerop (%get-current-console-font-ex (console-handle (tty-fd)) 0 sap))
+         (let ((face (coerce (loop for i from 0 below 32
+                                   for unit = (sb-sys:sap-ref-16 sap (+ 20 (* 2 i)))
+                                   until (zerop unit)
+                                   collect (code-char unit))
+                             'string)))
+           (and (plusp (length face)) face)))))))
+
+#+win32
+(defun %font-face-glyphs (face characters)
+  "=> the CHARACTERS (a string of the basic plane) the font named FACE has a
+glyph for, or :UNKNOWN when GDI cannot say: no such font, or a raster one."
+  ;; A name GDI does not know comes back as another font, so the face it
+  ;; chose is read back before its glyphs count. GGI_MARK_NONEXISTING_GLYPHS
+  ;; (1) answers #xFFFF for a character the font lacks.
+  (let ((none (sb-sys:int-sap 0))
+        (count (length characters)))
+    (macrolet ((gdi (name result types &rest arguments)
+                 `(%win32-call "gdi32.dll" ,name ,result ,types ,@arguments)))
+      (let ((dc (gdi "CreateCompatibleDC" sb-sys:system-area-pointer
+                     (sb-sys:system-area-pointer) none)))
+        (if (zerop (sb-sys:sap-int dc))
+            :unknown
+            (unwind-protect
+                 (let ((font (gdi "CreateFontW" sb-sys:system-area-pointer
+                                  (sb-alien:int sb-alien:int sb-alien:int sb-alien:int sb-alien:int
+                                   (sb-alien:unsigned 32) (sb-alien:unsigned 32)
+                                   (sb-alien:unsigned 32) (sb-alien:unsigned 32)
+                                   (sb-alien:unsigned 32) (sb-alien:unsigned 32)
+                                   (sb-alien:unsigned 32) (sb-alien:unsigned 32)
+                                   (sb-alien:c-string :external-format :ucs-2))
+                                  -16 0 0 0 400 0 0 0 1 0 0 0 0 face)))
+                   (if (zerop (sb-sys:sap-int font))
+                       :unknown
+                       (let ((was (gdi "SelectObject" sb-sys:system-area-pointer
+                                       (sb-sys:system-area-pointer sb-sys:system-area-pointer)
+                                       dc font))
+                             (indices (sb-alien:make-alien (sb-alien:unsigned 16) count)))
+                         (unwind-protect
+                              (sb-alien:with-alien ((chosen (array (sb-alien:unsigned 16) 64)))
+                                (let ((length (gdi "GetTextFaceW" sb-alien:int
+                                                   (sb-sys:system-area-pointer sb-alien:int
+                                                    sb-sys:system-area-pointer)
+                                                   dc 64 (sb-alien:alien-sap chosen))))
+                                  (if (or (zerop length)
+                                          (string-not-equal
+                                           face (coerce (loop for i below (1- length)
+                                                              collect (code-char (sb-alien:deref chosen i)))
+                                                        'string))
+                                          (/= count (gdi "GetGlyphIndicesW" (sb-alien:unsigned 32)
+                                                         (sb-sys:system-area-pointer
+                                                          (sb-alien:c-string :external-format :ucs-2)
+                                                          sb-alien:int sb-sys:system-area-pointer
+                                                          (sb-alien:unsigned 32))
+                                                         dc characters count
+                                                         (sb-alien:alien-sap indices) 1)))
+                                      :unknown
+                                      (coerce (loop for char across characters for i from 0
+                                                    unless (= #xffff (sb-alien:deref indices i))
+                                                      collect char)
+                                              'string))))
+                           (sb-alien:free-alien indices)
+                           (gdi "SelectObject" sb-sys:system-area-pointer
+                                (sb-sys:system-area-pointer sb-sys:system-area-pointer) dc was)
+                           (gdi "DeleteObject" sb-alien:int (sb-sys:system-area-pointer) font)))))
+              (gdi "DeleteDC" sb-alien:int (sb-sys:system-area-pointer) dc)))))))
+
+(defun console-glyph-predicate (&key (face (console-font-face)))
+  "=> a function of a character: whether the console window's font FACE
+draws it -- asked of the font, else, where it cannot be (a raster font),
+code page 437's glyphs."
+  (declare (ignorable face))
+  (let ((drawn #-win32 :unknown
+               #+win32 (if face
+                           (or (ignore-errors (%font-face-glyphs face (glyph-stand-in-questions)))
+                               :unknown)
+                           :unknown)))
+    (if (eq drawn :unknown)
+        #'cp437-glyph-p
+        (lambda (char) (or (< (char-code char) #x80) (find char drawn))))))
+
+(defun measure-glyph-stand-ins ()
+  "Set *GLYPH-STAND-INS* for the terminal this process paints: the console
+window's font's, where the console host draws its own window, else NIL."
+  (setf *glyph-stand-ins*
+        (and (console-draws-own-window-p)
+             (glyph-stand-ins (console-glyph-predicate)))))
+
 ;;; --- the truecolor probe --------------------------------------------------
 
 (define-escape (%ask-truecolor :flush t)
@@ -788,13 +943,64 @@ they come and popped when they go away, the window title when it moved."
 
 ;;; --- the clipboard -------------------------------------------------------
 ;;; The external helper chain first (wl-copy, xclip, xsel: the same chain
-;;; the Zig TUI runs), then OSC 52 through the terminal, wrapped for a
-;;; tmux or screen the terminal sits behind.
+;;; the Zig TUI runs; on Windows, the clipboard API itself), then OSC 52
+;;; through the terminal, wrapped for a tmux or screen the terminal sits
+;;; behind.
 
-(defvar *clipboard-use-command* #-win32 t #+win32 nil
+(defvar *clipboard-use-command* t
   "Whether clipboard writes try the helper chain before OSC 52. NIL forces
-OSC 52 — the Windows default: the helper chain is Wayland's and X11's, and
-Windows Terminal takes OSC 52.")
+OSC 52.")
+
+(defun crlf-text (text)
+  "TEXT with each bare newline as CR LF, the line end Windows programs paste."
+  (with-output-to-string (out)
+    (loop for char across text for previous = nil then current
+          for current = char
+          do (when (and (char= char #\Newline) (not (eql previous #\Return)))
+               (write-char #\Return out))
+             (write-char char out))))
+
+(defun windows-clipboard-write (text)
+  "Put TEXT on the Windows clipboard as Unicode text: T when it took."
+  ;; Windows 10's console host takes no OSC 52, so this is the only way a
+  ;; copy there reaches the clipboard. Opening the clipboard waits behind a
+  ;; program that holds it, as a clipboard manager briefly does; the memory
+  ;; is the clipboard's once SetClipboardData takes it, and freed here when
+  ;; it does not.
+  #-win32 (progn text nil)
+  #+win32
+  (ignore-errors
+   (let ((octets (sb-ext:string-to-octets (crlf-text text) :external-format :utf-16le))
+         (none (sb-sys:int-sap 0)))
+     (macrolet ((user32 (name result types &rest arguments)
+                  `(%win32-call "user32.dll" ,name ,result ,types ,@arguments)))
+       (when (loop repeat 10
+                   thereis (/= 0 (user32 "OpenClipboard" sb-alien:int
+                                         (sb-sys:system-area-pointer) none))
+                   do (sleep 0.02))
+         (unwind-protect
+              (let ((memory (%global-alloc #x2 (+ 2 (length octets)))))
+                (unless (zerop (sb-sys:sap-int memory))
+                  (let ((sap (%global-lock memory)))
+                    (cond ((zerop (sb-sys:sap-int sap)) (%global-free memory) nil)
+                          (t (loop for octet across octets for i from 0
+                                   do (setf (sb-sys:sap-ref-8 sap i) octet))
+                             (setf (sb-sys:sap-ref-16 sap (length octets)) 0)
+                             (%global-unlock memory)
+                             (user32 "EmptyClipboard" sb-alien:int ())
+                             ;; CF_UNICODETEXT is 13.
+                             (or (/= 0 (sb-sys:sap-int
+                                        (user32 "SetClipboardData" sb-sys:system-area-pointer
+                                                ((sb-alien:unsigned 32) sb-sys:system-area-pointer)
+                                                13 memory)))
+                                 (progn (%global-free memory) nil)))))))
+           (user32 "CloseClipboard" sb-alien:int ())))))))
+
+(defun over-ssh-p (&key (getenv #'uiop:getenv))
+  "Whether this process runs in a session reached over ssh, whose own
+clipboard is not the user's."
+  (or (plusp (length (funcall getenv "SSH_CONNECTION")))
+      (plusp (length (funcall getenv "SSH_CLIENT")))))
 
 (defun current-multiplexer ()
   "The terminal multiplexer this process runs under: :TMUX under tmux, :SCREEN
@@ -837,6 +1043,11 @@ takes DCS tmux; with every ESC doubled, screen takes 256-byte DCS chunks."
   ;; Wayland's and X11's. A helper with no display to reach exits nonzero (a
   ;; wl-copy outside a Wayland session, an xclip with no X server), so a host
   ;; that has the program but not its display answers NIL here, never T.
+  ;; Windows has no helper to run: the clipboard API is called in process,
+  ;; except over ssh, where the clipboard it would set is the far machine's
+  ;; and OSC 52 reaches the user's own.
+  #+win32 (and (not (over-ssh-p)) (windows-clipboard-write content) "clipboard")
+  #-win32
   (some (lambda (argv) (and (nlk:exits-zero-p argv :input content) (first argv)))
         #+darwin '(("pbcopy"))
         #-darwin '(("wl-copy")
