@@ -301,13 +301,13 @@ A shell opened later attaches to it. Its footer shows <Term screen="footer" spot
 {/* source: src/cli/entry.lisp */}
 ## Before you leave it alone
 
-Nodecode has no sandbox. Eval can read, write and run anything your user can.
+On Linux and macOS the agent runs in a jail: the project folder you started in, its own `~/.nodecode`, and the hosts the proxy allows. Inside the folder it can change anything. On Windows it has your account's full access.
 
 <Mistakes>
 <Mistake>
 <What>Treating the guard cell as a sandbox</What>
 <Why>It refuses known spellings. Any other spelling runs.</Why>
-<Instead>Run inside a container before you let it change things unattended.</Instead>
+<Instead>Keep the jail on, and keep the project in git. On Windows, use a VM or a separate account before you leave it working alone.</Instead>
 </Mistake>
 <Mistake>
 <What>Trusting `--ephemeral` to protect the machine</What>

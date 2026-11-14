@@ -46,7 +46,7 @@ Windows, in PowerShell:
 irm https://nodecode.ai/install.ps1 | iex
 ```
 
-Then run `nodecode`. The first launch opens setup. If another coding agent lives on the machine (Claude Code, Codex, Hermes Agent, OpenCode, Cursor CLI, Gemini CLI and 9 more), setup names it and asks before it reads anything; say Import and it brings over the agent's keys, instructions, memory, skills, MCP servers, bots and jobs, tick the agents one by one when it found several, or Skip and `/import` brings them over later. Then you pick a provider, a model and the reasoning effort. See [Quickstart](https://nodecode.ai/docs/quickstart) and [First run](https://nodecode.ai/docs/first-run).
+Then run `nodecode`. The first launch opens setup. If another coding agent lives on the machine (Claude Code, Codex, Hermes Agent, OpenCode, Cursor CLI, Gemini CLI and 9 more), setup names it and asks before it reads anything; say Import and it brings over the agent's instructions, memory, skills, MCP servers and jobs, leaving its API keys and bot tokens where they are (Import with keys brings those too), tick the agents one by one when it found several, or Skip and `/import` brings them over later. Then you pick a provider, a model and the reasoning effort. See [Quickstart](https://nodecode.ai/docs/quickstart) and [First run](https://nodecode.ai/docs/first-run).
 
 ## What's different
 
@@ -200,7 +200,16 @@ No. You ask in plain words, the model writes the Lisp, and your project can be i
 <summary><b>Is it safe to run?</b></summary>
 <br>
 
-Nodecode ships no sandbox. `eval` runs Lisp and shell commands with everything your user account can do. The `guard` cell refuses listed risky commands, but it is not a security boundary. A cell is code with full access to your files and keys, and a message in a chat room runs with the same authority, so allowlists decide who may send one. Run it in a container or a VM before you leave it working alone. See [Safety and trust](https://nodecode.ai/docs/security).
+**Implementation draft:** the default jail below is pending; this description must not ship before the combined jail and proxy implementation. Linux requires bubblewrap (`bwrap`); macOS uses its built-in sandbox.
+
+- **Files:** the agent reads and writes the project folder you started it in and its own `~/.nodecode`, except protected files. Your account home is not granted as the project folder. Explicit folder grants and configuration/store exceptions still apply. The system is read-only. Started in your home folder itself, it holds no folder: `cd` into a project first.
+- **Network:** only through Nodecode's own proxy, to your model providers, nodecode.ai, models.dev, GitHub and the chat services you connected. Everything else is refused. `nodecode sandbox allow HOST` adds a host.
+- **Keys:** dedicated provider credential files stay outside the jail; the proxy adds authentication to requests bound for each provider. This does not protect secrets in project folders, granted paths or saved snapshots. Setup's Import leaves other agents' API keys and bot tokens behind unless you pick Import with keys; the explicit `/import` command keeps its existing credential-import default.
+- **The background gateway** runs in the same jail.
+
+What the jail doesn't stop: the agent can change anything in the project folder and send readable data to allowed hosts. Keep the project in git. Anyone on a chat bot's allowlist can give it work. A cell you install runs inside the jail with the agent's access. Windows has no jail yet: Nodecode runs with your account's full access; `nodecode sandbox status` reports that. `nodecode sandbox off` turns the jail off, and asks first.
+
+Releases are unsigned. Their SHA256 checksums come from the same download server: they detect corruption, not a compromised publisher. Automatic staging runs the downloaded binary for a startup check. `update.mode` `ask` delays applying, not that execution; `off` disables automatic staging. A first `curl | sh` install also trusts the downloaded script. See [Safety and trust](https://nodecode.ai/docs/security).
 
 </details>
 
