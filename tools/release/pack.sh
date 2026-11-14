@@ -35,6 +35,22 @@ set -euo pipefail
 REV="${1:-HEAD}"
 OUT="${2:-dist}"
 
+# The build sees no organism's environment, only its own NODECODE_BUILD_*
+# knobs. A shell a nodecode session started carries that session's
+# NODECODE_HOME and NODECODE_SESSION_ID, and an operator may export provider
+# settings (NODECODE_API_KEY, NODECODE_ENDPOINT...). The image reads them while
+# it loads -- its startup parameters resolve then and ride the dump -- so the
+# builder's home, or a key, would be written into the tree a stranger unpacks:
+# the home gate below caught the first only as an unexplained refusal, and
+# nothing caught the second. The Mac arm's build host drops NODECODE_HOME too
+# (mac-build.sh).
+for var in $(compgen -e); do
+  case "$var" in
+    NODECODE_BUILD_*) ;;
+    NODECODE_*) unset "$var" ;;
+  esac
+done
+
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 tools="$(dirname "$here")"
 repo="$(cd "$here/../.." && pwd)"
