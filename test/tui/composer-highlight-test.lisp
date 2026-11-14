@@ -124,8 +124,7 @@
                (painted (loop for line in lines for row in spans
                               nconc (loop for (from to state) in row
                                           collect (list (subseq line from to) state)))))
-          (is (equal '(("#right" :recognised)) painted)
-              "a later /path line is prose, including its soft-wrapped continuation"))))))
+          (is (equal '(("#right" :recognised)) painted) "a later /path line is prose, including its soft-wrapped continuation"))))))
 
 (deftest composer-highlight-regression-whole-slash-command-stays-plain ()
   (with-lanes (("session" "#"))
