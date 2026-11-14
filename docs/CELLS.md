@@ -305,6 +305,7 @@ come off in the reverse:
 | `(:settings FUNCTION)` | `(lambda (values table) ...)` | — |
 | `(:tool NAME SCHEMA FN)` | `nle:register-tool` | `nle:unregister-tool` |
 | `(:command NAME RUN &key description argument-hint trigger complete)` | `nle:register-command`: `/NAME` in the one slash catalog, wherever it is typed; RUN takes `(args session-id)` and answers `(values TEXT DIALOG)`; COMPLETE takes `(text session-id)`, the argument typed so far, and answers `(:name :value)` plists, the choices a menu offers while it is typed; `:reads '(:draft)` hands RUN the shell's input box as `:draft`, `""` when the command was typed there, `nil` from a front end that does not send it | `nle:unregister-commands` |
+| `(:lane NAME SIGIL ROWS &key description)` | `nle:register-composer-lane`: a composer completion lane; ROWS takes no arguments and returns candidate strings or `(TEXT DETAIL)` lists | `nle:unregister-composer-lanes` |
 | `(:help TOPIC SUMMARY TEXT)` | `nle:set-help-topic`: `(help TOPIC)` answers TEXT, every request's `help` section carries SUMMARY, one line | `(nle:set-help-topic TOPIC nil)` |
 | `(:hook NAME FN)` | `nle:hook` on a point or a function name | `nle:unhook` |
 | `(:route PATH FN)` | `nle:route`: PATH answered on the gateway's own port | `(nle:route PATH nil)` |
@@ -325,6 +326,37 @@ nothing**: the registrations made before the failure are undone before the
 condition goes up, so the folder's next try finds nothing of the last one,
 and its siblings still start. Starting twice stops the first start before
 the second begins, so a second start leaves one of everything.
+
+## Composer lanes
+
+A peripheral can offer names beside file completion, without replacing the
+composer. Put `(:lane "places" "#" #'place-rows :description "Places")` in
+its `nle:define-cell` form. `place-rows` takes no arguments and returns a
+proper list of strings or `(TEXT DETAIL)` lists. Names must be nonempty;
+`file` is reserved. A sigil is one punctuation character other than `/`.
+
+The gateway lists these lanes at authenticated `GET /api/gateway/lanes`.
+Authenticated `POST /api/gateway/lanes` with `{"lane":"places"}` returns
+`{"rows":[{"text":"room","detail":"Example"}]}`. It drops malformed
+rows and empty text, uses an empty detail for non-string detail, and returns
+at most 512 accepted rows without inspecting rows beyond that prefix. An
+unknown lane is HTTP 400; a callback error returns empty rows and an `error`
+string. The row cap does not bound the callback's computation or allocation.
+
+Registering the same lane name replaces its previous owner and definition.
+Stopping a cell removes its registered lanes; attached shells refresh their
+catalog. It does not cancel callbacks already running. The file lane has
+first choice of sigil, then registered lanes in order; a collision leaves
+the later lane closed. Per-profile `sigils.json` can move a named lane.
+
+At word start, the shell fetches rows off the keystroke path once per token,
+filters them locally as you type, and Tab inserts plain text. Rows are a
+preview, not resolved authority. Callbacks have no session or query context;
+there is no pagination or generation-fenced freshness guarantee. A transport
+failure can leave cached rows visible. A prompt carries its shell's effective
+sigil table through start and steer to `nle::submit`'s `:sigils` keyword,
+an alist of lane names to characters. A cell's submit hook decides the
+meaning at submission; completion itself does not start a turn.
 
 ## Under it, and beside it
 

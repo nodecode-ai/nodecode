@@ -59,3 +59,19 @@
   (let ((table (nle::sigils-from-wire (nlk:make-json-object "file" "@" "session" "#" "bad" "ab"))))
     (is (equal '(("file" . #\@) ("session" . #\#))
                (sort (copy-list table) #'string< :key #'car)))))
+
+(deftest gateway-lanes-sanitizer-skips-malformed-rows ()
+  (with-saved-globals (nle::*registered-lanes*)
+    (nle:register-composer-lane "c" "malformed" "#"
+      (lambda () (list "first" '("dotted" . 7) 42 "" '(nil "bad")
+                       '("dotted-tail" "detail" . 7) '("last" "kept"))))
+    (is (equal '(("first" . "") ("last" . "kept"))
+               (nle::composer-lane-rows "malformed")))))
+(deftest gateway-lanes-sanitizer-stops-before-malformed-tail ()
+  (with-saved-globals (nle::*registered-lanes*)
+    (nle:register-composer-lane "c" "bounded" "#"
+      (lambda () (append (loop for i below 512 collect (format nil "row~d" i))
+                         (list '("must-not-read" . 7)))))
+    (let ((rows (nle::composer-lane-rows "bounded")))
+      (is (= 512 (length rows)))
+      (is (equal '("row511" . "") (car (last rows)))))))

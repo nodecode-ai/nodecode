@@ -59,16 +59,18 @@ went."
 
 (defun composer-lane-rows (name &aux (lane (find-composer-lane name)))
   "NAME's rows now, as (TEXT . DETAIL) conses, at most
-*COMPOSER-LANE-ROW-LIMIT*; a row neither a string nor a list starting with
-one is dropped. The cell's own error goes up."
-  (loop for row in (funcall (getf lane :rows))
-        for text = (if (consp row) (first row) row)
-        for detail = (if (consp row) (second row) nil)
+*COMPOSER-LANE-ROW-LIMIT*; a row neither a string nor a proper list starting
+with one is dropped. Rows beyond the limit are not inspected. The cell's own error goes up."
+  (loop with rows = '() and count = 0
+        for row in (funcall (getf lane :rows))
         while (< count *composer-lane-row-limit*)
-        when (json-value text :text)
-          collect (cons text (if (stringp detail) detail "")) into rows
-          and count t into count
-        finally (return rows)))
+        do (let* ((listp (and (consp row) (ignore-errors (list-length row))))
+                  (text (cond ((stringp row) row) (listp (first row))))
+                  (detail (and listp (second row))))
+             (when (json-value text :text)
+               (push (cons text (if (stringp detail) detail "")) rows)
+               (incf count)))
+        finally (return (nreverse rows))))
 
 (define-gateway-route handle-gateway-lanes-http (env)
   "GET /api/gateway/lanes — the composer lanes cells offer, oldest first, each
