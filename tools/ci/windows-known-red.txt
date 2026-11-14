@@ -85,7 +85,6 @@ SHARED-CONFIG-WRITE-LEAVES-THE-FILE-THE-OPERATORS-ALONE
 ## test/organism/knowledge-test.lisp (11)
 
 ## test/lib/os-test.lisp (10)
-A-SPAWN-WHOSE-LOG-FOLDER-IS-MISSING-NAMES-THE-LOG
 
 ## test/organism/warm-test.lisp (9)
 WARM-SUPERVISOR-PUBLISHES-A-VERIFIED-IMAGE
