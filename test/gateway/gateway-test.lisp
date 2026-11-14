@@ -4718,8 +4718,7 @@ request."
              (progn
                (is (eq :stopped (nle::launch-headless :wait nil nil path nil)))
                (is (not booted))
-               (is (null (nlk::held-lock (nlk::lock-path-for-store path)))
-                   "an early stop releases the already acquired lease"))
+               (is (null (nlk::held-lock (nlk::lock-path-for-store path))) "an early stop releases the already acquired lease"))
           (let ((lock (nlk::held-lock (nlk::lock-path-for-store path))))
             (when lock (nlk::unlock-file lock))))))))
 
