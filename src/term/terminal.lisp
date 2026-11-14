@@ -110,7 +110,15 @@ two console modes and two code pages — restored on exit.")
     (handle (sb-alien:signed 64))
     (records sb-sys:system-area-pointer)
     (length (sb-alien:unsigned 32))
-    (read (sb-alien:unsigned 32) :out)))
+    (read (sb-alien:unsigned 32) :out))
+  ;; RtlGetVersion is reached through these two: ntdll is in every process
+  ;; but not among the libraries the runtime links, which are all an alien
+  ;; routine resolves against.
+  (sb-alien:define-alien-routine ("GetModuleHandleW" %get-module-handle) sb-sys:system-area-pointer
+    (name (sb-alien:c-string :external-format :ucs-2)))
+  (sb-alien:define-alien-routine ("GetProcAddress" %get-proc-address) sb-sys:system-area-pointer
+    (module sb-sys:system-area-pointer)
+    (name sb-alien:c-string)))
 
 ;;; --- console input ---------------------------------------------------------
 ;;; SBCL's own console reader cannot carry a raw terminal. It drops every CR
@@ -658,9 +666,59 @@ flags, the cursor."
     (dolist (undo '(exit-alt-screen disable-mouse pop-kitty-keyboard exit-modes))
       (ignore-errors (funcall undo stream)))))
 
+;;; --- control strings ------------------------------------------------------
+;;; DCS (ESC P) and APC (ESC _) are control strings: a terminal that knows the
+;;; form swallows one whole, up to its ST, whether or not it knows the question
+;;; inside, and every POSIX terminal does. The console host of Windows 10
+;;; (conhost 10.0.19041, which also stands behind every terminal that takes
+;;; the system's ConPTY there) does not: it drops the introducer and prints
+;;; the rest as text. So the probes INIT writes landed in the frame wherever
+;;; the cursor stood, as `Gi=1,s=1,v=1,a=q,t=d,f=24;AAAA$qm+q524742' in the
+;;; composer of a Windows PowerShell window. The OSC and CSI probes it
+;;; parses, and swallows what it does not know. Windows 11's host (build 22000
+;;; on) swallows control strings, and so does the OpenConsole Windows
+;;; Terminal carries, whatever the Windows under it.
+
+(defconstant +control-string-host-build+ 22000
+  "The first Windows build whose console host swallows a control string it
+does not know (Windows 11): before it, conhost prints DCS and APC payloads.")
+
+(defun windows-build ()
+  "The build number of the Windows this process runs on, from RtlGetVersion;
+NIL anywhere else, or when the call fails."
+  ;; Not GetVersionEx: to a program without a compatibility manifest, as
+  ;; SBCL's runtime is, it answers 6.2.9200 on every Windows since 8.1.
+  ;; OSVERSIONINFOW is 276 bytes of 32-bit words, its size first and the
+  ;; build fourth. Read at call time: a dumped image must not carry the
+  ;; build of the machine that made it.
+  #-win32 nil
+  #+win32
+  (ignore-errors
+   (let ((rtl-get-version (%get-proc-address (%get-module-handle "ntdll.dll") "RtlGetVersion")))
+     (unless (zerop (sb-sys:sap-int rtl-get-version))
+       (sb-alien:with-alien ((info (array (sb-alien:unsigned 32) 69)))
+         (setf (sb-alien:deref info 0) 276)
+         (when (zerop (sb-alien:alien-funcall
+                       (sb-alien:sap-alien rtl-get-version
+                                           (function sb-alien:int
+                                                     (* (array (sb-alien:unsigned 32) 69))))
+                       (sb-alien:addr info)))
+           (sb-alien:deref info 3)))))))
+
+(defun control-strings-parsed-p (&key (windows-build (windows-build)) (getenv #'uiop:getenv))
+  "Whether the terminal swallows a DCS or APC it does not know rather than
+printing it: everywhere but under the console host of a Windows before
++CONTROL-STRING-HOST-BUILD+, unless Windows Terminal (WT_SESSION), whose own
+console host parses them, stands in front."
+  ;; WINDOWS-BUILD is NIL off Windows; GETENV is the environment read, a
+  ;; function of the variable name, so tests hand both.
+  (or (null windows-build)
+      (>= windows-build +control-string-host-build+)
+      (plusp (length (funcall getenv "WT_SESSION")))))
+
 ;;; --- the truecolor probe --------------------------------------------------
 
-(define-escape (request-truecolor :flush t)
+(define-escape (%ask-truecolor :flush t)
     ("[0m" "[38:2:1:2:3m" "P$qm" "\\" "[0m" "P+q524742" "\\")
   ;; Two questions ride one write, either answer suffices: a sentinel RGB
   ;; foreground (1 2 3) is set and read back with DECRQSS — a terminal that
@@ -668,8 +726,16 @@ flags, the cursor."
   ;; (524742 is "RGB" in hex). The decoder turns either reply into a
   ;; TRUECOLOR-MSG; silence keeps the environment's guess. The sentinel is
   ;; reset in the same write, so no painted cell ever wears it.
-  "Ask the terminal itself whether its SGR honors 24-bit color — the
-environment cannot say for sure (ssh forwards TERM but strips COLORTERM).")
+  "Write the truecolor probe: the sentinel, DECRQSS and XTGETTCAP.")
+
+(defun request-truecolor (stream)
+  "Ask the terminal itself whether its SGR honors 24-bit color, which the
+environment cannot say for sure (ssh forwards TERM but strips COLORTERM),
+unless it would print the question (CONTROL-STRINGS-PARSED-P)."
+  ;; Both questions are DCS: where they would print, nothing is asked and
+  ;; the environment's guess stands, as it does when a terminal is silent.
+  (when (control-strings-parsed-p)
+    (%ask-truecolor stream)))
 
 (define-escape (request-background :flush t) ("]11;?" "\\")
   ;; The decoder turns the reply into a BACKGROUND-MSG; a terminal that does

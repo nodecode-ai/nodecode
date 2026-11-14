@@ -458,8 +458,39 @@ as a window title, the empty string included."
 
 ;;; --- the truecolor probe ---------------------------------------------------
 
+;;; --- control strings -------------------------------------------------------
+
+(deftest control-strings-are-asked-only-where-the-host-swallows-them ()
+  ;; Windows 10's console host printed the startup probes into the frame, as
+  ;; `Gi=1,s=1,v=1,a=q,t=d,f=24;AAAA$qm+q524742' in the composer.
+  (flet ((parsed-p (build &optional wt-session)
+           (nlt::control-strings-parsed-p
+            :windows-build build
+            :getenv (lambda (name) (and (equal name "WT_SESSION") wt-session)))))
+    (is (parsed-p nil) "off Windows every terminal swallows them")
+    (is (not (parsed-p 19045)) "Windows 10's console host prints them")
+    (is (not (parsed-p 19045 "")) "an empty WT_SESSION names no Windows Terminal")
+    (let ((wt-session "0b6e9d2a-5c11-4f6e-9f43-1c2d3e4f5a6b"))
+      (is (parsed-p 19045 wt-session) "Windows Terminal's own host parses them on Windows 10 too"))
+    (is (parsed-p 22000) "Windows 11's host swallows them")
+    (is (parsed-p 26100))))
+
+(deftest windows-build-reads-the-running-windows ()
+  #-win32 (is (null (nlt::windows-build)) "off Windows there is no build")
+  #+win32 (is (typep (nlt::windows-build) '(integer 10240)) "a Windows 10 build or later, not GetVersionEx's 9200"))
+
+(deftest no-control-string-probe-is-written-where-the-host-would-print-it ()
+  (with-stubbed-fdefinition (nlt::control-strings-parsed-p (&rest args) nil)
+    (let ((truecolor (with-output-to-string (s) (nlt:request-truecolor s)))
+          (graphics (with-output-to-string (s) (nlt:request-kitty-graphics s nil)))
+          (background (with-output-to-string (s) (nlt:request-background s))))
+      (is (string= "" truecolor) "the truecolor probe is two DCS: nothing is asked, the guess stands")
+      (is (string= "" graphics) "the graphics query is an APC")
+      (is (search (format nil "~C]11;?" #\Escape) background) "OSC the host parses: the background is still asked"))))
+
 (deftest truecolor-probe-sets-asks-and-resets-in-one-write ()
-  (let ((out (with-output-to-string (s) (nlt:request-truecolor s))))
+  (let ((out (with-stubbed-fdefinition (nlt::control-strings-parsed-p (&rest args) t)
+               (with-output-to-string (s) (nlt:request-truecolor s)))))
     (is-let* ((sentinel (search (csi "38:2:1:2:3m") out))
               (readback (search (format nil "~CP$qm~C\\" #\Escape #\Escape) out))
               (tcap (search (format nil "~CP+q524742~C\\" #\Escape #\Escape) out)))

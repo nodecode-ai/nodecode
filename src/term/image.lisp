@@ -266,8 +266,9 @@ image's alone, since a sixel goes when its cells are written over
   "Ask whether the terminal speaks kitty graphics: the query action over a
 single RGB pixel (i=1,s=1,v=1,a=q,t=d,f=24 with the pixel as the payload),
 written to STREAM unless MULTIPLEXER (the one this process runs under) would
-take it as a title."
-  (unless multiplexer
+take it as a title, or the terminal would print it (CONTROL-STRINGS-PARSED-P)."
+  ;; The query is an APC, which the console host of Windows 10 prints.
+  (when (and (not multiplexer) (control-strings-parsed-p))
     (format stream "~C_Gi=1,s=1,v=1,a=q,t=d,f=24;AAAA~C\\" #\Escape #\Escape)
     (force-output stream)))
 
