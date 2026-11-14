@@ -362,6 +362,9 @@ of stacking."
      (:file "tui/frame")
      (:file "tui/view")
      (:file "cli/entry")
+     ;; pulls: the GitHub pull request a session's branch stands in, which
+     ;; the session row (gateway) names; cached, asked off the request thread.
+     (:file "gateway/pulls")
      (:file "gateway/gateway")
      ;; One debugger boundary for raw, cell and product workers; gateway owns notices.
      (:file "tui/worker")
@@ -716,6 +719,8 @@ of stacking."
      (:file "gateway/activity-test")
      (:file "gateway/notify-test")
      (:file "gateway/rows-test")
+     ;; pulls-test drives the same HTTP fixtures for the list row's `pr'.
+     (:file "gateway/pulls-test")
      ;; rpc-test drives the same WS fixtures: a program's lines through
      ;; `nodecode rpc' to a gateway and its frames back.
      (:file "cli/rpc-test")
