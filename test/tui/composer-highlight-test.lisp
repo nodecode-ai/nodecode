@@ -110,3 +110,47 @@
         (is (< 1 (count-if (lambda (line) (plusp (length line))) lines)) "the text wraps")
         (is (null (first spans)) "the first row holds no token")
         (is (equal '(("#right" :recognised)) painted) "the span stands on the row its token wrapped to; x#left stays text")))))
+
+
+(deftest composer-highlight-regression-later-slash-line-is-prose ()
+  (with-lanes (("session" "#"))
+    (dolist (width '(80 24))
+      (with-frame-model (model width 30 :session-id "later-slash")
+        (setf (nle::chat-model-lane-rows model) *highlight-rows*)
+        (type-string model (format nil "Discuss this file:~%/src/long/path/main.lisp #right "))
+        (is (not (nle::slash-input-p (nle::editor-value (nle::chat-model-editor model)))))
+        (let* ((spans (nle::composer-visible-lane-spans model))
+               (lines (nle::editor-visible-lines (nle::chat-model-editor model)))
+               (painted (loop for line in lines for row in spans
+                              nconc (loop for (from to state) in row
+                                          collect (list (subseq line from to) state)))))
+          (is (equal '(("#right" :recognised)) painted)
+              "a later /path line is prose, including its soft-wrapped continuation"))))))
+
+(deftest composer-highlight-regression-whole-slash-command-stays-plain ()
+  (with-lanes (("session" "#"))
+    (with-frame-model (model 80 30 :session-id "whole-slash")
+      (type-string model (format nil "/command #right~%#left "))
+      (let ((asked nil))
+        (with-stubbed-fdefinition (nle::ask-lane-rows (m lane)
+                                  (when m (push lane asked)) t)
+          (is (every #'null (nle::composer-visible-lane-spans model)))
+          (is (null asked))
+          (setf (nle::chat-model-lane-rows model) *highlight-rows*)
+          (is (every #'null (nle::composer-visible-lane-spans model))))))))
+
+(deftest composer-highlight-regression-character-offsets-across-wide-wrap ()
+  (with-lanes (("session" "#"))
+    (with-frame-model (model 24 30 :session-id "wide-wrap")
+      (let ((name "right012345678901234567890123456789"))
+        (setf (nle::chat-model-lane-rows model) (list (list "session" (cons name "known"))))
+        (type-string model (format nil "界 e~c #~a " (code-char #x301) name))
+        (let* ((spans (nle::composer-visible-lane-spans model))
+               (lines (nle::editor-visible-lines (nle::chat-model-editor model)))
+               (pieces (loop for line in lines for row in spans
+                             nconc (loop for (from to state) in row
+                                         do (is (eq state :recognised))
+                                         collect (subseq line from to)))))
+          (is (> (length pieces) 1) "the token itself crosses a visual wrap")
+          (is (string= (concatenate 'string "#" name)
+                       (apply #'concatenate 'string pieces))))))))

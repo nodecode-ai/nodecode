@@ -131,12 +131,12 @@ any landed."
   (loop for (lane sigil) in (cddr *composer-sigils-read*)
         when (and sigil (not (eq lane :file))) collect (cons lane sigil)))
 
-(defun composer-lane-tokens (text)
+(defun composer-lane-tokens (text &key prose-p)
   "Each lane token in TEXT as (START END LANE NAME): START at its sigil, END
 past its name, trailing sentence punctuation left to the prose. NIL for a
-slash command."
+slash command, unless PROSE-P marks an already classified prose line."
   (let ((sigils (composer-gateway-sigils)))
-    (when (and sigils (not (slash-input-p text)))
+    (when (and sigils (or prose-p (not (slash-input-p text))))
       (loop with length = (length text)
             for start from 0 below length
             for lane = (car (rassoc (char text start) sigils))
@@ -150,10 +150,11 @@ slash command."
             when (and end (> end (1+ start)))
               collect (list start end lane (subseq text (1+ start) end))))))
 
-(defun composer-lane-spans (text lane-rows)
+(defun composer-lane-spans (text lane-rows &key prose-p)
   "TEXT's lane tokens whose lane has rows in LANE-ROWS, as (START END STATE),
-STATE :RECOGNISED when a row's text is the name, else :UNRESOLVED."
-  (loop for (start end lane name) in (composer-lane-tokens text)
+STATE :RECOGNISED when a row's text is the name, else :UNRESOLVED.
+PROSE-P marks a logical line whose whole draft is already known to be prose."
+  (loop for (start end lane name) in (composer-lane-tokens text :prose-p prose-p)
         for rows = (assoc lane lane-rows :test #'string-equal)
         when rows
           collect (list start end (if (find name (cdr rows) :key #'car :test #'string-equal)
@@ -171,7 +172,7 @@ STATE :RECOGNISED when a row's text is the name, else :UNRESOLVED."
 (defun composer-visible-lane-spans (model &aux (editor (chat-model-editor model))
                                                (rows (chat-model-lane-rows model)))
   "For each visible composer row, the lane spans on it, (START END STATE) in
-the row's own columns; and the first lane wanting rows is asked for them."
+the row's own character offsets; the first lane wanting rows is asked for them."
   (unless (chat-model-composer-ask model)
     (let ((wanted (composer-lanes-wanting-rows (editor-value editor) rows)))
       (when-let (lane (find-if-not (lambda (lane)
@@ -184,7 +185,7 @@ the row's own columns; and the first lane wanting rows is asked for them."
     (loop for range in (editor-visible-ranges editor)
           collect (when (and range rows (not slash) (not (chat-model-composer-ask model)))
                     (destructuring-bind (line start end) range
-                      (loop for (from to state) in (composer-lane-spans line rows)
+                      (loop for (from to state) in (composer-lane-spans line rows :prose-p t)
                             when (and (< from end) (> to start))
                               collect (list (- (max from start) start)
                                             (- (min to end) start)
