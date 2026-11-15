@@ -1920,6 +1920,47 @@ children files on Linux, through one process table elsewhere."
                  (setf frontier next))))
     (nreverse found)))
 
+(defun proc-start-ticks (pid)
+  "PID's start time in clock ticks since boot (/proc stat field 22), or NIL:
+with the pid, what tells a process from a later one given its number."
+  #+linux
+  (when-let (text (proc-text (format nil "/proc/~d/" pid) "stat"))
+    (let ((fields (ppcre:split "\\s+" (subseq text (1+ (or (position #\) text :from-end t) -1))))))
+      (ignore-errors (parse-integer (nth 20 fields)))))
+  #-linux (progn pid nil))
+
+(defun signal-shell-tree (pid &key (grace 0.2))
+  "Ask the tree of PID, this image's unreaped (sh ...) child, to exit: SIGTERM
+to each descendant and its group, enumerated before any dies, then to PID and
+its group; after GRACE, SIGKILL to whatever of it is still there. The session
+wrapper (setsid) may fork, and the command then leads a session of its own
+that a signal to PID's group never reaches. A descendant is signalled only
+while its start time is the one enumerated, so a number freed and handed out
+again meanwhile is left alone; PID is unreaped, so its number is still its."
+  #-linux (nlk::signal-child-group pid :grace grace)
+  #+linux
+  (let ((tree (loop for child in (proc-descendants pid)
+                    for start = (proc-start-ticks child)
+                    when start collect (cons child start))))
+    (labels ((same-p (entry) (eql (cdr entry) (proc-start-ticks (car entry))))
+             (running-p (id) (and (pid-live-p id) (not (eql #\Z (proc-state id)))))
+             (hit (signal)
+               (dolist (entry tree)
+                 (when (same-p entry)
+                   (ignore-errors (sb-posix:kill (- (car entry)) signal))
+                   (ignore-errors (sb-posix:kill (car entry) signal))))
+               (ignore-errors (sb-posix:kill (- pid) signal))
+               (ignore-errors (sb-posix:kill pid signal))))
+      (hit sb-posix:sigterm)
+      (loop with deadline = (+ (get-internal-real-time)
+                               (round (* grace internal-time-units-per-second)))
+            while (and (or (running-p pid) (some #'same-p tree))
+                       (< (get-internal-real-time) deadline))
+            do (sleep 0.02))
+      (when (or (running-p pid) (some #'same-p tree))
+        (hit sb-posix:sigkill))))
+  t)
+
 (defun kill-process-tree (pid)
   "SIGKILL PID's whole tree: the descendants enumerated BEFORE any of them
 dies (a killed parent reparents its children away), then PID, then PID's
@@ -2117,7 +2158,7 @@ after N s] line."
           (bind (((captured cut)
                   (nlk::call-with-cancellation-waker
                    *current-durable-turn*
-                   (lambda () (nlk::signal-child-group pid))
+                   (lambda () (signal-shell-tree pid))
                    (lambda () (slurp-bounded output-stream *sh-capture-limit* *sh-chunk*)))))
             ;; The tree goes before the wait: a child still writing into a pipe
             ;; nobody reads would block there forever, and the wait with it.

@@ -149,3 +149,43 @@
         (ignore-errors (bt2:join-thread worker))
         (when gate (ignore-errors (bt2:join-thread gate)))
         (when kept (usocket:socket-close kept))))))
+
+(defun %procs-running (&rest argv)
+  "Pids whose command line is exactly ARGV."
+  (loop for dir in (directory "/proc/*/" :resolve-symlinks nil)
+        for pid = (ignore-errors (parse-integer (car (last (pathname-directory dir)))))
+        for line = (and pid (ignore-errors
+                             (with-open-file (in (format nil "/proc/~d/cmdline" pid))
+                               (with-output-to-string (out)
+                                 (loop for ch = (read-char in nil) while ch do (write-char ch out))))))
+        when (and line (equal argv (butlast (uiop:split-string line :separator (string (code-char 0))))))
+          collect pid))
+
+(defun %eventually (test seconds)
+  (loop with deadline = (+ (get-internal-real-time) (* seconds internal-time-units-per-second))
+        for value = (funcall test)
+        when value return value
+        while (< (get-internal-real-time) deadline)
+        do (sleep 0.02)))
+
+(deftest a-cancelled-eval-takes-its-shell-tree-with-it ()
+  ;; The model's (sh ...) runs inside an eval, on the eval's own thread,
+  ;; through the session wrapper (setsid), which may fork: the command then
+  ;; leads a session of its own, out of reach of a signal to the wrapper's
+  ;; group. Escape must still end the command, not leave it running.
+  #+linux
+  (with-session-store ("waker-sh")
+    (let* ((turn (nlk:admit-turn "waker-sh" "sh-command" "hello"))
+           (marker "30.4242")
+           (worker (nlk:spawn "waker-sh-turn"
+                     (ignore-errors
+                      (let ((nle::*current-durable-turn* turn))
+                        (nlk:with-cancellable-wait (turn)
+                          (nle::background-capable-eval (format nil "(sh \"sleep ~a\")" marker) 600000)))))))
+      (unwind-protect
+           (progn
+             (is (%eventually (lambda () (%procs-running "sleep" marker)) 10) "the command runs")
+             (nlk:request-cancel-turn "waker-sh" turn.turn-id :operator)
+             (is (%eventually (lambda () (null (%procs-running "sleep" marker))) 3) "the command is gone"))
+        (dolist (pid (%procs-running "sleep" marker)) (ignore-errors (sb-posix:kill pid sb-posix:sigkill)))
+        (ignore-errors (bt2:join-thread worker))))))
