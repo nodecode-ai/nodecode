@@ -76,7 +76,7 @@
   ;; Threads inside a cancellable wait. A test reads this to know the
   ;; worker has parked. A cancel does not interrupt them.
   (waiting-threads '())
-  ;; Functions a cancel runs, once, after the flag is set. Each wakes a
+  ;; WAKER-ENTRYs a cancel runs, once, after the flag is set. Each wakes a
   ;; resource its waiter owns: SHUT_RDWR a socket, signal a child group,
   ;; notify a condition. None unwinds another thread.
   (wakers '()))
@@ -130,24 +130,47 @@ when the operator asked from a surface."
   "The turn whose cancellable wait region the current thread is inside, nil
 elsewhere.")
 
+;;; A cancel copies the wakers under the signal lock and calls them outside
+;;; it, so a copy can outlive its registration: the wait leaves, closes or
+;;; pools its socket, reaps its child, and a pid or descriptor number is handed
+;;; out again. Each registration is therefore an entry with its own lock: the
+;;; cancel calls the function under that lock only while the entry is live, and
+;;; removal kills the entry under the same lock, waiting out a call in
+;;; progress. After removal returns, the waker never acts.
+
+(defstruct (waker-entry (:constructor make-waker-entry (function)))
+  (function nil :read-only t)
+  (lock (bt2:make-lock :name "cancel-waker") :read-only t)
+  (live t))
+
+(defun run-waker-entry (entry)
+  "Call ENTRY's waker under its lock if its wait still holds it."
+  (bt2:with-lock-held ((waker-entry-lock entry))
+    (when (waker-entry-live entry)
+      (ignore-errors (funcall (waker-entry-function entry))))))
+
 (defun call-with-cancellation-waker (turn waker thunk)
   "Register WAKER on TURN while THUNK runs. A cancel already pending calls
 WAKER before THUNK. REQUEST-CANCEL-TURN calls each registered waker once,
-outside the signal lock, after the flag is set. WAKER must not unwind
-another thread."
+outside the signal lock, after the flag is set, and never after THUNK's
+extent has ended. WAKER must not unwind another thread, and must not wait on
+anything the waiting thread holds while it leaves."
   (if (or (null turn) (not (functionp waker)))
       (funcall thunk)
       (let ((signal (turn-signal turn))
+            (entry (make-waker-entry waker))
             (run nil))
         (sb-ext:with-locked-hash-table (*turn-cancellation-signals*)
           (if (cancellation-signal-requested-p signal)
               (setf run t)
-              (push waker (cancellation-signal-wakers signal))))
+              (push entry (cancellation-signal-wakers signal))))
         (when run (funcall waker))
         (unwind-protect (funcall thunk)
           (sb-ext:with-locked-hash-table (*turn-cancellation-signals*)
             (setf (cancellation-signal-wakers signal)
-                  (remove waker (cancellation-signal-wakers signal) :count 1)))))))
+                  (remove entry (cancellation-signal-wakers signal) :count 1)))
+          (bt2:with-lock-held ((waker-entry-lock entry))
+            (setf (waker-entry-live entry) nil))))))
 
 (defmacro with-cancellation-waker ((turn-form waker-form) &body body)
   "Run BODY with WAKER-FORM registered on TURN-FORM."
@@ -191,7 +214,7 @@ when the cancel was what ended it."
         (install-cancel-socket-hooks)
         (multiple-value-prog1
             (call-with-cancellation-waker
-             turn (lambda () (mapc #'shutdown-fd (copy-cancel-fds fds)))
+             turn (lambda () (shutdown-owned-fds fds))
              (lambda ()
                (let ((*cancel-wake-fds* fds))
                  (unwind-protect
@@ -300,9 +323,9 @@ for the operator's own stop from a surface (TURN-CANCEL-CAUSE)."
                      signal.operator-p (or signal.operator-p operator)
                      signal.retract-p (or signal.retract-p (and retract t)))
                (copy-list signal.wakers))))
-      ;; Outside the lock. A waker wakes a resource; it does not unwind.
-      (dolist (waker wakers)
-        (ignore-errors (funcall waker))))
+      ;; Outside the signal lock. A waker wakes a resource; it does not
+      ;; unwind. Each runs under its entry's lock, only while still live.
+      (mapc #'run-waker-entry wakers))
     turn))
 
 

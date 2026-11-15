@@ -2423,20 +2423,62 @@ error. => T when shutdown returned 0."
   #+win32 (progn fd nil))
 
 (defvar *cancel-wake-fds* nil
-  "A one-element box holding the socket fds the current cancellable wait
-owns, or NIL outside one. A hook pushes into the box; the wait's waker
-copies that list and SHUT_RDWR's. The box is what the waker closed over." )
+  "A one-element box holding (FD . IDENTITY) for each socket the current
+cancellable wait owns, or NIL outside one. A hook adds to the box; the
+wait's waker SHUT_RDWR's what is still there. The box is what the waker
+closed over." )
 
-(defvar *cancel-fd-lock* (bt2:make-lock :name "cancel-fds"))
+(defvar *cancel-fd-lock* (bt2:make-lock :name "cancel-fds")
+  "Held to change any box, and for the whole of a waker's shutdowns: a socket
+forgotten (pooled) before the lock is taken is never cut by that waker.")
+
+;;; A descriptor number is not an ownership: closed, it is handed to the next
+;;; open in any thread, and a pooled connection keeps its number under a new
+;;; owner. The box keeps what the socket IS (device and inode, unique among
+;;; live sockets), the waker acts through a private duplicate of the number,
+;;; and only when that duplicate is still the socket noted. A duplicate pins
+;;; what it names, so nothing can change between the check and the shutdown.
+
+(defun fd-identity (fd)
+  "(DEV . INO) of the open file FD names, or NIL."
+  #-win32 (handler-case (let ((stat (sb-posix:fstat fd)))
+                          (cons (sb-posix:stat-dev stat) (sb-posix:stat-ino stat)))
+            (error () nil))
+  #+win32 (progn fd nil))
+
+(defun duplicate-fd (fd)
+  "A new close-on-exec descriptor for what FD names now, or NIL."
+  #-win32 (handler-case (sb-posix:fcntl fd #+linux 1030 #+darwin 67 #-(or linux darwin) 0 0)
+            (error () nil))
+  #+win32 (progn fd nil))
 
 (defun note-cancel-fd (fd)
-  "Remember FD for the cancellable wait on this thread, if one is open."
+  "Remember FD, as the socket it names now, for this thread's cancellable
+wait, if one is open."
   (when (and (consp *cancel-wake-fds*) (integerp fd) (not (minusp fd)))
-    (bt2:with-lock-held (*cancel-fd-lock*)
-      (pushnew fd (car *cancel-wake-fds*)))))
+    (let ((identity (fd-identity fd)))
+      (when identity
+        (bt2:with-lock-held (*cancel-fd-lock*)
+          (setf (car *cancel-wake-fds*)
+                (acons fd identity (remove fd (car *cancel-wake-fds*) :key #'car))))))))
 
-(defun copy-cancel-fds (box)
-  (bt2:with-lock-held (*cancel-fd-lock*) (copy-list (car box))))
+(defun forget-cancel-fd (fd)
+  "This thread's cancellable wait no longer owns FD: it went to the pool."
+  (when (and (consp *cancel-wake-fds*) (integerp fd))
+    (bt2:with-lock-held (*cancel-fd-lock*)
+      (setf (car *cancel-wake-fds*) (remove fd (car *cancel-wake-fds*) :key #'car)))))
+
+(defun shutdown-owned-fds (box)
+  "SHUT_RDWR each socket BOX still owns, through a private duplicate whose
+identity is the one noted. A number closed and handed out again, or a socket
+forgotten, is left alone. => the count shut down."
+  (bt2:with-lock-held (*cancel-fd-lock*)
+    (loop for (fd . identity) in (car box)
+          for copy = (duplicate-fd fd)
+          count (and copy
+                     (unwind-protect (and (equal identity (fd-identity copy))
+                                          (shutdown-fd copy))
+                       (ignore-errors (sb-posix:close copy)))))))
 
 (defun stream-fd (stream &optional (depth 4))
   "A socket or file descriptor STREAM reads through, or NIL. Walks a
@@ -2486,7 +2528,16 @@ wait is running. Idempotent. A missing library is skipped."
        (lambda (next &rest args)
          (let ((stream (apply next args)))
            (note-cancel-stream stream)
-           stream)))))
+           stream))))
+    ;; Pooled, a connection's next owner may be any thread: the wait that
+    ;; used it stops owning it before the pool can hand it out.
+    (when (and (fboundp 'dexador.connection-cache:push-connection)
+               (not (sb-int:encapsulated-p 'dexador.connection-cache:push-connection 'cancel-fd)))
+      (sb-int:encapsulate
+       'dexador.connection-cache:push-connection 'cancel-fd
+       (lambda (next host-port stream &rest more)
+         (forget-cancel-fd (ignore-errors (stream-fd stream)))
+         (apply next host-port stream more)))))
   t)
 
 (defun interruption-may-unwind-p ()
