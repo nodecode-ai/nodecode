@@ -1120,3 +1120,28 @@ corrupt, or owner thread exited without unlocking')."
       (setf sb-ext:*init-hooks* hooks)
       (loop for (object . dont-save) in flags
             do (setf (sb-alien::shared-object-dont-save object) dont-save)))))
+
+#+win32
+(defun process-handle-count ()
+  "The number of handles this process holds open (GetProcessHandleCount)."
+  (sb-alien:with-alien ((count sb-alien:unsigned-int 0))
+    (sb-alien:alien-funcall
+     (sb-alien:extern-alien "GetProcessHandleCount"
+                            (function sb-alien:int sb-alien:unsigned-long-long (* sb-alien:unsigned-int)))
+     #xFFFFFFFFFFFFFFFF                 ; GetCurrentProcess()'s pseudo-handle
+     (sb-alien:addr count))
+    count))
+
+;; A thread that ended and was joined holds no handle. The runtime replaced the
+;; handle _beginthreadex gave a new thread with a duplicate and closed only the
+;; duplicate, so every thread a process made left one handle open: a gateway that
+;; starts short-lived threads all day ran out of handles and could no longer open
+;; a file (tools/release/sbcl-win/thread-handle.patch).
+#+win32
+(deftest a-joined-thread-leaves-no-handle-open ()
+  (flet ((churn () (dotimes (i 200) (sb-thread:join-thread (sb-thread:make-thread (lambda () i))))))
+    (churn)                             ; warm: the recycle bin and the joinable list fill
+    (let ((before (process-handle-count)))
+      (churn)
+      (let ((grown (- (process-handle-count) before)))
+        (is (< grown 50) (format nil "200 threads made and joined left ~d more handles open" grown))))))
