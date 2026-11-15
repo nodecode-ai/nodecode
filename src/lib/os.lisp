@@ -2422,19 +2422,20 @@ error. => T when shutdown returned 0."
                fd 2)))
   #+win32 (progn fd nil))
 
+(defstruct cancel-fd-region
+  entries parent requested-p)
+
 (defvar *cancel-wake-fds* nil
-  "A one-element box holding (FD . IDENTITY) for each socket the current
-cancellable wait owns, or NIL outside one. A hook adds to the box; the
-wait's waker SHUT_RDWR's what is still there. The box is what the waker
-closed over." )
+  "The current cancellable wait's socket ownership region, or NIL. Parent
+regions retire their entries too when a nested wait returns one to a pool.")
 
 (defvar *cancel-fd-lock* (bt2:make-lock :name "cancel-fds")
-  "Held to change any box, and for the whole of a waker's shutdowns: a socket
+  "Held to change any region, and for the whole of a waker's shutdowns: a socket
 forgotten (pooled) before the lock is taken is never cut by that waker.")
 
 ;;; A descriptor number is not an ownership: closed, it is handed to the next
 ;;; open in any thread, and a pooled connection keeps its number under a new
-;;; owner. The box keeps what the socket IS (device and inode, unique among
+;;; owner. The region keeps what the socket IS (device and inode, unique among
 ;;; live sockets), the waker acts through a private duplicate of the number,
 ;;; and only when that duplicate is still the socket noted. A duplicate pins
 ;;; what it names, so nothing can change between the check and the shutdown.
@@ -2452,33 +2453,41 @@ forgotten (pooled) before the lock is taken is never cut by that waker.")
             (error () nil))
   #+win32 (progn fd nil))
 
+(defun shutdown-owned-fd (fd identity)
+  "Shut down FD only through a duplicate still naming IDENTITY. Caller holds
+*cancel-fd-lock*, so pool publication cannot race the ownership check."
+  (when-let (copy (duplicate-fd fd))
+    (unwind-protect (and (equal identity (fd-identity copy)) (shutdown-fd copy))
+      (ignore-errors (sb-posix:close copy)))))
+
 (defun note-cancel-fd (fd)
-  "Remember FD, as the socket it names now, for this thread's cancellable
-wait, if one is open."
-  (when (and (consp *cancel-wake-fds*) (integerp fd) (not (minusp fd)))
+  "Remember FD for this wait. If cancellation won before a connect returned,
+wake its newly enrolled socket too; the empty-region wake is not lost."
+  (when (and *cancel-wake-fds* (integerp fd) (not (minusp fd)))
     (let ((identity (fd-identity fd)))
       (when identity
         (bt2:with-lock-held (*cancel-fd-lock*)
-          (setf (car *cancel-wake-fds*)
-                (acons fd identity (remove fd (car *cancel-wake-fds*) :key #'car))))))))
+          (setf (cancel-fd-region-entries *cancel-wake-fds*)
+                (acons fd identity (remove fd (cancel-fd-region-entries *cancel-wake-fds*) :key #'car)))
+          (when (cancel-fd-region-requested-p *cancel-wake-fds*)
+            (shutdown-owned-fd fd identity)))))))
 
 (defun forget-cancel-fd (fd)
-  "This thread's cancellable wait no longer owns FD: it went to the pool."
-  (when (and (consp *cancel-wake-fds*) (integerp fd))
+  "A pool return retires FD from every enclosing wait before publication."
+  (when (integerp fd)
     (bt2:with-lock-held (*cancel-fd-lock*)
-      (setf (car *cancel-wake-fds*) (remove fd (car *cancel-wake-fds*) :key #'car)))))
+      (loop for region = *cancel-wake-fds* then (cancel-fd-region-parent region)
+            while region
+            do (setf (cancel-fd-region-entries region)
+                     (remove fd (cancel-fd-region-entries region) :key #'car))))))
 
-(defun shutdown-owned-fds (box)
-  "SHUT_RDWR each socket BOX still owns, through a private duplicate whose
-identity is the one noted. A number closed and handed out again, or a socket
-forgotten, is left alone. => the count shut down."
+(defun shutdown-owned-fds (region)
+  "Latch cancellation and SHUT_RDWR only sockets REGION still owns.
+The shared lock orders enrollment, pool return and shutdown. => count cut."
   (bt2:with-lock-held (*cancel-fd-lock*)
-    (loop for (fd . identity) in (car box)
-          for copy = (duplicate-fd fd)
-          count (and copy
-                     (unwind-protect (and (equal identity (fd-identity copy))
-                                          (shutdown-fd copy))
-                       (ignore-errors (sb-posix:close copy)))))))
+    (setf (cancel-fd-region-requested-p region) t)
+    (loop for (fd . identity) in (cancel-fd-region-entries region)
+          count (shutdown-owned-fd fd identity))))
 
 (defun stream-fd (stream &optional (depth 4))
   "A socket or file descriptor STREAM reads through, or NIL. Walks a

@@ -210,7 +210,7 @@ when the cancel was what ended it."
   ;; itself. A body with no such resource stays running until it returns.
   (if (null turn)
       (funcall thunk)
-      (let ((fds (list '())))
+      (let ((fds (make-cancel-fd-region :parent *cancel-wake-fds*)))
         (install-cancel-socket-hooks)
         (multiple-value-prog1
             (call-with-cancellation-waker

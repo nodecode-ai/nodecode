@@ -159,6 +159,8 @@ The installer restarts only units that Nodecode wrote. See [Updates](updates.mdx
 
 Escape, and `(eval-interrupt N)`, ask the owned work to stop. They do not kill its thread. A wait that registered a waker is woken, returns, and then the turn closes.
 
+Socket cancellation is ownership-scoped, including provider stream reads. Returning a connection to the pool retires it from every enclosing wait before another caller can borrow it. A cancellation arriving before a new socket is registered is remembered and wakes that socket when registration completes. Neither path asynchronously unwinds its worker.
+
 | What you did | What you see |
 | --- | --- |
 | Escape during a provider stream | The socket is shut down (`SHUT_RDWR`, not closed from another thread). The read returns. The turn closes as cancelled. Measured on a local provider that sent one delta and then held the socket silent: 69 ms from Escape to `turn.cancelled`. |
