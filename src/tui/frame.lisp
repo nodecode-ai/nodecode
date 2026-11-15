@@ -219,6 +219,18 @@ from the ones COLLECT-DURING-WAIT hid inside provider wait."
                                ((model-key-matches-p model :accept-suggestion key mod) :tab))))
                    (and dropdown-key (composer-dropdown-key model dropdown-key)))))
 
+           ;; Accept-suggestion on an empty composer takes the status row
+           ;; that offers something (STATUS-ROW-ACTION): its draft goes into
+           ;; the composer, or its slash line runs as a bound chord's does.
+           ((and (model-key-matches-p model :accept-suggestion key mod)
+                 (when-let (row (status-row-action model))
+                   (if-let (draft (getf row :draft))
+                     (progn (editor-insert (chat-model-editor model) draft)
+                            (reset-history-navigation model)
+                            t)
+                     (return-from update
+                       (values model (run-bound-slash-line model (getf row :run))))))))
+
            ;; Prompt history recall: Up at the end of the text walks older
            ;; prompts, Down walks back toward the stashed draft. Each helper
            ;; declines — falling through to cursor movement — when it does
@@ -728,22 +740,73 @@ Segments are the one authority for text, color, clipping and target ranges."
 ;;; Several cells share that one line, in the order they first spoke.
 
 (nlk:define-side-table status-rows-shown (:weakness :key)
-  "Live-only: a shell's model -> the status rows' texts its last
-organism.notices payload carried, which STATUS-ROWS-FRAME-ROW draws.")
+  "Live-only: a shell's model -> the status rows its last organism.notices
+payload carried, each a plist of :TEXT and, when the row has them,
+:SESSION-ID, :DRAFT, :RUN and :VERB. STATUS-ROWS-FOR reads them.")
 
 (defun note-status-rows (model board)
   "Keep the status rows BOARD, an organism.notices payload, carries."
   ;; A gateway from before the rows sends none, which reads as none standing.
+  ;; Every row is kept, its session's or not: the shell may move to that
+  ;; session before the next board, and STATUS-ROWS-FOR filters per frame.
   (setf (status-rows-shown model)
         (loop for row across (or (json-array board "rows") #())
               for text = (json-value row :text "text")
-              when (and text (plusp (length text))) collect text)))
+              when (and text (plusp (length text)))
+                collect (list* :text text
+                               (loop for (key field) in '((:session-id "session_id") (:draft "draft")
+                                                          (:run "run") (:verb "verb"))
+                                     for value = (json-value row :string field)
+                                     when value collect key and collect value)))))
+
+(defun status-rows-for (model &aux (session-id (chat-model-session-id model)))
+  "The status rows MODEL draws: every row without a session, and those of the
+session it shows."
+  (remove-if (lambda (row)
+               (let ((owner (getf row :session-id)))
+                 (and owner (not (equal owner session-id)))))
+             (status-rows-shown model)))
+
+(defun status-row-action (model)
+  "The row whose :DRAFT or :RUN the accept-suggestion key takes while the
+composer is empty: the first drawn row that has one, else NIL."
+  (and (composer-empty-p model)
+       (null (chat-model-dialog model))
+       (find-if (lambda (row) (or (getf row :draft) (getf row :run)))
+                (status-rows-for model))))
+
+(defun take-status-row (model row)
+  "Do what ROW, a status row with an action, says: put its :DRAFT in the
+composer, or run its :RUN line as if typed. => the command to run after the
+update, or NIL."
+  (if-let (draft (getf row :draft))
+    (progn (editor-insert (chat-model-editor model) draft) nil)
+    (run-bound-slash-line model (getf row :run))))
+
+(defun status-row-hint-segs (model row)
+  "The key hint for ROW's action, a filled cap before its verb as the turn
+bar's: the accept-suggestion chord, NIL while it is unbound."
+  (when-let (chord (first (gethash :accept-suggestion (chat-model-keymap model))))
+    (list (make-seg :text (format nil " ~(~a~) " (key-chord-label chord)) :tone :key-chip)
+          (make-seg :text (format nil " ~a" (or (getf row :verb) (if (getf row :draft) "accept" "run")))
+                    :tone :muted))))
 
 (defun status-rows-frame-row (model width bg)
   "The frame row the status rows stand on, muted and clipped to WIDTH like
-the footer under it, or NIL while none stands."
-  (when-let (texts (status-rows-shown model))
-    (bilateral-frame-row (format nil "~{~a~^ · ~}" texts) :muted nil width bg)))
+the footer under it, with the key hint of the row the accept-suggestion key
+takes on its right while the composer is empty; NIL while none stands."
+  (when-let (rows (status-rows-for model))
+    (let* ((text (format nil "~{~a~^ · ~}" (mapcar (lambda (row) (getf row :text)) rows)))
+           (action (status-row-action model))
+           (hint (and action (status-row-hint-segs model action))))
+      ;; The hint goes before the text is clipped away: a window too narrow
+      ;; for both keeps the text.
+      (if (and hint (<= (+ 3 (segs-display-width (list (make-seg :text text))) 2
+                           (segs-display-width hint)
+                           (- width 2 (transcript-text-width width)))
+                        width))
+          (bilateral-frame-row text :muted (segs-text hint) width bg nil hint)
+          (bilateral-frame-row text :muted nil width bg)))))
 
 ;;; The projected line strings are identity-stable across frames
 ;;; (ROW-DISPLAY-BLOCK memoizes per row), so the per-row inset+pad+gutter

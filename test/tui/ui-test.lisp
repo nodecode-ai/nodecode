@@ -1018,16 +1018,64 @@ its dispatch keeping each frame for LINK-COMMANDS."
   ;; other row of the frame where it was.
   (with-frame-model (model 100 30 :session-id "status-rows")
     (let ((before (nle::compose-frame model)))
-      (setf (nle::status-rows-shown model) '("codex: 41% of the week" "BTC 91k"))
+      (setf (nle::status-rows-shown model) '((:text "codex: 41% of the week") (:text "BTC 91k")))
       (let ((rows (nle::compose-frame model)))
         (is (= 30 (length rows)))
         (is (search "codex: 41% of the week · BTC 91k" (nth 27 rows)) "over the footer")
         (is (equal (nth 28 before) (nth 28 rows)) "the footer is where it was")
         (is (equal (subseq before 0 27) (subseq rows 0 27)) "and so is all above"))
-      (setf (nle::status-rows-shown model) (list (make-string 300 :initial-element #\x)))
+      (setf (nle::status-rows-shown model) (list (list :text (make-string 300 :initial-element #\x))))
       (is (search "…" (nth 27 (nle::compose-frame model))) "a long row is clipped")
       (setf (nle::status-rows-shown model) nil)
       (is (equal before (nle::compose-frame model)) "and none leaves the blank"))))
+
+(deftest status-rows-of-another-session-stand-in-its-shells-only ()
+  ;; A row with a session is drawn by the shells showing that session and by
+  ;; no other; a row without one by every shell.
+  (with-frame-model (model 100 30 :session-id "here")
+    (setf (nle::status-rows-shown model)
+          '((:text "for here" :session-id "here") (:text "for there" :session-id "there")
+            (:text "for all")))
+    (let ((row (nth 27 (nle::compose-frame model))))
+      (is (search "for here · for all" row))
+      (is (not (search "for there" row))))))
+
+(deftest status-row-draft-is-taken-by-tab-on-an-empty-composer ()
+  ;; A row that offers a draft wears the accept-suggestion key's hint while
+  ;; the composer is empty, and that key puts the draft in the composer;
+  ;; with text in the composer the key is the composer's again.
+  (with-frame-model (model 100 30 :session-id "here")
+    (setf (nle::status-rows-shown model)
+          '((:text "next: run the tests" :session-id "here" :draft "run the tests" :verb "use")))
+    (is (search "tab  use" (nth 27 (nle::compose-frame model))) "the hint")
+    (press model :tab)
+    (is (equal "run the tests" (composer-value model)))
+    (is (not (search "tab  use" (nth 27 (nle::compose-frame model)))) "no hint over text")
+    (press model :tab)
+    (is (= 1 (length (ppcre:all-matches-as-strings "run the tests" (composer-value model)))) "taken once")
+    ;; While a turn runs, Tab on an empty composer queues nothing, so it
+    ;; takes the row there too.
+    (nle::editor-reset model.editor)
+    (setf (nle::chat-model-turn-in-flight model) t)
+    (press model :tab)
+    (is (equal "run the tests" (composer-value model)) "mid-turn")))
+
+(deftest status-row-run-line-is-run-by-tab-as-a-bound-chord-runs-it ()
+  ;; A row that offers a slash line runs it on the key, the way a chord
+  ;; keybinds.json binds runs its line; a row of another session offers
+  ;; nothing here.
+  (with-frame-model (model 100 30 :session-id "here")
+    (let ((ran '()))
+      (with-stubbed-fdefinition (nle::run-bound-slash-line (m line) (push line ran) nil)
+        (setf (nle::status-rows-shown model)
+              '((:text "elsewhere" :session-id "there" :run "/ticker there")))
+        (press model :tab)
+        (is (null ran) "not this session's row")
+        (setf (nle::status-rows-shown model) '((:text "BTC 91k" :run "/ticker open")))
+        (is (search "tab  run" (nth 27 (nle::compose-frame model))))
+        (press model :tab)
+        (is (equal '("/ticker open") ran))
+        (is (equal "" (composer-value model)) "the composer is left as it was")))))
 
 (deftest footer-facts-never-dial-on-the-frame-path ()
   ;; Composing fetched model facts on the loop thread would let a dead
