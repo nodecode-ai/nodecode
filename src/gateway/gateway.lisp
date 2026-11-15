@@ -724,12 +724,23 @@ standing notice."
                :opt "key" key))
 
 (defun standing-notices-payload ()
-  "The complete typed standing board, including quiet entries; live-only."
+  "The complete typed standing board, including quiet entries, and the status
+rows every shell draws (STATUS-ROW); live-only."
+  ;; The rows ride this payload rather than a frame kind of their own: a
+  ;; shell refuses a session-less kind it does not know as a protocol error
+  ;; (DECODE-SYNC-MESSAGE), and a shell from before the rows stays attached
+  ;; to a gateway that moved to a release with them. Here they are one field
+  ;; such a shell never reads.
   (json-object "notices"
                (map 'vector (lambda (notice)
                                (destructuring-bind (key text level) notice
                                  (notice-payload text level key)))
-                    (nlk:standing-notices))))
+                    (nlk:standing-notices))
+               "rows"
+               (map 'vector (lambda (row)
+                               (destructuring-bind (key text) row
+                                 (json-object "key" key "text" text)))
+                    (nlk:status-rows))))
 
 (defvar *standing-notice-publication-lock* (bt2:make-lock :name "standing-notice-publication")
   "Order board writes and whole-board publications, without keeping another board.")
@@ -855,6 +866,30 @@ while no shell is open."
             (notice (format nil "gateway: ~a cannot keep running after this shell closes — ~a"
                             what refusal)
                     :level :warning))))))))
+
+(defun status-row (text &key key)
+  "Keep TEXT as one line in every attached shell's frame, under KEY, until a
+later call under KEY replaces it or a NIL TEXT clears it. => TEXT."
+  ;; A cell's passive status -- a subscription's usage, a ticker -- drawn by
+  ;; the shell in a fixed place (FRAME.LISP STATUS-ROWS-FRAME-ROW) and read
+  ;; by no one else: unlike a standing notice, the model's notices block,
+  ;; /cells and the toasts never carry a row. Like a keyed notice it stands:
+  ;; it rides the board's organism.notices frame, so a shell attaching later
+  ;; draws it too. A cell sets it from its :start or a worker there and
+  ;; clears it from ON-STOP, so a cell turned off or restarted takes its row
+  ;; out of every shell. Never durable: a restart starts with none.
+  (check-type key string)
+  (check-type text (or null string))
+  (bt2:with-lock-held (*standing-notice-publication-lock*)
+    (let ((before (nlk:status-rows)))
+      (nlk:note-status-row key (and text (plusp (length text)) (one-line-row-text text)))
+      (unless (equal before (nlk:status-rows))
+        (broadcast-organism "organism.notices" (standing-notices-payload)))))
+  text)
+
+(defun one-line-row-text (text)
+  "TEXT as the one line a status row draws: its line breaks and tabs spaces."
+  (substitute-if #\Space (lambda (c) (member c '(#\Newline #\Return #\Tab))) text))
 
 (defun notice (text &key (level :info) key)
   "Say TEXT to the operator: every attached shell puts it up as a toast

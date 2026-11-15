@@ -721,6 +721,30 @@ Segments are the one authority for text, color, clipping and target ranges."
           (bilateral-frame-row (segs-text left) :muted (and right (segs-text right))
                                width bg left right))))))
 
+;;; A cell's status rows (NLE:STATUS-ROW): the lines the organism keeps in
+;;; every shell's frame, from the last organism.notices payload. They take
+;;; the blank between the composer and the footer, so no geometry moves:
+;;; the transcript, the composer and every hit test keep the rows they had.
+;;; Several cells share that one line, in the order they first spoke.
+
+(nlk:define-side-table status-rows-shown (:weakness :key)
+  "Live-only: a shell's model -> the status rows' texts its last
+organism.notices payload carried, which STATUS-ROWS-FRAME-ROW draws.")
+
+(defun note-status-rows (model board)
+  "Keep the status rows BOARD, an organism.notices payload, carries."
+  ;; A gateway from before the rows sends none, which reads as none standing.
+  (setf (status-rows-shown model)
+        (loop for row across (or (json-array board "rows") #())
+              for text = (json-value row :text "text")
+              when (and text (plusp (length text))) collect text)))
+
+(defun status-rows-frame-row (model width bg)
+  "The frame row the status rows stand on, muted and clipped to WIDTH like
+the footer under it, or NIL while none stands."
+  (when-let (texts (status-rows-shown model))
+    (bilateral-frame-row (format nil "~{~a~^ · ~}" texts) :muted nil width bg)))
+
 ;;; The projected line strings are identity-stable across frames
 ;;; (ROW-DISPLAY-BLOCK memoizes per row), so the per-row inset+pad+gutter
 ;;; concatenate — a measured animation-tick heap hotspot — runs once per line,
@@ -1206,7 +1230,9 @@ footer, and the final blank; short windows end with two blank rows."
            (band (transcript-band-rows model width text-width bg))
            (panel (dialog-panel-rows model width bg))
            (foot (and (shell-footer-p height)
-                      (list blank (footer-frame-row model width bg) blank))))
+                      (list (or (status-rows-frame-row model width bg) blank)
+                            (footer-frame-row model width bg)
+                            blank))))
        (if panel
            ;; The frame head — blank, header, chat top padding — is all the
            ;; panel cannot reach; everything under it down to the shell

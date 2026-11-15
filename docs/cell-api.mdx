@@ -403,6 +403,43 @@ hello
 <Pair name="cell-notice-stays" />
 </Mistakes>
 
+{/* source: src/gateway/gateway.lisp */}
+## Status rows
+
+A status row is one line a cell keeps in every shell, over the footer: a usage meter, a ticker, a job's progress. Set it where the cell starts and clear it on stop:
+
+```lisp
+(nle:define-cell weather
+  (:section ("weather") ...)
+  (:start (lambda ()
+            (nle:status-row "weather: Oslo 4°C" :key "nodecode-weather")
+            (nle:on-stop (lambda () (nle:status-row nil :key "nodecode-weather"))))))
+```
+
+| | Status row | Keyed notice |
+| --- | --- | --- |
+| Where | One line over the footer of every shell, rows of several cells joined with ` · ` | A toast where popups are on |
+| A shell that attaches later | Draws it | Gets it |
+| The model | Never reads it | Reads it at the tail of its prompt |
+| `/cells` | Does not list it | Lists it |
+| Replace it | Call again under the same `:key` | The same |
+| Clear it | `nil` or `""` as the text | `nil` as the text |
+
+The row is one line: line breaks become spaces, and a row wider than the window is clipped with `…`. Rows live in the organism, so a restart starts with none. A shell from before status rows draws none and keeps working.
+
+<Mistakes>
+<Mistake>
+<What>Setting a row at start and never clearing it</What>
+<Why>It stays in every shell after the cell is turned off or restarts.</Why>
+<Instead>Clear it in `on-stop`, next to where you set it.</Instead>
+</Mistake>
+<Mistake>
+<What>Putting a state the model should know into a row</What>
+<Why>The model never reads a row.</Why>
+<Instead>Post a keyed notice instead, or as well.</Instead>
+</Mistake>
+</Mistakes>
+
 {/* source: src/organism/cell-dsl.lisp */}
 ## Stop
 
@@ -421,6 +458,7 @@ When the declaration does not fit, write `START-CELL` by hand from the same piec
 (nle:register-command OWNER CMD RUN ...)      ; (nle:unregister-commands OWNER)
 (nle:hook NAME KEY FN)                        ; (nle:unhook NAME KEY)
 (nle:route PATH FN)                           ; (nle:route PATH nil)
+(nle:status-row TEXT :key KEY)                ; (nle:status-row nil :key KEY)
 (nlk:worker-start NAME STEP :wake N)          ; (nlk:worker-stop W), (nlk:worker-poke W)
 (nle:starting ...)                            ; answers the thunk that undoes its body
 (nle:on-stop FN)                              ; one inverse, in the innermost scope
