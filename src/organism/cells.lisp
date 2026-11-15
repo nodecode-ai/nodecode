@@ -151,21 +151,23 @@ is NIL. => the entry, or NIL when cleared."
 ;;; lock, so the two travel in one organism.notices payload.
 
 (defvar *status-rows* '()
-  "((KEY TEXT) ...) in first-posting order.")
+  "((KEY TEXT OPTIONS) ...) in first-posting order, OPTIONS the row's plist
+of :SESSION-ID, :DRAFT, :RUN and :VERB (NLE:STATUS-ROW).")
 
-(defun note-status-row (key text)
-  "Make TEXT the status row under KEY, or clear KEY when TEXT is NIL.
-=> the entry, or NIL when cleared."
+(defun note-status-row (key text &optional options)
+  "Make TEXT, with OPTIONS, the status row under KEY, or clear KEY when TEXT
+is NIL. => the entry, or NIL when cleared."
   (check-type key string)
   (check-type text (or null string))
+  (check-type options list)
   (bt2:with-lock-held (*notices-lock*)
     (setf *status-rows* (if text
-                            (put-in-place *status-rows* key (list text) #'string=)
+                            (put-in-place *status-rows* key (list text options) #'string=)
                             (remove key *status-rows* :key #'first :test #'string=)))
-    (and text (list key text))))
+    (and text (list key text options))))
 
 (defun status-rows ()
-  "A copy of the status rows: ((KEY TEXT) ...)."
+  "A copy of the status rows: ((KEY TEXT OPTIONS) ...)."
   (bt2:with-lock-held (*notices-lock*)
     (copy-list *status-rows*)))
 

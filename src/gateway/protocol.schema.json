@@ -475,7 +475,11 @@
                 "description": "The cells' status rows (nle:status-row): one line each, which every shell draws over its footer and the model never reads. Absent from a gateway that predates them.",
                 "type": "array",
                 "items": { "type": "object", "required": ["key", "text"],
-                           "properties": { "key": { "type": "string" }, "text": { "type": "string" } } }
+                           "properties": { "key": { "type": "string" }, "text": { "type": "string" },
+                                           "session_id": { "type": "string", "description": "Only shells showing this session draw it." },
+                                           "draft": { "type": "string", "description": "What the accept-suggestion key on an empty composer puts in the composer." },
+                                           "run": { "type": "string", "description": "The slash line that key runs instead, as if typed." },
+                                           "verb": { "type": "string", "description": "The word the row's key hint shows." } } }
               }
             }
           }

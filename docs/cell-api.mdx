@@ -427,6 +427,24 @@ A status row is one line a cell keeps in every shell, over the footer: a usage m
 
 The row is one line: line breaks become spaces, and a row wider than the window is clipped with `…`. Rows live in the organism, so a restart starts with none. A shell from before status rows draws none and keeps working.
 
+### A row for one session, and a row that does something
+
+| Keyword | The row |
+| --- | --- |
+| `:session-id ID` | Stands only in the shells showing session ID. A shell that moves to that session draws it from then on. |
+| `:draft TEXT` | Offers TEXT: Tab on an empty composer puts it there, for the person to send or change. |
+| `:run LINE` | Offers a slash line instead: Tab on an empty composer runs it as if typed, the way a chord in `keybinds.json` runs one. Its answer's effects work, so `(:draft TEXT)` can come back from the gateway. |
+| `:verb WORD` | The word beside the key, `tab accept` by default for a draft and `tab run` for a line. |
+
+A suggestion for the next prompt of one session:
+
+```lisp
+(nle:status-row "next: run the failing test again" :key "here-ticker"
+                :session-id session-id :draft "run the failing test again")
+```
+
+The key hint shows on the row's right while the composer is empty, which is when Tab takes it; with several rows that offer something, Tab takes the first. Tab is the accept-suggestion key, so `keybinds.json` can move it. A row offers `:draft` or `:run`, not both, and `:run` starts with `/`: anything else signals, naming it.
+
 <Mistakes>
 <Mistake>
 <What>Setting a row at start and never clearing it</What>
