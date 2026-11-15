@@ -169,9 +169,11 @@ open the view on it. => NIL, the command the update runs after it."
      :subtitle (format nil "$ ~a" line)
      :empty-label "No output yet"
      :on-cancel (lambda (model) (declare (ignore model)) (stop-local-command bang))
+     ;; No notice: the header says `stopped' once it has, where a notice
+     ;; would stand over the view's keys for five seconds.
      :on-delete (lambda (model bang) (declare (ignore model))
                   (stop-local-command bang)
-                  "Stopping")
+                  nil)
      :on-tick (lambda (model dialog) (refresh-local-command-view model dialog bang)))
     (setf dialog (chat-model-dialog model))
     (refresh-local-command-view model dialog bang)
