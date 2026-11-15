@@ -1141,12 +1141,14 @@ left (meter.lisp BUDGET-REMAINING-MS), nor under 50 ms."
   (:report "background evaluation interrupted by (eval-interrupt)")
   ;; A SERIOUS-CONDITION that is not an ERROR — the SB-EXT:TIMEOUT lesson: the
   ;; form's own (handler-case ... (error ...)) arms and the eval snippet's text
-  ;; arms must not swallow the abort on its way out. A form that traps this
-  ;; anyway is answered by EVAL-INTERRUPT :FORCE, which terminates the thread.
-  ;; MESSAGE is the value the aborted evaluation exits with — the verb's own
+  ;; arms must not swallow the abort on its way out. Nothing sends it into a
+  ;; live thread any more: EVAL-INTERRUPT, with or without :FORCE, records a
+  ;; stop that the evaluation consumes at an owned boundary, and no thread is
+  ;; terminated. MESSAGE is the value the aborted evaluation exits with — the verb's own
   ;; text by default, the cancel's when the turn that spawned it was cut.
   (:documentation
-   "EVAL-INTERRUPT's soft abort, injected into the evaluating thread."))
+   "The abort an evaluation exits with when it signals this itself. EVAL-INTERRUPT
+never injects it: a stop is a request the evaluation consumes."))
 
 ;;; The two streams that stand in for a terminal: this eval's output, and the
 ;;; TUI's *ERROR-OUTPUT* (cli/entry.lisp TUI-ERROR-STREAM). Each is a line buffer
@@ -1432,8 +1434,10 @@ returns."
 
 (defun eval-interrupt (id &key force &aux (registry (exec-registry-instance))
                                           (process (find-background-eval registry id)))
-  "Abort background eval ID: the soft interrupt condition by default, thread
-termination with FORCE (for a form that traps the condition)."
+  "Ask background eval ID to stop. The request is consumed at an owned
+boundary: a waker its wait registered (socket, child group, host wait), or
+its return. FORCE is accepted and means the same: no thread is terminated,
+and a form that never returns keeps running until the gateway restarts."
   ;; Waits briefly for the exit, then returns what EVAL-STATUS returns.
   (when (and process (eq :running process.status)) (exec-stop-process process :hard force :by :model))
   (when process (exec-park-until registry id 2000))
@@ -1817,7 +1821,7 @@ yield-and-background lifecycle."
                             ;; what its (sh ...) child wrote so far: a
                             ;; command's capture is its value, read at exit
                             :opt "shell_output" (getf snapshot :shell-output)
-                            "message" "Form is still evaluating in the background. Do not wait for it: go on with anything else, or end your turn — when the evaluation exits, the harness reads it for you with an (eval-status ID) call whose result carries its remaining output and value: in this turn, after the calls running then, or, once the turn has ended, in a turn that wakes this session. Meanwhile (eval-status ID) is one non-blocking look, :SHELL-OUTPUT in it what its (sh ...) child wrote since the last; (list-evals) lists evaluations; (eval-interrupt ID) aborts one ((eval-interrupt ID :force t) if it traps the soft abort). (eval-await ID) parks at most the yield_time_ms of the call it runs in (10000 when unset), and only when a short wait beats ending the turn — never park a long window.")))))))
+                            "message" "Form is still evaluating in the background. Do not wait for it: go on with anything else, or end your turn — when the evaluation exits, the harness reads it for you with an (eval-status ID) call whose result carries its remaining output and value: in this turn, after the calls running then, or, once the turn has ended, in a turn that wakes this session. Meanwhile (eval-status ID) is one non-blocking look, :SHELL-OUTPUT in it what its (sh ...) child wrote since the last; (list-evals) lists evaluations; (eval-interrupt ID) asks one to stop - it ends once its owned work returns; :force t changes nothing and never kills the thread. (eval-await ID) parks at most the yield_time_ms of the call it runs in (10000 when unset), and only when a short wait beats ending the turn — never park a long window.")))))))
             ;; A cancel that cut this call takes its evaluation with it.
             ;; The cancel reaches a parked call as the worker's unwind
             ;; (WITH-CANCELLABLE-WAIT's throw) or as the park's wake, and
@@ -1825,8 +1829,8 @@ yield-and-background lifecycle."
             ;; on its own thread with its shell children under it. Left
             ;; alone it would run to its own end and nothing would ever
             ;; read the value: a cancelled turn's exits wake nobody. The
-            ;; soft abort is what (eval-interrupt) sends, and SH's unwind
-            ;; kills the child tree; the watcher's exit fact closes the
+            ;; stop request is what (eval-interrupt) records; SH's waker
+            ;; signals the child group and its cleanup kills the tree; the watcher's exit fact closes the
             ;; row with the cancel's own text. Only this call's
             ;; evaluation: one handed off at an earlier yield window was
             ;; reported to the model as background and stays that way.

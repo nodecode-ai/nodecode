@@ -317,9 +317,10 @@ transaction -- the caller's own when WITHIN evaluates to its handle."
 ;;; The lock above is the caller's discipline; this is the connection's own.
 ;;; A snippet can reach the bare handle — (require-open-store), or the struct's
 ;;; slot — and loop EXECUTE-TO-LIST on the handle from its own thread, no lock,
-;;; beside the turn thread's durable writes. An EVAL-INTERRUPT that stops it
-;;; unwinds that thread out of a glibc frame (INTERRUPT-THREAD runs its
-;;; function wherever the thread is, foreign frames included). Without the
+;;; beside the turn thread's durable writes. An interrupt delivered to that
+;;; thread (the runaway probe's; an eval stop no longer is one) would unwind
+;;; it out of a glibc frame (INTERRUPT-THREAD runs its function wherever the
+;;; thread is, foreign frames included). Without the
 ;;; guards below, the connection's recursive mutex would be left locked with no
 ;;; owner; every later statement in the image waits on it forever, and the
 ;;; shell would see only "background failed: I/O timeout" from the control call

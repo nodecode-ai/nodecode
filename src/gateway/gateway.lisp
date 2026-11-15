@@ -2118,8 +2118,8 @@ the session's selection back."
 (define-sync-command :interrupt-exec ((exec-id :integer "exec_id"))
   ;; The pending-exec view's gesture: the operator stops a background
   ;; evaluation from the surface they are watching, instead of asking a model
-  ;; to call (eval-interrupt). The soft abort is exactly the condition
-  ;; EVAL-INTERRUPT's default arm sends; the exit fact, the band row's
+  ;; to call (eval-interrupt). The stop is exactly the request
+  ;; EVAL-INTERRUPT records; the exit fact, the band row's
   ;; retirement and the wake all follow the ordinary path, so this command
   ;; only asks and answers.
   (:require (and sid exec-id) "session_id and exec_id are required")

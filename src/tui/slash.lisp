@@ -87,7 +87,7 @@
                             "The prompts, the answers, the plans and one line per call, as the transcript shows them, in a file named after the session: in this shell's folder, or in a folder or at a file it asks for. Reasoning and a call's output stay out; the web page's Markdown button saves the same file")
         (make-slash-command "execs" "Watch an exec's live output or how it ended, or interrupt it"
                             :help-detail
-                            "The band shows a pending exec in a five-line window; /execs opens the exec's retained output at panel height, live while it runs. Ctrl+X there interrupts it (the soft abort), Delete the same; Esc closes. The last execs that ended here stay listed with how each ended and its last lines. With more than one exec, a picker opens first, running ones on top, and Enter opens one")
+                            "The band shows a pending exec in a five-line window; /execs opens the exec's retained output at panel height, live while it runs. Ctrl+X there asks it to stop (it ends when its owned work returns), Delete the same; Esc closes. The last execs that ended here stay listed with how each ended and its last lines. With more than one exec, a picker opens first, running ones on top, and Enter opens one")
         (make-slash-command "tree" "Browse the session tree: continue from a turn, or rewind"
                             :aliases '("checkpoints"))
         (make-slash-command "undo" "Rewind the last turn"

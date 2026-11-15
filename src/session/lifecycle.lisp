@@ -221,10 +221,9 @@ records the request and runs this wait's wakers. The request is consumed
 before BODY and after BODY returns. Nothing is injected into a live thread."
   ;; TURN-FORM evaluating to nil (no durable turn executing) runs BODY plain.
   ;;
-  ;; The interruption crosses BODY as a THROW — see CANCEL-WAIT-INTERRUPTION
-  ;; for why a signalled condition cannot survive BODY's foreign handlers —
-  ;; and the ordinary TURN-CANCELLED-CONDITION is signalled here at the region
-  ;; boundary, so partial-text capture and durable closure behave exactly as a
+  ;; Nothing crosses BODY: a waker wakes the resource BODY waits on, BODY
+  ;; returns by itself, and the ordinary TURN-CANCELLED-CONDITION is
+  ;; signalled here at the region boundary, so partial-text capture and durable closure behave exactly as a
   ;; between-chunks cancel while no HANDLER-BIND inside BODY ever sees a
   ;; condition it could swallow.
   `(call-with-cancellable-wait ,turn-form (lambda () ,@body)))
