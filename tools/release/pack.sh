@@ -84,7 +84,13 @@ fi
 # labels, and a label is what a channel pointer names.
 label="$(git rev-parse --short=9 "$REV")"
 name="nodecode-${label}-${arch}-${os}"
-work="$(mktemp -d)"
+# The build tree is named by its real path. SBCL compiles a file under its
+# truename, so ASDF caches the tree's fasls at common-lisp/<impl>/<truename>,
+# and the trap below removes that copy by the same name. A temp folder reached
+# through a symlink -- every one on macOS, where mktemp answers /var/folders/...
+# and the file is /private/var/folders/... -- left a cache tree the trap never
+# matched: about 13 MB per Mac build, kept forever.
+work="$(cd "$(mktemp -d)" && pwd -P)"
 stage_root=''
 trap 'rm -rf "$work" "${XDG_CACHE_HOME:-$HOME/.cache}"/common-lisp/*"$work" ${stage_root:+"$stage_root"}' EXIT
 
