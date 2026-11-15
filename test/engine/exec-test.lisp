@@ -926,9 +926,10 @@ completed. BODY runs with SID bound."
     (is (null injected) "the requested callback never ran")
     (is (not (sleep-running-p marker)) "the finite child exited naturally")))
 
-(deftest cancel-of-a-parked-call-leaves-its-evaluation-pending (with-exec-registry (registry))
-  ;; Match the gateway's request + wake sequence. The turn may cancel while
-  ;; the owned eval and its real child remain alive until the child's return.
+(deftest cancel-of-a-parked-call-ends-its-child-and-its-evaluation (with-exec-registry (registry))
+  ;; Match the gateway's request + wake sequence. The cancel's waker signals
+  ;; the call's shell tree (the command may lead a session of its own); the
+  ;; evaluation then returns by itself and exits as the user's interruption.
   (with-session-store ("cancel-parked")
     (let* ((marker "1.743")
            (turn (nlk:admit-turn "cancel-parked" "cp-cmd" "run it"))
@@ -946,15 +947,12 @@ completed. BODY runs with SID bound."
               (nlk:request-cancel-turn "cancel-parked" turn-id :operator)
               (nle::wake-exec-session registry "cancel-parked")
               (is (eq :cancelled (bt2:join-thread worker)))
-              (is (eq :running (nle::exec-process-status process)))
-              (is (getf (nle::eval-snapshot-plist registry (nle::exec-process-id process)) :stop-pending))
-              (is (bt2:thread-alive-p (nle::exec-process-wait-thread process)))
-              (is (sleep-running-p marker) "turn cancellation is not child termination")
+              (is-eventually (not (sleep-running-p marker)) "no child outlives the cancel" :seconds 3)
               (is (equal "turn.cancelled" (nlk:turn-terminal-kind turn-id)))
               (is (= 1 (%turn-kind-count turn-id nlk::+kind-tool-result+)))
               (is (nle::exec-await-all-exits registry :timeout-seconds 3))
               (is (eql 130 (nle::exec-process-exit-code process)))
-              (is (not (sleep-running-p marker)) "the child completed naturally"))))))))
+              (is (not (sleep-running-p marker)) "the child is gone"))))))))
 
 (deftest a-cancelled-turns-pending-call-keeps-what-its-shell-wrote (with-exec-registry (registry))
   (with-session-store ("cancel-wrote")
@@ -973,7 +971,6 @@ completed. BODY runs with SID bound."
             (nlk:request-cancel-turn "cancel-wrote" turn-id :operator)
             (nle::wake-exec-session registry "cancel-wrote")
             (is (eq :cancelled (bt2:join-thread worker)))
-            (is (eq :running (nle::exec-process-status (spawned))))
             (is (search "half-way" (nle::octets-to-text (nle::exec-process-preview (spawned)))))
             (is (nle::exec-await-all-exits registry :timeout-seconds 3))
             (is (eql 130 (nle::exec-process-exit-code (spawned))))))))))
