@@ -95,10 +95,9 @@
            (progn
              (is (sb-thread:wait-on-semaphore entered :timeout 5))
              (setf stolen (dexador.connection-cache:steal-connection key))
-             (is (eq stolen (usocket:socket-stream own)) "another request took the pooled connection")
+             (is (eq stolen (usocket:socket-stream own)) "another owner took the pooled connection")
              (nlk:request-cancel-turn "waker-pool" turn.turn-id "esc")
-             (is (and stolen (not (%stream-cut-p stolen)))
-                 "the connection's new owner keeps it"))
+             (is (and stolen (not (%stream-cut-p stolen))) "its new owner keeps it"))
         (sb-thread:signal-semaphore release)
         (ignore-errors (bt2:join-thread worker))
         (when own (usocket:socket-close own))
