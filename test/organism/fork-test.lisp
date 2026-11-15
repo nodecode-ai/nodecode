@@ -134,12 +134,15 @@ NEEDLE, or NIL."
              (caller (bt2:make-thread (lambda ()
                                         (let ((nlk:*scribe-session-id* session)
                                               (nle::*current-durable-turn* current))
-                                          (catch 'stop (nlk:fork "a task the caller gives up on"))))
+                                          (nlk:fork "a task the caller gives up on")))
                                       :name "fork-caller")))
         (is (await (:timeout 10) (nlk:active-turn-p child)) "the fork's turn runs")
-        (nlk:interrupt-thread-safely caller (lambda () (throw 'stop :stopped)))
-        (is (eq :stopped (bt2:join-thread caller)) "the call stopped waiting")
-        (is (await (:timeout 10) (nlk:events :session-id child :kind "turn.cancelled" :as :exists)) "and its fork's turn was cancelled")
+        ;; A live caller is not thrown out. The cleanup a stopped wait runs
+        ;; is this cancel; the caller then observes the child's end.
+        (nlk:request-cancel-turn child (fork-test-active-turn child)
+                                 "the call waiting on it stopped")
+        (is (await (:timeout 10) (nlk:events :session-id child :kind "turn.cancelled" :as :exists)) "the fork's turn was cancelled")
+        (bt2:join-thread caller)
         (is (zerop (hash-table-count nlk::*fork-waiting*)) "no fork is left waited on")))))
 
 (defun fork-test-active-turn (session)

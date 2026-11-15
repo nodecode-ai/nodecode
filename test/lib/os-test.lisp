@@ -939,127 +939,64 @@ process's own, or NIL."
   (is (null (nlk:wait-deadline-reason (make-condition 'nlk:wait-deadline-passed :seconds 1))))
   (is (equal "cut short" (nlk:wait-deadline-reason (make-condition 'simple-error :format-control "cut short")))))
 
-;;; --- an interruption that unwinds lands where it strands nothing -----------
+;;; --- live work is not unwound across an unknown foreign caller --------------
 
-(defun c-malloc-and-free (size)
-  "One malloc of SIZE bytes and its free, in C."
-  (sb-alien:alien-funcall (sb-alien:extern-alien "free" (function sb-alien:void sb-sys:system-area-pointer))
-                          (sb-alien:alien-funcall (sb-alien:extern-alien "malloc" (function sb-sys:system-area-pointer
-                                                                                          sb-alien:unsigned-long))
-                                                  size)))
+(deftest an-interruption-classifier-cannot-prove-an-unwind-safe ()
+  (is (null (nlk:interruption-may-unwind-p)) "even Lisp may be a foreign callback")
+  (let ((ran nil))
+    (is (null (nlk:interrupt-thread-safely (bt2:current-thread) (lambda () (setf ran t)))))
+    (is (null ran) "no synchronous exception to the refusal contract"))
+  (is (signals-error error (nlk:terminate-thread-safely :not-a-thread))))
 
-(defun spin-in-malloc ()
-  "Call malloc and free forever, at sizes past glibc's thread cache, so that
-every call takes its arena's lock; on Darwin at large sizes, which take xzone
-malloc's segment group lock."
-  (loop (c-malloc-and-free #-darwin (+ 2048 (random 60000))
-                           #+darwin (+ 65536 (random 1000000)))))
+(deftest refused-interruptions-neither-run-now-nor-remain-queued ()
+  ;; Both accepted representations, repeated requests, and eventual natural
+  ;; return. The marker is checked AFTER the worker has ended: merely seeing
+  ;; it unchanged while the worker is parked would miss a queued callback.
+  (dolist (native-p '(nil t))
+    (let* ((ready (bt2:make-semaphore))
+           (release (bt2:make-semaphore))
+           (ran nil)
+           (thread (bt2:make-thread (lambda ()
+                                      (bt2:signal-semaphore ready)
+                                      (bt2:wait-on-semaphore release :timeout 5)
+                                      :returned)
+                                    :name "cooperative refusal test"))
+           (target (if native-p (bt2:thread-native-thread thread) thread)))
+      (unwind-protect
+           (progn
+             (is (bt2:wait-on-semaphore ready :timeout 5))
+             (dotimes (i 3)
+               (is (null (nlk:interrupt-thread-safely target (lambda () (setf ran t)) :within 0)))
+               (is (null (nlk:terminate-thread-safely target :within 0))))
+             (is (bt2:thread-alive-p thread) "refusal retains the live worker")
+             (is (null ran) "nothing ran on the target"))
+        (bt2:signal-semaphore release)
+        (is (eq :returned (nlk::%join-bounded thread 5)) "the owner released its worker naturally"))
+      (is (not (bt2:thread-alive-p thread)))
+      (is (null ran) "nothing was queued for later either")
+      (is (eq :gone (nlk:interrupt-thread-safely target (lambda () (setf ran t)))))
+      (is (eq :gone (nlk:terminate-thread-safely target)))
+      (is (null ran) "the dead-thread observation does not call the function"))))
 
-(defun every-arena-answers-p ()
-  "Whether malloc_trim, which takes every arena's lock in turn, returns within
-five seconds on a thread of its own. Windows' C library has no malloc_trim:
-there a thousand mallocs and frees over the sizes the spinner asks return in
-that time, each size class's lock taken. Nor has Darwin's: there a thousand
-large ones take the segment group lock, which a thread unwound out of malloc
-left held as it exited -- and the process aborts on it (`os_unfair_lock is
-corrupt, or owner thread exited without unlocking')."
-  (eq :ok (nlk::%join-bounded
-           (bt2:make-thread (lambda ()
-                              #+linux
-                              (sb-alien:alien-funcall (sb-alien:extern-alien "malloc_trim" (function sb-alien:int sb-alien:unsigned-long)) 0)
-                              #+win32
-                              (loop for size from 2048 below 62048 by 60 do (c-malloc-and-free size))
-                              #+darwin
-                              (loop for size from 65536 below 1065536 by 1000 do (c-malloc-and-free size))
-                              :ok)
-                            :name "arena probe")
-           5)))
-
-(deftest an-unwinding-interruption-never-strands-a-malloc-lock ()
-  ;; The frozen suite: a stop unwound a thread out of malloc, its arena's lock
-  ;; stayed held, and the next free elsewhere waited on it for six hours. A
-  ;; thread that spends most of its time inside malloc is stopped two hundred
-  ;; times, each way a stop is sent; every arena still answers after. With
-  ;; BT2:INTERRUPT-THREAD in place of the safe delivery this froze in its
-  ;; first few dozen stops.
-  (dolist (stop (list (lambda (thread) (nlk:interrupt-thread-safely thread (lambda () (throw 'stopped :stopped))))
-                      (lambda (thread) (nlk:terminate-thread-safely thread))
-                      (lambda (thread) (bt2:destroy-thread thread))))
-    (let ((ended 0))
-      (dotimes (i 200)
-        (let* ((ready (bt2:make-semaphore))
-               (thread (bt2:make-thread (lambda () (catch 'stopped
-                                                     (bt2:signal-semaphore ready)
-                                                     (spin-in-malloc)))
-                                        :name "spins in malloc")))
-          (bt2:wait-on-semaphore ready :timeout 5)
-          (sleep (/ (random 2000) 1000000))
-          (funcall stop thread)
-          (nlk::%join-bounded thread 5)
-          (unless (bt2:thread-alive-p thread)
-            (incf ended))))
-      (is (= 200 ended) "every stop ended its thread")
-      (is (every-arena-answers-p) "no arena's lock was left held"))))
-
-(deftest an-unwinding-interruption-runs-only-outside-other-c-code ()
-  ;; Every run of the function happened where the classifier allows an
-  ;; unwind; and a thread spinning in malloc was found inside C at least once,
-  ;; the case the delivery sends again rather than unwinds there.
-  (let* ((stop nil)
-         (thread (bt2:make-thread (lambda () (loop until stop do (c-malloc-and-free (+ 2048 (random 60000)))))
-                                  :name "spins in malloc"))
-         (runs 0) (unsafe 0) (in-c 0) (deliveries 0)
-         ;; At least 300 deliveries; where the landing inside malloc is
-         ;; asserted, more until one has landed there, bounded in time: on a
-         ;; loaded runner the spinner can spend 300 straight landings in its
-         ;; Lisp loop, which says nothing about the classifier.
-         #+(or (and linux x86-64) (and darwin arm64))
-         (deadline (+ (get-internal-real-time) (* 20 internal-time-units-per-second))))
+(deftest bordeaux-destroy-refuses-instead-of-dropping-a-live-handle ()
+  (let* ((ready (bt2:make-semaphore))
+         (release (bt2:make-semaphore))
+         (thread (bt2:make-thread (lambda ()
+                                    (bt2:signal-semaphore ready)
+                                    (bt2:wait-on-semaphore release :timeout 5)
+                                    :returned)
+                                  :name "Bordeaux refusal test")))
     (unwind-protect
-         (loop while (or (< deliveries 300)
-                         #+(or (and linux x86-64) (and darwin arm64))
-                         (and (zerop in-c) (< (get-internal-real-time) deadline)))
-               do (incf deliveries)
-           (nlk:interrupt-thread-safely thread (lambda ()
-                                                 (incf runs)
-                                                 (unless (nlk:interruption-may-unwind-p) (incf unsafe))))
-           ;; a plain delivery, which never unwinds, says where it landed
-           (let ((landed (bt2:make-semaphore)) (where (list nil)))
-             (bt2:interrupt-thread thread (lambda () (setf (car where) (nlk:interruption-may-unwind-p))
-                                            (bt2:signal-semaphore landed)))
-             (bt2:wait-on-semaphore landed :timeout 5)
-             (unless (car where) (incf in-c))))
-      (setf stop t)
-      (nlk::%join-bounded thread 5))
-    (is (= deliveries runs) "each delivery ran")
-    (is (zerop unsafe) "none ran inside C code")
-    #+(or (and linux x86-64) (and darwin arm64))
-    (is (plusp in-c) "the spinning thread was found inside malloc")))
-
-(deftest a-parked-thread-still-takes-an-unwinding-interruption ()
-  ;; A stop is for a thread parked on something outside it, so the safe
-  ;; delivery must still land in a system call that waits: a sleep, a read
-  ;; on a pipe nobody writes, an accept nobody dials, a futex wait. Windows'
-  ;; SBCL runs an interruption only back in Lisp or inside its own waits (a
-  ;; sleep, a lock, a stream's read): accept() there is Winsock's, a foreign
-  ;; call no interruption reaches, and nodecode parks in none (the gateway
-  ;; waits in usocket's two-second slices, the jail's socat accepts).
-  (dolist (park (list (lambda () (sleep 30))
-                      #-win32
-                      (lambda () (multiple-value-bind (in out) (sb-posix:pipe)
-                                   (declare (ignore out))
-                                   (read-byte (sb-sys:make-fd-stream in :input t :element-type '(unsigned-byte 8)) nil)))
-                      #-win32
-                      (lambda () (let ((socket (make-instance 'sb-bsd-sockets:inet-socket :type :stream :protocol :tcp)))
-                                   (sb-bsd-sockets:socket-bind socket #(127 0 0 1) 0)
-                                   (sb-bsd-sockets:socket-listen socket 1)
-                                   (unwind-protect (sb-bsd-sockets:socket-accept socket)
-                                     (sb-bsd-sockets:socket-close socket))))
-                      (lambda () (bt2:wait-on-semaphore (bt2:make-semaphore)))))
-    (let ((thread (bt2:make-thread (lambda () (catch 'stopped (funcall park) :returned)) :name "parked")))
-      (sleep 0.2)
-      (is (eq :ran (nlk:interrupt-thread-safely thread (lambda () (throw 'stopped :stopped)))))
-      (is (eq :stopped (nlk::%join-bounded thread 5)) "and unwound it out of its wait"))))
+         (progn
+           (is (bt2:wait-on-semaphore ready :timeout 5))
+           (is (search "cooperative cancellation"
+                       (refusal-text bt2:bordeaux-threads-error (bt2:destroy-thread thread))))
+           (is (bt2:thread-alive-p thread) "an error, not a false successful destruction"))
+      (bt2:signal-semaphore release)
+      (is (eq :returned (nlk::%join-bounded thread 5))))
+    (is (eq thread (bt2:destroy-thread thread)) "already dead: no interruption is sent"))
+  (is (search "Cannot destroy the current thread"
+              (refusal-text bt2:bordeaux-threads-error (bt2:destroy-thread (bt2:current-thread))))))
 
 ;;; --- the shared objects a saved image opens again --------------------------
 

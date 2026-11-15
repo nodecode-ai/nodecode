@@ -3523,11 +3523,10 @@ did not say."
                     ;; keeps; voiding the cancel backstop's accumulation the same
                     ;; way clears only what it did not.
                     (void-partial-stream)
-                    ;; The backoff itself is a cancellable wait: Esc during a
-                    ;; long Retry-After pause interrupts the sleep instead of
-                    ;; letting the retry fire first.
+                    ;; The backoff itself is a cancellable wait: Esc notifies
+                    ;; it, and the retry does not fire first.
                     (nlk:with-cancellable-wait (*current-durable-turn*)
-                      (sleep delay))))))))))))))
+                      (nlk::call-with-cancellable-sleep *current-durable-turn* delay))))))))))))))
 
 ;;; --- tool dispatch ------------------------------------------------------
 

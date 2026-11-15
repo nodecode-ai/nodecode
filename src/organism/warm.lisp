@@ -117,7 +117,8 @@
           ;; acceptor; the workers are waited out, bounded, and a dump they
           ;; would outlive is refused out loud.
           (dex:clear-connection-pool)
-          (stop-gateway)
+          (unless (stop-gateway)
+            (error "warm-image: gateway listener stop is still pending"))
           (setf hunchentoot:*default-connection-timeout* timeout)
           (nlk:close-store)
           (dolist (suffix '("" "-wal" "-shm" "-journal" ".lock" ".owner"))
@@ -127,11 +128,9 @@
                                     (search "hunchentoot-worker" (or (sb-thread:thread-name thread) "")))
                                   (sb-thread:list-all-threads))))
             (loop repeat 150 while (workers) do (sleep 0.02))
-            ;; Without this, a worker still in a kept-alive read after that
-            ;; would wait for a read timeout SBCL never applies to a socket
-            ;; on Windows: end it, and its socket with it.
-            (dolist (worker (workers))
-              (ignore-errors (nlk:terminate-thread-safely worker)))
-            (loop repeat 150 while (workers) do (sleep 0.02))
+            ;; A worker can be inside a native call holding library locks.
+            ;; Refuse the dump instead of unwinding that unknown frame; an
+            ;; open worker remains live and visible to the image's owner.
             (when (workers)
-              (error "warm-image: a gateway worker did not stop"))))))))
+              (error "warm-image: gateway workers still running: ~{~a~^, ~}"
+                     (mapcar #'sb-thread:thread-name (workers))))))))))

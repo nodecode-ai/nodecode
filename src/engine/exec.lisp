@@ -515,39 +515,32 @@ envelope and the harness will wake the session with the result."
 
 ;;; --- append / stop / reclaim ------------------------------------------------
 
-(defun exec-stop-process (process &key hard message by reason &aux (thread process.wait-thread))
-  "Abort a background evaluation: by default the BACKGROUND-EVAL-INTERRUPT
-condition injected into its thread; with HARD, thread termination
-(SB-THREAD's abort unwinds past every handler, the guarantee a form that
-swallows the soft interrupt condition forces). BY names who stopped it --
-:OPERATOR from a surface, :TURN when its turn was cancelled for REASON,
-:SHUTDOWN, :MODEL through (eval-interrupt) -- for the card that closes it."
-  ;; MESSAGE, when given, is the value the soft abort exits with in place of
-  ;; the verb's own text. Never under the registry lock (a shutdown holds it
-  ;; here): the stop is one slot, set once.
-  (when (and by (null process.stopped) (eq :running process.status))
-    (setf process.stopped (list :by by :reason reason :at (get-internal-real-time)
-                                :end (exec-total-len process))))
-  (if hard
-      (when (and thread (bt2:thread-alive-p thread))
-        (nlk:terminate-thread-safely thread))
-      ;; Only a still-running eval takes the abort (INTERRUPT-RUNNING).
-      (interrupt-running process (lambda ()
-                                   (apply #'error 'background-eval-interrupt
-                                          (and message (list :message message)))))))
+(defun eval-stop-message (process)
+  "The text a consumed stop leaves as PROCESS's value."
+  (or (getf process.stopped :message)
+      "ERROR: evaluation aborted by (eval-interrupt)"))
 
-(defun interrupt-running (process fn &key (within 2) &aux (thread process.wait-thread))
-  ;; FN on PROCESS's evaluating thread while that lives => the thread. The
-  ;; interruption may land after the eval completed but before its thread
-  ;; exits; signalling then would unwind outside the lifecycle's handler, so
-  ;; FN runs there only while the evaluation still runs. Delivered where its
-  ;; unwind strands no C library's lock (INTERRUPT-THREAD-SAFELY, WITHIN).
-  (when (and thread (bt2:thread-alive-p thread))
-    (ignore-errors
-     (nlk:interrupt-thread-safely
-      thread (lambda () (when (eq :running process.status) (funcall fn)))
-      :within within))
-    thread))
+(defun exec-stop-process (process &key hard message by reason)
+  "Request that PROCESS stop at its next owned boundary. HARD is ignored:
+a live thread is never terminated, and a refusal is not an exit. BY names
+who asked -- :OPERATOR from a surface, :TURN when its turn was cancelled
+for REASON, :SHUTDOWN, :MODEL through (eval-interrupt) -- for the card that
+closes it once the owned work has actually returned. The first request sticks."
+  ;; MESSAGE, when given, is the value the consumed stop exits with. Never
+  ;; under the registry lock: the stop is one slot, set once.
+  (declare (ignore hard))
+  (when (and by (null process.stopped) (eq :running process.status))
+    (setf process.stopped (list :by by :reason reason :message message
+                                :at (get-internal-real-time)
+                                :end (exec-total-len process))))
+  (exec-notify-change (exec-registry-instance))
+  process)
+
+(defun interrupt-running (process fn &key (within 2))
+  "Refuse to inject FN into PROCESS. A stop is a request consumed at an
+owned boundary; WITHIN is retained and ignored. => NIL."
+  (declare (ignore process fn within))
+  nil)
 
 ;;; --- the runaway probe -------------------------------------------------------
 ;;; Without this, a recursion that allocates on every call would overflow the
@@ -615,24 +608,12 @@ none repeats: the name of the recursion, for the verdict."
                 (most-present (sb-di::signal-context-frame
                                (sb-alien:alien-sap (sb-di::nth-interrupt-context (1- index)))))))))))
 
-(defun scan-eval-runaways (registry &aux (backgrounded '()))
-  "The watcher's pass over the running evaluations: interrupt each live
-evaluating thread with the probe — the registry's backgrounded processes,
-and the threads evaluating a snippet in place, which no registry holds."
-  ;; Never signals here — a thread that exited between the listing and the
-  ;; interrupt is not an event.
-  (dolist (process (bt2:with-lock-held (registry.lock) (copy-list registry.processes)))
-    ;; only a still-running evaluation takes the verdict (INTERRUPT-RUNNING)
-    (when (eq :running process.status)
-      (when-let (thread (interrupt-running process 'eval-runaway-thread-probe :within 0))
-        (push thread backgrounded))))
-  ;; A synchronous snippet has no process; its thread carries the evaluation
-  ;; itself. Skip one already probed above as a background eval's thread.
-  (dolist (thread (guarded-evaluating-threads))
-    (unless (member thread backgrounded)
-      ;; One delivery: a probe that lands inside C code skips this pass.
-      (ignore-errors
-       (nlk:interrupt-thread-safely thread #'eval-runaway-thread-probe :within 0)))))
+(defun scan-eval-runaways (registry)
+  "Observe REGISTRY's running evaluations without injecting an unwind.
+An interrupted program counter cannot prove a foreign caller released its
+locks, so this pass neither interrupts nor reports anyone stopped."
+  (declare (ignore registry))
+  nil)
 
 (defun control-stack-usage (&aux (sp (sb-sys:sap-int (sb-vm::current-sp)))
                                  (thread sb-thread:*current-thread*)
@@ -735,53 +716,39 @@ its evaluation.")
 (defparameter *eval-guard-interval-seconds* 0.2
   "Seconds between runaway passes.")
 
+(defvar *eval-stop-reason* nil
+  "NIL, or a one-element list whose car a pending observational stop writes.
+The after-GC hook sets :HEAP there. It never unwinds the thread that collected.")
+
 (defun eval-runaway-gc-hook ()
-  "Run after every collection, on the thread that triggered it."
-  ;; A poll cannot win this race: the fatal error is "Heap exhausted during
-  ;; garbage collection", so the image dies inside the collection, and between
-  ;; one sample and the next a recursion that conses can cross the whole
-  ;; remaining space. After a collection the number is exact and the moment is
-  ;; the right one — what is still live is what the evaluation is holding, and
-  ;; if that is already past the soft fraction no later collection will save
-  ;; it. Only a thread evaluating a snippet is unwound; any other thread that
-  ;; happens to collect just returns. IGNORE-ERRORS guards the LOOKUP only.
-  ;; Wrapping the signal in it too would swallow the very condition the hook
-  ;; exists to raise, and the image would still die.
-  (when-let (verdict (ignore-errors
-                      (let ((heap (sb-kernel:dynamic-usage))
-                            (cap (sb-ext:dynamic-space-size)))
-                        (when (and (> heap (* *eval-heap-soft-fraction* cap))
-                                   (bt2:with-lock-held (*eval-guard-lock*)
-                                     (member (bt2:current-thread) *evaluating-threads*)))
-                          (format nil "heap runaway: ~:d MB of ~:d MB still live after a collection during this evaluation — unwound before heap exhaustion, which is fatal inside a collection and takes the image. Hold less at once."
-                                  (floor heap 1048576) (floor cap 1048576))))))
-    (error 'eval-runaway :what verdict)))
+  "After a collection, mark a pending heap stop when this thread is evaluating.
+=> NIL. No root (*EVAL-STOP-REASON* not a cons) is inert. A nested call is not
+an owned cancellation boundary: the mark is pending until that boundary
+consumes a stop request, and this hook does not create one."
+  (unless (consp *eval-stop-reason*)
+    (return-from eval-runaway-gc-hook nil))
+  (when (ignore-errors
+         (let ((heap (sb-kernel:dynamic-usage))
+               (cap (sb-ext:dynamic-space-size)))
+           (and (> heap (* *eval-heap-soft-fraction* cap))
+                (bt2:with-lock-held (*eval-guard-lock*)
+                  (member (bt2:current-thread) *evaluating-threads*)))))
+    (setf (car *eval-stop-reason*) :heap))
+  nil)
 
 (defun ensure-eval-guard ()
-  "Start the runaway watcher if it is not already running, and answer its
-worker."
-  ;; Idempotent and cheap enough to call at the head of every evaluation: the
-  ;; common path is one lock hold and a live-thread test.
-  (bt2:with-lock-held (*eval-guard-lock*)
-    ;; The hook is the guard that matters for the heap; the watcher below
-    ;; still catches a control-stack runaway and a leak that never collects.
-    (pushnew 'eval-runaway-gc-hook sb-ext:*after-gc-hooks*)
-    (if (and *eval-guard-worker*
-             (ignore-errors (bt2:thread-alive-p (worker-thread *eval-guard-worker*))))
-        *eval-guard-worker*
-        (setf *eval-guard-worker*
-              (worker-start "eval-guard"
-                            (lambda ()
-                              (ignore-errors (scan-eval-runaways (exec-registry-instance))))
-                            :wake (lambda () *eval-guard-interval-seconds*))))))
+  "Register the observational after-GC hook. No watcher thread is started:
+a probe cannot prove an unwind safe, so none is injected."
+  (pushnew 'eval-runaway-gc-hook sb-ext:*after-gc-hooks*)
+  nil)
 
 (defun call-with-evaluation-guarded (thunk)
-  "Run THUNK with this thread on the guarded list and the watcher running."
-  ;; The list entry is removed on every exit, normal or not.
+  "Run THUNK with this thread on the observational list. No watcher starts."
+  ;; An outer *EVAL-STOP-REASON* is kept, so a test's preallocated cell is
+  ;; the one the hook writes. The list entry is removed on every exit.
   (ensure-eval-guard)
   (let ((self (bt2:current-thread))
-        ;; Bound outside the UNWIND-PROTECT, so it still holds while a
-        ;; verdict's unwind runs the cleanups inside.
+        (*eval-stop-reason* (if (consp *eval-stop-reason*) *eval-stop-reason* (list nil)))
         (*runaway-climb* (list nil)))
     (bt2:with-lock-held (*eval-guard-lock*)
       (push self *evaluating-threads*))
@@ -812,12 +779,14 @@ worker."
   (exec-notify-change registry))
 
 (defun exec-destroy-process (process)
-  "Reclamation once the process left the registry list: never called with
-the registry lock held (it joins the wait thread)."
+  "Join PROCESS once it has exited. A still-running evaluation is asked to
+stop and retained: its handle is not dropped, and this returns NIL."
   (when (eq :running process.status)
-    (exec-stop-process process :hard t))
+    (exec-stop-process process :by :shutdown)
+    (return-from exec-destroy-process nil))
   (when-let (thread (shiftf process.wait-thread nil))
-    (ignore-errors (bt2:join-thread thread))))
+    (ignore-errors (bt2:join-thread thread)))
+  t)
 
 ;;; --- parked waits -----------------------------------------------------------
 
@@ -845,7 +814,11 @@ WAKE-EXEC-SESSION, or — when CURSOR is given — output arrives past it, or it
                         (or (> (exec-total-len process) cursor)
                             (> process.shell-total process.shell-model-cursor)))
                    ;; a wake is one-shot: taken as it is read
-                   (shiftf process.wake-pending nil)))))
+                   (shiftf process.wake-pending nil)
+                   ;; A turn cancel is a request, read at this owned wait.
+                   ;; The evaluating thread is not unwound.
+                   (and *current-durable-turn*
+                        (nlk:turn-cancellation-requested-p *current-durable-turn*))))))
 
 (defun wake-exec-session (registry session-id)
   "Wake every parked wait on SESSION-ID's processes (turn cancellation must
@@ -1091,11 +1064,12 @@ retained buffer as one chunk at the ring base."
 ;;; --- listing and shutdown ---------------------------------------------------
 
 (defun terminate-all-execs (registry)
-  "Abort every still-running evaluation."
-  ;; Gateway shutdown calls this so no background work outlives the image that
-  ;; owns it.
-  (do-registry (process registry)
-    when (eq :running process.status) do (exec-stop-process process :hard t :by :shutdown)))
+  "Ask every still-running evaluation to stop. The request is recorded
+outside the registry lock: notifying waiters takes that lock."
+  (dolist (process (bt2:with-lock-held ((exec-registry-lock registry))
+                     (remove-if-not (lambda (process) (eq :running process.status))
+                                    registry.processes)))
+    (exec-stop-process process :by :shutdown)))
 
 (defun exec-await-all-exits (registry &key (timeout-seconds 5))
   "Block until no registered process still reports :RUNNING, or
@@ -1109,13 +1083,17 @@ TIMEOUT-SECONDS."
                (loop for process in registry.processes never (eq :running process.status)))))
 
 (defun destroy-all-execs (registry)
-  "Empty the registry and reclaim every process — the Registry.deinit half
-of the Zig shutdown contract, which the image-lifetime DEFGLOBAL registry
-otherwise never performs across gateway restarts: remove every entry under
-the lock, then kill/join/close outside it (EXEC-DESTROY-PROCESS joins the
-wait thread and must not hold the lock)."
-  ;; Callers own the durable exit-fact ordering: collect the final updates
-  ;; BEFORE this forgets the exits.
+  "Reclaim evaluations that have exited. A still-running one is asked to
+stop and retained, and this returns NIL: its registry entry and thread
+handle stay owned until the owned work returns. Callers that need the
+exits first use EXEC-AWAIT-ALL-EXITS."
+  (let ((live (bt2:with-lock-held ((exec-registry-lock registry))
+                (remove-if-not (lambda (process) (eq :running process.status))
+                               registry.processes))))
+    (dolist (process live)
+      (exec-stop-process process :by :shutdown))
+    (when live
+      (return-from destroy-all-execs nil)))
   (mapc #'exec-destroy-process
         (bt2:with-lock-held ((exec-registry-lock registry))
           (prog1 registry.processes
@@ -1278,26 +1256,29 @@ running evaluation's live preview, which the model's next look at it reads
              ;; what the form printed lands before its exit; a no-op once flushed
              (ignore-errors (flush-line-output stream))
              (finish-background-eval registry process exit-code value metadata)))
-      (unwind-protect
-          (handler-case
-              (multiple-value-bind (value-text error-p metadata)
-                  (funcall thunk stream)
-                (flush-line-output stream)
-                (finish (if error-p 1 0) value-text metadata))
-            (background-eval-interrupt (interrupt)
-              (finish 130 (background-eval-interrupt-message interrupt)))
-            ;; The last-resort net. EVAL-FORM-PRINTED already answers form
-            ;; errors as text; what lands here is the seam's own failure —
-            ;; a condition whose report re-signals when printed, or a cancel
-            ;; re-signaled with no worker unwind above it. Nothing may escape
-            ;; this thread: under --disable-debugger an unhandled condition
-            ;; in any thread quits the whole image (gateway.lisp invariant).
-            (serious-condition (c)
-              (finish 1 (format nil "ERROR: ~a" (nlk:safe-condition-report c)))))
-        ;; A terminated thread (EVAL-INTERRUPT :FORCE) unwinds through here
-        ;; without reaching either arm above; after either, the exit is already
-        ;; set and FINISH-BACKGROUND-EVAL leaves it as it is.
-        (finish 130 "ERROR: evaluation terminated")))))
+      (flet ((stopped-p () (and process.stopped (eq :running process.status))))
+        (unwind-protect
+            (handler-case
+                (if (stopped-p)
+                    (finish 130 (eval-stop-message process))
+                    (multiple-value-bind (value-text error-p metadata)
+                        (funcall thunk stream)
+                      (flush-line-output stream)
+                      (if (stopped-p)
+                          (finish 130 (eval-stop-message process))
+                          (finish (if error-p 1 0) value-text metadata))))
+              (background-eval-interrupt (interrupt)
+                (finish 130 (background-eval-interrupt-message interrupt)))
+              ;; The last-resort net. A condition that escapes the snippet is
+              ;; answered as text. A stop requested while that happened is
+              ;; still a stop, not a failure. Nothing may escape this thread.
+              (serious-condition (c)
+                (if (stopped-p)
+                    (finish 130 (eval-stop-message process))
+                    (finish 1 (format nil "ERROR: ~a" (nlk:safe-condition-report c))))))
+          ;; Reached only if the thread was unwound without finishing. A
+          ;; consumed stop has already set the exit, and this leaves it.
+          (finish 130 "ERROR: evaluation terminated"))))))
 
 (defun spawn-background-eval (registry form thunk
                               &key (session-id "local") turn-id
@@ -1338,6 +1319,9 @@ running evaluation's live preview, which the model's next look at it reads
         (append (list :id id
                       :status (getf snapshot :status)
                       :output (getf snapshot :output))
+                (when (and process.stopped (eq :running (getf snapshot :status)))
+                  (list :stop-pending t
+                        :note "stop requested; this evaluation keeps running until its owned work returns"))
                 ;; A running one's (sh ...) child is mid-command: what it wrote
                 ;; since the last look, the only word of it before its exit.
                 (when-let (shell (and (eq :running (getf snapshot :status))
@@ -2126,7 +2110,11 @@ after N s] line."
                          (kill-process-tree pid)
                          (ignore-errors (wait-for-child pid process)))
                        (ignore-errors (close output-stream)))
-          (bind (((captured cut) (slurp-bounded output-stream *sh-capture-limit* *sh-chunk*)))
+          (bind (((captured cut)
+                  (nlk::call-with-cancellation-waker
+                   *current-durable-turn*
+                   (lambda () (nlk::signal-child-group pid))
+                   (lambda () (slurp-bounded output-stream *sh-capture-limit* *sh-chunk*)))))
             ;; The tree goes before the wait: a child still writing into a pipe
             ;; nobody reads would block there forever, and the wait with it.
             (when (and cut (pid-live-p pid)) (kill-process-tree pid))

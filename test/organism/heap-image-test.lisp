@@ -10,6 +10,92 @@
 
 (in-package #:nodecode.test)
 
+(deftest image-quiescence-never-kills-and-spends-one-wait-budget ()
+  ;; Synthetic clock/thread list: the two survivors never end. A timer has
+  ;; already spent two of the five seconds; only three remain for ALL joins.
+  (let ((now 0) (joined '()) (stopped nil) (killed nil) (timer-deadline nil))
+    (with-stubbed-fdefinitions
+        ((get-internal-real-time () now)
+         (nlk::stop-launch-image-keeper (&optional seconds)
+           (setf stopped seconds))
+         (nlk::disarm-timers (&optional deadline)
+           (setf timer-deadline deadline)
+           (incf now (* 2 internal-time-units-per-second)))
+         (sb-thread:list-all-threads ()
+           (list sb-thread:*current-thread* :first :second))
+         (nlk::image-thread-name (thread) (symbol-name thread))
+         (sb-thread:terminate-thread (thread) (push thread killed))
+         (nlk::join-image-thread (thread seconds)
+           (push (list thread seconds) joined)
+           (incf now (round (* seconds internal-time-units-per-second)))
+           nil))
+      (is (equal '("FIRST" "SECOND") (nlk::quiesce-for-image 5)))
+      (is (null killed) "not one arbitrary thread is asynchronously unwound")
+      (is (eql 0 stopped) "keeper stop is requested without a private wait budget")
+      (is (= (* 5 internal-time-units-per-second) timer-deadline))
+      (is (equal '((:first 3)) joined) "only the remaining total budget is waited"))))
+
+(deftest image-timer-joins-share-the-callers-deadline ()
+  ;; No real timer is silenced: only the join accounting runs here.
+  (let ((now 0) (joined '()) (restored nil))
+    (with-stubbed-fdefinitions
+        ((get-internal-real-time () now)
+         (sb-ext:list-all-timers () nil)
+         #-win32 (nlk::silence-alarm () nil)
+         (nlk::restore-nursery () (setf restored t))
+         (sb-thread:list-all-threads () (list :first :second))
+         (nlk::image-thread-name (thread) (format nil "Timer ~a" thread))
+         (nlk::join-image-thread (thread seconds)
+           (push (list thread seconds) joined)
+           (incf now (round (* seconds internal-time-units-per-second)))
+           nil))
+      (nlk::disarm-timers (* 3 internal-time-units-per-second))
+      (is (equal '((:first 3)) joined) "one budget, not three seconds per timer")
+      (is restored "the nursery state is restored even when callbacks survive"))))
+
+(deftest launch-keeper-stop-wakes-its-idle-wait ()
+  (with-saved-globals ((nlk::*launch-image-keeper* nil)
+                       (nlk::*launch-image-period* 60))
+    (let ((worker nil) (looked nil))
+      (with-stubbed-fdefinition (nlk::tend-launch-image () (setf looked t))
+        (unwind-protect
+             (progn
+               (setf worker (nlk::start-launch-image-keeper))
+               (is (eq worker (nlk::start-launch-image-keeper)) "one owner")
+               (is (null (nlk::stop-launch-image-keeper .5)))
+               (is (not (bt2:thread-alive-p (nlk:worker-thread worker))))
+               (is (null nlk::*launch-image-keeper*) "cleared only once dead")
+               (is (null looked) "stop before a look starts does no folder work")
+               ;; FORGET-DEAD-THREADS clears bare thread globals, not the
+               ;; worker record a saved heap can still hold.
+               (setf nlk::*launch-image-keeper* worker)
+               (let ((old worker))
+                 (setf worker (nlk::start-launch-image-keeper))
+                 (is (not (eq old worker)) "dead retained worker starts fresh"))
+               (is (null (nlk::stop-launch-image-keeper .5))))
+          (when worker (nlk:worker-stop worker :timeout 1)))))))
+
+(deftest launch-keeper-retains-a-step-that-has-not-returned ()
+  (with-saved-globals ((nlk::*launch-image-keeper* nil)
+                       (nlk::*launch-image-period* .001))
+    (let ((entered (bt2:make-semaphore)) (release (bt2:make-semaphore)) worker)
+      (with-stubbed-fdefinition (nlk::tend-launch-image ()
+                                 (bt2:signal-semaphore entered)
+                                 (bt2:wait-on-semaphore release :timeout 5))
+        (unwind-protect
+             (progn
+               (setf worker (nlk::start-launch-image-keeper))
+               (is (bt2:wait-on-semaphore entered :timeout 1) "step really entered")
+               (is (eq worker (nlk::stop-launch-image-keeper .01)))
+               (is (eq worker nlk::*launch-image-keeper*) "live handle retained")
+               (is (eq worker (nlk::start-launch-image-keeper)) "no overlapping keeper")
+               (is (bt2:thread-alive-p (nlk:worker-thread worker)))
+               (bt2:signal-semaphore release)
+               (is (null (nlk::stop-launch-image-keeper 1)) "natural return completes stop")
+               (is (null nlk::*launch-image-keeper*)))
+          (bt2:signal-semaphore release)
+          (when worker (nlk:worker-stop worker :timeout 1)))))))
+
 (deftest a-dead-thread-a-global-holds-is-forgotten-for-the-image ()
   (let* ((package (make-package (format nil "HEAP-IMAGE-TEST-~d" (random 1000000)) :use '()))
          (dead (intern "*DEAD*" package))

@@ -24,12 +24,16 @@
 
 ;;; --- fixtures ---------------------------------------------------------------
 
+(defvar *test-eval-releases* nil)
+
 (defun drain-exec-registry (&aux (registry (nle::exec-registry-instance)))
-  "Kill and forget every process in the global registry so tests stay
-isolated. Wait threads finish on their own after the kill."
-  ;; The registry's own reclaim, the one gateway shutdown takes: every entry
-  ;; leaves the list, each running one is stopped and its thread joined, so a
-  ;; drained image costs no fixed tick.
+  "Release fixture-owned waits, await real exits, then reclaim the registry."
+  ;; A fixture release is not host cancellation: arbitrary evals do not poll
+  ;; this list, and production stop requests never signal these semaphores.
+  (nle::terminate-all-execs registry)
+  (mapc #'sb-thread:signal-semaphore (shiftf *test-eval-releases* nil))
+  (unless (nle::exec-await-all-exits registry :timeout-seconds 5)
+    (error "A bounded exec fixture did not return; retaining its live owner"))
   (nle::destroy-all-execs registry)
   registry)
 
@@ -39,19 +43,20 @@ isolated. Wait threads finish on their own after the kill."
      (declare (ignorable ,registry-var))
      (nlk:with-cleanup ((drain-exec-registry)) ,@body)))
 
-(defun spawn-test-eval (registry &key (prints "") (linger 0) (value "NIL") form
+(defun spawn-test-eval (registry &key (prints "") (linger 0) (value "NIL") form release
                                    (session-id "local") turn-id (tool-call-id ""))
-  "Register a background evaluation of FORM, a test-eval form unless named, that
-prints PRINTS, stays alive LINGER seconds and answers VALUE. Returns its id."
-  (nle::spawn-background-eval
-   registry (or form (format nil "(test-eval ~s ~a)" prints linger))
-   (lambda (stream)
-     (write-string prints stream)
-     (force-output stream)
-     (when (plusp linger) (sleep linger))
-     ;; a function VALUE is called there, on the evaluating thread
-     (values (if (functionp value) (funcall value) value) nil nil))
-   :session-id session-id :turn-id turn-id :tool-call-id tool-call-id))
+  "Register a bounded fixture eval. RELEASE permits a real, natural return."
+  (let ((release (or release (and (plusp linger) (sb-thread:make-semaphore)))))
+    (when release (push release *test-eval-releases*))
+    (nle::spawn-background-eval
+     registry (or form (format nil "(test-eval ~s ~a)" prints linger))
+     (lambda (stream)
+       (write-string prints stream)
+       (force-output stream)
+       (when release
+         (sb-thread:wait-on-semaphore release :timeout (if (plusp linger) linger 15)))
+       (values (if (functionp value) (funcall value) value) nil nil))
+     :session-id session-id :turn-id turn-id :tool-call-id tool-call-id)))
 
 (defun snippet-exit-fact (session-id &optional call-id)
   "The durable snippet tool_result fact in SESSION-ID's log — the background
@@ -203,10 +208,41 @@ evaluation's exit fact — narrowed to CALL-ID when one is named."
     (is (equal (format nil "Ready~%[2 terminal control sequences removed by the output sanitizer]")
                (getf (nle::exec-snapshot-since registry id 0) :output)))))
 
-(deftest exec-destroy-all-drains-the-image-lifetime-registry (with-exec-registry (registry))
-  (spawn-test-eval registry :prints "alive" :linger 30)
-  (is (= 1 (length registry.processes)))
-  (is-shape registry (nle::destroy-all-execs is "destroy-all returns") (.processes null)))
+(deftest exec-destroy-all-retains-a-live-pending-evaluation (with-exec-registry (registry))
+  (let* ((release (sb-thread:make-semaphore))
+         (id (spawn-test-eval registry :prints "alive" :release release))
+         (process (nle::find-background-eval registry id))
+         (thread (nle::exec-process-wait-thread process)))
+    (await (:tries 100 :rest 0.01) (plusp (fill-pointer (nle::exec-process-output process))))
+    (is (null (nle::destroy-all-execs registry)) "live work prevents complete destruction")
+    (is (eq process (nle::find-background-eval registry id)) "live registry entry retained")
+    (is (eq thread (nle::exec-process-wait-thread process)) "live owner handle retained")
+    (is (bt2:thread-alive-p thread) "no fabricated termination")
+    (is (getf (nle::eval-snapshot-plist registry id) :stop-pending))
+    (sb-thread:signal-semaphore release)
+    (is (nle::exec-await-all-exits registry :timeout-seconds 2))
+    (bt2:join-thread thread)
+    (is (nle::destroy-all-execs registry))
+    (is (null registry.processes))))
+
+(deftest repeated-eval-stop-keeps-the-first-request (with-exec-registry (registry))
+  (let* ((release (sb-thread:make-semaphore))
+         (id (spawn-test-eval registry :prints "held" :release release))
+         (process (nle::find-background-eval registry id)))
+    (await (:tries 100 :rest 0.01) (plusp (fill-pointer (nle::exec-process-output process))))
+    (nle::exec-stop-process process :by :operator :reason "first")
+    (let ((first (nle::exec-process-stopped process)))
+      (nle::exec-stop-process process :hard t :by :model :reason "second")
+      (is (eq first (nle::exec-process-stopped process)) "one sticky request, not a queue")
+      (is (eq :operator (getf first :by))))
+    (let ((snapshot (nle::eval-snapshot-plist registry id)))
+      (is (eq :running (getf snapshot :status)))
+      (is (getf snapshot :stop-pending))
+      (is (getf snapshot :note) "the pending state has a plain explanation")
+      (is (null (getf snapshot :exit-code)) "no exit until the root regains control"))
+    (sb-thread:signal-semaphore release)
+    (is (nle::exec-await-all-exits registry :timeout-seconds 2))
+    (is (eql 130 (nle::exec-process-exit-code process)))))
 
 (deftest a-running-sh-snippet-previews-what-its-child-writes (with-exec-registry (registry))
   ;; SH answers its capture only when the command ends, so a band saw nothing
@@ -230,7 +266,7 @@ evaluation's exit fact — narrowed to CALL-ID when one is named."
   ;; `nodecode add' read as silent to the model until it exited, whatever it
   ;; had printed. A look carries what the child wrote since the last one; the
   ;; output stays what the form printed -- nothing.
-  (let* ((command "echo one; sleep 30")
+  (let* ((command "echo one; sleep 2")
          (id (spawn-test-eval registry :form (format nil "(sh ~s)" command)
                                        :value (lambda () (nle::sh command))))
          (process (nle::find-background-eval registry id)))
@@ -244,7 +280,7 @@ evaluation's exit fact — narrowed to CALL-ID when one is named."
 (deftest eval-await-wakes-on-what-a-sh-child-writes (with-exec-registry (registry))
   ;; A park on a running command answers the child's line as it comes, not
   ;; at the window's end.
-  (let* ((command "sleep 0.5; echo late; sleep 30")
+  (let* ((command "sleep 0.5; echo late; sleep 2")
          (id (spawn-test-eval registry :form (format nil "(sh ~s)" command)
                                        :value (lambda () (nle::sh command))))
          (start (get-internal-real-time))
@@ -257,7 +293,7 @@ evaluation's exit fact — narrowed to CALL-ID when one is named."
 (deftest a-sh-snippet-past-its-window-answers-what-its-child-wrote (with-exec-registry (registry))
   ;; The running envelope is the first look: the child's lines so far ride it
   ;; as shell_output, and the next look starts after them.
-  (let* ((text (nle::background-capable-eval "(sh \"echo first; sleep 30\")" 1500))
+  (let* ((text (nle::background-capable-eval "(sh \"echo first; sleep 2\")" 1500))
          (json (nlk:decode-json text))
          (id (gethash "eval_id" json)))
     (is (equal "running" (gethash "status" json)) text)
@@ -275,11 +311,11 @@ evaluation's exit fact — narrowed to CALL-ID when one is named."
              (await (:rest 0.02) (= total (nle::exec-process-shell-total process)))
              (getf (nle::eval-status id) :shell-output))))
     (is (equal (format nil "ared~%30%~%[2 terminal control sequences removed by the output sanitizer]")
-               (look "printf 'a\\033[31mred\\033[0m\\n10%%\\r20%%\\r30%%\\n'; sleep 30" 26)))
+               (look "printf 'a\\033[31mred\\033[0m\\n10%%\\r20%%\\r30%%\\n'; sleep 2" 26)))
     (let ((skipped (- 6005 nle::*exec-preview-bytes*)))
       (is (equal (format nil "[~:d earlier bytes not kept]~%~a~%end~%" skipped
                          (make-string (- nle::*exec-preview-bytes* 5) :initial-element #\x))
-                 (look "head -c 6000 /dev/zero | tr '\\0' x; echo; echo end; sleep 30" 6005))))))
+                 (look "head -c 6000 /dev/zero | tr '\\0' x; echo; echo end; sleep 2" 6005))))))
 
 (deftest a-silent-snippet-announces-its-handoff (with-exec-registry (registry))
   ;; A backgrounded snippet that writes nothing still runs in a band.
@@ -645,15 +681,13 @@ completed. BODY runs with SID bound."
 
 (deftest bg-shutdown-appends-exit-facts-before-watcher-dies ()
   (with-backgrounded-eval (sid "bg-shutdown" "bg-shutdown-cmd"
-                           ("call-shutdown" "(loop (sleep 0.05))"))
-    ;; The evaluation is still running when the gateway stops. The
-    ;; shutdown ladder aborts it, waits for the exit, lands the durable
-    ;; exit fact via one final collection, and drains the registry — the
-    ;; pre-fix order stopped the watcher first, the fact was lost, and
-    ;; replay reported the work running forever.
+                           ("call-shutdown" "(progn (sleep 0.5) :finished)"))
+    ;; This finite evaluation returns during the shutdown wait. Only then
+    ;; may the final collection publish its exit and reclaim the registry;
+    ;; this does not claim shutdown can forcibly stop an arbitrary form.
     (nle:stop-gateway)
     (is-present (fact (snippet-exit-fact sid))
-        "shutdown landed the durable exit fact for the aborted eval"
+        "shutdown landed the durable exit fact after the finite eval returned"
         (is (equal "call-shutdown" (nlk:tool-result-event-call-id fact))))
     (is (null (nle::exec-registry-processes (nle::exec-registry-instance))))))
 
@@ -874,80 +908,75 @@ completed. BODY runs with SID bound."
     (is (not (sleep-running-p marker)) "no child outlives the bound"))
   (is (equal "hi" (nle:sh "printf hi" :timeout 10)) "a command inside its bound answers as before"))
 
-(deftest sh-kills-its-child-when-the-evaluation-unwinds ()
-  ;; eval-interrupt on a stuck (sh ...) must not leave the child running.
-  (let* ((marker "31.7")
+(deftest a-refused-thread-interrupt-does-not-kill-its-sh-child ()
+  (let* ((marker "1.731")
+         (injected nil)
          (thread (bt2:make-thread
                   (lambda ()
-                    ;; Windows has no sleep on its PATH, only in sh's.
-                    (handler-case (nle:sh #-win32 (list "sleep" marker) #+win32 (format nil "sleep ~a" marker))
-                      (error () :unwound))))))
-    (sleep 0.3)
-    (nlk:interrupt-thread-safely thread (lambda () (error "eval-interrupt")))
-    (is (eq :unwound (bt2:join-thread thread)) "the evaluation unwound")
-    (is (not (sleep-running-p marker)) "no child outlives the unwind")))
+                    (nle:sh #-win32 (list "sleep" marker)
+                            #+win32 (format nil "sleep ~a" marker))
+                    :returned))))
+    (is-eventually (sleep-running-p marker) "the actual child started" :seconds 1)
+    (is (not (member (nlk:interrupt-thread-safely
+                      thread (lambda () (setf injected t) (error "unsafe interrupt")))
+                     '(:ran :gone))) "a live target is refused, not reported stopped")
+    (is (bt2:thread-alive-p thread))
+    (is (sleep-running-p marker) "the refusal did not kill the child")
+    (is (eq :returned (bt2:join-thread thread)))
+    (is (null injected) "the requested callback never ran")
+    (is (not (sleep-running-p marker)) "the finite child exited naturally")))
 
-(deftest cancel-of-a-parked-call-stops-its-evaluation-and-its-child (with-exec-registry (registry))
-  ;; Cancelling a turn parked in eval takes the call's evaluation with it:
-  ;; the soft abort, the child tree killed by SH's unwind, the exit named
-  ;; as the user's interruption. Without this, a cancelled turn would leave
-  ;; its child running with no reader and the row still `running`.
+(deftest cancel-of-a-parked-call-leaves-its-evaluation-pending (with-exec-registry (registry))
+  ;; Match the gateway's request + wake sequence. The turn may cancel while
+  ;; the owned eval and its real child remain alive until the child's return.
   (with-session-store ("cancel-parked")
-    (let* ((marker "43.1")
+    (let* ((marker "1.743")
            (turn (nlk:admit-turn "cancel-parked" "cp-cmd" "run it"))
            (turn-id turn.turn-id))
       (with-provider-stub (nil (tool-call-round "c1" "eval" "yield_time_ms" 60000
                                                "form" (format nil "(sh \"sleep ~a\")" marker)))
         (let ((worker (nlk:spawn "cancel-parked-worker"
                         (nlk:with-handlers ((nlk:turn-cancelled-condition () :cancelled))
-                          (nle:run "run it"
-                                   :session (nle:intern-session "cancel-parked")
+                          (nle:run "run it" :session (nle:intern-session "cancel-parked")
                                    :command-id "cp-cmd" :admitted-turn turn)))))
           (flet ((spawned () (first registry.processes)))
-            (await (:tries 250 :rest 0.02)
-              (and (nlk::cancellation-signal-waiting-threads (nlk::turn-signal turn))
-                   (spawned) (nle::exec-process-child-pid (spawned))))
-            (is-present (process (spawned)) "the call parked, the child live"
+            (await (:tries 100 :rest 0.01)
+              (and (spawned) (nle::exec-process-child-pid (spawned))))
+            (is-present (process (spawned)) "the real child is registered"
               (nlk:request-cancel-turn "cancel-parked" turn-id :operator)
+              (nle::wake-exec-session registry "cancel-parked")
               (is (eq :cancelled (bt2:join-thread worker)))
-              (await (:tries 300 :rest 0.01) (eq :exited (nle::exec-process-status process)))
-              (is-shape process (.status eq :exited) (.exit-code eql 130)
-                (.eval-value "interrupted by user"))
-              (is (not (sleep-running-p marker)) "no child outlives the cancel")
+              (is (eq :running (nle::exec-process-status process)))
+              (is (getf (nle::eval-snapshot-plist registry (nle::exec-process-id process)) :stop-pending))
+              (is (bt2:thread-alive-p (nle::exec-process-wait-thread process)))
+              (is (sleep-running-p marker) "turn cancellation is not child termination")
               (is (equal "turn.cancelled" (nlk:turn-terminal-kind turn-id)))
               (is (= 1 (%turn-kind-count turn-id nlk::+kind-tool-result+)))
-              (let ((result (first (session-events "cancel-parked" :type 'nlk:tool-result-event))))
-                (is (equal "interrupted by user" (nlk:tool-result-event-result result)) "the model's words")
-                ;; The operator's Stop names the call theirs, not a failure.
-                (is (not (nlk:tool-result-event-failed result)))
-                (is-shape (nlk:tool-result-event-metadata result)
-                  ((:string "stopped" "by") "operator" "stopped by the operator's own Stop")
-                  ((:integer "stopped" "after_ms") is "after how long")
-                  ((:string "stopped" "reason") null "the operator's stop needs no reason"))))))))))
+              (is (nle::exec-await-all-exits registry :timeout-seconds 3))
+              (is (eql 130 (nle::exec-process-exit-code process)))
+              (is (not (sleep-running-p marker)) "the child completed naturally"))))))))
 
-(deftest a-cancelled-turns-call-tells-the-model-what-its-shell-wrote (with-exec-registry (registry))
-  ;; The cancel's words sit under the lines the call's shell had written by
-  ;; then, as a terminal shows them above the stop, so the next turn's model
-  ;; can say where the command stood.
+(deftest a-cancelled-turns-pending-call-keeps-what-its-shell-wrote (with-exec-registry (registry))
   (with-session-store ("cancel-wrote")
     (let* ((turn (nlk:admit-turn "cancel-wrote" "cw-cmd" "run it"))
            (turn-id turn.turn-id))
       (with-provider-stub (nil (tool-call-round "c1" "eval" "yield_time_ms" 60000
-                                               "form" "(sh \"echo half-way; sleep 47.2\")"))
+                                               "form" "(sh \"echo half-way; sleep 1.751\")"))
         (let ((worker (nlk:spawn "cancel-wrote-worker"
                         (nlk:with-handlers ((nlk:turn-cancelled-condition () :cancelled))
-                          (nle:run "run it"
-                                   :session (nle:intern-session "cancel-wrote")
+                          (nle:run "run it" :session (nle:intern-session "cancel-wrote")
                                    :command-id "cw-cmd" :admitted-turn turn)))))
           (flet ((spawned () (first registry.processes)))
-            (await (:tries 250 :rest 0.02)
-              (and (nlk::cancellation-signal-waiting-threads (nlk::turn-signal turn))
-                   (spawned) (nle::exec-process-preview (spawned))
+            (await (:tries 100 :rest 0.01)
+              (and (spawned) (nle::exec-process-preview (spawned))
                    (search "half-way" (nle::octets-to-text (nle::exec-process-preview (spawned))))))
             (nlk:request-cancel-turn "cancel-wrote" turn-id :operator)
+            (nle::wake-exec-session registry "cancel-wrote")
             (is (eq :cancelled (bt2:join-thread worker)))
-            (let ((result (first (session-events "cancel-wrote" :type 'nlk:tool-result-event))))
-              (is (equal (format nil "half-way~%interrupted by user") (nlk:tool-result-event-result result)) "the shell's lines, then the words"))))))))
+            (is (eq :running (nle::exec-process-status (spawned))))
+            (is (search "half-way" (nle::octets-to-text (nle::exec-process-preview (spawned)))))
+            (is (nle::exec-await-all-exits registry :timeout-seconds 3))
+            (is (eql 130 (nle::exec-process-exit-code (spawned))))))))))
 
 (deftest an-interrupted-sh-answers-what-its-child-wrote (with-exec-registry (registry))
   ;; An agent stopped a backgrounded `nodecode add' after four hours and read
@@ -955,15 +984,20 @@ completed. BODY runs with SID bound."
   ;; what the child had written lived on its card alone (2026-11-01). The
   ;; stop's read carries those lines, and not the compiler's report of it.
   (nle::background-capable-eval
-   "(sh \"sleep 0.2; echo stuck-at-step; echo why-line >&2; sleep 60\")" 50)
+   "(sh \"sleep 0.2; echo stuck-at-step; echo why-line >&2; sleep 3.1\")" 50)
   (let ((process (first registry.processes)))
     (is-eventually (and process (nle::exec-process-preview process)
                         (search "why-line" (nle::octets-to-text (nle::exec-process-preview process))))
                    "the child wrote both lines" :seconds 6)
     (let ((plist (nle::eval-interrupt (nle::exec-process-id process))))
-      (is (eql 130 (getf plist :exit-code)) "a stop")
-      (is (equal (format nil "stuck-at-step~%why-line~%") (getf plist :shell-output)) "what the child wrote, both streams in order")
-      (is (not (search "compilation unit" (getf plist :output))) "and not the compiler's report of the abort"))))
+      (is (eq :running (getf plist :status)))
+      (is (getf plist :stop-pending) "request is pending while the child still runs")
+      (is (equal (format nil "stuck-at-step~%why-line~%") (getf plist :shell-output)))
+      (is (not (search "compilation unit" (getf plist :output)))))
+    (is (nle::exec-await-all-exits registry :timeout-seconds 3))
+    (let ((plist (nle::eval-snapshot-plist registry (nle::exec-process-id process))))
+      (is (eql 130 (getf plist :exit-code)) "stop completed only after natural return")
+      (is (equal (format nil "stuck-at-step~%why-line~%") (getf plist :shell-output))))))
 
 (deftest an-operators-stop-keeps-what-the-call-wrote (with-exec-registry (registry))
   ;; The stop rides the result as its own end: who stopped it, after how
@@ -1009,10 +1043,13 @@ completed. BODY runs with SID bound."
       (await (:tries 100 :rest 0.02) (eq :exited (nle::exec-process-status (nle::find-background-eval registry done))))
       (is-shape (read-card done) ("status" "exited") ("end" "done")
         ("text" (format nil "tick 1~%tick 2") "the lines, not the header and the plist")))
-    (let* ((running (spawn-test-eval registry :prints (format nil "step 1~%") :linger 30))
+    (let* ((release (sb-thread:make-semaphore))
+           (running (spawn-test-eval registry :prints (format nil "step 1~%") :release release))
            (process (nle::find-background-eval registry running)))
       (await (:tries 100 :rest 0.02) (plusp (fill-pointer (nle::exec-process-output process))))
       (nle::exec-stop-process process :by :operator)
+      (is (eq :running (nle::exec-process-status process)) "a request is not an exit")
+      (sb-thread:signal-semaphore release)
       (await (:tries 150 :rest 0.02) (eq :exited (nle::exec-process-status process)))
       (let ((card (read-card running)))
         (is-shape card ("end" "stopped") ("text" "" "its lines are its box's"))
@@ -1022,136 +1059,51 @@ completed. BODY runs with SID bound."
   ;; A gateway stopping mid-call closed it `failed' with `; compilation unit
   ;; aborted ... ERROR: evaluation terminated'. The shutdown's kill says it
   ;; was the shutdown, and keeps what the form had printed before it.
-  (let* ((id (spawn-test-eval registry :prints (format nil "half way~%") :linger 30))
+  (let* ((release (sb-thread:make-semaphore))
+         (id (spawn-test-eval registry :prints (format nil "half way~%") :release release))
          (process (nle::find-background-eval registry id)))
     (await (:tries 100 :rest 0.02) (plusp (fill-pointer (nle::exec-process-output process))))
     (nle::terminate-all-execs registry)
-    (nle::exec-await-all-exits registry :timeout-seconds 3)
+    (is (eq :running (nle::exec-process-status process)) "shutdown asks; it does not kill")
+    (sb-thread:signal-semaphore release)
+    (is (nle::exec-await-all-exits registry :timeout-seconds 3))
     (is-shape (nle::exec-stop-document process) ("by" "shutdown"))
     (is (search "half way" (gethash "tail" (nle::exec-stop-document process))) "what it had printed")
     (is (equal "stopped" (nle::exec-end (nle::exec-process-exit-code process) nil)) "a stop's end word")))
 
 ;;; --- the strings side-channel and the file verbs ------------------------
 
-(deftest eval-runaway-recursion-is-a-tool-error-not-an-image-death (with-exec-registry (registry))
-  ;; A runaway recursive evaluation that allocates an array on each call
-  ;; would cross the guard page inside the allocator and kill the image.
-  ;; The watcher's probe unwinds the evaluation at half its stack, long
-  ;; before the page: the same form is one ERROR line naming the
-  ;; recursion.
-  (let* ((stop nil)
-         (scanner (nlk:spawn "runaway-scanner"
-                    (loop until stop
-                          do (nle::scan-eval-runaways registry)
-                             (sleep 0.02)))))
-    (nlk:with-cleanup ((setf stop t) (bt2:join-thread scanner))
-      (is-carrying (result (nle::background-capable-eval
-                            "(labels ((deep (n) (let ((a (make-array 8192 :initial-element n))) (+ (aref a 0) (deep (1+ n)))))) (deep 0))"
-                            60000))
-        ("ERROR: EVAL-RUNAWAY: control stack runaway" result)
-        ("DEEP" "the verdict names the recursion")
-        ("unwound before the guard page" "and says why it was stopped")))))
+(deftest heap-observation-does-not-unwind-a-callback ()
+  ;; Invoke the hook directly with a synthetic low threshold. This is not a
+  ;; claim that SBCL dispatched an actual after-GC hook inside a C callback.
+  (let ((nle::*eval-stop-reason* (list nil))
+        (nle::*eval-heap-soft-fraction* -1)
+        (returned nil))
+    (is (eq :returned
+            (nle::call-with-evaluation-guarded
+             (lambda ()
+               (nle::eval-runaway-gc-hook)
+               (setf returned t)
+               :returned))))
+    (is returned "the hook did not unwind its caller")
+    (is (eq :heap (car nle::*eval-stop-reason*)) "the preallocated intent was marked")
+    (is (null (nle::guarded-evaluating-threads)) "observational registration was released")))
 
-(deftest a-runaway-verdict-holds-while-its-unwind-runs-cleanups ()
-  ;; An unwind runs each UNWIND-PROTECT cleanup with the stack pointer still
-  ;; where the verdict was signalled: the abandoned frames stay below it until
-  ;; the handler is reached. A probe landing in a cleanup there (the
-  ;; compilation unit's summary wraps every snippet) read the stack as past
-  ;; the limit, walked a frame chain that no longer holds the recursion, and
-  ;; its unnamed verdict replaced the named one. One verdict per climb: the
-  ;; next waits for the stack to come back under the limit, unless it climbs
-  ;; on to the hard mark.
-  (destructuring-bind (first in-cleanup held-climb past-hard shallow again)
-      (bt2:join-thread
-       (nlk:spawn "runaway-climb"
-         (let ((nle::*runaway-climb* (list nil)))
-           (multiple-value-bind (used span) (nle::control-stack-usage)
-             (declare (ignore used))
-             (let* ((limit (min (* 16 1024 1024) (floor span 2)))
-                    (hard (+ limit (floor (- span limit) 2)))
-                    (in-cleanup :unset))
-               (labels ((probe ()
-                          (handler-case (progn (nle::eval-runaway-thread-probe) :quiet)
-                            (nle::eval-runaway (e) (princ-to-string e))))
-                        (climb (mark)
-                          (if (> (nle::control-stack-usage) mark)
-                              (progn (nle::eval-runaway-thread-probe) 0)
-                              (1+ (climb mark))))
-                        (verdict (mark)
-                          (handler-case (progn (climb mark) :quiet)
-                            (nle::eval-runaway (e) (princ-to-string e)))))
-                 (list (handler-case (unwind-protect (climb limit)
-                                       (setf in-cleanup (probe)))
-                         (nle::eval-runaway (e) (princ-to-string e)))
-                       in-cleanup
-                       (verdict limit)
-                       (verdict hard)
-                       (probe)
-                       (verdict limit))))))))
-    (is (search "control stack runaway" first) "past the limit, the verdict")
-    (is (search "CLIMB" first) "naming the recursion")
-    (is (eq :quiet in-cleanup) "a probe inside its unwind's cleanup holds")
-    (is (eq :quiet held-climb) "and so does a second climb before the stack came back down")
-    (is (search "control stack runaway" past-hard) "unless it climbs on to the hard mark")
-    (is (eq :quiet shallow) "a shallow probe is quiet and clears the hold")
-    (is (search "control stack runaway" again) "so the next climb takes its verdict at the limit")))
+(deftest heap-observation-without-an-eval-root-is-inert ()
+  (let ((nle::*eval-stop-reason* nil)
+        (nle::*eval-heap-soft-fraction* -1))
+    (is (null (nle::eval-runaway-gc-hook)) "no root means no cancellation target")))
 
-(deftest a-runaway-verdict-that-names-nothing-waits-for-a-probe-that-does ()
-  ;; On Windows a probe can land in POST-GC, which the allocator runs under the
-  ;; recursion's own MAKE-ARRAY: the walk from there stops at the allocator's
-  ;; C frames and names nothing. Below the hard mark that probe lets its pass
-  ;; go and the next one, landing in the recursion, names it; at the hard mark
-  ;; the stack comes first and the verdict is raised unnamed.
-  (destructuring-bind ((first-pass next-pass) shallow (blind-at-limit) (blind-at-hard))
-      (bt2:join-thread
-       (nlk:spawn "runaway-blind"
-         (let ((nle::*runaway-climb* (list nil))
-               (blind 1))
-           (multiple-value-bind (used span) (nle::control-stack-usage)
-             (declare (ignore used))
-             (let* ((limit (min (* 16 1024 1024) (floor span 2)))
-                    (hard (+ limit (floor (- span limit) 2))))
-               (labels ((probe ()
-                          (handler-case (progn (nle::eval-runaway-thread-probe) :quiet)
-                            (nle::eval-runaway (e) (princ-to-string e))))
-                        (climb (mark passes)
-                          (if (> (nle::control-stack-usage) mark)
-                              (loop repeat passes collect (probe))
-                              (copy-list (climb mark passes)))))
-                 (with-stubbed-fdefinition (nle::runaway-frame-name ()
-                                             (if (plusp blind)
-                                                 (progn (decf blind) nil)
-                                                 (funcall original)))
-                   (list (climb limit 2)
-                         (probe)
-                         (progn (setf blind most-positive-fixnum)
-                                (climb limit 1))
-                         (climb hard 1)))))))))
-    (is (eq :quiet first-pass) "a probe whose walk names nothing lets its pass go")
-    (is (and (stringp next-pass) (search "control stack runaway" next-pass)) "the next pass takes the verdict")
-    (is (and (stringp next-pass) (search "CLIMB" next-pass)) "naming the recursion")
-    (is (eq :quiet shallow) "a shallow probe clears the hold")
-    (is (eq :quiet blind-at-limit) "a walk that stays blind waits past the limit")
-    (is (and (stringp blind-at-hard) (search "control stack runaway" blind-at-hard)) "until the hard mark, where the stack comes first")
-    (is (and (stringp blind-at-hard) (not (search "deepest in" blind-at-hard))) "and the verdict goes unnamed")))
-
-(deftest control-stack-usage-grows-with-depth (labels ((deep (n)
-                                                         (if (zerop n)
-                                                             (list (nle::control-stack-usage))
-                                                             (cons n (deep (1- n)))))))
-  ;; Whichever way the control stack grows, usage must rise with depth,
-  ;; measured in a fresh thread as an evaluation's is, and a shallow thread
-  ;; takes no verdict.
-  (destructuring-bind (top deep-used span verdict)
-      (bt2:join-thread
-       (nlk:spawn "stack-usage"
-         (multiple-value-bind (used span) (nle::control-stack-usage)
-           (list used (car (last (deep 2000))) span
-                 (handler-case (progn (nle::eval-runaway-thread-probe) :quiet)
-                   (nle::eval-runaway (e) (princ-to-string e)))))))
-    (is (< 0 top (* 1024 1024)) "a fresh thread has used under a megabyte")
-    (is (< top deep-used (floor span 2)) "two thousand frames deeper reads as more")
-    (is (eq :quiet verdict) "and a shallow thread takes no verdict")))
+(deftest eval-scanning-does-not-inject-a-runaway-unwind (with-exec-registry (registry))
+  (let* ((release (sb-thread:make-semaphore))
+         (id (spawn-test-eval registry :prints "held" :release release))
+         (process (nle::find-background-eval registry id)))
+    (await (:tries 100 :rest 0.01) (plusp (fill-pointer (nle::exec-process-output process))))
+    (let ((nle::*eval-heap-soft-fraction* -1)) (nle::scan-eval-runaways registry))
+    (is (eq :running (nle::exec-process-status process)))
+    (is (bt2:thread-alive-p (nle::exec-process-wait-thread process)))
+    (sb-thread:signal-semaphore release)
+    (is (nle::exec-await-all-exits registry :timeout-seconds 2))))
 
 (deftest eval-strings-ride-to-the-evaluating-thread (with-exec-registry (registry))
   ;; Source text tunnels JSON -> Lisp string -> shell -> python heredoc.

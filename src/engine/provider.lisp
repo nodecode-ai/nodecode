@@ -5531,10 +5531,14 @@ functions below."
                               limit (if content-cut-p left seconds)))
                       ;; A read error mid-body is truncation; a cancel unwinds as itself.
                       (let ((line (handler-case (nlk:with-cancellable-wait (*current-durable-turn*)
-                                                  (if buffer
-                                                      (read-octet-line stream buffer limit)
-                                                      (with-read-deadline (limit)
-                                                        (read-line stream nil nil))))
+                                                  (nlk::with-cancellation-waker
+                                                      (*current-durable-turn*
+                                                       (lambda ()
+                                                         (nlk::shutdown-fd (nlk::stream-fd stream))))
+                                                    (if buffer
+                                                        (read-octet-line stream buffer limit)
+                                                        (with-read-deadline (limit)
+                                                          (read-line stream nil nil)))))
                                     (nlk:turn-cancelled-condition (c) (error c))
                                     (error (e)
                                       (error 'provider-stream-incomplete

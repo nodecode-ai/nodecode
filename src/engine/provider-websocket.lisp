@@ -450,7 +450,11 @@ in the state it reached."
              (ws-request-done line request :closed))
            (loop while (eq (ws-request-state request) :waiting)
                  do (nlk:with-cancellable-wait (*current-durable-turn*)
-                      (websocket-wait request)))
+                      (nlk::with-cancellation-waker
+                          (*current-durable-turn*
+                           (lambda ()
+                             (sb-thread:signal-semaphore (ws-request-semaphore request))))
+                        (websocket-wait request))))
            (setf started t)
            request)
       ;; A deadline or a cancel while it waited: the server stops it.

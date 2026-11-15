@@ -2661,10 +2661,10 @@ run BODY with TURN the admitted turn, TURN-ID its id and PRIOR the head before i
            ,@body)))))
 
 (defun park-until-cancelled ()
-  "A provider stub's answer that never comes: a cancellable wait on the current
-turn, which a cancel of that turn interrupts."
+  "A provider stub parked in a host-owned wait. A cancel notifies that wait.
+The region then signals, which is what closes the turn. Nothing is injected."
   (nlk:with-cancellable-wait (nle::*current-durable-turn*)
-    (sleep 30)))
+    (nlk::call-with-cancellable-sleep nle::*current-durable-turn* 30)))
 
 (defun %wait-for-parked-worker (turn)
   "Wait until the worker is inside its cancellable provider wait."

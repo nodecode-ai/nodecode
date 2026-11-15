@@ -153,3 +153,22 @@ The unit names the installer's `current` link. A restart runs the build installe
 | `nodecode gateway restart` | Rewrites the unit first if the binary path or `PATH` changed. |
 
 The installer restarts only units that Nodecode wrote. See [Updates](updates.mdx).
+
+{/* source: src/engine/exec.lisp */}
+## Stopping work
+
+Escape, and `(eval-interrupt N)`, ask the owned work to stop. They do not kill its thread. A wait that registered a waker is woken, returns, and then the turn closes.
+
+| What you did | What you see |
+| --- | --- |
+| Escape during a provider stream | The socket is shut down (`SHUT_RDWR`, not closed from another thread). The read returns. The turn closes as cancelled. Measured on a local socket that never wrote: 10 ms from the request to `turn.cancelled`. |
+| Escape during a shell tool | The child's process group gets `SIGTERM`, then `SIGKILL` if it is still there after 0.2 s. The pipe ends. The turn closes as cancelled. Measured on `sleep 30`: 212 ms. |
+| Escape during a wait the host owns (a retry pause, a parked provider stub) | That wait is notified. The turn closes as cancelled. Measured: 10 ms. |
+| Escape during a runaway eval that never returns, or a foreign call that registered no waker | The request is recorded. The turn stays active. The worker keeps running. On a private gateway, one second after Escape: still not `turn.cancelled`, worker still alive, about one core (1.01 s of CPU in 1.00 s), RSS changed by +12 KiB. Nothing restarts the gateway for you. |
+| `(eval-interrupt N)`, including `:force t` | The same request. `:force` does not terminate the thread. |
+
+A pending worker does not fail the watchdog. The gateway stays up, and other sessions keep serving. The session with the stuck turn does not take another turn until that worker returns, or until you restart.
+
+To clear a worker that will not return, restart the gateway yourself: `nodecode gateway restart`. That ends the whole process, including every other session. A worker that has been pending for minutes does not, by itself, mark the gateway unhealthy.
+
+An optional escalation is not built: a worker still pending N minutes after a stop request could mark health degraded so the watchdog restarts the gateway. N is not chosen. What a restart loses is every live session, not only the stuck worker.
