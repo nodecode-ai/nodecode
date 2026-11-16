@@ -1195,6 +1195,35 @@ completed. BODY runs with SID bound."
     ;; A crowd answers the count: widen OLD until it names one place.
     (is-carrying (report (refusal-text error (nle:edit path "a" "x"))) "occurs 5 times")))
 
+(deftest edit-matches-and-keeps-a-crlf-files-line-endings ()
+  ;; git's autocrlf leaves a Windows checkout CRLF, and the model writes OLD
+  ;; and NEW with bare newlines: a carriage return is invisible in what it
+  ;; reads. Its multi-line OLD still names the place, and what NEW adds ends
+  ;; its lines as the file does.
+  (flet ((crlf (&rest lines)
+           (format nil "~{~a~c~%~}" (loop for line in lines append (list line #\Return)))))
+    (with-temp-file (path :type "py"
+                          :contents (crlf "def greet(name):" "    print('hi', name)" "    return name"))
+      (is-carrying (receipt (nle:edit path
+                                      (format nil "    print('hi', name)~%    return name")
+                                      (format nil "    print('hello', name)~%    return name.upper()")))
+        "line 2" "-2 +2 lines" "CRLF line endings kept")
+      (is (equal (crlf "def greet(name):" "    print('hello', name)" "    return name.upper()")
+                 (uiop:read-file-string path)))
+      ;; a one-line OLD whose NEW adds a line adds a CRLF line
+      (nle:edit path "def greet(name):" (format nil "# greets~%def greet(name):"))
+      (is (equal (crlf "# greets" "def greet(name):" "    print('hello', name)" "    return name.upper()")
+                 (uiop:read-file-string path))))
+    ;; A file of mixed endings is matched as it stands, and a miss on a
+    ;; carriage return names it, since both sides print alike.
+    (with-temp-file (path :type "txt"
+                          :contents (format nil "one~c~%two~%three~%" #\Return))
+      (is-carrying (report (refusal-text error (nle:edit path (format nil "one~%two") "x")))
+        "diverges" "carriage return (CRLF)")
+      (is-carrying (receipt (nle:edit path (format nil "two~%three") (format nil "2~%3")))
+        "line 2" (:absent "CRLF"))
+      (is (equal (format nil "one~c~%2~%3~%" #\Return) (uiop:read-file-string path))))))
+
 (deftest write-file-writes-whole-files-with-parents (with-temp-trees ((root "write-file")))
   (let* ((path (namestring (merge-pathnames "deep/file.txt" root)))
          (receipt (nle:write-file path (format nil "one~%two~%"))))
