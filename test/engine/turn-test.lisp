@@ -94,6 +94,17 @@ them spells the message out."
     ("this image is the truth" "a stale page loses to the image"))
   (is (search "https://nodecode.ai/docs" (second (assoc :docs nle::*help-topics*))) "the summary every session carries names the reference"))
 
+(deftest help-models-topic-names-every-wire-nodecode-ai-serves ()
+  (let ((text (nle:help :models)))
+    (is-carrying text
+      ("POST /v1/chat/completions" "OpenAI's chat completions")
+      ("POST /v1/responses" "OpenAI Responses, what Codex speaks")
+      ("POST /v1/messages and POST /v1/messages/count_tokens" "Anthropic Messages, what Claude Code speaks")
+      ("ANTHROPIC_BASE_URL=https://api.nodecode.ai without /v1" "Claude Code's base URL carries no /v1")
+      ("https://nodecode.ai/docs/cyber.md" "the page that sets the agents up"))
+    (is (null (search "no /v1/messages" text)) "the gateway serves the Messages wire")
+    (is (null (search "no /v1/responses" text)) "and the Responses wire")))
+
 (deftest help-indexes-verbs-and-topics-and-answers-a-miss-with-the-index ()
   (is-carrying (index (nle:help))
     (dolist (verb nle::*help-verbs*)
