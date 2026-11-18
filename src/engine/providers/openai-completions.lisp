@@ -61,7 +61,177 @@ no text and no image."
                                 :image-fn #'identity
                                 :drop-empty-text-p t))))
 
+;;; --- the free lane: one prompt, the tools as text ---------------------------
+;;;
+;;; A free key on api.nodecode.ai is answered only for a body that is a single
+;;; prompt: at most one system message and one user message, and no "tools"
+;;; array at all. Any other shape answers 403 free_needs_nodecode ("A free key
+;;; works only from the Nodecode CLI"): a tools array, a second turn, an
+;;; assistant message. So this lane, on such a provider, folds the whole
+;;; conversation into one user message, spells the tools out in the system
+;;; prompt, and reads the model's fenced ```tool block back as the tool call it
+;;; meant.
+
+(defparameter *free-lane-providers* '("nodecode-free")
+  "Provider ids whose endpoint takes one prompt and no tool schemas.")
+
+(defun free-lane-provider-p (provider)
+  "Whether PROVIDER is a free-lane provider id."
+  (and (stringp provider)
+       (member provider *free-lane-providers* :test #'string-equal)))
+
+(defparameter +free-lane-tools-heading+
+  "TOOLS. This endpoint takes no tool schemas, so a tool call is text: to call
+one, end your message with a fenced block in exactly this shape, and nothing
+after it:
+
+```tool
+{\"name\": \"eval\", \"arguments\": {\"form\": \"(+ 1 2)\"}}
+```
+
+One call per message. The operator-facing text goes before the block. The
+result comes back in the next message as a line beginning TOOL RESULT. The
+tools, each with the arguments it takes:")
+
+(defparameter +free-lane-transcript-heading+
+  "The conversation follows as one transcript: a line [n] names who spoke, and
+the lines under it are what they said. Answer the last OPERATOR entry.")
+
+(defun free-lane-content-text (content)
+  "CONTENT's text, an image named wherever one stood."
+  (format nil "~{~a~^~%~}"
+          (map-content-parts content
+                             :text-fn #'identity
+                             :image-fn (lambda (url)
+                                          (declare (ignore url))
+                                          "[image]"))))
+
+(defun free-lane-lines (message)
+  "MESSAGE as the transcript lines that carry it: a header, then its text."
+  (let* ((role (or (json-value message :string "role") "user"))
+         (text (or (free-lane-content-text (gethash "content" message)) ""))
+         (calls (gethash "tool_calls" message))
+         (lines '()))
+    (cond
+      ((equal role "assistant")
+       (when (plusp (length text))
+         (push (format nil "ASSISTANT~%~a" text) lines))
+       (when (vectorp calls)
+         (loop for call across calls
+               do (multiple-value-bind (name input)
+                      (tool-call-function-input call)
+                    (push (format nil "ASSISTANT CALLED~%~a ~a"
+                                  (or name "") (encode-json-object input))
+                          lines)))))
+      ((equal role "tool")
+       (push (format nil "TOOL RESULT~%~a" text) lines))
+      ((equal role "system")
+       (when (plusp (length text))
+         (push (format nil "NOTE~%~a" text) lines)))
+      (t (push (format nil "OPERATOR~%~a" text) lines)))
+    (nreverse lines)))
+
+(defun free-lane-transcript (messages)
+  "MESSAGES as one text prompt, every entry numbered."
+  (let ((out (make-string-output-stream)))
+    (loop for message across messages
+          for n from 1
+          do (loop for line in (free-lane-lines message)
+                   do (format out "[~d] ~a~%" n line)))
+    (get-output-stream-string out)))
+
+(defun free-lane-tools-text (tools)
+  "TOOLS as the protocol's list: its name, its description, its arguments."
+  (with-output-to-string (out)
+    (loop for wrapper across (or tools #())
+          for fn = (json-value wrapper :any "function")
+          when fn
+            do (format out "~%- ~a~@[ — ~a~]~%  arguments: ~a"
+                       (or (json-value fn :string "name") "")
+                       (let ((description (json-value fn :string "description")))
+                         (cond ((null description) nil)
+                               ((> (length description) 600)
+                                (concatenate 'string (subseq description 0 600) "…"))
+                               (t description)))
+                       (encode-json-object
+                        (or (json-value fn :any "parameters") (json-object)))))))
+
+(defun free-lane-request-body (context)
+  "One prompt carrying the whole conversation and the tools as text."
+  (with-request-shape context
+      ((provider (effective-provider-config-provider config)))
+    (declare (ignore provider))
+    (let ((system (format nil "~a~%~%~a~a~%~%~a"
+                          (or context.system-prompt "")
+                          +free-lane-tools-heading+
+                          (free-lane-tools-text tools)
+                          +free-lane-transcript-heading+)))
+      (json-object
+       "model" config.model
+       "messages" (vector (json-object "role" "system" "content" system)
+                           (json-object "role" "user" "content"
+                                        (free-lane-transcript (request-messages context))))
+       "prompt_cache_key" (openai-prompt-cache-key context)
+       :opt "max_tokens" (effective-max-output-tokens context)
+       :when (and effort (not (string-equal effort "off"))) "reasoning_effort" effort))))
+
+(defun free-lane-split-tool-text (text)
+  "TEXT without its ```tool blocks, and those blocks as (NAME . ARGUMENTS)
+calls, in the order they stood."
+  (let ((calls '()) (out (make-string-output-stream)) (cursor 0))
+    (loop
+      (multiple-value-bind (start end)
+          (ppcre:scan "(?s)```tool[ \\t]*\\r?\\n(.*?)```" text :start cursor)
+        (unless start (return))
+        (write-string text out :start cursor :end start)
+        (let* ((piece (subseq text start end))
+               (raw (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                 (subseq piece 7 (max 7 (- (length piece) 3)))))
+               (json (ignore-errors (nlk:decode-json raw))))
+          (if (and (hash-table-p json) (json-value json :string "name"))
+              (let ((arguments (json-value json :any "arguments")))
+                (push (cons (json-value json :string "name")
+                            (cond ((stringp arguments) arguments)
+                                  (arguments (encode-json-object arguments))
+                                  (t "{}")))
+                      calls))
+              ;; a fence that names no call stays the text it was
+              (write-string text out :start start :end end)))
+        (setf cursor end)))
+    (write-string text out :start cursor)
+    (values (string-trim '(#\Space #\Tab #\Newline #\Return)
+                         (get-output-stream-string out))
+            (nreverse calls))))
+
+(defvar *free-lane-call-sequence* 0
+  "How many free-lane tool calls this process has read: every id its own.")
+
+(defun free-lane-answer (message)
+  "MESSAGE with its ```tool blocks read back as the tool calls they name."
+  (let ((content (json-value message :string "content")))
+    (when (and content (search "```tool" content))
+      (multiple-value-bind (clean calls) (free-lane-split-tool-text content)
+        (when calls
+          (setf (gethash "content" message) (if (zerop (length clean)) :null clean))
+          (setf (gethash "tool_calls" message)
+                (map 'vector
+                     (lambda (call)
+                       (chat-tool-call-object
+                        (format nil "free-~a" (incf *free-lane-call-sequence*))
+                        (car call) (cdr call)))
+                     calls)))))
+    message))
+
 (defun request-body (context)
+  "The chat body for CONTEXT: the free lane's one prompt where the provider
+answers no other shape, the plain chat body otherwise."
+  (if (free-lane-provider-p
+       (effective-provider-config-provider
+        (compiled-turn-context-provider-config context)))
+      (free-lane-request-body context)
+      (%request-body context)))
+
+(defun %request-body (context)
   "Build a chat-completions request solely from compiled CONTEXT."
   ;; Controls are emitted only when configured: an unset control is an absent
   ;; key. The history rides through the turn's memo: a message the turn
@@ -176,7 +346,10 @@ chat-shaped assistant message."
          ;; drain tools, close reasoning, close text), then reconstruct the
          ;; message in the chat wire shape.
          :close-order (:tools :reasoning :text)
-         :after-finish ((note-phase "stream-done finish=~a tool-calls=~d" finish-reason
+         :after-finish ((when (free-lane-provider-p
+                               (effective-provider-config-provider config))
+                          (free-lane-answer message))
+                        (note-phase "stream-done finish=~a tool-calls=~d" finish-reason
                                     (length (lane-assembly-tool-buffers asm)))))
   (:finish-on-sentinel t
    ;; An error frame's numeric code is the status retry reads; a code-less one is transient.
