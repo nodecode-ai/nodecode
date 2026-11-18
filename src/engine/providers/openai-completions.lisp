@@ -93,7 +93,12 @@ its JSON whole and its closing fence after it:
 {\"name\": \"eval\", \"arguments\": {\"form\": \"(+ 1 2)\"}}
 ```
 
-One block is one call, and two blocks in one message are two calls. The
+One block is one call, and two blocks in one message are two calls. For
+eval, a block may hold the form itself, with no JSON around it:
+
+```tool
+(sh \"ls\")
+``` The
 operator-facing text goes before the block. The result comes back in the next
 message as a line beginning TOOL RESULT. The tools, each with the arguments
 it takes:~%~a"
@@ -246,6 +251,23 @@ escaped, which JSON forbids and models do anyway."
                   ((hash-table-p arguments) (encode-json-object arguments))
                   (t "{}"))))))
 
+(defun free-lane-marker-only-p (text)
+  "Whether TEXT is nothing but a fence the answer never closed: a marker with no
+call in it is not an answer, whichever lane wrote it."
+  (let ((trimmed (string-trim '(#\Space #\Tab #\Newline #\Return) (or text ""))))
+    (and (>= (length trimmed) 3)
+         (string= "```" trimmed :end2 3)
+         (null (search "```" trimmed :start2 3)))))
+(defun free-lane-lisp-call (body)
+  "BODY as an eval call when it is a Lisp form rather than JSON: a model that
+writes the form straight into the fence escapes nothing, and JSON cannot hold
+it, so the form is the argument it meant."
+  (let ((text (string-trim '(#\Space #\Tab #\Newline #\Return) body)))
+    (when (and (plusp (length text))
+               (char= (char text 0) #\()
+               (char= (char text (1- (length text))) #\)))
+      (cons "eval" (encode-json-object (json-object "form" text))))))
+
 (defun free-lane-split-tool-text (text)
   "TEXT without its call blocks, and those blocks as (NAME . ARGUMENTS) calls,
 in the order they stood. A block that names no call stays the text it was."
@@ -260,7 +282,7 @@ in the order they stood. A block that names no call stays the text it was."
                        (declare (ignore match))
                        (and registers (aref registers 0))))
                (json (and body (free-lane-decode-call body)))
-               (call (and json (free-lane-call-of json))))
+               (call (or (and json (free-lane-call-of json)) (free-lane-lisp-call body))))
           (cond (call
                  (push call calls)
                  (write-string text out :start cursor :end start))

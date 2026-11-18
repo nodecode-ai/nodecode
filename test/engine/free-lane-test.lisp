@@ -119,3 +119,19 @@
          (twice (nle::free-lane-answer once)))
     (is (= 1 (length (gethash "tool_calls" twice))) "reading a read call adds no second one")
     (is (equal (gethash "content" once) (gethash "content" twice)) "and leaves the words it left")))
+(deftest a-fence-holding-the-form-is-the-eval-call-it-means
+  (let* ((answer (nle::free-lane-answer
+                  (nlk:json-object "role" "assistant" "content"
+                                   (format nil "running~%```tool~%(sh \"echo hi\")~%```"))))
+         (calls (gethash "tool_calls" answer))
+         (call (and calls (aref calls 0))))
+    (is calls "a form the model could not escape into JSON still calls eval")
+    (is (equal "eval" (nlk:json-value call :string "function" "name")))
+    (is (search "echo hi" (nlk:json-value call :string "function" "arguments")))))
+
+(deftest a-marker-alone-is-no-answer-on-any-lane
+  (is (nle::free-lane-marker-only-p "```tool"))
+  (is (nle::free-lane-marker-only-p "  ```json  "))
+  (is (not (nle::free-lane-marker-only-p "```tool\n(sh \"x\")\n```")))
+  (is (not (nle::free-lane-marker-only-p "just words"))))
+
