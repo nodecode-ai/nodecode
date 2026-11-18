@@ -3305,6 +3305,12 @@ did not say."
                   (multiple-value-bind (merged continued-from)
                       (merge-continuation message)
                     (setf message merged)
+                    ;; The free lane's call is text: read it back here, where every
+                    ;; path (a stream, a retry, a merged continuation) meets, so a
+                    ;; call the lane's own finish missed still runs and an answer
+                    ;; that was only the marker counts as empty and re-asks.
+                    (when (free-lane-provider-p provider-id)
+                      (setf message (free-lane-answer message)))
                     ;; The emptiness check runs on the merged message: a
                     ;; continued attempt whose own stream is still silent
                     ;; carries the sealed cut text, so the seal counts — and

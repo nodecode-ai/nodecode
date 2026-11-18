@@ -111,3 +111,11 @@
     (is (null none) "a turn with no tool teaches no protocol")
     (is (search "TOOLS." some))
     (is (search "eval" some))))
+
+(deftest a-call-already-read-is-left-alone
+  (let* ((once (nle::free-lane-answer
+                (nlk:json-object "role" "assistant" "content"
+                                  (format nil "doing it~%```tool~%{\"name\":\"eval\",\"arguments\":{\"form\":\"1\"}}~%```"))))
+         (twice (nle::free-lane-answer once)))
+    (is (= 1 (length (gethash "tool_calls" twice))) "reading a read call adds no second one")
+    (is (equal (gethash "content" once) (gethash "content" twice)) "and leaves the words it left")))
