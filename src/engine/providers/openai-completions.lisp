@@ -80,18 +80,24 @@ no text and no image."
   (and (stringp provider)
        (member provider *free-lane-providers* :test #'string-equal)))
 
-(defparameter +free-lane-tools-heading+
-  "TOOLS. This endpoint takes no tool schemas, so a tool call is text: to call
-one, end your message with a fenced block in exactly this shape, and nothing
-after it:
+(defun free-lane-protocol-heading (tools)
+  "The paragraph teaching the fenced call, and the tools it names, or NIL when
+this turn carries no tool at all: a turn with none teaches nothing, so a model
+cannot call a tool that is not there."
+  (when (plusp (length (or tools #())))
+    (format nil "TOOLS. This endpoint takes no tool schemas, so a tool call is
+text: to call one, end your message with a fenced block in exactly this shape,
+its JSON whole and its closing fence after it:
 
 ```tool
 {\"name\": \"eval\", \"arguments\": {\"form\": \"(+ 1 2)\"}}
 ```
 
-One call per message. The operator-facing text goes before the block. The
-result comes back in the next message as a line beginning TOOL RESULT. The
-tools, each with the arguments it takes:")
+One block is one call, and two blocks in one message are two calls. The
+operator-facing text goes before the block. The result comes back in the next
+message as a line beginning TOOL RESULT. The tools, each with the arguments
+it takes:~%~a"
+            (free-lane-tools-text tools))))
 
 (defparameter +free-lane-transcript-heading+
   "The conversation follows as one transcript: a line [n] names who spoke, and
@@ -161,10 +167,9 @@ the lines under it are what they said. Answer the last OPERATOR entry.")
   (with-request-shape context
       ((provider (effective-provider-config-provider config)))
     (declare (ignore provider))
-    (let ((system (format nil "~a~%~%~a~a~%~%~a"
+    (let ((system (format nil "~a~@[~%~%~a~]~%~%~a"
                           (or context.system-prompt "")
-                          +free-lane-tools-heading+
-                          (free-lane-tools-text tools)
+                          (free-lane-protocol-heading tools)
                           +free-lane-transcript-heading+)))
       (json-object
        "model" config.model
@@ -175,29 +180,92 @@ the lines under it are what they said. Answer the last OPERATOR entry.")
        :opt "max_tokens" (effective-max-output-tokens context)
        :when (and effort (not (string-equal effort "off"))) "reasoning_effort" effort))))
 
+(defparameter +free-lane-call-fence+
+  "(?s)```[ \\t]*(?i:tool|json)?[ \\t]*\\r?\\n?(.*?)(?:```|\\z)"
+  "A fenced block that may carry a call: the info string a model reaches for,
+the body, and the close -- or the answer's own end, when the block was cut
+short.")
+
+(defun free-lane-close-brackets (text)
+  "TEXT with every bracket its end left open closed, a string it left open
+closed too: a body the answer cut short still reads."
+  (let ((closers '()) (in-string nil) (escape nil))
+    (loop for ch across text
+          do (cond (escape (setf escape nil))
+                   ((and in-string (char= ch #\\)) (setf escape t))
+                   ((char= ch #\") (setf in-string (not in-string)))
+                   (in-string)
+                   ((char= ch #\{) (push #\} closers))
+                   ((char= ch #\[) (push #\] closers))
+                   ((equal (first closers) ch) (pop closers))))
+    (concatenate 'string text (if in-string "\"" "") (coerce closers 'string))))
+
+(defun free-lane-sanitize (text)
+  "TEXT with a control character the model wrote raw inside a JSON string
+escaped, which JSON forbids and models do anyway."
+  (with-output-to-string (o)
+    (let ((in-string nil) (escape nil))
+      (loop for ch across text
+            do (cond (escape (write-char ch o) (setf escape nil))
+                     ((char= ch #\\) (write-char ch o) (setf escape t))
+                     ((char= ch #\") (write-char ch o) (setf in-string (not in-string)))
+                     ((and in-string (member ch '(#\Newline #\Return #\Tab)))
+                      (write-string (ecase ch (#\Newline "\\n") (#\Return "\\r") (#\Tab "\\t")) o))
+                     (t (write-char ch o)))))))
+
+(defun free-lane-decode-call (raw)
+  "RAW as the object it holds, repaired where the answer cut it short, or NIL."
+  (let ((text (string-trim '(#\Space #\Tab #\Newline #\Return) raw)))
+    (labels ((object (string)
+               (let ((json (ignore-errors (nlk:decode-json string))))
+                 (and (hash-table-p json) json))))
+      (flet ((decoded (string)
+               (or (object string)
+                   (object (free-lane-sanitize string))
+                   (object (free-lane-close-brackets (free-lane-sanitize string))))))
+        (or (decoded text)
+            (let ((cut (position #\} text :from-end t)))
+              (and cut (decoded (subseq text 0 (1+ cut))))))))))
+
+(defun free-lane-call-of (json)
+  "The (NAME . ARGUMENTS) JSON names, or NIL when it names no tool."
+  (let* ((function (json-value json :any "function"))
+         (name (or (json-value json :string "name")
+                   (json-value json :string "tool")
+                   (and (hash-table-p function) (json-value function :string "name"))))
+         (arguments (or (json-value json :any "arguments")
+                        (json-value json :any "input")
+                        (json-value json :any "parameters")
+                        (and (hash-table-p function)
+                             (json-value function :any "arguments")))))
+    (when (and (stringp name) (plusp (length name)))
+      (cons name
+            (cond ((and (stringp arguments)
+                        (plusp (length (string-trim '(#\Space #\Tab #\Newline) arguments))))
+                   arguments)
+                  ((hash-table-p arguments) (encode-json-object arguments))
+                  (t "{}"))))))
+
 (defun free-lane-split-tool-text (text)
-  "TEXT without its ```tool blocks, and those blocks as (NAME . ARGUMENTS)
-calls, in the order they stood."
+  "TEXT without its call blocks, and those blocks as (NAME . ARGUMENTS) calls,
+in the order they stood. A block that names no call stays the text it was."
   (let ((calls '()) (out (make-string-output-stream)) (cursor 0))
     (loop
       (multiple-value-bind (start end)
-          (ppcre:scan "(?s)```tool[ \\t]*\\r?\\n(.*?)```" text :start cursor)
+          (ppcre:scan +free-lane-call-fence+ text :start cursor)
         (unless start (return))
-        (write-string text out :start cursor :end start)
         (let* ((piece (subseq text start end))
-               (raw (string-trim '(#\Space #\Tab #\Newline #\Return)
-                                 (subseq piece 7 (max 7 (- (length piece) 3)))))
-               (json (ignore-errors (nlk:decode-json raw))))
-          (if (and (hash-table-p json) (json-value json :string "name"))
-              (let ((arguments (json-value json :any "arguments")))
-                (push (cons (json-value json :string "name")
-                            (cond ((stringp arguments) arguments)
-                                  (arguments (encode-json-object arguments))
-                                  (t "{}")))
-                      calls))
-              ;; a fence that names no call stays the text it was
-              (write-string text out :start start :end end)))
-        (setf cursor end)))
+               (body (multiple-value-bind (match registers)
+                         (ppcre:scan-to-strings +free-lane-call-fence+ piece)
+                       (declare (ignore match))
+                       (and registers (aref registers 0))))
+               (json (and body (free-lane-decode-call body)))
+               (call (and json (free-lane-call-of json))))
+          (cond (call
+                 (push call calls)
+                 (write-string text out :start cursor :end start))
+                (t (write-string text out :start cursor :end end)))
+          (setf cursor end))))
     (write-string text out :start cursor)
     (values (string-trim '(#\Space #\Tab #\Newline #\Return)
                          (get-output-stream-string out))
@@ -206,20 +274,34 @@ calls, in the order they stood."
 (defvar *free-lane-call-sequence* 0
   "How many free-lane tool calls this process has read: every id its own.")
 
+(defun free-lane-dangling-fence (text)
+  "TEXT without the fence it ends on when that fence was never closed: a marker
+with no call in it is not what the operator asked to read."
+  (let ((count 0) (last 0) (at 0))
+    (loop while (setf at (search "```" text :start2 at))
+          do (incf count) (setf last at at (+ at 3)))
+    (when (oddp count)
+      (string-right-trim '(#\Space #\Tab #\Newline #\Return) (subseq text 0 last)))))
+
 (defun free-lane-answer (message)
-  "MESSAGE with its ```tool blocks read back as the tool calls they name."
+  "MESSAGE with its call blocks read back as the tool calls they name."
   (let ((content (json-value message :string "content")))
-    (when (and content (search "```tool" content))
+    (when (and content (search "```" content))
       (multiple-value-bind (clean calls) (free-lane-split-tool-text content)
-        (when calls
-          (setf (gethash "content" message) (if (zerop (length clean)) :null clean))
-          (setf (gethash "tool_calls" message)
-                (map 'vector
-                     (lambda (call)
-                       (chat-tool-call-object
-                        (format nil "free-~a" (incf *free-lane-call-sequence*))
-                        (car call) (cdr call)))
-                     calls)))))
+        (cond
+          (calls
+           (setf (gethash "content" message) (if (zerop (length clean)) :null clean))
+           (setf (gethash "tool_calls" message)
+                 (map 'vector
+                      (lambda (call)
+                        (chat-tool-call-object
+                         (format nil "free-~a" (incf *free-lane-call-sequence*))
+                         (car call) (cdr call)))
+                      calls)))
+          (t (let ((cut (free-lane-dangling-fence clean)))
+               (when (and cut (not (equal cut clean)))
+                 (setf (gethash "content" message)
+                       (if (zerop (length cut)) :null cut))))))))
     message))
 
 (defun request-body (context)
