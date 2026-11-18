@@ -193,6 +193,15 @@ of its name under *PROFILES-DIRECTORY*. Nothing is created or checked here."
       (default-home)
       (merge-pathnames (format nil "~a/" name) *profiles-directory*)))
 
+;; TRIMMED lives here, not in lib/text: the sticky profile file is read while the
+;; startup parameters below resolve at load time, before lib/text is loaded
+;; (nodecode.asd loads lib/paths third). Still the one definition every file uses.
+(defun trimmed (text)
+  "TEXT without its leading and trailing blanks -- space, tab, return,
+newline. The one bag: a caller that spells the character list out disagrees
+with the next one by a character sooner or later."
+  (string-trim '(#\Space #\Tab #\Return #\Newline) text))
+
 (defun sticky-profile ()
   "The name the sticky file holds, or NIL: absent, blank, not a profile
 name, `default', or naming a folder that is not there — a deleted
