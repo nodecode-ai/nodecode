@@ -251,6 +251,20 @@ escaped, which JSON forbids and models do anyway."
                   ((hash-table-p arguments) (encode-json-object arguments))
                   (t "{}"))))))
 
+(defun free-lane-salvage-form (body)
+  "The form a body meant to pass as \"form\" when its quotes were left
+unescaped: JSON cannot hold a Lisp form a model wrote without escaping it, and
+the form is still what it asked to run."
+  (let ((at (search "\"form\"" body)))
+    (when at
+      (let* ((colon (position #\: body :start (min (length body) (+ at 6))))
+             (open (and colon (position #\" body :start (1+ colon))))
+             (close (and open (position #\" body :from-end t))))
+        (when (and open close (> close (1+ open)))
+          (let ((form (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                   (subseq body (1+ open) close))))
+            (when (and (plusp (length form)) (char= (char form 0) #\())
+              (cons "eval" (encode-json-object (json-object "form" form))))))))))
 (defun free-lane-marker-only-p (text)
   "Whether TEXT is nothing but a fence the answer never closed: a marker with no
 call in it is not an answer, whichever lane wrote it."
@@ -282,7 +296,8 @@ in the order they stood. A block that names no call stays the text it was."
                        (declare (ignore match))
                        (and registers (aref registers 0))))
                (json (and body (free-lane-decode-call body)))
-               (call (or (and json (free-lane-call-of json)) (free-lane-lisp-call body))))
+               (call (or (and json (free-lane-call-of json)) (free-lane-lisp-call body)
+                (free-lane-salvage-form body))))
           (cond (call
                  (push call calls)
                  (write-string text out :start cursor :end start))
