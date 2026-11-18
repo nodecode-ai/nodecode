@@ -4485,6 +4485,21 @@ and where a terminal answer would end the turn."
          ;; context, the tools this round dispatches — reads the config the
          ;; round ENDED with, never the selection it started from.
          (setf context (or active-context context))
+
+         ;; The free lane's call is text, and the lane's own read at the
+         ;; stream's finish is not the last word: a retry, a merged
+         ;; continuation or an empty re-ask can land here unread. Read it at
+         ;; this round's one exit, before the message is recorded or
+         ;; dispatched, and let an answer that was only the marker be empty
+         ;; enough to re-ask.
+         (when (free-lane-provider-p
+                (effective-provider-config-provider context.provider-config))
+           (let ((before (content-text (gethash "content" message))))
+             (setf message (free-lane-answer message))
+             (when (and (stringp before) (plusp (length before))
+                        (assistant-message-empty-p message))
+               (error 'provider-empty-response
+                      :detail "the free lane answered only its call marker"))))
          ;; Durable closure BEFORE the cancel check: this round's message
          ;; is fully streamed and fully billed whatever happens next.
          ;; Cancelling between the provider's return and the fact commit
