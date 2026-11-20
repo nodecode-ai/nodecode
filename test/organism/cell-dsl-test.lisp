@@ -52,6 +52,7 @@ before it: the partial-start seam.")
   (:hook :frame (lambda (op next) (funcall next op)))
   ;; Registered and taken back, never run: the gates read the catalog.
   (:command "demo" #'identity :description "the demo command" :argument-hint "args")
+  (:lane "demo-lane" "~" (lambda () (list "demo-row")) :description "the demo lane")
   (:start (lambda ()
             (incf *demo-starts*)
             (nle:on-stop (lambda () (incf *demo-stops*)))
@@ -72,13 +73,14 @@ it."
   "What the demo has on the image right now, as a plist of booleans."
   (list :tool (and (nle::find-tool "demo_tool") t)
         :command (and (nle::find-registered-command "demo") t)
+        :lane (and (nle::find-composer-lane "demo-lane") t)
         :help (and (assoc :demo nle::*help-topics*) t)
         :frame (and (cell-hook "nodecode-cell-demo" :frame) t)
         :settings (and nodecode-cell-demo::*demo* t)))
 
 (defun demo-all (flag)
   "DEMO-INSTALLED's answer when every contribution is FLAG."
-  (list :tool flag :command flag :help flag :frame flag :settings flag))
+  (list :tool flag :command flag :lane flag :help flag :frame flag :settings flag))
 
 (defmacro with-demo ((&rest pairs) &body body)
   "Run BODY with the demo started on PAIRS, stopped on unwind, the tool

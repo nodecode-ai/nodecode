@@ -526,6 +526,7 @@ renderer, the program loop.")
    #:await-port #:start-gateway #:stop-gateway #:serve-organism-candidate
    ;; --- a cell's slash commands (SLASH-CATALOG, SLASH) ---
    #:register-command #:unregister-commands #:list-dialog
+   #:register-composer-lane #:unregister-composer-lanes
    #:run-row #:ask-row #:ask-line #:bare-args-p
    ;; --- gateway TUI client (G1) ---
    #:gateway-chat-model #:run-chat-gateway #:start-client-organism))

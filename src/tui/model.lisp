@@ -150,6 +150,12 @@ for the many bars and rows that paint one run of text in one tone."
    ;; The @ lane's last ranking, (FILTER CATALOG . ROWS): every frame between
    ;; two keystrokes asks for the rows, and scoring the catalog is the cost.
    (file-rows-memo :initform nil :accessor chat-model-file-rows-memo)
+   ;; The lanes cells offer: each lane's rows as its last fetch answered,
+   ;; ((LANE . ROWS) ...), ROWS (TEXT . DETAIL) each; and (LANE . START) of the
+   ;; token that last asked for them, NIL while none is typed, so every new
+   ;; token fetches fresh (LANE-TOKEN-SUGGESTIONS).
+   (lane-rows :initform nil :accessor chat-model-lane-rows)
+   (lane-asked :initform nil :accessor chat-model-lane-asked)
    ;; The @ lane's folder listings for path tokens (`@~/', `@../', `@/'),
    ;; each (HEAD . ENTRIES), newest first and bounded, HEAD the token up to
    ;; its last separator; and the HEAD last asked for, NIL while no path
@@ -797,7 +803,8 @@ repaints after it expires)."
       (and (nth-value 1 (bar-lane model)) t)))
 
 (nlt:defmessage command-catalog-msg
-    ((commands :initarg :commands :reader command-catalog-msg-commands))
+    ((commands :initarg :commands :reader command-catalog-msg-commands)
+     (lanes :initarg :lanes :initform nil :reader command-catalog-msg-lanes))
   :documentation "The cell commands the gateway serves, read off the loop
 thread: INIT queues the read as a command so the first frame never waits on
 it — it is an HTTP round trip — and UPDATE installs what came back.")
@@ -809,10 +816,12 @@ stay (builtins keep working, and the next connection or COMMANDS_CHANGED
 reads again)."
   (lambda ()
     (with-handlers ((error () nil))
-      (make-instance 'command-catalog-msg :commands (gateway-command-entries model)))))
+      (make-instance 'command-catalog-msg :commands (gateway-command-entries model)
+                                          :lanes (gateway-lane-entries model)))))
 
 (defmethod nlt:update ((model chat-model) (msg command-catalog-msg))
   (set-gateway-commands (command-catalog-msg-commands msg))
+  (setf *gateway-lanes* (command-catalog-msg-lanes msg))
   (values model nil))
 
 ;;; --- the composer's @ catalog -----------------------------------------------
@@ -968,7 +977,8 @@ attach was for is on screen."
 loop thread, and put each failure up as an error toast (INSTALL-COMPOSER-
 CATALOGS owns what an answered lane and a failed one each take); the folder
 listings @ path tokens asked for land with them (LAND-PATH-LISTINGS)."
-  (let ((listed (land-path-listings model)))
+  (let ((listed (let ((lanes (land-lane-rows model)))
+                  (or (land-path-listings model) lanes))))
     (or (when-let (result (bt2:with-lock-held (*composer-catalog-walks-lock*)
                             (prog1 (gethash model *composer-catalog-results*)
                               (remhash model *composer-catalog-results*))))
