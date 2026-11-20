@@ -37,14 +37,29 @@
 (deftest a-failed-turns-detail-is-the-message-without-the-printers-references ()
   ;; SBCL's printer appends a `See also:' block of manual references to some
   ;; conditions; a card showing every line of a failure's detail would print
-  ;; it as if it were the error. The detail is the message, every line of it.
+  ;; it as if it were the error. The message is kept, every line of it: as the
+  ;; detail itself, or beside a detail in plain words when Nodecode itself
+  ;; failed, as a bad SUBSEQ is.
   (with-admitted-turn (turn "lifecycle-references" "command-1" "hello")
     (nlk:fail-turn turn (handler-case (subseq (string (gensym)) 0 99) (error (e) e)))
-    (let ((detail (nlk::turn-failed-detail
-                   (first (nlk:events :session-id "lifecycle-references" :kind nlk::+kind-turn-failed+)))))
-      (is-carrying detail
+    (let ((failed (first (nlk:events :session-id "lifecycle-references" :kind nlk::+kind-turn-failed+))))
+      (is-carrying (text (nlk:turn-failed-condition-text failed))
         ("The bounding indices 0 and 99 are bad" "the message stands")
-        (:absent "See also" "the printer's references are not the error")))))
+        (:absent "See also" "the printer's references are not the error"))
+      (is-carrying (detail (nlk:turn-failed-detail failed))
+        ("Nodecode hit an internal error. Your session is saved" "the detail says it in plain words")
+        (:absent "bounding indices" "and leaves SBCL's words to the fact")))))
+
+(deftest a-failed-turns-detail-keeps-a-message-written-for-a-person ()
+  ;; Only a fault of Nodecode's own reads in plain words: a refusal the code
+  ;; wrote for a person, a file the disk would not take, stays as it was said.
+  (with-admitted-turn (turn "lifecycle-worded" "command-1" "hello")
+    (nlk:fail-turn turn (make-condition 'simple-error :format-control "spawning ~a: Permission denied"
+                                                      :format-arguments '("/usr/bin/claude")))
+    (let ((failed (first (nlk:events :session-id "lifecycle-worded" :kind nlk::+kind-turn-failed+))))
+      (is (equal "spawning /usr/bin/claude: Permission denied" (nlk:turn-failed-detail failed)) "the detail is the message")
+      (is (null (nlk:turn-failed-condition-text failed)) "kept once")
+      (is (null (nlk:turn-failed-frames failed)) "and no stack was given"))))
 
 (deftest a-settled-turn-releases-its-cancellation-registration ()
   ;; D2 reclamation: the process-local cancellation registry must not grow by
