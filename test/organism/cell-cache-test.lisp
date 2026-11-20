@@ -14,8 +14,7 @@
 (defun backdate-file (path seconds)
   "Set PATH's write date SECONDS before now, as a copy that keeps an old date
 leaves it."
-  (let ((unix (- (get-universal-time) (encode-universal-time 0 0 0 1 1 1970 0) seconds)))
-    (sb-posix:utimes (namestring path) unix unix)))
+  (set-file-times path (- (get-universal-time) (encode-universal-time 0 0 0 1 1 1970 0) seconds)))
 
 (defun rewrite-peripheral (root name forms &rest options)
   "Write peripheral NAME under ROOT anew with FORMS, its every file dated a day
