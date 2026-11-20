@@ -339,8 +339,8 @@ text."
 
 (nlk:define-section ("index")
   (:guide "The index section at the head of every conversation lists the definitions the organism keeps -- memories, skills, the layer's -- ranked by use.")
-  ("hot_budget" :integer :default 8192 :min 500
-                :doc "characters of the index below its first line: all described when they fit, else half for descriptions, the rest names")
+  ("hot_budget" :integer :default 8192 :min 120
+                :doc "characters of the index below its first line: all described when they fit, else half for descriptions, the rest names; a small budget leaves names only")
   ("stale_days" :integer :default 30 :min 1
                 :doc "a skill or a layer definition unused this long reads as cold; a memory never does"))
 
