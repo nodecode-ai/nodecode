@@ -127,7 +127,8 @@ no line, base or down mark from before."
      (nle::await-port (ws-mock-port ,mock))
      (unwind-protect (progn ,@body)
        (nle::close-websocket-lines)
-       (clack:stop (ws-mock-handler ,mock)))))
+       (unless (nle::stop-clack-handler (ws-mock-handler ,mock) :timeout 5)
+         (error "ws mock listener stop is still pending")))))
 
 (defun deaf-websocket-answer (socket close-frame &aux (stream (usocket:socket-stream socket)))
   "Take SOCKET's upgrade, then read whatever comes and answer nothing; with

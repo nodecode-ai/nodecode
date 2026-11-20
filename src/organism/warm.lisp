@@ -100,13 +100,13 @@
                               (nlt:update model (make-instance 'gw-projection-msg :frame frame))
                               (bt2:signal-semaphore replayed)))))
                  (wsd:start-connection ws)
-                 ;; CLOSE-CONNECTION closes the socket, then destroys the read
-                 ;; thread it saw alive -- which that close has just ended, so
-                 ;; on a loaded box the destroy finds it exited and signals
-                 ;; (both arms of the 7de1bc51d publish, built side by side).
-                 ;; An exited reader is the state the close is for.
-                 (with-cleanup ((handler-case (wsd:close-connection ws)
-                                  (bt2:bordeaux-threads-error () nil)))
+                 ;; Not CLOSE-CONNECTION: it closes the socket and then
+                 ;; destroys the read thread it saw alive, and a live thread
+                 ;; is never destroyed (os.lisp), so a reader still parked in
+                 ;; its read outlived the close and the dump refused to save
+                 ;; with it running. SEVER-WEBSOCKET shuts the socket down;
+                 ;; the parked read returns and the reader closes itself.
+                 (with-cleanup ((nlk:sever-websocket ws))
                    (unless (bt2:wait-on-semaphore replayed :timeout 10)
                      (error "warm-image: the sync stream never replayed"))))
                (setf *boot-trim-done* nil)
@@ -117,7 +117,8 @@
           ;; acceptor; the workers are waited out, bounded, and a dump they
           ;; would outlive is refused out loud.
           (dex:clear-connection-pool)
-          (stop-gateway)
+          (unless (stop-gateway)
+            (error "warm-image: gateway listener stop is still pending"))
           (setf hunchentoot:*default-connection-timeout* timeout)
           (nlk:close-store)
           (dolist (suffix '("" "-wal" "-shm" "-journal" ".lock" ".owner"))
@@ -127,11 +128,9 @@
                                     (search "hunchentoot-worker" (or (sb-thread:thread-name thread) "")))
                                   (sb-thread:list-all-threads))))
             (loop repeat 150 while (workers) do (sleep 0.02))
-            ;; Without this, a worker still in a kept-alive read after that
-            ;; would wait for a read timeout SBCL never applies to a socket
-            ;; on Windows: end it, and its socket with it.
-            (dolist (worker (workers))
-              (ignore-errors (nlk:terminate-thread-safely worker)))
-            (loop repeat 150 while (workers) do (sleep 0.02))
+            ;; A worker can be inside a native call holding library locks.
+            ;; Refuse the dump instead of unwinding that unknown frame; an
+            ;; open worker remains live and visible to the image's owner.
             (when (workers)
-              (error "warm-image: a gateway worker did not stop"))))))))
+              (error "warm-image: gateway workers still running: ~{~a~^, ~}"
+                     (mapcar #'sb-thread:thread-name (workers))))))))))

@@ -800,7 +800,10 @@ one execs the published image.")
   "The longest the keeper waits between looks at a folder that has not moved.")
 
 (defvar *launch-image-keeper* nil
-  "This process's keeper thread, or NIL when it keeps none.")
+  "This process's keeper WORKER, retained until its thread has actually left.")
+
+(defvar *launch-image-keeper-lock* (bt2:make-lock :name "launch-image-keeper")
+  "Serializes keeper ownership, never held while joining its thread.")
 
 (defun folder-stamp (&aux (count 0) (names 0) (sizes 0) (times 0) (inodes 0))
   "What FOLDER-KEY reads, witnessed without its manifest: sums over the stat of
@@ -870,18 +873,38 @@ else NIL."
       key)))
 
 (defun start-launch-image-keeper ()
-  "Keep this home's launch image in step with the folder, on a thread of its
-own, for as long as this process lives. Idempotent per process."
-  (or *launch-image-keeper*
-      (setf *launch-image-keeper*
-            (spawn "launch-image-keeper"
-              (let ((period *launch-image-period*))
-                (loop (sleep period)
-                      (let ((seen *launch-image-stamp*))
-                        (ignore-errors (tend-launch-image))
-                        (setf period (if (eq seen *launch-image-stamp*)
-                                         (min *launch-image-idle-period* (* 2 period))
-                                         *launch-image-period*)))))))))
+  "Keep this home's launch image in step with the folder. Answer its WORKER;
+while a stopped worker is still returning from a look, keep that same owner."
+  (bt2:with-lock-held (*launch-image-keeper-lock*)
+    (if (and *launch-image-keeper*
+             (bt2:thread-alive-p (worker-thread *launch-image-keeper*)))
+        *launch-image-keeper*
+        (let ((period *launch-image-period*))
+          (setf *launch-image-keeper*
+                (worker-start
+                 "launch-image-keeper"
+                 (lambda ()
+                   (let ((seen *launch-image-stamp*))
+                     (ignore-errors (tend-launch-image))
+                     (setf period (if (eq seen *launch-image-stamp*)
+                                      (min *launch-image-idle-period* (* 2 period))
+                                      *launch-image-period*))))
+                 :wake (lambda () period)))))))
+
+(defun stop-launch-image-keeper (&optional (seconds 5))
+  "Request the keeper's cooperative stop and wait at most SECONDS. Answer
+NIL only after its thread has left, else the retained, still-pending WORKER."
+  (let ((worker (bt2:with-lock-held (*launch-image-keeper-lock*)
+                  *launch-image-keeper*)))
+    (when worker
+      ;; WORKER-STOP wakes the idle semaphore. A look already inside foreign
+      ;; code must return on its own; its handle stays owned until then.
+      (worker-stop worker :timeout seconds)
+      (bt2:with-lock-held (*launch-image-keeper-lock*)
+        (when (and (eq worker *launch-image-keeper*)
+                   (not (bt2:thread-alive-p (worker-thread worker))))
+          (setf *launch-image-keeper* nil)))
+      (when (bt2:thread-alive-p (worker-thread worker)) worker))))
 
 ;;; A warm launch image runs from the cache, so the kernel's list of what runs
 ;;; names the cache file, never the release this image descends from: the
@@ -1237,11 +1260,19 @@ sentinel says another builder is at it, or a marker says not to."
   (run-warm-supervisor)
   (uiop:quit 0))
 
-(defun disarm-timers ()
+(defun image-thread-name (thread)
+  "THREAD's name, or a stand-in when it has none or is not a thread."
+  (or (ignore-errors (sb-thread:thread-name thread)) "a thread with no name"))
+
+(defun join-image-thread (thread seconds)
+  "Wait at most SECONDS for THREAD. A non-thread is the caller's error."
+  (sb-thread:join-thread thread :default nil :timeout seconds))
+
+(defun disarm-timers (&optional (deadline (deadline-after 10)))
   "Unschedule every SBCL timer in this process, silence its alarm for good --
 the kernel's timer zeroed and SIGALRM ignored, one already raised with it --
-and wait out a callback still on its thread. For a process whose next act is
-its dump."
+and wait out callbacks until the shared absolute DEADLINE. For a process
+whose next act is its dump; surviving callbacks must still refuse the save."
   ;; Without this, a timer's SIGALRM landing inside GC-AND-SAVE would be
   ;; fatal to the runtime, and a core save has no business racing a
   ;; recurring callback. The dumped image arms its own timers at every start
@@ -1263,8 +1294,11 @@ its dump."
       (silence-alarm))
     (dolist (thread (sb-thread:list-all-threads))
       (when (and (not (eq thread sb-thread:*current-thread*))
-                 (uiop:string-prefix-p "Timer " (or (sb-thread:thread-name thread) "")))
-        (sb-thread:join-thread thread :default nil :timeout 10)))
+                 (uiop:string-prefix-p "Timer " (image-thread-name thread)))
+        (let ((remaining (/ (max 0 (- deadline (get-internal-real-time)))
+                            internal-time-units-per-second)))
+          (when (plusp remaining)
+            (join-image-thread thread remaining)))))
     (unschedule-all))
   ;; A nursery a load raised comes back on a timer (WITH-NURSERY); unscheduled,
   ;; the image would carry the raise and the floor it found into every

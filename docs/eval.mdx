@@ -84,8 +84,8 @@ The harness reads the exit for the model. It does so in the same turn, or in a n
 | `(eval-status N)` | Returns the output since the last look. Adds the value and exit code once exited. |
 | `(eval-await N)` | Waits for new output or the exit. Waits at most the calling cell's `yield_time_ms`. |
 | `(eval-await N :until-exit t)` | Waits for the exit only. |
-| `(eval-interrupt N)` | Aborts the eval. |
-| `(eval-interrupt N :force t)` | Terminates its thread. Use when the form traps the abort. |
+| `(eval-interrupt N)` | Asks the eval to stop. It stays running until its owned work returns, then exits stopped. |
+| `(eval-interrupt N :force t)` | The same request. It does not terminate the thread. |
 
 Background output is live only. The exit result is stored in the log.
 

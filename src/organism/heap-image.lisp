@@ -7,9 +7,9 @@
 ;;;; single thread left, and ends that process: the organism that asked must
 ;;;; go on. So the save runs where the serve's owner parks (SERVE-NEXT
 ;;;; :IMAGE), after the gateway stopped and the store was let go, in steps:
-;;;;   - QUIESCE: timers disarmed, every thread still running stopped and
-;;;;     joined -- a cell's :START brings its own back at boot, as it does at
-;;;;     every boot;
+;;;;   - QUIESCE: timers disarmed, known owners asked to stop cooperatively;
+;;;;     one total wait for every remaining thread, refusing the save when
+;;;;     any survives -- arbitrary threads are never forcibly unwound;
 ;;;;   - FORGET: a variable that held one of those threads holds NIL, so the
 ;;;;     `start unless running' idiom starts it again in the image;
 ;;;;   - FORK: with one thread left SBCL forks, the child dumps the heap
@@ -25,26 +25,26 @@
 (in-package #:nodecode.kernel)
 
 (defparameter *image-quiesce-seconds* 5
-  "How long a save waits on each thread it stopped before it gives up.")
+  "The total wait budget for all threads at a live-image save.")
 
 (defun quiesce-for-image (&optional (seconds *image-quiesce-seconds*))
-  "Leave this thread the only one: SBCL's timers disarmed (DISARM-TIMERS) and
-every other thread stopped and joined. => the names of the threads that
-would not stop, NIL when none is left."
-  ;; Called with the gateway stopped (STOP-GATEWAY: cells, execs, the
-  ;; listener), so what is left are the threads nobody stops -- a keeper's
-  ;; sleep loop, a cell that starts a thread and declares no :STOP. Each is
-  ;; ended the way a process exit ends it, and one that will not end within
-  ;; SECONDS refuses the save: a fork beside it is not allowed.
-  (disarm-timers)
-  (let ((others (remove sb-thread:*current-thread* (sb-thread:list-all-threads))))
-    (dolist (thread others)
-      (ignore-errors (sb-thread:terminate-thread thread)))
-    (dolist (thread others)
-      (ignore-errors (sb-thread:join-thread thread :default nil :timeout seconds)))
+  "Disarm timers, request known owners' stop, and wait until one shared
+monotonic deadline. Answer every surviving thread's name, NIL only if alone."
+  ;; STOP-GATEWAY has already asked cells, execs and the listener to stop.
+  ;; The launch keeper owns a separate idle loop. Any foreign call or cell
+  ;; without a cooperative stop is left alive: refusal, never a guessed safe
+  ;; unwind across a foreign frame. Timer joins spend this same wait budget.
+  (let ((deadline (deadline-after seconds)))
+    (stop-launch-image-keeper 0)
+    (disarm-timers deadline)
+    (dolist (thread (remove sb-thread:*current-thread* (sb-thread:list-all-threads)))
+      (let ((remaining (/ (max 0 (- deadline (get-internal-real-time)))
+                          internal-time-units-per-second)))
+        (when (plusp remaining)
+          (ignore-errors (join-image-thread thread remaining)))))
     (loop for thread in (sb-thread:list-all-threads)
           unless (eq thread sb-thread:*current-thread*)
-            collect (or (sb-thread:thread-name thread) "a thread with no name"))))
+            collect (image-thread-name thread))))
 
 (defun forget-dead-threads (&optional (packages (list-all-packages)))
   "Set every global variable of PACKAGES that holds a thread no longer alive

@@ -2118,8 +2118,8 @@ the session's selection back."
 (define-sync-command :interrupt-exec ((exec-id :integer "exec_id"))
   ;; The pending-exec view's gesture: the operator stops a background
   ;; evaluation from the surface they are watching, instead of asking a model
-  ;; to call (eval-interrupt). The soft abort is exactly the condition
-  ;; EVAL-INTERRUPT's default arm sends; the exit fact, the band row's
+  ;; to call (eval-interrupt). The stop is exactly the request
+  ;; EVAL-INTERRUPT records; the exit fact, the band row's
   ;; retirement and the wake all follow the ordinary path, so this command
   ;; only asks and answers.
   (:require (and sid exec-id) "session_id and exec_id are required")
@@ -4883,25 +4883,76 @@ config change instead of relaunching."
     (format nil "~a~@[~%~{/~a~^, ~}: the commands it registered, each answering as typed~]"
             (or (nlk:cells-report-text names) "no cells") commands)))
 
+(defstruct (clack-owner (:copier nil))
+  acceptor
+  stop-p)
+
+(defvar *clack-owners* (make-hash-table :test #'eq)
+  "Clack owner thread -> its started acceptor and pending stop intent.
+A live owner is retained even when a stop caller times out.")
+(defvar *clack-owners-lock* (bt2:make-lock :name "clack-owners"))
+
+(defun reap-clack-owners ()
+  "Forget only owners actually observed dead, never a timed-out owner."
+  (bt2:with-lock-held (*clack-owners-lock*)
+    (maphash (lambda (thread owner)
+               (declare (ignore owner))
+               (unless (bt2:thread-alive-p thread)
+                 (remhash thread *clack-owners*)))
+             *clack-owners*)))
+
+(defun request-clack-acceptor-stop (acceptor)
+  "Request listener exit; its Clack owner alone performs full STOP cleanup."
+  ;; Hunchentoot STOP also joins the listener and closes its socket. Calling
+  ;; it here would race the Clack owner's UNWIND-PROTECT. Only set the same
+  ;; shutdown flag and wake the accept loop; the owner joins it and cleans up.
+  (bordeaux-threads:with-lock-held ((hunchentoot::acceptor-shutdown-lock acceptor))
+    (setf (hunchentoot::acceptor-shutdown-p acceptor) t))
+  (hunchentoot::wake-acceptor-for-shutdown acceptor))
+
+(defun note-clack-started (acceptor)
+  ;; START-LISTENING is too early: START has not yet initialized the
+  ;; taskmaster's listener thread. A pending stop must wait for START to
+  ;; return before waking it. Capture on this exact Clack owner thread.
+  (let* ((thread (bt2:current-thread))
+         (pending
+           (bt2:with-lock-held (*clack-owners-lock*)
+             (let ((owner (or (gethash thread *clack-owners*)
+                              (setf (gethash thread *clack-owners*) (make-clack-owner)))))
+               (setf (clack-owner-acceptor owner) acceptor)
+               (clack-owner-stop-p owner)))))
+    ;; Never block under the ownership map's lock.
+    (when pending (ignore-errors (request-clack-acceptor-stop acceptor)))))
+
+(defmethod hunchentoot:start :after
+    ((acceptor clack.handler.hunchentoot::clack-acceptor))
+  (note-clack-started acceptor))
+
 (defun stop-clack-handler (handler &key (timeout 5))
-  "Stop HANDLER's acceptor and wait for it to be gone."
-  ;; CLACK:STOP is
-  ;; DESTROY-THREAD plus a fixed half-second sleep; hunchentoot's own STOP runs
-  ;; inside the dying handler thread's unwind, so the call returns while the
-  ;; listener can still be alive. A process that exits in that window lets SBCL
-  ;; reap the two threads in arbitrary order: the listener aborts first, and the
-  ;; handler's cleanup then joins an aborted thread — the JOIN-THREAD-ERROR
-  ;; backtrace on Ctrl-C. Joining the handler thread (bounded by TIMEOUT
-  ;; seconds) is the proof the acceptor is down, so the thread is destroyed
-  ;; here and joined, without CLACK:STOP's half second: two of them were a
-  ;; second of every organism's stop, the store held through it. Every error
-  ;; is swallowed: a stop is best effort and this is unwind-time code.
+  "Request HANDLER's listener stop and wait up to TIMEOUT for its owner.
+T proves the owner exited; NIL means pending or an unsupported handler.
+TIMEOUT bounds the join, not a foreign call or the listener's wake operation."
+  ;; No asynchronous thread unwind: a Clack owner can be waiting inside
+  ;; native code. A request arriving before START completes is remembered;
+  ;; NOTE-CLACK-STARTED delivers it after the taskmaster is initialized.
   (let ((thread (ignore-errors (clack.handler::handler-acceptor handler))))
-    (cond ((typep thread 'bt2:thread)
-           (when (bt2:thread-alive-p thread) (ignore-errors (nlk:terminate-thread-safely thread)))
-           (nlk::%join-bounded thread timeout))
-          (t (ignore-errors (clack:stop handler)))))
-  t)
+    (unless (typep thread 'bt2:thread) (return-from stop-clack-handler nil))
+    (reap-clack-owners)
+    (unless (bt2:thread-alive-p thread) (return-from stop-clack-handler t))
+    (let* ((owner (bt2:with-lock-held (*clack-owners-lock*)
+                    (let ((owner (or (gethash thread *clack-owners*)
+                                     (setf (gethash thread *clack-owners*) (make-clack-owner)))))
+                      (setf (clack-owner-stop-p owner) t)
+                      owner)))
+           (acceptor (bt2:with-lock-held (*clack-owners-lock*)
+                       (clack-owner-acceptor owner))))
+      (when acceptor (ignore-errors (request-clack-acceptor-stop acceptor)))
+      (nlk::%join-bounded thread timeout)
+      (unless (bt2:thread-alive-p thread)
+        (bt2:with-lock-held (*clack-owners-lock*)
+          (when (eq owner (gethash thread *clack-owners*))
+            (remhash thread *clack-owners*)))
+        t))))
 
 (defun mark-interactive-socket (socket)
   "TCP_NODELAY on SOCKET, a connection the gateway accepted."
@@ -5008,6 +5059,7 @@ NIL after SECONDS."
   ;; A latch left from an earlier acceptor on the same port must not answer
   ;; for this one.
   (note-listening port nil)
+  (reap-clack-owners)
   (apply #'clack:clackup app :port port :silent t :debug nil arguments))
 
 (defun await-port (port &key (attempts 100) (pause 0.002))
@@ -5205,8 +5257,10 @@ SERVE-GATEWAY."
       ;; clackup binds on its own handler thread, so a bind failure never
       ;; signals here — a listener that never confirms is how it presents.
       ;; Fail the start loudly instead of returning a port nobody serves.
-      (stop-clack-handler (shiftf *gateway-handler* nil))
-      (error "gateway never started accepting on port ~d" bound))
+      (when (stop-clack-handler *gateway-handler*)
+        (setf *gateway-handler* nil))
+      (error "gateway never started accepting on port ~d~a" bound
+             (if *gateway-handler* "; listener stop is still pending" "")))
     (nlk:note-boot-phase "gateway-listening" bound)
     (when (nlk:store-open-p)
       (nlk:session-state-put "gateway" "port" (princ-to-string bound)))
@@ -5410,7 +5464,10 @@ back after them (NLK:TRIM-MEMORY)."
       (nlk::%join-bounded *gateway-acceptance-probe* 5)
       (setf *gateway-acceptance-probe* nil))
     (nlk:note-phase "stop listener")
-    (stop-clack-handler *gateway-handler*)
+    (unless (stop-clack-handler *gateway-handler*)
+      ;; Keep the actual owner reachable; a later stop can observe its exit.
+      ;; Claiming success here would let a warm dump inherit a live listener.
+      (return-from stop-gateway nil))
     (nlk:note-phase "stop update-poller")
     (ignore-errors (stop-update-poller))
     (set-help-topic :image nil)

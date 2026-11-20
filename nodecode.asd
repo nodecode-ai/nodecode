@@ -575,6 +575,7 @@ of stacking."
      ;; fixtures, and asserts what a minted-but-unspoken id did NOT write.
      (:file "store/standby-test")
      (:file "session/lifecycle-test")
+     (:file "session/cancel-waker-test")
      (:file "session/session-admit-test")
      (:file "organism/evolve-test")
      (:file "organism/cells-test")

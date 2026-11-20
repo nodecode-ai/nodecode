@@ -291,18 +291,16 @@ them spells the message out."
   (let ((symbol (find-symbol "MULTI-LINE-GATE" :nodecode.evolved)))
     (when (and symbol (fboundp symbol)) (fmakunbound symbol))))
 
-(deftest an-evaluation-is-guarded-without-a-gateway ()
-  ;; Without the guard, a synchronous snippet in a headless image is in no
-  ;; list at all and the model's own recursion takes the image down with
-  ;; "Heap exhausted, game over".
+(deftest an-evaluation-is-observed-without-a-runaway-watcher ()
+  ;; No allocation storm or unbounded recursion: removing asynchronous rescue
+  ;; must not let the test itself exhaust the image. A hook may record intent,
+  ;; but a nested eval/callback is not an owned cancellation boundary.
   (is (null nle::*background-exec-watcher*) "no gateway watcher in the test image")
-  (let ((nle::*eval-heap-soft-fraction* 0.0001)
-        (nle::*eval-guard-interval-seconds* 0.05))
-    (is-eval "(let ((acc nil)) (dotimes (i 40000000) (push (make-array 64) acc)) (length acc))"
-      ("runaway" result)
-      ("heap runaway" "named as the heap, not the stack")))
-  (is nle::*eval-guard-worker* "the guard runs after an evaluation")
-  (is (null (nle::guarded-evaluating-threads)) "and the thread list empties")
+  (let ((nle::*eval-heap-soft-fraction* -1))
+    (is-eval "(progn (eval-runaway-gc-hook) (+ 1 1))"
+      ("2" "a finite synchronous snippet returns normally")))
+  (is (null nle::*eval-guard-worker*) "no asynchronous runaway watcher is started")
+  (is (null (nle::guarded-evaluating-threads)) "the observational thread list empties")
   (is-eval "(+ 1 1)" ("2" "an ordinary snippet is untouched")))
 
 (deftest the-responses-lane-replays-encrypted-reasoning-without-a-summary ()
@@ -1188,17 +1186,17 @@ pushing them onto the RAN box, then answer ANSWER."
       (is (noted-p (first asked)) "the round that recorded it sends it, mid-turn"))))
 
 (deftest a-runaway-eval-backgrounds-at-the-yield-window ()
-  ;; One eval form globbing the whole monorepo pinned a turn worker at
-  ;; full CPU for half an hour. The fix is the run tool's own AX, not a
-  ;; deadline: at the yield window the call hands back a running envelope
-  ;; and the form keeps evaluating in the background, where
-  ;; (eval-interrupt ID) can abort it.
-  (nlk:with-cleanup ((nle::destroy-all-execs
+  ;; At the yield window the call hands back a running envelope. A stop is
+  ;; a request: this finite sleep is not killed, and the exit is recorded
+  ;; only after it returns. An infinite loop is not started here; nothing
+  ;; in the suite can force one to stop.
+  (nlk:with-cleanup ((nle::exec-await-all-exits (nle::exec-registry-instance) :timeout-seconds 5)
+                      (nle::destroy-all-execs
                       (nle::exec-registry-instance)))
     (let* ((start (get-internal-real-time))
            (result (execute-wire-call "call-spin"
                                       "eval"
-                                      (nlk:json-object "form" "(loop)" "yield_time_ms" 200)))
+                                      (nlk:json-object "form" "(sleep 1.5)" "yield_time_ms" 200)))
            (content (nle::message-content result))
            (elapsed (/ (- (get-internal-real-time) start)
                        internal-time-units-per-second)))
@@ -1310,7 +1308,7 @@ pushing them onto the RAN box, then answer ANSWER."
                                  turn))
                            (execute-wire-call "call-esc"
                                               "eval"
-                                              "{\"form\": \"(progn (sb-thread:signal-semaphore nodecode.test::*tool-cancel-entered*) (sleep 30))\"}"
+                                              "{\"form\": \"(progn (sb-thread:signal-semaphore nodecode.test::*tool-cancel-entered*) (sleep 1.5))\"}"
                                               context)))))
                :name "tool-cancel-worker")))
         (sb-thread:wait-on-semaphore entered)
@@ -1321,6 +1319,7 @@ pushing them onto the RAN box, then answer ANSWER."
                           internal-time-units-per-second)))
           (is (eq :cancelled outcome))
           (is (< elapsed 10))))))
+   (nle::exec-await-all-exits (nle::exec-registry-instance) :timeout-seconds 5)
    (nle::destroy-all-execs
     (nle::exec-registry-instance))))
 

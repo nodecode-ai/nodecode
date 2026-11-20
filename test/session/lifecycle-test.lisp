@@ -184,73 +184,63 @@
           (nle::complete-turn turn "late completion")))))
 
 (defun %cancel-parked-wait (session-id command-id park)
-  "Admit a turn on SESSION-ID under COMMAND-ID, park a worker inside its
-WITH-CANCELLABLE-WAIT running PARK — a function of the semaphore it signals
-once parked — and cancel the turn once it is."
-  ;; Answers the worker's outcome, :CANCELLED or :SLEPT-THROUGH, and the
-  ;; seconds from the worker's start to its join.
+  "Request cancellation while PARK holds; release it independently afterwards."
   (let* ((turn (nlk:admit-turn session-id command-id "hello"))
          (entered (sb-thread:make-semaphore :name "wait-entered"))
+         (release (sb-thread:make-semaphore :name "wait-release"))
          (outcome nil)
          (worker (nlk:spawn "wait-cancel-worker"
                    (setf outcome
                          (nlk:with-handlers ((nlk:turn-cancelled-condition () :cancelled))
                            (nlk:with-cancellable-wait (turn)
-                             (funcall park entered)
-                             :slept-through)))))
-         (start (get-internal-real-time)))
-    (sb-thread:wait-on-semaphore entered)
-    (nlk:request-cancel-turn session-id turn.turn-id "esc")
-    (bt2:join-thread worker)
-    (values outcome (/ (- (get-internal-real-time) start)
-                       internal-time-units-per-second))))
+                             (funcall park entered release)
+                             :returned))))))
+    (unwind-protect
+        (progn
+          (is (sb-thread:wait-on-semaphore entered :timeout 5))
+          (nlk:request-cancel-turn session-id turn.turn-id "esc")
+          (is (nlk:turn-cancellation-requested-p turn) "intent is visible immediately")
+          (is (bt2:thread-alive-p worker) "no asynchronous unwind of the held body")
+          (is (null outcome) "a request is not a completed cancellation")
+          (sb-thread:signal-semaphore release)
+          (bt2:join-thread worker)
+          outcome)
+      (sb-thread:signal-semaphore release))))
 
-(deftest cancel-interrupts-a-parked-cancellable-wait (with-session-store ("lifecycle-wait-cancel"))
-  ;; Esc must not wait for the next byte off the provider socket: a thread
-  ;; parked inside WITH-CANCELLABLE-WAIT is interrupted by the cancel request
-  ;; and unwinds as the ordinary cancel condition, immediately.
-  (is-values (outcome elapsed)
-      (%cancel-parked-wait "lifecycle-wait-cancel" "wait-command"
-                           (lambda (entered)
-                             (sb-thread:signal-semaphore entered)
-                             (sleep 30)))
-    (outcome eq :cancelled) ((< elapsed 5) is)))
+(deftest cancel-waits-for-a-parked-body-to-return (with-session-store ("lifecycle-wait-cancel"))
+  (is (eq :cancelled
+          (%cancel-parked-wait "lifecycle-wait-cancel" "wait-command"
+                              (lambda (entered release)
+                                (sb-thread:signal-semaphore entered)
+                                (sb-thread:wait-on-semaphore release :timeout 5))))))
 
 (deftest a-prior-cancel-signals-at-wait-entry ()
-  ;; A cancel that lands before the wait opens must refuse to block at all.
+  ;; Entry refuses before executing the body, without any blocking operation.
   (with-admitted-turn (turn "lifecycle-wait-precancel" "pre-command" "hello")
-    (nlk:request-cancel-turn "lifecycle-wait-precancel"
-                             turn.turn-id "esc")
-    (is (signals-error nlk:turn-cancelled-condition
-          (nlk:with-cancellable-wait (turn) (sleep 30))))))
+    (let ((ran nil))
+      (nlk:request-cancel-turn "lifecycle-wait-precancel" turn.turn-id "esc")
+      (is (signals-error nlk:turn-cancelled-condition
+            (nlk:with-cancellable-wait (turn) (setf ran t))))
+      (is (null ran)))))
 
-(deftest cancel-unwinds-past-foreign-error-handlers ()
-  ;; The dexador WITH-RETRYING shape: a (HANDLER-BIND ((ERROR ...))) inside
-  ;; the parked BODY that answers any error by resuming the wait (the
-  ;; reused-pooled-connection retry). A cancel that unwound as a signalled
-  ;; condition was eaten there, and the resumed request re-parked INSIDE the
-  ;; interruption with interrupts disabled — SBCL's poll(2)-without-a-timeout
-  ;; wedge that needed a second Esc. The cancel must cross BODY as a THROW no
-  ;; handler-bind can see, and re-signal only at the region boundary.
+(deftest cancel-is-signalled-outside-the-returned-bodys-error-handlers ()
+  ;; A provider's retry handler cannot see cancellation, because no condition
+  ;; is injected into its body. The ordinary condition is raised on return.
   (with-session-store ("lifecycle-foreign-handler")
-    (is-let* ((retries 0)
-              (outcome (%cancel-parked-wait "lifecycle-foreign-handler" "fh-command"
-                                            (lambda (entered)
-                                              (tagbody
-                                                 retry
-                                                 (handler-bind ((error
-                                                                  (nlk:lambda-ignoring (e)
-                                                                    (incf retries)
-                                                                    (go retry))))
-                                                   (sb-thread:signal-semaphore entered)
-                                                   (sleep 30)))))))
-      (outcome eq :cancelled) ((zerop retries) is))))
-
-(deftest a-stale-wait-interruption-is-a-no-op ()
-  ;; Delivery can race region exit: the interruption function outside any
-  ;; cancellable wait must do nothing rather than unwind foreign code.
-  (is (null (nlk::cancel-wait-interruption))))
-
+    (let ((caught 0)
+          (returned nil))
+      (is (eq :cancelled
+              (%cancel-parked-wait
+               "lifecycle-foreign-handler" "fh-command"
+               (lambda (entered release)
+                 (handler-bind ((error (lambda (condition)
+                                         (declare (ignore condition))
+                                         (incf caught))))
+                   (sb-thread:signal-semaphore entered)
+                   (sb-thread:wait-on-semaphore release :timeout 5)
+                   (setf returned t))))))
+      (is returned "the foreign-handler region returned naturally")
+      (is (zerop caught) "cancellation was signalled outside that region"))))
 
 (deftest durable-admission-refuses-a-second-active-turn (with-session-store ("one-active"))
   (nlk:admit-turn "one-active" "first-command" "first")

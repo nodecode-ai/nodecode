@@ -153,3 +153,25 @@ The unit names the installer's `current` link. A restart runs the build installe
 | `nodecode gateway restart` | Rewrites the unit first if the binary path or `PATH` changed. |
 
 The installer restarts only units that Nodecode wrote. See [Updates](updates.mdx).
+
+{/* source: src/engine/exec.lisp */}
+## Stopping work
+
+Escape, and `(eval-interrupt N)`, ask the owned work to stop. They do not kill its thread. A wait that registered a waker is woken, returns, and then the turn closes.
+
+Socket cancellation is ownership-scoped, including provider stream reads. Returning a connection to the pool retires it from every enclosing wait before another caller can borrow it. A cancellation arriving before a new socket is registered is remembered and wakes that socket when registration completes. Neither path asynchronously unwinds its worker.
+
+| What you did | What you see |
+| --- | --- |
+| Escape during a provider stream | The socket is shut down (`SHUT_RDWR`, not closed from another thread). The read returns. The turn closes as cancelled. Measured on a local provider that sent one delta and then held the socket silent: 69 ms from Escape to `turn.cancelled`. |
+| Escape during a shell command, `(sh ...)` in an eval | Every process of the command's tree gets `SIGTERM`, then `SIGKILL` if it is still there after 0.2 s, including a command that leads a session of its own. The pipe ends, the eval exits 130 and keeps what the command wrote. The turn closes as cancelled. Measured on `sleep 30`: 77 ms to `turn.cancelled`, 98 ms until `sleep` was gone. |
+| Escape during a wait the host owns (a retry pause, a parked provider stub) | That wait is notified. The turn closes as cancelled. Measured: 10 ms. |
+| Escape during an eval whose form never returns, such as `(loop)` or `(loop (sleep 0.05))` | The turn closes as cancelled (45 ms for both). The eval does not stop: it keeps running in the background. `(list-evals)` still shows it `:running` 5 s and 60 s after Escape. `(loop)` keeps one core busy (1.00 s of CPU per second at 5 s and at 60 s); `(loop (sleep 0.05))` costs nearly nothing. The session takes new turns meanwhile. Only a gateway restart ends such an eval. |
+| Escape during a foreign call that registered no waker, in the turn's own thread | The request is recorded. The turn stays active and the worker keeps running. One second after the request: still not `turn.cancelled`, about one core, RSS +12 KiB. Nothing restarts the gateway for you. |
+| `(eval-interrupt N)`, including `:force t` | The same request. `:force` does not terminate the thread. |
+
+A pending worker does not fail the watchdog. The gateway stays up, and other sessions keep serving. A session whose turn is stuck in such a foreign call does not take another turn until that worker returns, or until you restart. The stream, shell and eval rows were measured by pressing Escape in a real shell in a terminal, attached to its gateway, with a provider played on loopback; the host-owned wait and foreign call rows inside one image.
+
+To clear a worker that will not return, restart the gateway yourself: `nodecode gateway restart`. That ends the whole process, including every other session. A worker that has been pending for minutes does not, by itself, mark the gateway unhealthy.
+
+An optional escalation is not built: a worker still pending N minutes after a stop request could mark health degraded so the watchdog restarts the gateway. N is not chosen. What a restart loses is every live session, not only the stuck worker.

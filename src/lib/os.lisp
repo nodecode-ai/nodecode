@@ -605,6 +605,24 @@ what still runs in it running."
         (remhash pid *child-jobs*)
         (sb-win32::close-handle job)))))
 
+(defun signal-child-group (pid &key (grace 0.2))
+  "Ask PID's process group to exit, then force it if it is still alive after
+GRACE seconds. SIGTERM first. Does not close a pipe and does not wait for
+the reap: the reader sees end of file and reaps."
+  #-win32
+  (progn
+    (ignore-errors (sb-posix:kill (- pid) sb-posix:sigterm))
+    (ignore-errors (sb-posix:kill pid sb-posix:sigterm))
+    (loop with deadline = (+ (get-internal-real-time)
+                             (round (* grace internal-time-units-per-second)))
+          while (and (pid-live-p pid) (< (get-internal-real-time) deadline))
+          do (sleep 0.02))
+    (when (pid-live-p pid)
+      (ignore-errors (sb-posix:kill (- pid) sb-posix:sigkill))
+      (ignore-errors (sb-posix:kill pid sb-posix:sigkill))))
+  #+win32 (kill-tree pid)
+  t)
+
 (defun kill-tree (pid)
   "End PID and everything under it, now: SIGKILL to PID's process group
 (RUN-BOUNDED's and SPAWN-DETACHED's children lead their own groups) and to
@@ -1351,10 +1369,10 @@ not let go, and the pipes stay open rather than freeze the image."
   ;; pending on the same pipe, and while it waits every other close in the
   ;; process waits behind it: a NUL close started 14 s in finished at 30 s, the
   ;; moment the pipe's last writer exited (2026-11-05, winbox). A thread still
-  ;; parked when the bound fell -- a grandchild holds the pipe's other end -- is
-  ;; ended first; SBCL's interrupt cancels its pending I/O
-  ;; (CancelSynchronousIo). A POSIX close never waits, so there the pipes close
-  ;; as they are.
+  ;; parked when the bound fell -- a grandchild holds the pipe's other end --
+  ;; now refuses forced destruction. If it stays alive after the bounded join,
+  ;; its pipes remain open: safety does not imply that pending I/O completed.
+  ;; A POSIX close never waits, so there the pipes close as they are.
   #-win32 (progn threads t)
   #+win32
   (dolist (thread threads t)
@@ -2386,217 +2404,179 @@ page comes back alone when next touched."
   #-linux
   (progn image nil))
 
-;;; --- interrupting a thread: where an unwind may land ------------------------
-;;; An interruption runs on top of whatever its thread was doing, C frames
-;;; included: SBCL delivers it inside foreign code as readily as in Lisp. One
-;;; that unwinds -- a THROW, an ERROR, ABORT-THREAD -- discards those C frames
-;;; without their cleanup, and a C function that held a lock when it was
-;;; interrupted holds it for good. malloc's arena lock is the one that bites:
-;;; every thread shares two arenas (CAP-MALLOC-ARENAS), so the next malloc or
-;;; free that misses its thread's cache, on any thread, waits on it forever,
-;;; at 0% CPU and deaf to SIGINT. A full `just test' froze so for six hours:
-;;; the main thread joining a thread, in free, on the main arena, and no live
-;;; thread holding it. The test it froze in had done nothing wrong; an earlier
-;;; stop had unwound a thread out of malloc.
-;;;
-;;; So an interruption that may unwind goes through INTERRUPT-THREAD-SAFELY.
-;;; It runs where the interrupted pc is Lisp code, or where the thread is
-;;; parked in a system call that waits -- a read, a poll, an accept, a sleep,
-;;; a wait for a child or a futex the runtime itself sleeps on -- across which
-;;; no C library lock is held. Landed anywhere else in C it does nothing, and
-;;; is sent again a moment later, by when the thread is past the malloc it
-;;; found. The parked case is what a stop is for (a turn waiting on its
-;;; provider, an evaluation in SLEEP or SH), so it stays reachable; the
-;;; classification reads the interrupted context's pc and result register.
-;;; Where that reading is not written (x86-64 Linux and arm64 Darwin have
-;;; it), every landing counts as safe, as it did before; Windows interrupts at
-;;; safepoints only.
+;;; --- cancellation never guesses whether a foreign caller owns a lock -------
+;;; A wait can hold a C library lock, and a Lisp callback can have a C caller
+;;; holding one. Neither the interrupted PC nor its syscall proves that an
+;;; unwind is safe. Leave the work alive: its owner must request cooperation
+;;; at a boundary it controls, or recover the whole process under supervision.
 
-#+(and linux x86-64)
-(defparameter +waiting-syscalls+
-  '(0 1 7 17 18 19 20 23 34 35 42 43 44 45 46 47 61 72 73 202 230 232 247 270 271 281 288)
-  "x86-64 Linux system calls a thread parks in while it waits on something
-outside it: read, write, poll, pread64, pwrite64, readv, writev, select,
-pause, nanosleep, connect, accept, sendto, recvfrom, sendmsg, recvmsg, wait4,
-fcntl, flock, futex, clock_nanosleep, epoll_wait, waitid, pselect6, ppoll,
-epoll_pwait, accept4.")
+(defun shutdown-fd (fd)
+  "SHUT_RDWR on FD. Does not close it: another thread closing would race
+with fd reuse. A reader blocked in read returns with end of file or an
+error. => T when shutdown returned 0."
+  #-win32
+  (and (integerp fd) (not (minusp fd))
+       (zerop (sb-alien:alien-funcall
+               (sb-alien:extern-alien "shutdown"
+                                      (function sb-alien:int sb-alien:int sb-alien:int))
+               fd 2)))
+  #+win32 (progn fd nil))
 
-#+(and darwin arm64)
-(defparameter +waiting-syscalls+
-  '(3 4 7 27 28 29 30 92 93 98 111 120 121 131 133 153 154 173 230 334 363 369 374
-    394 395 396 397 400 401 402 403 404 406 407 409 410 411 412 413 414 415 416 417 423
-    515 544)
-  "arm64 Darwin system calls, by the number svc reads from x16, a thread parks in
-while it waits on something outside it: read, write, wait4, recvmsg, sendmsg,
-recvfrom, accept, fcntl, select, connect, sigsuspend, readv, writev, flock,
-sendto, pread, pwrite, waitid, poll, __semwait_signal (nanosleep's), kevent,
-kevent64, kevent_qos, pselect and the _nocancel twin of each; then __ulock_wait
-and __ulock_wait2, the futex.")
+(defstruct cancel-fd-region
+  entries parent requested-p)
 
-#+(or (and linux x86-64) (and darwin arm64))
-(defun %pc-function-name (pc)
-  "The name of the exported C function PC is in, or NIL."
-  (sb-alien:with-alien ((info (sb-alien:array sb-sys:system-area-pointer 4)))
-    (unless (zerop (sb-alien:alien-funcall
-                    (sb-alien:extern-alien "dladdr" (function sb-alien:int sb-sys:system-area-pointer
-                                                             (* (sb-alien:array sb-sys:system-area-pointer 4))))
-                    pc (sb-alien:addr info)))
-      (let ((name (sb-alien:deref info 2)))
-        (unless (zerop (sb-sys:sap-int name))
-          (sb-alien::c-string-to-string name :latin-1 'character))))))
+(defvar *cancel-wake-fds* nil
+  "The current cancellable wait's socket ownership region, or NIL. Parent
+regions retire their entries too when a nested wait returns one to a pool.")
 
-(defun interruption-may-unwind-p (&aux (context sb-kernel:*current-internal-error-context*))
-  "Inside an interruption, true when unwinding out of it strands no C
-library's lock: its thread was running Lisp code, or was parked in a system
-call that waits (+WAITING-SYSCALLS+)."
-  ;; Nothing here may call malloc: this can run on top of a malloc that holds
-  ;; its arena's lock, and the lock is not recursive. dladdr does not.
-  #+(and linux x86-64)
-  (or (null context)                    ; run outside a signal: Lisp
-      (let* ((context (sb-alien:sap-alien context (* sb-sys:os-context-t)))
-             (pc (sb-vm:context-pc context))
-             (address (sb-sys:sap-int pc))
-             (result (sb-vm:context-register context sb-vm::rax-offset)))
-        (flet ((syscall-at (offset)
-                 ;; the two bytes of `syscall' (0F 05), read only inside pc's page
-                 (let ((byte (+ (logand address #xfff) offset)))
-                   (and (<= 0 byte) (<= (+ byte 2) #x1000)
-                        (= #x0f (sb-sys:sap-ref-8 pc offset))
-                        (= #x05 (sb-sys:sap-ref-8 pc (1+ offset)))))))
-          (or (and (sb-di::code-header-from-pc pc) t)
-              ;; A wait the signal broke: the call returned -EINTR, pc past it.
-              (and (= result (- (ash 1 64) 4)) (syscall-at -2))
-              ;; A wait the kernel will restart: pc back on the call, and the
-              ;; result register holding its number again. A futex only from
-              ;; libc's syscall(), which is how the runtime sleeps; glibc's own
-              ;; lock waits (__lll_lock_wait) may sit inside another lock.
-              (and (member result +waiting-syscalls+)
-                   (syscall-at 0)
-                   (or (/= result 202)
-                       (equal (%pc-function-name pc) "syscall")))))))
-  ;; arm64 Darwin: `svc #0x80' (D4001001) traps with the call's number in x16.
-  ;; A wait the signal broke returns past it with EINTR, the carry flag set and
-  ;; errno in x0 -- the ulock waits answer -EINTR in x0 instead; a wait the
-  ;; kernel will restart has pc back on the svc. A ulock wait only from the
-  ;; runtime's futex_wait, which is how it sleeps, named by lr since the stub is
-  ;; a leaf: os_unfair_lock waits there too, malloc's among them, inside
-  ;; whatever lock its caller holds.
-  #+(and darwin arm64)
-  (or (null context)                    ; run outside a signal: Lisp
-      (let* ((context (sb-alien:sap-alien context (* sb-sys:os-context-t)))
-             (pc (sb-vm:context-pc context))
-             (address (sb-sys:sap-int pc))
-             (call (sb-vm:context-register context 16))
-             (result (sb-vm:context-register context 0))
-             (ulock (member call '(515 544))))
-        (flet ((svc-at (offset)
-                 ;; the four bytes of `svc #0x80', read only inside pc's page
-                 (let ((byte (+ (logand address #xfff) offset)))
-                   (and (<= 0 byte) (<= (+ byte 4) #x1000)
-                        (= #xd4001001 (sb-sys:sap-ref-32 pc offset))))))
-          (or (and (sb-di::code-header-from-pc pc) t)
-              (and (member call +waiting-syscalls+)
-                   (or (and (svc-at -4)
-                            (if ulock
-                                (= result (- (ash 1 64) 4))
-                                (and (= result 4)
-                                     (nth-value 1 (sb-vm::context-overflow-carry-flags context)))))
-                       (svc-at 0))
-                   (or (not ulock)
-                       (equal (%pc-function-name
-                               (sb-sys:int-sap (sb-vm:context-register context sb-vm::lr-offset)))
-                              "futex_wait")))))))
-  #-(or (and linux x86-64) (and darwin arm64))
-  (progn context t))
+(defvar *cancel-fd-lock* (bt2:make-lock :name "cancel-fds")
+  "Held to change any region, and for the whole of a waker's shutdowns: a socket
+forgotten (pooled) before the lock is taken is never cut by that waker.")
 
-(defparameter *interrupt-resend-seconds* 0.001
-  "How long INTERRUPT-THREAD-SAFELY waits before sending again an
-interruption that landed inside C code.")
+;;; A descriptor number is not an ownership: closed, it is handed to the next
+;;; open in any thread, and a pooled connection keeps its number under a new
+;;; owner. The region keeps what the socket IS (device and inode, unique among
+;;; live sockets), the waker acts through a private duplicate of the number,
+;;; and only when that duplicate is still the socket noted. A duplicate pins
+;;; what it names, so nothing can change between the check and the shutdown.
 
-;;; Windows' SBCL wakes a thread for an interruption by flipping its safepoint
-;;; state, so that the thread traps at its next safepoint and runs what is
-;;; queued (wake_thread_impl, src/runtime/safepoint.c). A thread inside a
-;;; foreign call during the flip has no safepoint to trap at, and when it
-;;; comes back out after the flip nothing makes it look: the interruption
-;;; waits for the next GC. Sending again does not help, since a wake is not
-;;; made while the first one's mark (*THRUPTION-PENDING*) still stands.
-;;; Probed on the winbox: a thread calling malloc in a loop missed one stop in
-;;; fifteen, and fifty sends over ten seconds did not reach it.
+(defun fd-identity (fd)
+  "(DEV . INO) of the open file FD names, or NIL."
+  #-win32 (handler-case (let ((stat (sb-posix:fstat fd)))
+                          (cons (sb-posix:stat-dev stat) (sb-posix:stat-ino stat)))
+            (error () nil))
+  #+win32 (progn fd nil))
 
-#+win32
-(defun rewake-thread (thread)
-  "Wake THREAD once more for the interruptions queued on it, as the runtime's
-first wake would have, had THREAD not been inside a foreign call."
-  ;; The mark is cleared so the wake is made, and a no-op carries it.
-  (ignore-errors
-   (setf (sb-thread::symbol-value-in-thread 'sb-sys:*thruption-pending* thread) nil)
-   (sb-thread:interrupt-thread thread (lambda ()))))
+(defun duplicate-fd (fd)
+  "A new close-on-exec descriptor for what FD names now, or NIL."
+  #-win32 (handler-case (sb-posix:fcntl fd #+linux 1030 #+darwin 67 #-(or linux darwin) 0 0)
+            (error () nil))
+  #+win32 (progn fd nil))
 
-(defun await-landing (landed thread seconds)
-  "Wait up to SECONDS on the semaphore LANDED, which an interruption sent to
-THREAD signals when it runs. => true once it ran."
-  #-win32 (progn thread (sb-thread:wait-on-semaphore landed :timeout seconds))
-  ;; On Windows the wait is cut in twentieths of a second, and the thread
-  ;; woken again after each (REWAKE-THREAD).
-  #+win32
-  (let ((deadline (+ (get-internal-real-time) (* seconds internal-time-units-per-second))))
-    (loop (let ((left (/ (- deadline (get-internal-real-time)) internal-time-units-per-second)))
-            (when (sb-thread:wait-on-semaphore landed :timeout (max 0.001 (min 0.05 left)))
-              (return t))
-            (when (<= left 0.05)
-              (return nil))
-            (rewake-thread thread)))))
+(defun shutdown-owned-fd (fd identity)
+  "Shut down FD only through a duplicate still naming IDENTITY. Caller holds
+*cancel-fd-lock*, so pool publication cannot race the ownership check."
+  (when-let (copy (duplicate-fd fd))
+    (unwind-protect (and (equal identity (fd-identity copy)) (shutdown-fd copy))
+      (ignore-errors (sb-posix:close copy)))))
+
+(defun note-cancel-fd (fd)
+  "Remember FD for this wait. If cancellation won before a connect returned,
+wake its newly enrolled socket too; the empty-region wake is not lost."
+  (when (and *cancel-wake-fds* (integerp fd) (not (minusp fd)))
+    (let ((identity (fd-identity fd)))
+      (when identity
+        (bt2:with-lock-held (*cancel-fd-lock*)
+          (setf (cancel-fd-region-entries *cancel-wake-fds*)
+                (acons fd identity (remove fd (cancel-fd-region-entries *cancel-wake-fds*) :key #'car)))
+          (when (cancel-fd-region-requested-p *cancel-wake-fds*)
+            (shutdown-owned-fd fd identity)))))))
+
+(defun forget-cancel-fd (fd)
+  "A pool return retires FD from every enclosing wait before publication."
+  (when (integerp fd)
+    (bt2:with-lock-held (*cancel-fd-lock*)
+      (loop for region = *cancel-wake-fds* then (cancel-fd-region-parent region)
+            while region
+            do (setf (cancel-fd-region-entries region)
+                     (remove fd (cancel-fd-region-entries region) :key #'car))))))
+
+(defun shutdown-owned-fds (region)
+  "Latch cancellation and SHUT_RDWR only sockets REGION still owns.
+The shared lock orders enrollment, pool return and shutdown. => count cut."
+  (bt2:with-lock-held (*cancel-fd-lock*)
+    (setf (cancel-fd-region-requested-p region) t)
+    (loop for (fd . identity) in (cancel-fd-region-entries region)
+          count (shutdown-owned-fd fd identity))))
+
+(defun stream-fd (stream &optional (depth 4))
+  "A socket or file descriptor STREAM reads through, or NIL. Walks a
+keep-alive or TLS wrapper. Does not close anything."
+  (when (and stream (plusp depth) (streamp stream))
+    (cond ((sb-sys:fd-stream-p stream) (sb-sys:fd-stream-fd stream))
+          (t (or (let ((package (find-package :dexador.keep-alive-stream)))
+                   (when (and package (find-symbol "KEEP-ALIVE-STREAM" package)
+                              (typep stream (find-symbol "KEEP-ALIVE-STREAM" package)))
+                     (stream-fd (funcall (find-symbol "KEEP-ALIVE-STREAM-STREAM" package) stream)
+                                (1- depth))))
+                 (let ((package (find-package :cl+ssl)))
+                   (when (and package (find-symbol "SSL-STREAM" package)
+                              (typep stream (find-symbol "SSL-STREAM" package)))
+                     (stream-fd (funcall (find-symbol "SSL-STREAM-SOCKET" package) stream)
+                                (1- depth))))
+                 (dolist (slot (sb-mop:class-slots (class-of stream)))
+                   (let* ((name (sb-mop:slot-definition-name slot))
+                          (value (and (slot-boundp stream name) (slot-value stream name))))
+                     (when (streamp value)
+                       (let ((found (stream-fd value (1- depth))))
+                         (when found (return found)))))))))))
+
+(defun note-cancel-stream (stream)
+  (note-cancel-fd (ignore-errors (stream-fd stream))))
+
+(defvar *cancel-socket-hooks* nil)
+
+(defun install-cancel-socket-hooks ()
+  "Note the fd of a socket this thread opens or borrows while a cancellable
+wait is running. Idempotent. A missing library is skipped."
+  (unless *cancel-socket-hooks*
+    (setf *cancel-socket-hooks* t)
+    (when (and (fboundp 'usocket:socket-connect)
+               (not (sb-int:encapsulated-p 'usocket:socket-connect 'cancel-fd)))
+      (sb-int:encapsulate
+       'usocket:socket-connect 'cancel-fd
+       (lambda (next &rest args)
+         (let ((socket (apply next args)))
+           (ignore-errors
+            (note-cancel-fd (sb-bsd-sockets:socket-file-descriptor (usocket:socket socket))))
+           socket))))
+    (when (and (fboundp 'dexador.connection-cache:steal-connection)
+               (not (sb-int:encapsulated-p 'dexador.connection-cache:steal-connection 'cancel-fd)))
+      (sb-int:encapsulate
+       'dexador.connection-cache:steal-connection 'cancel-fd
+       (lambda (next &rest args)
+         (let ((stream (apply next args)))
+           (note-cancel-stream stream)
+           stream))))
+    ;; Pooled, a connection's next owner may be any thread: the wait that
+    ;; used it stops owning it before the pool can hand it out.
+    (when (and (fboundp 'dexador.connection-cache:push-connection)
+               (not (sb-int:encapsulated-p 'dexador.connection-cache:push-connection 'cancel-fd)))
+      (sb-int:encapsulate
+       'dexador.connection-cache:push-connection 'cancel-fd
+       (lambda (next host-port stream &rest more)
+         (forget-cancel-fd (ignore-errors (stream-fd stream)))
+         (apply next host-port stream more)))))
+  t)
+
+(defun interruption-may-unwind-p ()
+  "Always NIL. Retained for callers of the former interruption classifier:
+no interrupted program counter proves the absence of foreign cleanup."
+  nil)
 
 (defun interrupt-thread-safely (thread function &key (within 2))
-  "Run FUNCTION in THREAD as BT2:INTERRUPT-THREAD does, but only where an
-unwind out of it strands nothing (INTERRUPTION-MAY-UNWIND-P): landed inside
-other C code it is sent again, until it runs or WITHIN seconds pass.
-=> :RAN; :GONE when THREAD has ended; :QUEUED when THREAD holds interruptions
-back past WITHIN (it runs, in Lisp, once they are allowed again); NIL when
-THREAD stayed inside C code for WITHIN seconds and FUNCTION did not run."
-  ;; THREAD a bordeaux or an SBCL thread. The call waits for each delivery to
-  ;; land, which is microseconds unless THREAD defers interruptions
-  ;; (WITHOUT-INTERRUPTS, a guarded SQLite call): at least a twentieth of a
-  ;; second, so WITHIN 0 makes one delivery and a probe that may skip a pass
-  ;; asks that.
-  (let ((native (if (typep thread 'sb-thread:thread) thread (bt2:thread-native-thread thread)))
-        (deadline (+ (get-internal-real-time) (* within internal-time-units-per-second))))
-    (loop
-      (let ((landed (sb-thread:make-semaphore))
-            (where (list nil)))
-        (unless (ignore-errors
-                 (sb-thread:interrupt-thread
-                  native (lambda ()
-                           (let ((safe (interruption-may-unwind-p)))
-                             (setf (car where) (if safe :ran :deferred))
-                             (sb-thread:signal-semaphore landed)
-                             (when safe (funcall function)))))
-                 t)
-          (return :gone))
-        (unless (await-landing
-                 landed native (max 0.05 (/ (- deadline (get-internal-real-time))
-                                            internal-time-units-per-second)))
-          (return (if (sb-thread:thread-alive-p native) :queued :gone)))
-        (when (eq (car where) :ran)
-          (return :ran))
-        (when (>= (get-internal-real-time) deadline)
-          (return nil))
-        (sleep *interrupt-resend-seconds*)))))
+  "Refuse asynchronous delivery to a live THREAD: return NIL without running
+or queuing FUNCTION. Return :GONE only after observing that THREAD is dead.
+THREAD may be a Bordeaux or an SBCL thread. WITHIN is retained for source
+compatibility; this observation does not wait or establish a cancellation
+boundary. Owners must arrange cooperative cancellation of their own work."
+  (declare (ignore function within))
+  (let ((native (if (typep thread 'sb-thread:thread) thread (bt2:thread-native-thread thread))))
+    (unless (sb-thread:thread-alive-p native) :gone)))
 
 (defun terminate-thread-safely (thread &key (within 2))
-  "End THREAD as SB-THREAD:TERMINATE-THREAD does, delivered where its unwind
-strands nothing (INTERRUPT-THREAD-SAFELY, whose answer this is)."
-  (interrupt-thread-safely thread (lambda () (sb-thread:abort-thread :allow-exit t))
-                           :within within))
+  "Return NIL for a live THREAD, without terminating it, or :GONE if already
+dead. A refusal leaves the owner responsible for its thread and resources."
+  (interrupt-thread-safely thread nil :within within))
 
-;;; Libraries end their own threads through BT2:DESTROY-THREAD -- the
-;;; websocket client its reader on every close, clack its acceptor -- so the
-;;; entry itself goes through TERMINATE-THREAD-SAFELY. Idempotent: a reload
-;;; replaces the advice rather than stacking it.
+;;; Libraries also call BT2:DESTROY-THREAD. Refuse with its own error family:
+;;; returning a thread on refusal would let a caller discard a live handle.
+;;; Preserve Bordeaux's self-destruction error. Advice replacement is idempotent.
 (when (sb-int:encapsulated-p 'bt2:destroy-thread 'safe-point)
   (sb-int:unencapsulate 'bt2:destroy-thread 'safe-point))
 (sb-int:encapsulate 'bt2:destroy-thread 'safe-point
                     (lambda (next thread)
-                      (if (eq thread (bt2:current-thread))
-                          (funcall next thread) ; its own refusal
-                          (progn (terminate-thread-safely thread) thread))))
+                      (cond ((eq thread (bt2:current-thread)) (funcall next thread))
+                            ((eq :gone (terminate-thread-safely thread)) thread)
+                            (t (bt2::bt-error "Cannot destroy a live thread safely; request cooperative cancellation or restart its process: ~S."
+                                              thread)))))

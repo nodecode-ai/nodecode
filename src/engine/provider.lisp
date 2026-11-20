@@ -5268,9 +5268,9 @@ FIELDS -- a format control over ARGUMENTS -- after the timing."
         ,@arguments))))
 
 (defmacro cancellable-post ((request-json address) &body post-form)
-  "One blocking provider POST (POST-FORM) to ADDRESS, the URL it dials, as a
-cancellable wait: Esc interrupts the thread parked on connect/headers instead
-of waiting for bytes off the socket."
+  "Run blocking POST-FORM to ADDRESS as a cooperative cancellable wait.
+Cancellation wakes registered sockets; a connect still in progress must
+return before its socket can be enrolled and woken."
   ;; The cancel unwind passes through untouched; a status failure carries
   ;; REQUEST-JSON as evidence, a refusal names ADDRESS, and every other
   ;; transport failure classifies by its class (a host's, by ADDRESS too).
@@ -5531,6 +5531,9 @@ functions below."
                               limit (if content-cut-p left seconds)))
                       ;; A read error mid-body is truncation; a cancel unwinds as itself.
                       (let ((line (handler-case (nlk:with-cancellable-wait (*current-durable-turn*)
+                                                  ;; Use the region's identity-checked ownership:
+                                                  ;; EOF can publish this socket before the read returns.
+                                                  (nlk::note-cancel-stream stream)
                                                   (if buffer
                                                       (read-octet-line stream buffer limit)
                                                       (with-read-deadline (limit)

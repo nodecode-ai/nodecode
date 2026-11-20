@@ -73,14 +73,13 @@
   ;; :OPERATOR): the calls the cancel cuts are theirs to name as stopped by
   ;; the operator, where a room's stop names its reason.
   (operator-p nil)
-  ;; The threads parked inside a cancellable wait for this turn — the turn
-  ;; thread in its provider wait or its tool body, each background
-  ;; evaluation's waiter — empty outside one. REQUEST-CANCEL-TURN interrupts
-  ;; every one of them so a cancel unwinds the blocking HTTP exchange and the
-  ;; bodies now instead of at the next stream chunk or the body's
-  ;; return (the gateway wakeSession-on-cancel posture applied to the
-  ;; provider wait).
-  (waiting-threads '()))
+  ;; Threads inside a cancellable wait. A test reads this to know the
+  ;; worker has parked. A cancel does not interrupt them.
+  (waiting-threads '())
+  ;; WAKER-ENTRYs a cancel runs, once, after the flag is set. Each wakes a
+  ;; resource its waiter owns: SHUT_RDWR a socket, signal a child group,
+  ;; notify a condition. None unwinds another thread.
+  (wakers '()))
 
 (access (signal cancellation-signal))
 
@@ -131,57 +130,123 @@ when the operator asked from a surface."
   "The turn whose cancellable wait region the current thread is inside, nil
 elsewhere.")
 
-(defun cancel-wait-interruption ()
-  "Runs inside the waiting thread via BT2:INTERRUPT-THREAD."
-  ;; Unwinds the enclosing cancellable-wait region by THROW (tag: the turn
-  ;; struct) when the thread is still parked in one whose turn has a pending
-  ;; cancel; every other delivery is a no-op.
-  ;;
-  ;; A THROW, never a signalled condition, deliberately: the interruption lands at
-  ;; whatever blocking read the thread was parked in — often inside DEX:REQUEST,
-  ;; whose WITH-RETRYING wraps the socket I/O in (HANDLER-BIND ((ERROR ...))) and
-  ;; answers any ERROR on a reused pooled connection by redialing and resending
-  ;; the whole request. A signalled cancel is such an ERROR: dexador ate it and
-  ;; re-parked the thread inside this interruption's context, where interrupts
-  ;; stay disabled — SBCL's "Starting a poll(2) without a timeout while
-  ;; interrupts are disabled" wedge, unkillable until a second Esc landed on the
-  ;; fresh (non-reused) retry connection. A THROW is invisible to every
-  ;; HANDLER-BIND between the park and the region boundary; WITH-CANCELLABLE-WAIT
-  ;; signals the ordinary cancel condition at that boundary, outside any foreign
-  ;; handler's scope. The throw target is live exactly while
-  ;; *CANCELLABLE-WAIT-TURN* is bound, because the CATCH encloses the binding.
-  (when (and *cancellable-wait-turn* (turn-cancellation-requested-p *cancellable-wait-turn*))
-    (throw *cancellable-wait-turn* t)))
+;;; A cancel copies the wakers under the signal lock and calls them outside
+;;; it, so a copy can outlive its registration: the wait leaves, closes or
+;;; pools its socket, reaps its child, and a pid or descriptor number is handed
+;;; out again. Each registration is therefore an entry with its own lock: the
+;;; cancel calls the function under that lock only while the entry is live, and
+;;; removal kills the entry under the same lock, waiting out a call in
+;;; progress. After removal returns, the waker never acts.
+
+(defstruct (waker-entry (:constructor make-waker-entry (function)))
+  (function nil :read-only t)
+  (lock (bt2:make-lock :name "cancel-waker") :read-only t)
+  (live t))
+
+(defun run-waker-entry (entry)
+  "Call ENTRY's waker under its lock if its wait still holds it."
+  (bt2:with-lock-held ((waker-entry-lock entry))
+    (when (waker-entry-live entry)
+      (ignore-errors (funcall (waker-entry-function entry))))))
+
+(defun call-with-cancellation-waker (turn waker thunk)
+  "Register WAKER on TURN while THUNK runs. A cancel already pending calls
+WAKER before THUNK. REQUEST-CANCEL-TURN calls each registered waker once,
+outside the signal lock, after the flag is set, and never after THUNK's
+extent has ended. WAKER must not unwind another thread, and must not wait on
+anything the waiting thread holds while it leaves."
+  (if (or (null turn) (not (functionp waker)))
+      (funcall thunk)
+      (let ((signal (turn-signal turn))
+            (entry (make-waker-entry waker))
+            (run nil))
+        (sb-ext:with-locked-hash-table (*turn-cancellation-signals*)
+          (if (cancellation-signal-requested-p signal)
+              (setf run t)
+              (push entry (cancellation-signal-wakers signal))))
+        (when run (funcall waker))
+        (unwind-protect (funcall thunk)
+          (sb-ext:with-locked-hash-table (*turn-cancellation-signals*)
+            (setf (cancellation-signal-wakers signal)
+                  (remove entry (cancellation-signal-wakers signal) :count 1)))
+          (bt2:with-lock-held ((waker-entry-lock entry))
+            (setf (waker-entry-live entry) nil))))))
+
+(defmacro with-cancellation-waker ((turn-form waker-form) &body body)
+  "Run BODY with WAKER-FORM registered on TURN-FORM."
+  `(call-with-cancellation-waker ,turn-form ,waker-form (lambda () ,@body)))
+
+(defun call-with-cancellable-sleep (turn seconds)
+  "Sleep up to SECONDS, or until TURN's cancel notifies this wait. A
+host-owned wait: the waker notifies, the waiter rechecks the flag. => T
+when the cancel was what ended it."
+  (let ((lock (bt2:make-lock :name "cancel-sleep"))
+        (cv (bt2:make-condition-variable :name "cancel-sleep"))
+        (wake nil)
+        (deadline (+ (get-internal-real-time)
+                     (round (* seconds internal-time-units-per-second)))))
+    (flet ((waker ()
+             (bt2:with-lock-held (lock)
+               (setf wake t)
+               (bt2:condition-notify cv))))
+      (call-with-cancellation-waker
+       turn #'waker
+       (lambda ()
+         (bt2:with-lock-held (lock)
+           (loop until (or wake
+                           (and turn (turn-cancellation-requested-p turn))
+                           (>= (get-internal-real-time) deadline))
+                 for left = (/ (- deadline (get-internal-real-time))
+                               internal-time-units-per-second)
+                 do (bt2:condition-wait cv lock :timeout (max 0.01 left))))))
+      (and turn (turn-cancellation-requested-p turn)))))
 
 (defun call-with-cancellable-wait (turn thunk &aux (signal (and turn (turn-signal turn))))
-  "Run THUNK as TURN's interruptible waiter, or plain when TURN is nil."
-  ;; A cancel that arrived before the region opened signals on entry, before
-  ;; anything blocks.
+  "Run THUNK as TURN's waiter, or plain when TURN is nil."
+  ;; A cancel is a request. It is consumed before THUNK, and again after
+  ;; THUNK has returned, outside every handler THUNK bound. Nothing is
+  ;; injected into a live body. Sockets this wait opens are shut down
+  ;; (SHUT_RDWR, not close) so a blocked read returns and the body unwinds
+  ;; itself. A body with no such resource stays running until it returns.
   (if (null turn)
       (funcall thunk)
-      (block done
-        (catch turn
-          (with-cleanup ((sb-ext:with-locked-hash-table (*turn-cancellation-signals*)
-                           (setf signal.waiting-threads
-                                 (remove (bt2:current-thread) signal.waiting-threads))))
-            (sb-ext:with-locked-hash-table (*turn-cancellation-signals*)
-              (ensure-turn-not-cancelled turn)
-              (pushnew (bt2:current-thread) signal.waiting-threads))
-            (return-from done (let ((*cancellable-wait-turn* turn)) (funcall thunk)))))
-        ;; Reached only via the interruption's throw: the cancel is pending.
-        (ensure-turn-not-cancelled turn))))
+      (let ((fds (make-cancel-fd-region :parent *cancel-wake-fds*)))
+        (install-cancel-socket-hooks)
+        (multiple-value-prog1
+            (call-with-cancellation-waker
+             turn (lambda () (shutdown-owned-fds fds))
+             (lambda ()
+               (let ((*cancel-wake-fds* fds))
+                 (unwind-protect
+                      (progn
+                        (sb-ext:with-locked-hash-table (*turn-cancellation-signals*)
+                          (ensure-turn-not-cancelled turn)
+                          (pushnew (bt2:current-thread) signal.waiting-threads))
+                        (let ((*cancellable-wait-turn* turn))
+                          ;; A waker makes a blocked read return, often as an
+                          ;; error. That error is the wake, not a failure:
+                          ;; drop it when the flag is set so the boundary
+                          ;; below signals the cancel outside this body.
+                          (handler-case (funcall thunk)
+                            (turn-cancelled-condition (c) (error c))
+                            (error (e)
+                              (unless (turn-cancellation-requested-p turn)
+                                (error e))))))
+                   (sb-ext:with-locked-hash-table (*turn-cancellation-signals*)
+                     (setf signal.waiting-threads
+                           (remove (bt2:current-thread) signal.waiting-threads)))))))
+          (ensure-turn-not-cancelled turn)))))
 
 (defmacro with-cancellable-wait ((turn-form) &body body)
   "Run BODY — one blocking provider wait (HTTP POST, SSE read, retry sleep)
-or one tool-call execution — as an interruptible region: REQUEST-CANCEL-TURN
-interrupts the thread parked here so Esc unwinds the wait immediately instead
-of at the next byte off the socket or the tool body's return."
+or one tool-call execution — as a cancellable region. REQUEST-CANCEL-TURN
+records the request and runs this wait's wakers. The request is consumed
+before BODY and after BODY returns. Nothing is injected into a live thread."
   ;; TURN-FORM evaluating to nil (no durable turn executing) runs BODY plain.
   ;;
-  ;; The interruption crosses BODY as a THROW — see CANCEL-WAIT-INTERRUPTION
-  ;; for why a signalled condition cannot survive BODY's foreign handlers —
-  ;; and the ordinary TURN-CANCELLED-CONDITION is signalled here at the region
-  ;; boundary, so partial-text capture and durable closure behave exactly as a
+  ;; Nothing crosses BODY: a waker wakes the resource BODY waits on, BODY
+  ;; returns by itself, and the ordinary TURN-CANCELLED-CONDITION is
+  ;; signalled here at the region boundary, so partial-text capture and durable closure behave exactly as a
   ;; between-chunks cancel while no HANDLER-BIND inside BODY ever sees a
   ;; condition it could swallow.
   `(call-with-cancellable-wait ,turn-form (lambda () ,@body)))
@@ -251,18 +316,16 @@ for the operator's own stop from a surface (TURN-CANCEL-CAUSE)."
   (when-let (turn (find-active-turn session-id turn-id))
     (let* ((signal (turn-signal turn))
            (operator (eq reason :operator))
-           (waiting
+           (wakers
              (sb-ext:with-locked-hash-table (*turn-cancellation-signals*)
                (setf signal.requested-p t
                      signal.reason (if operator "stopped by the operator" (princ-to-string reason))
                      signal.operator-p (or signal.operator-p operator)
                      signal.retract-p (or signal.retract-p (and retract t)))
-               (copy-list signal.waiting-threads))))
-      ;; Interrupt outside the lock: the interruption's own unwind re-takes it
-      ;; in WITH-CANCELLABLE-WAIT's cleanup. A stale delivery is harmless — the
-      ;; interruption function is a guarded no-op once the region is gone.
-      (dolist (thread waiting)
-        (ignore-errors (interrupt-thread-safely thread #'cancel-wait-interruption))))
+               (copy-list signal.wakers))))
+      ;; Outside the signal lock. A waker wakes a resource; it does not
+      ;; unwind. Each runs under its entry's lock, only while still live.
+      (mapc #'run-waker-entry wakers))
     turn))
 
 
