@@ -40,9 +40,16 @@ The walk imports first, then has three steps: Provider, Model, Reasoning effort.
 {/* source: src/tui/setup.lisp */}
 ## 1. Import
 
-The import runs only when another coding agent's home is on this machine. Nodecode knows 15 of them: Claude Code, Codex, OpenCode, Cursor CLI, Gemini CLI, Qwen Code, pi, Crush, Cline, Windsurf, Kiro, dotagents, Hermes Agent, Openclaw and Command Code. It does not ask first.
+The import runs only when another coding agent's home is on this machine. Nodecode knows 15 of them: Claude Code, Codex, OpenCode, Cursor CLI, Gemini CLI, Qwen Code, pi, Crush, Cline, Windsurf, Kiro, dotagents, Hermes Agent, Openclaw and Command Code. It asks first, and reads nothing until you answer:
 
-The walk says what it found in its own dialog, never the chat: a ledger over the key check, such as `2 keys`, `3 configs` and `1 memory`, each with the agents it came from. The keys land first; instructions, memory, skills, servers, bots and jobs land behind the walk.
+| Row | What it does |
+| --- | --- |
+| Import | Brings the agent's instructions, memory, skills, MCP servers and jobs. Its API keys and bot tokens stay where they are. |
+| Import with keys | The same, and its API keys and bot tokens too. |
+| Choose which… | Shown when it found several agents. Tick the ones to bring. The keys row at the bottom starts unticked. |
+| Skip | Reads nothing. `/import` brings them later. |
+
+The walk says what it found in its own dialog, never the chat: a ledger over the key check, such as `2 keys`, `3 configs` and `1 memory`, each with the agents it came from. The providers land first, with their keys when you picked Import with keys; instructions, memory, skills, servers, bots and jobs land behind the walk.
 
 When the import brings a default model over and its provider answers, the walk ends there. `/models` changes the pick.
 
@@ -51,7 +58,8 @@ When the import brings a default model over and its provider answers, the walk e
 | Instructions | Added to `~/.nodecode/AGENTS.md`, under the agent's name. |
 | Skills | Kept by name, with their description. |
 | MCP servers | Written to the config, off. `/mcp` starts one: the server's row. |
-| API keys | Copied to `auth.json`, then checked. |
+| API keys | Left in the other agent's home. With Import with keys: copied to `auth.json`, then checked. |
+| Bot tokens | Left in the other agent's home. With Import with keys: a 0600 file under `secrets/`. |
 | Sign-ins | Stay with the other agent. |
 | Sessions | Left out. `nodecode import WORLD --only sessions` brings them. |
 | Settings this home already has | Kept. |
@@ -59,9 +67,9 @@ When the import brings a default model over and its provider answers, the walk e
 
 <Mistakes>
 <Mistake>
-<What>Starting where another agent holds keys you don't want here</What>
-<Why>The import runs without a question. Keys and bot tokens come with it.</Why>
-<Instead>Run `nodecode import WORLD` first and pick Skip. Then `nodecode`.</Instead>
+<What>Expecting the other agent's keys to work here after Import</What>
+<Why>Import leaves API keys and bot tokens in their home. The report says so: `its key stays in WORLD`.</Why>
+<Instead>Pick Import with keys, or run `/import WORLD` later and confirm its preview.</Instead>
 </Mistake>
 <Mistake>
 <What>Expecting a Claude Code or Codex sign-in to come over</What>

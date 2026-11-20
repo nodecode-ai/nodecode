@@ -28,7 +28,8 @@
 
 ;;; --- the verbs ----------------------------------------------------------------------------
 
-(defun run-import (&key source overwrite (takeover t) only without apply progress (answer #'identity))
+(defun run-import (&key source overwrite (takeover t) (credentials t) only without apply progress
+                        (answer #'identity))
   "The plan for SOURCE, applied when APPLY — and then the watch started
 for any bot it held for a running foreign gateway. => what ANSWER makes of
 the plan, the plan itself unless told otherwise."
@@ -39,7 +40,7 @@ the plan, the plan itself unless told otherwise."
   ;; when the nursery comes back down.
   (nlk:with-nursery ((* 512 1024 1024))
     (let ((plan (make-plan :source source :overwrite overwrite :takeover takeover
-                           :only only :without without)))
+                           :credentials credentials :only only :without without)))
       (cond (apply
              (apply-plan plan :progress progress)
              (funcall *start-watch*))
@@ -248,9 +249,10 @@ back; NIL when none is."
 
 (defun run-method (method params &key progress)
   "The wizard's methods over the params object {source, only, without,
-overwrite, keep_running}, source a world name, a path or a list of world
-names: `plan' previews, `apply' writes, `scan' answers the same plan with
-nothing written — the pasteable report."
+overwrite, keep_running, credentials}, source a world name, a path or a list
+of world names: `plan' previews, `apply' writes, `scan' answers the same plan
+with nothing written — the pasteable report. credentials false leaves the
+homes' API keys and bot tokens where they are; absent, they come."
   ;; Nothing is posted: the wizard writes the answer's report into the
   ;; transcript of the shell that walks it. Posted, it was a toast cut at four
   ;; rows that left after five seconds (ip-01).
@@ -260,6 +262,8 @@ nothing written — the pasteable report."
               :without (nlk:json-value params :text "without")
               :overwrite (param-flag params "overwrite")
               :takeover (not (param-flag params "keep_running"))
+              :credentials (multiple-value-bind (value present) (nlk:json-value params :any "credentials")
+                             (or (not present) (eq value t)))
               :apply (equal method "apply") :progress progress :answer #'plan-json))
 
 (defparameter *stream-ping-seconds* 10
