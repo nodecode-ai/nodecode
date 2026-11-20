@@ -321,6 +321,99 @@ build on it, as the painter always has, but no step to another row does."
                  (t (format stream "~C[H" #\Escape)))
            t))))
 
+;;; --- glyph stand-ins ------------------------------------------------------
+;;; A console host that draws its own window -- conhost, the console of
+;;; Windows 10, and Windows 11's wherever Windows Terminal does not take over
+;;; -- draws every cell from the one font its window is set to, with no
+;;; fallback to another: a character that font lacks is an empty box. Consolas,
+;;; its default, has no braille (every live mark: the bar showed `□□ waiting
+;;; on the model'), no ✓ ✗ ✕ and no ⋮ ⌎ ⎿; Lucida Console lacks more. There the
+;;; font is asked which of these it has (terminal.lisp), and each it lacks is
+;;; written as the first stand-in down its chain the font does have, the last
+;;; one ASCII, which every font has. A stand-in is one cell, as the character
+;;; it stands for, so the frame's layout never moves.
+
+(defparameter *glyph-stand-in-chains*
+  '((#\✓ #\√ #\v) (#\✗ #\× #\x) (#\✕ #\× #\x) (#\× #\x)
+    (#\⋮ #\¦ #\:) (#\⌎ #\└ #\+) (#\⎿ #\└ #\+)
+    (#\↷ #\→ #\>) (#\↶ #\← #\<) (#\↺ #\← #\<) (#\↦ #\→ #\>)
+    (#\← #\<) (#\→ #\>) (#\↑ #\^) (#\↓ #\v)
+    (#\✦ #\♦ #\*) (#\◉ #\● #\• #\o) (#\● #\• #\*) (#\• #\· #\*)
+    (#\○ #\o) (#\◦ #\° #\o) (#\◇ #\◊ #\o) (#\▣ #\■ #\#) (#\□ #\○ #\o)
+    (#\■ #\#) (#\▾ #\▼ #\v) (#\▸ #\► #\>) (#\▴ #\▲ #\^)
+    (#\╭ #\┌ #\+) (#\╮ #\┐ #\+) (#\╰ #\└ #\+) (#\╯ #\┘ #\+)
+    (#\┌ #\+) (#\┐ #\+) (#\└ #\+) (#\┘ #\+)
+    (#\━ #\═ #\─ #\-) (#\─ #\-) (#\┆ #\│ #\|) (#\│ #\|)
+    (#\▊ #\█ #\#) (#\█ #\#) (#\▌ #\|) (#\▐ #\|)
+    (#\… #\.) (#\› #\>) (#\− #\-) (#\– #\-) (#\— #\-) (#\“ #\") (#\” #\")
+    (#\∞ #\~) (#\· #\.) (#\√ #\v) (#\° #\o))
+  "Character -> its stand-ins, best first, the last ASCII: every glyph
+beyond ASCII the shell paints, and the stand-ins themselves, since a font
+may lack those too.")
+
+(defconstant +braille-blank+ #x2800
+  "The first of the 256 braille patterns, the one with no dots.")
+
+(defparameter *cp437-glyphs*
+  "☺☻♥♦♣♠•◘○◙♂♀♪♫☼►◄↕‼¶§▬↨↑↓→←∟↔▲▼⌂ÇüéâäàåçêëèïîìÄÅÉæÆôöòûùÿÖÜ¢£¥₧ƒáíóúñÑªº¿⌐¬½¼¡«»░▒▓│┤╡╢╖╕╣║╗╝╜╛┐└┴┬├─┼╞╟╚╔╩╦╠═╬╧╨╤╥╙╘╒╓╫╪┘┌█▄▌▐▀αßΓπΣσµτΦΘΩδ∞φε∩≡±≥≤⌠⌡÷≈°∙·√ⁿ²■"
+  "The glyphs of code page 437 beyond ASCII: what a console font that cannot
+be asked -- a raster font -- is taken to draw.")
+
+(defun cp437-glyph-p (char)
+  "Whether CHAR is ASCII or one of code page 437's glyphs."
+  (or (< (char-code char) #x80) (find char *cp437-glyphs*)))
+
+(defun glyph-stand-in-questions ()
+  "=> the string of every character GLYPH-STAND-INS asks a font about."
+  (coerce (remove-duplicates
+           (cons (code-char (+ +braille-blank+ #x3f))
+                 (remove-if (lambda (char) (< (char-code char) #x80))
+                            (reduce #'append *glyph-stand-in-chains*))))
+          'string))
+
+(defun glyph-stand-ins (drawn-p)
+  "=> the stand-in table for a font that draws a character when DRAWN-P
+answers true for it: each character the font lacks -> the first of its
+stand-ins it draws, the last ASCII; NIL when it lacks none."
+  ;; Braille is asked as one pattern, all six dots: a font has the block or
+  ;; not. Without it each pattern stands as a dot, the blank one as a space,
+  ;; and the live marks take their plain frames (STATUS-MARK).
+  (let ((table (make-hash-table)))
+    (loop for (char . stand-ins) in *glyph-stand-in-chains*
+          unless (funcall drawn-p char)
+            do (setf (gethash char table)
+                     (or (find-if (lambda (stand-in)
+                                    (or (< (char-code stand-in) #x80) (funcall drawn-p stand-in)))
+                                  stand-ins)
+                         char)))
+    (unless (funcall drawn-p (code-char (+ +braille-blank+ #x3f)))
+      (let ((dot (if (funcall drawn-p #\·) #\· #\.)))
+        (setf (gethash (code-char +braille-blank+) table) #\Space)
+        (loop for code from (1+ +braille-blank+) to (+ +braille-blank+ #xff)
+              do (setf (gethash (code-char code) table) dot))))
+    (and (plusp (hash-table-count table)) table)))
+
+(defvar *glyph-stand-ins* nil
+  "The stand-in table frames are written under (GLYPH-STAND-INS), or NIL:
+every character as itself. Set where the terminal is measured
+(MEASURE-GLYPH-STAND-INS).")
+
+(defun forget-glyph-stand-ins ()
+  "Drop the measured table: it is a fact about one console's font, and a
+dumped image must not carry the build machine's."
+  (setf *glyph-stand-ins* nil))
+
+(pushnew 'forget-glyph-stand-ins sb-ext:*save-hooks*)
+
+(declaim (inline stand-in-glyph))
+(defun stand-in-glyph (char)
+  "CHAR as the frame writes it: its stand-in where the terminal's font lacks it."
+  (if *glyph-stand-ins* (values (gethash char *glyph-stand-ins* char)) char))
+
+(defun glyph-drawn-p (char)
+  "Whether the terminal draws CHAR as itself, not a stand-in."
+  (not (and *glyph-stand-ins* (nth-value 1 (gethash char *glyph-stand-ins*)))))
+
 (defun render-diff (old new stream
                     &key (cursor-x 0) (cursor-y 0)
                     &aux (w new.width) (h new.height) (cur-x cursor-x) (cur-y cursor-y)
@@ -356,7 +449,7 @@ the terminal holds the cursor with its wrap pending."
                    (format stream "~C]8;;~@[~A~]~C\\" #\Escape cell.link #\Escape)
                    (setf link cell.link))
                  (unless (zerop cell.width)
-                   (write-char cell.char stream)
+                   (write-char (stand-in-glyph cell.char) stream)
                    (when (>= (char-code cell.char) #x7f) (setf sure nil)))
                  (incf cur-x step)
                  ;; In the last column the wrap is pending: no step from

@@ -69,11 +69,12 @@ renderer, the program loop.")
    ;; --- cells (cells.lisp) ---
    #:+attr-bold+ #:+attr-italic+ #:+attr-underline+ #:+attr-faint+
    #:screen-buffer-ref #:paint-rows #:parse-styled-string #:render-diff
+   #:glyph-drawn-p
    ;; --- the tty and its modes (terminal.lisp) ---
    #:terminal-size #:window-size #:terminal-present-p #:enter-modes
    #:exit-modes #:enter-alt-screen #:exit-alt-screen
    #:enable-mouse #:disable-mouse #:push-kitty-keyboard #:pop-kitty-keyboard
-   #:apply-terminal-transitions #:request-truecolor #:request-background
+   #:apply-terminal-transitions #:request-truecolor #:request-background #:windows-build
    #:*clipboard-use-command* #:copy-to-clipboard #:write-clipboard
    ;; --- the decoder (input.lisp) ---
    #:read-key #:ctrl-char-to-key #:parse-mouse-sequence

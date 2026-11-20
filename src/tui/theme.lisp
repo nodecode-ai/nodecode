@@ -398,9 +398,11 @@ palette :foreground first so there is a color to dim."
 transparent theme's colours are solved against, since its canvas is the
 terminal's.")
 
-(defun detect-color-profile (&key (is-tty t) (getenv #'uiop:getenv))
+(defun detect-color-profile (&key (is-tty t) (getenv #'uiop:getenv)
+                                  (windows-build (nlt:windows-build)))
   "Resolve :auto against the environment, Zig rule order plus the
-known-truecolor terminal names."
+known-truecolor terminal names, and on a Windows that names no terminal
+(WINDOWS-BUILD, NIL elsewhere) its console host's own."
   ;; GETENV is the environment read, a function of the variable name — tests
   ;; hand a table.
   (flet ((env (name) (json-value (funcall getenv name) :text))
@@ -421,6 +423,12 @@ known-truecolor terminal names."
              :truecolor)
             ((has term "256color") :ansi256)
             ((has term "color" "ansi" "xterm" "screen") :ansi)
+            ;; Windows sets no TERM, so its console host fell to 256 colors,
+            ;; and the probe that would upgrade it is one Windows 10's host
+            ;; prints, so it is not asked there. That host has drawn 24-bit
+            ;; SGR exactly since build 14931; before it, 16 colors.
+            ((and windows-build (zerop (length term)))
+             (if (>= windows-build 14931) :truecolor :ansi))
             (t :ansi256)))))
 
 (defun effective-color-profile ()
@@ -803,9 +811,21 @@ and retype, :WRITE a page filling, :DEFINE parens filling with a body,
 (defparameter *status-running-frame-ms* 150)
 (defparameter *status-waiting-after-ms* 2000)
 
+(defparameter *status-marks-plain*
+  '((:wait    . #("· " "· " "· " "· " " ·" " ·" " ·" " ·"))
+    (:default . #("┤ " "┘ " "┴ " "└ " "├ " "┌ " "┬ " "┐ ")))
+  "The live marks where the terminal's font has no braille, as Consolas in
+Windows 10's console host: :WAIT's sway, and for every other kind a pipe
+turning, in glyphs of code page 437, which every console font has.")
+
 (defun status-mark (elapsed-ms &optional (kind :default))
-  "KIND's live mark at ELAPSED-MS into the turn."
+  "KIND's live mark at ELAPSED-MS into the turn, in plain frames
+(*STATUS-MARKS-PLAIN*) where the terminal draws no braille."
   (let ((frames (cdr (assoc kind *status-marks*))))
+    ;; An unknown kind still fails here, plain frames or not.
+    (when (and frames (not (nlt:glyph-drawn-p (code-char #x283f))))
+      (setf frames (cdr (or (assoc kind *status-marks-plain*)
+                            (assoc :default *status-marks-plain*)))))
     (aref frames (mod (truncate elapsed-ms *status-running-frame-ms*) (length frames)))))
 
 ;;; --- scrollbar geometry (src/tui/transcript.zig) ---------------------------
