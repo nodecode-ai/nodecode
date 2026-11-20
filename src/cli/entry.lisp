@@ -1291,15 +1291,20 @@ condition's report, exit 1."
                 #'launch))
               (t (launch)))))))
 
-(defun launch-headless (serve child session-id store-path setup
-                        ;; `gateway run' (:WAIT) waits for the store and takes it before
-                        ;; anything here runs (TAKE-STORE-BEFORE-BOOT): booted first, it
-                        ;; pointed a shell's cell installs at its own build and left its
-                        ;; receipt, so a stop while it waited made the next launch pristine.
-                        &aux (ready (and (eq serve :wait) (take-store-before-boot store-path))))
+(defun launch-headless (serve child session-id store-path setup)
+  "Acquire a headless owner's stop supervisor before any store wait or boot."
+  (flet ((launch () (launch-headless-supervised serve child session-id store-path setup)))
+    (if serve (call-with-gateway-stop-supervisor #'launch) (launch))))
+
+(defun launch-headless-supervised (serve child session-id store-path setup
+                                  &aux (ready (and (eq serve :wait)
+                                                   (take-store-before-boot store-path))))
   "The launch of a process that paints no TUI: SERVE's headless owner, or a
 CHILD's one answer. => what that answers; :LOST for a serve that does not
 wait and found the store held."
+  (when (and serve (gateway-stop-requested-p))
+    (return-from launch-headless-supervised
+      (finish-stopped-gateway (merge-pathnames (or store-path nlk::*default-store-path*)))))
   ;; A serve that loses the election loses before its boot: the boot points
   ;; the home's cell installs at this build (REFRESH-INSTALLED-CELLS), moves
   ;; its hub clones and loads every cell, and a loser left all of that to the
@@ -1308,7 +1313,7 @@ wait and found the store held."
   ;; race this look misses. `gateway run' (:WAIT) has waited for the store
   ;; instead, and holds it (READY).
   (when (and (eq serve t) (serve-election-lost-p store-path))
-    (return-from launch-headless :lost))
+    (return-from launch-headless-supervised :lost))
   ;; a serve leaves its receipt before the load: a self that dies before serving is found by the launch after
   ;; a serve that will own the organism boots the saved heap a restore asked for, before any folder loads (images.lisp)
   (when serve (follow-restore-pointer))
