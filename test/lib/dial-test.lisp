@@ -230,3 +230,12 @@ LISTEN-HOST took, both closed on the way out."
       (let ((one (cl+ssl:make-context :verify-location bundle))
             (two (cl+ssl:make-context :verify-location bundle)))
         (is (not (cffi:pointer-eq one two)) "a named location is fresh: its file may change")))))
+
+(deftest http-caller-can-refuse-redirects-without-changing-the-default ()
+  (let (limits)
+    (with-stubbed-fdefinition (dex:request (url &rest keys)
+                               (push (getf keys :max-redirects) limits)
+                               (values "body" 200 nil nil nil))
+      (is (= 200 (nth-value 1 (nlk:http :get "http://127.0.0.1/"))))
+      (is (= 200 (nth-value 1 (nlk:http :get "http://127.0.0.1/" :max-redirects 0))))
+      (is (equal '(0 5) limits) "existing callers follow five; the probe can require the original endpoint"))))

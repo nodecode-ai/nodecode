@@ -1,0 +1,17 @@
+--- a/src/runtime/thread.c	2026-11-15 21:36:42.474847941 +0100
++++ b/src/runtime/thread.c	2026-11-15 21:36:42.485367770 +0100
+@@ -507,7 +507,14 @@
+ #endif
+ {
+     struct thread* th = arg;
++#ifndef LISP_FEATURE_WIN32
+     ASSOCIATE_OS_THREAD(th);
++#endif
++    /* win32: create_lisp_thread stored the handle _beginthreadex answered
++     * in th->os_thread before it resumed this thread, and the join closes
++     * that slot's handle. ASSOCIATE_OS_THREAD would overwrite it with a
++     * DuplicateHandle of this thread, and the first handle would never be
++     * closed: one leaked handle per thread the process ever made. */
+ 
+ #ifdef LISP_FEATURE_SB_SAFEPOINT
+     init_thread_data scribble;

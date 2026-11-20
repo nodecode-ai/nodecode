@@ -72,6 +72,16 @@ function Start-Sbcl([string]$sbcl, [string]$log) {
   return $p.ExitCode
 }
 
+# A shard's results file, read whole: its lines, and whether its last line is
+# SUITE-DONE. The @() wraps the if, not the read inside it: an if statement's
+# output unrolls, so a one-line file read inside it comes back a string whose
+# [-1] is its last character (a -Only shard that runs none of the named tests
+# leaves just SUITE-DONE, and read as unfinished).
+function Read-ShardResults([string]$path) {
+  $lines = @(if (Test-Path $path) { Get-Content $path -Encoding utf8 })
+  [pscustomobject]@{ Lines = $lines; Done = ($lines.Count -gt 0 -and $lines[-1] -eq 'SUITE-DONE') }
+}
+
 # --- one shard, in its own console --------------------------------------------
 if ($Shard) {
   $tag = $Shard.Replace('/', '-')
@@ -206,10 +216,9 @@ while ($procs | Where-Object { -not $_.HasExited }) {
 # --- held to the list ---------------------------------------------------------------
 $results = @{}; $unfinished = @()
 foreach ($i in 0..($Shards - 1)) {
-  $r = Join-Path $out "results-$i-$Shards.tsv"
-  $lines = if (Test-Path $r) { @(Get-Content $r -Encoding utf8) } else { @() }
-  if ($lines.Count -eq 0 -or $lines[-1] -ne 'SUITE-DONE') { $unfinished += "$i/$Shards" }
-  foreach ($l in $lines) {
+  $read = Read-ShardResults (Join-Path $out "results-$i-$Shards.tsv")
+  if (-not $read.Done) { $unfinished += "$i/$Shards" }
+  foreach ($l in $read.Lines) {
     $c = $l -split "`t"
     if ($c.Count -ge 2) { $results[$c[0].ToUpper()] = @($c[1], $(if ($c.Count -gt 3) { $c[3] } else { '' })) }
   }

@@ -2033,16 +2033,16 @@ quietly."
                 ;; Park; the gateway runs on hunchentoot threads and this
                 ;; process lives until killed or asked (SERVE-NEXT). The
                 ;; heartbeat is deliberately on this owner thread.
-                (loop
-                  (nlk:systemd-watchdog)
-                  (unless heartbeat-noted
+                (loop for window = (nlk::systemd-watchdog-window)
+                      for healthy = (or (null window) (gateway-watchdog-pulse window)) do
+                  (when (and healthy (not heartbeat-noted))
                     (setf heartbeat-noted t)
                     (format t "~&[CP-ISSUE-20260912-002] gateway heartbeat~%"))
                   ;; Poll only the stop record between the existing heartbeat
                   ;; intervals; SIGTERM never needs to signal this semaphore.
                   (loop with until = (+ (get-internal-real-time)
                                         (* internal-time-units-per-second
-                                           (/ nlk:*gateway-watchdog-seconds* 3)))
+                                           (/ (or window nlk:*gateway-watchdog-seconds*) 3)))
                         until (or *serve-next* (>= (get-internal-real-time) until))
                         do (when (gateway-stop-requested-p) (serve-next :stop))
                            (unless *serve-next*
