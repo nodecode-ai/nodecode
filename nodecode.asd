@@ -578,6 +578,9 @@ of stacking."
      (:file "session/session-admit-test")
      (:file "organism/evolve-test")
      (:file "organism/cells-test")
+     ;; cell-cache-test follows cells-test: it writes its folders with that
+     ;; file's WRITE-PERIPHERAL-FOLDER and loads them with its fixture.
+     (:file "organism/cell-cache-test")
      (:file "organism/notice-log-test")
      (:file "organism/cell-dsl-test")
      (:file "organism/upgrade-test")
