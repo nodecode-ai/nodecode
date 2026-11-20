@@ -95,9 +95,9 @@ program that cannot be run answers STATUS :MISSING."
 
 ;;; --- systemd supervision -------------------------------------------------
 
-;;; The serve owner sends its heartbeat from the same thread that waits for or
-;;; serves the store. A helper thread would be stopped by the same
-;;; stop-the-world failure this watchdog is meant to catch.
+;;; The serve owner sends its heartbeat, not an independent keepalive thread.
+;;; While serving, GATEWAY-WATCHDOG-PULSE requires HTTP, the shared store and a
+;;; completed work-loop pass. Store-lease waiting retains its own heartbeat.
 (defparameter *gateway-watchdog-seconds* 30
   "The watchdog window in the generated unit, in seconds.")
 
@@ -139,6 +139,18 @@ fill the journal once per heartbeat.")
 (defun systemd-ready ()
   "Tell a systemd notify unit that the gateway owner is initialized."
   (systemd-notify "READY=1"))
+
+(defun systemd-watchdog-window ()
+  "The watchdog's seconds when systemd arms this process, otherwise NIL.
+A notification socket alone is not an armed watchdog (Type=notify can have none)."
+  #+linux
+  (let* ((socket (uiop:getenv "NOTIFY_SOCKET"))
+         (usec (ignore-errors (parse-integer (uiop:getenv "WATCHDOG_USEC"))))
+         (pid (uiop:getenv "WATCHDOG_PID")))
+    (and (stringp socket) (plusp (length socket)) (integerp usec) (plusp usec)
+         (or (null pid) (eql (ignore-errors (parse-integer pid)) (sb-posix:getpid)))
+         (/ usec 1000000)))
+  #-linux nil)
 
 (defun systemd-watchdog ()
   "Refresh a systemd watchdog from the gateway owner thread."

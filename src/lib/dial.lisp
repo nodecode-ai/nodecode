@@ -410,7 +410,7 @@ dial in this image asks PROXY-FOR instead."
 (pushnew 'forget-build-proxy sb-ext:*init-hooks*)
 
 (defun http (method url &key headers content (timeout 30) (connect-timeout (min 10 timeout))
-                              max-bytes binary stream pool proxy &aux clipped)
+                              max-bytes binary stream pool proxy (max-redirects 5) &aux clipped)
   "One HTTP exchange that answers every status as a value. => (values BODY
 STATUS HEADERS TRUNCATED-P). TIMEOUT seconds bound the whole exchange on a
 wall clock -- the connect, the TLS handshake, the headers and, unless
@@ -422,6 +422,7 @@ STREAM, the body; past them it signals HTTP-TIMEOUT."
   ;; answering one) the body is streamed under that cap and a TIMEOUT-second
   ;; wall clock: BODY is an octet vector, TRUNCATED-P true when the wire had
   ;; more. A failed status's streamed BODY is its text, the first 2 KiB of it.
+  ;; MAX-REDIRECTS defaults to five; zero requires the original endpoint's answer.
   ;; POOL keeps the connection (localhost control and platform REST reuse
   ;; theirs), PROXY names one. Without POOL the exchange asks the peer to
   ;; close: dexador hands a kept-alive connection back to its caller to close
@@ -446,7 +447,7 @@ STREAM, the body; past them it signals HTTP-TIMEOUT."
           (bind (((body status response-headers _ socket)
                   (dex:request url :method method :headers headers :content content
                                    :connect-timeout connect-timeout :read-timeout timeout
-                                   :max-redirects 5 :use-connection-pool pool :keep-alive (and pool t)
+                                   :max-redirects max-redirects :use-connection-pool pool :keep-alive (and pool t)
                                    :proxy (proxy-for url proxy)
                                    :want-stream (or stream (and max-bytes t))
                                    :force-binary (or binary (and max-bytes t)))))

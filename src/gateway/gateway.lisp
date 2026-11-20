@@ -1678,6 +1678,42 @@ recordBackgroundShellExitFact): skipped when the shell has no owning turn."
              :anchor-position position)))))))
 
 (defvar *background-exec-watcher* nil)
+(defstruct watchdog-progress completed-at seen http-failed)
+(defvar *gateway-watchdog-progress* nil
+  "This watcher's progress. A retired worker may finish late, but only in its own record.")
+
+(defun gateway-watchdog-pulse (&optional (seconds (nlk::systemd-watchdog-window)))
+  "Refresh an armed serving watchdog only after HTTP, the shared store and a new
+watcher pass prove live. A native store wait is bounded by the external watchdog."
+  (let ((progress *gateway-watchdog-progress*))
+    (when (and seconds progress *gateway-bound-port* (not (watchdog-progress-http-failed progress)))
+      (let ((began (get-internal-real-time)) (budget (/ seconds 3)))
+        ;; No redirects, pool, helper thread or provider-contacting doctor call.
+        ;; One failed request latches unhealthy: do not pile up stuck workers.
+        (unless (ignore-errors
+                  (multiple-value-bind (body status headers clipped)
+                      (nlk:http :get (format nil "http://127.0.0.1:~d/healthz" *gateway-bound-port*)
+                                :timeout budget :max-bytes 1024 :max-redirects 0)
+                    (declare (ignore headers))
+                    (and (eql status 200) (not clipped)
+                         (let ((answer (nlk:decode-json body :whole t)))
+                           (and (hash-table-p answer) (eq t (gethash "ok" answer))
+                                (equal "gateway" (gethash "component" answer)))))))
+          (setf (watchdog-progress-http-failed progress) t)
+          (return-from gateway-watchdog-pulse nil))
+        ;; The operational connection, not WITH-STORE-READER's independent one.
+        ;; This is a read, not a requirement that events advance: idle is healthy.
+        (when (ignore-errors
+                (let ((nlk::*store-reader* nil))
+                  (integerp (nlk:events :as :value :columns '("coalesce(max(log_position), 0)")))))
+          (let ((completed (watchdog-progress-completed-at progress))
+                (seen (watchdog-progress-seen progress))
+                (now (get-internal-real-time)) (ticks (* budget internal-time-units-per-second)))
+            (when (and (eq progress *gateway-watchdog-progress*) completed
+                       (or (null seen) (> completed seen))
+                       (<= 0 (- now completed) ticks) (< (- now began) ticks))
+              (setf (watchdog-progress-seen progress) completed)
+              (nlk:systemd-watchdog))))))))
 
 (defvar *exit-wake-lock* (bt2:make-lock :name "exit-wake"))
 
@@ -1747,16 +1783,19 @@ no prompt queued."
 
 (defun start-background-exec-watcher ()
   (unless *background-exec-watcher*
-    (setf *background-exec-watcher*
-          (worker-start "background-exec-watcher"
+    (let ((progress (make-watchdog-progress)))
+      (setf *gateway-watchdog-progress* progress
+            *background-exec-watcher*
+            (worker-start "background-exec-watcher"
                         (lambda ()
                           (ignore-errors (scan-exec-child-stalls (exec-registry-instance)))
                           ;; The runaway probe is no longer driven from here: it has
                           ;; one owner, the eval guard, which starts with the first
                           ;; evaluation in any image and reaches synchronous snippets this
                           ;; watcher never listed (exec.lisp ENSURE-EVAL-GUARD).
-                          (background-exec-watcher-tick :wake t))
-                        :wake 0.2))))
+                          (background-exec-watcher-tick :wake t)
+                          (setf (watchdog-progress-completed-at progress) (get-internal-real-time)))
+                        :wake 0.2)))))
 
 
 ;;; Filled by DEFINE-SYNC-COMMAND; DISPATCH-COMMAND routes every
@@ -5402,7 +5441,8 @@ back after them (NLK:TRIM-MEMORY)."
     (ignore-errors (terminate-all-execs (exec-registry-instance)))
     (ignore-errors (exec-await-all-exits (exec-registry-instance)))
     (ignore-errors (background-exec-watcher-tick))
-    (setf *background-exec-watcher* (worker-stop *background-exec-watcher*))
+    (setf *gateway-watchdog-progress* nil
+          *background-exec-watcher* (worker-stop *background-exec-watcher*))
     (ignore-errors (destroy-all-execs (exec-registry-instance)))
     ;; The application probe still in flight proves the acceptor live; a
     ;; stop must not outrun it.
