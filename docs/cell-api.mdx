@@ -196,11 +196,14 @@ A command runs where the cell runs, which may not be where the person sits. EFFE
 | `(:draft TEXT)` | Replaces the composer's draft with TEXT. |
 | `(:draft TEXT :how :insert)` | Inserts TEXT at the caret. |
 | `(:draft TEXT :how :append)` | Adds TEXT at the end of the draft. |
+| `(:dismiss t)` | Closes the current picker and retires its inherited picker stack, without changing the draft, caret or selection. Only true requests dismissal. |
 | `(:open SESSION-ID :prompt TEXT)` | Opens the session in a new tab of the terminal the shell runs in, as `nodecode resume SESSION-ID -- TEXT`: tmux, zellij, GNU screen, WezTerm, kitty with remote control, Windows Terminal or Ghostty. `:prompt` is optional. |
 
-The shell does them in order, then shows TEXT as usual. A row's `:run` line can answer effects too, so Space on a row can copy it. After a row's line, the list opens again, unless the answer set the draft: then it stays closed, because the composer is where the person goes next. A shell passes over an effect it does not know. A malformed effect, one that is not a plist with keyword keys, signals and names it.
+The shell does them in order, then shows TEXT as usual. A row's `:run` line can answer effects too, so Space on a row can copy it. After a row's line, the list opens again, unless the answer set the draft or explicitly dismissed the picker: then it stays closed. Dismissal does not run the picker's cancel callback. If the same answer carries a new dialog, it opens as a new root; Esc cannot return to the retired stack. A shell passes over an effect it does not know. A malformed effect, one that is not a plist with keyword keys, signals and names it.
 
-`nle:*slash-effects*` holds the effects the caller performs while RUN runs: `(:clipboard :draft)` from a shell, with `:open` when it runs in a terminal it can open a tab in, `nil` from the web page, rooms, `nodecode rpc` and `(nle:slash LINE)` from eval, which show TEXT alone. `(nle:slash LINE :effects '(:clipboard))` names them from eval. Word TEXT by it, so it never claims a copy that did not happen:
+`nle:*slash-effects*` holds the effects the caller performs while RUN runs: `(:clipboard :draft :dismiss)` from a shell, with `:open` when it runs in a terminal it can open a tab in, `nil` from the web page, rooms, `nodecode rpc` and `(nle:slash LINE)` from eval, which show TEXT alone. `(nle:slash LINE :effects '(:clipboard))` names them from eval. Word TEXT by it, so it never claims a copy that did not happen:
+
+A cell should emit `(:dismiss t)` only when `:dismiss` is present in `nle:*slash-effects*`. Older shells and gateways do not advertise it; their existing picker behavior remains unchanged. False, absent or wrong-typed dismissal values have no effect.
 
 `nle:*slash-effects*` is bound while RUN runs, so read it there: a thread RUN starts does not see it.
 

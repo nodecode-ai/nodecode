@@ -45,11 +45,11 @@ innermost wins: a tmux inside kitty opens a tmux window."
 
 (defun shell-effect-names (&key (getenv #'uiop:getenv))
   "The effects this shell performs, as POST /api/gateway/slash names them:
-the clipboard and the draft always, and :open where the terminal GETENV
+the clipboard, draft and dismissal always, and :open where the terminal GETENV
 reads is one this shell can open a tab in (TERMINAL-TAB-COMMAND)."
   (if (terminal-tab-command '("nodecode") :directory "/" :getenv getenv)
-      #("clipboard" "draft" "open")
-      #("clipboard" "draft")))
+      #("clipboard" "draft" "dismiss" "open")
+      #("clipboard" "draft" "dismiss")))
 
 (defun shell-word (word)
   "WORD as one POSIX shell word: as it is when nothing in it is special,
