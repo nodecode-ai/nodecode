@@ -268,6 +268,66 @@ text)."
       (unless (find-if #'blank-char-p filter)
         filter))))
 
+;;; --- the sigil table ------------------------------------------------------------
+;;; Which character opens an inline lane is a table, not a literal at the call
+;;; site, so a profile can move a lane: `sigils.json' holding {"file": "&"}
+;;; frees @ for prose such as mail addresses. The default sigil keeps its
+;;; historical reading (it opens even inside a word, a@b.de); a moved one opens
+;;; only at the start of the text or after whitespace, so a&b or costs$5 stay
+;;; text. The document is read once per path, so a change shows at the next
+;;; launch, as keybinds.json's does.
+
+(defparameter *composer-sigils* '((:file #\@))
+  "The declarative default sigil table: (LANE CHARACTER). :FILE is the lane of
+workspace and folder paths (TOKEN-SUGGESTIONS-FOR).")
+
+(define-startup-parameter *composer-sigils-path*
+  (home "sigils.json")
+  "Where a profile moves a lane to another sigil: a JSON object of lane name to
+one character, e.g. {\"file\": \"&\"}. NIL disables overrides; tests bind.")
+
+(define-startup-parameter *composer-sigils-read* nil
+  "(PATH . TABLE): the sigil table last read, and the path it was read from.
+Forget it at image start: a warm image may have read a table whose path is
+unchanged but whose bytes have since changed.")
+
+(defun composer-sigil-char-p (char)
+  "Whether CHAR can open a lane: printable punctuation other than the slash
+lane's own /, never a letter, digit or blank."
+  (and (graphic-char-p char) (not (alphanumericp char))
+       (not (blank-char-p char)) (char/= char #\/)))
+
+(defun read-composer-sigils ()
+  "The sigil table in force: the defaults, each lane moved where the override
+document names a usable character. An unreadable document or an unusable entry
+leaves the default: sigils are convenience, never worth refusing the shell over."
+  (let ((document (when *composer-sigils-path*
+                    (with-handlers ((error () nil))
+                      (nlk:decode-json (nlk:read-text *composer-sigils-path*))))))
+    (loop for (lane default) in *composer-sigils*
+          for value = (when (hash-table-p document)
+                        (gethash (string-downcase (symbol-name lane)) document))
+          collect (list lane (if (and (stringp value) (= 1 (length value))
+                                      (composer-sigil-char-p (char value 0)))
+                                 (char value 0)
+                                 default)))))
+
+(defun composer-sigil (lane &aux (read *composer-sigils-read*))
+  "The character that opens LANE now."
+  (unless (and read (equal (car read) *composer-sigils-path*))
+    (setf read (cons *composer-sigils-path* (read-composer-sigils))
+          *composer-sigils-read* read))
+  (second (assoc lane (cdr read))))
+
+(defun composer-lane-filter (text lane &aux (sigil (composer-sigil lane)))
+  "The token LANE's sigil opens at the end of TEXT, or NIL."
+  (when-let (filter (composer-token-filter text sigil))
+    (let ((at (- (length text) (length filter) 1)))
+      (when (or (eql sigil (second (assoc lane *composer-sigils*)))
+                (zerop at)
+                (blank-char-p (char text (1- at))))
+        filter))))
+
 (defun file-suggestion-rows (filter paths)
   "The @ lane's rows for FILTER over PATHS, the workspace catalog: every path
 whose file name or whole path answers FILTER through the dialogs' fuzzy
@@ -320,7 +380,7 @@ filter and catalog."
   ;; folder, so the next one lists fresh.
   (let ((filter (unless (or (slash-input-p text)
                             (not (composer-cursor-at-end-p (chat-model-editor model))))
-                  (composer-token-filter text #\@))))
+                  (composer-lane-filter text :file))))
     (cond ((and filter (path-token-p filter))
            (path-token-suggestions model filter))
           (t
