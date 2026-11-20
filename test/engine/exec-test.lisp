@@ -730,13 +730,23 @@ completed. BODY runs with SID bound."
   (is (= 2 status) "a diff sent to sh is rejected as a command")
   (is (search "(edit path old new)" output)))
 
-;; gpt-6-astra passed whole commands as the name, 30 times, and the error
-;; echoed each back as the key to send.
-(deftest a-strings-read-given-its-text-says-to-send-it-as-an-entry (with-exec-registry (registry))
+;; gpt-6-astra passed whole commands as the name, 30 times, and Cyber v1
+;; wraps its first edit's old text in $: the text is what was meant, and the
+;; reader's gate has already refused any escape it would have lost.
+(deftest a-strings-read-given-its-text-is-that-text (with-exec-registry (registry))
   (let ((strings (nlk::make-json-object "script" "echo hi")))
-    (dolist (result (list (nle::background-capable-eval "(sh ($ \"echo hi && ls -la\"))" 5000 strings)
-                          (nle::background-capable-eval "(sh ($ \"echo hi && ls -la\"))" 5000)))
-      (is-carrying result "takes an entry's name, not its text" "($ \"script\")"))
+    (dolist (result (list (nle::background-capable-eval "($ \"echo hi && ls -la\")" 5000 strings)
+                          (nle::background-capable-eval "($ \"echo hi && ls -la\")" 5000)))
+      (is (search "echo hi && ls -la" result)))
+    ;; an escaped quote arrives whole
+    (is (search "say \\\"hi\\\" twice" (nle::background-capable-eval "($ \"say \\\"hi\\\" twice\")" 5000)))
+    ;; an entry of that very name still wins
+    (is (search "from strings" (nle::background-capable-eval
+                                "($ \"echo hi && ls\")" 5000
+                                (nlk::make-json-object "echo hi && ls" "from strings"))))
+    ;; text the reader would have changed never reaches $: nothing runs
+    (let ((refused (nle::background-capable-eval "($ \"printf 'a\\nb' && ls\")" 5000)))
+      (is-carrying refused "nothing ran" "strings entry"))
     ;; a short name still lists what the call carries
     (is (search "no strings entry named \"absent\"" (nle::background-capable-eval "($ \"absent\")" 5000 strings)))))
 
