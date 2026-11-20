@@ -586,6 +586,10 @@ thread reads it and clears this place.")
        ;; runs the ask's line with it (tui/commands/bare.lisp SUBMIT-ASK).
        (when (chat-model-composer-ask model)
          (return-from update (values model (nth-value 1 (submit-ask model text)))))
+       ;; `!' runs the rest here, on this shell's machine, and nothing goes
+       ;; to the session (tui/commands/local-command.lisp).
+       (when (draft-local-command text)
+         (return-from update (values model (run-local-command model text))))
        (when (slash-input-p text)
          ;; Slash commands dispatch through the shared submit seam (ui.lisp);
          ;; EXECUTE-SLASH-COMMAND below routes the gateway-backed ones over
