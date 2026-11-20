@@ -550,7 +550,11 @@ thread, then rebuild an open /models picker from what it landed."
         (stale (and *provider-models-cache-path*
                     (append (stale-listable-provider-ids) (stale-local-runtime-ids)))))
     ;; Every open rereads the gateway's list (its cells add models this
-    ;; shell never sees); => T only when a stale listing is being fetched.
+    ;; shell never sees), and asks the gateway to fetch what its own image
+    ;; holds stale ("stale" true): a provider a cell makes listable is
+    ;; listable there alone, so the ids this shell knows stale never named
+    ;; claude-code. => T only when a stale listing this shell knows is being
+    ;; fetched.
     (when (and program
                (let ((thread *provider-models-refresh-thread*))
                  (or (null thread) (not (bt2:thread-alive-p thread)))))
@@ -559,11 +563,10 @@ thread, then rebuild an open /models picker from what it landed."
                       (lambda ()
                         (with-cleanup ((setf *provider-models-memo* nil
                                              *provider-models-refresh-thread* nil))
-                          (when stale
-                            (ignore-errors
-                              (gateway-model-http-call
-                               model :post "/api/gateway/provider-models/refresh"
-                               (json-object "ids" (coerce stale 'vector)))))
+                          (ignore-errors
+                            (gateway-model-http-call
+                             model :post "/api/gateway/provider-models/refresh"
+                             (json-object "ids" (coerce stale 'vector) "stale" t)))
                           (ignore-errors (fetch-gateway-models model))))
                       (lambda (model value)
                         ;; The list open when it lands, whether the one that
@@ -847,7 +850,7 @@ current caches, then refresh the fetched listings behind it."
   (cond
     ((or rows provider then)
      (open-picker-dialog
-      model (models-picker-title (length rows) nil :auxiliary auxiliary) rows
+      model (models-picker-title (count-if #'picker-row-value rows) nil :auxiliary auxiliary) rows
       ;; The row's value is the (PROVIDER MODEL) token pair, so Enter
       ;; routes the lane too — the Zig "select for session" semantics.
       (lambda (model tokens)
@@ -896,7 +899,7 @@ current caches, then refresh the fetched listings behind it."
      (start-models-frequent-read model model.dialog)
      (when (start-provider-models-refresh model)
        (setf (picker-dialog-title model.dialog)
-             (models-picker-title (length rows) t :auxiliary auxiliary)))
+             (models-picker-title (count-if #'picker-row-value rows) t :auxiliary auxiliary)))
      (values nil nil))
     (t
      ;; Nothing cached yet: fetch, and report the selection meanwhile —
@@ -973,7 +976,7 @@ value the refresh dropped leaves the cursor on its seat."
                       (eq :provider (connect-dialog-step dialog)))))
     (cond ((eq dialog.kind :model-providers) (setf dialog.title "Models"))
           ((not (connect-dialog-p dialog))
-           (setf dialog.title (models-picker-title (length (models-dialog-catalog-rows dialog)) nil
+           (setf dialog.title (models-picker-title (count-if #'picker-row-value (models-dialog-catalog-rows dialog)) nil
                                                    :auxiliary (eq dialog.kind :auxiliary-models))
                  ;; a list opened before anything was cached said it was loading
                  dialog.empty-label "No models found")))
