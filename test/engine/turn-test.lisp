@@ -9433,7 +9433,38 @@ signals is a decider that cannot be reached. Every other call goes out."
                    (nlk:turn-failed-content-type failed)))
         (is (equal (nlk::sha256-text request)
                    (nlk:turn-failed-request-sha256 failed)))
-        (is (equal body (nlk:turn-failed-response-body failed)))))))
+        (is (equal body (nlk:turn-failed-response-body failed)))
+        (is (null (nlk:turn-failed-frames failed)) "a provider's failure keeps no stack")
+        (is (null (nlk:turn-failed-condition-text failed)) "and its detail is its message")))))
+
+(defun write-a-table-two-threads-write (table)
+  "Raise SBCL's own word on TABLE, a hash table two threads wrote at once,
+as its PUTHASH does when it finds the table mid-write."
+  (sb-impl::signal-corrupt-hash-table table))
+
+(deftest a-turn-nodecode-itself-failed-says-so-plainly-and-keeps-where (with-session-store ("internal-fault"))
+  ;; A Router customer's turn died on SBCL's `Unsafe concurrent operations on
+  ;; #<HASH-TABLE :TEST EQUAL :COUNT 9 {1200D9F2A3}> detected.': his shell
+  ;; printed that line as the turn's failure, and the fact kept no frame, so
+  ;; nobody could say which table. The detail says in plain words what
+  ;; happened, where and what to do; the fact keeps the message and the stack
+  ;; it was raised on.
+  (let ((turn (nlk:admit-turn "internal-fault" "if-cmd" "hello")))
+    (with-provider-stub (nil (write-a-table-two-threads-write (make-hash-table :test 'equal)))
+      (nlk:with-handlers ((error () nil))
+        (nle:run "hello" :session (nle:intern-session "internal-fault")
+                 :command-id "if-cmd" :admitted-turn turn)))
+    (is-present (failed (session-event "internal-fault" :type 'nlk:turn-failed)) "the turn failed durably"
+      (is-carrying (detail (nlk:turn-failed-detail failed))
+        ("Nodecode hit an internal error in write-a-table-two-threads-write." "what happened and where")
+        ("Your session is saved: send your message again, and restart Nodecode if it repeats." "what to do")
+        (:absent "#<" "no printed object")
+        (:absent "Unsafe" "no SBCL words"))
+      (is (search "Unsafe concurrent operations on #<HASH-TABLE :TEST EQUAL" (nlk:turn-failed-condition-text failed)) "the message stays on the fact")
+      (is-present (frames (nlk:turn-failed-frames failed)) "the fact keeps the stack"
+        (is (equal "SB-IMPL::SIGNAL-CORRUPT-HASH-TABLE" (aref frames 0)) "from the frame that raised it")
+        (is (equal "NODECODE.TEST::WRITE-A-TABLE-TWO-THREADS-WRITE" (aref frames 1)) "to the code that wrote the table")
+        (is (<= (length frames) 20) "and no deeper than its bound")))))
 
 (deftest a-home-with-no-model-chosen-fails-its-turn-saying-so (with-session-store ("no-model"))
   ;; The target an image is built with answers nobody now -- OpenCode's free

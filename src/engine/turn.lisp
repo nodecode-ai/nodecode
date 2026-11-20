@@ -4594,6 +4594,17 @@ already closed is never closed twice."
   (and turn
        (not (nlk::turn-terminal-p (nlk:durable-turn-turn-id turn)))))
 
+(defmacro with-failure-frames ((place) &body body)
+  "Run BODY, setting PLACE to (CONDITION . FRAMES) as an error that is no
+provider's failure and no cancel is signalled in it: FRAMES the stack it was
+raised on (NLK:CONDITION-FRAMES), read before a handler outside unwinds it."
+  ;; A handler inside BODY that takes the error first leaves PLACE as it was,
+  ;; so the condition a turn fails on is the one PLACE holds when they are EQ.
+  `(handler-bind ((error (lambda (condition)
+                           (unless (typep condition '(or provider-error nlk:turn-cancelled-condition))
+                             (setf ,place (cons condition (nlk:condition-frames)))))))
+     ,@body))
+
 (defun run (input &key (session (current-session)) command-id invocation admitted-turn
                        images prefill)
   "Run INPUT after durable admission, committing exactly one outcome.
@@ -4618,6 +4629,9 @@ outranks the default effort the same way while the turn's effective
          (default-effort *reasoning-effort*)
          (turn nil)
          (turn-id nil)
+         ;; The error the turn fails on, with the stack it was raised on
+         ;; (WITH-FAILURE-FRAMES).
+         (failure nil)
          (*current-durable-turn* nil)
          ;; Round zero's previous request is the turn before's (CALL-PROVIDER).
          (*previous-request-json* nil)
@@ -4657,7 +4671,7 @@ outranks the default effort the same way while the turn's effective
       (attach-turn-images turn-id images)
       (setf *live-turn* (open-live-turn sid turn-id))
       (handler-case
-          (progn
+          (with-failure-frames (failure)
             ;; A home that chose no model has only the target the image was
             ;; built with, which nobody connected: its turn fails with the
             ;; far end's refusal as raw JSON (OpenCode's free tier now answers
@@ -4786,6 +4800,7 @@ outranks the default effort the same way while the turn's effective
         (error (condition)
           (when (turn-still-open-p turn)
             (nlk:fail-turn turn condition
-                           :evidence (provider-failure-evidence condition))
+                           :evidence (provider-failure-evidence condition)
+                           :frames (and (eq condition (car failure)) (cdr failure)))
             (notify-turn-facts-committed))
           (error condition)))))))
