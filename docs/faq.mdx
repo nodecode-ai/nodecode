@@ -26,7 +26,7 @@ In the home, `~/.nodecode/`: the config, your keys, the store of every session, 
 {/* source: src/engine/exec.lisp */}
 ## What can the model touch on my machine?
 
-Everything your user account can. `eval` runs Lisp and shell commands with full host authority, and Nodecode ships no sandbox. Run it in a container before you leave it working alone. See [Safety and trust](security.mdx).
+On Linux and macOS, what its jail allows: the project folder you started it in, its own `~/.nodecode`, the system read-only, and the network through Nodecode's proxy to the hosts it allows. Your keys and the rest of your home are not in the jail. On Windows, or with the jail turned off, everything your user account can. See [Safety and trust](security.mdx).
 
 {/* source: src/organism/scribe.lisp */}
 ## How is it different from other coding agents?
