@@ -267,6 +267,18 @@ live by SESSION-ID's turn when one is named."
       (is-shape frame (.type eq :projection) (.sequence eql 0) (.session-id null))
       (is (equal kind (gethash "type" frame.payload))))))
 
+(deftest protocol-notices-board-rows-are-optional-and-an-array ()
+  ;; A gateway from before the status rows sends a board without them; one
+  ;; that sends them sends an array.
+  (flet ((decodes-p (payload)
+           (handler-case (progn (nlk:decode-sync-message
+                                 (nlk:encode-unsequenced-frame "organism.notices" payload))
+                                t)
+             (nlk:protocol-error () nil))))
+    (is (decodes-p (nlk:json-object "notices" #())) "a board without rows")
+    (is (decodes-p (nlk:json-object "notices" #() "rows" #())) "a board with rows")
+    (is (not (decodes-p (nlk:json-object "notices" #() "rows" 7))) "rows not an array")))
+
 (deftest protocol-frame-bound-refuses-past-the-bound ()
   ;; The one bound both ends of the transport measure against: at it the
   ;; frame passes through unchanged; one past it the refusal names both sizes.

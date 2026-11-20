@@ -1012,6 +1012,23 @@ its dispatch keeping each frame for LINK-COMMANDS."
       (is (not (rows-carry-p "Connecting to Gateway" rows)) "which says nothing over it")
       (is (not (rows-carry-p "Gateway 127.0.0.1" rows))))))
 
+(deftest status-rows-stand-over-the-footer-and-move-nothing ()
+  ;; A cell's status rows take the blank between the composer and the footer:
+  ;; one muted line, several cells' joined, clipped to the window, and every
+  ;; other row of the frame where it was.
+  (with-frame-model (model 100 30 :session-id "status-rows")
+    (let ((before (nle::compose-frame model)))
+      (setf (nle::status-rows-shown model) '("codex: 41% of the week" "BTC 91k"))
+      (let ((rows (nle::compose-frame model)))
+        (is (= 30 (length rows)))
+        (is (search "codex: 41% of the week · BTC 91k" (nth 27 rows)) "over the footer")
+        (is (equal (nth 28 before) (nth 28 rows)) "the footer is where it was")
+        (is (equal (subseq before 0 27) (subseq rows 0 27)) "and so is all above"))
+      (setf (nle::status-rows-shown model) (list (make-string 300 :initial-element #\x)))
+      (is (search "…" (nth 27 (nle::compose-frame model))) "a long row is clipped")
+      (setf (nle::status-rows-shown model) nil)
+      (is (equal before (nle::compose-frame model)) "and none leaves the blank"))))
+
 (deftest footer-facts-never-dial-on-the-frame-path ()
   ;; Composing fetched model facts on the loop thread would let a dead
   ;; endpoint park the first paint for the connect timeout.

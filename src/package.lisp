@@ -284,6 +284,7 @@ renderer, the program loop.")
    ;; --- the folder: cell load, report, lifecycle (cells.lisp) ---
    #:layer #:cells #:load-cells #:boot-cells #:describe-cells #:find-cell
    #:note-standing #:standing-notices #:standing-notices-text
+   #:note-status-row #:status-rows
    #:note-said #:notice-log #:+notice-log-size+
    #:cells-report-text #:cells-folder-text #:broken-cell-links #:broken-layer-files
    ;; the shipped catalog, the hub's, and installing from them (cells.lisp)
@@ -452,6 +453,9 @@ renderer, the program loop.")
    ;; --- the organism's own voice (gateway.lisp): every attached shell, the
    ;; standing board the live tail of every round's prompt shows the model ---
    #:notice
+   ;; and the one line a cell keeps in every shell's frame, which the model
+   ;; never reads (gateway.lisp)
+   #:status-row
    ;; --- one question put to the person watching a session, waited on
    ;; (gateway/questions.lisp) ---
    #:ask-operator

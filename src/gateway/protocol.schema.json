@@ -470,6 +470,12 @@
                 "items": { "type": "object", "required": ["key", "text", "level"],
                            "properties": { "key": { "type": "string" }, "text": { "type": "string" },
                                            "level": { "type": "string" } } }
+              },
+              "rows": {
+                "description": "The cells' status rows (nle:status-row): one line each, which every shell draws over its footer and the model never reads. Absent from a gateway that predates them.",
+                "type": "array",
+                "items": { "type": "object", "required": ["key", "text"],
+                           "properties": { "key": { "type": "string" }, "text": { "type": "string" } } }
               }
             }
           }

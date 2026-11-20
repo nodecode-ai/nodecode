@@ -602,7 +602,11 @@ so the payload need not carry the token again."
            ("session_stream_event"
             (decode-stream-frame (or (gethash "frame" payload) payload) "session stream frame"))
            ("organism.notice" (required-string payload "text"))
-           ("organism.notices" (required-array nil "organism.notices notices" (gethash "notices" payload)))
+           ("organism.notices"
+            (required-array nil "organism.notices notices" (gethash "notices" payload))
+            ;; A gateway from before the status rows sends none.
+            (multiple-value-bind (rows present) (gethash "rows" payload)
+              (when present (required-array nil "organism.notices rows" rows))))
            ("organism.note" (required-string payload "text"))
            ("organism.cells" (required-array nil "organism.cells names" (gethash "names" payload)))
            ("organism.activity"
