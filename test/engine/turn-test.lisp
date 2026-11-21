@@ -7098,6 +7098,28 @@ cloudflare-workers-ai's and databricks' do: one in the path, one the host.")
       (is (equal "sig-a" (gethash "thoughtSignature" (aref parts 0))))
       (is (null (nth-value 1 (gethash "thoughtSignature" (aref parts 1))))))))
 
+(deftest google-unsigned-first-tool-call-uses-skip-sentinel (let ((nle::*provider* "google")
+                                                                  (nle::*model* "gemini-4-neon")
+                                                                  (nle::*api-key* "k")))
+  ;; Harness-synthesized tool calls (exit-wake-message) and cross-provider tool
+  ;; calls carry no Gemini thoughtSignature. Without Google's bypass sentinel on
+  ;; the first functionCall, Gemini 3+ rejects the request with HTTP 400.
+  (let* ((wake (nle::exit-wake-message '(42 43)))
+         (calls (gethash "tool_calls" wake))
+         (contents (gethash "contents"
+                            (nle::google-request-body
+                             (compiled-context
+                              (list (nle::message "user" "run")
+                                    wake
+                                    (nle::message "tool" "ok" :name "eval"
+                                                  :tool-call-id (gethash "id" (aref calls 0)))
+                                    (nle::message "tool" "ok" :name "eval"
+                                                  :tool-call-id (gethash "id" (aref calls 1))))))))
+         (parts (gethash "parts" (aref contents 1))))
+    (is (= 2 (length parts)))
+    (is (equal "skip_thought_signature_validator" (gethash "thoughtSignature" (aref parts 0))))
+    (is (null (nth-value 1 (gethash "thoughtSignature" (aref parts 1)))))))
+
 (deftest google-eof-is-normal-completion (let ((nle::*provider* "google")
                                                (nle::*api-key* "k")))
   ;; No [DONE], no terminal event: end of stream is the google done marker,

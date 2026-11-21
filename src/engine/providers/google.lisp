@@ -43,6 +43,12 @@ fileData."
         (json-object "fileData"
                      (json-object "mimeType" "image/jpeg" "fileUri" url)))))
 
+(defparameter *google-skip-thought-signature-sentinel*
+  "skip_thought_signature_validator"
+  "Google's documented thoughtSignature sentinel for functionCall parts that
+did not originate from Gemini (harness-synthesized calls such as
+EXIT-WAKE-MESSAGE, or calls from another provider after a mid-turn switch).")
+
 (defun google-message-content (msg &aux (role (gethash "role" msg))
                                         (content (gethash "content" msg)))
   "(values role parts) for one chat-shaped message in GenAI form."
@@ -54,20 +60,27 @@ fileData."
                        (text (content-text content)))
                    (when (plusp (length text))
                      (push (google-text-part text) parts))
-                   ;; A call replays with the thoughtSignature it arrived with:
-                   ;; Without this, Gemini 3 would refuse a tool turn's next
-                   ;; round (400) when the first functionCall of a step comes
-                   ;; back unsigned. Reasoning itself is never replayed as a
-                   ;; thought part.
+                   ;; A call replays with the thoughtSignature it arrived with.
+                   ;; Gemini 3+ refuses a turn's next round (400) when the first
+                   ;; functionCall of a model message has no thoughtSignature:
+                   ;; harness-synthesized calls (exit-wake-message) and calls
+                   ;; from another provider have none, so an unsigned first call
+                   ;; gets Google's bypass sentinel while parallel siblings stay
+                   ;; unsigned. Reasoning itself is never replayed as a thought
+                   ;; part.
                    (loop for call across (json-array msg "tool_calls")
+                         for first-call-p = t then nil
                          do (multiple-value-bind (name args)
                                 (tool-call-function-input call)
-                              (push (json-object
-                                     "functionCall"
-                                     (json-object "name" name "args" args)
-                                     :opt "thoughtSignature"
-                                     (json-value msg :text "thought_signatures" (gethash "id" call)))
-                                    parts)))
+                              (let ((sig (or (json-value msg :text "thought_signatures"
+                                                         (gethash "id" call))
+                                             (and first-call-p
+                                                  *google-skip-thought-signature-sentinel*))))
+                                (push (json-object
+                                       "functionCall"
+                                       (json-object "name" name "args" args)
+                                       :opt "thoughtSignature" sig)
+                                      parts))))
                    (values "model" (nreverse parts))))
     ("tool" (let ((name (or (json-value msg :text "name")
                             (gethash "tool_call_id" msg)
