@@ -87,6 +87,8 @@ operator file."
         ;; Keybind overrides are machine state: the suite asserts the
         ;; declarative defaults; override tests bind their own document.
         (nodecode.evolved::*keybinds-path* nil)
+        ;; Sigil overrides are machine state too: the suite asserts the default table.
+        (nodecode.evolved::*composer-sigils-path* nil)
         ;; A shell's copy of the gateway's cell commands is runtime state:
         ;; the suite asserts the builtin catalog; a test that reads the
         ;; gateway's commands sets its own entries inside this binding.
