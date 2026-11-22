@@ -5198,6 +5198,27 @@ USOCKET:ADDRESS-IN-USE-ERROR."
 (defparameter *gateway-connection-read-timeout* 75
   "Socket read timeout, in seconds, for every gateway connection.")
 
+;;; Hunchentoot's default taskmaster caps concurrent connection threads at 100
+;;; (and total accepted connections at 120). Each attached shell holds a
+;;; persistent WebSocket plus pooled HTTP keep-alive connections (up to ~7
+;;; sockets during a reconnect burst), so 50+ concurrent sessions saturate
+;;; both 100 and 200 threads and stall every new HTTP/WS request (including
+;;; /healthz). 512 worker threads with 64 queued headroom (576 total) absorbs
+;;; reconnect bursts across 60+ sessions while remaining well below the 1024
+;;; select-safe file-descriptor cap.
+(defparameter *gateway-max-thread-count* 512
+  "Concurrent connection-thread ceiling for the gateway's Hunchentoot taskmaster.")
+
+(defparameter *gateway-max-accept-headroom* 64
+  "Accepted-connection headroom above *GATEWAY-MAX-THREAD-COUNT* before 503.")
+
+(defun gateway-taskmaster-limits ()
+  "Taskmaster (values MAX-THREAD-COUNT MAX-ACCEPT-COUNT), enforcing Hunchentoot's
+invariant MAX-ACCEPT-COUNT > MAX-THREAD-COUNT >= 1."
+  (let* ((threads (max 1 *gateway-max-thread-count*))
+         (accept (+ threads (max 1 *gateway-max-accept-headroom*))))
+    (values threads accept)))
+
 (defun start-gateway (&rest keys &key port operator-token workspace-captures trim)
   "Start the HTTP/WS gateway with one materialized operator token and return
 the port it accepted on: the listener first (OPEN-GATEWAY-LISTENER), then
@@ -5273,8 +5294,11 @@ SERVE-GATEWAY."
   (let ((bound (if (zerop port)
                    (or (gateway-port-from-environment) (remembered-port) (local-port 0))
                    port)))
-    (setf *gateway-handler*
-          (clackup-listening (make-sync-app) bound))
+    (multiple-value-bind (max-threads max-accept) (gateway-taskmaster-limits)
+      (setf *gateway-handler*
+            (clackup-listening (make-sync-app) bound
+                               :max-thread-count max-threads
+                               :max-accept-count max-accept)))
     (nlk:note-boot-phase "gateway-clacked" bound)
     (unless (await-gateway-acceptance bound)
       ;; clackup binds on its own handler thread, so a bind failure never
