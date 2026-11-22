@@ -529,7 +529,7 @@ owns this image's gateway — straight into its in-process dispatch."
       (wsd:send ws text)))
 
 (defun gateway-link-close (ws)
-  "Hang up WS: close the socket, or detach the in-process peer and forget
+  "Hang up WS: sever the socket, or detach the in-process peer and forget
 its subscriptions and rows views. NIL is quiet."
   ;; The in-process peer has no socket whose :close would close its rows
   ;; views, so they close here, as that handler closes a socket's.
@@ -537,7 +537,10 @@ its subscriptions and rows views. NIL is quiet."
     ((null ws) nil)
     ((gw-loopback-client-p ws)
      (stop-gw-peer ws) (remove-peer (car ws.subscriptions) ws) (close-rows-views ws))
-    (t (ignore-errors (wsd:close-connection ws)))))
+    ;; Severed, never closed: whoever hangs up -- a shell's teardown first --
+    ;; is not the socket's reader, and a close under that reader held every
+    ;; quit for the two seconds its kill is bounded by (SEVER-WEBSOCKET).
+    (t (ignore-errors (nlk:sever-websocket ws :grace-seconds 1)))))
 
 (defun enqueue-peer-frame (peer item &key session-id cursor cursor-present-p encoder attach
                                 &aux accepted)

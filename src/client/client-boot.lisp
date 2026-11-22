@@ -907,7 +907,12 @@ session the shell ended on, or NIL when it never attached."
                      (loop until (bt2:wait-on-semaphore
                                   closed :timeout *sync-keepalive-seconds*)
                            do (wsd:send-ping ws)))
-                   (ignore-errors (wsd:close-connection ws))
+                   ;; Severed, not closed off its reader: a connection this lap
+                   ;; gives up while it still reads -- an ensure that did not
+                   ;; land, a rejection -- held the next lap for the two
+                   ;; seconds the reader's kill is bounded by. One its reader
+                   ;; closed already is left as it is.
+                   (ignore-errors (nlk:sever-websocket ws :grace-seconds 1))
                    (when permanent
                      (return))
                    (unless stop

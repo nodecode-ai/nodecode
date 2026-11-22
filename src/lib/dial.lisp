@@ -509,9 +509,9 @@ keeps the stream alive."
 ;;; --- a client socket ended from another thread ----------------------------------
 ;;; A websocket-driver client reads on a thread of its own, and anything that
 ;;; drops a socket -- a stop, a supervisor that heard nothing, a replaced
-;;; line -- runs somewhere else. Every client that dials out over TLS needs
-;;; the one safe way to do that: the channels' platform sockets and the link
-;;; cell's line to its relay.
+;;; line, a shell on its way out -- runs somewhere else. Every client needs
+;;; the one safe way to do that: the channels' platform sockets, the link
+;;; cell's line to its relay, and a shell's own link to its gateway.
 
 (defun sever-websocket (ws &key (grace-seconds 3))
   "Disconnect WS from ANY thread without touching its stream state."
@@ -520,11 +520,16 @@ keeps the stream alive."
   ;; CLOSEs the transport stream under the parked reader — on a TLS client that
   ;; is SSL_free racing SSL_read (a libssl memory fault that
   ;; would corrupt malloc/OpenSSL locks and wedge process exit) — and then
-  ;; DESTROY-THREADs the reader. This sever instead shutdown(2)s the socket fd:
-  ;; the parked read wakes with EOF while every stream/SSL structure stays
-  ;; valid, and the reader runs wsd's own close path on itself, tearing the
-  ;; stream down exactly once on the thread that uses it. We wait up to
-  ;; GRACE-SECONDS for that self-close.
+  ;; DESTROY-THREADs the reader. On a plain socket that reader is left waiting
+  ;; on an fd that is no longer one: poll(2) answers "invalid" at once, SBCL
+  ;; takes that for "not ready" and asks again, and the reader spins there,
+  ;; inside libc, where no interruption may unwind it -- so the destroy waits
+  ;; out its whole bound (two seconds on every quit of a shell), on a number
+  ;; the next open may hand to something else. This sever instead shutdown(2)s
+  ;; the socket fd: the parked read wakes with EOF while every stream/SSL
+  ;; structure stays valid, and the reader runs wsd's own close path on
+  ;; itself, tearing the stream down exactly once on the thread that uses it.
+  ;; We wait up to GRACE-SECONDS for that self-close.
   ;;
   ;; With no live reader (never connected, reader already self-closed, or
   ;; called ON the reader) no concurrent stream user exists, so the plain
@@ -550,8 +555,10 @@ keeps the stream alive."
               (sb-alien:extern-alien
                "shutdown" (function sb-alien:int sb-alien:int sb-alien:int))
               fd 2)))
+         ;; Asked every millisecond: the reader closes within one of the
+         ;; shutdown, and a shell's quit is what waits here.
          (wait-until (lambda () (eq (wsd:ready-state ws) :closed))
-                     (deadline-after grace-seconds) 0.05)
+                     (deadline-after grace-seconds) 0.001)
          (unless (eq (wsd:ready-state ws) :closed)
            (warn "ws sever: reader did not close within ~as; abandoning"
                  grace-seconds))))))
