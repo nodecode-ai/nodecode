@@ -88,6 +88,40 @@
             "a name alone restarts the peripheral")
   (is (= 1 (switch-runs top)) "once"))
 
+(deftest control-cells-a-library-named-alone-restarts-the-peripheral-it-plugs-into
+    (with-switch-fixture (port base top))
+  ;; A channel is a library the channel kit runs: the kit's start reads the
+  ;; channel's section, and the channel has no start of its own. Its name
+  ;; alone answered 200 and restarted nothing, so a channel added to its
+  ;; section stayed unread until the kit was named instead.
+  (let ((kit (format nil "nl-sw-kit-~36r" (random (expt 36 6))))
+        (plug (format nil "nl-sw-plug-~36r" (random (expt 36 6))))
+        (loose (format nil "nl-sw-loose-~36r" (random (expt 36 6)))))
+    (write-peripheral-folder (nlk:shipped-cells-directory) kit :exports '("*starts*") :forms '("(defvar *starts* 0)")
+                             :start "(declare (ignore config)) (incf *starts*) nil" :depends-on (list base))
+    (dolist (library (list plug loose))
+      (write-cell-folder (nlk:shipped-cells-directory) library
+                         (list (cons "cell" (format nil "(defpackage #:~a (:use #:cl))" library)))
+                         :depends-on (and (string= library plug) (list kit))))
+    (dolist (name (list plug loose top))
+      (is-route (port :post "/api/gateway/cells" :body (switch-body name t)) 200 "on"))
+    (flet ((starts () (symbol-value (uiop:find-symbol* '#:*starts* (string-upcase kit)))))
+      (is (and (eq :library (nlk:cell-kind (nlk:find-cell plug))) (= 1 (starts))) "the plug is a library, its kit started once")
+      (with-gateway-http (port :post "/api/gateway/cells" :body (format nil "{\"name\": ~s}" plug) :status 200)
+        (is (equal (format nil "~a has no start of its own: restarted ~a, which runs it" plug kit) (nlk:json-value body :string "text")) "saying what it restarted for it"))
+      (is (= 2 (starts)) "the kit it plugs into was started again")
+      (is (and (= 1 (switch-runs base)) (= 1 (switch-runs top))) "the others run on")
+      (with-gateway-http (port :post "/api/gateway/cells" :body (format nil "{\"name\": ~s}" loose))
+        (is (= 400 status) "a library standing on nothing that starts is refused")
+        (is (search (format nil "~a is a library: it has no start of its own and stands on no folder that has one" loose) (nlk:json-value body :string "error" "message")) "saying so"))
+      (is (= 2 (starts)) "and nothing restarted")
+      (multiple-value-bind (report said) (nle::restart-cells plug)
+        (is (eql 0 (search (format nil "~a has no start of its own: restarted ~a" plug kit) report)) "the eval's report opens with it")
+        (is (equal said (subseq report 0 (position #\Newline report))) "and answers it as its second value"))
+      (multiple-value-bind (report said) (nle::restart-cells top)
+        (is (null said) "a peripheral named alone restarts itself, saying nothing more")
+        (is (search top report))))))
+
 (deftest control-cells-on-tells-every-shell-to-load-what-it-turned-on
     (with-switch-fixture (port base top))
   ;; A shell in another process loads the folders the organism turned on, as
