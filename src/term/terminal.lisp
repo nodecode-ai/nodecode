@@ -556,10 +556,10 @@ terminal or it reports no size."
       (ignore-errors
        #-win32
        (sb-alien:with-alien ((ws (sb-alien:struct winsize)))
-         (when (sb-unix:unix-ioctl fd ; TIOCGWINSZ
-                                   #+darwin #x40087468 #-darwin #x5413
-                                   (sb-alien:alien-sap ws))
-           (values (sb-alien:slot ws 'cols) (sb-alien:slot ws 'rows))))
+         (sb-posix:ioctl fd ; TIOCGWINSZ
+                         #+darwin #x40087468 #-darwin #x5413
+                         (sb-alien:addr ws))
+         (values (sb-alien:slot ws 'cols) (sb-alien:slot ws 'rows)))
        #+win32
        (sb-alien:with-alien ((info (sb-alien:struct console-screen-buffer-info)))
          (unless (zerop (%get-console-screen-buffer-info (console-handle fd)

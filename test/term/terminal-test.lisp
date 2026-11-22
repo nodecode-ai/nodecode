@@ -349,7 +349,7 @@ as a window title, the empty string included."
                       (sb-alien:slot ws 'nlt::cols) 37
                       (sb-alien:slot ws 'nlt::xpixel) 0
                       (sb-alien:slot ws 'nlt::ypixel) 0)
-                (sb-unix:unix-ioctl slave +tiocswinsz+ (sb-alien:alien-sap ws))
+                (sb-posix:ioctl slave +tiocswinsz+ (sb-alien:addr ws))
                 (setf ran t)
                 (multiple-value-bind (width height) (nlt:window-size slave)
                   (is (= 37 width) "the width the pty was given")
