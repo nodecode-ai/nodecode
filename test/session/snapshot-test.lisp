@@ -408,6 +408,44 @@ completed once BODY is done."
       (is (every (lambda (file) (stringp (gethash "patch" file))) files))
       (is (null (gethash "truncated" document))))))
 
+(deftest workspace-diff-document-keeps-a-dumps-head-and-counts-the-rest (with-git-workspace (store dir))
+  ;; One call that rewrote a 120,000-line file carried 12 MB of patch on its
+  ;; result, into history and every replay (#530): past the bounds the patch
+  ;; keeps its head and counts the lines it lost.
+  (%write-file dir "big.txt" (format nil "seed~%"))
+  (let ((pre (%anchored-capture store "pre")))
+    (%write-file dir "big.txt" (format nil "~{line ~d~%~}tail-marker~%" (loop for k below 5000 collect k)))
+    (let* ((document (nlk:workspace-diff-document store pre (nlk:capture-workspace-tree store)))
+           (big (%diff-entry "big.txt" (gethash "files" document)))
+           (patch (gethash "patch" big)))
+      (is (= 5001 (gethash "added" big)) "the stats stay whole")
+      (is (= nlk::*diff-patch-max-lines* (count #\Newline patch)) "the patch keeps its head")
+      (is (not (search "tail-marker" patch)))
+      (is (plusp (gethash "patch_cut" big)) "and counts what it cut")
+      (is (eq document (nlk:bound-diff-document document)) "bounding it again changes nothing"))))
+
+(deftest a-diff-document-past-its-budget-keeps-every-files-stats ()
+  ;; The budget runs out across files: the later ones keep their stats and
+  ;; what is left of it; past the file cap they are counts, so a header's
+  ;; totals stay whole.
+  (let* ((nlk::*diff-document-max-chars* 100)
+         (nlk::*diff-document-max-files* 3)
+         (patch (format nil "~{~a~%~}" (make-list 3 :initial-element (make-string 19 :initial-element #\x))))
+         (document (nlk:json-object "files" (coerce (loop for k below 5
+                                                          collect (nlk:json-object "path" (format nil "f~d" k)
+                                                                                   "added" 3 "removed" 1 "patch" patch))
+                                                    'vector)))
+         (bounded (nlk:bound-diff-document document))
+         (files (gethash "files" bounded)))
+    (is (= 3 (length files)))
+    (is (eq (aref (gethash "files" document) 0) (aref files 0)) "a file within the budget is kept as it was")
+    (is (= 40 (length (gethash "patch" (aref files 1)))) "the next keeps what was left, whole lines")
+    (is (= 1 (gethash "patch_cut" (aref files 1))))
+    (is (null (gethash "patch" (aref files 2))) "the budget spent, a file keeps its stats")
+    (is (= 3 (gethash "patch_cut" (aref files 2))))
+    (is (equal '(2 6 2) (mapcar (lambda (key) (gethash key bounded)) '("truncated" "truncated_added" "truncated_removed"))))
+    (is (= 5 (length (gethash "files" document))) "the document handed in is untouched")))
+
 (deftest snapshot-restore-roundtrips-modified-deleted-added (with-git-workspace (store dir))
   (%write-file dir "keep me.txt" "original with spaces" "doomed.txt" "will be deleted")
   (let ((before (%anchored-capture store "before")))

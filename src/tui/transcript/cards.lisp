@@ -8,7 +8,8 @@
 ;;; The line-diff document over a tool call's workspace bracket. The producer
 ;;; (snapshot.lisp WORKSPACE-DIFF-DOCUMENT) diffs the call's pre/post capture
 ;;; trees and ships bounded per-file unified patches in the result's display
-;;; metadata; this projection parses them back into the edit_diff.zig
+;;; metadata (BOUND-DIFF-DOCUMENT: a long patch keeps its head and counts the
+;;; rest in "patch_cut"); this projection parses them back into the edit_diff.zig
 ;;; document shape — right-aligned numbered gutters, removed-before-added
 ;;; hunks (git's own ordering), word-level emphasis on index-paired lines,
 ;;; "..." elision rows between hunks, per-file path headers carrying the
@@ -167,10 +168,14 @@ rows dim muted."
   "The Zig \" +N -M\" header stats over the lines every file the calls ROWS changed
 added and removed, onto LLINE -- nothing when they changed none."
   (when files
+    ;; The files a bounded document only counts count here too.
     (loop for file in files
           sum (or (json-value file :integer "added") 0) into added
           sum (or (json-value file :integer "removed") 0) into removed
-          finally (append-lline-run lline (format nil " +~d" added) :tone :diff-added)
+          finally (loop for row in rows
+                        do (incf added (or (json-value row.metadata :integer "workspace_diff" "truncated_added") 0))
+                           (incf removed (or (json-value row.metadata :integer "workspace_diff" "truncated_removed") 0)))
+                  (append-lline-run lline (format nil " +~d" added) :tone :diff-added)
                   (append-lline-run lline (format nil " -~d" removed) :tone :diff-removed))))
 
 (defparameter *diff-preview-lines* 12
@@ -182,31 +187,46 @@ long one does not bury the turn.")
   "Weak memo: a diff document file -> PARSE-UNIFIED-PATCH of its patch, so
 a run listing its edits on every frame parses each patch once.")
 
+(defparameter *diff-files-shown* 50
+  "How many changed files of one call stand under it, each with its diff;
+the rest are counted on one line.")
+
 (defun file-diff-llines (file key &aux (open (detail-open-p key)))
   "The diff of FILE, a diff document file, as lines under its header: all
 of it while the header (KEY) is clicked open, else its first
 *DIFF-PREVIEW-LINES* and a line counting the rest, which opens it too."
+  ;; The lines the document cut ("patch_cut") are counted with the rest; open,
+  ;; they stand as one line that opens nothing -- the capture trees hold
+  ;; them, not the document.
   (let* ((patch (json-value file :string "patch"))
+         (cut (max 0 (or (json-value file :integer "patch_cut") 0)))
          (entries (and patch (memoized (parsed-patch file) (patch) (parse-unified-patch patch))))
          (maximum (reduce #'max entries :key (lambda (entry) (or (diff-line-number entry) 0)) :initial-value 0))
          (gutter (if (plusp maximum) (length (format nil "~d" maximum)) 0))
          (shown (if open entries (subseq entries 0 (min (length entries) *diff-preview-lines*))))
          (hidden (- (length entries) (length shown))))
     (append (mapcar (lambda (entry) (diff-body-lline entry gutter)) shown)
-            (when (plusp hidden)
+            (when (plusp (+ hidden cut))
               (let ((more (make-lline :text (spaces (if (plusp gutter) (+ gutter 3) 2))
                                       :tone :muted :role :tool-cont)))
-                (append-lline-run more (format nil "… +~d line~:p" hidden) :tone :muted)
-                (dolist (span (lline-spans more)) (setf (mspan-link span) key))
+                (append-lline-run more (if (plusp hidden)
+                                           (format nil "… +~d line~:p" (+ hidden cut))
+                                           (format nil "… +~d line~:p not shown" cut))
+                                  :tone :muted)
+                (when (plusp hidden)
+                  (dolist (span (lline-spans more)) (setf (mspan-link span) key)))
                 (list more))))))
 
 (defun workspace-diff-llines (row)
   "File disclosures immediately below their tool, each showing the head of
 its diff and opening its own full diff (FILE-DIFF-LLINES)."
   (when-let (document (json-value row.metadata :object "workspace_diff"))
-    (let ((truncated (or (json-value document :integer "truncated") 0)))
+    (let* ((files (json-array document "files"))
+           (truncated (+ (or (json-value document :integer "truncated") 0)
+                         (max 0 (- (length files) *diff-files-shown*)))))
       (append
-       (loop for file across (json-array document "files")
+       (loop for file across files
+             for index below *diff-files-shown*
              when (hash-table-p file)
                nconc (let* ((path (or (json-value file :string "path") ""))
                             (key (list :diff (tool-row-expand-key row) path))
