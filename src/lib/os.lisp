@@ -1403,13 +1403,27 @@ closed) and empty otherwise, in DIRECTORY when given, under ENVIRONMENT
                      (and errors (list (spawn "run-bounded stderr" (%drain error-stream errors))))))
            (feeder (and input-stream (spawn "run-bounded stdin" (%feed input-stream input))))
            (waiter (spawn "run-bounded wait" (wait-for-child pid process)))
-           (status (%join-bounded waiter seconds)))
-      (with-cleanup ((when (%threads-released-p (if feeder (cons feeder readers) readers))
+           (status nil)
+           (settled nil))
+      (with-cleanup (;; The caller unwound before the child ended -- an interrupted
+                     ;; evaluation, a stopped turn, a terminated thread: the child's
+                     ;; tree goes with the call that started it. Left alone it ran
+                     ;; on with nobody to read it, holding whatever it had taken.
+                     ;; Only while the waiter lives, so the pid is still this
+                     ;; child's and never a reaped one the system handed on.
+                     (unless settled
+                       (when (bt2:thread-alive-p waiter)
+                         (kill-tree pid)
+                         (%join-bounded waiter 5))
+                       (when feeder (%join-bounded feeder 5))
+                       (dolist (reader readers) (%join-bounded reader 5)))
+                     (when (%threads-released-p (if feeder (cons feeder readers) readers))
                        (when output-stream (ignore-errors (close output-stream)))
                        (when error-stream (ignore-errors (close error-stream)))
                        (when input-stream (ignore-errors (close input-stream :abort t)))
                        ;; Closes the same streams once more: never under a parked thread.
                        (when process (ignore-errors (sb-ext:process-close process)))))
+        (setf status (%join-bounded waiter seconds))
         (when (eq status :timeout)
           (step-ran-out clipped)
           (kill-tree pid)
@@ -1418,6 +1432,7 @@ closed) and empty otherwise, in DIRECTORY when given, under ENVIRONMENT
         ;; drain is bounded so a stray grandchild cannot park the caller.
         (when feeder (%join-bounded feeder 5))
         (dolist (reader readers) (%join-bounded reader 5))
+        (setf settled t)
         (values (and output (get-output-stream-string output))
                 (and errors (get-output-stream-string errors))
                 status)))))
