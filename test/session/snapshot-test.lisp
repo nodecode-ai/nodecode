@@ -424,6 +424,37 @@ completed once BODY is done."
       (is (plusp (gethash "patch_cut" big)) "and counts what it cut")
       (is (eq document (nlk:bound-diff-document document)) "bounding it again changes nothing"))))
 
+(deftest a-patch-kept-as-its-bytes-is-cut-as-its-string-is ()
+  ;; A document read for its bound alone leaves each patch as the bytes it
+  ;; was written in (DECODE-JSON's KEEP), and the cut reads only the head: the
+  ;; same head and the same count of what it dropped, wherever the bounds
+  ;; fall -- inside a line, on a line's end, past an open last line.
+  (flet ((bytes (text) (nlk:json-verbatim (nlk:encode-json-octets text))))
+    (dolist (patch (list "" "x" (format nil "~%")
+                         (format nil "~{~a~%~}" '("one" "two é\\n" "" "four"))
+                         (format nil "~{~a~%~}open" '("one" "tw\"o" "three"))
+                         (format nil "~a~%tail" (make-string 40 :initial-element (code-char #x1f600)))))
+      (loop for max-lines from 0 to 5
+            do (loop for max-chars from 0 to (+ 2 (length patch))
+                     do (is (equal (multiple-value-list (nlk::cut-patch patch max-lines max-chars))
+                                   (multiple-value-list (nlk::cut-patch (bytes patch) max-lines max-chars)))
+                            (format nil "~s at ~d lines, ~d characters" patch max-lines max-chars)))))
+    (let* ((nlk::*diff-patch-max-lines* 3)
+           (nlk::*diff-document-max-chars* 60)
+           (patch (format nil "~{line ~d~%~}" (alexandria:iota 9)))
+           (files (lambda (patch-of)
+                    (nlk:json-object
+                     "files" (vector (nlk:json-object "path" "a" "added" 9 "patch" (funcall patch-of patch))
+                                     (nlk:json-object "path" "b" "patch" (funcall patch-of "short"))
+                                     (nlk:json-object "path" "c" "patch" (funcall patch-of patch)
+                                                      "patch_cut" 2)
+                                     (nlk:json-object "path" "d" "binary" t)))))
+           (whole (nlk:encode-json-object (nlk:bound-diff-document (funcall files #'identity))))
+           (read (nlk:bound-diff-document (funcall files #'bytes)))
+           (within (gethash "patch" (aref (gethash "files" read) 1))))
+      (is (equal whole (nlk:encode-json-object read)) "so a document is bounded as one read whole is")
+      (is (nlk:json-verbatim-p within) "and a patch within the bounds stays its bytes"))))
+
 (deftest a-diff-document-past-its-budget-keeps-every-files-stats ()
   ;; The budget runs out across files: the later ones keep their stats and
   ;; what is left of it; past the file cap they are counts, so a header's

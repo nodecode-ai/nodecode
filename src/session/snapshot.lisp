@@ -964,7 +964,20 @@ files keep their stats and as much patch as is left.")
 (defun cut-patch (patch max-lines max-chars)
   "PATCH's head: at most MAX-LINES lines and MAX-CHARS characters, ending at a
 line end. => (values HEAD DROPPED), DROPPED the lines the head lost, 0 and
-PATCH itself when it fits."
+all of PATCH when it fits. PATCH is a string, or one kept as its bytes (a
+JSON-VERBATIM, DECODE-JSON's KEEP): read as far as its head, counted past it."
+  (when (json-verbatim-p patch)
+    (return-from cut-patch
+      ;; One character past MAX-CHARS, and the head is cut where the whole
+      ;; string's would be: nothing further on moves a cut.
+      (multiple-value-bind (text offset) (json-string-head patch (1+ max-chars))
+        (multiple-value-bind (head dropped) (cut-patch text max-lines max-chars)
+          (if (= offset (1- (length (json-verbatim-octets patch))))
+              (values head dropped)
+              (multiple-value-bind (lines open) (json-string-lines patch offset)
+                (values head (+ (count #\Newline text :start (length head))
+                                lines
+                                (if open 1 0)))))))))
   (let ((end 0)
         (lines 0))
     (loop for newline = (position #\Newline patch :start end)
@@ -987,13 +1000,15 @@ PATCH itself when it fits."
   "DOCUMENT, a diff document, within the display bounds: DOCUMENT itself when
 it already is, else a fresh one -- DOCUMENT is never modified."
   ;; Idempotent: a bounded document answers itself. A file whose patch was
-  ;; cut before keeps its count and adds what this cut drops.
+  ;; cut before keeps its count and adds what this cut drops. A patch may be
+  ;; one its reader kept as its bytes (CUT-PATCH): a document read for its
+  ;; bound alone never decodes what the bound drops.
   (let* ((files (json-array document "files"))
          (kept (loop for file across files
                      for index from 0
                      while (< index *diff-document-max-files*)
-                     collect (let ((patch (json-value file :string "patch")))
-                               (if (null patch)
+                     collect (let ((patch (gethash "patch" file)))
+                               (if (not (or (stringp patch) (json-verbatim-p patch)))
                                    file
                                    (multiple-value-bind (head dropped)
                                        (cut-patch patch *diff-patch-max-lines*

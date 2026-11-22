@@ -620,6 +620,20 @@ release to UPDATE."
     (is (not (frame-dropped-p program model "fresh-session")))
     (is (frame-dropped-p program model "boot-session"))))
 
+(deftest a-frame-its-reader-decoded-is-dispatched-as-it-is ()
+  ;; The socket's reader decodes each frame to learn what it is, and the fold
+  ;; takes that frame: handed on as its text, every chunk of a replay and
+  ;; every delta of a turn was decoded twice (#530).
+  (let* ((model (detached-shell "boot-session"))
+         (program (nlt:make-program model))
+         (frame (nlk:decode-sync-message
+                 (nlk::encode-projection-event "boot-session" 1 "session_input_queue_snapshot_updated"
+                                               (nlk::make-json-object))))
+         (released nil))
+    (with-stubbed-fdefinition (nlk:decode-sync-message (text) (error "decoded again: ~a" text))
+      (nle::dispatch-inbound-frame program model frame :release (lambda () (setf released t))))
+    (is (not released) "dispatched: its ingress slot is UPDATE's to release")))
+
 (deftest gateway-client-folds-live-and-durable-tool-calls (let ((state (nle::initial-chat-state))))
   (flet ((delta (arguments)
            (nlk::make-json-object
@@ -2367,6 +2381,39 @@ had time to send anything more: a row sent twice arrives after the match."
     (is (> (length (first (recording-peer-ws-sent socket))) nlk:+max-sync-frame-bytes+))
     (nle::stop-gw-peer socket)))
 
+(deftest a-replay-cuts-its-chunks-by-what-their-payloads-weigh ()
+  ;; The frames are sized before any is encoded: three payloads of 6 MiB are
+  ;; two chunks in order, each within the bound and the last one final. Encoded
+  ;; first and halved when too long, every level of the halving encoded them
+  ;; all again (#530).
+  (let* ((socket (make-instance 'recording-peer-ws :require-masking nil))
+         (job (nle::make-gw-replay-job :session-id "gw-runs" :cursor 3))
+         (payload (nlk:json-verbatim
+                   (nlk:encode-json-octets (make-string (* 6 1024 1024) :initial-element #\x
+                                                                         :element-type 'base-char))))
+         (frames (loop for seq from 1 to 3
+                       collect (nlk:json-object "seq" seq
+                                                "event" (nlk:json-object "payload" payload))))
+         (past (nlk:json-object
+                "event" (nlk:json-object
+                         "payload" (nlk:json-verbatim
+                                    (make-array nlk:+max-sync-frame-bytes+
+                                                :element-type '(unsigned-byte 8)))))))
+    (flet ((runs (frames) (mapcar #'length (nle::replay-frame-runs frames))))
+      (is (equal '(2 1) (runs frames)))
+      (is (equal '(1 1 2) (runs (list* (first frames) past (rest frames)))) "one past the bound runs alone"))
+    (is (= 2 (nle::send-replay-chunk (install-silent-peer socket) job frames 0 t)))
+    (let ((sent (reverse (recording-peer-ws-sent socket))))
+      (is (every (lambda (chunk) (<= (length chunk) nlk:+max-sync-frame-bytes+)) sent))
+      (is (equal '((0 nil (1 2)) (1 t (3)))
+                 (loop for chunk in (mapcar #'nlk:decode-json sent)
+                       collect (list (nlk:json-value chunk :integer "payload" "replay_chunk_index")
+                                     (nlk:json-value chunk :boolean "payload" "replay_chunk_final")
+                                     (map 'list (lambda (frame) (gethash "seq" frame))
+                                          (nlk:json-value chunk :array
+                                                          "payload" "accumulated_frames")))))))
+    (nle::stop-gw-peer socket)))
+
 (deftest stop-gw-peer-reclaims-the-registry-entry (let* ((peer (list :reclaim-peer))
                                                          (state (install-silent-peer peer))))
   (is (eq state (nle::find-gw-peer-state peer)))
@@ -4043,6 +4090,49 @@ request."
             "metadata rides the durable payload"
             (let ((image (gethash "image" meta)))
               (is-shape image ("payload_kind" "base64") ("provider_executed" null))))))))
+
+(deftest a-replay-carries-a-dumped-workspace-diff-bounded (with-temp-gateway (port))
+  ;; A result from before its producer bounded the document it carries holds
+  ;; every patch whole (#530). The replay cuts it as the producer would now; a
+  ;; long result whose document is within the bounds, and one too short to be
+  ;; read at all, leave as the bytes the log keeps.
+  (ensure-durable-session "dump-replay")
+  (with-saved-globals ((nlk::*diff-patch-max-lines* 5)
+                       (nle::*replay-payload-read-octets* 2000))
+    (flet ((metadata (patch)
+             (nlk:json-object
+              "workspace_diff" (nlk:json-object
+                                "files" (vector (nlk:json-object "path" "big.txt" "added" 400
+                                                                  "removed" 0 "patch" patch)))
+              "calls" 1)))
+      (let ((turn (nlk:admit-turn "dump-replay" (nlk::make-durable-id "command") "rewrite it")))
+        (record-tool-use turn "dumped" "eval" "{}" "done"
+                         :metadata (metadata (format nil "~{line ~d é~%~}" (alexandria:iota 400))))
+        (record-tool-use turn "long" "eval" "{}" (make-string 3000 :initial-element #\r)
+                         :metadata (metadata (format nil "one~%")))
+        (record-tool-use turn "short" "eval" "{}" "done" :metadata (metadata (format nil "one~%")))
+        (nlk:complete-turn turn nil)))
+    (let ((kept (loop for stored in (nlk:events :session-id "dump-replay" :as :facts
+                                                :kind nlk::+kind-tool-result+)
+                      collect (eq (nlk::stored-fact-payload stored)
+                                  (nlk:json-verbatim-octets (nle::replay-payload stored))))))
+      (is (equal '(nil t t) kept) "only the dump is rewritten"))
+    (let* ((results (remove "turn.tool_result" (replay-frames (subscribed-frames port "dump-replay"))
+                            :test-not #'equal
+                            :key (lambda (frame) (nlk:json-value frame :string "event" "type"))))
+           (payload (lambda (call)
+                      (gethash "payload"
+                               (gethash "event" (wire-row call results "event" "payload" "call-id")))))
+           (file (lambda (call)
+                   (aref (nlk:json-array (funcall payload call) "metadata" "workspace_diff" "files") 0)))
+           (dumped (funcall file "dumped"))
+           (head (format nil "~{line ~d é~%~}" (alexandria:iota 5))))
+      (is (equal head (gethash "patch" dumped)) "the patch keeps its head")
+      (is-shape dumped ("patch_cut" = 395 "and counts what it lost") ("added" = 400) ("path" "big.txt"))
+      (is-shape (funcall payload "dumped")
+        ("result" "done" "what else the result carries rides as it was")
+        ((:integer "metadata" "calls") = 1))
+      (is (equal (format nil "one~%") (gethash "patch" (funcall file "long")))))))
 
 (deftest gateway-image-route-serves-the-file-a-look-names (with-temp-gateway (port))
   ;; A page cannot open the path a LOOK's image fact names, so the route

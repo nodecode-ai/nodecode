@@ -199,24 +199,62 @@ transport."
 session's replay (SEND-REPLAY-CHUNK); a fresh one for each gateway's start
 (START-CELLS-BEHIND-THE-LISTENER), so no replay an earlier one sent counts.")
 
+(defun replay-frame-octets (frame)
+  "About the octets FRAME, one accumulated frame, takes in a chunk: its
+payload's, which a replay knows (VISIBLE-EVENT-FRAMES lays the log's own
+bytes in), and an allowance for the envelope around them."
+  (let ((payload (gethash "payload" (gethash "event" frame))))
+    (+ 1024 (if (nlk:json-verbatim-p payload)
+                (length (nlk:json-verbatim-octets payload))
+                0))))
+
+(defun replay-frame-runs (frames)
+  "FRAMES in order as the runs one chunk each carries: as many frames as fit
+the frame bound by REPLAY-FRAME-OCTETS, a frame past the bound a run of its
+own."
+  (let ((bound (- nlk:+max-sync-frame-bytes+ 4096))
+        (runs '())
+        (run '())
+        (size 0))
+    (map nil (lambda (frame &aux (octets (replay-frame-octets frame)))
+               (when (and run (> (+ size octets) bound))
+                 (push (nreverse run) runs)
+                 (setf run '()
+                       size 0))
+               (push frame run)
+               (incf size octets))
+         frames)
+    (when run (push (nreverse run) runs))
+    (nreverse runs)))
+
 (defun send-replay-chunk (state job frames index final-p &optional tail-p)
-  "Send FRAMES as one bounded chunk, bisecting oversized chunks."
-  ;; Returns the next chunk index. A chunk of one fact goes whole even past
-  ;; the bound: the fact was admitted under the same bound and outgrew it only
-  ;; by its envelope, the socket itself reads to 64 MiB, and refusing it would
-  ;; leave the session unreadable to every shell that ever attaches.
-  (let ((json (replay-job-frame job (coerce frames 'vector) index final-p tail-p)))
-    (cond
-      ((or (<= (length json) nlk:+max-sync-frame-bytes+)
-           (<= (length frames) 1))
-       (gw-peer-send-text state json)
-       (when final-p (bt2:signal-semaphore *replay-sent-semaphore*))
-       (1+ index))
-      (t
-       (let* ((half (floor (length frames) 2))
-              (next (send-replay-chunk state job (subseq frames 0 half)
-                                       index nil tail-p)))
-         (send-replay-chunk state job (subseq frames half) next final-p tail-p))))))
+  "Send FRAMES as bounded chunks, the last one FINAL-P's."
+  ;; Returns the next chunk index. The frames are cut into chunks by what
+  ;; their payloads weigh, before any is encoded: encoded first and halved
+  ;; when too long, a page of 12 MB results was encoded seven times over on
+  ;; its way down to chunks of one (#530). The halving stays for a run whose
+  ;; envelopes outgrew their allowance. A chunk of one fact goes whole even
+  ;; past the bound: the fact was admitted under the same bound and outgrew it
+  ;; only by its envelope, the socket itself reads to 64 MiB, and refusing it
+  ;; would leave the session unreadable to every shell that ever attaches.
+  (let ((runs (replay-frame-runs frames)))
+    (if (rest runs)
+        (loop for (run . more) on runs
+              do (setf index (send-replay-chunk state job run index
+                                                (and final-p (null more)) tail-p))
+              finally (return index))
+        (let ((json (replay-job-frame job (coerce frames 'vector) index final-p tail-p)))
+          (cond
+            ((or (<= (length json) nlk:+max-sync-frame-bytes+)
+                 (<= (length frames) 1))
+             (gw-peer-send-text state json)
+             (when final-p (bt2:signal-semaphore *replay-sent-semaphore*))
+             (1+ index))
+            (t
+             (let* ((half (floor (length frames) 2))
+                    (next (send-replay-chunk state job (subseq frames 0 half)
+                                             index nil tail-p)))
+               (send-replay-chunk state job (subseq frames half) next final-p tail-p))))))))
 
 ;;; --- the first pass -----------------------------------------------------------
 ;;; A replay is the whole log, folded by the shell in order and painted at its
@@ -963,18 +1001,69 @@ seq, session and turn."
   (accumulated-frame session-id event.log-position event.turn-id event.kind
                      event.payload event.event-id event.command-id event.occurred-at))
 
+;;; A tool result recorded before its producer bounded the workspace diff it
+;;; carries (NLK:BOUND-DIFF-DOCUMENT) holds every patch whole: 12 MB on one
+;;; call that rewrote a 120,000-line file. Carried as the log keeps them,
+;;; fifteen of those were 166 MB for a shell to read and decode before its
+;;; first paint, each then cut to the screens it shows (#530). The cut is
+;;; made here: a result that long is read for its document alone -- every
+;;; other member found and carried as the bytes it is, no patch decoded past
+;;; its head -- and leaves as its producer would write it now.
+
+(defparameter *replay-payload-read-octets* (* 1024 1024)
+  "A tool result's payload longer than this is read before a replay carries
+it, for a workspace diff from before its producer bounded it: more than a
+bounded document and a bounded result come to.")
+
+(defun bounded-result-payload (octets)
+  "OCTETS, a tool result's payload, with its workspace diff within the
+display bounds, as a JSON-VERBATIM; NIL when it is within them already or
+carries none."
+  (let* ((payload (nlk:decode-json
+                   octets :whole t
+                   ;; Paths run innermost key first: the payload's members and
+                   ;; its metadata's stay bytes, but for the way to the
+                   ;; document, and so does each file's patch inside it.
+                   :keep (lambda (path)
+                           (cond ((null (rest path))
+                                  (or (equal (first path) "metadata") :verbatim))
+                                 ((null (cddr path))
+                                  (or (equal (first path) "workspace_diff") :verbatim))
+                                 ((equal path '("patch" "files" "workspace_diff" "metadata"))
+                                  :verbatim)
+                                 (t t)))))
+         (metadata (and (hash-table-p payload) (gethash "metadata" payload)))
+         (document (and (hash-table-p metadata) (gethash "workspace_diff" metadata)))
+         (bounded (and (hash-table-p document) (nlk:bound-diff-document document))))
+    (unless (eq bounded document)
+      (nlk:json-verbatim
+       (nlk:encode-json-octets
+        (copy-json-object payload "metadata"
+                          (copy-json-object metadata "workspace_diff" bounded)))))))
+
+(defun replay-payload (stored)
+  "STORED's payload as a replay or a history page carries it: the log's own
+bytes, or a long tool result's with its workspace diff bounded
+(BOUNDED-RESULT-PAYLOAD)."
+  (or (and (equal stored.kind nlk::+kind-tool-result+)
+           (> (length stored.payload) *replay-payload-read-octets*)
+           ;; One this cannot read leaves as the log keeps it.
+           (ignore-errors (bounded-result-payload stored.payload)))
+      (nlk:json-verbatim stored.payload)))
+
 (defun visible-event-frames (session-id facts visible-set)
   "FACTS, STORED-FACTs, as the frames a client folds, less the
 replay-suppressed evidence kinds and the turn-bearing facts off VISIBLE-SET's
 chain."
   ;; The replay pages and the history pager filter through this one predicate,
-  ;; and lay each payload into its frame as the log keeps it. Without this,
-  ;; a payload would be decoded into an instance only to be encoded back.
+  ;; and lay each payload into its frame as the log keeps it (REPLAY-PAYLOAD).
+  ;; Without this, a payload would be decoded into an instance only to be
+  ;; encoded back.
   (loop for stored in facts
         unless (or (nlk:event-kind-replay-suppressed-p stored.kind)
                    (not (nlk::turn-visible-p stored.turn-id visible-set)))
           collect (accumulated-frame session-id stored.log-position stored.turn-id
-                                     stored.kind (nlk:json-verbatim stored.payload)
+                                     stored.kind (replay-payload stored)
                                      stored.event-id stored.command-id
                                      stored.occurred-at)))
 

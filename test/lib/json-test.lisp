@@ -684,8 +684,18 @@ write's four values."
 
 ;;; --- a value already encoded, and the memo that keeps it -------------------
 
+(deftest encode-json-octets-never-reads-a-verbatim ()
+  ;; The bytes cross as they are -- these spell no text at all -- between
+  ;; the bytes of the text written around them.
+  (let ((raw (coerce #(34 255 254 34) 'nlk:octets)))
+    (is (equalp (concatenate 'vector
+                             (nlk:utf-8-octets "{\"a\":\"é\",\"v\":") raw
+                             (nlk:utf-8-octets ",\"z\":[") raw (nlk:utf-8-octets ",\"ü\"]}"))
+                (nlk:encode-json-octets
+                 (nlk:json-object "a" "é" "v" (nlk:json-verbatim raw)
+                                  "z" (vector (nlk:json-verbatim raw) "ü")))))))
+
 (deftest encode-json-octets-lays-a-verbatim-in-as-its-bytes ()
-  ;; A verbatim of 512 bytes or more is spliced in, not copied.
   (let* ((inner (nlk:json-object "k" "café" "n" (vector 1 2)
                                  "long" (make-string 600 :initial-element #\é)))
          (whole (nlk:json-object "a" inner "b" (vector inner "x" inner) "c" 3)))
@@ -772,6 +782,59 @@ write's four values."
     (is-shape value ("d" eq t "and the members after it read") ("b" = -150))
     (is (member '("x" "keep" "a") seen :test #'equal) "an array's elements share its path")
     (is (not (member "s" seen :key #'first :test #'string=)) "nothing inside a refused value is asked")))
+
+(deftest a-kept-decode-keeps-a-member-as-its-bytes-when-asked ()
+  ;; :VERBATIM: the member is found and never decoded -- an escaped quote, a
+  ;; bracket inside a string, a nested value, a number -- and the body it
+  ;; rides out in spells it as it was written.
+  (let* ((text "{\"a\":{\"s\":\"q\\\"]}\\u00e9\\n\",\"o\":{\"k\":[1,{\"x\":\"}\"}]},\"n\":-1.5e2},\"b\":2}")
+         (value (nlk:decode-json
+                 text :whole t
+                 :keep (lambda (path)
+                         (if (member (first path) '("s" "o" "n") :test #'string=) :verbatim t)))))
+    (flet ((bytes (key)
+             (nlk::utf-8-text (nlk:json-verbatim-octets (gethash key (gethash "a" value))))))
+      (is (equal "\"q\\\"]}\\u00e9\\n\"" (bytes "s")))
+      (is (equal "{\"k\":[1,{\"x\":\"}\"}]}" (bytes "o")))
+      (is (equal "-1.5e2" (bytes "n"))))
+    (is (= 2 (gethash "b" value)) "what follows it reads")
+    (is (equal text (nlk::utf-8-text (nlk:encode-json-octets value))))))
+
+(deftest a-string-kept-as-its-bytes-reads-as-far-as-its-head ()
+  ;; JSON-STRING-HEAD counts characters as the string spells them: an escape,
+  ;; a pair of them and the bytes of one character each count once.
+  (flet ((heads (text token)
+           (loop for count from 0 to (1+ (length text))
+                 do (multiple-value-bind (head offset) (nlk::json-string-head token count)
+                      (is (string= (subseq text 0 (min count (length text))) head)
+                          (format nil "~d of ~s" count text))
+                      (when (>= count (length text))
+                        (is (= offset (1- (length (nlk:json-verbatim-octets token))))
+                            (format nil "~s read whole ends at its closing quote" text)))))))
+    (let ((text (coerce (list #\a #\" #\\ #\Newline #\Tab #\é (code-char #x1f600)
+                              (code-char #x20ac) (code-char 7) #\z)
+                        'string)))
+      (heads text (nlk:json-verbatim (nlk:encode-json-octets text))))
+    (heads (coerce (list #\x (code-char #x1f600) #\y #\é #\/) 'string)
+           (nlk:json-verbatim (nlk:utf-8-octets "\"x\\ud83d\\uDE00y\\u00e9\\/\"")))
+    (heads "" (nlk:json-verbatim (nlk:utf-8-octets "\"\""))))
+  (let ((array (nlk:json-verbatim (nlk:utf-8-octets "[1]"))))
+    (is (signals-error nlk:json-refusal (nlk::json-string-head array 1)) "no string, no head")))
+
+(deftest a-string-kept-as-its-bytes-counts-the-lines-past-its-head ()
+  ;; A newline is \n or \u000a, and an escaped backslash before an n is
+  ;; neither; OPEN says the last character is something else.
+  (flet ((lines (token &optional (count 0))
+           (multiple-value-list
+            (nlk::json-string-lines token (nth-value 1 (nlk::json-string-head token count))))))
+    (let ((token (nlk:json-verbatim
+                  (nlk:encode-json-octets (format nil "one~%two\\nstill two~%three")))))
+      (is (equal '(2 t) (lines token)))
+      (is (equal '(1 t) (lines token 4)) "from past the first line")
+      (is (equal '(0 t) (lines token 20)) "from inside the last"))
+    (is (equal '(2 nil) (lines (nlk:json-verbatim (nlk:utf-8-octets "\"a\\u000Ab\\\\\\u000a\"")))))
+    (is (equal '(1 nil) (lines (nlk:json-verbatim (nlk:encode-json-octets (format nil "é~%"))))))
+    (is (equal '(0 nil) (lines (nlk:json-verbatim (nlk:utf-8-octets "\"\"")))))))
 
 (deftest a-revived-decode-puts-the-reader-s-record-in-each-member-s-place ()
   ;; JSON.parse's reviver: each kept member's value as it closes, innermost
