@@ -4864,15 +4864,34 @@ clear their refusals."
     (%stop-cells names))
   (refresh-attached-command-catalogs))
 
-(defun restart-cell-folder (name &aux (prefixed (format nil "nodecode-~a" name))
-                                      (record (or (nlk:find-cell name) (nlk:find-cell prefixed))))
-  "The folder RESTART-CELLS restarts for NAME: its own name, or the label
-/cells shows it by (`goal' for nodecode-goal). Refused, saying what is so,
-when NAME names a folder that is off, one this organism has not loaded, or
+(defun cell-runners (record &aux (path (nlk:cell-path record)))
+  "The loaded folders with a start of their own that RECORD's folder stands
+on, by name: what runs a library that has none -- the channel kit, whose
+start reads each channel's section and runs that channel."
+  (let ((needs (and path (ignore-errors (nlk::folder-depends-on (nlk::make-cell-folder path))))))
+    (loop for other in (nlk:cells)
+          when (and (not (eq other record))
+                    (eq (nlk:cell-state other) :loaded)
+                    (intersection (nlk:cell-systems other) needs :test #'string-equal)
+                    (nlk:note-cell-start other))
+            collect (nlk:cell-name other))))
+
+(defun restart-cell-folders (name &aux (prefixed (format nil "nodecode-~a" name))
+                                       (record (or (nlk:find-cell name) (nlk:find-cell prefixed))))
+  "The folders RESTART-CELLS restarts for NAME, its own name or the label
+/cells shows it by (`goal' for nodecode-goal): its own, or for a library
+with no start the folders it stands on that have one (CELL-RUNNERS). =>
+(values FOLDERS SAID), SAID the sentence naming those when they stand in
+for NAME's own. Refused, saying what is so, when NAME names a folder that
+is off, one this organism has not loaded, one with nothing to start, or
 none at all."
   ;; /cells drops the shipped prefix, and the refusal said `no cell folder
   ;; named goal' for a folder that runs: a lane read it as a bundled cell no
   ;; restart re-reads, and an off one read as missing too (2026-11-10).
+  ;; A channel is a library the channel kit runs, and its config.md says to
+  ;; restart after an edit: naming the channel stopped and started nothing
+  ;; and answered as if it had, so a channel added to its section stayed
+  ;; unread until the kit was named instead (2026-11-22).
   (let* ((folder (cond (record (nlk:cell-name record))
                        ((nlk:installed-cell-p name) name)
                        ((nlk:installed-cell-p prefixed) prefixed)
@@ -4892,35 +4911,52 @@ none at all."
           ((null record)
            (error "~a is on, but this organism has not loaded its folder: a restart of nodecode loads it"
                   (cell-label folder)))
-          (t folder))))
+          ((not (eq (nlk:cell-state record) :loaded))
+           (error "~a did not load, so nothing of it runs to restart: (cells) says why" (cell-label folder)))
+          ((nlk:note-cell-start record) (list folder))
+          (t
+           (let ((kind (nlk:cell-kind record)))
+             (if-let (runners (and (eq kind :library) (cell-runners record)))
+               (values runners
+                       (format nil "~a has no start of its own: restarted ~{~a~#[~; and ~:;, ~]~}, which run~:[s~;~] it"
+                               (cell-label folder) (mapcar #'cell-label runners) (rest runners)))
+               (error "~a is ~a: it has no start of its own~:[~; and stands on no folder that has one~], so nothing restarts"
+                      (cell-label folder)
+                      (case kind (:library "a library") (:layer "a layer") (:knowledge "a knowledge cell")
+                        (t (format nil "a ~(~a~)" kind)))
+                      (eq kind :library))))))))
 
-(defun restart-cells (&optional name &aux (names (and name (list (restart-cell-folder name)))))
-  "Stop every started peripheral — or the folder NAME names alone, by its
-own name or the label /cells shows (`goal' for nodecode-goal) — re-read the
-shared config, and start again: what the operator or the model says after a
-config change instead of relaunching."
+(defun restart-cells (&optional name)
+  "Stop every started peripheral — or the folders NAME restarts
+(RESTART-CELL-FOLDERS): its own, by its own name or the label /cells shows
+(`goal' for nodecode-goal), or the peripheral a library plugs into — re-read
+the shared config, and start again: what the operator or the model says
+after a config change instead of relaunching. => the report, and the
+sentence naming the folders restarted when they stand in for NAME's own."
   ;; The same stops and starts the gateway runs at its own boot and unwind;
   ;; nothing new in the lifecycle. Answers the report — the records' lines
   ;; with their start state, then the board — so the eval snippet shows what
   ;; happened. Blocks on the caller's thread for as long as the stops and
-  ;; starts take. A NAME that names no loaded folder is refused before
-  ;; anything stops (RESTART-CELL-FOLDER).
-  (bt2:with-lock-held (*cells-lifecycle-lock*)
-    (%stop-cells names)
-    ;; The reader's memo keys on size and mtime, second-granular: an edit
-    ;; the operator made within the second the memo was taken must still
-    ;; be what starts.
-    (setf *shared-config-memo* nil)
-    (%start-cells names))
-  (refresh-attached-command-catalogs)
-  (broadcast-model-changed)
-  ;; A folder named alone also says the commands it registered, so that its
-  ;; maker reads the proof here and does not go looking for the table.
-  (let ((commands (and names (loop for command in *registered-commands*
-                                   when (member (slash-command-owner command) names :test #'equal)
-                                     collect (slash-command-name command)))))
-    (format nil "~a~@[~%~{/~a~^, ~}: the commands it registered, each answering as typed~]"
-            (or (nlk:cells-report-text names) "no cells") commands)))
+  ;; starts take. A NAME with nothing to restart is refused before anything
+  ;; stops (RESTART-CELL-FOLDERS).
+  (multiple-value-bind (names said) (and name (restart-cell-folders name))
+    (bt2:with-lock-held (*cells-lifecycle-lock*)
+      (%stop-cells names)
+      ;; The reader's memo keys on size and mtime, second-granular: an edit
+      ;; the operator made within the second the memo was taken must still
+      ;; be what starts.
+      (setf *shared-config-memo* nil)
+      (%start-cells names))
+    (refresh-attached-command-catalogs)
+    (broadcast-model-changed)
+    ;; A folder named alone also says the commands it registered, so that its
+    ;; maker reads the proof here and does not go looking for the table.
+    (let ((commands (and names (loop for command in *registered-commands*
+                                     when (member (slash-command-owner command) names :test #'equal)
+                                       collect (slash-command-name command)))))
+      (values (format nil "~@[~a~%~]~a~@[~%~{/~a~^, ~}: the commands it registered, each answering as typed~]"
+                      said (or (nlk:cells-report-text names) "no cells") commands)
+              said))))
 
 (defun stop-clack-handler (handler &key (timeout 5))
   "Stop HANDLER's acceptor and wait for it to be gone."
