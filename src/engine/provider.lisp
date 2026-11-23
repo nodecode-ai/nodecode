@@ -5583,13 +5583,22 @@ functions below."
             ;; most a few KiB, so a tail that is not there or does not end costs a missed
             ;; reuse, never a wait; the one park this can take -- a chunk header split
             ;; across records -- is under the idle deadline, and its cut abandons the
-            ;; drain, never the completed stream.
+            ;; drain, never the completed stream. A tail that breaks is the same missed
+            ;; reuse: a provider that resets or closes the connection once its last
+            ;; event is out, before the terminal chunk, fails the read with a raw
+            ;; transport condition (SSL_ERROR_SYSCALL on a reset or a drop, END-OF-FILE
+            ;; after a close_notify) that no verdict above names, and it ended the turn
+            ;; with the answer already in hand. The socket stays unpooled: the cleanup closes it while the wrapper
+            ;; still holds it.
             (when-let (raw (and done buffer (provider-stream-socket stream)))
               (with-idle-cut (seconds)
                   (sb-sys:with-deadline (:seconds seconds)
-                    (loop repeat 4096
-                          while (and (open-stream-p raw) (ignore-errors (listen raw)))
-                          do (unless (read-byte stream nil nil) (return))))
+                    (handler-case
+                        (loop repeat 4096
+                              while (and (open-stream-p raw) (ignore-errors (listen raw)))
+                              do (unless (read-byte stream nil nil) (return)))
+                      (nlk:turn-cancelled-condition (c) (error c))
+                      (error () nil)))
                 nil))
             (when (and degraded-finish (plusp count))
               (let ((finish (funcall degraded-finish)))
