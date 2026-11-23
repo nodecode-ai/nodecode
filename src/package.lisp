@@ -130,6 +130,7 @@ renderer, the program loop.")
    #:verbs-text #:verb-help-text
    ;; --- profiles: several homes, one binary (organism/profile.lisp) ---
    #:profiles #:find-profile #:profile-create #:profile-delete #:profile-use
+   #:home-secret-file
    #:profile-switch #:*profile-switch-performer* #:*profile-switch-parked*
    #:export-home #:profile-export #:profile-import #:profile-install #:profile-update
    #:profile-command #:*profile-verbs* #:require-profile #:*wrapper-directory*

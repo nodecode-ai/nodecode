@@ -577,6 +577,27 @@ RUN-CHECKED, newest first: nothing runs and nothing is moved."
     (is (null (nlk:symlink-target (merge-pathnames "cells/tester-memory/" fork))) "and its memory")
     (is (equal '() (nlk::manifest-list fork "shared")) "and its manifest shares nothing")))
 
+#-win32
+(deftest a-profile-s-paste-into-shared-secrets-is-its-own-and-goes-with-it ()
+  ;; Two homes read one secrets/, but a bot token belongs to one of them: a
+  ;; paste in the new home is named for it, so it never replaces the file the
+  ;; source's config names, and deleting the profile takes it along.
+  (profile-test-seed-every-entry nlk:*home*)
+  (let* ((name "channels.discord.bot_token_file")
+         (theirs (merge-pathnames (format nil "secrets/~a" name) nlk:*home*))
+         (home (nlk:profile-create "sharing"))
+         (ours (let ((nlk:*home* home)) (nlk:home-secret-file name))))
+    (write-temp-file theirs "the source's bot")
+    (is (equal name (file-namestring (nlk:home-secret-file name))) "a home that owns its folder names it plainly")
+    (is (equal "profiles.sharing.channels.discord.bot_token_file" (file-namestring ours)) "a home sharing it names it for itself")
+    (write-temp-file ours "the profile's bot")
+    (is (equal "the source's bot" (uiop:read-file-string theirs)) "the source's token is its own still")
+    (let ((kept (merge-pathnames (format nil "secrets/~a" (file-namestring ours)) nlk:*home*)))
+      (is (probe-file kept) "the paste sits in the shared folder")
+      (nlk:profile-delete "sharing")
+      (is (null (probe-file kept)) "and goes with the profile")
+      (is (probe-file theirs) "leaving the source's"))))
+
 (deftest create-publishes-with-one-rename-and-leaves-no-half-home ()
   ;; The home is built in a dot-named staging tree and published with one
   ;; rename, so a shell or gateway walking profiles/ never sees a half-made

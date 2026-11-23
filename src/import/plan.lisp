@@ -1221,8 +1221,8 @@ adapter restarted so it reads the section as written."
                                                 left)))))
         (add-item plan "channels" (first refusal) :fact fact :reason (second refusal)
                   :destination destination)
-        (let* ((file (merge-pathnames (format nil "channels.~a.~a" platform token-field)
-                                      nle::*secrets-directory*))
+        (let* ((file (nlk:home-secret-file (format nil "channels.~a.~a" platform token-field)
+                                           nle::*secrets-directory*))
                (section (nlk:make-json-object token-field (namestring file)))
                (base (format nil "~d user~:p, ~d chat~:p, token in a 0600 file"
                              (length users) (length chats))))
