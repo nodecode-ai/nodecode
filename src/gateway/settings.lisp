@@ -75,10 +75,11 @@ then."
 (defun section-secret-file (section)
   "The file a secret SECTION takes by reference is kept in once pasted: one
 0600 file under *SECRETS-DIRECTORY*, named for the section and the pair's
-path member, which then names it."
-  (merge-pathnames (format nil "~a.~a" (nlk:section-key section.path)
-                           (nlk:section-field-name (cdr (nlk:section-secret-pair section))))
-                   *secrets-directory*))
+path member, which then names it -- and for this home too where the folder
+is shared with another (NLK:HOME-SECRET-FILE)."
+  (nlk:home-secret-file (format nil "~a.~a" (nlk:section-key section.path)
+                                (nlk:section-field-name (cdr (nlk:section-secret-pair section))))
+                        *secrets-directory*))
 
 (defun write-secret-file (file text)
   "TEXT into FILE, created 0600 under a 0700 directory; an existing file is
