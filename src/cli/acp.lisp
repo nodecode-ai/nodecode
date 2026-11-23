@@ -248,22 +248,36 @@ over the rungs its model admits, when it admits any."
               options)))
     (coerce (reverse options) 'vector)))
 
-(defun acp-available-commands (agent)
-  "The slash commands a prompt may run here, as ACP available commands."
+(defparameter +acp-unlisted-commands+ '("clear" "undo" "redo")
+  "The slash commands left out of the list a client offers: each moves the
+session's head, and a client has no way to be told its transcript no longer
+stands -- an editor's own new thread is its fresh start. Typed, they still run.")
+
+(defun acp-slash-catalog (agent)
+  "The slash commands the organism runs for a client, as ACP available
+commands, every one of them."
   (let ((catalog (ignore-errors (acp-http agent :get "/api/gateway/slash"))))
-    (map 'vector
+    (map 'list
          (lambda (entry)
            (json-object "name" (string-left-trim "/" (json-value entry :string "name"))
                         "description" (or (json-value entry :string "description") "")))
          (remove-if-not (lambda (entry) (json-value entry :text "name"))
                         (or (json-value catalog :array "commands") #())))))
 
+(defun acp-available-commands (agent)
+  "The slash commands a client offers its person (ACP-SLASH-CATALOG less
++ACP-UNLISTED-COMMANDS+)."
+  (coerce (remove-if (lambda (command)
+                       (member (gethash "name" command) +acp-unlisted-commands+ :test #'string=))
+                     (acp-slash-catalog agent))
+          'vector))
+
 (defun acp-slash-command-p (agent text)
   "Whether TEXT, a prompt, runs one of the organism's slash commands."
   (let ((name (and (plusp (length text)) (char= #\/ (char text 0))
                    (subseq text 1 (position-if (lambda (c) (member c '(#\Space #\Tab #\Newline))) text)))))
     (and (plusp (length name))
-         (find name (acp-available-commands agent)
+         (find name (acp-slash-catalog agent)
                :key (lambda (command) (gethash "name" command)) :test #'string=))))
 
 ;;; --- the links ------------------------------------------------------------------
@@ -511,9 +525,6 @@ characters]'), which the model reads and an editor's output pane need not."
        (acp-update agent session (acp-tool-call payload)))
       ((equal kind "turn.tool_result")
        (acp-update agent session (acp-tool-result payload)))
-      ((equal kind "session.title")
-       (when-let (title (json-value payload :text "title"))
-         (acp-update agent session (json-object "sessionUpdate" "session_info_update" "title" title))))
       ((member kind '("turn.completed" "turn.failed" "turn.cancelled") :test #'equal)
        (setf session.said "" session.thought "")
        (unless history
@@ -555,9 +566,16 @@ folded onto what was read after a resume, read for its cursor otherwise."
         (when-let (cursor (json-value frame :integer "cursor"))
           (setf session.cursor (max cursor (or session.cursor 0))))
         (setf session.replay :quiet)
+        (unless resumed
+          (acp-title agent session (json-value payload :text "title")))
         (when-let (id (shiftf session.opening nil))
           (acp-respond agent id (json-object "configOptions" (acp-config-options agent session)))
           (acp-commands-update agent session))))))
+
+(defun acp-title (agent session title)
+  "Tell the client SESSION's name is TITLE, when it names one."
+  (when title
+    (acp-update agent session (json-object "sessionUpdate" "session_info_update" "title" title))))
 
 (defun acp-commands-update (agent session)
   "Tell the client the slash commands SESSION's prompts may run."
@@ -666,6 +684,11 @@ is withdrawn."
       ((equal type "gateway_turn_command_result")
        (acp-on-result agent session (json-value payload :object "result")))
       ((equal type "organism.questions") (acp-on-questions agent session payload))
+      ;; A name is no fact of the stream (session.title is config evidence):
+      ;; the organism says it to every shell.
+      ((equal type "session_titled")
+       (when (equal session.id (json-value payload :string "session_id"))
+         (acp-title agent session (json-value payload :text "title"))))
       ;; The session's history moved under it (a checkpoint move elsewhere):
       ;; its whole replay again, read for its cursor -- what the client
       ;; already shows stays.
