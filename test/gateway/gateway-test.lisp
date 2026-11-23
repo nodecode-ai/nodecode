@@ -91,6 +91,21 @@ initializes its terminal widgets."
     (nle:stop-gateway)
     (is (not (bt2:thread-alive-p handler-thread)))))
 
+(deftest a-stopped-gateway-takes-back-what-it-started-for-itself (with-temp-gateway (port))
+  ;; A process outlives the gateway it served: a shell that hosted one, a test
+  ;; image. Left behind, the launch-image keeper is a thread nobody owns --
+  ;; SB-POSIX:FORK refuses with "Cannot fork with multiple threads running"
+  ;; -- and /index rides in every catalog read after.
+  (flet ((keeper ()
+           (find "launch-image-keeper" (sb-thread:list-all-threads) :key #'sb-thread:thread-name :test #'equal))
+         (index () (nle::find-registered-command "index")))
+    (is (keeper) "the keeper runs while the gateway serves")
+    (is (index) "and /index is in the catalog")
+    (nle:stop-gateway)
+    (is (null (keeper)) "a stopped gateway leaves no keeper thread")
+    (is (null nlk::*launch-image-keeper*) "nor a keeper the next start would take for running")
+    (is (null (index)) "nor /index in the catalog")))
+
 (defun ws-collect-frames (url &key (timeout 2) send-commands subscribe pid headers
                                    (token "test-token") await-subscription)
   "Open a WS client to URL, its upgrade carrying HEADERS and its connect TOKEN,
