@@ -5581,6 +5581,10 @@ back after them (NLK:TRIM-MEMORY)."
     (stop-clack-handler *gateway-handler*)
     (nlk:note-phase "stop update-poller")
     (ignore-errors (stop-update-poller))
+    ;; What SERVE-GATEWAY started for this gateway goes with it: the process
+    ;; may outlive it, and must not keep the keeper's thread or /index.
+    (ignore-errors (nlk::stop-launch-image-keeper))
+    (unregister-commands "index")
     (set-help-topic :image nil)
     (nlk:unhook 'nlk:source-loaded "gateway-loaded")
     (nlk:unhook 'nlk::note-hook-failure "gateway-notice")
