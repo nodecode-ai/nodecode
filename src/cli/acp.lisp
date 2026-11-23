@@ -504,7 +504,9 @@ characters]'), which the model reads and an editor's output pane need not."
       (when (and (null (getf prompt :turn)) turn
                  (equal (getf prompt :command) (json-value fact :string "event" "metadata" "command_id")))
         (setf (getf (acp-session-prompt session) :turn) turn)
-        (pushnew turn session.turns :test #'equal)))
+        (pushnew turn session.turns :test #'equal)
+        (when (getf prompt :cancelled)
+          (ignore-errors (send-cancel-turn session.ws session.id turn)))))
     (cond
       ((equal kind "turn.started")
        (setf session.begun t))
@@ -714,10 +716,15 @@ is withdrawn."
 
 (defun acp-open (agent session)
   "Register SESSION and attach its link, its replay read as SESSION.REPLAY says."
-  (bt2:with-lock-held (agent.lock)
-    (when-let (old (gethash session.id agent.sessions))
-      (acp-detach old))
-    (setf (gethash session.id agent.sessions) session))
+  (let ((old (bt2:with-lock-held (agent.lock)
+               (prog1 (gethash session.id agent.sessions)
+                 (setf (gethash session.id agent.sessions) session)))))
+    ;; Opened again: the link before goes, and the prompt it carried is
+    ;; answered, since its turn's end now reaches the new link alone.
+    (when old
+      (when-let (prompt (shiftf (acp-session-prompt old) nil))
+        (acp-respond agent (getf prompt :id) (json-object "stopReason" "cancelled")))
+      (acp-detach old)))
   (handler-case (acp-attach agent session)
     (gateway-unreached (condition)
       (bt2:with-lock-held (agent.lock) (remhash session.id agent.sessions))
@@ -865,9 +872,12 @@ the turn's text."
         (let ((answer (acp-http agent :post "/api/gateway/slash"
                                 (json-object "line" line "session_id" session.id))))
           (acp-chunk agent session "agent_message_chunk" (or (json-value answer :string "text") ""))
-          (when (bt2:with-lock-held (agent.lock)
-                  (when (equal :slash (getf session.prompt :turn)) (setf session.prompt nil) t))
-            (acp-respond agent id (json-object "stopReason" "end_turn"))))
+          (when-let (prompt (bt2:with-lock-held (agent.lock)
+                              (let ((prompt session.prompt))
+                                (when (equal :slash (getf prompt :turn))
+                                  (setf session.prompt nil)
+                                  prompt))))
+            (acp-respond agent id (json-object "stopReason" (if (getf prompt :cancelled) "cancelled" "end_turn")))))
       (acp-refusal (refusal)
         (bt2:with-lock-held (agent.lock) (setf session.prompt nil))
         (acp-respond-error agent id (acp-refusal-code refusal) (acp-refusal-message refusal)))))
