@@ -136,7 +136,9 @@ order."
            ;; Drain frames until TIMEOUT with no new arrival.
            (frames (loop for frame = (sb-concurrency:receive-message inbox :timeout timeout)
                          while frame collect frame)))
-      (ignore-errors (wsd:close-connection ws))
+      ;; Severed, as a shell hangs up: a close from here waited out the two
+      ;; seconds its reader's kill is bounded by, in every test that collects.
+      (ignore-errors (nlk:sever-websocket ws :grace-seconds 1))
       (ignore-errors (bt2:join-thread conn-thread))
       (nconc frames (sb-concurrency:receive-pending-messages inbox)))))
 
@@ -1368,7 +1370,7 @@ it is still open SECONDS later."
     (let ((thread (nlk:spawn "quiet-socket" (ignore-errors (wsd:start-connection ws)))))
       (sleep seconds)
       (prog1 (and (not closed) (eq :open (wsd:ready-state ws)))
-        (ignore-errors (wsd:close-connection ws))
+        (ignore-errors (nlk:sever-websocket ws :grace-seconds 1))
         (ignore-errors (bt2:join-thread thread))))))
 
 (deftest a-quiet-socket-lives-on-the-gateways-pings ()
@@ -1382,6 +1384,33 @@ it is still open SECONDS later."
       (setf nle::*gateway-ping-seconds* 0.3)
       (with-temp-gateway (port)
         (is (quiet-socket-open-after port 3) "pinged, it stays open")))))
+
+(deftest a-socket-link-hung-up-off-its-reader-is-not-waited-out (with-temp-gateway (port))
+  ;; Given a shell's socket to its gateway, the reader parked on a link gone
+  ;; quiet after the challenge,
+  ;; When another thread hangs it up, as the shell's teardown does on a quit,
+  ;; Then the reader reads the end and closes itself. Closed under its read
+  ;; instead, it was killed there, and the hang-up waited out the two seconds
+  ;; that kill is bounded by: every quit of a shell took them.
+  (let ((ws (nle::gateway-client port "test-token"))
+        (challenged (bt2:make-semaphore :name "challenged")))
+    (wsd:on :message ws (lambda (message)
+                          (declare (ignore message))
+                          (bt2:signal-semaphore challenged)))
+    (wsd:start-connection ws)
+    (is (bt2:wait-on-semaphore challenged :timeout 5) "the gateway challenges the link")
+    (let ((reader (bt2:thread-native-thread (websocket-driver.ws.client::read-thread ws))))
+      ;; Back in its read: the handler above ran on the reader itself.
+      (sleep 0.05)
+      (let* ((began (get-internal-real-time))
+             (hung-up (progn (nle::gateway-link-close ws) (get-internal-real-time)))
+             (seconds (/ (- hung-up began) internal-time-units-per-second))
+             ;; What its function answered, or :KILLED for a reader that was
+             ;; aborted or that reads on.
+             (ended (sb-thread:join-thread reader :timeout 2 :default :killed)))
+        (is (eq :closed (wsd:ready-state ws)) "the link is closed when the hang-up returns")
+        (is (< seconds 1) (format nil "the hang-up waits for no kill (~,2f s)" seconds))
+        (is (null ended) "the reader ended by itself, neither killed nor left reading")))))
 
 (deftest a-route-answers-its-path-and-the-gateways-own-routes-win (with-temp-gateway (port))
   (flet ((text (path)
