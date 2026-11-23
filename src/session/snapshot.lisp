@@ -874,15 +874,21 @@ lists in tree order; a path the tree does not hold adds nothing."
 
 ;;; --- workspace diff documents ---------------------------------------------
 ;;; The machine-readable delta between two captured trees: per-file numstat
-;;; plus complete git-owned unified patches. The capture facts' tree shas
-;;; remain the durable authority; disclosure never sheds large/later patches.
+;;; plus git-owned unified patches. The capture facts' tree shas remain the
+;;; durable authority -- undo and restore read the trees, never the document.
+;;; The document a tool result carries is display metadata, bounded
+;;; (BOUND-DIFF-DOCUMENT): it rides the fact into history, every replay and
+;;; every client, and one call that rewrote a 120,000-line file once carried
+;;; 12 MB of patch on a single fact (#530).
 
 (defun workspace-diff-document (store pre-tree post-tree)
-  "The complete JSON diff document between two captured trees, or NIL when
-the trees are equal, nothing changed, or the derivation degrades."
+  "The JSON diff document between two captured trees, bounded for display
+(BOUND-DIFF-DOCUMENT), or NIL when the trees are equal, nothing changed, or
+the derivation degrades."
   (when store
-    (diff-document (lambda (args) (run-snapshot-git store args :with-work-tree nil))
-                   pre-tree post-tree)))
+    (when-let (document (diff-document (lambda (args) (run-snapshot-git store args :with-work-tree nil))
+                                       pre-tree post-tree))
+      (bound-diff-document document))))
 
 (defun diff-document (git pre-tree post-tree)
   "The complete JSON diff document between two trees -- or commits -- that
@@ -933,6 +939,103 @@ derivation degrades."
                                :opt "patch" attach)
                              files)))
             (json-object "files" (coerce (nreverse files) 'vector))))))))
+
+;;; A reader opens a file's diff to read it: past a screenful of screens the
+;;; patch is a dump, and a dump on every replay. Every file keeps its stats
+;;; and the patch keeps its head, cut at a line; "patch_cut" counts the lines
+;;; it lost, so a reader says how much it is not showing. The files past
+;;; *DIFF-DOCUMENT-MAX-FILES* -- a checkout, a vendored tree -- leave as
+;;; counts: "truncated" files, "truncated_added" and "truncated_removed"
+;;; lines, so the totals a header shows stay whole.
+
+(defparameter *diff-patch-max-lines* 2000
+  "Lines of one file's patch a diff document keeps.")
+
+(defparameter *diff-patch-max-chars* (* 128 1024)
+  "Characters of one file's patch a diff document keeps.")
+
+(defparameter *diff-document-max-chars* (* 512 1024)
+  "Characters of patch a diff document keeps over all its files: the later
+files keep their stats and as much patch as is left.")
+
+(defparameter *diff-document-max-files* 2000
+  "Files a diff document lists; the rest are counted.")
+
+(defun cut-patch (patch max-lines max-chars)
+  "PATCH's head: at most MAX-LINES lines and MAX-CHARS characters, ending at a
+line end. => (values HEAD DROPPED), DROPPED the lines the head lost, 0 and
+all of PATCH when it fits. PATCH is a string, or one kept as its bytes (a
+JSON-VERBATIM, DECODE-JSON's KEEP): read as far as its head, counted past it."
+  (when (json-verbatim-p patch)
+    (return-from cut-patch
+      ;; One character past MAX-CHARS, and the head is cut where the whole
+      ;; string's would be: nothing further on moves a cut.
+      (multiple-value-bind (text offset) (json-string-head patch (1+ max-chars))
+        (multiple-value-bind (head dropped) (cut-patch text max-lines max-chars)
+          (if (= offset (1- (length (json-verbatim-octets patch))))
+              (values head dropped)
+              (multiple-value-bind (lines open) (json-string-lines patch offset)
+                (values head (+ (count #\Newline text :start (length head))
+                                lines
+                                (if open 1 0)))))))))
+  (let ((end 0)
+        (lines 0))
+    (loop for newline = (position #\Newline patch :start end)
+          while (and newline (< lines max-lines) (<= (1+ newline) max-chars))
+          do (setf end (1+ newline))
+             (incf lines))
+    ;; The last line may lack its newline: it fits whole or not at all.
+    (when (and (< lines max-lines) (< end (length patch))
+               (null (position #\Newline patch :start end))
+               (<= (length patch) max-chars))
+      (setf end (length patch)))
+    (if (= end (length patch))
+        (values patch 0)
+        (values (subseq patch 0 end)
+                (+ (count #\Newline patch :start end)
+                   (if (char= #\Newline (char patch (1- (length patch)))) 0 1))))))
+
+(defun bound-diff-document (document &aux (budget *diff-document-max-chars*)
+                                          (changed nil))
+  "DOCUMENT, a diff document, within the display bounds: DOCUMENT itself when
+it already is, else a fresh one -- DOCUMENT is never modified."
+  ;; Idempotent: a bounded document answers itself. A file whose patch was
+  ;; cut before keeps its count and adds what this cut drops. A patch may be
+  ;; one its reader kept as its bytes (CUT-PATCH): a document read for its
+  ;; bound alone never decodes what the bound drops.
+  (let* ((files (json-array document "files"))
+         (kept (loop for file across files
+                     for index from 0
+                     while (< index *diff-document-max-files*)
+                     collect (let ((patch (gethash "patch" file)))
+                               (if (not (or (stringp patch) (json-verbatim-p patch)))
+                                   file
+                                   (multiple-value-bind (head dropped)
+                                       (cut-patch patch *diff-patch-max-lines*
+                                                  (min *diff-patch-max-chars* budget))
+                                     (decf budget (length head))
+                                     (if (zerop dropped)
+                                         file
+                                         (progn
+                                           (setf changed t)
+                                           (let ((copy (copy-json-object
+                                                        file "patch_cut"
+                                                        (+ dropped (or (json-value file :integer "patch_cut") 0)))))
+                                             (if (plusp (length head))
+                                                 (setf (gethash "patch" copy) head)
+                                                 (remhash "patch" copy))
+                                             copy))))))))
+         (rest (nthcdr (length kept) (coerce files 'list))))
+    (if (and (not changed) (null rest))
+        document
+        (let ((copy (copy-json-object document "files" (coerce kept 'vector))))
+          (when rest
+            (flet ((more (key amount)
+                     (setf (gethash key copy) (+ amount (or (json-value document :integer key) 0)))))
+              (more "truncated" (length rest))
+              (more "truncated_added" (loop for file in rest sum (or (json-value file :integer "added") 0)))
+              (more "truncated_removed" (loop for file in rest sum (or (json-value file :integer "removed") 0)))))
+          copy))))
 
 (defmacro with-session-snapshot-store ((store session-id) &body body)
   "Run BODY with STORE bound to SESSION-ID's open shadow store, else NIL."

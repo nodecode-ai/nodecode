@@ -2189,11 +2189,12 @@ target and its first prompt -- carried over."
 (10 s at most) until it has run there: how a thread changes what the loop
 reads without racing it. A model with no program, a test's, is called here."
   ;; NLT:SEND drops a message while the program is not running yet, so the
-  ;; call waits for it as POST-SHELL-NOTICE does.
+  ;; call waits for it as POST-SHELL-NOTICE does: 5 s at most, looked at
+  ;; often, since a launch's session waits here on a gateway already serving.
   (if (null program)
       (funcall function model)
       (progn
-        (loop repeat 100 until program.running do (sleep 0.05))
+        (loop repeat 1000 until program.running do (sleep 0.005))
         (nlt:send program (make-instance 'off-loop-msg
                                          :value nil
                                          :continuation (lambda-ignoring (model value)

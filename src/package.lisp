@@ -371,6 +371,7 @@ renderer, the program loop.")
    ;; --- workspace snapshots (snapshot.lisp) ---
    #:ensure-snapshot-store #:git-available-p #:capture-workspace-tree
    #:open-workspace-bracket #:close-workspace-bracket #:workspace-diff-document
+   #:bound-diff-document
    #:anchor-tree #:changed-paths #:restore-paths #:hash-in-tree #:repack-store
    #:record-workspace-capture #:checkpoint-capture-boundary
    #:close-detached-workspace-window #:turn-boundary-captured-p
