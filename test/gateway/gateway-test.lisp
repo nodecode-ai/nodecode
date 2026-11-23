@@ -2021,6 +2021,46 @@ for a field left to the gateway, each under its own WHY."
           (is (null asked) "welcome.note off asks the model nothing")
           (is (null said) "and says nothing"))))))
 
+(deftest the-boot-note-waits-for-the-start-of-the-cell-that-serves-its-model (let ((said '()) (warned '())))
+  ;; Every home on claude-code logged `the organism's note went unsaid:
+  ;; provider claude-code is not one this box knows' at its boot, and said no
+  ;; note: the note's side call ran while the cell that brings the lane was
+  ;; still to start. The side call waits for that start, as a turn does.
+  (let ((cell (nlk::make-cell :name "nl-cell" :kind :peripheral :start (lambda (config) config nil)))
+        (provider nle::*provider*)
+        (model nle::*model*))
+    (with-saved-globals (nle::*organism-note* (nlk::*cells* (list cell)) (nlk::*cells-starting* :a-start-pass)
+                         (nle::*provider* "nl-cell-lane") (nle::*auxiliary-model* nil))
+      ;; The lane is known once the cell has started, and not before.
+      (with-stubbed-fdefinitions ((nlk::cell-served-providers (served) (and (eq served cell) '("nl-cell-lane")))
+                                  (nle::selection-refusal (lane) lane
+                                    (and (not (nlk:cell-started-p cell)) "no lane yet"))
+                                  (nle::snapshot-effective-provider-config (&optional (lane nle::*provider*) (id nle::*model*))
+                                    id
+                                    (if (and (equal lane "nl-cell-lane") (not (nlk:cell-started-p cell)))
+                                        (error 'nle::provider-config-error
+                                               :detail "provider nl-cell-lane is not one this box knows")
+                                        (funcall original provider model)))
+                                  (nle::broadcast-organism (kind payload &key session-id)
+                                    (push (cons kind (nlk:json-value payload :string "text")) said)))
+        (with-provider-stub (nil (wire-message "assistant" :content "Back, and none the worse."))
+          ;; The cell starts 0.3 s into the note.
+          (let ((start (get-internal-real-time))
+                (starter (bt2:make-thread (lambda () (sleep 0.3) (setf (nlk:cell-started-p cell) t))
+                                          :name "cell-started")))
+            (let* ((waited nil)
+                   (words (unwind-protect
+                               (prog1 (handler-bind ((warning (lambda (condition)
+                                                                (push (princ-to-string condition) warned)
+                                                                (muffle-warning condition))))
+                                        (nle::say-note "nodecode is running again after 5s away."))
+                                 (setf waited (- (get-internal-real-time) start)))
+                            (bt2:join-thread starter))))
+              (is (null warned) "no warning says the note went unsaid")
+              (is (equal "Back, and none the worse." words) "the note is said once the cell has started")
+              (is (>= waited (* 0.25 internal-time-units-per-second)) "its side call waited for that start"))
+            (is (equal '(("organism.note" . "Back, and none the worse.")) said))))))))
+
 (deftest a-boot-that-picks-up-a-cut-off-turn-says-it-is-back (let ((requests '())))
   ;; If nodecode is cut off and returns, it should brief the user up, that
   ;; it is back and just brief quickly. When a restart for an update cuts a
