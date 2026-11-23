@@ -96,13 +96,12 @@ has. BODY's end closes its stdin."
             (is-present answer "the prompt is answered once its turn ends"
               (is (equal "end_turn" (nlk:json-value answer :string "result" "stopReason")))))
           (let* ((all (messages))
-                 (answered (position 3 all :key (lambda (m) (and (null (gethash "method" m)) (gethash "id" m))))))
+                 (answered (position 3 all :key (lambda (m) (and (null (gethash "method" m)) (gethash "id" m)))))
+                 (chunks-after (remove-if (lambda (message) (< (position message all) answered))
+                                          (remove-if-not (lambda (m) (equal "session/update" (gethash "method" m))) all))))
             (is (equal "pong" (acp-chunks-text all "agent_message_chunk")))
             (is (null (acp-updates all "user_message_chunk")))
-            (is (every (lambda (update) (< (position update all :key (lambda (m) (nlk:json-value m :object "params" "update")))
-                                         answered))
-                       (acp-updates all "agent_message_chunk"))
-                "every chunk comes before the answer")))))))
+            (is (null (acp-updates chunks-after "agent_message_chunk")) "every chunk comes before the answer")))))))
 
 (deftest acp-a-tool-call-opens-and-closes-in-the-client ()
   (with-temp-gateway (port)
@@ -148,16 +147,15 @@ has. BODY's end closes its stdin."
           (let* ((all (messages))
                  (answered (position answer all)))
             (is (equal "ping" (acp-chunks-text (subseq all 0 answered) "user_message_chunk")))
-            (is (equal "pong" (acp-chunks-text (subseq all 0 answered) "agent_message_chunk"))
-                "the history comes before the answer")))
+            (let ((before (subseq all 0 answered)))
+              (is (equal "pong" (acp-chunks-text before "agent_message_chunk")) "the history comes before the answer"))))
         (send (acp-call 3 "session/list" (nlk:json-object "cwd" (namestring (fixture-workspace)))))
         (let ((listed (await (:timeout 10) (acp-answer (messages) 3))))
-          (is (find id (nlk:json-value listed :array "result" "sessions")
-                    :key (lambda (row) (gethash "sessionId" row)) :test #'equal)
-              "session/list lists it under its folder"))
+          (let ((ids (map 'list (lambda (row) (gethash "sessionId" row)) (nlk:json-value listed :array "result" "sessions"))))
+            (is (member id ids :test #'equal) "session/list lists it under its folder")))
         (send (acp-call 4 "session/load" (nlk:json-object "sessionId" "s-none" "cwd" "/" "mcpServers" #())))
-        (is (eql -32002 (nlk:json-value (await (:timeout 10) (acp-answer (messages) 4)) :integer "error" "code"))
-            "an unknown session is not found")))))
+        (let ((code (nlk:json-value (await (:timeout 10) (acp-answer (messages) 4)) :integer "error" "code")))
+          (is (eql -32002 code) "an unknown session is not found"))))))
 
 (deftest acp-a-question-is-the-clients-permission-prompt ()
   ;; What the organism asks whoever watches (the guard's ask) reaches the
@@ -186,6 +184,20 @@ has. BODY's end closes its stdin."
                                                                                         "optionId" "Allow"))))))
         (bt2:join-thread asker)
         (is (equal '("Allow" :answered) (car asked)) "the option picked is the answer")))))
+
+(deftest acp-a-name-given-elsewhere-reaches-the-client ()
+  ;; A session's name is no fact of its stream: the organism says it to every
+  ;; shell, and the client is told it as a session_info_update.
+  (with-gateway-session (port "acp-named" :cwd (namestring (fixture-workspace)))
+    (with-acp (port send messages outcome)
+      (send (acp-call 1 "session/resume" (nlk:json-object "sessionId" "acp-named"
+                                                          "cwd" (namestring (fixture-workspace))
+                                                          "mcpServers" #())))
+      (is (await (:timeout 10) (acp-answer (messages) 1)))
+      (nle::set-session-title "acp-named" "Renamed elsewhere")
+      (let ((update (await (:timeout 10) (first (acp-updates (messages) "session_info_update")))))
+        (is-present update "the name reaches the client"
+          (is (equal "Renamed elsewhere" (gethash "title" update))))))))
 
 (deftest acp-refuses-what-it-cannot-do-in-json-rpc-terms ()
   (with-temp-gateway (port)
