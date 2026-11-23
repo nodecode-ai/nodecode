@@ -3603,6 +3603,12 @@ message, no tools and no history — the answer's own text."
   ;; a turn, but billed all the same, so /usage counts it.
   (labels ((ask ()
              (with-auxiliary-model (:session-id session-id)
+               ;; A provider a cell serves has no lane until the cells start,
+               ;; behind a cold boot's listener: the boot's own note, on
+               ;; claude-code, went unsaid at every start, `provider
+               ;; claude-code is not one this box knows'. It waits, as a turn
+               ;; does (AWAIT-CELLS-STARTING).
+               (await-cells-starting *provider*)
                (let* ((*max-completion-tokens* (or max-tokens *max-completion-tokens*))
                       (context (compile-turn-context
                                 (make-context-request
