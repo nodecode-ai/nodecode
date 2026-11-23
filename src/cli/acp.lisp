@@ -452,9 +452,18 @@ first line."
                  "status" "in_progress"
                  "rawInput" (if (hash-table-p arguments) arguments text))))
 
+(defun acp-result-text (result)
+  "RESULT, a tool's answer to the model, as a person reads it: without the
+size line an eval's printed output opens with (`[text: 3 lines, 95
+characters]'), which the model reads and an editor's output pane need not."
+  (let ((newline (position #\Newline result)))
+    (if (and newline (uiop:string-prefix-p "[text: " result) (char= #\] (char result (1- newline))))
+        (subseq result (1+ newline))
+        result)))
+
 (defun acp-tool-result (payload)
   "The tool_call_update a turn.tool_result PAYLOAD closes its call with."
-  (let* ((result (or (json-value payload :string "result") ""))
+  (let* ((result (acp-result-text (or (json-value payload :string "result") "")))
          (shown (if (> (length result) *acp-tool-output-chars*)
                     (format nil "~a~%... (~:d more characters)"
                             (subseq result 0 *acp-tool-output-chars*)
