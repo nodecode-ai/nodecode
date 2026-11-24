@@ -870,18 +870,26 @@ else NIL."
       key)))
 
 (defun start-launch-image-keeper ()
-  "Keep this home's launch image in step with the folder, on a thread of its
-own, for as long as this process lives. Idempotent per process."
+  "Keep this home's launch image in step with the folder, on a worker of its
+own, for as long as this process's gateway serves: STOP-LAUNCH-IMAGE-KEEPER
+ends it. Idempotent."
   (or *launch-image-keeper*
       (setf *launch-image-keeper*
-            (spawn "launch-image-keeper"
-              (let ((period *launch-image-period*))
-                (loop (sleep period)
-                      (let ((seen *launch-image-stamp*))
-                        (ignore-errors (tend-launch-image))
-                        (setf period (if (eq seen *launch-image-stamp*)
-                                         (min *launch-image-idle-period* (* 2 period))
-                                         *launch-image-period*)))))))))
+            (let ((period *launch-image-period*))
+              (worker-start "launch-image-keeper"
+                            (lambda (&aux (seen *launch-image-stamp*))
+                              (ignore-errors (tend-launch-image))
+                              (setf period (if (eq seen *launch-image-stamp*)
+                                               (min *launch-image-idle-period* (* 2 period))
+                                               *launch-image-period*)))
+                            :wake (lambda () period))))))
+
+(defun stop-launch-image-keeper ()
+  "End the keeper START-LAUNCH-IMAGE-KEEPER started; nothing when none runs."
+  ;; A process outlives the gateway it served -- a shell that hosted one, a
+  ;; test image -- and a keeper left looking at the folder there is a thread
+  ;; nobody owns: SB-POSIX:FORK refuses while it lives.
+  (setf *launch-image-keeper* (worker-stop *launch-image-keeper*)))
 
 ;;; A warm launch image runs from the cache, so the kernel's list of what runs
 ;;; names the cache file, never the release this image descends from: the

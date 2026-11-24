@@ -107,6 +107,17 @@
         (is (< (nle::since-ms start) 100.0)
             (format nil "and no wait at all: ~,1fms" (nle::since-ms start)))))))
 
+(deftest a-launch-with-its-session-to-settle-does-not-hold-its-frame ()
+  ;; `-c' and `resume ID' settle their session on the shell's own loop, which
+  ;; starts behind the launch frame, and the facts read goes out behind that:
+  ;; a wait for it could only run out, and held every such launch its deadline.
+  (with-frame-model (model 100 30 :http-port 4321 :session-id "footer-resume" :launch-resume :continue)
+    (with-saved-globals ((nle::*first-frame-facts-settle-ms* 2000))
+      (let ((start (get-internal-real-time)))
+        (is (not (nlt:settle-before-first-frame model)) "the read is not out yet")
+        (is (< (nle::since-ms start) 1000.0)
+            (format nil "and the frame does not wait for it: ~,1fms" (nle::since-ms start)))))))
+
 (deftest a-session-switch-refetches-the-destination-facts ()
   ;; The facts a shell holds belong to the session it is on -- the pin, the
   ;; effort -- so a switch blanks them; and nothing else refetches for a

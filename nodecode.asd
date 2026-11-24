@@ -401,6 +401,10 @@ of stacking."
      ;; its stdin, the gateway's frames on its stdout. After client: it
      ;; finds, starts and attaches to the organism the way a shell does.
      (:file "cli/rpc")
+     ;; acp: `nodecode acp', the organism as an Agent Client Protocol agent
+     ;; on stdio. After rpc: it finds the organism as rpc does, and rides the
+     ;; gateway's links and control routes as a shell does.
+     (:file "cli/acp")
      ;; rows: a session's transcript folded here, by the shell's reducer, for
      ;; a client that renders and does not fold. After client: it folds with
      ;; APPLY-GATEWAY-EVENT and subscribes the way a shell does.
@@ -578,6 +582,9 @@ of stacking."
      (:file "session/session-admit-test")
      (:file "organism/evolve-test")
      (:file "organism/cells-test")
+     ;; cell-cache-test follows cells-test: it writes its folders with that
+     ;; file's WRITE-PERIPHERAL-FOLDER and loads them with its fixture.
+     (:file "organism/cell-cache-test")
      (:file "organism/notice-log-test")
      (:file "organism/cell-dsl-test")
      (:file "organism/upgrade-test")
@@ -719,6 +726,8 @@ of stacking."
      ;; rpc-test drives the same WS fixtures: a program's lines through
      ;; `nodecode rpc' to a gateway and its frames back.
      (:file "cli/rpc-test")
+     ;; acp-test drives an ACP client's agent over the same fixtures.
+     (:file "cli/acp-test")
      (:file "gateway/observe-test")
      (:file "gateway/usage-projection-test")
      ;; sessions-nodes-test drives the same picker rows: a session's own

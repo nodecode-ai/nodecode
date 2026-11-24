@@ -408,6 +408,75 @@ completed once BODY is done."
       (is (every (lambda (file) (stringp (gethash "patch" file))) files))
       (is (null (gethash "truncated" document))))))
 
+(deftest workspace-diff-document-keeps-a-dumps-head-and-counts-the-rest (with-git-workspace (store dir))
+  ;; One call that rewrote a 120,000-line file carried 12 MB of patch on its
+  ;; result, into history and every replay (#530): past the bounds the patch
+  ;; keeps its head and counts the lines it lost.
+  (%write-file dir "big.txt" (format nil "seed~%"))
+  (let ((pre (%anchored-capture store "pre")))
+    (%write-file dir "big.txt" (format nil "~{line ~d~%~}tail-marker~%" (loop for k below 5000 collect k)))
+    (let* ((document (nlk:workspace-diff-document store pre (nlk:capture-workspace-tree store)))
+           (big (%diff-entry "big.txt" (gethash "files" document)))
+           (patch (gethash "patch" big)))
+      (is (= 5001 (gethash "added" big)) "the stats stay whole")
+      (is (= nlk::*diff-patch-max-lines* (count #\Newline patch)) "the patch keeps its head")
+      (is (not (search "tail-marker" patch)))
+      (is (plusp (gethash "patch_cut" big)) "and counts what it cut")
+      (is (eq document (nlk:bound-diff-document document)) "bounding it again changes nothing"))))
+
+(deftest a-patch-kept-as-its-bytes-is-cut-as-its-string-is ()
+  ;; A document read for its bound alone leaves each patch as the bytes it
+  ;; was written in (DECODE-JSON's KEEP), and the cut reads only the head: the
+  ;; same head and the same count of what it dropped, wherever the bounds
+  ;; fall -- inside a line, on a line's end, past an open last line.
+  (flet ((bytes (text) (nlk:json-verbatim (nlk:encode-json-octets text))))
+    (dolist (patch (list "" "x" (format nil "~%")
+                         (format nil "~{~a~%~}" '("one" "two é\\n" "" "four"))
+                         (format nil "~{~a~%~}open" '("one" "tw\"o" "three"))
+                         (format nil "~a~%tail" (make-string 40 :initial-element (code-char #x1f600)))))
+      (loop for max-lines from 0 to 5
+            do (loop for max-chars from 0 to (+ 2 (length patch))
+                     do (is (equal (multiple-value-list (nlk::cut-patch patch max-lines max-chars))
+                                   (multiple-value-list (nlk::cut-patch (bytes patch) max-lines max-chars)))
+                            (format nil "~s at ~d lines, ~d characters" patch max-lines max-chars)))))
+    (let* ((nlk::*diff-patch-max-lines* 3)
+           (nlk::*diff-document-max-chars* 60)
+           (patch (format nil "~{line ~d~%~}" (alexandria:iota 9)))
+           (files (lambda (patch-of)
+                    (nlk:json-object
+                     "files" (vector (nlk:json-object "path" "a" "added" 9 "patch" (funcall patch-of patch))
+                                     (nlk:json-object "path" "b" "patch" (funcall patch-of "short"))
+                                     (nlk:json-object "path" "c" "patch" (funcall patch-of patch)
+                                                      "patch_cut" 2)
+                                     (nlk:json-object "path" "d" "binary" t)))))
+           (whole (nlk:encode-json-object (nlk:bound-diff-document (funcall files #'identity))))
+           (read (nlk:bound-diff-document (funcall files #'bytes)))
+           (within (gethash "patch" (aref (gethash "files" read) 1))))
+      (is (equal whole (nlk:encode-json-object read)) "so a document is bounded as one read whole is")
+      (is (nlk:json-verbatim-p within) "and a patch within the bounds stays its bytes"))))
+
+(deftest a-diff-document-past-its-budget-keeps-every-files-stats ()
+  ;; The budget runs out across files: the later ones keep their stats and
+  ;; what is left of it; past the file cap they are counts, so a header's
+  ;; totals stay whole.
+  (let* ((nlk::*diff-document-max-chars* 100)
+         (nlk::*diff-document-max-files* 3)
+         (patch (format nil "~{~a~%~}" (make-list 3 :initial-element (make-string 19 :initial-element #\x))))
+         (document (nlk:json-object "files" (coerce (loop for k below 5
+                                                          collect (nlk:json-object "path" (format nil "f~d" k)
+                                                                                   "added" 3 "removed" 1 "patch" patch))
+                                                    'vector)))
+         (bounded (nlk:bound-diff-document document))
+         (files (gethash "files" bounded)))
+    (is (= 3 (length files)))
+    (is (eq (aref (gethash "files" document) 0) (aref files 0)) "a file within the budget is kept as it was")
+    (is (= 40 (length (gethash "patch" (aref files 1)))) "the next keeps what was left, whole lines")
+    (is (= 1 (gethash "patch_cut" (aref files 1))))
+    (is (null (gethash "patch" (aref files 2))) "the budget spent, a file keeps its stats")
+    (is (= 3 (gethash "patch_cut" (aref files 2))))
+    (is (equal '(2 6 2) (mapcar (lambda (key) (gethash key bounded)) '("truncated" "truncated_added" "truncated_removed"))))
+    (is (= 5 (length (gethash "files" document))) "the document handed in is untouched")))
+
 (deftest snapshot-restore-roundtrips-modified-deleted-added (with-git-workspace (store dir))
   (%write-file dir "keep me.txt" "original with spaces" "doomed.txt" "will be deleted")
   (let ((before (%anchored-capture store "before")))

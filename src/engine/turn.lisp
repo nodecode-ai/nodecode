@@ -147,7 +147,7 @@ This session's own model. The footer names it; (models), (select-model ...) and 
 
 A model of your own. A provider whose base_url is a machine you run - localhost, a private or tailnet address, a .local or .ts.net name - is listed under Local in /models' Main tab: providers.<id> = {\"sdk\": \"openai-completions\", \"base_url\": \"http://HOST:PORT/v1\"}, its models from GET <base_url>/models.
 
-nodecode.ai's API: Nodecode's own models, at https://api.nodecode.ai/v1, OpenAI's wire, provider id nodecode. `nodecode login` or /login (the operator's to run; signs in at nodecode.ai in a browser) saves the key at auth.json api_keys.nodecode.key and writes providers.nodecode {\"sdk\": \"openai-completions\", \"base_url\": \"https://api.nodecode.ai/v1\"}; a key made at https://nodecode.ai/account/keys works the same. (getf (resolve-provider-credential \"nodecode\") :key) reads it: never print it or put it in a shell command or a file. Keys start with sk-nc-; any other key answers 401 invalid_api_key, and the fix is a new `nodecode login`. A sign-in with a free key (Allow with a free key on nodecode.ai/cli) saves a second key beside it, provider id nodecode-free (same base URL): Cyber v1 at no cost from the CLI, 256K context, and nothing else; /models lists it badged FREE above the paid Cyber v1, which draws on the plan or the balance. Routes: POST /v1/chat/completions, POST /v1/images/generations, GET /v1/models (what the key may call), GET /v1/models/ID, GET /v1/usage (the plan's requests left, its end and quota reset, seats, the credit; the operator's footer and /usage draw it); there is no /v1/messages or /v1/responses. A call is paid per token from the account's topped-up balance (https://nodecode.ai/pricing; no plan is sold now), or from a plan's month where the account still holds one; with neither it answers 402.
+nodecode.ai's API: Nodecode's own models, at https://api.nodecode.ai/v1, OpenAI's wire, provider id nodecode. `nodecode login` or /login (the operator's to run; signs in at nodecode.ai in a browser) saves the key at auth.json api_keys.nodecode.key and writes providers.nodecode {\"sdk\": \"openai-completions\", \"base_url\": \"https://api.nodecode.ai/v1\"}; a key made at https://nodecode.ai/account/keys works the same. (getf (resolve-provider-credential \"nodecode\") :key) reads it: never print it or put it in a shell command or a file. Keys start with sk-nc-; any other key answers 401 invalid_api_key, and the fix is a new `nodecode login`. A sign-in with a free key (Allow with a free key on nodecode.ai/cli) saves a second key beside it, provider id nodecode-free (same base URL): Cyber v1 at no cost from the CLI, 256K context, and nothing else; /models lists it badged FREE above the paid Cyber v1, which draws on the plan or the balance. Routes: POST /v1/chat/completions (what provider id nodecode speaks), POST /v1/responses (OpenAI Responses: Codex CLI, base_url https://api.nodecode.ai/v1 with wire_api \"responses\"), POST /v1/messages and POST /v1/messages/count_tokens (Anthropic Messages: Claude Code and the Anthropic SDKs, ANTHROPIC_BASE_URL=https://api.nodecode.ai without /v1, the client adds it), POST /v1/images/generations, GET /v1/models (what the key may call), GET /v1/models/ID, GET /v1/usage (the plan's requests left, its end and quota reset, seats, the credit; the operator's footer and /usage draw it), and GET /v1/ws, the same routes over one WebSocket for a paid key. https://nodecode.ai/docs/cyber.md sets up Claude Code and Codex on them. A call is paid per token from the account's topped-up balance (https://nodecode.ai/pricing; no plan is sold now), or from a plan's month where the account still holds one; with neither it answers 402.
 - Cyber v1, nodecode-cyber-v1: the security model, a chat model (DeepSeek V4.1 Flash 1017 with Foresight Labs finetunes), 1M context (1,048,576 tokens, prompt and output together), 16K output unless a call asks for more. A breach, a CVE, a patch or a server or website to check starts at (help :security), the cyber-security cell's manual, whatever model runs the session. Ask Cyber v1 one security question with the complete call above, or make it this session's model: (select-model \"nodecode-cyber-v1\" :provider \"nodecode\"), or in a shell /models' Main tab: nodecode, then Cyber v1.
 - Image v1, nodecode-image-v1: the image model (Qwen-Image 2.1 Turbo with Foresight Labs finetunes). POST /v1/images/generations with {\"model\", \"prompt\", \"n\" 1-4, \"size\" \"WxH\" up to 2048x2048 or \"auto\", \"response_format\" \"b64_json\", \"seed\" optional} answers {\"data\": [{\"b64_json\": ...}], \"size\", \"usage\"}: the images come back in the body, never as URLs. nlk:http answers (values BODY STATUS HEADERS TRUNCATED); check STATUS is 200 before decoding BODY:
   (multiple-value-bind (body status)
@@ -339,8 +339,8 @@ text."
 
 (nlk:define-section ("index")
   (:guide "The index section at the head of every conversation lists the definitions the organism keeps -- memories, skills, the layer's -- ranked by use.")
-  ("hot_budget" :integer :default 8192 :min 500
-                :doc "characters of the index below its first line: all described when they fit, else half for descriptions, the rest names")
+  ("hot_budget" :integer :default 8192 :min 120
+                :doc "characters of the index below its first line: all described when they fit, else half for descriptions, the rest names; a small budget leaves names only")
   ("stale_days" :integer :default 30 :min 1
                 :doc "a skill or a layer definition unused this long reads as cold; a memory never does"))
 
@@ -4594,6 +4594,17 @@ already closed is never closed twice."
   (and turn
        (not (nlk::turn-terminal-p (nlk:durable-turn-turn-id turn)))))
 
+(defmacro with-failure-frames ((place) &body body)
+  "Run BODY, setting PLACE to (CONDITION . FRAMES) as an error that is no
+provider's failure and no cancel is signalled in it: FRAMES the stack it was
+raised on (NLK:CONDITION-FRAMES), read before a handler outside unwinds it."
+  ;; A handler inside BODY that takes the error first leaves PLACE as it was,
+  ;; so the condition a turn fails on is the one PLACE holds when they are EQ.
+  `(handler-bind ((error (lambda (condition)
+                           (unless (typep condition '(or provider-error nlk:turn-cancelled-condition))
+                             (setf ,place (cons condition (nlk:condition-frames)))))))
+     ,@body))
+
 (defun run (input &key (session (current-session)) command-id invocation admitted-turn
                        images prefill)
   "Run INPUT after durable admission, committing exactly one outcome.
@@ -4618,6 +4629,9 @@ outranks the default effort the same way while the turn's effective
          (default-effort *reasoning-effort*)
          (turn nil)
          (turn-id nil)
+         ;; The error the turn fails on, with the stack it was raised on
+         ;; (WITH-FAILURE-FRAMES).
+         (failure nil)
          (*current-durable-turn* nil)
          ;; Round zero's previous request is the turn before's (CALL-PROVIDER).
          (*previous-request-json* nil)
@@ -4657,7 +4671,7 @@ outranks the default effort the same way while the turn's effective
       (attach-turn-images turn-id images)
       (setf *live-turn* (open-live-turn sid turn-id))
       (handler-case
-          (progn
+          (with-failure-frames (failure)
             ;; A home that chose no model has only the target the image was
             ;; built with, which nobody connected: its turn fails with the
             ;; far end's refusal as raw JSON (OpenCode's free tier now answers
@@ -4786,6 +4800,7 @@ outranks the default effort the same way while the turn's effective
         (error (condition)
           (when (turn-still-open-p turn)
             (nlk:fail-turn turn condition
-                           :evidence (provider-failure-evidence condition))
+                           :evidence (provider-failure-evidence condition)
+                           :frames (and (eq condition (car failure)) (cdr failure)))
             (notify-turn-facts-committed))
           (error condition)))))))

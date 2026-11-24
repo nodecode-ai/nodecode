@@ -97,7 +97,10 @@ in the EVOLVED package, loaded from source at every boot."))
   (start nil)
   (stop nil)
   (started-p nil)
-  (refusal nil))
+  (refusal nil)
+  ;; the text this boot compiled the folder from, FOLDER-CONTENT-KEY's answer
+  ;; when its load began; NIL for a folder whose fasls no key directs
+  (content-key nil))
 
 (access (cell cell) (layer cell))
 
@@ -1167,8 +1170,9 @@ and rewritten only when its text changed, so its fasl is reused."
 (define-startup-parameter *peripheral-cache-directory*
   (cache-path "nodecode/peripherals/")
   "Where a peripheral outside the shipped tree compiles to:
-<stamp>/<folder>/, so a new build compiles it again
-(CELL-OUTPUT-TRANSLATIONS). NIL leaves it to ASDF's user cache.")
+<stamp>/<folder>/<key>/, so a new build compiles it again and so does a new
+text of the folder (CELL-OUTPUT-TRANSLATIONS). NIL leaves it to ASDF's user
+cache.")
 
 (defun asd-files (directory &aux (native (uiop:native-namestring
                                             (uiop:ensure-directory-pathname directory))))
@@ -2143,7 +2147,7 @@ LOAD-CELL-FOLDERS started it -- of FOLDER into CELL, one file at a time."
         (dolist (path paths)
           (when (assoc path waiting) (settle path '() t)))))))
 
-(defun load-cell-folders (folders owners before)
+(defun load-cell-folders (folders owners before &aux (keys (peripheral-content-keys folders)))
   "Freeze the image (every live system immutable), register FOLDERS with ASDF
 and load them dependencies first, each judged from the snapshot the one before
 left (BEFORE for the first) against OWNERS. => the records, in load order."
@@ -2151,10 +2155,11 @@ left (BEFORE for the first) against OWNERS. => the records, in load order."
   (note-image-systems)
   ;; ASDF's output configuration is process state a dump hook clears, so it
   ;; is set at every load, not once at boot.
-  (when-let (translations (cell-output-translations folders))
+  (when-let (translations (cell-output-translations folders keys))
     (asdf:initialize-output-translations translations))
   (note-stamp-in-use *peripheral-cache-directory*)
   (ignore-errors (prune-stamp-cache *image-stamp* *peripheral-cache-directory*))
+  (note-content-keys-in-use keys)
   ;; Registered by where the code is read from, never by the entry: ASDF
   ;; searches these again at every LOAD-SYSTEM (OWN-CELL-DIRECTORY).
   (dolist (folder folders) (pushnew (cell-folder-source folder) asdf:*central-registry* :test #'equal))
@@ -2241,7 +2246,8 @@ left (BEFORE for the first) against OWNERS. => the records, in load order."
       (dolist (folder (nreverse ordered) (nreverse records))
         (let ((cell (make-cell :name folder.name
                                :path folder.directory
-                               :systems (mapcar #'declared-system-name folder.systems))))
+                               :systems (mapcar #'declared-system-name folder.systems)
+                               :content-key (content-key keys folder.name))))
           ;; Diagnostics a failing load prints — SBCL's "while evaluating the form
           ;; at line N" context, a compile-time error's body — belong on the record
           ;; beside the condition, not scattered across a boot terminal the TUI is
@@ -2253,6 +2259,8 @@ left (BEFORE for the first) against OWNERS. => the records, in load order."
                    ;; vendored system becomes findable. Peripherals carry their
                    ;; dependencies this way, so the operator's box needs no
                    ;; quicklisp.
+                   (when-let (refusal (content-refusal keys folder.name))
+                     (error "~a" refusal))
                    (when (probe-file bundle)
                      (muffled-load (lambda () (load bundle))))
                    (dolist (declared folder.systems)
@@ -2271,6 +2279,7 @@ left (BEFORE for the first) against OWNERS. => the records, in load order."
                        (when-let (start (exported-start-cell name))
                          (setf cell.start start)
                          (when (eq cell.kind :library) (setf cell.kind :peripheral)))))))
+            (verify-content-key cell folder keys)
             (let ((after (definition-snapshot)))
               ;; fill CELL's lists and advance OWNERS: the next folder is judged against this one
               ;; a changed method count adds methods; a changed definition nobody here owns
@@ -2522,13 +2531,178 @@ directory down: <source>/../fasl/, beside the folders they compile from."
   (when shipped
     (probe-file (merge-pathnames "../fasl/" shipped))))
 
-(defun cell-output-translations (folders &aux (shipped (shipped-cells-directory))
-                                                (fasl (and shipped (shipped-fasl-directory shipped))))
+(defun content-file-octets (path)
+  "PATH's bytes, or an error when it cannot be read as a regular file."
+  ;; The walk's stat is not the file we open: a replacement FIFO must not
+  ;; wait for a writer. Open nonblocking, then check that same descriptor.
+  #-win32
+  (let ((fd (sb-posix:open path (logior sb-posix:o-rdonly sb-posix:o-nonblock sb-posix:o-noctty))))
+    (with-cleanup ((sb-posix:close fd))
+      (unless (= (logand (sb-posix:stat-mode (sb-posix:fstat fd)) sb-posix:s-ifmt) sb-posix:s-ifreg)
+        (error "Not a regular file for content key: ~a" path))
+      (let ((in (sb-sys:make-fd-stream fd :input t :element-type '(unsigned-byte 8)
+                                        :buffering :full :auto-close nil)))
+        (alexandria:read-stream-content-into-byte-vector in))))
+  #+win32
+  (or (file-octets path) (error "Cannot read file for content key: ~a" path)))
+
+(defun folder-content-digest (directory &aux (entries '())
+                                             (start (length (namestring (uiop:ensure-directory-pathname directory)))))
+  "sha256: of what DIRECTORY's files say: every visible file under it, as
+the launch key walks it (MAP-VISIBLE-FILE-TREE), by its path relative to
+DIRECTORY and its bytes, in name order."
+  ;; The bytes, where the launch key takes a stat: a fasl is judged by a date
+  ;; a copy can keep older than it, and the inode and change time that stand
+  ;; for the bytes there name a file, not the text its fasl was compiled
+  ;; from. Every file, not the .lisp ones alone: a form may read a file beside
+  ;; it as it compiles, and an .asd may name a file of any type.
+  (map-visible-file-tree directory (lambda (path stat)
+                                     (unless (= (logand (sb-posix:stat-mode stat) sb-posix:s-ifmt) sb-posix:s-ifreg)
+                                       (error "Not a regular file for content key: ~a" path))
+                                     (push (cons (subseq path start) path) entries)))
+  (sha256-text
+   (with-output-to-string (out)
+     (loop for (name . path) in (sort entries #'string< :key #'car)
+           do (format out "~a~c~a~%" name (code-char 0)
+                      (sha256-text (content-file-octets path)))))))
+
+(defun folder-content-key (directory &optional inputs)
+  "The name of the directory DIRECTORY's peripheral compiles into, 16 hex
+digits: where DIRECTORY is, its files' digest (FOLDER-CONTENT-DIGEST), and
+INPUTS -- the keys of the sibling folders it depends on and a line for each
+system it depends on from outside them (OUTSIDE-SYSTEM-LINE)."
+  ;; A dependency's key is part of the dependent's, so a macro's expansion is
+  ;; never kept past the text it expanded from -- a dependency changed and
+  ;; changed back finds its first fasls, which are older than the dependent's
+  ;; newer ones, and ASDF's dates alone would keep the second expansion. Where
+  ;; the folder is is part of it because a fasl names the file it compiled
+  ;; from: two checkouts of one text share no fasl, so a definition's source
+  ;; is the checkout it was loaded from, and an edit goes there.
+  (subseq (sha256-text (format nil "~a~%~a~{~%~a~}" (namestring (truename directory))
+                               (folder-content-digest directory)
+                               (sort (copy-list inputs) #'string<)))
+          7 23))
+
+(defun outside-system-line (name &aux (system (ignore-errors (asdf:find-system name nil))))
+  "The line a folder's key takes for the system NAME it depends on from
+outside the cell folders: its version and its .asd file's identity and last
+change, or that ASDF finds none."
+  ;; The .asd's stat, as the launch key takes one, not the system's bytes: a
+  ;; library laid down again -- an update, a reinstall -- moves its inode and
+  ;; change time whatever dates it keeps, and reading a whole library at every
+  ;; boot would cost what the key is meant to save.
+  (if system
+      (let ((file (ignore-errors (asdf:system-source-file system))))
+        (format nil "system ~a ~a ~a" name (or (ignore-errors (asdf:component-version system)) "")
+                (or (and file (ignore-errors (stat-line-of (namestring file) (sb-posix:stat (namestring file)))))
+                    "no file")))
+      (format nil "system ~a absent" name)))
+
+(defun content-key (keys name)
+  "The key PERIPHERAL-CONTENT-KEYS took for the folder NAME, or NIL."
+  (getf (gethash name keys) :key))
+
+(defun content-refusal (keys name)
+  "Why PERIPHERAL-CONTENT-KEYS could take no key for the folder NAME, or NIL."
+  (getf (gethash name keys) :refused))
+
+(defun peripheral-compiled-p (folder shipped &aux (directory (ignore-errors (truename (cell-folder-source folder)))))
+  "Whether FOLDER compiles into the peripheral cache: a folder outside the
+SHIPPED tree with a system that is no layer."
+  (and directory
+       (notevery #'declared-system-layer folder.systems)
+       (not (and shipped (uiop:subpathp directory shipped)))))
+
+(defun peripheral-content-keys (folders &aux (keys (make-hash-table :test 'equal))
+                                             (shipped (shipped-cells-directory)))
+  "NAME -> what the key of each of FOLDERS that compiles into the peripheral
+cache (PERIPHERAL-COMPILED-P) came to: (:KEY KEY :INPUTS INPUTS), KEY
+FOLDER-CONTENT-KEY's answer over INPUTS, or (:REFUSED TEXT) when no key could
+be taken -- the folder's or a sibling's it depends on. Read with CONTENT-KEY
+and CONTENT-REFUSAL. Empty without that cache."
+  ;; A sibling's key is taken when a dependent asks for it, so the folders
+  ;; no peripheral stands on are never read; a cycle keys its far end alone.
+  ;; A folder whose key cannot be taken -- a directory no one may read, a file
+  ;; gone in the walk -- is refused, and so is every folder standing on it:
+  ;; each fails alone at its load, never the boot, and none compiles where
+  ;; ASDF's dates alone would judge its fasls.
+  (when *peripheral-cache-directory*
+    (let ((homes (loop for folder in folders
+                       append (loop for declared in folder.systems
+                                    collect (cons declared.name folder))))
+          (asked (make-hash-table :test 'equal))
+          (all (make-hash-table :test 'equal)))
+      (labels ((inputs (folder)
+                 (loop for need in (folder-depends-on folder)
+                       for other = (and (stringp need) (cdr (assoc need homes :test #'string-equal)))
+                       for entry = (cond ((null other) (and (stringp need) (list :key (outside-system-line need))))
+                                         ((not (eq other folder)) (entry other)))
+                       when (getf entry :refused)
+                         do (error "it depends on ~a, which has none: ~a" (cell-folder-name other)
+                                   (getf entry :refused))
+                       when (getf entry :key) collect it))
+               (entry (folder)
+                 (or (gethash folder.name all)
+                     (unless (gethash folder.name asked)
+                       (setf (gethash folder.name asked) t)
+                       (setf (gethash folder.name all)
+                             (handler-case
+                                 (let ((inputs (inputs folder)))
+                                   (list :key (folder-content-key (cell-folder-source folder) inputs)
+                                         :inputs inputs))
+                               (error (condition)
+                                 (list :refused (format nil "no content key for ~a: ~a"
+                                                        folder.name condition)))))))))
+        (dolist (folder folders)
+          (when (peripheral-compiled-p folder shipped)
+            (when-let (entry (entry folder))
+              (setf (gethash folder.name keys) entry)))))))
+  keys)
+
+(defun note-content-keys-in-use (keys &aux (stamp (and *peripheral-cache-directory* *image-stamp*
+                                                       (folder-under *image-stamp* *peripheral-cache-directory*))))
+  "Mark each key directory KEYS names in use, then keep beside it the newest
+one and those another load marked: a folder's directory keeps what is being
+read from it, as PRUNE-STAMP-CACHE keeps the stamps'. Never signals."
+  (when stamp
+    (maphash (lambda (name entry &aux (key (getf entry :key)) (folder (folder-under name stamp)))
+               (when key
+                 (note-stamp-in-use folder key)
+                 (ignore-errors (prune-stamp-cache key folder))))
+             keys)))
+
+(defun verify-content-key (cell folder keys &aux (entry (gethash folder.name keys)))
+  "After FOLDER loaded into CELL: when its files no longer key to the key its
+load began with, take that key off CELL and delete its directory -- what
+compiled there is no text the disk held at one moment. Never signals."
+  ;; A file written while a boot compiles: shells boot while sessions write.
+  ;; Left, the key directory would hold the later text's fasls under the
+  ;; earlier text's name, and a copy of the earlier text, dated old, would
+  ;; find them.
+  (when-let (key (getf entry :key))
+    (unless (equal key (ignore-errors (folder-content-key (cell-folder-source folder) (getf entry :inputs))))
+      (setf cell.content-key nil)
+      (when (and *peripheral-cache-directory* *image-stamp*)
+        (ignore-errors
+         (uiop:delete-directory-tree
+          (merge-pathnames (format nil "~a/~a/~a/" *image-stamp* folder.name key) *peripheral-cache-directory*)
+          :validate t :if-does-not-exist :ignore))))))
+
+(defun cell-output-translations (folders
+                                 &optional (keys (peripheral-content-keys folders))
+                                 &aux (shipped (shipped-cells-directory))
+                                 (fasl (and shipped (shipped-fasl-directory shipped))))
   "ASDF's output configuration for a load of FOLDERS: every source under the
 shipped folders compiles beside them (SHIPPED-FASL-DIRECTORY), every other
-peripheral into a directory of its own under this build's stamp
-(*PERIPHERAL-CACHE-DIRECTORY*), and everything else into the user cache as
-before. NIL when neither applies."
+peripheral into a directory of its own under this build's stamp and its
+folder's content key, KEYS (*PERIPHERAL-CACHE-DIRECTORY*), and everything
+else into the user cache as before. NIL when neither applies."
+  ;; The key is the stamp's answer one level down. ASDF judges a fasl current
+  ;; when it is dated after its source, and a checkout or a copy that keeps
+  ;; dates puts a new text under an older date than the fasl the last one
+  ;; compiled to: the boot loaded the last text's code while the disk said
+  ;; the new one, every file intact and nothing failed. Keyed by the bytes, a
+  ;; text compiles once and only its own fasls answer for it.
   ;; ASDF judges a fasl by its date against the core's load, which a dumped
   ;; image carries from its build. Without a directory per stamp, a fasl
   ;; compiled after the image was dumped would read as current and keep that
@@ -2542,14 +2716,12 @@ before. NIL when neither applies."
                       (list (list (namestring shipped) (namestring fasl))))
                     (when *peripheral-cache-directory*
                       (loop for folder in folders
-                            for directory = (ignore-errors (truename (cell-folder-source folder)))
-                            when (and directory
-                                      (notevery #'declared-system-layer folder.systems)
-                                      (not (and shipped (uiop:subpathp directory shipped))))
-                              collect (list (namestring directory)
+                            for key = (content-key keys folder.name)
+                            when (and key (peripheral-compiled-p folder shipped))
+                              collect (list (namestring (truename (cell-folder-source folder)))
                                             (namestring
                                              (merge-pathnames
-                                              (format nil "~a/~a/" *image-stamp* folder.name)
+                                              (format nil "~a/~a/~a/" *image-stamp* folder.name key)
                                               *peripheral-cache-directory*)))))))
     (list* :output-translations (append rules (list :inherit-configuration)))))
 

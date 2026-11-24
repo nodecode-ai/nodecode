@@ -1718,9 +1718,14 @@ it.")
   ;; paints at once), only a known endpoint waits (an owner still booting its
   ;; gateway has nothing to read from and paints at once), and the deadline
   ;; is 25 ms whatever the peer does — a gateway that never answers costs the
-  ;; launch frame 25 ms and nothing more.
+  ;; launch frame 25 ms and nothing more. A launch with its session still to
+  ;; settle (`-c', `resume ID') does not wait either: it settles on this
+  ;; thread's loop (RESOLVE-LAUNCH-SESSION), which starts behind this frame,
+  ;; and the read goes out behind that -- so the wait could only run out, and
+  ;; held every such launch its whole 25 ms with a gateway already serving.
   (when (and model.http-port
-             (eq model.model-facts :unresolved))
+             (eq model.model-facts :unresolved)
+             (not (member model.launch-resume '(:continue :named))))
     (wait-until (lambda () (not (eq model.model-facts :unresolved)))
                 (deadline-after (/ *first-frame-facts-settle-ms* 1000)) 0.001)))
 

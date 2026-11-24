@@ -12,7 +12,7 @@
 ;;;;
 ;;;; So a round to a host in *WEBSOCKET-HOSTS* goes over the socket by
 ;;;; default, and over HTTP with SSE whenever the socket is not there for it:
-;;;; a host or key that refuses the upgrade (a free key does, with 403), a
+;;;; a host or key that refuses the upgrade (401, 403 or 404), a
 ;;;; dial that fails, a socket that closes or refuses the frame before the
 ;;;; answer starts, a proxy in the way, or NODECODE_WEBSOCKET=0.
 ;;;;

@@ -32,8 +32,14 @@ NAME.lisp (one function, one variable, one generic), both loaded from disk.
   (mapcar #'second (getf drift :live-only)))
 
 (defun drift-eval-in (package text)
-  "Evaluate TEXT read in PACKAGE, as an eval in the cell would."
-  (let ((*package* package)) (eval (read-from-string text))))
+  "Evaluate TEXT read in PACKAGE on a thread of its own, as an eval in the
+cell is (exec.lisp runs each on its own)."
+  ;; Never on the calling thread: a suite run inside LOAD (`sbcl --load',
+  ;; `--script') would have SBCL give what EVAL compiles there the loading
+  ;; file's pathname, and nothing would read as only evaluated.
+  (bt2:join-thread
+   (bt2:make-thread (lambda () (let ((*package* package)) (eval (read-from-string text))))
+                    :name "drift-eval")))
 
 (defun drift-append (file text)
   "Append TEXT to FILE, as a write into the cell's file would."
@@ -61,6 +67,25 @@ NAME.lisp (one function, one variable, one generic), both loaded from disk.
                (is (null (getf drift :not-live)) "and everything the file defines is live")))
         (ignore-errors (delete-package package))
         (uiop:delete-directory-tree (uiop:pathname-parent-directory-pathname directory) :validate t :if-does-not-exist :ignore)))))
+
+(deftest cell-drift-names-an-eval-made-while-the-suite-loads-a-file ()
+  ;; The suite may itself run inside LOAD (`sbcl --load', `--script'); an
+  ;; eval in the cell is still an eval, and is named.
+  (let ((name (format nil "drift-c-~d" (random 1000000))))
+    (multiple-value-bind (directory code package) (drift-fixture name)
+      (declare (ignore code))
+      (let ((loader (merge-pathnames "loader.lisp" (temp-path "cell-drift-load"))))
+        (unwind-protect
+             (progn
+               (ensure-directories-exist loader)
+               (nlk::write-file-atomically
+                loader
+                (format nil "(nodecode.test::drift-eval-in (find-package ~s) \"(defun while-loading () 6)\")~%" (package-name package)))
+               (load loader)
+               (is (member "defun while-loading" (drift-live-labels (nlk:cell-drift directory)) :test #'string=) "an eval made inside a LOAD is named all the same"))
+          (ignore-errors (delete-package package))
+          (uiop:delete-directory-tree (uiop:pathname-parent-directory-pathname directory) :validate t :if-does-not-exist :ignore)
+          (uiop:delete-directory-tree (uiop:pathname-directory-pathname loader) :validate t :if-does-not-exist :ignore))))))
 
 (deftest cell-drift-names-an-evaluated-hook-and-a-file-ahead ()
   (let* ((name (format nil "drift-b-~d" (random 1000000)))

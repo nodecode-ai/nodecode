@@ -1661,7 +1661,7 @@ none does."
   ;; election it was never meant to contest. Says once on stdout, the unit's
   ;; journal, whom it waits on. => how many looks it took.
   (loop for looks from 0
-        while (funcall held-p path)
+        while (and (not (gateway-stop-requested-p)) (funcall held-p path))
         do (when (zerop looks)
              (format t "~&waiting: pid ~a owns ~a; serving once it lets go~%"
                      (or (nlk::read-store-holder path) "?") (namestring path))
@@ -1719,12 +1719,14 @@ an exec in its boot."
         ;; published warm image): the same unit's process, past its ready.
         (said (plusp (length (uiop:getenv +gateway-ready-variable+)))))
     (loop
+      (when (gateway-stop-requested-p) (return said))
       (when (nlk::store-lease-held-elsewhere-p path)
         (unless said
           (say-gateway-ready)
           (nlk::set-environment-variable +gateway-ready-variable+ "1")
           (setf said t))
         (await-free-store path :tick #'nlk:systemd-watchdog))
+      (when (gateway-stop-requested-p) (return said))
       ;; NIL: another process took it first, and is waited out in turn.
       (if (handler-case (or (nlk::held-lock (nlk::lock-path-for-store path))
                             (nlk::hold-store-lease path))
@@ -1763,23 +1765,102 @@ to run *SERVE-SWITCH* in its place.")
 (defvar *stopping* nil
   "T once this headless owner was told to stop.")
 
+(defstruct gateway-stop-supervisor
+  (state :running)
+  (interval (max 1 (ceiling (* *stop-seconds* internal-time-units-per-second))))
+  thread)
+
+(defvar *gateway-stop-supervisor* nil
+  "The headless process's prestarted deadline worker and captured stop state.")
+
 (defun cut-short ()
-  "End this process now: everything it started killed, then gone without an
-unwind -- the kernel frees the store's lock with it."
-  ;; An exit that unwinds waits on every thread it cannot stop, up to SBCL's
-  ;; exit timeout: a channel's read, an MCP server's pipe. Under a SIGTERM
-  ;; that lands mid-stop, before CLOSE-STORE, that wait would hold the store
-  ;; while a relaunched shell dials a gateway already gone.
-  #-win32 (dolist (pid (proc-descendants (sb-posix:getpid)))
-            (ignore-errors (sb-posix:kill pid sb-posix:sigkill)))
-  (sb-ext:exit :code 143 :abort t))
+  "Exit directly; the kernel releases the store. No unwind, child walk or spawn."
+  (sb-unix::os-exit 143 :abort t))
+
+(defun gateway-stop-requested-p (&optional (supervisor *gateway-stop-supervisor*))
+  "Whether this owner has admitted a stop, even before its store or cells boot."
+  (when supervisor
+    (let ((state (gateway-stop-supervisor-state supervisor)))
+      (or (integerp state) (eq state :force)))))
+
+(defun request-gateway-stop (supervisor &optional signalp)
+  "Admit the first deadline atomically; only a repeated signal forces exit.
+The handler does no cleanup, logging, wake or thread creation. After handoff,
+its captured record still makes a deferred signal exit, not vanish."
+  (loop for old = (gateway-stop-supervisor-state supervisor)
+        for new = (case old
+                    (:running (+ (get-internal-real-time)
+                                 (gateway-stop-supervisor-interval supervisor)))
+                    ((:handoff :finished) (when signalp (cut-short)) (return nil))
+                    (otherwise (if signalp :force (return old))))
+        when (eq old (sb-ext:compare-and-swap
+                       (gateway-stop-supervisor-state supervisor) old new))
+          return new))
+
+(defun run-gateway-stop-supervisor (supervisor)
+  "Observe only captured state; store/endpoint cleanup cannot delay this worker."
+  (loop for state = (gateway-stop-supervisor-state supervisor)
+        until (member state '(:handoff :finished))
+        do (when (or (eq state :force)
+                     (and (integerp state) (>= (get-internal-real-time) state)))
+             (cut-short)
+             (return))
+           (sleep 0.01)))
+
+(defun finish-gateway-stop-supervisor (supervisor &optional exceptional)
+  "Join cooperatively. An error must not disarm a stop before error reporting."
+  (when exceptional
+    (let ((old (sb-ext:compare-and-swap
+                 (gateway-stop-supervisor-state supervisor) :running :finished)))
+      ;; A signal either won before this CAS, or sees :FINISHED and exits in
+      ;; its captured handler. It cannot disappear between a check and a store.
+      (when (or (integerp old) (eq old :force)) (cut-short))))
+  (setf (gateway-stop-supervisor-state supervisor) :finished)
+  (when (gateway-stop-supervisor-thread supervisor)
+    (bt2:join-thread (gateway-stop-supervisor-thread supervisor))))
+
+(defun gateway-stop-handoff (supervisor)
+  "Stop wins before this CAS. After it, the installed signal closure exits
+when Lisp dispatches it, even after the worker has joined."
+  (when (or (null supervisor)
+            (eq :running (sb-ext:compare-and-swap
+                           (gateway-stop-supervisor-state supervisor) :running :handoff)))
+    (when supervisor
+      (bt2:join-thread (gateway-stop-supervisor-thread supervisor)))
+    t))
+
+(defun call-with-gateway-stop-supervisor (function)
+  "Acquire the deadline worker before waiting/booting, or refuse startup. A
+nested serve shares it; a fresh process/image launch never reuses a deadline."
+  (if (and *gateway-stop-supervisor*
+           (not (member (gateway-stop-supervisor-state *gateway-stop-supervisor*)
+                        '(:handoff :finished))))
+      (progn
+        (unless (bt2:thread-alive-p
+                 (gateway-stop-supervisor-thread *gateway-stop-supervisor*))
+          (error "The gateway stop supervisor is no longer running"))
+        (funcall function))
+      (let ((supervisor (make-gateway-stop-supervisor)) (returned nil))
+        (setf (gateway-stop-supervisor-thread supervisor)
+              (bt2:make-thread (lambda () (run-gateway-stop-supervisor supervisor))
+                               :name "gateway-stop-supervisor")
+              *gateway-stop-supervisor* supervisor
+              *serve-next* nil *stopping* nil)
+        (unwind-protect
+             (progn
+               (stop-on-sigterm supervisor)
+               (multiple-value-prog1 (funcall function) (setf returned t)))
+          (finish-gateway-stop-supervisor supervisor (not returned))
+          (setf *gateway-stop-supervisor* nil)))))
 
 (defun serve-next (what)
   "Have the headless owner WHAT (:STOP or :RESTART) once it lets the store go;
 a stop that has not let it go within *STOP-SECONDS* is cut short (CUT-SHORT)."
-  (when (and (eq what :stop) *serving* (not *stopping*))
-    (setf *stopping* t)
-    (spawn "stop-deadline" (sleep *stop-seconds*) (cut-short)))
+  (when (and (eq what :stop) *gateway-stop-supervisor*)
+    (request-gateway-stop *gateway-stop-supervisor*))
+  ;; A later restart/image/switch cannot replace an admitted stop.
+  (when (gateway-stop-requested-p)
+    (setf what :stop *stopping* t))
   ;; An owner on its way out advertises nothing from the moment it is told,
   ;; not from when its owner thread reaches STOP-GATEWAY: a shell launching
   ;; in between attached to it and was dropped as it went (#226). The
@@ -1788,8 +1869,14 @@ a stop that has not let it go within *STOP-SECONDS* is cut short (CUT-SHORT)."
     (ignore-errors (nlk::publish-store-endpoint nil)))
   ;; A save or a switch execs another heap in this pid: the store closes
   ;; with its lease kept, for the exec to hand on (*KEEP-STORE-LEASE*).
-  (setf nlk::*keep-store-lease* (and (member what '(:image :switch)) t)
-        *serve-next* what)
+  ;; Publication may have blocked while another request admitted a stop.
+  ;; Once :STOP lands, no later request may overwrite it.
+  (setf what
+        (loop for old = *serve-next*
+              for next = (if (or (eq old :stop) (gateway-stop-requested-p)) :stop what)
+              when (eq old (sb-ext:compare-and-swap (symbol-value '*serve-next*) old next))
+                return next)
+        nlk::*keep-store-lease* (and (member what '(:image :switch)) t))
   (bt2:signal-semaphore *serve-wake*))
 
 (defun serve-image (name)
@@ -1818,16 +1905,11 @@ stderr closed first. Answers only the kernel's refusal."
   (nlk::close-inherited-descriptors)
   (nlk::exec-program (nlk:organism-binary) argv))
 
-(defun stop-on-sigterm ()
-  "SIGTERM stops this headless owner as a quit does (SERVE-NEXT :STOP), and
-one that lands while it already stops cuts it short."
-  ;; SBCL's own handler exits from wherever the signal lands, and from inside
-  ;; STOP-GATEWAY that unwind skipped CLOSE-STORE. The work goes to a thread
-  ;; of its own, never the handler's.
+(defun stop-on-sigterm (supervisor)
+  "Install a closure over the already running supervisor, not thread-local state."
   #-win32 (sb-sys:enable-interrupt sb-unix:sigterm
-                                   (lambda-ignoring (signal info context)
-                                     (spawn "serve-sigterm"
-                                       (if *stopping* (cut-short) (serve-next :stop))))))
+             (lambda-ignoring (signal info context)
+               (request-gateway-stop supervisor t))))
 
 (defun serve-election-lost-p (&optional store-path)
   "Whether another live process holds the store at STORE-PATH (the home's
@@ -1849,7 +1931,21 @@ and the receipt a boot left taken with this process, which did not die."
       (nlk:take-self-receipt)
       t)))
 
-(defun serve-organism-candidate (&key session-id store-path (port *gateway-port*) wait ready)
+(defun finish-stopped-gateway (path)
+  "Release even a lease retained by cleanup racing a newly admitted stop."
+  (setf nlk::*keep-store-lease* nil)
+  (when-let (lock (nlk::held-lock (nlk::lock-path-for-store path)))
+    (ignore-errors (delete-file (nlk::lease-path-for-store path)))
+    (nlk::unlock-file lock))
+  :stopped)
+
+(defun serve-organism-candidate (&rest options &key session-id store-path port wait ready)
+  "Serve with the stop deadline acquired before the first ownership wait."
+  (declare (ignore session-id store-path port wait ready))
+  (call-with-gateway-stop-supervisor
+   (lambda () (apply #'serve-organism-candidate-supervised options))))
+
+(defun serve-organism-candidate-supervised (&key session-id store-path (port *gateway-port*) wait ready)
   "Boot the organism as a HEADLESS gateway owner, or lose the election
 quietly."
   ;; This is the `nodecode serve` entry and the process a client's
@@ -1874,7 +1970,7 @@ quietly."
     ;; A candidate that loses says that and nothing else: a ready line before
     ;; it read as a gateway that came up and went.
     (when (and (not wait) (serve-election-lost-p path))
-      (return-from serve-organism-candidate :lost))
+      (return-from serve-organism-candidate-supervised :lost))
     ;; Notify before waiting for a shell-owned store: the service is initialized
     ;; even while it is intentionally idle, and the same owner thread must keep
     ;; the watchdog alive in that wait. READY: the wait came before the boot
@@ -1889,6 +1985,7 @@ quietly."
         ;; loop once: every way out of it below returns.
         (when wait
           (await-free-store path :tick #'nlk:systemd-watchdog))
+        (when (gateway-stop-requested-p) (return (finish-stopped-gateway path)))
         (with-handlers ((nlk::store-in-use (refusal)
                           (format t "~&election lost: ~a~%" refusal)
                           (finish-output)
@@ -1907,7 +2004,13 @@ quietly."
               (boot-owned-organism :session-id session-id :store-path path)
             (with-cleanup ((ignore-errors (stop-gateway))
                            (nlk:note-phase "stop store")
-                           (ignore-errors (nlk:close-store))
+                           ;; Request threads cannot change this cleanup's
+                           ;; lease decision after it was made. A stop arriving
+                           ;; later releases a retained lease below.
+                           (let ((nlk::*keep-store-lease*
+                                   (and (not (gateway-stop-requested-p))
+                                        (member *serve-next* '(:image :switch)) t)))
+                             (ignore-errors (nlk:close-store)))
                            (nlk:note-phase "stop done"))
               ;; The store's open and a warm image's folder walk overlapped;
               ;; a stale image does not serve (NLK:AWAIT-WARM-VERIFICATION).
@@ -1926,24 +2029,39 @@ quietly."
                 ;; a second on threads it cannot stop.
                 (setf *serving* t
                       sb-ext:*exit-timeout* 1)
-                (stop-on-sigterm)
                 (watch-front)
                 ;; Park; the gateway runs on hunchentoot threads and this
                 ;; process lives until killed or asked (SERVE-NEXT). The
                 ;; heartbeat is deliberately on this owner thread.
-                (loop
-                  (nlk:systemd-watchdog)
-                  (unless heartbeat-noted
+                (loop for window = (nlk::systemd-watchdog-window)
+                      for healthy = (or (null window) (gateway-watchdog-pulse window)) do
+                  (when (and healthy (not heartbeat-noted))
                     (setf heartbeat-noted t)
                     (format t "~&[CP-ISSUE-20260912-002] gateway heartbeat~%"))
-                  (when *serve-next* (return))
-                  (bt2:wait-on-semaphore *serve-wake*
-                                         :timeout (/ nlk:*gateway-watchdog-seconds* 3)))))))
+                  ;; Poll only the stop record between the existing heartbeat
+                  ;; intervals; SIGTERM never needs to signal this semaphore.
+                  (loop with until = (+ (get-internal-real-time)
+                                        (* internal-time-units-per-second
+                                           (/ (or window nlk:*gateway-watchdog-seconds*) 3)))
+                        until (or *serve-next* (>= (get-internal-real-time) until))
+                        do (when (gateway-stop-requested-p) (serve-next :stop))
+                           (unless *serve-next*
+                             (bt2:wait-on-semaphore *serve-wake* :timeout 0.1)))
+                  (when *serve-next* (return)))))))
         ;; The store is let go by now: an exec keeps every open descriptor,
         ;; and a lease still held would be inherited into a deadlock. So
         ;; would a connection a page still holds, read by nobody after.
+        ;; Join before a snapshot quiesces threads. Keep the closure installed:
+        ;; a signal deferred across handoff still exits through its old record.
+        (when (or (eq *serve-next* :stop) (gateway-stop-requested-p))
+          (return (finish-stopped-gateway path)))
+        ;; A lost store election retries with the same live supervisor. Only
+        ;; an actual exec/image request crosses the handoff boundary.
+        (when (member *serve-next* '(:restart :image :switch))
+          (unless (gateway-stop-handoff *gateway-stop-supervisor*)
+            (return (finish-stopped-gateway path))))
         (case *serve-next*
-          (:stop (return :stopped))
+          (:stop (return (finish-stopped-gateway path)))
           (:restart
            (return (format t "~&restart refused: ~a~%" (run-current-again))))
           ;; The heap is saved by a fork and this process becomes it: the
@@ -2071,11 +2189,12 @@ target and its first prompt -- carried over."
 (10 s at most) until it has run there: how a thread changes what the loop
 reads without racing it. A model with no program, a test's, is called here."
   ;; NLT:SEND drops a message while the program is not running yet, so the
-  ;; call waits for it as POST-SHELL-NOTICE does.
+  ;; call waits for it as POST-SHELL-NOTICE does: 5 s at most, looked at
+  ;; often, since a launch's session waits here on a gateway already serving.
   (if (null program)
       (funcall function model)
       (progn
-        (loop repeat 100 until program.running do (sleep 0.05))
+        (loop repeat 1000 until program.running do (sleep 0.005))
         (nlt:send program (make-instance 'off-loop-msg
                                          :value nil
                                          :continuation (lambda-ignoring (model value)

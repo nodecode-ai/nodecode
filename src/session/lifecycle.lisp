@@ -1085,20 +1085,100 @@ by) ASSISTANT-MESSAGE's completion row when there is one, else by the start fact
                                                    background-pending)))
                         :assistant-message assistant-message))
 
-(defun fail-turn (turn condition &key evidence)
+(defun fail-turn (turn condition &key evidence frames)
   "TURN's terminal failure fact: the condition's type and rendering, plus
 EVIDENCE, a payload plist the caller distilled from the condition (the
 engine's PROVIDER-FAILURE-EVIDENCE: status, content type, request digest,
-the head of the response body)."
+the head of the response body), and FRAMES, the stack the condition was
+signalled on as CONDITION-FRAMES reads it."
   ;; Debug-only retention on the fact, so a session that failed and was never
-  ;; opened in a debugger still says what the provider answered. The detail is
-  ;; the condition's message, every line of it, without the `See also:' block
-  ;; SBCL's printer appends: references to a manual's nodes, which every
-  ;; surface showing the detail would print as if they were the error.
-  (record-turn-terminal turn +kind-turn-failed+
-                        (nconc (list :condition-type (princ-to-string (type-of condition))
-                                     :detail (condition-detail condition))
-                               (copy-list evidence))))
+  ;; opened in a debugger still says what the provider answered, and where in
+  ;; Nodecode a fault of its own struck. The detail is the condition's message,
+  ;; every line of it, without the `See also:' block SBCL's printer appends:
+  ;; references to a manual's nodes, which every surface showing the detail
+  ;; would print as if they were the error. A fault of Nodecode's own reads in
+  ;; plain words instead, naming where it struck; its message stays on the
+  ;; fact as :CONDITION-TEXT.
+  (let* ((text (condition-detail condition))
+         (internal (internal-condition-p condition text)))
+    (record-turn-terminal turn +kind-turn-failed+
+                          (nconc (list :condition-type (princ-to-string (type-of condition))
+                                       :detail (if internal (internal-failure-detail frames) text))
+                                 (when internal (list :condition-text text))
+                                 (when frames (list :frames (map 'vector #'cdr frames)))
+                                 (copy-list evidence)))))
+
+(defun nodecode-symbol-p (symbol &aux (package (and (symbolp symbol) (symbol-package symbol))))
+  "Whether SYMBOL is one of Nodecode's own: its package is the kernel's, the
+engine's, a cell's -- any whose name begins NODECODE."
+  (and package (eql 0 (search "NODECODE" (package-name package)))))
+
+(defun internal-condition-p (condition text)
+  "Whether CONDITION, whose message is TEXT, is a fault in Nodecode itself
+rather than a refusal written for a person: an error a program makes (a
+wrong type, an undefined function, a call with the wrong arguments), or any
+error from below Nodecode whose message prints an object no person reads.
+Nodecode's own conditions are written for people and never count."
+  ;; SBCL's word on a hash table two threads wrote at once is a plain
+  ;; SIMPLE-ERROR, `Unsafe concurrent operations on #<HASH-TABLE :TEST EQUAL
+  ;; :COUNT 9 {1200D9F2A3}> detected.': the printed object is what marks it.
+  (and (not (nodecode-symbol-p (type-of condition)))
+       (or (typep condition '(or type-error cell-error program-error
+                                 control-error arithmetic-error))
+           (and (search "#<" text) t))))
+
+(defun internal-failure-detail (frames)
+  "A failed turn's detail when Nodecode itself failed: what happened, where,
+what was kept and what to do, in plain words. FRAMES as CONDITION-FRAMES
+names them; the first of Nodecode's own is where."
+  (format nil "Nodecode hit an internal error~@[ in ~(~a~)~]. Your session is saved: ~
+send your message again, and restart Nodecode if it repeats."
+          (loop for (name) in frames
+                for owner = (frame-owner name)
+                when (nodecode-symbol-p owner) return owner)))
+
+(defun frame-owner (name)
+  "The function a frame whose debug name is NAME stands in: the name itself,
+the X of (SETF X) or of a method on X, the enclosing X of a (LAMBDA ... :IN
+X) or an (FLET F :IN X); NIL for anything else."
+  (cond ((symbolp name) name)
+        ((not (consp name)) nil)
+        ((member :in name) (frame-owner (second (member :in name))))
+        ((and (symbolp (first name))
+              (member (symbol-name (first name)) '("SETF" "FAST-METHOD" "SLOW-METHOD") :test #'string=))
+         (frame-owner (second name)))))
+
+(defparameter +signalling-frames+ '(error cerror sb-kernel:internal-error)
+  "The frames a condition is raised through: the stack CONDITION-FRAMES keeps
+begins below the first of them.")
+
+(defun condition-frames (&key (limit 20) &aux (names '()))
+  "The stack the condition being signalled was raised on, innermost first,
+from a HANDLER-BIND handler: up to LIMIT frames below the one that raised it,
+each (NAME . TEXT), NAME its debug name and TEXT that name printed with its
+package, clipped."
+  ;; Never signals: a stack read is evidence, and evidence that cannot be
+  ;; gathered is simply absent. A fault the runtime trapped (a wrong type, an
+  ;; undefined function) comes up through foreign frames, named by strings,
+  ;; that are left out with the raising frame.
+  (ignore-errors
+   (sb-debug:map-backtrace
+    (lambda (frame)
+      (push (sb-di:debug-fun-name (sb-di:frame-debug-fun frame)) names))
+    :count (+ limit 40)))
+  (let* ((names (nreverse names))
+         (raised (position-if (lambda (name) (member name +signalling-frames+))
+                              names :end (min 40 (length names))))
+         (below (if raised (nthcdr (1+ raised) names) names)))
+    (loop for name in (member-if-not #'stringp below)
+          repeat limit
+          collect (cons name (let ((text (ignore-errors
+                                          ;; Read in CL-USER: Common Lisp's own names bare,
+                                          ;; every other with its package.
+                                          (with-standard-io-syntax
+                                            (let ((*print-readably* nil))
+                                              (prin1-to-string name))))))
+                               (if (stringp text) (subseq text 0 (min 200 (length text))) "?"))))))
 
 (defun condition-detail (condition)
   "CONDITION's message as a person reads it: every line, without the `See

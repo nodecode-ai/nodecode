@@ -1672,6 +1672,14 @@ NIL for every other turn.")))
   ;; identity the failing request targeted, as a retry fact names it: the
   ;; Dashboard's error rate per model reads them.
   ((detail :string "detail")
+   (condition-text :string "condition-text"
+                   :doc "The condition's own message, kept when the detail says in
+plain words that Nodecode itself failed (FAIL-TURN): SBCL's text, the printed
+object in it included.")
+   (frames :array "frames"
+           :doc "The stack the condition was raised on, innermost first, each
+frame's name printed with its package: where a fault of Nodecode's own struck.
+NIL for a provider's failure.")
    (status :integer "status")
    (provider :string "provider")
    (model :string "model")

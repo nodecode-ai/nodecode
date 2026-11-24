@@ -342,6 +342,40 @@ and TOOLCHAIN willing, the programs they start."
       (is (< (- (get-internal-real-time) started)
              (* 3 internal-time-units-per-second))))))
 
+(deftest a-caller-that-unwinds-takes-its-childs-tree-down ()
+  ;; An evaluation interrupted, a turn stopped, a thread terminated: the
+  ;; unwind passes through RUN-BOUNDED while it waits on the child, and the
+  ;; child's whole tree goes with it. Left alone, a scorer ran on for hours
+  ;; holding a shared lock, with nobody to read what it printed.
+  #-win32
+  (with-temp-workspace (dir)
+    (let* ((pids (merge-pathnames "pids" dir))
+           (caller (bt2:make-thread
+                    (lambda ()
+                      (catch 'unwound
+                        (run-sh (format nil "sleep 30 & echo $! > '~a'; echo $$ >> '~a'; sleep 30"
+                                        (namestring pids) (namestring pids))
+                                :seconds 60)))
+                    :name "run-bounded caller"))
+           (ids (loop repeat 200
+                      for ids = (ignore-errors (mapcar #'parse-integer (uiop:read-file-lines pids)))
+                      until (= 2 (length ids))
+                      do (sleep 0.05)
+                      finally (return ids))))
+      (flet ((running-p (pid)
+               ;; a zombie waiting on init to reap it has ended
+               (and (nlk:pid-live-p pid)
+                    (not (search ") Z " (or (ignore-errors
+                                             (uiop:read-file-string (format nil "/proc/~d/stat" pid)))
+                                            ""))))))
+        (is (= 2 (length ids)) "the shell and its background sleep both started")
+        (bt2:interrupt-thread caller (lambda () (throw 'unwound :unwound)))
+        (is (eq :unwound (sb-thread:join-thread (bt2:thread-native-thread caller) :timeout 5 :default :still-running)) "the caller unwound out of the wait at once")
+        (is (loop repeat 60 thereis (notany #'running-p ids) do (sleep 0.05))
+            (format nil "the child's tree ended with the call: ~a" (remove-if-not #'running-p ids)))
+        (dolist (id ids)
+          (when (running-p id) (ignore-errors (sb-posix:kill id sb-posix:sigkill))))))))
+
 (deftest run-bounded-lays-the-environment-over-the-inherited-one ()
   (nlk:bind (((output _ status)
               (run-sh "printf '%s|%s' \"$NODECODE_OS_TEST\" \"$PATH\""
@@ -1120,3 +1154,28 @@ corrupt, or owner thread exited without unlocking')."
       (setf sb-ext:*init-hooks* hooks)
       (loop for (object . dont-save) in flags
             do (setf (sb-alien::shared-object-dont-save object) dont-save)))))
+
+#+win32
+(defun process-handle-count ()
+  "The number of handles this process holds open (GetProcessHandleCount)."
+  (sb-alien:with-alien ((count sb-alien:unsigned-int 0))
+    (sb-alien:alien-funcall
+     (sb-alien:extern-alien "GetProcessHandleCount"
+                            (function sb-alien:int sb-alien:unsigned-long-long (* sb-alien:unsigned-int)))
+     #xFFFFFFFFFFFFFFFF                 ; GetCurrentProcess()'s pseudo-handle
+     (sb-alien:addr count))
+    count))
+
+;; A thread that ended and was joined holds no handle. The runtime replaced the
+;; handle _beginthreadex gave a new thread with a duplicate and closed only the
+;; duplicate, so every thread a process made left one handle open: a gateway that
+;; starts short-lived threads all day ran out of handles and could no longer open
+;; a file (tools/release/sbcl-win/thread-handle.patch).
+#+win32
+(deftest a-joined-thread-leaves-no-handle-open ()
+  (flet ((churn () (dotimes (i 200) (sb-thread:join-thread (sb-thread:make-thread (lambda () i))))))
+    (churn)                             ; warm: the recycle bin and the joinable list fill
+    (let ((before (process-handle-count)))
+      (churn)
+      (let ((grown (- (process-handle-count) before)))
+        (is (< grown 50) (format nil "200 threads made and joined left ~d more handles open" grown))))))

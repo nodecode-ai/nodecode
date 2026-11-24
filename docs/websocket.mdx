@@ -5,11 +5,11 @@ summary: "The same API over one WebSocket: many requests on one socket, and a tu
 
 `wss://api.nodecode.ai/v1/ws` carries the same three routes as HTTP over one socket, with the same key, limits and prices. It pays off in a long agent loop: each turn sends only its new messages, not the whole conversation again. On a 20 Mbit/s link an 818k-token chat took 1.5 s to first token this way, against 3.4 s over HTTP.
 
-The Nodecode CLI uses it for nodecode.ai's models on a paid key, and falls back to HTTP when the socket is not there. `NODECODE_WEBSOCKET=0` keeps it on HTTP.
+The Nodecode CLI uses it for nodecode.ai's models on a paid key and on a free one, and falls back to HTTP when the socket is not there. `NODECODE_WEBSOCKET=0` keeps it on HTTP.
 
 ## Connect
 
-Open the socket with a paid key in `Authorization: Bearer sk-nc-...`; a free key is refused with 403. The first frame states the socket's limits:
+Open the socket with your key, paid or free, in `Authorization: Bearer sk-nc-...`. A free key's requests keep the free tier's terms, as over HTTP: they are served to the Nodecode CLI only. The first frame states the socket's limits:
 
 ```json
 {"type": "open", "idle_secs": 60, "max_age_secs": 3600, "max_running": 16, "keep_bytes": 67108864}

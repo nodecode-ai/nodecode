@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the SBCL Windows runtime nodecode.exe is dumped on: sbcl.exe of the
-# official SBCL 2.6.8 x86-64 Windows release, with two patches:
+# official SBCL 2.6.8 x86-64 Windows release, with three patches:
 #
 # - core-views.patch maps the core into memory copy-on-write instead of
 #   reading it whole (below);
@@ -10,6 +10,11 @@
 #   runtime then finds no core and starts as plain SBCL. The patched one reads
 #   the trailer just before the table the PE header names (and its zero
 #   padding), and saves no stale certificate pointer into an image it dumps.
+# - thread-handle.patch closes every thread's handle. A new Lisp thread
+#   replaced the handle _beginthreadex gave it with a duplicate of its own,
+#   and the join closed only the duplicate: one handle leaked for every
+#   thread a process ever made, until a long-running gateway could no longer
+#   open a file (ERROR_TOO_MANY_OPEN_FILES).
 #
 # Every nodecode process on Windows (the shell, the organism, each worker)
 # starts by loading the ~90 MB image. The stock runtime reads it all into
@@ -54,6 +59,7 @@ tar -xjf src.tar.bz2
 cd sbcl-$ver
 patch -p1 --quiet < "$here/core-views.patch"
 patch -p1 --quiet < "$here/signed-core.patch"
+patch -p1 --quiet < "$here/thread-handle.patch"
 
 # make-config.sh as the official build's MSYS2 shell ran it
 mkdir -p "$work/bin"
