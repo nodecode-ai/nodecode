@@ -1078,8 +1078,9 @@ attached session's, the one this shell's stop acts on."
         (values model.state model.turn-in-flight model.turn-started-at
                 model.turn-activity t))))
 
-(defun dispatch-inbound-frame (program model json-text &key release &aux (dispatched nil))
-  "Decode one projection and enqueue it; all state changes happen in UPDATE."
+(defun dispatch-inbound-frame (program model message &key release &aux (dispatched nil))
+  "Enqueue one projection, MESSAGE its JSON or the frame its reader already
+decoded; all state changes happen in UPDATE."
   ;; The session filter reads MODEL's session id at dispatch time — never a
   ;; connect-time snapshot — because /clear, /sessions, and /fork re-point the
   ;; model at another session over the same connection, and a filter frozen on
@@ -1088,7 +1089,9 @@ attached session's, the one this shell's stop acts on."
   ;; whole stream: the submit-then-stall-forever shape).
   (with-cleanup ((when (and release (not dispatched)) (funcall release)))
     (handler-case
-        (let* ((frame (decode-sync-message json-text))
+        (let* ((frame (if (typep message '(or string octets))
+                          (decode-sync-message message)
+                          message))
                (payload (and (eq :projection frame.type) frame.payload)))
           ;; Session-less, this shell's own, or the preview lane's followed session.
           (when (and payload (member frame.session-id

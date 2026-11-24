@@ -108,6 +108,8 @@ back since.")
   (mailbox (sb-concurrency:make-mailbox))
   (commands (sb-concurrency:make-mailbox))
   (running nil)
+  ;; T once its terminal hung up (HANG-UP): nothing queued is folded after.
+  (hung-up nil)
   (tty-stream nil)
   (worker nil)
   (input-thread nil)
@@ -133,6 +135,52 @@ not running."
 
 (defun %report (program where condition)
   (ignore-errors (funcall program.error-handler where condition)))
+
+(defparameter *hang-up-grace-seconds* 1
+  "How long a program whose terminal hung up folds what it had queued before
+it stops ahead of the rest.")
+
+(defun hang-up (program &key (grace 0))
+  "PROGRAM's terminal is gone: quit, and stop ahead of everything still
+queued once GRACE seconds have passed -- at once when GRACE is 0."
+  ;; Its window closed, its ssh dropped, its pty's master gone: nothing reads
+  ;; another frame. A quit posted like any message waited behind the batch
+  ;; drained before it, and with a heavy transcript every fold of that batch
+  ;; kept the process painting into a dead tty, a core busy, until it was
+  ;; killed by hand (#530). The grace keeps what was typed before the end:
+  ;; a responsive loop folds it and the quit behind it well inside a second.
+  ;; Slot writes and a spawn, so a signal handler may call it; the quit that
+  ;; ends a blocked drain is posted from a thread of its own.
+  (flet ((stop () (setf program.hung-up t program.running nil)))
+    (when (zerop grace) (stop))
+    (nlk:spawn "nlt-hangup"
+      (sb-concurrency:send-message program.mailbox (make-quit-msg))
+      (when (plusp grace)
+        (sleep grace)
+        (stop))))
+  t)
+
+(defun terminal-gone-p (program condition &aux (tty program.tty-stream))
+  "Whether CONDITION is PROGRAM's terminal failing to be read or written: a
+syscall failure or the end of file on its stream."
+  ;; A write into a pty whose master closed fails EIO (`Couldn't write to
+  ;; /dev/tty: Input/output error'); reported and painted again, the loop
+  ;; failed that write on every frame. A decoding error is the terminal's
+  ;; bytes, not its end, and stays a report.
+  (and (typep condition '(or sb-int:simple-stream-error end-of-file))
+       tty
+       (let ((stream (stream-error-stream condition)))
+         (or (eq stream tty)
+             (eq stream (renderer-output-stream program.renderer))
+             (and (typep tty 'two-way-stream)
+                  (or (eq stream (two-way-stream-input-stream tty))
+                      (eq stream (two-way-stream-output-stream tty))))))))
+
+(defun %report-or-hang-up (program where condition)
+  "Hang PROGRAM up when CONDITION is its terminal gone, else report it."
+  (if (terminal-gone-p program condition)
+      (hang-up program)
+      (%report program where condition)))
 
 (defun resize-program (program &optional (post #'send))
   "Measure the terminal, size PROGRAM's renderer to it, and tell the model
@@ -229,6 +277,9 @@ COUNT the number folded."
   ;; frame in each batch would fall behind its gateway and never catch up.
   (dolist (msg (coalesce-wheel messages))
     (cond
+      ;; Hung up: what is left of the batch has no terminal to answer to.
+      (program.hung-up
+       (return-from handle-messages))
       ((quit-msg-p msg)
        (setf program.running nil)
        (return-from handle-messages))
@@ -245,7 +296,7 @@ COUNT the number folded."
        (setf updated t))
       ((terminal-io-msg-p msg)
        (let ((stream (or program.tty-stream renderer.output-stream)))
-         (nlk:with-handlers ((error (e) (%report program :terminal-io e)))
+         (nlk:with-handlers ((error (e) (%report-or-hang-up program :terminal-io e)))
            (funcall (terminal-io-msg-thunk msg) stream)
            (force-output stream))))
       (t
@@ -258,7 +309,7 @@ COUNT the number folded."
            (unless quiet (setf updated t))
            (when cmd (push cmd commands)))))))
   (run-command program (nreverse commands))
-  (when (and updated paint-p)
+  (when (and updated paint-p (not program.hung-up))
     (render renderer (view program.model)))
   updated)
 
@@ -276,7 +327,7 @@ COUNT the number folded."
   (setf program.loop-thread (bt2:current-thread))
   (nlk:with-cleanup ((setf (program-loop-thread program) nil))
     (loop while program.running
-          do (nlk:with-handlers ((error (e) (%report program :event-loop e)))
+          do (nlk:with-handlers ((error (e) (%report-or-hang-up program :event-loop e)))
                (let* ((period (round (* *frame-period-seconds*
                                         internal-time-units-per-second)))
                       ;; A pending frame owns the next wake-up: either a
@@ -295,6 +346,7 @@ COUNT the number folded."
                             (handle-messages program messages :paint-p nil))
                    (setf pending-paint t))
                  (when (and pending-paint
+                            (not program.hung-up)
                             (or (null last-painted-at)
                                 (>= (- (get-internal-real-time) last-painted-at)
                                     period)))
@@ -309,8 +361,8 @@ COUNT the number folded."
 (defun input-loop (program &aux (ended nil))
   "Decode the tty into messages until the program stops, or the tty ends."
   ;; A tty ends when it hangs up -- its window closed, its ssh dropped, its
-  ;; pty's master gone -- and nothing types there again: what came before the
-  ;; end is handed on, then a quit. Polled on, it held the process alive with
+  ;; pty's master gone -- and nothing types there again: the program hangs
+  ;; up (HANG-UP), and so does a read the dead tty fails. Polled on, it held the process alive with
   ;; no terminal anywhere, and the shell later fronted an organism of its
   ;; own (T-348). On Windows the loop also measures the console every tenth
   ;; of a second, the resize signal that platform lacks.
@@ -318,13 +370,21 @@ COUNT the number folded."
         #+win32 (size (multiple-value-call #'cons (terminal-size)))
         #+win32 (measure-at (get-internal-real-time)))
     (loop while (and program.running (not ended))
-          do (nlk:with-handlers ((error (e) (%report program :input e)))
+          do (nlk:with-handlers ((error (e)
+                                   (cond ((terminal-gone-p program e)
+                                          (setf ended t)
+                                          (hang-up program))
+                                         ;; Any other failure that repeats
+                                         ;; must not turn this loop at the
+                                         ;; speed of the failure.
+                                         (t (%report program :input e)
+                                            (sleep 0.01)))))
                (let ((events (loop for msg = (read-key stream :ended)
                                    while (and msg (not (eq msg :ended)))
                                    collect msg
                                    finally (setf ended (eq msg :ended)))))
                  (dolist (msg events) (send program msg))
-                 (cond (ended (send program (make-quit-msg)))
+                 (cond (ended (hang-up program :grace *hang-up-grace-seconds*))
                        ((null events) (sleep 0.001)))
                  #+win32
                  (when (>= (get-internal-real-time) measure-at)
@@ -346,7 +406,7 @@ COUNT the number folded."
   "Hand what SIGNAL asks of PROGRAM to its loop: SIGWINCH re-measures,
 SIGTSTP suspends, SIGHUP -- its terminal hung up, the window closed -- quits."
   (cond ((= signal sb-posix:sigwinch) (resize-program program #'%defer))
-        ((= signal sb-posix:sighup) (%defer program (make-quit-msg)))
+        ((= signal sb-posix:sighup) (hang-up program :grace *hang-up-grace-seconds*))
         (t (%defer program :suspend))))
 
 ;;; --- run -----------------------------------------------------------------

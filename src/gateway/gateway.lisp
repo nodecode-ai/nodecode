@@ -199,24 +199,62 @@ transport."
 session's replay (SEND-REPLAY-CHUNK); a fresh one for each gateway's start
 (START-CELLS-BEHIND-THE-LISTENER), so no replay an earlier one sent counts.")
 
+(defun replay-frame-octets (frame)
+  "About the octets FRAME, one accumulated frame, takes in a chunk: its
+payload's, which a replay knows (VISIBLE-EVENT-FRAMES lays the log's own
+bytes in), and an allowance for the envelope around them."
+  (let ((payload (gethash "payload" (gethash "event" frame))))
+    (+ 1024 (if (nlk:json-verbatim-p payload)
+                (length (nlk:json-verbatim-octets payload))
+                0))))
+
+(defun replay-frame-runs (frames)
+  "FRAMES in order as the runs one chunk each carries: as many frames as fit
+the frame bound by REPLAY-FRAME-OCTETS, a frame past the bound a run of its
+own."
+  (let ((bound (- nlk:+max-sync-frame-bytes+ 4096))
+        (runs '())
+        (run '())
+        (size 0))
+    (map nil (lambda (frame &aux (octets (replay-frame-octets frame)))
+               (when (and run (> (+ size octets) bound))
+                 (push (nreverse run) runs)
+                 (setf run '()
+                       size 0))
+               (push frame run)
+               (incf size octets))
+         frames)
+    (when run (push (nreverse run) runs))
+    (nreverse runs)))
+
 (defun send-replay-chunk (state job frames index final-p &optional tail-p)
-  "Send FRAMES as one bounded chunk, bisecting oversized chunks."
-  ;; Returns the next chunk index. A chunk of one fact goes whole even past
-  ;; the bound: the fact was admitted under the same bound and outgrew it only
-  ;; by its envelope, the socket itself reads to 64 MiB, and refusing it would
-  ;; leave the session unreadable to every shell that ever attaches.
-  (let ((json (replay-job-frame job (coerce frames 'vector) index final-p tail-p)))
-    (cond
-      ((or (<= (length json) nlk:+max-sync-frame-bytes+)
-           (<= (length frames) 1))
-       (gw-peer-send-text state json)
-       (when final-p (bt2:signal-semaphore *replay-sent-semaphore*))
-       (1+ index))
-      (t
-       (let* ((half (floor (length frames) 2))
-              (next (send-replay-chunk state job (subseq frames 0 half)
-                                       index nil tail-p)))
-         (send-replay-chunk state job (subseq frames half) next final-p tail-p))))))
+  "Send FRAMES as bounded chunks, the last one FINAL-P's."
+  ;; Returns the next chunk index. The frames are cut into chunks by what
+  ;; their payloads weigh, before any is encoded: encoded first and halved
+  ;; when too long, a page of 12 MB results was encoded seven times over on
+  ;; its way down to chunks of one (#530). The halving stays for a run whose
+  ;; envelopes outgrew their allowance. A chunk of one fact goes whole even
+  ;; past the bound: the fact was admitted under the same bound and outgrew it
+  ;; only by its envelope, the socket itself reads to 64 MiB, and refusing it
+  ;; would leave the session unreadable to every shell that ever attaches.
+  (let ((runs (replay-frame-runs frames)))
+    (if (rest runs)
+        (loop for (run . more) on runs
+              do (setf index (send-replay-chunk state job run index
+                                                (and final-p (null more)) tail-p))
+              finally (return index))
+        (let ((json (replay-job-frame job (coerce frames 'vector) index final-p tail-p)))
+          (cond
+            ((or (<= (length json) nlk:+max-sync-frame-bytes+)
+                 (<= (length frames) 1))
+             (gw-peer-send-text state json)
+             (when final-p (bt2:signal-semaphore *replay-sent-semaphore*))
+             (1+ index))
+            (t
+             (let* ((half (floor (length frames) 2))
+                    (next (send-replay-chunk state job (subseq frames 0 half)
+                                             index nil tail-p)))
+               (send-replay-chunk state job (subseq frames half) next final-p tail-p))))))))
 
 ;;; --- the first pass -----------------------------------------------------------
 ;;; A replay is the whole log, folded by the shell in order and painted at its
@@ -529,7 +567,7 @@ owns this image's gateway — straight into its in-process dispatch."
       (wsd:send ws text)))
 
 (defun gateway-link-close (ws)
-  "Hang up WS: close the socket, or detach the in-process peer and forget
+  "Hang up WS: sever the socket, or detach the in-process peer and forget
 its subscriptions and rows views. NIL is quiet."
   ;; The in-process peer has no socket whose :close would close its rows
   ;; views, so they close here, as that handler closes a socket's.
@@ -537,7 +575,10 @@ its subscriptions and rows views. NIL is quiet."
     ((null ws) nil)
     ((gw-loopback-client-p ws)
      (stop-gw-peer ws) (remove-peer (car ws.subscriptions) ws) (close-rows-views ws))
-    (t (ignore-errors (wsd:close-connection ws)))))
+    ;; Severed, never closed: whoever hangs up -- a shell's teardown first --
+    ;; is not the socket's reader, and a close under that reader held every
+    ;; quit for the two seconds its kill is bounded by (SEVER-WEBSOCKET).
+    (t (ignore-errors (nlk:sever-websocket ws :grace-seconds 1)))))
 
 (defun enqueue-peer-frame (peer item &key session-id cursor cursor-present-p encoder attach
                                 &aux accepted)
@@ -1025,18 +1066,69 @@ seq, session and turn."
   (accumulated-frame session-id event.log-position event.turn-id event.kind
                      event.payload event.event-id event.command-id event.occurred-at))
 
+;;; A tool result recorded before its producer bounded the workspace diff it
+;;; carries (NLK:BOUND-DIFF-DOCUMENT) holds every patch whole: 12 MB on one
+;;; call that rewrote a 120,000-line file. Carried as the log keeps them,
+;;; fifteen of those were 166 MB for a shell to read and decode before its
+;;; first paint, each then cut to the screens it shows (#530). The cut is
+;;; made here: a result that long is read for its document alone -- every
+;;; other member found and carried as the bytes it is, no patch decoded past
+;;; its head -- and leaves as its producer would write it now.
+
+(defparameter *replay-payload-read-octets* (* 1024 1024)
+  "A tool result's payload longer than this is read before a replay carries
+it, for a workspace diff from before its producer bounded it: more than a
+bounded document and a bounded result come to.")
+
+(defun bounded-result-payload (octets)
+  "OCTETS, a tool result's payload, with its workspace diff within the
+display bounds, as a JSON-VERBATIM; NIL when it is within them already or
+carries none."
+  (let* ((payload (nlk:decode-json
+                   octets :whole t
+                   ;; Paths run innermost key first: the payload's members and
+                   ;; its metadata's stay bytes, but for the way to the
+                   ;; document, and so does each file's patch inside it.
+                   :keep (lambda (path)
+                           (cond ((null (rest path))
+                                  (or (equal (first path) "metadata") :verbatim))
+                                 ((null (cddr path))
+                                  (or (equal (first path) "workspace_diff") :verbatim))
+                                 ((equal path '("patch" "files" "workspace_diff" "metadata"))
+                                  :verbatim)
+                                 (t t)))))
+         (metadata (and (hash-table-p payload) (gethash "metadata" payload)))
+         (document (and (hash-table-p metadata) (gethash "workspace_diff" metadata)))
+         (bounded (and (hash-table-p document) (nlk:bound-diff-document document))))
+    (unless (eq bounded document)
+      (nlk:json-verbatim
+       (nlk:encode-json-octets
+        (copy-json-object payload "metadata"
+                          (copy-json-object metadata "workspace_diff" bounded)))))))
+
+(defun replay-payload (stored)
+  "STORED's payload as a replay or a history page carries it: the log's own
+bytes, or a long tool result's with its workspace diff bounded
+(BOUNDED-RESULT-PAYLOAD)."
+  (or (and (equal stored.kind nlk::+kind-tool-result+)
+           (> (length stored.payload) *replay-payload-read-octets*)
+           ;; One this cannot read leaves as the log keeps it.
+           (ignore-errors (bounded-result-payload stored.payload)))
+      (nlk:json-verbatim stored.payload)))
+
 (defun visible-event-frames (session-id facts visible-set)
   "FACTS, STORED-FACTs, as the frames a client folds, less the
 replay-suppressed evidence kinds and the turn-bearing facts off VISIBLE-SET's
 chain."
   ;; The replay pages and the history pager filter through this one predicate,
-  ;; and lay each payload into its frame as the log keeps it. Without this,
-  ;; a payload would be decoded into an instance only to be encoded back.
+  ;; and lay each payload into its frame as the log keeps it (REPLAY-PAYLOAD).
+  ;; Without this, a payload would be decoded into an instance only to be
+  ;; encoded back.
   (loop for stored in facts
         unless (or (nlk:event-kind-replay-suppressed-p stored.kind)
                    (not (nlk::turn-visible-p stored.turn-id visible-set)))
           collect (accumulated-frame session-id stored.log-position stored.turn-id
-                                     stored.kind (nlk:json-verbatim stored.payload)
+                                     stored.kind (replay-payload stored)
                                      stored.event-id stored.command-id
                                      stored.occurred-at)))
 
@@ -1740,6 +1832,42 @@ recordBackgroundShellExitFact): skipped when the shell has no owning turn."
              :anchor-position position)))))))
 
 (defvar *background-exec-watcher* nil)
+(defstruct watchdog-progress completed-at seen http-failed)
+(defvar *gateway-watchdog-progress* nil
+  "This watcher's progress. A retired worker may finish late, but only in its own record.")
+
+(defun gateway-watchdog-pulse (&optional (seconds (nlk::systemd-watchdog-window)))
+  "Refresh an armed serving watchdog only after HTTP, the shared store and a new
+watcher pass prove live. A native store wait is bounded by the external watchdog."
+  (let ((progress *gateway-watchdog-progress*))
+    (when (and seconds progress *gateway-bound-port* (not (watchdog-progress-http-failed progress)))
+      (let ((began (get-internal-real-time)) (budget (/ seconds 3)))
+        ;; No redirects, pool, helper thread or provider-contacting doctor call.
+        ;; One failed request latches unhealthy: do not pile up stuck workers.
+        (unless (ignore-errors
+                  (multiple-value-bind (body status headers clipped)
+                      (nlk:http :get (format nil "http://127.0.0.1:~d/healthz" *gateway-bound-port*)
+                                :timeout budget :max-bytes 1024 :max-redirects 0)
+                    (declare (ignore headers))
+                    (and (eql status 200) (not clipped)
+                         (let ((answer (nlk:decode-json body :whole t)))
+                           (and (hash-table-p answer) (eq t (gethash "ok" answer))
+                                (equal "gateway" (gethash "component" answer)))))))
+          (setf (watchdog-progress-http-failed progress) t)
+          (return-from gateway-watchdog-pulse nil))
+        ;; The operational connection, not WITH-STORE-READER's independent one.
+        ;; This is a read, not a requirement that events advance: idle is healthy.
+        (when (ignore-errors
+                (let ((nlk::*store-reader* nil))
+                  (integerp (nlk:events :as :value :columns '("coalesce(max(log_position), 0)")))))
+          (let ((completed (watchdog-progress-completed-at progress))
+                (seen (watchdog-progress-seen progress))
+                (now (get-internal-real-time)) (ticks (* budget internal-time-units-per-second)))
+            (when (and (eq progress *gateway-watchdog-progress*) completed
+                       (or (null seen) (> completed seen))
+                       (<= 0 (- now completed) ticks) (< (- now began) ticks))
+              (setf (watchdog-progress-seen progress) completed)
+              (nlk:systemd-watchdog))))))))
 
 (defvar *exit-wake-lock* (bt2:make-lock :name "exit-wake"))
 
@@ -1809,16 +1937,19 @@ no prompt queued."
 
 (defun start-background-exec-watcher ()
   (unless *background-exec-watcher*
-    (setf *background-exec-watcher*
-          (worker-start "background-exec-watcher"
+    (let ((progress (make-watchdog-progress)))
+      (setf *gateway-watchdog-progress* progress
+            *background-exec-watcher*
+            (worker-start "background-exec-watcher"
                         (lambda ()
                           (ignore-errors (scan-exec-child-stalls (exec-registry-instance)))
                           ;; The runaway probe is no longer driven from here: it has
                           ;; one owner, the eval guard, which starts with the first
                           ;; evaluation in any image and reaches synchronous snippets this
                           ;; watcher never listed (exec.lisp ENSURE-EVAL-GUARD).
-                          (background-exec-watcher-tick :wake t))
-                        :wake 0.2))))
+                          (background-exec-watcher-tick :wake t)
+                          (setf (watchdog-progress-completed-at progress) (get-internal-real-time)))
+                        :wake 0.2)))))
 
 
 ;;; Filled by DEFINE-SYNC-COMMAND; DISPATCH-COMMAND routes every
@@ -4887,15 +5018,34 @@ clear their refusals."
     (%stop-cells names))
   (refresh-attached-command-catalogs))
 
-(defun restart-cell-folder (name &aux (prefixed (format nil "nodecode-~a" name))
-                                      (record (or (nlk:find-cell name) (nlk:find-cell prefixed))))
-  "The folder RESTART-CELLS restarts for NAME: its own name, or the label
-/cells shows it by (`goal' for nodecode-goal). Refused, saying what is so,
-when NAME names a folder that is off, one this organism has not loaded, or
+(defun cell-runners (record &aux (path (nlk:cell-path record)))
+  "The loaded folders with a start of their own that RECORD's folder stands
+on, by name: what runs a library that has none -- the channel kit, whose
+start reads each channel's section and runs that channel."
+  (let ((needs (and path (ignore-errors (nlk::folder-depends-on (nlk::make-cell-folder path))))))
+    (loop for other in (nlk:cells)
+          when (and (not (eq other record))
+                    (eq (nlk:cell-state other) :loaded)
+                    (intersection (nlk:cell-systems other) needs :test #'string-equal)
+                    (nlk:note-cell-start other))
+            collect (nlk:cell-name other))))
+
+(defun restart-cell-folders (name &aux (prefixed (format nil "nodecode-~a" name))
+                                       (record (or (nlk:find-cell name) (nlk:find-cell prefixed))))
+  "The folders RESTART-CELLS restarts for NAME, its own name or the label
+/cells shows it by (`goal' for nodecode-goal): its own, or for a library
+with no start the folders it stands on that have one (CELL-RUNNERS). =>
+(values FOLDERS SAID), SAID the sentence naming those when they stand in
+for NAME's own. Refused, saying what is so, when NAME names a folder that
+is off, one this organism has not loaded, one with nothing to start, or
 none at all."
   ;; /cells drops the shipped prefix, and the refusal said `no cell folder
   ;; named goal' for a folder that runs: a lane read it as a bundled cell no
   ;; restart re-reads, and an off one read as missing too (2026-11-10).
+  ;; A channel is a library the channel kit runs, and its config.md says to
+  ;; restart after an edit: naming the channel stopped and started nothing
+  ;; and answered as if it had, so a channel added to its section stayed
+  ;; unread until the kit was named instead (2026-11-22).
   (let* ((folder (cond (record (nlk:cell-name record))
                        ((nlk:installed-cell-p name) name)
                        ((nlk:installed-cell-p prefixed) prefixed)
@@ -4915,35 +5065,52 @@ none at all."
           ((null record)
            (error "~a is on, but this organism has not loaded its folder: a restart of nodecode loads it"
                   (cell-label folder)))
-          (t folder))))
+          ((not (eq (nlk:cell-state record) :loaded))
+           (error "~a did not load, so nothing of it runs to restart: (cells) says why" (cell-label folder)))
+          ((nlk:note-cell-start record) (list folder))
+          (t
+           (let ((kind (nlk:cell-kind record)))
+             (if-let (runners (and (eq kind :library) (cell-runners record)))
+               (values runners
+                       (format nil "~a has no start of its own: restarted ~{~a~#[~; and ~:;, ~]~}, which run~:[s~;~] it"
+                               (cell-label folder) (mapcar #'cell-label runners) (rest runners)))
+               (error "~a is ~a: it has no start of its own~:[~; and stands on no folder that has one~], so nothing restarts"
+                      (cell-label folder)
+                      (case kind (:library "a library") (:layer "a layer") (:knowledge "a knowledge cell")
+                        (t (format nil "a ~(~a~)" kind)))
+                      (eq kind :library))))))))
 
-(defun restart-cells (&optional name &aux (names (and name (list (restart-cell-folder name)))))
-  "Stop every started peripheral — or the folder NAME names alone, by its
-own name or the label /cells shows (`goal' for nodecode-goal) — re-read the
-shared config, and start again: what the operator or the model says after a
-config change instead of relaunching."
+(defun restart-cells (&optional name)
+  "Stop every started peripheral — or the folders NAME restarts
+(RESTART-CELL-FOLDERS): its own, by its own name or the label /cells shows
+(`goal' for nodecode-goal), or the peripheral a library plugs into — re-read
+the shared config, and start again: what the operator or the model says
+after a config change instead of relaunching. => the report, and the
+sentence naming the folders restarted when they stand in for NAME's own."
   ;; The same stops and starts the gateway runs at its own boot and unwind;
   ;; nothing new in the lifecycle. Answers the report — the records' lines
   ;; with their start state, then the board — so the eval snippet shows what
   ;; happened. Blocks on the caller's thread for as long as the stops and
-  ;; starts take. A NAME that names no loaded folder is refused before
-  ;; anything stops (RESTART-CELL-FOLDER).
-  (bt2:with-lock-held (*cells-lifecycle-lock*)
-    (%stop-cells names)
-    ;; The reader's memo keys on size and mtime, second-granular: an edit
-    ;; the operator made within the second the memo was taken must still
-    ;; be what starts.
-    (setf *shared-config-memo* nil)
-    (%start-cells names))
-  (refresh-attached-command-catalogs)
-  (broadcast-model-changed)
-  ;; A folder named alone also says the commands it registered, so that its
-  ;; maker reads the proof here and does not go looking for the table.
-  (let ((commands (and names (loop for command in *registered-commands*
-                                   when (member (slash-command-owner command) names :test #'equal)
-                                     collect (slash-command-name command)))))
-    (format nil "~a~@[~%~{/~a~^, ~}: the commands it registered, each answering as typed~]"
-            (or (nlk:cells-report-text names) "no cells") commands)))
+  ;; starts take. A NAME with nothing to restart is refused before anything
+  ;; stops (RESTART-CELL-FOLDERS).
+  (multiple-value-bind (names said) (and name (restart-cell-folders name))
+    (bt2:with-lock-held (*cells-lifecycle-lock*)
+      (%stop-cells names)
+      ;; The reader's memo keys on size and mtime, second-granular: an edit
+      ;; the operator made within the second the memo was taken must still
+      ;; be what starts.
+      (setf *shared-config-memo* nil)
+      (%start-cells names))
+    (refresh-attached-command-catalogs)
+    (broadcast-model-changed)
+    ;; A folder named alone also says the commands it registered, so that its
+    ;; maker reads the proof here and does not go looking for the table.
+    (let ((commands (and names (loop for command in *registered-commands*
+                                     when (member (slash-command-owner command) names :test #'equal)
+                                       collect (slash-command-name command)))))
+      (values (format nil "~@[~a~%~]~a~@[~%~{/~a~^, ~}: the commands it registered, each answering as typed~]"
+                      said (or (nlk:cells-report-text names) "no cells") commands)
+              said))))
 
 (defun stop-clack-handler (handler &key (timeout 5))
   "Stop HANDLER's acceptor and wait for it to be gone."
@@ -5464,7 +5631,8 @@ back after them (NLK:TRIM-MEMORY)."
     (ignore-errors (terminate-all-execs (exec-registry-instance)))
     (ignore-errors (exec-await-all-exits (exec-registry-instance)))
     (ignore-errors (background-exec-watcher-tick))
-    (setf *background-exec-watcher* (worker-stop *background-exec-watcher*))
+    (setf *gateway-watchdog-progress* nil
+          *background-exec-watcher* (worker-stop *background-exec-watcher*))
     (ignore-errors (destroy-all-execs (exec-registry-instance)))
     ;; The application probe still in flight proves the acceptor live; a
     ;; stop must not outrun it.
@@ -5475,6 +5643,10 @@ back after them (NLK:TRIM-MEMORY)."
     (stop-clack-handler *gateway-handler*)
     (nlk:note-phase "stop update-poller")
     (ignore-errors (stop-update-poller))
+    ;; What SERVE-GATEWAY started for this gateway goes with it: the process
+    ;; may outlive it, and must not keep the keeper's thread or /index.
+    (ignore-errors (nlk::stop-launch-image-keeper))
+    (unregister-commands "index")
     (set-help-topic :image nil)
     (nlk:unhook 'nlk:source-loaded "gateway-loaded")
     (nlk:unhook 'nlk::note-hook-failure "gateway-notice")

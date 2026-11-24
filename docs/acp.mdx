@@ -1,0 +1,100 @@
+---
+title: ACP
+summary: "Run Nodecode in Zed, JetBrains or any Agent Client Protocol client: nodecode acp is the agent the editor starts."
+---
+
+[The Agent Client Protocol](https://agentclientprotocol.com) is how an editor runs a coding agent: it starts the agent as a process and speaks JSON-RPC on its stdin and stdout. `nodecode acp` is that process for your home's organism. The sessions the editor opens are your home's sessions: the shell, the web page and the channels see them too, and `nodecode resume` opens them.
+
+{/* source: src/cli/acp.lisp */}
+## Set it up
+
+Zed, in `settings.json`:
+
+```json
+{
+  "agent_servers": {
+    "Nodecode": { "type": "custom", "command": "nodecode", "args": ["acp"] }
+  }
+}
+```
+
+Then pick Nodecode in the Agent Panel's new-thread menu ([Zed: custom agents](https://zed.dev/docs/ai/external-agents#custom-agents)).
+
+JetBrains IDEs, in `~/.jetbrains/acp.json`:
+
+```json
+{
+  "agent_servers": {
+    "Nodecode": { "command": "nodecode", "args": ["acp"] }
+  }
+}
+```
+
+Any other client runs `nodecode acp`, with `-p NAME` before `acp` for another profile and `--store PATH` or `--ephemeral` after it for another store. It speaks protocol version 1.
+
+## What the editor asks
+
+| The editor sends | Nodecode |
+| --- | --- |
+| `session/new` | Opens a session working in the editor's folder. |
+| `session/prompt` | Runs a turn and answers with how it ended: `end_turn`, or `cancelled`. A turn that fails answers with its error. |
+| `session/cancel` | Cancels the running turn. |
+| `session/load` | Sends the session's conversation again, then answers. |
+| `session/resume` | Opens the session without sending its conversation again. |
+| `session/list` | Lists this home's sessions, newest first, those of one folder when the editor names it. |
+| `session/close` | Cancels the running turn and lets the session go. It stays in your home. |
+| `session/set_config_option` | Changes the session's model or reasoning effort. |
+
+A prompt's text, the files the editor attaches and its pictures go to the model as one message. An attached file the editor sends whole is written out in the message under its path; one it only links is named by its path, for Nodecode to read itself.
+
+## What the editor shows
+
+| Nodecode | The editor gets |
+| --- | --- |
+| The answer as it streams | `agent_message_chunk` |
+| Thinking as it streams | `agent_thought_chunk` |
+| A tool call starting, then its result | `tool_call`, then `tool_call_update` with the output |
+| A prompt someone typed in the same session elsewhere | `user_message_chunk` |
+| A name given to the session | `session_info_update` |
+| A question the organism puts to you, such as the guard's ask | `session/request_permission`, its choices as the options |
+
+A tool call is titled with the note on the first line of its snippet (`;; list the folder`), else the snippet's first line.
+
+## Models and reasoning
+
+Each session offers two config options. `model` lists the models of every provider you connected, as `/models` does, grouped by provider. `effort` lists the reasoning rungs the model admits; a model that does not reason has no `effort`. A pick on a session that already ran moves it the way `/models` does: from its next turn, and as the default new sessions start on. A pick before the first turn holds for that session alone.
+
+## Slash commands
+
+The editor lists the organism's slash commands, and a prompt that starts with one runs it, as a channel runs it: `/rename`, `/models`, `/context`, `/status` and the commands your cells add. Its answer is the turn's text. `/clear`, `/undo` and `/redo` are left out of the list, since each moves the conversation under the editor's transcript, which the editor cannot be told to redraw. Start a new thread in the editor instead. Typed, they still run.
+
+## The organism's life
+
+| When | Nodecode |
+| --- | --- |
+| No organism runs | `nodecode acp` starts one, which stops when the editor closes its stdin. A running turn stops with it, and the next start picks it up. |
+| One already runs (`nodecode gateway on`, an open shell) | It attaches. The organism keeps running when the editor goes. |
+| The organism goes while the editor stays: a shell that started it quits, an update restarts it | Each session attaches again to whatever serves next, starting one when none does, and goes on past the last thing it read. A turn that was running is answered when it ends on the next boot. |
+| Nothing serves again within 60 seconds | Running prompts fail, and `nodecode acp` exits 1. |
+
+Run `nodecode gateway on` to keep one organism serving the editor, the shell and the channels alike.
+
+<Mistakes>
+<Mistake>
+<What>Writing anything else to `nodecode acp`'s stdout, or reading its stderr as protocol</What>
+<Why>stdout is the protocol, one JSON-RPC message a line. What Nodecode has to say beside it goes to stderr.</Why>
+<Instead>Let the editor own stdin and stdout.</Instead>
+</Mistake>
+<Mistake>
+<What>Expecting the editor's MCP servers in Nodecode</What>
+<Why>Nodecode does not connect the MCP servers an editor offers in `session/new`.</Why>
+<Instead>Name them in Nodecode's own MCP configuration.</Instead>
+</Mistake>
+<Mistake>
+<What>Expecting Nodecode to read and write files through the editor</What>
+<Why>Nodecode runs its tools in its own process on your machine, as it does in the shell. The editor sees a tool call and its output, not each file it touched.</Why>
+<Instead>Review changes in the editor's git view.</Instead>
+</Mistake>
+</Mistakes>
+
+See [RPC](rpc.mdx) for driving the organism with the gateway's own commands, and [The gateway](gateway.mdx) for keeping it running.

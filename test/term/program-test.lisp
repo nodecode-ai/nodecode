@@ -92,6 +92,72 @@ stopped and the thread joined however BODY leaves."
     (is (await () (not (bt2:thread-alive-p loop-thread))) "the loop stops")
     (is (null program.running) "and the program is no longer running")))
 
+(deftest a-hangup-stops-the-loop-ahead-of-its-queue (let* ((program (make-probe-program))
+                                                           (model program.model)))
+  ;; A quit posted like any message waited behind the batch drained before
+  ;; it, and a heavy transcript's folds kept a process with no terminal
+  ;; painting into a dead tty until it was killed (#530).
+  (nlt::hang-up program)
+  (is (not (nlt:handle-messages program (list (nlt:make-key-press-msg :code #\a) (nlt:make-tick-msg)))))
+  (is (null (seen-of-type model 'nlt:key-press-msg)) "nothing queued is folded")
+  (is (zerop (probe-frames model)) "and nothing painted")
+  (is (null program.running)))
+
+#-win32
+(deftest a-hangup-behind-a-slow-queue-stops-within-its-grace (with-saved-globals ((nlt::*hang-up-grace-seconds* 1/5)))
+  ;; Each fold of a heavy transcript took its time, and the quit a closed
+  ;; window posted queued behind 3,439 of them (#530).
+  (let* ((program (make-probe-program))
+         (model program.model))
+    (setf (probe-answer model) (lambda (msg) (declare (ignore msg)) (sleep 1/20) nil))
+    (dotimes (i 100) (nlt:send program (nlt:make-tick-msg)))
+    (with-event-loop (program loop-thread)
+      (nlt::on-signal program sb-posix:sighup)
+      (is (await (:timeout 2) (not (bt2:thread-alive-p loop-thread))) "the loop stops within its grace")
+      (is (< (length (probe-seen model)) 50) "ahead of the rest of its queue"))))
+
+(defclass dead-tty (sb-gray:fundamental-character-input-stream sb-gray:fundamental-character-output-stream) ()
+  (:documentation "A pty whose master closed: every read and write fails EIO."))
+
+(defun dead-tty-fails (stream)
+  (error 'sb-int:simple-stream-error :stream stream
+                                     :format-control "Couldn't write to ~s: Input/output error"
+                                     :format-arguments (list stream)))
+
+(defmethod sb-gray:stream-write-char ((stream dead-tty) char) (declare (ignore char)) (dead-tty-fails stream))
+(defmethod sb-gray:stream-write-string ((stream dead-tty) string &optional start end)
+  (declare (ignore string start end))
+  (dead-tty-fails stream))
+(defmethod sb-gray:stream-read-char ((stream dead-tty)) (dead-tty-fails stream))
+(defmethod sb-gray:stream-read-char-no-hang ((stream dead-tty)) (dead-tty-fails stream))
+(defmethod sb-gray:stream-listen ((stream dead-tty)) (dead-tty-fails stream))
+
+(deftest a-paint-into-a-dead-terminal-hangs-up (let* ((program (make-probe-program))
+                                                      (tty (make-instance 'dead-tty))
+                                                      (reports '())))
+  ;; Reported and painted again, the write failed on every frame and the
+  ;; process outlived its terminal at a core's worth of CPU (#530).
+  (setf (nlt::program-tty-stream program) tty
+        (nlt:renderer-output-stream program.renderer) tty
+        (nlt::program-error-handler program) (lambda (where condition) (push (list where condition) reports)))
+  (with-event-loop (program loop-thread)
+    (nlt:send program (nlt:make-key-press-msg :code #\a))
+    (is (await () (not (bt2:thread-alive-p loop-thread))) "the loop stops")
+    (is (nlt::program-hung-up program) "hung up")
+    (is (null reports) "rather than reported")))
+
+(deftest a-read-the-dead-terminal-fails-hangs-up (let ((program (make-probe-program))))
+  ;; Reported and read again, the failure turned the input loop at its own
+  ;; speed for as long as the process lived (#530).
+  (setf (nlt::program-tty-stream program) (make-instance 'dead-tty))
+  (let ((input (nlk:spawn "test-input" (nlt::input-loop program))))
+    (unwind-protect
+         (progn
+           (is (await () (not (bt2:thread-alive-p input))) "the input loop ends")
+           (is (nlt::program-hung-up program) "and the program hangs up"))
+      (setf (nlt:program-running program) nil)
+      (ignore-errors (bt2:join-thread input)))))
+
 (deftest loop-paces-physical-paints (with-saved-globals (nlt:*frame-period-seconds*))
   (setf nlt:*frame-period-seconds* 0.1)
   (let ((program (make-probe-program)))

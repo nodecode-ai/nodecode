@@ -625,8 +625,10 @@ says none."
 on or off (SWITCH-CELL-ON, SWITCH-CELL-OFF), on refused when a commit
 rides with it and the hub pins another, and with move a hub install at
 an older pin moved on to that commit first; POST {name} starts its
-peripheral again on config.jsonc as it is now (RESTART-CELLS). A POST
-answers the listing, with what came of it as text when it switched."
+peripheral again on config.jsonc as it is now (RESTART-CELLS) -- a
+library's, the one it plugs into, refused when there is none. A POST
+answers the listing, with what came of it as text when it switched or
+restarted another folder for the one named."
   (:route nil "/api/gateway/cells")
   (cells-json
    (when (eq (getf env :request-method) :post)
@@ -634,7 +636,7 @@ answers the listing, with what came of it as text when it switched."
             (name (json-value request :string "name")))
        (require-non-empty (list name) "name must be a non-empty string" :required t)
        (multiple-value-bind (on switch) (json-value request :boolean "on")
-         (cond ((not switch) (restart-cells name) nil)
+         (cond ((not switch) (nth-value 1 (restart-cells name)))
                (on (switch-cell-on name :commit (json-value request :string "commit")
                                         :move (eq t (json-value request :boolean "move"))
                                         :seconds (request-wait-seconds request)))

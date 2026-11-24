@@ -42,7 +42,10 @@ deltas after the head: :STALL one word, then an empty delta and a keep-alive
 comment every 0.1 s for 10 s; :CHATTY a word every 0.2 s for 3 s, then the
 sentinel; :WARM keep-alive comments and empty deltas every 0.1 s for 1.5 s,
 then a word and the sentinel; :COLD the same keep-alives for 10 s and never
-a word."
+a word. The broken-tail modes write a word and the sentinel, each its own
+chunk, and then the connection goes before the terminal chunk: :CUT-TAIL
+closes it with a TLS close_notify, :CUT-TAIL-BARE drops the socket under the
+TLS session with none."
   ;; The head declares keep-alive, so a body that ended cleanly WOULD be
   ;; pooled: the pool gate is not trivially green. The thread then reads until
   ;; the client closes, so its end proves the socket was closed. => (values
@@ -89,6 +92,13 @@ a word."
                                       (chunk (format nil "data: {\"n\": 1, \"pad\": ~s}~%~%"
                                                      (make-string 130 :initial-element #\-))))
                              (last-chunk (format nil "data: [DONE]~%~%")))
+                           (when (member mode '(:cut-tail :cut-tail-bare))
+                             (chunk (chat-delta-line "hi"))
+                             (chunk (format nil "data: [DONE]~%~%"))
+                             (sleep 0.1)
+                             (if (eq mode :cut-tail)
+                                 (close stream)
+                                 (usocket:socket-close socket)))
                            (when (eq mode :paced)
                              ;; one 20-byte data: line, flushed, then a
                              ;; second's silence before the next
@@ -199,6 +209,25 @@ the fold receives handed to ON-FRAME => the provider error signalled, or :DONE."
     (is (= 1 (nle::pooled-connection-count url)) "a clean stream pools its socket")
     (nle::flush-provider-connection-pool)
     (is (thread-ends-within server 3) "the flush closed it: the server saw the socket close")))
+
+(deftests a-tail-that-breaks-after-the-sentinel-keeps-the-stream (mode)
+  ;; The walk drains a finished body's tail so its socket pools. A provider
+  ;; that drops the connection once its last event is out, before the
+  ;; terminal chunk, failed that read with a raw transport condition --
+  ;; END-OF-FILE after a close_notify, SSL-ERROR-SYSCALL (`SSL_get_error: 5')
+  ;; after a drop or a reset -- that no provider verdict names, so
+  ;; the turn died with the answer in hand and was never retried. The
+  ;; stream stands and the broken socket is not pooled.
+  (multiple-value-bind (outcome seconds frames url server)
+      (handler-case (walk-silence mode) (error (e) e))
+    (declare (ignore seconds))
+    (is (eq :done outcome) (format nil "the completed stream stands: ~a" outcome))
+    (when (eq :done outcome)
+      (is (= 1 frames) "the word folded")
+      (is (= 0 (nle::pooled-connection-count url)) "the broken socket is not pooled")
+      (is (thread-ends-within server 3) "the server saw the socket close")))
+  (closed-with-a-close-notify :cut-tail)
+  (dropped-under-the-tls-session :cut-tail-bare))
 
 (deftest watchdog-never-cuts-a-stream-that-keeps-dripping ()
   ;; dexador's own :READ-TIMEOUT rides along at four times the configured

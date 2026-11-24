@@ -129,6 +129,9 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      - name: Test the suite's own summary
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\ci\ci-windows-suite-test.ps1
       - name: Run the core suite, held to its known reds
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\ci\ci-windows-suite.ps1

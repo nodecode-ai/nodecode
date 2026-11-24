@@ -99,6 +99,27 @@ changed greet.py by HUNK, then its answer."
         (is (rows-carry-p "40 + l40" open) "opened, the whole diff")
         (is (not (rows-carry-p "… +" open)))))))
 
+(deftest a-dumped-diff-replays-bounded-and-says-what-it-cut ()
+  ;; A fact recorded before the producer bounded its document carries every
+  ;; patch whole, 12 MB on one call (#530). The replay keeps the head; the
+  ;; lines it cut are counted with the rest, and opened, they stand on a
+  ;; line that opens nothing.
+  (let* ((nle::*tool-detail* :standard)
+         (count (+ nlk::*diff-patch-max-lines* 500))
+         (state (edit-diff-state :commands 0 :hunk (loop for k from 1 to count collect (format nil "+l~d" k))))
+         (group (find-if #'nle::tool-group-p (mapcar #'nle::display-block-row (nle:project-state state :width 100))))
+         (row (find "call-edit" (nle::tool-group-members group) :key #'nle::transcript-row-tool-call-id :test #'equal))
+         (file (aref (nlk:json-array row.metadata "workspace_diff" "files") 0))
+         (key (list :diff (nle::tool-row-expand-key row) "greet.py")))
+    ;; Three header lines and the hunk's own before its COUNT lines.
+    (is (= (- (+ count 4) nlk::*diff-patch-max-lines*) (gethash "patch_cut" file)) "the row keeps the head")
+    (is (rows-carry-p (format nil "… +~d lines" (- count nle::*diff-preview-lines*)) (edit-diff-lines state)) "closed, the count holds all of the rest")
+    (let* ((nle::*expanded-tool-call* (list :fold key))
+           (open (edit-diff-lines state))
+           (cut (find-if (lambda (line) (search "not shown" (nle::lline-text line))) (nle::workspace-diff-llines row))))
+      (is (rows-carry-p (format nil "… +~d lines not shown" (gethash "patch_cut" file)) open) "opened, the head and what it cut")
+      (is (notany #'nle::mspan-link (nle::lline-spans cut)) "which opens nothing"))))
+
 (defun edit-call-fact (state note paths &key (turn-id "edits-turn") (call t) (result t))
   "STATE after an Eval noted NOTE: its call when CALL, then its result when
 RESULT, whose snapshot changed each of PATHS by one line."
