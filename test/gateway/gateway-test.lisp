@@ -1427,6 +1427,33 @@ it is still open SECONDS later."
         (is (< seconds 1) (format nil "the hang-up waits for no kill (~,2f s)" seconds))
         (is (null ended) "the reader ended by itself, neither killed nor left reading")))))
 
+(deftest a-socket-link-hung-up-returns-once-its-reader-ran-its-close (with-temp-gateway (port))
+  ;; Given a shell's socket to its gateway whose :close handler is still at
+  ;; work when the socket already reads closed,
+  ;; When another thread hangs it up, as the shell's teardown does on a quit,
+  ;; Then the hang-up returns once the reader has run that handler to its end
+  ;; and ended. Returned at the closed state instead, the shell exited under
+  ;; its reader, and the exit aborted it mid-handler: the shell's first
+  ;; disconnect notice compiles its constructor there, so a quit of a shell
+  ;; attached over a socket ended on "; compilation unit aborted".
+  (let ((ws (nle::gateway-client port "test-token"))
+        (challenged (bt2:make-semaphore :name "challenged"))
+        (handled nil))
+    (wsd:on :message ws (lambda (message)
+                          (declare (ignore message))
+                          (bt2:signal-semaphore challenged)))
+    (wsd:on :close ws (lambda (&key &allow-other-keys)
+                        (sleep 0.3)
+                        (setf handled t)))
+    (wsd:start-connection ws)
+    (is (bt2:wait-on-semaphore challenged :timeout 5) "the gateway challenges the link")
+    (let ((reader (websocket-driver.ws.client::read-thread ws)))
+      ;; Back in its read: the handler above ran on the reader itself.
+      (sleep 0.05)
+      (nle::gateway-link-close ws)
+      (is handled "the link's :close handler ran to its end before the hang-up returned")
+      (is (not (bt2:thread-alive-p reader)) "the link's reader ended before the hang-up returned"))))
+
 (deftest a-route-answers-its-path-and-the-gateways-own-routes-win (with-temp-gateway (port))
   (flet ((text (path)
            (multiple-value-bind (body status) (nlk:http :get (format nil "http://127.0.0.1:~d~a" port path))
