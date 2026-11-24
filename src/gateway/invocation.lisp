@@ -98,3 +98,18 @@ SOURCE is its source kind (\"kernel\" for the kernel's own writes), ID its id."
                 "domain" (invocation-transport-domain
                           value.transport)
                 :opt "connection_id" (invocation-transport-connection-id value.transport))))
+
+(defun invocation-from-json-object (object)
+  "OBJECT, INVOCATION-JSON-OBJECT's shape decoded, as the typed INVOCATION it
+was written from; INVOCATION-ERROR when it is not one."
+  ;; The way back for provenance kept as JSON until a later write stamps it:
+  ;; a parked prompt's, which its promotion writes (DEQUEUE-NEXT-TURN). Every
+  ;; field passes the constructors' checks again.
+  (flet ((field (&rest path) (apply #'json-value object :string path)))
+    (make-invocation
+     :action (field "action")
+     :command-id (field "command_id")
+     :correlation-id (field "correlation_id")
+     :source (make-invocation-source (field "source" "kind") :id (field "source" "id"))
+     :transport (make-invocation-transport (field "transport" "domain")
+                                           :connection-id (field "transport" "connection_id")))))
