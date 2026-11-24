@@ -2397,6 +2397,27 @@ again, as if written whole."
   ;; 8)) is a fix that costs its two subforms.
   `(patch-definition ',name ',old ',new))
 
+(defun bare-newline-p (text)
+  "True when TEXT holds a newline that no carriage return precedes."
+  (loop for at = (position #\Newline text) then (position #\Newline text :start (1+ at))
+        while at
+        thereis (or (zerop at) (char/= #\Return (char text (1- at))))))
+
+(defun crlf-text (text)
+  "TEXT with each newline that no carriage return precedes made CRLF."
+  (with-output-to-string (out)
+    (loop for at below (length text)
+          for char = (char text at)
+          do (when (and (char= char #\Newline)
+                        (or (zerop at) (char/= #\Return (char text (1- at)))))
+               (write-char #\Return out))
+             (write-char char out))))
+
+(defun crlf-file-text-p (text)
+  "True when every line of TEXT that ends ends in CRLF, and one does."
+  (and (search (coerce '(#\Return #\Newline) 'string) text)
+       (not (bare-newline-p text))))
+
 (defun edit (path old new)
   "Replace the one occurrence of OLD in the file at PATH with NEW and
 answer a receipt naming the line."
@@ -2406,6 +2427,12 @@ answer a receipt naming the line."
   ;; names one place. A relative PATH is against the session's directory.
   ;; Deliver OLD and NEW through the call's strings object — ($ "old"),
   ;; ($ "new") — rather than escaping them into the form.
+  ;; A file whose lines all end in CRLF (git's autocrlf on Windows) is matched
+  ;; and written in CRLF: the model writes OLD and NEW with bare newlines,
+  ;; since a carriage return is invisible in what it reads, so OLD's and
+  ;; NEW's bare newlines are taken as the file's own. Without that every
+  ;; multi-line OLD misses on a difference neither side of the divergence
+  ;; shows, and an inserted line leaves the file with mixed endings.
   (check-type old string)
   (check-type new string)
   (receipt-call "edit" path)
@@ -2416,6 +2443,10 @@ answer a receipt naming the line."
                                                     :external-format :utf-8)
                  (error (e) (error "cannot read ~a: ~a"
                                    (namestring resolved) e))))
+         (crlf (and (crlf-file-text-p text)
+                    (or (bare-newline-p old) (bare-newline-p new))))
+         (old (if crlf (crlf-text old) old))
+         (new (if crlf (crlf-text new) new))
          (start (search old text)))
     (cond
       ((null start)
@@ -2430,13 +2461,19 @@ answer a receipt naming the line."
              (error "~a does not contain OLD, not even its first character"
                     (namestring resolved))
              (let ((point (+ position matched)))
+               ;; A carriage return prints as nothing: a divergence there
+               ;; (a file of mixed endings) says so, or both sides read alike.
                (error "~a does not contain OLD. It matches the first ~d ~
                        character~:p (through line ~d), then diverges:~%~
-                       file continues ~s~%OLD continues  ~s"
+                       file continues ~s~%OLD continues  ~s~:[~;~%~
+                       The file's line ends in a carriage return (CRLF) ~
+                       where OLD's ends in a bare newline.~]"
                       (namestring resolved) matched
                       (1+ (count #\Newline text :end point))
                       (subseq text point (min (length text) (+ point 60)))
-                      (subseq old matched (min (length old) (+ matched 60))))))))
+                      (subseq old matched (min (length old) (+ matched 60)))
+                      (and (< point (length text)) (char= #\Return (char text point))
+                           (< matched (length old)) (char= #\Newline (char old matched))))))))
       ((search old text :start2 (+ start (length old)))
        (error "OLD occurs ~d times in ~a; widen it until it names one place"
               (ppcre:count-matches `(:sequence ,old) text) (namestring resolved)))
@@ -2447,7 +2484,8 @@ answer a receipt naming the line."
                  (namestring resolved)
                  (1+ (count #\Newline text :end start))
                  (text-line-count old) (text-line-count new)
-                 (source-clauses resolved edited text)))))))
+                 (cons (and crlf "its CRLF line endings kept")
+                       (source-clauses resolved edited text))))))))
 
 (defun write-file (path text)
   "Write TEXT to the file at PATH — parents created, an existing file

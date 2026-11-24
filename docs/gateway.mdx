@@ -69,6 +69,17 @@ The home is `~/.nodecode/` unless a profile or `NODECODE_HOME` names another. Yo
 | Stop timeout | 60 s | 60 s |
 | Log | The user journal | `~/Library/Logs/nodecode/nodecode-gateway.log` |
 
+While serving on Linux under an armed systemd watchdog, each heartbeat requires a successful local
+`/healthz` response without redirects, a read through the shared store connection and a newly
+completed background watcher pass. An idle gateway is healthy: no new tokens,
+messages or events are required. A blocked store or watcher stops the heartbeat.
+A failed HTTP probe stops heartbeats until restart, rather than accumulating
+requests against a stuck listener. The check does not contact a model provider.
+The systemd watchdog, not a forced unwind of a native call, bounds a stuck check.
+Foreground serving and a notification socket without an armed watchdog do not
+run these probes. A retired watcher's late completion cannot count for its successor.
+Waiting for another process to release the store retains its waiting heartbeat.
+
 On macOS the launcher is copied once to `~/Library/Application Support/nodecode/launcher/1/nodecode`.
 
 `on` refuses to overwrite a unit file of that name that Nodecode did not write. `off` leaves such a file alone.
@@ -153,3 +164,29 @@ The unit names the installer's `current` link. A restart runs the build installe
 | `nodecode gateway restart` | Rewrites the unit first if the binary path or `PATH` changed. |
 
 The installer restarts only units that Nodecode wrote. See [Updates](updates.mdx).
+
+{/* source: src/client/client-session.lisp, src/cli/entry.lisp */}
+## Bounded headless shutdown
+
+A headless gateway starts its stop supervisor before waiting for the store or
+loading cells. If that thread cannot start, the gateway refuses startup. SIGTERM
+records a three-second monotonic deadline without creating another thread. The
+owner does normal cleanup; the already-running supervisor enforces the deadline
+even when endpoint publication or cleanup is blocked. Repeated ordinary stop
+requests do not extend it. A second SIGTERM asks for immediate exit. An error
+unwinding an already stopping owner exits directly before error reporting, rather
+than disarming the deadline while reporting might block.
+
+The deadline exits directly, without unwinding, flushing output, or walking child
+processes. In-flight work may be lost; the kernel releases this process's store
+lock. The external service manager owns child cleanup and restart policy. A stop
+already admitted takes precedence over restart or image handoff. Before a saved
+image is made, the supervisor joins cooperatively; a signal during handoff exits
+as soon as Lisp dispatches its handler, and a new launch acquires a fresh
+supervisor. During snapshot/exec handoff the worker has joined: a blocked foreign
+call can defer that handler, so only external supervision bounds that span.
+A manually run, unsupervised gateway may leave child processes after forced exit.
+
+This is not a substitute for external supervision: if all Lisp execution or GC
+is wedged, the in-process deadline may not run. No service-unit limits or restart
+policy are changed by this code.

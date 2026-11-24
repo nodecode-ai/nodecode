@@ -100,13 +100,11 @@
                               (nlt:update model (make-instance 'gw-projection-msg :frame frame))
                               (bt2:signal-semaphore replayed)))))
                  (wsd:start-connection ws)
-                 ;; CLOSE-CONNECTION closes the socket, then destroys the read
-                 ;; thread it saw alive -- which that close has just ended, so
-                 ;; on a loaded box the destroy finds it exited and signals
-                 ;; (both arms of the 7de1bc51d publish, built side by side).
-                 ;; An exited reader is the state the close is for.
-                 (with-cleanup ((handler-case (wsd:close-connection ws)
-                                  (bt2:bordeaux-threads-error () nil)))
+                 ;; Hung up the way a shell hangs up (GATEWAY-LINK-CLOSE): the
+                 ;; socket shut down, its reader left to read the end and
+                 ;; close itself. A close from here would destroy that reader
+                 ;; under its read, and wait out the bound of the kill.
+                 (with-cleanup ((nlk:sever-websocket ws :grace-seconds 1))
                    (unless (bt2:wait-on-semaphore replayed :timeout 10)
                      (error "warm-image: the sync stream never replayed"))))
                (setf *boot-trim-done* nil)

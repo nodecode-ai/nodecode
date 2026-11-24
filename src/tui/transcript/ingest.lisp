@@ -352,6 +352,19 @@ turn. A no-op when no pending row matches."
           (transcript-row-retention row) :persisted-history
           (transcript-row-hydrated row) t)))
 
+(defun bounded-result-metadata (metadata)
+  "A tool result's display METADATA with its workspace_diff document within
+the display bounds (NLK:BOUND-DIFF-DOCUMENT): METADATA itself when it already
+is, else a copy -- the fact's own object is never modified."
+  ;; A fact recorded before the producer bounded its document still carries
+  ;; every patch whole, 12 MB on one call (#530): bounded here, a replay
+  ;; parses and keeps what a reader can open, not the dump.
+  (let* ((document (and (hash-table-p metadata) (json-value metadata :object "workspace_diff")))
+         (bounded (and document (nlk:bound-diff-document document))))
+    (if (eq bounded document)
+        metadata
+        (copy-json-object metadata "workspace_diff" bounded))))
+
 (define-ingest ingest-tool-result-fact (st call-id name result
                                         &key turn-id error-p metadata)
   "Record a tool result on the row its call opened, failed when ERROR-P —
@@ -391,7 +404,7 @@ background when it handed its job off (until the exit's reducer closes it)."
                                                   "background")
                                                  (t "complete"))
           (transcript-row-error-p row) (and error-p t)
-          (transcript-row-metadata row) (and (hash-table-p metadata) metadata)
+          (transcript-row-metadata row) (and (hash-table-p metadata) (bounded-result-metadata metadata))
           (transcript-row-retention row) :persisted-history
           (transcript-row-hydrated row) t)))
 

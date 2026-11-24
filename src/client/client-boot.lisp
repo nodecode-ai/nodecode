@@ -604,6 +604,14 @@ session the shell ended on, or NIL when it never attached."
   ;; organism it started (STOP-FRONT).
   ;; STORE-PATH also names the store whose sidecar the ladder re-resolves
   ;; after a sustained outage.
+  ;; The models.dev catalog is parsed beside the attach, from the first
+  ;; moment, not by its first reader: the header's occupancy lane resolves
+  ;; the newest round's window through it (MODEL-CONTEXT-TOKENS), and read on
+  ;; the loop thread the parse held the first frame of a replayed transcript
+  ;; 75 ms, and a new session's first usage fact as long inside its turn. A
+  ;; reader that comes while it is in flight waits on its lock, for what is
+  ;; left of it (READ-JSON-FILE-MEMO).
+  (spawn "models-catalog" (ignore-errors (models-catalog-table)))
   (engage-theme)
   ;; Programs outside the organism read which session this shell is on
   ;; from its presence record (NOTE-SHELL-PRESENCE).
@@ -630,9 +638,9 @@ session the shell ended on, or NIL when it never attached."
          ;; One inbound frame into the fold, bounded by the ingress slots: the
          ;; socket's projection arm.
          (release (lambda () (bt2:signal-semaphore ingress-slots)))
-         (ingest (lambda (msg)
+         (ingest (lambda (frame)
                    (bt2:wait-on-semaphore ingress-slots)
-                   (dispatch-inbound-frame program model msg :release release)))
+                   (dispatch-inbound-frame program model frame :release release)))
          ;; The shell program, answered to the boot's rare notices once it
          ;; exists.
          (shell (lambda ()
@@ -877,9 +885,13 @@ session the shell ended on, or NIL when it never attached."
                                        (or (gethash "message" frame.payload)
                                            "Gateway connection rejected"))
                                       (bt2:signal-semaphore closed))
+                                     ;; The frame goes on as it was decoded
+                                     ;; here: handed on as its text, every
+                                     ;; chunk of a replay and every delta of
+                                     ;; a turn was decoded twice.
                                      (:projection
                                       (when handshake-complete
-                                        (funcall ingest msg)))))
+                                        (funcall ingest frame)))))
                                (protocol-error (condition)
                                  (setf permanent t)
                                  (report-transport-error program :permanent "~a"
@@ -907,7 +919,12 @@ session the shell ended on, or NIL when it never attached."
                      (loop until (bt2:wait-on-semaphore
                                   closed :timeout *sync-keepalive-seconds*)
                            do (wsd:send-ping ws)))
-                   (ignore-errors (wsd:close-connection ws))
+                   ;; Severed, not closed off its reader: a connection this lap
+                   ;; gives up while it still reads -- an ensure that did not
+                   ;; land, a rejection -- held the next lap for the two
+                   ;; seconds the reader's kill is bounded by. One its reader
+                   ;; closed already is left as it is.
+                   (ignore-errors (nlk:sever-websocket ws :grace-seconds 1))
                    (when permanent
                      (return))
                    (unless stop

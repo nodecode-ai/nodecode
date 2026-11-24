@@ -381,6 +381,10 @@ Zig launcher gives the same thing."
                   :label "rpc [SESSION-ID]"
                   :arguments "[SESSION-ID [--cursor N]] [--store PATH | --ephemeral]"
                   :detail "Each line on stdin is one gateway command, the object a client_command frame carries: {\"type\":\"start_turn\",\"request\":{\"prompt\":\"...\"}}, which may also name the provider, model and effort a session not yet begun runs on (the default stays where it is), or steer_turn, cancel_turn, withdraw_prompt, interrupt_exec, navigate_checkpoint, get_state (the session as it stands, in its result), set_session_subscriptions. A command_id is minted when a line names none, and a command naming no session_id goes to SESSION-ID, or to a fresh session. Each line on stdout is one gateway frame as the gateway sent it: the session's replay first, then its facts as they land (session_stream_event; turn.completed, turn.failed or turn.cancelled ends a turn), each command's gateway_turn_command_result, and a sync_protocol_error for a line that is not a command. --cursor N, the newest cursor a program read, resumes: the replay carries only what landed past it and says resumed_after, unless the session's history changed under it (a checkpoint move), when the whole replay comes instead. Every shape both ways is src/gateway/protocol.schema.json. With no organism running it starts one, which stops when stdin closes; one already running keeps running.")
+   (nlk:make-verb "acp" "run this home's organism as an agent in Zed, JetBrains or any ACP client"
+                  :label "acp"
+                  :arguments "[--store PATH | --ephemeral]"
+                  :detail "Speaks the Agent Client Protocol (agentclientprotocol.com, version 1) on stdin and stdout, one JSON-RPC message a line: the editor starts it and talks to it, and nothing else should write to it. Each session the editor opens is one of this home's sessions, which the shell and the web page show too: session/new opens one in the editor's folder, session/load sends one's conversation again, session/list lists them, and a session's model and reasoning effort are its config options. A question the organism puts to whoever watches -- the guard's ask -- is the editor's permission prompt. With no organism running it starts one, which stops when stdin closes; one already running keeps running, and when the organism goes while the editor stays -- an update, a shell that quits -- its sessions attach again to whatever serves next.")
    (nlk:make-verb "help" "this text, or one command's" :arguments "[COMMAND]")
    (nlk:make-verb "trial" "a fresh process of the folder that answers one form (launch.lisp)" :internal t)
    (nlk:make-verb "warm" "the warm-image supervisor (launch.lisp)" :internal t)
@@ -652,6 +656,10 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
                       (launch-usage-error "--cursor resumes a session past a log position: ~
                                              nodecode rpc SESSION-ID --cursor N"))
                     (setf child (list :rpc session cursor))))
+                 ;; (:acp): an ACP client's agent on stdio, its sessions
+                 ;; the client's to open.
+                 ((string= name "acp")
+                  (setf child (list :acp)))
                  ;; `gateway setup [CHANNEL]' is the shell, opened straight on
                  ;; the channel's setup sheet; `gateway setup --help' is the
                  ;; gateway verbs' help, like every verb's.
@@ -757,9 +765,10 @@ CHILD SESSION-ID STORE-PATH EPHEMERAL SETUP PROFILE PRISTINE LAUNCH)."
                                 ((and (consp setup) (eq (first setup) :image-picker)) "snapshots")
                                 ((consp setup) "import")
                                 (t "setup"))))
-    (when (and child (eq (first child) :rpc) (or serve session-id setup))
-      (launch-usage-error "rpc is a command of its own: nodecode [-p NAME] rpc ~a"
-                          (nlk:verb-arguments (nlk:find-verb "rpc" *launch-verbs*))))
+    (when (and child (member (first child) '(:rpc :acp)) (or serve session-id setup))
+      (launch-usage-error "~(~a~) is a command of its own: nodecode [-p NAME] ~:*~(~a~) ~a"
+                          (first child)
+                          (nlk:verb-arguments (nlk:find-verb (string-downcase (first child)) *launch-verbs*))))
     (when (and child (member (first child) '(:login :machine-link :add :profile :secrets :sandbox :gateway :update :web :generations :rollback :snapshot :snapshots))
                (or serve session-id store-path ephemeral setup))
       (launch-usage-error "~a is a command of its own: nodecode [-p NAME] ~:*~a ..."
@@ -1187,7 +1196,7 @@ condition's report, exit 1."
       (when (or serve (null child)) (nlk:decide-pristine))
       ;; A launch that runs an organism asks once whether its home and store
       ;; can be used, before a shell paints or anything boots (HOME-REFUSAL).
-      (when-let (refusal (and (or (null child) (eq (first child) :rpc))
+      (when-let (refusal (and (or (null child) (member (first child) '(:rpc :acp)))
                               (home-refusal store-path)))
         (print-answer-and-quit refusal 1 :error))
       ;; A sandboxed shell: the jail's settings written and its port chosen
@@ -1207,7 +1216,7 @@ condition's report, exit 1."
                           :asked *sandbox-asked*
                           :sandboxed (sandboxed-process-p)
                           :loads (or (null child) serve
-                                     (member (first child) '(:rpc :trial :warm :warm-dump)))))
+                                     (member (first child) '(:rpc :acp :trial :warm :warm-dump)))))
         (print-answer-and-quit refusal 1 :error))
       ;; The launch-cache verbs run before any folder loads: the `warm`
       ;; supervisor loads nothing itself, and `warm-dump` must load the
@@ -1235,6 +1244,7 @@ condition's report, exit 1."
                   (gateway-http-error (refusal)
                     (values (gateway-http-error-detail refusal) 1 :error))))
           (:rpc (rpc-main (second child) (third child) store-path))
+          (:acp (acp-main store-path))
           (:trial nil)))
       ;; The folder loads in EVERY process before anything else runs:
       ;; the owner, an attached TUI, a headless serve
@@ -1291,15 +1301,20 @@ condition's report, exit 1."
                 #'launch))
               (t (launch)))))))
 
-(defun launch-headless (serve child session-id store-path setup
-                        ;; `gateway run' (:WAIT) waits for the store and takes it before
-                        ;; anything here runs (TAKE-STORE-BEFORE-BOOT): booted first, it
-                        ;; pointed a shell's cell installs at its own build and left its
-                        ;; receipt, so a stop while it waited made the next launch pristine.
-                        &aux (ready (and (eq serve :wait) (take-store-before-boot store-path))))
+(defun launch-headless (serve child session-id store-path setup)
+  "Acquire a headless owner's stop supervisor before any store wait or boot."
+  (flet ((launch () (launch-headless-supervised serve child session-id store-path setup)))
+    (if serve (call-with-gateway-stop-supervisor #'launch) (launch))))
+
+(defun launch-headless-supervised (serve child session-id store-path setup
+                                  &aux (ready (and (eq serve :wait)
+                                                   (take-store-before-boot store-path))))
   "The launch of a process that paints no TUI: SERVE's headless owner, or a
 CHILD's one answer. => what that answers; :LOST for a serve that does not
 wait and found the store held."
+  (when (and serve (gateway-stop-requested-p))
+    (return-from launch-headless-supervised
+      (finish-stopped-gateway (merge-pathnames (or store-path nlk::*default-store-path*)))))
   ;; A serve that loses the election loses before its boot: the boot points
   ;; the home's cell installs at this build (REFRESH-INSTALLED-CELLS), moves
   ;; its hub clones and loads every cell, and a loser left all of that to the
@@ -1308,7 +1323,7 @@ wait and found the store held."
   ;; race this look misses. `gateway run' (:WAIT) has waited for the store
   ;; instead, and holds it (READY).
   (when (and (eq serve t) (serve-election-lost-p store-path))
-    (return-from launch-headless :lost))
+    (return-from launch-headless-supervised :lost))
   ;; a serve leaves its receipt before the load: a self that dies before serving is found by the launch after
   ;; a serve that will own the organism boots the saved heap a restore asked for, before any folder loads (images.lisp)
   (when serve (follow-restore-pointer))

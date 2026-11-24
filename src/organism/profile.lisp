@@ -290,6 +290,39 @@ organism's binary with `-p NAME'."
 
 ;;; --- create --------------------------------------------------------------------------
 
+(defun shared-secret-prefix (&optional (home *home*))
+  "What a file HOME pastes into a secrets folder it shares with another home
+is named under: profiles.<HOME's profile name>."
+  ;; A profile name is a-z, 0-9, _ and -, never a dot, so the prefix names
+  ;; one home's files and no other's; a section key never starts `profiles.'.
+  (format nil "profiles.~a." (profile-name home)))
+
+(defun home-secret-file (name &optional (directory (home "secrets/")))
+  "The file a secret this home pastes as NAME is kept in under DIRECTORY,
+its secrets folder: NAME itself where the folder is this home's own, and
+NAME behind SHARED-SECRET-PREFIX where the folder is a link to another
+home's, as `profile create' makes it."
+  ;; Two homes read one secrets/ so a provider key has one owner, but a
+  ;; pasted secret is named for its section alone -- channels.discord's bot
+  ;; token is channels.discord.bot_token_file in every home -- so a paste in
+  ;; the new home replaced the file the source home's config names, and the
+  ;; source's gateway logged in as the new bot (DROP-CLONED-CHANNELS: a bot
+  ;; token belongs to one home). The home's own name keeps the two apart, and
+  ;; PROFILE-DELETE takes it with the home. A home that owns its folder -- the
+  ;; default one, a fork, a Windows copy -- names it as it always has.
+  (merge-pathnames (if (symlink-target directory)
+                       (concatenate 'string (shared-secret-prefix) name)
+                       name)
+                   (uiop:ensure-directory-pathname directory)))
+
+(defun home-shared-secret-files (home &aux (secrets (merge-pathnames "secrets/" home)))
+  "The files HOME pasted into the secrets folder it shares with another home
+(HOME-SECRET-FILE): its own, gone with it."
+  (when (symlink-target secrets)
+    (let ((prefix (shared-secret-prefix home)))
+      (remove-if-not (lambda (file) (uiop:string-prefix-p prefix (file-namestring file)))
+                     (ignore-errors (uiop:directory-files secrets))))))
+
 (defun drop-cloned-channels (home &aux (path (merge-pathnames "config.jsonc" home)))
   "Take the `channels' member out of the config.jsonc a clone just copied
 into HOME, and answer the member's name when there was one to take out."
@@ -523,6 +556,8 @@ named it. Refused as DELETABLE-PROFILE says. => T."
   ;; A unit left behind would restart a home that is gone, five seconds
   ;; after every exit, for good.
   (gateway-off :home (profile-record-home record) :mark nil)
+  ;; Its pasted secrets sit in the folder it shares, under its own name.
+  (mapc #'delete-file (home-shared-secret-files (profile-record-home record)))
   (remove-tree (profile-record-home record))
   (let ((wrapper (wrapper-path name)))
     (when (wrapper-owned-p wrapper name)

@@ -49,12 +49,6 @@ blank or NIL TEXT."
                                 :separator '(#\Space #\Tab #\Return #\Newline))
           :test #'string=))
 
-(defun trimmed (text)
-  "TEXT without its leading and trailing blanks -- space, tab, return,
-newline. The one bag: a caller that spells the character list out disagrees
-with the next one by a character sooner or later."
-  (string-trim '(#\Space #\Tab #\Return #\Newline) text))
-
 (defun narrow-string (string)
   "STRING as a simple-base-string when every character of it is one, else
 STRING itself."

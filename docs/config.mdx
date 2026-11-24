@@ -184,7 +184,7 @@ A cancelled turn sends no notice.
 
 | Key | Type | Default |
 | --- | --- | --- |
-| `index.hot_budget` | Integer, 500 or more | 8192: characters of the index below its first line |
+| `index.hot_budget` | Integer, 120 or more | 8192: characters of the index below its first line. A small budget names the definitions without describing them. |
 | `index.stale_days` | Integer, 1 or more | 30: a skill or a layer definition unused this long reads as cold. A memory never does. |
 | `import.session_budget` | Integer, 1 or more | 200: conversations one import carries before the rest wait |
 | `welcome.note` | Boolean | `true`: a short brief when Nodecode comes back after a stop, a crash or an update, as a row in a chat that has begun and in each channel's home room. The home screen shows none. `false` makes no model call for it. |

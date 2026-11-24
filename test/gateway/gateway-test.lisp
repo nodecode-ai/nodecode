@@ -91,6 +91,21 @@ initializes its terminal widgets."
     (nle:stop-gateway)
     (is (not (bt2:thread-alive-p handler-thread)))))
 
+(deftest a-stopped-gateway-takes-back-what-it-started-for-itself (with-temp-gateway (port))
+  ;; A process outlives the gateway it served: a shell that hosted one, a test
+  ;; image. Left behind, the launch-image keeper is a thread nobody owns --
+  ;; SB-POSIX:FORK refuses with "Cannot fork with multiple threads running"
+  ;; -- and /index rides in every catalog read after.
+  (flet ((keeper ()
+           (find "launch-image-keeper" (sb-thread:list-all-threads) :key #'sb-thread:thread-name :test #'equal))
+         (index () (nle::find-registered-command "index")))
+    (is (keeper) "the keeper runs while the gateway serves")
+    (is (index) "and /index is in the catalog")
+    (nle:stop-gateway)
+    (is (null (keeper)) "a stopped gateway leaves no keeper thread")
+    (is (null nlk::*launch-image-keeper*) "nor a keeper the next start would take for running")
+    (is (null (index)) "nor /index in the catalog")))
+
 (defun ws-collect-frames (url &key (timeout 2) send-commands subscribe pid headers
                                    (token "test-token") await-subscription)
   "Open a WS client to URL, its upgrade carrying HEADERS and its connect TOKEN,
@@ -136,7 +151,9 @@ order."
            ;; Drain frames until TIMEOUT with no new arrival.
            (frames (loop for frame = (sb-concurrency:receive-message inbox :timeout timeout)
                          while frame collect frame)))
-      (ignore-errors (wsd:close-connection ws))
+      ;; Severed, as a shell hangs up: a close from here waited out the two
+      ;; seconds its reader's kill is bounded by, in every test that collects.
+      (ignore-errors (nlk:sever-websocket ws :grace-seconds 1))
       (ignore-errors (bt2:join-thread conn-thread))
       (nconc frames (sb-concurrency:receive-pending-messages inbox)))))
 
@@ -619,6 +636,20 @@ release to UPDATE."
       (nle::switch-gateway-session model "fresh-session"))
     (is (not (frame-dropped-p program model "fresh-session")))
     (is (frame-dropped-p program model "boot-session"))))
+
+(deftest a-frame-its-reader-decoded-is-dispatched-as-it-is ()
+  ;; The socket's reader decodes each frame to learn what it is, and the fold
+  ;; takes that frame: handed on as its text, every chunk of a replay and
+  ;; every delta of a turn was decoded twice (#530).
+  (let* ((model (detached-shell "boot-session"))
+         (program (nlt:make-program model))
+         (frame (nlk:decode-sync-message
+                 (nlk::encode-projection-event "boot-session" 1 "session_input_queue_snapshot_updated"
+                                               (nlk::make-json-object))))
+         (released nil))
+    (with-stubbed-fdefinition (nlk:decode-sync-message (text) (error "decoded again: ~a" text))
+      (nle::dispatch-inbound-frame program model frame :release (lambda () (setf released t))))
+    (is (not released) "dispatched: its ingress slot is UPDATE's to release")))
 
 (deftest gateway-client-folds-live-and-durable-tool-calls (let ((state (nle::initial-chat-state))))
   (flet ((delta (arguments)
@@ -1354,7 +1385,7 @@ it is still open SECONDS later."
     (let ((thread (nlk:spawn "quiet-socket" (ignore-errors (wsd:start-connection ws)))))
       (sleep seconds)
       (prog1 (and (not closed) (eq :open (wsd:ready-state ws)))
-        (ignore-errors (wsd:close-connection ws))
+        (ignore-errors (nlk:sever-websocket ws :grace-seconds 1))
         (ignore-errors (bt2:join-thread thread))))))
 
 (deftest a-quiet-socket-lives-on-the-gateways-pings ()
@@ -1368,6 +1399,33 @@ it is still open SECONDS later."
       (setf nle::*gateway-ping-seconds* 0.3)
       (with-temp-gateway (port)
         (is (quiet-socket-open-after port 3) "pinged, it stays open")))))
+
+(deftest a-socket-link-hung-up-off-its-reader-is-not-waited-out (with-temp-gateway (port))
+  ;; Given a shell's socket to its gateway, the reader parked on a link gone
+  ;; quiet after the challenge,
+  ;; When another thread hangs it up, as the shell's teardown does on a quit,
+  ;; Then the reader reads the end and closes itself. Closed under its read
+  ;; instead, it was killed there, and the hang-up waited out the two seconds
+  ;; that kill is bounded by: every quit of a shell took them.
+  (let ((ws (nle::gateway-client port "test-token"))
+        (challenged (bt2:make-semaphore :name "challenged")))
+    (wsd:on :message ws (lambda (message)
+                          (declare (ignore message))
+                          (bt2:signal-semaphore challenged)))
+    (wsd:start-connection ws)
+    (is (bt2:wait-on-semaphore challenged :timeout 5) "the gateway challenges the link")
+    (let ((reader (bt2:thread-native-thread (websocket-driver.ws.client::read-thread ws))))
+      ;; Back in its read: the handler above ran on the reader itself.
+      (sleep 0.05)
+      (let* ((began (get-internal-real-time))
+             (hung-up (progn (nle::gateway-link-close ws) (get-internal-real-time)))
+             (seconds (/ (- hung-up began) internal-time-units-per-second))
+             ;; What its function answered, or :KILLED for a reader that was
+             ;; aborted or that reads on.
+             (ended (sb-thread:join-thread reader :timeout 2 :default :killed)))
+        (is (eq :closed (wsd:ready-state ws)) "the link is closed when the hang-up returns")
+        (is (< seconds 1) (format nil "the hang-up waits for no kill (~,2f s)" seconds))
+        (is (null ended) "the reader ended by itself, neither killed nor left reading")))))
 
 (deftest a-route-answers-its-path-and-the-gateways-own-routes-win (with-temp-gateway (port))
   (flet ((text (path)
@@ -1978,6 +2036,46 @@ for a field left to the gateway, each under its own WHY."
           (is (null asked) "welcome.note off asks the model nothing")
           (is (null said) "and says nothing"))))))
 
+(deftest the-boot-note-waits-for-the-start-of-the-cell-that-serves-its-model (let ((said '()) (warned '())))
+  ;; Every home on claude-code logged `the organism's note went unsaid:
+  ;; provider claude-code is not one this box knows' at its boot, and said no
+  ;; note: the note's side call ran while the cell that brings the lane was
+  ;; still to start. The side call waits for that start, as a turn does.
+  (let ((cell (nlk::make-cell :name "nl-cell" :kind :peripheral :start (lambda (config) config nil)))
+        (provider nle::*provider*)
+        (model nle::*model*))
+    (with-saved-globals (nle::*organism-note* (nlk::*cells* (list cell)) (nlk::*cells-starting* :a-start-pass)
+                         (nle::*provider* "nl-cell-lane") (nle::*auxiliary-model* nil))
+      ;; The lane is known once the cell has started, and not before.
+      (with-stubbed-fdefinitions ((nlk::cell-served-providers (served) (and (eq served cell) '("nl-cell-lane")))
+                                  (nle::selection-refusal (lane) lane
+                                    (and (not (nlk:cell-started-p cell)) "no lane yet"))
+                                  (nle::snapshot-effective-provider-config (&optional (lane nle::*provider*) (id nle::*model*))
+                                    id
+                                    (if (and (equal lane "nl-cell-lane") (not (nlk:cell-started-p cell)))
+                                        (error 'nle::provider-config-error
+                                               :detail "provider nl-cell-lane is not one this box knows")
+                                        (funcall original provider model)))
+                                  (nle::broadcast-organism (kind payload &key session-id)
+                                    (push (cons kind (nlk:json-value payload :string "text")) said)))
+        (with-provider-stub (nil (wire-message "assistant" :content "Back, and none the worse."))
+          ;; The cell starts 0.3 s into the note.
+          (let ((start (get-internal-real-time))
+                (starter (bt2:make-thread (lambda () (sleep 0.3) (setf (nlk:cell-started-p cell) t))
+                                          :name "cell-started")))
+            (let* ((waited nil)
+                   (words (unwind-protect
+                               (prog1 (handler-bind ((warning (lambda (condition)
+                                                                (push (princ-to-string condition) warned)
+                                                                (muffle-warning condition))))
+                                        (nle::say-note "nodecode is running again after 5s away."))
+                                 (setf waited (- (get-internal-real-time) start)))
+                            (bt2:join-thread starter))))
+              (is (null warned) "no warning says the note went unsaid")
+              (is (equal "Back, and none the worse." words) "the note is said once the cell has started")
+              (is (>= waited (* 0.25 internal-time-units-per-second)) "its side call waited for that start"))
+            (is (equal '(("organism.note" . "Back, and none the worse.")) said))))))))
+
 (deftest a-boot-that-picks-up-a-cut-off-turn-says-it-is-back (let ((requests '())))
   ;; If nodecode is cut off and returns, it should brief the user up, that
   ;; it is back and just brief quickly. When a restart for an update cuts a
@@ -2365,6 +2463,39 @@ had time to send anything more: a row sent twice arrives after the match."
     (is (= 1 (nle::send-replay-chunk (install-silent-peer socket) job (vector fact) 0 t)))
     (is (= 1 (length (recording-peer-ws-sent socket))))
     (is (> (length (first (recording-peer-ws-sent socket))) nlk:+max-sync-frame-bytes+))
+    (nle::stop-gw-peer socket)))
+
+(deftest a-replay-cuts-its-chunks-by-what-their-payloads-weigh ()
+  ;; The frames are sized before any is encoded: three payloads of 6 MiB are
+  ;; two chunks in order, each within the bound and the last one final. Encoded
+  ;; first and halved when too long, every level of the halving encoded them
+  ;; all again (#530).
+  (let* ((socket (make-instance 'recording-peer-ws :require-masking nil))
+         (job (nle::make-gw-replay-job :session-id "gw-runs" :cursor 3))
+         (payload (nlk:json-verbatim
+                   (nlk:encode-json-octets (make-string (* 6 1024 1024) :initial-element #\x
+                                                                         :element-type 'base-char))))
+         (frames (loop for seq from 1 to 3
+                       collect (nlk:json-object "seq" seq
+                                                "event" (nlk:json-object "payload" payload))))
+         (past (nlk:json-object
+                "event" (nlk:json-object
+                         "payload" (nlk:json-verbatim
+                                    (make-array nlk:+max-sync-frame-bytes+
+                                                :element-type '(unsigned-byte 8)))))))
+    (flet ((runs (frames) (mapcar #'length (nle::replay-frame-runs frames))))
+      (is (equal '(2 1) (runs frames)))
+      (is (equal '(1 1 2) (runs (list* (first frames) past (rest frames)))) "one past the bound runs alone"))
+    (is (= 2 (nle::send-replay-chunk (install-silent-peer socket) job frames 0 t)))
+    (let ((sent (reverse (recording-peer-ws-sent socket))))
+      (is (every (lambda (chunk) (<= (length chunk) nlk:+max-sync-frame-bytes+)) sent))
+      (is (equal '((0 nil (1 2)) (1 t (3)))
+                 (loop for chunk in (mapcar #'nlk:decode-json sent)
+                       collect (list (nlk:json-value chunk :integer "payload" "replay_chunk_index")
+                                     (nlk:json-value chunk :boolean "payload" "replay_chunk_final")
+                                     (map 'list (lambda (frame) (gethash "seq" frame))
+                                          (nlk:json-value chunk :array
+                                                          "payload" "accumulated_frames")))))))
     (nle::stop-gw-peer socket)))
 
 (deftest stop-gw-peer-reclaims-the-registry-entry (let* ((peer (list :reclaim-peer))
@@ -4044,6 +4175,49 @@ request."
             (let ((image (gethash "image" meta)))
               (is-shape image ("payload_kind" "base64") ("provider_executed" null))))))))
 
+(deftest a-replay-carries-a-dumped-workspace-diff-bounded (with-temp-gateway (port))
+  ;; A result from before its producer bounded the document it carries holds
+  ;; every patch whole (#530). The replay cuts it as the producer would now; a
+  ;; long result whose document is within the bounds, and one too short to be
+  ;; read at all, leave as the bytes the log keeps.
+  (ensure-durable-session "dump-replay")
+  (with-saved-globals ((nlk::*diff-patch-max-lines* 5)
+                       (nle::*replay-payload-read-octets* 2000))
+    (flet ((metadata (patch)
+             (nlk:json-object
+              "workspace_diff" (nlk:json-object
+                                "files" (vector (nlk:json-object "path" "big.txt" "added" 400
+                                                                  "removed" 0 "patch" patch)))
+              "calls" 1)))
+      (let ((turn (nlk:admit-turn "dump-replay" (nlk::make-durable-id "command") "rewrite it")))
+        (record-tool-use turn "dumped" "eval" "{}" "done"
+                         :metadata (metadata (format nil "~{line ~d é~%~}" (alexandria:iota 400))))
+        (record-tool-use turn "long" "eval" "{}" (make-string 3000 :initial-element #\r)
+                         :metadata (metadata (format nil "one~%")))
+        (record-tool-use turn "short" "eval" "{}" "done" :metadata (metadata (format nil "one~%")))
+        (nlk:complete-turn turn nil)))
+    (let ((kept (loop for stored in (nlk:events :session-id "dump-replay" :as :facts
+                                                :kind nlk::+kind-tool-result+)
+                      collect (eq (nlk::stored-fact-payload stored)
+                                  (nlk:json-verbatim-octets (nle::replay-payload stored))))))
+      (is (equal '(nil t t) kept) "only the dump is rewritten"))
+    (let* ((results (remove "turn.tool_result" (replay-frames (subscribed-frames port "dump-replay"))
+                            :test-not #'equal
+                            :key (lambda (frame) (nlk:json-value frame :string "event" "type"))))
+           (payload (lambda (call)
+                      (gethash "payload"
+                               (gethash "event" (wire-row call results "event" "payload" "call-id")))))
+           (file (lambda (call)
+                   (aref (nlk:json-array (funcall payload call) "metadata" "workspace_diff" "files") 0)))
+           (dumped (funcall file "dumped"))
+           (head (format nil "~{line ~d é~%~}" (alexandria:iota 5))))
+      (is (equal head (gethash "patch" dumped)) "the patch keeps its head")
+      (is-shape dumped ("patch_cut" = 395 "and counts what it lost") ("added" = 400) ("path" "big.txt"))
+      (is-shape (funcall payload "dumped")
+        ("result" "done" "what else the result carries rides as it was")
+        ((:integer "metadata" "calls") = 1))
+      (is (equal (format nil "one~%") (gethash "patch" (funcall file "long")))))))
+
 (deftest gateway-image-route-serves-the-file-a-look-names (with-temp-gateway (port))
   ;; A page cannot open the path a LOOK's image fact names, so the route
   ;; serves that file's bytes as the fact's media type -- only a path some
@@ -4624,26 +4798,149 @@ request."
           (is (eql 45999 (nle::live-published-endpoint store-path)) "a live pid's"))))))
 
 (deftest a-stop-that-runs-long-is-cut-short (let ((cut 0)))
-  ;; A serve's stop has *STOP-SECONDS*: past it the process ends at once
-  ;; (CUT-SHORT), the kernel freeing the store's lock, where an exit that
-  ;; waited on a thread it could not stop held the store 60 s. Armed only in
-  ;; a serve: this image, which stops gateways all day, never.
   (with-saved-globals ((nle::*serving* nil) (nle::*stopping* nil) (nle::*serve-next* nil)
-                       (nle::*stop-seconds* 0.05))
+                       (nle::*gateway-stop-supervisor* nil) (nle::*stop-seconds* 0.05))
     (with-stubbed-fdefinition (nle::cut-short () (incf cut))
-      (nle::serve-next :stop)
-      (sleep 0.3)
-      (is (zerop cut) "outside a serve, a stop is never cut short")
-      (setf nle::*serving* t)
-      (nle::serve-next :restart)
-      (sleep 0.3)
-      (is (zerop cut) "a restart has no deadline")
-      (nle::serve-next :stop)
-      (is-eventually (= 1 cut) "a serve's stop is cut short past its seconds")
-      (nle::serve-next :stop)
-      (sleep 0.3)
-      (is (= 1 cut) "once"))
+      (with-stubbed-fdefinition (nle::stop-on-sigterm (supervisor) (declare (ignore supervisor)))
+        (nle::serve-next :stop)
+        (sleep 0.1)
+        (is (zerop cut) "outside a headless owner there is no deadline")
+        (nle::call-with-gateway-stop-supervisor
+         (lambda ()
+           (nle::serve-next :restart)
+           (sleep 0.1)
+           (is (zerop cut) "restart has no deadline")
+           (nle::serve-next :stop)
+           (is-eventually (= 1 cut) "the prestarted worker enforces the deadline")
+           (nle::serve-next :stop)
+           (sleep 0.1)
+           (is (= 1 cut) "once")))))
     (loop while (bt2:wait-on-semaphore nle::*serve-wake* :timeout 0))))
+
+(deftest shutdown-deadline-is-first-admitted-and-stop-dominates ()
+  (let* ((nle::*stop-seconds* 3)
+         (state (nle::make-gateway-stop-supervisor)))
+    (with-saved-globals ((nle::*gateway-stop-supervisor* state) (nle::*serving* nil)
+                         (nle::*serve-next* nil) (nle::*stopping* nil)
+                         (nlk::*keep-store-lease* nil))
+      (nle::serve-next :stop)
+      (let ((deadline (nle::gateway-stop-supervisor-state state)))
+        (is (integerp deadline))
+        (nle::serve-next :stop)
+        (is (= deadline (nle::gateway-stop-supervisor-state state)))
+        (dolist (request '(:restart :image :switch))
+          (nle::serve-next request)
+          (is (eq :stop nle::*serve-next*))
+          (is (null nlk::*keep-store-lease*)))
+        (is (null (nle::gateway-stop-handoff state)) "a stop wins before handoff")
+        (is (= deadline (nle::gateway-stop-supervisor-state state))))
+      (nle::request-gateway-stop state t)
+      (is (eq :force (nle::gateway-stop-supervisor-state state)))
+      (loop while (bt2:wait-on-semaphore nle::*serve-wake* :timeout 0)))))
+
+(deftest shutdown-stop-admitted-during-endpoint-publication-wins ()
+  (let ((reentered nil) (state (nle::make-gateway-stop-supervisor)))
+    (with-saved-globals ((nle::*gateway-stop-supervisor* state) (nle::*serving* t)
+                         (nle::*serve-next* nil) (nle::*stopping* nil)
+                         (nlk::*keep-store-lease* nil))
+      (with-stubbed-fdefinition (nlk::publish-store-endpoint (&rest args)
+                                  (declare (ignore args))
+                                  ;; Deterministic equivalent of the older image
+                                  ;; request resuming after a newer stop's publish.
+                                  (unless reentered
+                                    (setf reentered t)
+                                    (nle::serve-next :stop)))
+        (nle::serve-next :image))
+      (is (eq :stop nle::*serve-next*))
+      (is (null nlk::*keep-store-lease*))
+      (loop while (bt2:wait-on-semaphore nle::*serve-wake* :timeout 0)))))
+
+(deftest shutdown-worker-is-acquired-before-the-body-or-startup-refuses ()
+  (let ((called nil))
+    (with-saved-globals ((nle::*gateway-stop-supervisor* nil))
+      (with-stubbed-fdefinition (bt2:make-thread (&rest args)
+                                  (declare (ignore args))
+                                  (error "fixture: no threads available"))
+        (handler-case (nle::call-with-gateway-stop-supervisor (lambda () (setf called t)))
+          (error () nil)))
+      (is (null called))
+      (is (null nle::*gateway-stop-supervisor*)))))
+
+(deftest shutdown-stopped-return-releases-a-previously-retained-lease
+    (with-temp-directory (dir "shutdown-lease"))
+  (let* ((path (merge-pathnames "history.db" dir))
+         (lock (nlk::hold-store-lease path)))
+    (nlk:with-cleanup ((when (nlk::held-lock (nlk::lock-path-for-store path))
+                        (nlk::unlock-file lock)))
+      (is lock)
+      (is (eq :stopped (nle::finish-stopped-gateway path)))
+      (is (null (nlk::held-lock (nlk::lock-path-for-store path)))))))
+
+(deftest shutdown-early-stop-releases-a-lease-acquired-before-the-stop
+    (with-temp-directory (dir "shutdown-early-lease"))
+  (let ((path (merge-pathnames "store.sqlite" dir)) (booted nil))
+    (with-saved-globals ((nle::*gateway-stop-supervisor* nil)
+                        (nle::*serve-next* nil) (nle::*stopping* nil))
+      (with-stubbed-fdefinitions
+          ((nle::stop-on-sigterm (supervisor) (declare (ignore supervisor)))
+           (nle::take-store-before-boot (given)
+             (nlk::hold-store-lease given)
+             (nle::request-gateway-stop nle::*gateway-stop-supervisor*)
+             t)
+           (nlk:boot-cells (&rest options) (declare (ignore options)) (setf booted t)))
+        (unwind-protect
+             (progn
+               (is (eq :stopped (nle::launch-headless :wait nil nil path nil)))
+               (is (not booted))
+               (is (null (nlk::held-lock (nlk::lock-path-for-store path))) "an early stop releases the already acquired lease"))
+          (let ((lock (nlk::held-lock (nlk::lock-path-for-store path))))
+            (when lock (nlk::unlock-file lock))))))))
+
+(deftest shutdown-error-after-stop-exits-before-disarming-the-deadline ()
+  (let ((cut 0) (armed nil) (caught nil))
+    (with-saved-globals ((nle::*gateway-stop-supervisor* nil))
+      (with-stubbed-fdefinitions
+          ((nle::stop-on-sigterm (supervisor) (declare (ignore supervisor)))
+           (nle::cut-short ()
+             (incf cut)
+             (setf armed
+                   (and (nle::gateway-stop-requested-p)
+                        (bt2:thread-alive-p
+                         (nle::gateway-stop-supervisor-thread nle::*gateway-stop-supervisor*))))))
+        (handler-case
+            (nle::call-with-gateway-stop-supervisor
+             (lambda ()
+               (nle::request-gateway-stop nle::*gateway-stop-supervisor*)
+               (error "fixture: owner unwinds while stopping")))
+          (error () (setf caught t)))
+        (is caught)
+        (is (= cut 1) "forced exit precedes top-level error reporting")
+        (is armed "the original deadline stays armed through the exit request")))))
+
+(deftest shutdown-handoff-joins-and-a-new-entry-gets-a-fresh-record ()
+  (let ((first nil) (second nil) (cut 0))
+    (with-saved-globals ((nle::*gateway-stop-supervisor* nil))
+      (with-stubbed-fdefinition (nle::stop-on-sigterm (supervisor) (declare (ignore supervisor)))
+        (nle::call-with-gateway-stop-supervisor
+         (lambda ()
+           (setf first nle::*gateway-stop-supervisor*)
+           (is (bt2:thread-alive-p (nle::gateway-stop-supervisor-thread first)))
+           (nle::call-with-gateway-stop-supervisor
+            (lambda () (is (eq first nle::*gateway-stop-supervisor*))))
+           (is (nle::gateway-stop-handoff first))
+           (is (not (bt2:thread-alive-p (nle::gateway-stop-supervisor-thread first))))))
+        ;; A heap may retain the old record. Entry must not reuse it.
+        (setf nle::*gateway-stop-supervisor* first)
+        (nle::call-with-gateway-stop-supervisor
+         (lambda ()
+           (setf second nle::*gateway-stop-supervisor*)
+           (is (not (eq first second)))
+           (is (eq :running (nle::gateway-stop-supervisor-state second))))))
+      (is (not (bt2:thread-alive-p (nle::gateway-stop-supervisor-thread second))))
+      (is (null nle::*gateway-stop-supervisor*))
+      (with-stubbed-fdefinition (nle::cut-short () (incf cut))
+        (nle::request-gateway-stop first t)
+        (is (= cut 1) "a deferred signal on the old record is not ignored")))))
 
 (deftest a-stopping-gateway-advertises-no-endpoint-first (with-temp-gateway (port))
   ;; The sidecar loses its port before the peripherals stop: a shell that
@@ -6567,3 +6864,115 @@ scratch runtime directory."
       (is (null (nle::shell-presence-path 42)))
       (sb-posix:unsetenv "XDG_RUNTIME_DIR")
       (is (null (nle::shell-presence-path 42)) "no runtime directory, no record"))))
+
+(deftest serving-watchdog-needs-completed-work-not-new-events
+    (with-gateway-scratch (dir "watchdog" :store t))
+  (let ((beats 0) (reads 0) (http-calls 0) (mode :good))
+    (with-saved-globals ((nle::*gateway-bound-port* 1)
+                        (nle::*gateway-watchdog-progress* (nle::make-watchdog-progress)))
+      (with-stubbed-fdefinitions
+          ((nlk::systemd-watchdog-window () 30)
+           (nlk:http (method url &rest keys)
+             (incf http-calls)
+             (is (eql 0 (getf keys :max-redirects)) "health never follows a redirect")
+             (if (eq mode :error) (error "probe failed")
+                 (values (babel:string-to-octets
+                          (case mode
+                            (:body "{\"ok\":true,\"component\":\"other\"}")
+                            (:trailing "{\"ok\":true,\"component\":\"gateway\"}junk")
+                            (:malformed "{")
+                            (t "{\"ok\":true,\"component\":\"gateway\"}")))
+                         (if (eq mode :status) 503 200) nil (eq mode :clipped))))
+           (nlk:systemd-watchdog () (incf beats)))
+        (is (null (nle::gateway-watchdog-pulse)) "before a watcher pass there is no beat")
+        (setf (nle::watchdog-progress-completed-at nle::*gateway-watchdog-progress*) (get-internal-real-time))
+        (is (nle::gateway-watchdog-pulse) "an empty idle store is healthy")
+        (is (= 1 beats) "one completed pass is one heartbeat receipt")
+        (is (null (nle::gateway-watchdog-pulse)) "the same pass cannot prove more work")
+        (setf (nle::watchdog-progress-completed-at nle::*gateway-watchdog-progress*)
+              (- (get-internal-real-time) (* 60 internal-time-units-per-second))
+              (nle::watchdog-progress-seen nle::*gateway-watchdog-progress*) nil)
+        (is (null (nle::gateway-watchdog-pulse)) "a stale pass is not healthy")
+        (setf (nle::watchdog-progress-completed-at nle::*gateway-watchdog-progress*) (get-internal-real-time))
+        (let ((nlk::*store-reader* :must-not-bypass-shared-store))
+          (is (nle::gateway-watchdog-pulse) "even a reader binding uses the operational connection"))
+        (with-stubbed-fdefinition (nlk:events (&rest keys) (incf reads) (error "store broken"))
+          (setf (nle::watchdog-progress-seen nle::*gateway-watchdog-progress*) nil)
+          (is (null (nle::gateway-watchdog-pulse)) "a failed store read with healthy HTTP is not healthy")
+          (is (= 1 reads) "the operational read was actually attempted"))
+        (let ((before http-calls))
+          (is (null (nle::gateway-watchdog-pulse nil)) "without an armed watchdog no probe runs")
+          (is (= before http-calls) "unsupervised serving does not even request HTTP"))
+        (with-stubbed-fdefinition (nlk:events (&rest keys)
+                                   (sleep .04)
+                                   (setf (nle::watchdog-progress-completed-at nle::*gateway-watchdog-progress*)
+                                         (get-internal-real-time))
+                                   0)
+          (is (null (nle::gateway-watchdog-pulse .03)) "late store success cannot revive an expired pass"))
+        (dolist (failure '(:status :body :trailing :malformed :clipped :error))
+          (setf mode failure (nle::watchdog-progress-http-failed nle::*gateway-watchdog-progress*) nil)
+          (is (null (nle::gateway-watchdog-pulse)) "failed HTTP suppresses the beat")
+          (is (nle::watchdog-progress-http-failed nle::*gateway-watchdog-progress*) "failure is latched")
+          (let ((before http-calls))
+            (setf mode :good)
+            (is (null (nle::gateway-watchdog-pulse)) "a later call cannot revive this listener")
+            (is (= before http-calls) "no accumulating requests after a failed probe")))
+        (is (= 2 beats) "only the two newly completed healthy passes refreshed the watchdog")))))
+
+(deftest a-retired-watchers-late-completion-cannot-prove-its-successor
+    (with-saved-globals ((nle::*background-exec-watcher* nil) (nle::*gateway-watchdog-progress* nil)))
+  (let ((entered-old (bt2:make-semaphore)) (entered-new (bt2:make-semaphore))
+        (release-old (bt2:make-semaphore)) (release-new (bt2:make-semaphore))
+        (calls 0) old new)
+    (with-stubbed-fdefinitions
+        ((nle::scan-exec-child-stalls (registry) nil)
+         (nle::background-exec-watcher-tick (&key wake)
+           (let ((first (= 1 (incf calls))))
+             (bt2:signal-semaphore (if first entered-old entered-new))
+             (bt2:wait-on-semaphore (if first release-old release-new) :timeout 5))))
+      (unwind-protect
+           (progn
+             (nle::start-background-exec-watcher)
+             (setf old nle::*background-exec-watcher*)
+             (is (bt2:wait-on-semaphore entered-old :timeout 2) "the old actual worker is blocked inside its pass")
+             (setf nle::*background-exec-watcher* (nlk:worker-stop old :timeout .01))
+             (is (bt2:thread-alive-p (nlk:worker-thread old)) "bounded stop did not end the old worker")
+             (nle::start-background-exec-watcher)
+             (setf new nle::*background-exec-watcher*)
+             (is (bt2:wait-on-semaphore entered-new :timeout 2) "replacement actual worker has not completed")
+             (is (null (nle::watchdog-progress-completed-at nle::*gateway-watchdog-progress*)) "replacement has no completion yet")
+             (bt2:signal-semaphore release-old)
+             (nlk::%join-bounded (nlk:worker-thread old) 2)
+             (is (not (bt2:thread-alive-p (nlk:worker-thread old))) "old worker really exited")
+             (is (null (nle::watchdog-progress-completed-at nle::*gateway-watchdog-progress*)) "old late completion must not count for replacement")
+             (bt2:signal-semaphore release-new)
+             (is (await (:tries 30) (nle::watchdog-progress-completed-at nle::*gateway-watchdog-progress*)) "only replacement completion advances its health proof"))
+        (bt2:signal-semaphore release-old)
+        (bt2:signal-semaphore release-new)
+        (nlk:worker-stop old :timeout 2)
+        (nlk:worker-stop new :timeout 2)
+        (setf nle::*background-exec-watcher* nil)))))
+(deftest shutdown-election-retry-keeps-its-supervisor-alive
+    (with-temp-directory (dir "shutdown-election-retry"))
+  (let ((attempts 0) (path (merge-pathnames "history.db" dir)))
+    (with-saved-globals ((nle::*gateway-stop-supervisor* nil) (nle::*gateway-run* nil)
+                        (nle::*serve-next* nil) (nle::*stopping* nil) (nle::*serving* nil))
+      (with-stubbed-fdefinitions
+          ((nle::stop-on-sigterm (state) (declare (ignore state)))
+           (nle::say-gateway-ready () nil)
+           (nle::await-free-store (&rest args) (declare (ignore args)))
+           (nle::models-catalog-table () nil)
+           (nle::boot-owned-organism (&rest args)
+             (declare (ignore args))
+             (if (= 1 (incf attempts))
+                 (error 'nlk::store-in-use :path path :owner-pid 424242)
+                 (let ((state nle::*gateway-stop-supervisor*))
+                   (is (eq :running (nle::gateway-stop-supervisor-state state)))
+                   (is (bt2:thread-alive-p (nle::gateway-stop-supervisor-thread state)))
+                   (is (integerp (nle::request-gateway-stop state)))
+                   ;; End this fixture's admitted deadline before its nonlocal return.
+                   (nle::finish-gateway-stop-supervisor state)
+                   (throw 'observed :observed)))))
+        (is (eq :observed (catch 'observed
+                            (nle:serve-organism-candidate :wait t :store-path path))))
+        (is (= attempts 2))))))

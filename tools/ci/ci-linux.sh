@@ -143,13 +143,13 @@ if ! git config user.email >/dev/null 2>&1; then
   export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
 fi
 sbcl_run() {
-  # sbcl_run NODECODE_HOME XDG_CACHE_HOME FORM: one SBCL on the suite's SBCL
+  # sbcl_run XDG_CACHE_HOME FORM: one SBCL on the suite's SBCL
   # and quicklisp, from the root, with the system loaded and FORM evaluated.
-  ( NODECODE_HOME="$1" XDG_CACHE_HOME="$2" \
+  ( XDG_CACHE_HOME="$1" \
       PATH="$sbcl_root/bin:$PATH" SBCL_HOME="$sbcl_root/lib/sbcl" \
       timeout 5400 sbcl --dynamic-space-size 4096 --control-stack-size 64MB --noinform --non-interactive \
       --userinit "$scratch/sbclrc" --eval '(require :asdf)' --eval '(push (truename ".") asdf:*central-registry*)' \
-      --eval '(asdf:load-system :nodecode/test)' --eval "$3" )
+      --eval '(asdf:load-system :nodecode/test)' --eval "$2" )
 }
 # One compile, then the shards: each loads the compiled suite from a cache of
 # its own (hard links to the one compile), so no two processes share a cache
@@ -158,8 +158,12 @@ sbcl_run() {
 # time, so a red shard reruns alone with its two numbers.
 shards="${CI_SHARDS:-12}"
 log="$out/suite.log"
-mkdir -p "$suite_home/compile/nodecode-home"
-if ! sbcl_run "$suite_home/compile/nodecode-home" "$scratch/cache" '(values)' > "$out/compile.log" 2>&1; then
+# No later component has been loaded to supply STICKY-PROFILE's helpers at
+# first load. The explicit shard homes would skip that path entirely.
+mkdir -p "$suite_home/compile/.nodecode/profiles/coder"
+printf 'coder\n' > "$suite_home/compile/.nodecode/active-profile"
+if ! (unset NODECODE_HOME; HOME="$suite_home/compile" sbcl_run "$scratch/cache" \
+    '(assert (equal (nlk:home) (merge-pathnames ".nodecode/profiles/coder/" (user-homedir-pathname))))') > "$out/compile.log" 2>&1; then
   tail -40 "$out/compile.log"
   echo 'ci-linux: the suite did not compile' >&2
   exit 1
@@ -171,7 +175,7 @@ pids=()
 for i in $(seq 0 $((shards - 1))); do
   mkdir -p "$suite_home/s$i/nodecode-home" "$scratch/cache-$i"
   cp -al "$scratch/cache/." "$scratch/cache-$i/"
-  sbcl_run "$suite_home/s$i/nodecode-home" "$scratch/cache-$i" \
+  NODECODE_HOME="$suite_home/s$i/nodecode-home" sbcl_run "$scratch/cache-$i" \
     "(nodecode.test::run-shard $i $shards)" > "$out/shard-$i.log" 2>&1 &
   pids+=($!)
 done

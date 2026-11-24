@@ -190,7 +190,11 @@ strings as simple strings, true T, false NIL, null :NULL."
   ;; table built for it, and read only as far as finding where it ends. A
   ;; reader that wants a few fields of a large document pays for those:
   ;; Without KEEP, it would still build a table for every member of the whole
-  ;; document, each one garbage once it is compacted.
+  ;; document, each one garbage once it is compacted. A member it answers
+  ;; :VERBATIM for is kept as the bytes it is written in, a JSON-VERBATIM:
+  ;; found, as a refused one is, and never decoded, so a reader that passes a
+  ;; long value through, or wants only the head of one (JSON-STRING-HEAD),
+  ;; pays for finding where it ends.
   ;;
   ;; REVIVE, when given, is JSON.parse's reviver: called with the same path
   ;; and each kept member's value as its value closes, innermost first, and
@@ -449,10 +453,15 @@ passes it, or past +JSON-MAX-DIGITS+ of them."
                        (skip-space)
                        (unless (eql (peek) #.(char-code #\:)) (refuse "a key wants :"))
                        (incf index)
-                       (let ((inner (if (or keep revive) (cons key path) path)))
-                         (if (and keep (not (funcall keep inner)))
+                       (let* ((inner (if (or keep revive) (cons key path) path))
+                              (kept (or (null keep) (funcall keep inner))))
+                         (if (null kept)
                              (skip-value)
-                             (let ((value (read-value (1+ depth) inner)))
+                             (let ((value (if (eq kept :verbatim)
+                                              (let ((from (progn (skip-space) index)))
+                                                (skip-value)
+                                                (json-verbatim (subseq octets from index)))
+                                              (read-value (1+ depth) inner))))
                                (vector-push-extend key stack)
                                (vector-push-extend (if revive (funcall revive inner value) value)
                                                    stack)))))
@@ -1252,17 +1261,142 @@ written into a body as they are."
   ;; body encodes to whole.
   (octets (error "octets required") :type octets :read-only t))
 
+(defvar *json-octet-parts* nil
+  "While ENCODE-JSON-OCTETS writes a body: (STREAM . PARTS), the string stream
+it writes to and what has been cut from that stream so far, newest first --
+the text before a verbatim, a string, then the verbatim's own octets.")
+
 (defmethod shasht:print-json-value ((value json-verbatim) stream)
-  (write-string (sb-ext:octets-to-string (json-verbatim-octets value) :external-format :utf-8)
-                stream)
+  (let ((parts *json-octet-parts*))
+    (if (and parts (eq stream (car parts)))
+        ;; A body leaving as octets takes the bytes as they are: the text
+        ;; written so far is cut from the stream and the bytes follow it.
+        (progn
+          (push (get-output-stream-string stream) (cdr parts))
+          (push (json-verbatim-octets value) (cdr parts)))
+        ;; A body leaving as text spells them out.
+        (write-string (sb-ext:octets-to-string (json-verbatim-octets value)
+                                               :external-format :utf-8)
+                      stream)))
   value)
 
-(defun encode-json-octets (object)
+(defun encode-json-octets (object &aux (*print-pretty* nil))
   "OBJECT as the UTF-8 octets of its JSON text: the form a body leaves the
 process in."
-  ;; The bytes are shasht's (ENCODE-JSON-OBJECT), and a JSON-VERBATIM inside
-  ;; OBJECT writes the text its octets spell.
-  (utf-8-octets (encode-json-object object)))
+  ;; The bytes are shasht's (ENCODE-JSON-OBJECT, and its one dialect), and a
+  ;; JSON-VERBATIM inside OBJECT is laid in as the octets it holds. Without
+  ;; this, each one was decoded into the text and the text encoded back: a
+  ;; replay of a 166 MB log spent 7.5 s and 22 GB of garbage on bytes it
+  ;; already had (#530).
+  (let* ((cut (list nil))
+         (rest (utf-8-octets (with-output-to-string (out)
+                              (setf (car cut) out)
+                              (let ((*json-octet-parts* cut))
+                                (shasht:write-json object out)))))
+         (parts (cdr cut)))
+    (if (null parts)
+        ;; No verbatim: the text's bytes are the body.
+        rest
+        (let ((size (length rest)))
+          (declare (type fixnum size))
+          (loop for cell on parts
+                do (when (stringp (car cell))
+                     (setf (car cell) (utf-8-octets (car cell))))
+                   (incf size (length (the octets (car cell)))))
+          (let ((octets (make-array size :element-type '(unsigned-byte 8)))
+                (start 0))
+            (declare (type fixnum start))
+            (dolist (part (nreverse (cons rest parts)) octets)
+              (declare (type octets part))
+              (replace octets part :start1 start)
+              (incf start (length part))))))))
+
+;;; A string kept as its bytes (DECODE-JSON's KEEP) is read as far as its
+;;; reader wants of it: the head as characters, the rest only counted. A
+;;; patch of 120,000 lines shows its first screens and says how many lines
+;;; it is not showing, and decoding all 12 MB of it for that cost 42 ms and
+;;; 180 MB of garbage a patch (#530).
+
+(defun json-string-head (verbatim count)
+  "The first COUNT characters of the string VERBATIM spells -- all of them
+when it spells no more -- and the offset in its octets they end at, its
+closing quote's when the string was read whole."
+  (let* ((octets (json-verbatim-octets verbatim))
+         (end (1- (length octets)))
+         (at 1))
+    (declare (type octets octets)
+             (type fixnum end at))
+    (unless (and (plusp end)
+                 (= (aref octets 0) #.(char-code #\"))
+                 (= (aref octets end) #.(char-code #\")))
+      (error 'json-refusal :position 0 :detail "a string expected"))
+    (flet ((surrogate (from lead)
+             ;; Whether the escape at FROM is \uDxxx with its second digit
+             ;; among LEAD: one half of the pair a character outside the
+             ;; basic plane is spelled with.
+             (and (<= (+ from 6) end)
+                  (= (aref octets from) #.(char-code #\\))
+                  (= (aref octets (+ from 1)) #.(char-code #\u))
+                  (char-equal (code-char (aref octets (+ from 2))) #\d)
+                  (find (code-char (aref octets (+ from 3))) lead :test #'char-equal))))
+      (loop repeat count
+            while (< at end)
+            do (let ((byte (aref octets at)))
+                 (incf at (cond ((= byte #.(char-code #\\))
+                                 (cond ((not (and (< (1+ at) end)
+                                                  (= (aref octets (1+ at)) #.(char-code #\u))))
+                                        2)
+                                       ;; A pair is one character.
+                                       ((and (surrogate at "89ab") (surrogate (+ at 6) "cdef"))
+                                        12)
+                                       (t 6)))
+                                ;; ASCII, or the bytes of one character in UTF-8.
+                                ((< byte #xc0) 1)
+                                ((< byte #xe0) 2)
+                                ((< byte #xf0) 3)
+                                (t 4))))))
+    (setf at (min at end))
+    (let ((head (make-array (1+ at) :element-type '(unsigned-byte 8))))
+      (replace head octets :end2 at)
+      (setf (aref head at) #.(char-code #\"))
+      (values (decode-json head :whole t) at))))
+
+(defun json-string-lines (verbatim offset)
+  "How many newlines the string VERBATIM spells from OFFSET of its octets on,
+a character's start (JSON-STRING-HEAD's), and whether what it spells there
+ends on something else: a last line left open."
+  (let* ((octets (json-verbatim-octets verbatim))
+         (end (1- (length octets)))
+         (at offset)
+         (lines 0)
+         (open nil))
+    (declare (type octets octets)
+             (type fixnum end at lines)
+             (optimize speed))
+    ;; A newline inside a string is always an escape, \n or \u000a: the
+    ;; rest is read only for where the escapes are.
+    (loop while (< at end)
+          do (cond ((/= (aref octets at) #.(char-code #\\))
+                    (setf open t)
+                    (incf at))
+                   ((and (< (1+ at) end)
+                         (= (aref octets (1+ at)) #.(char-code #\n)))
+                    (setf open nil)
+                    (incf lines)
+                    (incf at 2))
+                   ((and (<= (+ at 6) end)
+                         (= (aref octets (+ at 1)) #.(char-code #\u))
+                         (= (aref octets (+ at 2)) #.(char-code #\0))
+                         (= (aref octets (+ at 3)) #.(char-code #\0))
+                         (= (aref octets (+ at 4)) #.(char-code #\0))
+                         (char-equal (code-char (aref octets (+ at 5))) #\a))
+                    (setf open nil)
+                    (incf lines)
+                    (incf at 6))
+                   (t
+                    (setf open t)
+                    (incf at 2))))
+    (values lines open)))
 
 ;;; --- encodings remembered by identity --------------------------------------
 ;;; What a verbatim stands for has to come from somewhere: JSON-MEMO is the

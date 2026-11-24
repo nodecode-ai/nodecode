@@ -118,6 +118,28 @@ name, a check -- and nl-settings.shut, whose probe refuses."
                   :body "{\"path\": [\"nl-settings\", \"shut\"], \"secret\": \"x\"}")
             400 "a section with no secret pair takes none" "invalid_request"))
 
+#-win32
+(deftest settings-a-paste-into-a-shared-secrets-folder-keeps-the-other-home-s-file
+    (with-settings-lane (port config))
+  ;; `profile create' links the new home's secrets/ to its source's. A paste
+  ;; there named for its section alone was the very file the source's config
+  ;; names: setting up a second bot replaced the first home's bot token.
+  (with-temp-trees ((shared "settings-shared") (home "settings-linked-home"))
+    (let ((theirs (merge-pathnames "nl-settings.lane.token_file" shared))
+          (link (merge-pathnames "secrets/" home)))
+      (write-temp-file theirs (format nil "the-other-home-s-bot~%"))
+      (ensure-directories-exist home)
+      (nlk:make-symlink shared link)
+      (setf nle::*secrets-directory* link)
+      (with-gateway-http (port :post "/api/gateway/config" :status 200
+                               :body "{\"path\": [\"nl-settings\", \"lane\"], \"secret\": \"this-home-s-bot\"}")
+        (is (equal (format nil "the-other-home-s-bot~%") (uiop:read-file-string theirs)) "the other home's file is untouched")
+        (is-present (row (settings-row body "nl-settings.lane" "token_file")) "the section names a file"
+          (let ((ours (nlk:json-value row :string "value")))
+            (is (uiop:string-prefix-p "profiles." (file-namestring ours)) "one named for this home")
+            (is (equal (format nil "this-home-s-bot~%") (uiop:read-file-string ours)) "holding the paste")
+            (is (equal (namestring (truename shared)) (namestring (uiop:pathname-directory-pathname (truename ours)))) "in the folder the two homes share")))))))
+
 (deftest settings-probe-runs-the-declared-choices-and-check (with-settings-lane (port config))
   (with-gateway-http (port :post "/api/gateway/config/probe" :status 200
                            :body "{\"path\": [\"nl-settings\", \"lane\"], \"field\": \"rooms\"}")

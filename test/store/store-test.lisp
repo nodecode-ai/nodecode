@@ -664,10 +664,18 @@ nursery collections on. => that generation's size while they were live."
   ;; The mechanism, proven against a deterministic sleep rather than the network:
   ;; the timer must fire while the body is still blocked, in this thread, and
   ;; the body's value comes back through the macro.
-  (is (eq :answered (nlk:collect-during-wait (sleep 0.4) :answered)) "the body's value")
-  (is (> nlk::*forced-collections* before) "a collection completed during the body")
-  (is (numberp nlk::*last-gc-pause*) "pause was measured")
-  (is (< nlk::*last-gc-pause* 0.4) "pause is shorter than the wait it hid inside"))
+  ;;
+  ;; FORCE-COLLECTION skips a dispatch that consed less than
+  ;; *COLLECT-MIN-CONSED* since the last forced collection -- the policy, not
+  ;; this mechanism -- so a collection forced just before (an earlier test,
+  ;; this one run again) would make it skip here. The floor is set aside, SETF
+  ;; and not LET: the timer's own thread reads it.
+  (with-saved-globals ((nlk::*collect-min-consed* 0))
+    (setf nlk::*forced-consed-at* (sb-ext:get-bytes-consed))
+    (is (eq :answered (nlk:collect-during-wait (sleep 0.4) :answered)) "the body's value")
+    (is (> nlk::*forced-collections* before) "a collection completed during the body, even right after another")
+    (is (numberp nlk::*last-gc-pause*) "pause was measured")
+    (is (< nlk::*last-gc-pause* 0.4) "pause is shorter than the wait it hid inside")))
 
 (deftest a-forced-collection-reaches-the-generation-that-outgrew-its-budget (with-saved-nursery)
   ;; What a long turn promotes dies in the oldest generation, and SBCL's own
