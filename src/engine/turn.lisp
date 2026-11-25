@@ -3431,7 +3431,7 @@ did not say."
              ;; error is allowed to stand.
              (unless (evict-and-retarget) (error e))
              (incf overflow-recoveries))
-            ;; Three failures walk the chain at once. On a candidate (the
+            ;; Four failures walk the chain at once. On a candidate (the
             ;; round has walked the chain), a failure no retry cures is that
             ;; candidate's verdict, not the round's: the chain walks on, and
             ;; only past its last entry does it stand. Without this, a relay's
@@ -3446,7 +3446,11 @@ did not say."
             ;; each stands, or the ladder below retries it.
             ((let ((refusal-p (and (typep e 'provider-refused) (null fallback-tried))))
                (and (or (typep e '(or provider-refused provider-slow-start))
-                        (and fallback-tried (not (retryable-provider-error-p e))))
+                        (and (not (retryable-provider-error-p e))
+                             ;; off the selection, a failure no retry can cure --
+                             ;; a 403, a 401, a 400 -- has one road left before it
+                             ;; stands: the candidate the operator put behind it.
+                             (or fallback-tried (failover-chain-for e nil))))
                     (try-fallback e)
                     (or (not refusal-p) (setf refusal-fallback-p t))))
              nil)
