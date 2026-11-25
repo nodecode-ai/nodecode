@@ -574,15 +574,15 @@ receipts say ran, with METADATA, else what its snippet spells."
           (t (loop for (verb . source) in (and text (ignore-errors (snippet-calls text)))
                    when (and (equal verb "sh") (stringp source)) collect source)))))
 
-(defun acp-raw-input (name arguments kind &optional metadata)
+(defun acp-raw-input (name arguments &optional metadata)
   "A call's ARGUMENTS as the client is given them: the object they decode
-to, with the command it runs under \"command\" when KIND is execute, as ACP
-clients read a command; the text when it is no object."
+to, with the shell commands it runs under \"command\", as ACP clients read a
+command -- whatever its kind, since a `cat' the transcript reads as a read
+still ran a command; the text when it is no object."
   (let ((decoded (ignore-errors (nlk:decode-json arguments))))
     (cond ((not (hash-table-p decoded)) arguments)
-          (t (when (equal kind "execute")
-               (when-let (commands (acp-shell-commands name arguments metadata))
-                 (setf (gethash "command" decoded) (format nil "~{~a~^~%~}" commands))))
+          (t (when-let (commands (acp-shell-commands name arguments metadata))
+               (setf (gethash "command" decoded) (format nil "~{~a~^~%~}" commands)))
              decoded))))
 
 (defun acp-tool-call (session payload)
@@ -600,7 +600,7 @@ held in SESSION until its result closes it."
                  "kind" kind
                  "status" "in_progress"
                  :opt "locations" (acp-locations session activity '())
-                 "rawInput" (acp-raw-input name arguments kind))))
+                 "rawInput" (acp-raw-input name arguments))))
 
 (defun acp-result-text (result)
   "RESULT, a tool's answer to the model, as a person reads it: without the
@@ -631,6 +631,9 @@ diff of every file it changed ahead of its result."
                      (and (json-value metadata :any "stopped") t)))
          (activity (and arguments (acp-activity name arguments :metadata metadata :failed failed)))
          (kind (and arguments (acp-call-kind name activity)))
+         ;; The shell commands it ran, whatever its kind: their text and the
+         ;; last one's exit status ride the close.
+         (commands (and arguments (acp-shell-commands name arguments metadata)))
          (files (acp-diff-files session metadata))
          (result (acp-result-text (or (json-value payload :string "result") "")))
          (shown (if (> (length result) *acp-tool-output-chars*)
@@ -645,8 +648,8 @@ diff of every file it changed ahead of its result."
                  :opt "title" (and arguments (acp-call-title name activity))
                  :opt "kind" kind
                  :opt "locations" (acp-locations session activity files)
-                 :opt "rawInput" (and (equal kind "execute") (acp-raw-input name arguments kind metadata))
-                 :opt "rawOutput" (when-let (code (and (equal kind "execute") (acp-exit-code result)))
+                 :opt "rawInput" (and commands (acp-raw-input name arguments metadata))
+                 :opt "rawOutput" (when-let (code (and commands (acp-exit-code result)))
                                     (json-object "exitCode" code))
                  "content" (coerce (append (acp-diff-content files)
                                            (list (json-object "type" "content" "content" (acp-text-block shown))))

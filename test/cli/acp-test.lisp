@@ -296,6 +296,16 @@ has. BODY's end closes its stdin."
         (is-shape done ("kind" "edit") ("status" "completed"))
         (is (equal "diff" (nlk:json-value (aref (gethash "content" done) 0) :string "type")) "the diff comes first")
         (is (eql 4 (nlk:json-value (aref (gethash "locations" done) 0) :integer "line"))))
+      ;; A command the transcript reads as a read still says what ran and
+      ;; how it exited.
+      (let ((call (open-call "c4" "(sh \"cat a.txt; exit 3\")")))
+        (is-shape call ("kind" "read")
+          ((:string "rawInput" "command") "cat a.txt; exit 3" "a read that ran a command says the command")))
+      (let ((done (close-call "c4" (format nil "hello~%[exit 3]")
+                              (nlk:json-object "calls" (vector (nlk:json-object "verb" "sh" "source" "cat a.txt; exit 3"))))))
+        (is-shape done ("kind" "read")
+          ((:string "rawInput" "command") "cat a.txt; exit 3")
+          ((:integer "rawOutput" "exitCode") = 3)))
       (open-call "c3" "(sleep 1)")
       (let ((agent (nle::make-acp-agent :output (make-broadcast-stream))))
         (nle::acp-fail-open-calls agent session)
