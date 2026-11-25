@@ -2822,7 +2822,8 @@ lane function, so nothing dials."
     (is (equal "broken_answer" (trigger 'nle::provider-empty-response :detail "nothing")))
     (is (equal "slow_start" (trigger 'nle::provider-slow-start :detail "no first token in 60 s")))
     (is (equal "outage" (trigger 'nle::provider-error :status 503 :detail "overloaded")))
-    (is (equal "outage" (trigger 'nle::provider-error :detail "no response for 60 s")) "a stall below HTTP is an outage")))
+    (is (equal "outage" (trigger 'nle::provider-error :detail "no response for 60 s")) "a stall below HTTP is an outage")
+    (is (equal "outage" (trigger 'nle::provider-error :status 403 :detail "free_paused")) "a status no retry cures is too")))
 
 (deftest a-trigger-switched-off-keeps-the-failure-on-the-selection ()
   (let ((calls 0))
@@ -3097,6 +3098,52 @@ refusal; NIL, an answer; past the list, an answer)."
                 (is (search (format nil "~%2. alt-a/ma · HTTP 400: no such model") detail) "each candidate with what its provider said")
                 (is (search (format nil "~%3. alt-b/mb · HTTP 503: the pool is empty") detail) "down to the candidate the failure stood on"))))
           (is (equal selection nle::*model*) "the selection binding is untouched"))))))
+
+(deftest a-status-no-retry-cures-leaves-the-selection-for-the-chain
+    (with-session-store ("failover-403"))
+  ;; nodecode.ai's free lane answered every free key 403 free_paused
+  ;; (2026-11-25): with three backups configured and every trigger on, a
+  ;; turn failed on the 403 with none of them tried. A status no retry cures
+  ;; leaves the selection at once, under the outage trigger, and its
+  ;; candidate holds for the turn as past a spent budget; with outage off,
+  ;; or with no chain, it stands, sent once.
+  (with-durable-turn (turn "failover-403" :command-id "failover-403-cmd" :input "go" :current t :retry-delay 0)
+    (let ((selection nle::*model*)
+          (asked '())
+          (triggers (mapcar #'car nle::+failover-triggers+))
+          (chain '((:provider "alt" :model "alt-model"))))
+      (with-stubbed-fdefinitions
+          ((nle::failover-chain () chain)
+           (nle::failover-triggers () triggers)
+           (nle::failover-candidate-config (provider model)
+             (stub-effective-provider-config provider model))
+           (nle::call-provider-streaming (context &key on-part)
+             (declare (ignorable on-part))
+             (let ((model (nle::effective-provider-config-model context.provider-config)))
+               (push model asked)
+               (if (equal "alt-model" model)
+                   (wire-message "assistant" :content "answered on the candidate")
+                   (error 'nle::provider-error :status 403 :scope :request
+                                               :detail "{\"error\":{\"message\":\"Free keys are paused for now.\",\"code\":\"free_paused\"}}")))))
+        (multiple-value-bind (message usage finish metadata active)
+            (nle::call-provider (user-context))
+          (declare (ignore usage finish))
+          (is (equal "answered on the candidate" (gethash "content" message)))
+          (is (equal "alt-model" (nle::effective-provider-config-model active.provider-config)))
+          (is (null (getf metadata :resume-provider-config)) "no resume: the candidate holds for the turn"))
+        (is (equal (list "alt-model" selection) asked) "the selection was asked once, never retried")
+        (let ((moves (mapcar (lambda (fact)
+                               (list (nlk:provider-fallback-event-reason fact)
+                                     (nlk:provider-fallback-event-status fact)
+                                     (nlk:provider-fallback-event-to-model fact)))
+                             (provider-fallback-facts "failover-403"))))
+          (is (equal '(("forbidden" 403 "alt-model")) moves) "one move, saying why the selection failed"))
+        (setf asked '() triggers (remove "outage" triggers :test #'string=))
+        (signals-error nle::provider-error (nle::call-provider (user-context)))
+        (is (equal (list selection) asked) "with outage off it stands on the selection")
+        (setf asked '() triggers (mapcar #'car nle::+failover-triggers+) chain '())
+        (signals-error nle::provider-error (nle::call-provider (user-context)))
+        (is (equal (list selection) asked) "with no chain it stands, sent once")))))
 
 (deftest a-refused-connection-spends-the-request-budget-at-once
     (let ((nle::*max-request-retries* 4) (nle::*retry-base-delay* 0) (calls 0) (parts '())))

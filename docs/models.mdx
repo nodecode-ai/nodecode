@@ -296,7 +296,7 @@ The failover chain is the backup models a failing round moves to, in order. Ever
 | Trigger | `on` id | The failure |
 | --- | --- | --- |
 | rate limit | `rate_limit` | A 429. |
-| outage | `outage` | A server or transport failure, a timeout or a stall. |
+| outage | `outage` | A server or transport failure, a timeout or a stall. Also a status no retry cures: a rejected key, a spent balance, a model the provider does not serve. |
 | slow start | `slow_start` | An attempt that streamed no token by its deadline, or was skipped while it waited. |
 | broken answer | `broken_answer` | A stream cut short, an empty answer or a malformed tool call. |
 | refusal | `refusal` | The model's refusal. |
@@ -306,7 +306,7 @@ The failover chain is the backup models a failing round moves to, in order. Ever
 | `on` unset | Every trigger is on. |
 | `on` is `[]` | Every trigger is off. The chain stays set and is never walked. |
 | A trigger that is off | The failure stays on the selected model. |
-| Rate limit, outage, broken answer | The selected model's retries are spent first. Then the round re-runs on the next entry. |
+| Rate limit, outage, broken answer | The selected model's retries are spent first. Then the round re-runs on the next entry. A status no retry cures moves at once. |
 | Slow start | Watched only while a chain entry stands behind the attempt. Past `first_token_seconds`, 60 unless set, `0` never, the round leaves for the next entry at once, without retrying. |
 | Refusal | Never resent. The chain's first entry answers that round. The next round runs on the selected model. |
 | On a chain entry | A failure no retry cures, or one whose retries are spent, moves to the next entry, whatever `on` says. |
