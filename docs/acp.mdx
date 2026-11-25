@@ -38,7 +38,7 @@ Any other client runs `nodecode acp`, with `-p NAME` before `acp` for another pr
 | --- | --- |
 | `session/new` | Opens a session working in the editor's folder. |
 | `session/prompt` | Runs a turn and answers with how it ended: `end_turn`, or `cancelled`. A turn that fails answers with its error. |
-| `session/cancel` | Cancels the running turn. |
+| `session/cancel` | Cancels the running turn. Its tool calls still open close as failed. |
 | `session/load` | Sends the session's conversation again, then answers. |
 | `session/resume` | Opens the session without sending its conversation again. |
 | `session/list` | Lists this home's sessions, newest first, those of one folder when the editor names it. |
@@ -54,11 +54,12 @@ A prompt's text, the files the editor attaches and its pictures go to the model 
 | The answer as it streams | `agent_message_chunk` |
 | Thinking as it streams | `agent_thought_chunk` |
 | A tool call starting, then its result | `tool_call`, then `tool_call_update` with the output |
+| The files a tool call changed | `diff` content on its `tool_call_update`, one block a changed stretch of each file, and the files as its `locations` |
 | A prompt someone typed in the same session elsewhere | `user_message_chunk` |
 | A name given to the session | `session_info_update` |
 | A question the organism puts to you, such as the guard's ask | `session/request_permission`, its choices as the options |
 
-A tool call is titled with the note on the first line of its snippet (`;; list the folder`), else the snippet's first line.
+A tool call is titled the way the shell's transcript titles it: by what it did, `Read src/cli/acp.lisp` or `Ran just lint`, and by the note on the first line of its snippet (`;; list the folder`) when it ran nothing Nodecode has words for. Its kind follows: `read`, `search`, `fetch`, `edit` or `execute`, else `other`. A call that runs shell commands carries them under `rawInput.command`, and the last one's exit status under `rawOutput.exitCode`.
 
 ## Models and reasoning
 
@@ -92,8 +93,8 @@ Run `nodecode gateway on` to keep one organism serving the editor, the shell and
 </Mistake>
 <Mistake>
 <What>Expecting Nodecode to read and write files through the editor</What>
-<Why>Nodecode runs its tools in its own process on your machine, as it does in the shell. The editor sees a tool call and its output, not each file it touched.</Why>
-<Instead>Review changes in the editor's git view.</Instead>
+<Why>Nodecode runs its tools in its own process on your machine, as it does in the shell. The editor sees a tool call, its output and the diff of the files it changed, never a request to read or write one.</Why>
+<Instead>Read each call's diff in the editor, or review changes in its git view.</Instead>
 </Mistake>
 </Mistakes>
 

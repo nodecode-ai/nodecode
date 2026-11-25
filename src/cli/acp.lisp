@@ -99,7 +99,10 @@ head, saying how much was left out.")
   (begun nil)
   (pick nil)
   ;; Question id -> the session/request_permission id it went out as.
-  (questions (make-hash-table :test #'equal) :read-only t))
+  (questions (make-hash-table :test #'equal) :read-only t)
+  ;; The calls opened and not yet closed: call id -> (TOOL-NAME . ARGUMENTS),
+  ;; what the call's result is classified by, and what a turn's end fails.
+  (calls (make-hash-table :test #'equal) :read-only t))
 
 (nlk:access (session acp-session))
 
@@ -419,52 +422,153 @@ rest after it when WHOLE goes on from it, all of it when nothing streamed."
         ((uiop:string-prefix-p said whole) (subseq whole (length said)))
         (t "")))
 
-(defun acp-form-title (form)
-  "The title a Lisp snippet FORM reads as: its leading `;;' note, else its
-first line."
-  (let* ((lines (remove "" (mapcar (lambda (line) (string-trim '(#\Space #\Tab #\Return) line))
-                                   (uiop:split-string form :separator '(#\Newline)))
-                        :test #'string=))
-         (note (find-if (lambda (line) (uiop:string-prefix-p ";" line)) lines :end (min 1 (length lines)))))
-    (if note
-        (string-trim '(#\; #\Space) note)
-        (or (first lines) ""))))
+;;; A call is told the way the transcript tells it (tool-summary.lisp): the
+;;; same activity names its title (`Read src/x.lisp', `Ran just lint', the
+;;; snippet's note when nothing known ran) and its ACP kind, as it opens from
+;;; the snippet alone and again as it closes, once its receipts and its
+;;; workspace diff say what it did. The diff rides the close as ACP diff
+;;; content, a hunk a block, as the Claude and Codex adapters send theirs.
 
-(defun acp-form-kind (form)
-  "The ACP tool kind a Lisp snippet FORM's first verb names."
-  (let* ((code (with-output-to-string (out)
-                 (dolist (line (uiop:split-string form :separator '(#\Newline)))
-                   (unless (uiop:string-prefix-p ";" (string-left-trim '(#\Space #\Tab) line))
-                     (write-line line out)))))
-         (open (position #\( code))
-         (verb (and open (string-downcase
-                          (subseq code (1+ open)
-                                  (or (position-if (lambda (c) (member c '(#\Space #\Newline #\) #\Tab)))
-                                                   code :start (1+ open))
-                                      (length code)))))))
-    (cond ((member verb '("sh") :test #'equal) "execute")
-          ((member verb '("edit" "write-file") :test #'equal) "edit")
-          ((member verb '("look" "read-file") :test #'equal) "read")
-          ((member verb '("web:fetch") :test #'equal) "fetch")
-          ((member verb '("web:search" "index" "recall-log") :test #'equal) "search")
-          (t "other"))))
+(defun acp-activity (name arguments &key metadata failed)
+  "What the call of tool NAME with ARGUMENTS (its JSON text) did, as the
+transcript reads it -- with METADATA, its result's receipts and workspace
+diff -- or NIL when the transcript has no words for it. A classifier that
+signals is said on stderr, and the call goes out unclassified."
+  (handler-case (tool-arguments-activity name (or arguments "") :metadata metadata :error-p failed)
+    (error (condition)
+      (format *error-output* "nodecode acp: a ~a call went out unclassified: ~a~%" name condition)
+      nil)))
 
-(defun acp-tool-call (payload)
-  "The tool_call update a turn.tool_call_started PAYLOAD opens."
+(defun acp-call-kind (name activity)
+  "The ACP tool kind of a call of tool NAME that did ACTIVITY."
+  (if activity
+      (case (activity-family activity)
+        ((:read :list :image) "read")
+        ((:search :recall) "search")
+        (:fetch "fetch")
+        ((:edit :write) "edit")
+        (:command "execute")
+        (t "other"))
+      (cond ((search "search" name) "search")
+            ((search "fetch" name) "fetch")
+            (t "other"))))
+
+(defun acp-call-title (name activity &key running)
+  "The title of a call of tool NAME that did ACTIVITY: its words, RUNNING
+in the present tense, else NAME."
+  (let ((title (and activity (activity-title activity :running running))))
+    (if (plusp (length title)) title name)))
+
+(defun acp-absolute-path (session path)
+  "PATH, as a call or the workspace diff spells a file, absolute: one
+relative to SESSION's folder is joined to it."
+  (let ((path (if (uiop:string-prefix-p "./" path) (subseq path 2) path)))
+    (if (or (uiop:string-prefix-p "/" path) (uiop:string-prefix-p "~" path) (null session.cwd))
+        path
+        (uiop:native-namestring
+         (merge-pathnames (uiop:parse-native-namestring path)
+                          (uiop:ensure-directory-pathname (uiop:parse-native-namestring session.cwd)))))))
+
+(defun acp-patch-hunks (patch)
+  "PATCH, one file's git diff, as its hunks: (NEW-START OLD-TEXT NEW-TEXT)
+each, the lines either side of the hunk reads, its context on both."
+  (let ((hunks '()) (start nil) (old '()) (new '()))
+    (flet ((close-hunk ()
+             (when start
+               (push (list start (format nil "~{~a~%~}" (reverse old)) (format nil "~{~a~%~}" (reverse new)))
+                     hunks))))
+      (dolist (line (uiop:split-string patch :separator '(#\Newline)))
+        (cond ((uiop:string-prefix-p "@@" line)
+               (close-hunk)
+               (setf old '() new '()
+                     start (or (ppcre:register-groups-bind ((#'parse-integer from)) ("^@@ -\\S+ \\+(\\d+)" line)
+                                 from)
+                               1)))
+              ((null start))
+              ((uiop:string-prefix-p "+" line) (push (subseq line 1) new))
+              ((uiop:string-prefix-p "-" line) (push (subseq line 1) old))
+              ((uiop:string-prefix-p " " line) (push (subseq line 1) old) (push (subseq line 1) new))))
+      (close-hunk))
+    (nreverse hunks)))
+
+(defun acp-diff-files (session metadata)
+  "The text files a call's result METADATA says it changed, from its
+workspace diff, as (PATH CREATED DELETED HUNKS): PATH absolute, HUNKS as
+ACP-PATCH-HUNKS reads its patch."
+  (loop for file across (json-array metadata "workspace_diff" "files")
+        for path = (json-value file :text "path")
+        for patch = (json-value file :string "patch")
+        when (and path patch)
+          collect (list (acp-absolute-path session path)
+                        (and (ppcre:scan "(?m)^--- /dev/null$" patch) t)
+                        (and (ppcre:scan "(?m)^\\+\\+\\+ /dev/null$" patch) t)
+                        (acp-patch-hunks patch))))
+
+(defun acp-diff-content (files)
+  "FILES (ACP-DIFF-FILES) as ACP diff content: a block a hunk, a new file's
+old text null and a deleted one's new text empty."
+  (loop for (path created deleted hunks) in files
+        nconc (loop for (nil old new) in hunks
+                    collect (json-object "type" "diff" "path" path
+                                         "oldText" (if created :null old)
+                                         "newText" (if deleted "" new)))))
+
+(defun acp-locations (session activity files)
+  "The files a call that did ACTIVITY is about, as ACP locations: those
+FILES (ACP-DIFF-FILES) changed first, at their first hunk's line, then every
+file its entries name. NIL when it names none."
+  (let ((seen '()) (locations '()))
+    (flet ((add (path line)
+             (unless (member path seen :test #'string=)
+               (push path seen)
+               (push (json-object "path" path :opt "line" line) locations))))
+      (loop for (path nil nil hunks) in files
+            do (add path (first (first hunks))))
+      (loop for (family source detail) in (and activity (activity-entries activity))
+            when (and (stringp source) (plusp (length source))
+                      (eq :path (getf (activity-family-plist family) :source)))
+              do (add (acp-absolute-path session source)
+                      (and (eq family :read) (stringp detail)
+                           (ppcre:register-groups-bind ((#'parse-integer line)) ("^(\\d+)" detail) line)))))
+    (when locations (coerce (nreverse locations) 'vector))))
+
+(defun acp-shell-commands (name arguments metadata)
+  "The shell commands a call of tool NAME with ARGUMENTS ran: what its
+receipts say ran, with METADATA, else what its snippet spells."
+  (let ((text (tool-argument-text arguments +tool-command-keys+)))
+    (cond ((member name *shell-tool-names* :test #'equal) (and text (list text)))
+          ((loop for (verb . source) in (receipt-calls metadata)
+                 when (and (equal verb "sh") source) collect source))
+          (t (loop for (verb . source) in (and text (ignore-errors (snippet-calls text)))
+                   when (and (equal verb "sh") (stringp source)) collect source)))))
+
+(defun acp-raw-input (name arguments kind &optional metadata)
+  "A call's ARGUMENTS as the client is given them: the object they decode
+to, with the command it runs under \"command\" when KIND is execute, as ACP
+clients read a command; the text when it is no object."
+  (let ((decoded (ignore-errors (nlk:decode-json arguments))))
+    (cond ((not (hash-table-p decoded)) arguments)
+          (t (when (equal kind "execute")
+               (when-let (commands (acp-shell-commands name arguments metadata))
+                 (setf (gethash "command" decoded) (format nil "~{~a~^~%~}" commands))))
+             decoded))))
+
+(defun acp-tool-call (session payload)
+  "The tool_call update a turn.tool_call_started PAYLOAD opens, the call
+held in SESSION until its result closes it."
   (let* ((name (or (json-value payload :text "tool-name") "tool"))
-         (text (or (json-value payload :string "arguments") ""))
-         (arguments (ignore-errors (nlk:decode-json text)))
-         (form (json-value arguments :string "form")))
+         (arguments (or (json-value payload :string "arguments") ""))
+         (id (or (json-value payload :text "call-id") (nlk:make-durable-id "call")))
+         (activity (acp-activity name arguments))
+         (kind (acp-call-kind name activity)))
+    (setf (gethash id session.calls) (cons name arguments))
     (json-object "sessionUpdate" "tool_call"
-                 "toolCallId" (or (json-value payload :text "call-id") (nlk:make-durable-id "call"))
-                 "title" (let ((title (if form (acp-form-title form) name)))
-                           (if (plusp (length title)) title name))
-                 "kind" (cond (form (acp-form-kind form))
-                              ((search "search" name) "search")
-                              ((search "fetch" name) "fetch")
-                              (t "other"))
+                 "toolCallId" id
+                 "title" (acp-call-title name activity :running t)
+                 "kind" kind
                  "status" "in_progress"
-                 "rawInput" (if (hash-table-p arguments) arguments text))))
+                 :opt "locations" (acp-locations session activity '())
+                 "rawInput" (acp-raw-input name arguments kind))))
 
 (defun acp-result-text (result)
   "RESULT, a tool's answer to the model, as a person reads it: without the
@@ -475,18 +579,54 @@ characters]'), which the model reads and an editor's output pane need not."
         (subseq result (1+ newline))
         result)))
 
-(defun acp-tool-result (payload)
-  "The tool_call_update a turn.tool_result PAYLOAD closes its call with."
-  (let* ((result (acp-result-text (or (json-value payload :string "result") "")))
+(defun acp-exit-code (result)
+  "The exit status of the last shell command RESULT reports (`[exit 2]'), or NIL."
+  (let ((code nil))
+    (ppcre:do-register-groups ((#'parse-integer status)) ("\\[exit (-?\\d+)\\]" result)
+      (setf code status))
+    code))
+
+(defun acp-tool-result (session payload)
+  "The tool_call_update a turn.tool_result PAYLOAD closes its call with:
+said again from what the call did -- its title, kind and files -- with the
+diff of every file it changed ahead of its result."
+  (let* ((id (or (json-value payload :text "call-id") ""))
+         (call (gethash id session.calls))
+         (name (or (car call) (json-value payload :text "tool-name") "tool"))
+         (arguments (cdr call))
+         (metadata (json-value payload :object "metadata"))
+         (failed (or (json-value payload :boolean "failed")
+                     (and (json-value metadata :any "stopped") t)))
+         (activity (and arguments (acp-activity name arguments :metadata metadata :failed failed)))
+         (kind (and arguments (acp-call-kind name activity)))
+         (files (acp-diff-files session metadata))
+         (result (acp-result-text (or (json-value payload :string "result") "")))
          (shown (if (> (length result) *acp-tool-output-chars*)
                     (format nil "~a~%... (~:d more characters)"
                             (subseq result 0 *acp-tool-output-chars*)
                             (- (length result) *acp-tool-output-chars*))
                     result)))
+    (remhash id session.calls)
     (json-object "sessionUpdate" "tool_call_update"
-                 "toolCallId" (or (json-value payload :text "call-id") "")
-                 "status" (if (json-value payload :boolean "failed") "failed" "completed")
-                 "content" (vector (json-object "type" "content" "content" (acp-text-block shown))))))
+                 "toolCallId" id
+                 "status" (if failed "failed" "completed")
+                 :opt "title" (and arguments (acp-call-title name activity))
+                 :opt "kind" kind
+                 :opt "locations" (acp-locations session activity files)
+                 :opt "rawInput" (and (equal kind "execute") (acp-raw-input name arguments kind metadata))
+                 :opt "rawOutput" (when-let (code (and (equal kind "execute") (acp-exit-code result)))
+                                    (json-object "exitCode" code))
+                 "content" (coerce (append (acp-diff-content files)
+                                           (list (json-object "type" "content" "content" (acp-text-block shown))))
+                                   'vector))))
+
+(defun acp-fail-open-calls (agent session)
+  "Close every call of SESSION still open as failed: its turn ended without
+its result, and a client would show it running for good."
+  (dolist (id (alexandria:hash-table-keys session.calls))
+    (remhash id session.calls)
+    (acp-update agent session (json-object "sessionUpdate" "tool_call_update"
+                                           "toolCallId" id "status" "failed"))))
 
 (defun acp-own-turn-p (session fact)
   "Whether FACT belongs to a turn this agent started."
@@ -524,11 +664,12 @@ characters]'), which the model reads and an editor's output pane need not."
                     (acp-unsaid (if history "" session.said) (acp-message-text message)))
          (setf session.said "" session.thought "")))
       ((equal kind "turn.tool_call_started")
-       (acp-update agent session (acp-tool-call payload)))
+       (acp-update agent session (acp-tool-call session payload)))
       ((equal kind "turn.tool_result")
-       (acp-update agent session (acp-tool-result payload)))
+       (acp-update agent session (acp-tool-result session payload)))
       ((member kind '("turn.completed" "turn.failed" "turn.cancelled") :test #'equal)
        (setf session.said "" session.thought "")
+       (acp-fail-open-calls agent session)
        (unless history
          (acp-turn-ended agent session turn kind payload))))))
 
@@ -762,10 +903,12 @@ session/resume: the session's link, answered once its replay is read."
          (session-id (json-value params :text "sessionId")))
     (unless session-id (acp-refuse -32602 "sessionId is required"))
     ;; The organism's own answer: an unknown id is the client's not-found.
-    (acp-http agent :get (acp-session-path session-id))
-    (acp-open agent (make-acp-session :id session-id :cwd cwd
-                                      :replay (if history :history :quiet)
-                                      :opening id))
+    ;; The folder it works in is the one its files are said from.
+    (let ((detail (acp-http agent :get (acp-session-path session-id))))
+      (acp-open agent (make-acp-session :id session-id
+                                        :cwd (or (json-value detail :text "cwd") cwd)
+                                        :replay (if history :history :quiet)
+                                        :opening id)))
     ;; Answered from the link, once the replay ends (ACP-ON-REPLAY).
     :deferred))
 

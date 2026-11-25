@@ -212,3 +212,76 @@ has. BODY's end closes its stdin."
         (is (eql -32602 (code 3)) "a folder that is not absolute"))))
   (is (equal "allow_always" (nle::acp-choice-kind "Allow always")))
   (is (equal "reject_once" (nle::acp-choice-kind "Deny"))))
+
+(deftest acp-a-workspace-diff-is-the-clients-diff ()
+  ;; A changed file's git patch reaches the client as ACP diff content, a
+  ;; block a hunk with the text either side of it, the path absolute; a new
+  ;; file's old side is null, a deleted one's new side empty.
+  (let* ((session (nle::make-acp-session :id "s" :cwd "/work/repo"))
+         (metadata (nlk:json-object
+                    "workspace_diff"
+                    (nlk:json-object
+                     "files" (vector (nlk:json-object
+                                      "path" "src/a.txt" "added" 1 "removed" 1
+                                      "patch" (format nil "diff --git a/src/a.txt b/src/a.txt~%--- a/src/a.txt~%+++ b/src/a.txt~%@@ -3,3 +3,3 @@ head~% one~%-two~%+TWO~% three~%@@ -20,2 +20,3 @@~% x~%+y~% z~%"))
+                                     (nlk:json-object
+                                      "path" "new.txt" "added" 2 "removed" 0
+                                      "patch" (format nil "diff --git a/new.txt b/new.txt~%new file mode 100644~%--- /dev/null~%+++ b/new.txt~%@@ -0,0 +1,2 @@~%+hello~%+world~%"))
+                                     (nlk:json-object
+                                      "path" "gone.txt" "added" 0 "removed" 1
+                                      "patch" (format nil "diff --git a/gone.txt b/gone.txt~%deleted file mode 100644~%--- a/gone.txt~%+++ /dev/null~%@@ -1 +0,0 @@~%-bye~%"))
+                                     (nlk:json-object "path" "pic.png" "added" 0 "removed" 0 "binary" t)))))
+         (files (nle::acp-diff-files session metadata))
+         (blocks (nle::acp-diff-content files)))
+    (let ((paths (mapcar #'first files))
+          (texts '("/work/repo/src/a.txt" "/work/repo/new.txt" "/work/repo/gone.txt")))
+      (is (equal texts paths) "every text file, absolute; a binary one has no text to show"))
+    (is (eql 4 (length blocks)) "a block a hunk")
+    (is-shape (first blocks)
+      ("type" "diff") ("path" "/work/repo/src/a.txt")
+      ("oldText" (format nil "one~%two~%three~%")) ("newText" (format nil "one~%TWO~%three~%")))
+    (is-shape (second blocks) ("oldText" (format nil "x~%z~%")) ("newText" (format nil "x~%y~%z~%")))
+    (is (eq :null (gethash "oldText" (third blocks))) "a new file has no old side")
+    (is (equal (format nil "hello~%world~%") (gethash "newText" (third blocks))))
+    (is (equal "" (gethash "newText" (fourth blocks))) "a deleted file has an empty new side")
+    (let ((locations (nle::acp-locations session nil files)))
+      (is (equal "/work/repo/src/a.txt" (gethash "path" (aref locations 0))))
+      (is (eql 3 (gethash "line" (aref locations 0))) "at its first hunk's line"))
+    (is (eql 2 (nle::acp-exit-code (format nil "built~%[exit 0]~%tests~%[exit 2]"))) "the last command's exit")
+    (is (null (nle::acp-exit-code "no command ran")))))
+
+(deftest acp-a-call-reads-as-the-transcript-tells-it ()
+  ;; A call opens titled and kinded by what its snippet does, and closes said
+  ;; again from what it did: its receipts, its diff, its command.
+  (let ((session (nle::make-acp-session :id "s" :cwd "/work/repo")))
+    (flet ((open-call (id form)
+             (nle::acp-tool-call session (nlk:json-object "call-id" id "tool-name" "eval"
+                                                          "arguments" (nlk:encode-json-object
+                                                                       (nlk:json-object "form" form)))))
+           (close-call (id result &optional metadata)
+             (nle::acp-tool-result session (nlk:json-object "call-id" id "tool-name" "eval"
+                                                            "result" result :opt "metadata" metadata))))
+      (let ((call (open-call "c1" "(sh \"just lint\")")))
+        (is-shape call ("kind" "execute") ("status" "in_progress")
+          ((:string "rawInput" "command") "just lint" "the command rides where a client reads one")))
+      (let ((done (close-call "c1" (format nil "ok~%[exit 0]")
+                              (nlk:json-object "calls" (vector (nlk:json-object "verb" "sh" "source" "just lint"))))))
+        (is-shape done ("status" "completed") ("kind" "execute")
+          ((:integer "rawOutput" "exitCode") = 0)))
+      (let ((call (open-call "c2" "(edit \"src/a.txt\" ($ \"old\") ($ \"new\"))")))
+        (is (equal "edit" (gethash "kind" call)))
+        (is (equal "/work/repo/src/a.txt" (nlk:json-value (aref (gethash "locations" call) 0) :string "path"))))
+      (let ((done (close-call "c2" "edited /work/repo/src/a.txt: line 4, -1 +1"
+                              (nlk:json-object
+                               "calls" (vector (nlk:json-object "verb" "edit" "source" "src/a.txt"))
+                               "workspace_diff"
+                               (nlk:json-object "files" (vector (nlk:json-object
+                                                                 "path" "src/a.txt" "added" 1 "removed" 1
+                                                                 "patch" (format nil "--- a/src/a.txt~%+++ b/src/a.txt~%@@ -4 +4 @@~%-old~%+new~%"))))))))
+        (is-shape done ("kind" "edit") ("status" "completed"))
+        (is (equal "diff" (nlk:json-value (aref (gethash "content" done) 0) :string "type")) "the diff comes first")
+        (is (eql 4 (nlk:json-value (aref (gethash "locations" done) 0) :integer "line"))))
+      (open-call "c3" "(sleep 1)")
+      (let ((agent (nle::make-acp-agent :output (make-broadcast-stream))))
+        (nle::acp-fail-open-calls agent session)
+        (is (zerop (hash-table-count (nle::acp-session-calls session))) "a turn's end closes what it left open")))))
