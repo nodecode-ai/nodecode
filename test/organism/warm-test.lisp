@@ -88,6 +88,52 @@ core's offset, then the magic the core opens with -- cut to LENGTH octets."
           (is (null (directory (make-pathname :name "booting" :type :wild
                                               :defaults (nlk::warm-key-directory key))))))))))
 
+#+linux
+(deftest a-serves-folder-load-holds-its-units-start-open ()
+  ;; The unit hears READY only once the folder has loaded, and until then
+  ;; runs under the service manager's start timeout (45 s under Fedora's user
+  ;; manager): a load that ran past it was killed mid-load, and the launch
+  ;; after stood on the floor, no folder and no channels. A serve's load tells
+  ;; the unit, beat by beat, that its start goes on; it feeds the watchdog
+  ;; only once the unit was told it is ready, since a WATCHDOG=1 before that
+  ;; arms it mid-start; and no beat outlives the load.
+  (with-warm-fixture (key root cache)
+    (write-layer-folder root "nl-slow"
+                        '(("slow" . "(defparameter *cells-probe-slow* (progn (sleep 1) :slow))")))
+    (let* ((path (format nil "/tmp/nodecode-load-beat-~d.sock" (sb-posix:getpid)))
+           (saved (sb-posix:getenv "NOTIFY_SOCKET"))
+           (socket (make-instance 'sb-bsd-sockets:local-socket :type :datagram)))
+      (flet ((heard ()
+               (loop for (bytes length) = (multiple-value-list
+                                           (ignore-errors (sb-bsd-sockets:socket-receive socket nil 256)))
+                     while (and bytes length (plusp length))
+                     collect (subseq bytes 0 length)))
+             (beating-p ()
+               (find "load-beat" (bt2:all-threads) :key #'bt2:thread-name :test #'equal)))
+        (nlk:with-cleanup ((sb-bsd-sockets:socket-close socket) (ignore-errors (delete-file path))
+                           (if saved
+                               (sb-posix:setenv "NOTIFY_SOCKET" saved 1)
+                               (sb-posix:unsetenv "NOTIFY_SOCKET"))
+                           (nlk:take-self-receipt))
+          (ignore-errors (delete-file path))
+          (sb-bsd-sockets:socket-bind socket path)
+          (setf (sb-bsd-sockets:non-blocking-mode socket) t)
+          (sb-posix:setenv "NOTIFY_SOCKET" path 1)
+          (let ((nlk::*load-beat-seconds* 0.2) (nlk::*systemd-told-ready* nil))
+            (is (find "nl-slow" (nlk:boot-cells :spawn nil :receipt t) :key #'nlk:cell-name :test #'equal))
+            (let ((messages (heard)))
+              (is (<= 3 (length messages)) "the unit heard its start go on while the folder loaded")
+              (is (every (lambda (message) (equal "EXTEND_TIMEOUT_USEC=600000" message)) messages) "each beat extends the start by three beats, and arms no watchdog before the ready line"))
+            (is (null (beating-p)) "no beat outlives the load")
+            (setf nlk::*systemd-told-ready* t)
+            (nlk::call-with-load-beat (lambda () (sleep 0.5)))
+            (is (find (format nil "EXTEND_TIMEOUT_USEC=600000~%WATCHDOG=1") (heard) :test #'equal) "a unit told it is ready has its watchdog fed through the load")
+            (is (null (beating-p)) "nor this one"))
+          (sb-posix:unsetenv "NOTIFY_SOCKET")
+          (let ((nlk::*load-beat-seconds* 0.1))
+            (nlk:boot-cells :spawn nil :receipt t)
+            (is (null (heard)) "outside systemd the load beats nothing")))))))
+
 #-win32
 (deftest a-refused-exec-says-why-and-gives-the-gc-lock-back ()
   ;; EXEC-PROGRAM holds the runtime's GC lock across execve, so no
