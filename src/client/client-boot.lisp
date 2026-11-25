@@ -898,7 +898,9 @@ session the shell ended on, or NIL when it never attached."
                                                          (protocol-error-message condition))))))
                    (wsd:on :close ws
                            (lambda (&key &allow-other-keys)
-                             (unless permanent
+                             ;; A hang-up by this shell's own teardown (STOP)
+                             ;; is no disconnect: the loop it would tell is gone.
+                             (unless (or permanent stop)
                                (report-transport-error program nil "gateway disconnected"))
                              (bt2:signal-semaphore closed)))
                    (with-handlers ((error (condition)

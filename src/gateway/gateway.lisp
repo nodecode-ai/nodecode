@@ -578,7 +578,15 @@ its subscriptions and rows views. NIL is quiet."
     ;; Severed, never closed: whoever hangs up -- a shell's teardown first --
     ;; is not the socket's reader, and a close under that reader held every
     ;; quit for the two seconds its kill is bounded by (SEVER-WEBSOCKET).
-    (t (ignore-errors (nlk:sever-websocket ws :grace-seconds 1)))))
+    ;; The sever returns once the socket reads closed, which wsd sets before
+    ;; it runs the socket's :close handlers on the reader, so the hang-up
+    ;; also waits, as bounded, for the reader to end: a shell that went on to
+    ;; exit aborted it mid-handler, and a compile it was in printed "; compilation
+    ;; unit aborted" on the terminal the shell had just handed back.
+    (t (let ((reader (ignore-errors (websocket-driver.ws.client::read-thread ws))))
+         (ignore-errors (nlk:sever-websocket ws :grace-seconds 1))
+         (when (and reader (not (eq reader (bt2:current-thread))))
+           (nlk::%join-bounded reader 1))))))
 
 (defun enqueue-peer-frame (peer item &key session-id cursor cursor-present-p encoder attach
                                 &aux accepted)
