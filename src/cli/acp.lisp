@@ -65,6 +65,8 @@ head, saying how much was left out.")
   (asked (make-hash-table :test #'equal) :read-only t)
   (next-id 0)
   (reattaching nil)
+  ;; Whether the client said initialize: every other request waits on it.
+  (initialized nil)
   (done (bt2:make-semaphore :name "acp-done") :read-only t)
   (outcome nil))
 
@@ -102,19 +104,33 @@ head, saying how much was left out.")
   (questions (make-hash-table :test #'equal) :read-only t)
   ;; The calls opened and not yet closed: call id -> (TOOL-NAME . ARGUMENTS),
   ;; what the call's result is classified by, and what a turn's end fails.
-  (calls (make-hash-table :test #'equal) :read-only t))
+  (calls (make-hash-table :test #'equal) :read-only t)
+  ;; The turn in flight's token counts, summed over its rounds: the prompt's
+  ;; answer carries them.
+  (usage nil)
+  ;; The config options and the slash commands the client was last given,
+  ;; as JSON text.
+  (told-config nil)
+  (told-commands nil))
 
 (nlk:access (session acp-session))
 
 ;;; --- the wire ---------------------------------------------------------------
 
-(define-error acp-refusal (error) (code message)
+(define-error acp-refusal (error) (code message (data :initform nil))
   (:report "~a" message)
-  (:documentation "A request refused with a JSON-RPC error: CODE, MESSAGE."))
+  (:documentation "A request refused with a JSON-RPC error: CODE, MESSAGE, and
+DATA, the error's data object when it has one."))
 
 (defun acp-refuse (code control &rest arguments)
   "Refuse the request being answered: CODE and the formatted message."
   (error 'acp-refusal :code code :message (apply #'format nil control arguments)))
+
+(defun acp-refuse-unknown (session-id control &rest arguments)
+  "Refuse the request: SESSION-ID names no session to act on (-32002,
+resource not found), the error's data naming it as ACP asks."
+  (error 'acp-refusal :code -32002 :message (apply #'format nil control arguments)
+                      :data (json-object "sessionId" session-id)))
 
 (defun acp-write (agent object)
   "One JSON-RPC message, OBJECT, to the client: one line on stdout."
@@ -129,10 +145,11 @@ head, saying how much was left out.")
   (acp-write agent (json-object "jsonrpc" "2.0" "id" id
                                 "result" (or result (make-hash-table :test #'equal)))))
 
-(defun acp-respond-error (agent id code message)
-  "Answer request ID with the JSON-RPC error CODE, MESSAGE."
+(defun acp-respond-error (agent id code message &optional data)
+  "Answer request ID with the JSON-RPC error CODE, MESSAGE, and DATA when given."
   (acp-write agent (json-object "jsonrpc" "2.0" "id" (if (null id) :null id)
-                                "error" (json-object "code" code "message" message))))
+                                "error" (json-object "code" code "message" message
+                                                     :opt "data" data))))
 
 (defun acp-notify (agent method params)
   "Send the client the notification METHOD with PARAMS."
@@ -667,11 +684,87 @@ its result, and a client would show it running for good."
        (acp-update agent session (acp-tool-call session payload)))
       ((equal kind "turn.tool_result")
        (acp-update agent session (acp-tool-result session payload)))
+      ((equal kind "turn.usage")
+       (unless history
+         (acp-count-usage session turn payload)))
       ((member kind '("turn.completed" "turn.failed" "turn.cancelled") :test #'equal)
        (setf session.said "" session.thought "")
        (acp-fail-open-calls agent session)
        (unless history
          (acp-turn-ended agent session turn kind payload))))))
+
+;;; --- usage ------------------------------------------------------------------------
+;;; A prompt's answer carries what its turn spent, and a usage_update after
+;;; it what now sits in the context window, of how large a one, and what the
+;;; whole session has cost: the meter an editor draws, as the Claude and Codex
+;;; adapters feed theirs.
+
+(defparameter +acp-usage-counts+
+  '(("input-tokens" . "inputTokens") ("output-tokens" . "outputTokens")
+    ("cached-input-tokens" . "cachedReadTokens") ("cache-write-tokens" . "cachedWriteTokens")
+    ("reasoning-tokens" . "thoughtTokens") ("total-tokens" . "totalTokens"))
+  "Each count a turn.usage fact carries, and the ACP usage field it adds to.")
+
+(defun acp-count-usage (session turn payload)
+  "Add one round's turn.usage PAYLOAD to what SESSION's prompt in flight has
+spent, when the round is that prompt's TURN's."
+  (let ((prompt session.prompt))
+    (when (and prompt turn (equal turn (getf prompt :turn)))
+      (let ((usage (or session.usage (setf session.usage (make-hash-table :test #'equal)))))
+        (loop for (key . field) in +acp-usage-counts+
+              for count = (json-value payload :integer key)
+              when count
+                do (incf (gethash field usage 0) count))))))
+
+(defun acp-turn-usage (session)
+  "What SESSION's prompt in flight spent, as ACP usage, or NIL when no round
+reported: its total the providers' own when they gave one, else the sum."
+  (when-let (usage session.usage)
+    (unless (gethash "totalTokens" usage)
+      (setf (gethash "totalTokens" usage)
+            (loop for field in '("inputTokens" "outputTokens" "cachedReadTokens" "cachedWriteTokens")
+                  sum (gethash field usage 0))))
+    (dolist (field '("inputTokens" "outputTokens"))
+      (unless (gethash field usage) (setf (gethash field usage) 0)))
+    usage))
+
+(defun acp-context-window (agent session model)
+  "The context window, in tokens, of MODEL as the organism's catalog sizes
+it -- the row of SESSION's provider first -- or NIL when it does not say."
+  (let* ((provider (or (getf session.pick :provider)
+                       (json-value (acp-target agent session) :string "provider")))
+         (rows (coerce (json-array (acp-http agent :get "/api/gateway/models") "models") 'list))
+         (same (remove model rows :key (lambda (row) (json-value row :string "model"))
+                                  :test-not #'equal)))
+    (json-value (or (find provider same :key (lambda (row) (json-value row :string "provider"))
+                                        :test #'equal)
+                    (first same))
+                :integer "context")))
+
+(defun acp-usage-update (agent session)
+  "Tell the client what sits in SESSION's context window, of how large a
+one, and what the session has cost so far, once a round has said; nothing
+while the organism cannot size the window. A route that fails is said on
+stderr: the meter is the client's comfort, and the answer it rides beside
+must still go."
+  (handler-case
+      (let* ((header (acp-http agent :get (acp-session-path session.id "header")))
+             (context (json-value header :object "context_usage"))
+             (spent (json-value header :object "session_usage"))
+             (model (json-value context :text "model"))
+             (size (and model (acp-context-window agent session model))))
+        (when (and context size)
+          (acp-update agent session
+                      (json-object "sessionUpdate" "usage_update"
+                                   "used" (loop for key in '("input" "cached" "cache_write")
+                                                sum (or (json-value context :integer key) 0))
+                                   "size" size
+                                   :opt "cost" (when (and (json-value spent :boolean "cost_known")
+                                                          (json-value spent :number "cost"))
+                                                 (json-object "amount" (json-value spent :number "cost")
+                                                              "currency" "USD"))))))
+    (error (condition)
+      (format *error-output* "nodecode acp: no usage for ~a: ~a~%" session.id condition))))
 
 (defun acp-turn-ended (agent session turn kind payload)
   "TURN of SESSION ended as KIND says: the prompt that waits on it is answered."
@@ -681,14 +774,17 @@ its result, and a client would show it running for good."
                       (setf session.prompt nil)
                       prompt)))))
     (when prompt
-      (cond ((getf prompt :cancelled)
-             (acp-respond agent (getf prompt :id) (json-object "stopReason" "cancelled")))
-            ((equal kind "turn.completed")
-             (acp-respond agent (getf prompt :id) (json-object "stopReason" "end_turn")))
-            ((equal kind "turn.cancelled")
-             (acp-respond agent (getf prompt :id) (json-object "stopReason" "cancelled")))
-            (t (acp-respond-error agent (getf prompt :id) -32603
-                                  (or (json-value payload :text "detail") "the turn failed")))))))
+      (acp-usage-update agent session)
+      (let ((usage (acp-turn-usage session)))
+        (setf session.usage nil)
+        (flet ((stop (reason)
+                 (acp-respond agent (getf prompt :id)
+                              (json-object "stopReason" reason :opt "usage" usage))))
+          (cond ((getf prompt :cancelled) (stop "cancelled"))
+                ((equal kind "turn.completed") (stop "end_turn"))
+                ((equal kind "turn.cancelled") (stop "cancelled"))
+                (t (acp-respond-error agent (getf prompt :id) -32603
+                                      (or (json-value payload :text "detail") "the turn failed")))))))))
 
 (defun acp-on-replay (agent session frame payload)
   "One chunk of SESSION's replay: sent as history while a load waits on it,
@@ -712,18 +808,41 @@ folded onto what was read after a resume, read for its cursor otherwise."
         (unless resumed
           (acp-title agent session (json-value payload :text "title")))
         (when-let (id (shiftf session.opening nil))
-          (acp-respond agent id (json-object "configOptions" (acp-config-options agent session)))
-          (acp-commands-update agent session))))))
+          (acp-respond agent id (json-object "configOptions" (acp-session-config agent session)))
+          (acp-commands-update agent session)
+          (when session.begun (acp-usage-update agent session)))))))
 
 (defun acp-title (agent session title)
   "Tell the client SESSION's name is TITLE, when it names one."
   (when title
     (acp-update agent session (json-object "sessionUpdate" "session_info_update" "title" title))))
 
+(defun acp-session-config (agent session)
+  "SESSION's config options (ACP-CONFIG-OPTIONS), held as the ones the
+client was last told."
+  (let ((options (acp-config-options agent session)))
+    (setf session.told-config (encode-json-object (json-object "o" options)))
+    options))
+
+(defun acp-config-update (agent session)
+  "Tell the client SESSION's config options when they are not the ones it
+was last told: a move the organism announces more than once (a session's
+first pin, the default moving under it) goes out once."
+  (let* ((options (acp-config-options agent session))
+         (text (encode-json-object (json-object "o" options))))
+    (unless (equal text session.told-config)
+      (setf session.told-config text)
+      (acp-update agent session (json-object "sessionUpdate" "config_option_update"
+                                             "configOptions" options)))))
+
 (defun acp-commands-update (agent session)
-  "Tell the client the slash commands SESSION's prompts may run."
-  (let ((commands (acp-available-commands agent)))
-    (when (plusp (length commands))
+  "Tell the client the slash commands SESSION's prompts may run, when they
+are not the ones it was last told: a catalog the organism says moved more
+than once goes out once."
+  (let* ((commands (acp-available-commands agent))
+         (text (encode-json-object (json-object "c" commands))))
+    (when (and (plusp (length commands)) (not (equal text session.told-commands)))
+      (setf session.told-commands text)
       (acp-update agent session (json-object "sessionUpdate" "available_commands_update"
                                              "availableCommands" commands)))))
 
@@ -832,6 +951,15 @@ is withdrawn."
       ((equal type "session_titled")
        (when (equal session.id (json-value payload :string "session_id"))
          (acp-title agent session (json-value payload :text "title"))))
+      ;; The model or effort a turn binds moved -- this session's, or the
+      ;; default a session with no pin of its own follows -- by a pick made
+      ;; anywhere: the client's selects follow it.
+      ((equal type "model_changed")
+       (when (member (json-value payload :string "session_id") (list nil session.id) :test #'equal)
+         (acp-config-update agent session)))
+      ;; A cell started or stopped and its commands came or went.
+      ((equal type "commands_changed")
+       (acp-commands-update agent session))
       ;; The session's history moved under it (a checkpoint move elsewhere):
       ;; its whole replay again, read for its cursor -- what the client
       ;; already shows stays.
@@ -846,7 +974,16 @@ is withdrawn."
   (let ((id (json-value params :text "sessionId")))
     (unless id (acp-refuse -32602 "sessionId is required"))
     (or (bt2:with-lock-held (agent.lock) (gethash id agent.sessions))
-        (and open (acp-refuse -32002 "session ~a is not open here: session/load or session/resume it first" id)))))
+        (and open (acp-refuse-unknown id "session ~a is not open here: session/load or session/resume it first" id)))))
+
+(defun acp-check-session (agent session-id)
+  "Refuse the request unless the organism holds a session SESSION-ID: an
+unknown one is the client's not-found, naming it. => the session's detail."
+  (handler-case (acp-http agent :get (acp-session-path session-id))
+    (acp-refusal (refusal)
+      (if (eql -32002 (acp-refusal-code refusal))
+          (acp-refuse-unknown session-id "session ~a: ~a" session-id (acp-refusal-message refusal))
+          (error refusal)))))
 
 (defun acp-cwd (params)
   "The absolute folder PARAMS' cwd names."
@@ -872,7 +1009,8 @@ is withdrawn."
       (acp-refuse -32603 "~a" condition))))
 
 (defun acp-initialize (agent params)
-  (declare (ignore agent params))
+  (declare (ignore params))
+  (setf agent.initialized t)
   (json-object
    "protocolVersion" +acp-protocol-version+
    "agentCapabilities" (json-object
@@ -881,6 +1019,7 @@ is withdrawn."
                         "mcpCapabilities" (json-object "http" nil "sse" nil)
                         "sessionCapabilities" (json-object "list" (json-object)
                                                            "resume" (json-object)
+                                                           "fork" (json-object)
                                                            "close" (json-object)))
    "authMethods" #()
    "agentInfo" (json-object "name" "nodecode" "title" "Nodecode"
@@ -893,7 +1032,27 @@ is withdrawn."
     (acp-http agent :post "/api/gateway/sessions" (json-object "session_id" session.id "cwd" cwd))
     (acp-open agent session)
     (values (json-object "sessionId" session.id
-                         "configOptions" (acp-config-options agent session))
+                         "configOptions" (acp-session-config agent session))
+            (lambda () (acp-commands-update agent session)))))
+
+(defun acp-fork-session (agent params)
+  "session/fork: a new gateway session forked from the one PARAMS name at
+its head, as the shell's /fork makes one, working in the client's folder."
+  (let* ((cwd (acp-cwd params))
+         (parent (json-value params :text "sessionId"))
+         (session (make-acp-session :id (fresh-session-id) :cwd cwd)))
+    (unless parent (acp-refuse -32602 "sessionId is required"))
+    ;; A fork at an earlier point names a cursor the agent issued; this one
+    ;; issues none, so a fork that names one would land somewhere else.
+    (unless (member (gethash "cursorId" params) '(nil :null))
+      (acp-refuse -32602 "~a is no cursor this agent issued: it forks at the newest turn alone"
+                  (gethash "cursorId" params)))
+    (acp-check-session agent parent)
+    (acp-http agent :post "/api/gateway/sessions"
+              (json-object "session_id" session.id "parent" parent "cwd" cwd))
+    (acp-open agent session)
+    (values (json-object "sessionId" session.id
+                         "configOptions" (acp-session-config agent session))
             (lambda () (acp-commands-update agent session)))))
 
 (defun acp-load-session (agent id params &key history)
@@ -904,7 +1063,7 @@ session/resume: the session's link, answered once its replay is read."
     (unless session-id (acp-refuse -32602 "sessionId is required"))
     ;; The organism's own answer: an unknown id is the client's not-found.
     ;; The folder it works in is the one its files are said from.
-    (let ((detail (acp-http agent :get (acp-session-path session-id))))
+    (let ((detail (acp-check-session agent session-id)))
       (acp-open agent (make-acp-session :id session-id
                                         :cwd (or (json-value detail :text "cwd") cwd)
                                         :replay (if history :history :quiet)
@@ -916,7 +1075,11 @@ session/resume: the session's link, answered once its replay is read."
   "session/list: this home's sessions, newest first, a page at a time,
 those begun in CWD alone when it is given."
   (let* ((cwd (json-value params :text "cwd"))
-         (start (or (ignore-errors (parse-integer (json-value params :text "cursor"))) 0))
+         (cursor (gethash "cursor" params))
+         (start (cond ((member cursor '(nil :null)) 0)
+                      ((and (stringp cursor) (plusp (length cursor)) (every #'digit-char-p cursor))
+                       (parse-integer cursor))
+                      (t (acp-refuse -32602 "~a is no cursor this agent gave" cursor))))
          (rows (remove-if-not (lambda (row) (or (null cwd) (equal cwd (json-value row :string "working_directory"))))
                               (coerce (or (acp-http agent :get "/api/gateway/sessions") #()) 'list)))
          (rows (stable-sort (copy-list rows) #'string>
@@ -985,25 +1148,50 @@ ends -- or, a line naming a slash command, that command run."
     (multiple-value-bind (text images) (acp-prompt-content (json-value params :array "prompt"))
       (when (and (zerop (length (string-trim '(#\Space #\Newline #\Tab) text))) (null images))
         (acp-refuse -32602 "the prompt is empty"))
-      (when (bt2:with-lock-held (agent.lock) session.prompt)
+      (let ((running (bt2:with-lock-held (agent.lock) session.prompt)))
+        (cond ((null running) (acp-start-prompt agent id session text images))
+              ;; The prompt before was cancelled and its turn is still
+              ;; winding down: a client that stops a turn to send another
+              ;; (T3 Code does, for a message typed mid-turn) has this one
+              ;; start once that one is answered, off the reading thread.
+              ((getf running :cancelled)
+               (spawn "acp-prompt-after-cancel"
+                 (handler-case
+                     (if (wait-until (lambda () (null session.prompt))
+                                     (deadline-after *acp-reattach-seconds*) 0.05)
+                         (acp-start-prompt agent id session text images)
+                         (acp-refuse -32603 "the cancelled prompt before it in session ~a never ended"
+                                     session.id))
+                   (acp-refusal (refusal)
+                     (acp-respond-error agent id (acp-refusal-code refusal) (acp-refusal-message refusal)
+                                        (acp-refusal-data refusal)))))
+               :deferred)
+              (t (acp-refuse -32602 "a prompt is already running in session ~a" session.id)))))))
+
+(defun acp-start-prompt (agent id session text images)
+  "Start the turn request ID asks of SESSION with TEXT and IMAGES -- or, a
+line naming a slash command, run it -- answered once it ends. => :DEFERRED."
+  (when (and (null images) (acp-slash-command-p agent text))
+    (return-from acp-start-prompt (acp-slash agent id session text)))
+  (unless (wait-until (lambda () (member session.link '(:attached :closed))) (deadline-after *acp-reattach-seconds*) 0.05)
+    (acp-refuse -32603 "the organism is not reachable"))
+  (when (eq session.link :closed)
+    (acp-refuse-unknown session.id "session ~a is closed" session.id))
+  (let ((command (nlk:make-durable-id "command")))
+    (bt2:with-lock-held (agent.lock)
+      ;; Two prompts that waited on one cancel: the first to land runs.
+      (when session.prompt
         (acp-refuse -32602 "a prompt is already running in session ~a" session.id))
-      (when (and (null images) (acp-slash-command-p agent text))
-        (return-from acp-prompt (acp-slash agent id session text)))
-      (unless (wait-until (lambda () (member session.link '(:attached :closed))) (deadline-after *acp-reattach-seconds*) 0.05)
-        (acp-refuse -32603 "the organism is not reachable"))
-      (when (eq session.link :closed)
-        (acp-refuse -32002 "session ~a is closed" session.id))
-      (let ((command (nlk:make-durable-id "command")))
-        (bt2:with-lock-held (agent.lock)
-          (setf session.prompt (list :id id :command command :turn nil :cancelled nil))
-          (push command session.commands))
-        (handler-case (send-start-turn session.ws session.id text
-                                       :command-id command :images images
-                                       :target (unless session.begun session.pick))
-          (error (condition)
-            (bt2:with-lock-held (agent.lock) (setf session.prompt nil))
-            (acp-refuse -32603 "the prompt could not be sent: ~a" condition)))
-        :deferred))))
+      (setf session.prompt (list :id id :command command :turn nil :cancelled nil)
+            session.usage nil)
+      (push command session.commands))
+    (handler-case (send-start-turn session.ws session.id text
+                                   :command-id command :images images
+                                   :target (unless session.begun session.pick))
+      (error (condition)
+        (bt2:with-lock-held (agent.lock) (setf session.prompt nil))
+        (acp-refuse -32603 "the prompt could not be sent: ~a" condition)))
+    :deferred))
 
 (defun acp-slash (agent id session line)
   "Run LINE, a slash command, in SESSION as a channel runs it, its answer
@@ -1059,7 +1247,7 @@ yet begun on its first turn."
                        (json-object "effort" (or effort :null)))
              (setf (getf session.pick :effort) effort))))
       (t (acp-refuse -32602 "no config option ~s: model and effort are" config)))
-    (json-object "configOptions" (acp-config-options agent session))))
+    (json-object "configOptions" (acp-session-config agent session))))
 
 (defun acp-answered (agent message)
   "The client's answer MESSAGE to a request of ours: a question's choice
@@ -1097,10 +1285,13 @@ or an answer to a request of ours."
            (multiple-value-bind (result after)
                (cond
                  ((equal method "initialize") (acp-initialize agent params))
+                 ((not agent.initialized)
+                  (acp-refuse -32600 "~a came before initialize: initialize the connection first" method))
                  ((equal method "authenticate") nil)
                  ((equal method "session/new") (acp-new-session agent params))
                  ((equal method "session/load") (acp-load-session agent id params :history t))
                  ((equal method "session/resume") (acp-load-session agent id params))
+                 ((equal method "session/fork") (acp-fork-session agent params))
                  ((equal method "session/list") (acp-list-sessions agent params))
                  ((equal method "session/close") (acp-close-session agent params))
                  ((equal method "session/prompt") (acp-prompt agent id params))
@@ -1110,7 +1301,8 @@ or an answer to a request of ours."
                (acp-respond agent id result)
                (when after (funcall after))))
          (acp-refusal (refusal)
-           (acp-respond-error agent id (acp-refusal-code refusal) (acp-refusal-message refusal)))
+           (acp-respond-error agent id (acp-refusal-code refusal) (acp-refusal-message refusal)
+                              (acp-refusal-data refusal)))
          (error (condition)
            (acp-respond-error agent id -32603 (princ-to-string condition))))))))
 
