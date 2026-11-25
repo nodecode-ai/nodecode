@@ -316,6 +316,55 @@ registry however BODY leaves."
     (nle:notice nil :key "channels.discord")
     (is (null (nlk:standing-notices)) "a NIL text clears the key")))
 
+(defun board-rows (frame)
+  "The status rows' (KEY TEXT) pairs an organism.notices FRAME carries."
+  (loop for row across (gethash "rows" (gethash "payload" frame))
+        collect (list (gethash "key" row) (gethash "text" row))))
+
+(deftest gateway-status-row-reaches-every-shell-and-never-the-model ()
+  ;; A status row rides the board's organism.notices frame: an attached shell
+  ;; gets it at once, a later one with the board after its replay, and a NIL
+  ;; text takes it out of both. It is no notice: the board the model and
+  ;; /cells read never carries it, and no toast is put up for it.
+  (with-gateway-session (port "row-s")
+    (let ((frames (frames-while (ws port :subscribe '("row-s") :await-subscription t)
+                    (is (equal "codex: 41% of the week"
+                               (nle:status-row "codex: 41% of the week" :key "codex-sub")))
+                    (nle:status-row (format nil "two~%lines") :key "ticker"))))
+      (let ((rows (board-rows (car (last (frames-of-type frames "organism.notices"))))))
+        (is (equal '(("codex-sub" "codex: 41% of the week") ("ticker" "two lines")) rows)))
+      (is (null (frames-of-type frames "organism.notice")) "and no toast"))
+    (is (null (nlk:standing-notices)) "the model's board carries no row")
+    ;; A shell attaching later draws them too.
+    (let* ((frames (subscribed-frames port "row-s"))
+           (rows (board-rows (first (frames-of-type frames "organism.notices")))))
+      (is (equal '("codex-sub" "ticker") (mapcar #'first rows))))
+    ;; NIL or an empty text clears the row.
+    (let* ((frames (frames-while (ws port :subscribe '("row-s") :await-subscription t)
+                     (nle:status-row nil :key "codex-sub")
+                     (nle:status-row "" :key "ticker")))
+           (rows (board-rows (car (last (frames-of-type frames "organism.notices"))))))
+      (is (null rows)))
+    (is (null (nlk:status-rows)))))
+
+(deftest gateway-status-rows-frame-is-kept-for-the-frame (let ((model (detached-shell))))
+  ;; The client side: the board's rows are the shell's to draw, before any
+  ;; watermark check, and never a toast or a transcript row; a board without
+  ;; rows, a gateway's from before them, stands none.
+  (with-stubbed-fdefinition (nle::render-state (m) nil)
+    (setf (nle::gateway-model-last-sequence model) 9)
+    (feed-wire model (nlk:encode-unsequenced-frame
+                      "organism.notices"
+                      (nlk:json-object "notices" #()
+                                       "rows" (vector (nlk:json-object "key" "codex-sub" "text" "codex: 41%")
+                                                      (nlk:json-object "key" "ticker" "text" "BTC 91k")))))
+    (is (equal '("codex: 41%" "BTC 91k") (nle::status-rows-shown model)))
+    (is (null (nle::chat-model-toasts model)) "no toast")
+    (is (not (transcript-carries-p (nle::chat-model-state model) "codex: 41%")) "no row")
+    (feed-wire model (nlk:encode-unsequenced-frame "organism.notices" (nlk:json-object "notices" #())))
+    (is (null (nle::status-rows-shown model)) "an older gateway's board stands none")
+    (is (eql 9 (nle::gateway-model-last-sequence model)))))
+
 (deftest gateway-notice-puts-up-a-toast (let ((model (detached-shell))))
   ;; The client side: the frame becomes a toast, error-level one that stays,
   ;; a keyed one in place of the toast under its key, before any watermark

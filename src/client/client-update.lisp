@@ -165,6 +165,9 @@ thread reads it and clears this place.")
             ;; The whole board: the hooks it says are skipped are the
             ;; footer's chip (SKIPPED-HOOK-SEGS).
             (note-skipped-hooks model payload)
+            ;; and the cells' status rows, the line over the footer
+            ;; (STATUS-ROWS-FRAME-ROW).
+            (note-status-rows model payload)
             (refresh-status-dialog model :board payload))
            ((string= kind "organism.notice")
             ;; The organism speaking to every attached shell (NLE:NOTICE):
