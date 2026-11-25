@@ -159,10 +159,12 @@ FAILED, whole."
 (nlk:access (setting setting) (part settings-section) (page settings-section))
 
 (defparameter +field-labels+
-  '(("codex-auth.endpoint" . "Sign-in endpoint") ("welcome.note" . "Welcome note"))
+  '(("codex-auth.endpoint" . "Sign-in endpoint") ("welcome.note" . "Welcome note")
+    ("help.hot_budget" . "Manual size"))
   "A field's name in one section's words, where the name alone says another
 thing beside the fields it stands with: the ChatGPT sign-in's endpoint under
-OpenAI Codex's base url, the welcome's note among the notifications.")
+OpenAI Codex's base url, the welcome's note among the notifications, the
+help section's budget beside the index's.")
 
 (defun field-setting (part field)
   "FIELD, one of PART's declared fields, as a row."
@@ -484,6 +486,7 @@ where no service manager runs one."
 (defparameter +settings-pages+
   '(("Agent" "Reflections" nil "experience")
     ("Agent" "Memory" nil "index")
+    ("Agent" "Manual" nil "help")
     ("Agent" "Team" nil "team")
     ("Agent" "Schedules" nil "cron")
     ("Tools" "Web search" nil "websearch")

@@ -1894,9 +1894,11 @@ a durable row of its own, and rides behind every other (INDEX-LAST)."
                                                               (uiop:os-windows-p))))
                              (instructions-section files)
                              ;; a line a topic of the manual: what the image and its
-                             ;; running cells can do, the texts left to (help)
+                             ;; running cells can do, the texts left to (help), within
+                             ;; help.hot_budget
                              (cons "help" (format nil *help-section*
-                                                  (string-right-trim '(#\Newline) (help-topic-lines)))))
+                                                  (string-right-trim '(#\Newline)
+                                                                     (help-topic-lines (help-budget))))))
                        (index-last sections))
       (when projected
         (setf sections
