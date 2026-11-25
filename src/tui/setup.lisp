@@ -1421,7 +1421,9 @@ then the providers, the model, what the walk found and its notes."
 (defun setup-ready-page (model run &key (selection 0))
   "The walk's last page: what it did, what to check first, and the way on --
 Start, or over a caveat the way back to the providers first -- with Details
-when an import ran. Start and Esc close it on an empty chat."
+when an import ran. Start and Esc close it on an empty chat. With nothing to
+check first, the task its Start row asks for can be typed or pasted at it: the
+key closes it as Start does and lands in the composer."
   ;; A caveat holds the page until it is answered, and Start over one leaves
   ;; its count in the footer (SETUP-ISSUE-SEGS), which no frame retires.
   (let ((caveats (setup-caveats run))
@@ -1460,6 +1462,12 @@ when an import ran. Start and Esc close it on an empty chat."
        :option-marker t
        :hint "enter select  esc start  ↑↓ navigate"
        :on-cancel #'start)
+      ;; Start says `type a task', and the page took no text: a task typed
+      ;; at it vanished and its Enter closed the page on an empty chat (a
+      ;; first-run take, 2026-11-25). Over a caveat it offers no task, which
+      ;; would fail at once, so that page keeps its keys.
+      (unless caveats
+        (setf (picker-type-through (chat-model-dialog model)) t))
       (setf (setup-page-run (chat-model-dialog model)) run))))
 
 (defun setup-report-items (report)
