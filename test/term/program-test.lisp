@@ -370,3 +370,28 @@ stopped and the thread joined however BODY leaves."
     (is (await () seen) "a failing fold reaches the handler")
     (is (equal '(:event-loop . t) (first seen))))
   (is (null program.loop-thread)))
+
+(deftest a-signal-storm-costs-one-post-per-kind-not-one-per-pixel (let ((program (make-probe-program)))
+  ;; A window drag is a SIGWINCH per pixel, and %DEFER runs on whichever
+  ;; thread the signal interrupted, so each one spawned a thread of its own --
+  ;; and with bordeaux 0.9.4's bookkeeping race one of those could die before
+  ;; its SEND, leaving the shell unpainted. A kind posts once at a time now:
+  ;; what a storm costs is posts, not deferrals.
+  (with-event-loop (program loop-thread)
+    (let ((real (symbol-function 'sb-thread:make-thread))
+          (posts 0))
+      (unwind-protect
+           (progn
+             (sb-ext:without-package-locks
+               (setf (symbol-function 'sb-thread:make-thread)
+                     (lambda (fn &rest args &key name &allow-other-keys)
+                       (when (equal name "nlt-signal") (incf posts))
+                       (apply real fn args))))
+             (dotimes (i 200) (nlt::%defer program (nlt:make-tick-msg)))
+             (sleep 1/10))
+        (sb-ext:without-package-locks
+          (setf (symbol-function 'sb-thread:make-thread) real)))
+      (is (< posts 10) "200 deferrals spawn a handful of posts, not one per call")
+      (is (await () (plusp (length (seen-of-type program.model 'nlt:tick-msg))))
+          "and the loop still hears the message")
+      (is (bt2:thread-alive-p loop-thread) "and the loop itself is untouched")))))
