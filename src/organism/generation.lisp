@@ -534,12 +534,16 @@ revision moved."
   (loop for (manifest . older) on manifests
         collect (and older (generation-changes (first older) manifest :history history))))
 
-(defun generations (&aux (manifests (manifests))
-                         (current (let ((identity (ignore-errors (self-identity))))
-                                    (and identity (sealed-generation identity manifests))))
-                         (deltas (generation-deltas manifests)))
+(defun generations (&key newest &aux (manifests (manifests))
+                                     (shown (if newest (min newest (length manifests)) (length manifests)))
+                                     (current (let ((identity (ignore-errors (self-identity))))
+                                                (and identity (sealed-generation identity manifests))))
+                                     ;; each one shown is read against the one before it
+                                     (deltas (generation-deltas
+                                              (subseq manifests 0 (min (length manifests) (1+ shown))))))
   "Every generation sealed in this home, in words: the model's and the
-operator's (generations)."
+operator's (generations). NEWEST, a count, lists that many of the newest and
+says how many older ones it leaves out."
   (with-output-to-string (out)
     (when *pristine*
       (format out "pristine: generation 0, no folder loaded~@[ -- ~a~]~%" (pristine-reason)))
@@ -548,6 +552,7 @@ operator's (generations)."
         (loop for (manifest . older) on manifests
               for previous = (first older)
               for changes in deltas
+              for index from 0 below shown
               do (format out "~&generation ~d~:[~;  current~]  ~a  nodecode ~a~%"
                          (manifest-number manifest) (eq manifest current)
                          (json-value manifest :string "sealed_at")
@@ -568,6 +573,9 @@ operator's (generations)."
                                            collect (getf (getf change :row) :name))
                        when names do (format out "  ~(~a~) since ~d: ~{~a~^, ~}~%"
                                              kind (manifest-number previous) names))))
+    (when (< shown (length manifests))
+      (format out "~&~:d older generation~:p not listed: (generations) lists them all~%"
+              (- (length manifests) shown)))
     (unless current
       (format out "~&unsealed: the folder as it stands matches no generation~@[ -- ~{~a~^; ~}~]~%"
               (refusal-lines)))))

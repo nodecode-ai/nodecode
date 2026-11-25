@@ -5988,6 +5988,9 @@ launch running N."
 
 ;;; --- the floor handed to the model -------------------------------------------
 
+(defparameter *failed-self-generations* 10
+  "How many of the newest generations the floor's hand-on lists.")
+
 (defparameter *failed-self-request*
   "[self: ~a. This launch runs pristine: generation 0, the binary alone -- nothing of the folder (~a) loaded, no image followed, and nothing is kept while it runs. What was sealed:
 ~a
@@ -6011,9 +6014,13 @@ death: this boot runs pristine because the self before it died before serving
         (let ((folder (namestring (or nlk::*cells-directory* (nlk:home)))))
           (unless (nlk:session-exists-p "layer")
             (nlk:standby-session :id "layer" :cwd folder))
+          ;; The newest few: every generation a home sealed ran to 338,895
+          ;; characters at 482 of them, past what one message may carry, and
+          ;; the hand-on was refused whole. (generations) lists the rest.
           (submit "layer"
                   (format nil *failed-self-request*
-                          (json-value marker :string "line") folder (nlk:generations))
+                          (json-value marker :string "line") folder
+                          (nlk:generations :newest *failed-self-generations*))
                   :source "layer"))
         (nlk:session-state-put "gateway" "failed-self"
                                (encode-json-object (json-object "deaths" deaths)))
