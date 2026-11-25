@@ -398,8 +398,51 @@ COUNT the number folded."
 ;;; takes the mailbox lock nor writes the terminal; it hands the request to
 ;;; a short-lived thread whose SEND the loop thread serves.
 
+(defvar *deferred-posts* (make-hash-table :test 'equal :synchronized t)
+  "(PROGRAM . MESSAGE-TYPE) -> (PENDING . T) for a deferred post still in flight.")
+
+(defvar *deferred-posts-lock* (bt2:make-lock :name "deferred-posts")
+  "The lock the deferred-post table's read-modify-write takes.")
+
+(defun post-deferred (key program)
+  "Post what KEY holds until nothing is pending, then forget KEY."
+  (unwind-protect
+       (loop for msg = (bt2:with-lock-held (*deferred-posts-lock*)
+                         (let ((pending (gethash key *deferred-posts*)))
+                           (when pending (prog1 (car pending) (setf (car pending) nil)))))
+             while msg
+             do (ignore-errors (send program msg)))
+    (bt2:with-lock-held (*deferred-posts-lock*) (remhash key *deferred-posts*))))
+
 (defun %defer (program msg)
-  (nlk:spawn "nlt-signal" (send program msg)))
+  "Hand MSG to PROGRAM's loop from a signal handler, one post per kind at a time.
+
+A signal lands on whichever thread it interrupts and a window drag is a
+SIGWINCH per pixel, so what SEND posts runs on a thread of its own and a
+second message of the same kind folds into the post already in flight — the
+latest one, posted after it — rather than spawning past it: a drag costs one
+thread per kind, not one per pixel.
+
+The post is spawned with SB-THREAD, not through bordeaux-threads. bordeaux
+0.9.4 starts a thread by recording a wrapper for it under
+*KNOWN-THREADS-LOCK* and has the new thread look that record up; the new
+thread can get there first, and the BT-ERROR it then raises is signalled
+inside the very mutex RECORD-CONDITION re-grabs, so SBCL answers \"Recursive
+lock attempt\" and the thread dies with the message unposted — which froze a
+TUI for an hour. Going around bt2 costs only the inherited dynamic bindings,
+which a two-line relay does not want. What the body raises is still caught
+here, so a failure reports through the loop instead of ending the thread."
+  (let ((key (cons program (type-of msg))))
+    (bt2:with-lock-held (*deferred-posts-lock*)
+      (let ((pending (gethash key *deferred-posts*)))
+        (cond (pending (setf (car pending) msg))
+              (t (setf (gethash key *deferred-posts*) (cons msg t))
+                 (#+sb-thread sb-thread:make-thread #-sb-thread bt2:make-thread
+                  (lambda ()
+                    (let ((*print-readably* nil))
+                      (handler-case (post-deferred key program)
+                        (error (e) (ignore-errors (%report program :signal e))))))
+                  :name "nlt-signal")))))))
 
 #-win32
 (defun on-signal (program signal)
