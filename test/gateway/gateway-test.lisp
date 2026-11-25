@@ -347,6 +347,28 @@ registry however BODY leaves."
       (is (null rows)))
     (is (null (nlk:status-rows)))))
 
+(deftest gateway-status-row-carries-its-session-and-what-its-key-does ()
+  ;; A row's session and its draft or slash line ride the board beside its
+  ;; text, for the shell to filter and take; a row that would do two things,
+  ;; or run what is not a slash line, is refused where the cell can see it.
+  (with-gateway-session (port "row-a")
+    (let* ((frames (frames-while (ws port :subscribe '("row-a") :await-subscription t)
+                     (nle:status-row "next: run the tests" :key "ticker" :session-id "row-a"
+                                                            :draft "run the tests" :verb "use")
+                     (nle:status-row "BTC 91k" :key "btc" :run "/btc open")))
+           (rows (gethash "rows" (gethash "payload" (car (last (frames-of-type frames "organism.notices"))))))
+           (ticker (aref rows 0)) (btc (aref rows 1)))
+      (is (equal '("row-a" "run the tests" "use")
+                 (mapcar (lambda (field) (gethash field ticker)) '("session_id" "draft" "verb"))))
+      (is (equal "/btc open" (gethash "run" btc)))
+      (is (not (nth-value 1 (gethash "session_id" btc))) "no session, no field"))
+    (signals-error error (nle:status-row "x" :key "k" :draft "a" :run "/b"))
+    (signals-error error (nle:status-row "x" :key "k" :run "weather"))
+    (signals-error error (nle:status-row "x" :key "k" :verb "open"))
+    (is (equal '("ticker" "btc") (mapcar #'first (nlk:status-rows))) "a refusal changes nothing")
+    (nle:status-row nil :key "ticker")
+    (nle:status-row nil :key "btc")))
+
 (deftest gateway-status-rows-frame-is-kept-for-the-frame (let ((model (detached-shell))))
   ;; The client side: the board's rows are the shell's to draw, before any
   ;; watermark check, and never a toast or a transcript row; a board without
@@ -357,8 +379,11 @@ registry however BODY leaves."
                       "organism.notices"
                       (nlk:json-object "notices" #()
                                        "rows" (vector (nlk:json-object "key" "codex-sub" "text" "codex: 41%")
-                                                      (nlk:json-object "key" "ticker" "text" "BTC 91k")))))
-    (is (equal '("codex: 41%" "BTC 91k") (nle::status-rows-shown model)))
+                                                      (nlk:json-object "key" "ticker" "text" "BTC 91k"
+                                                                       "session_id" "s1" "run" "/ticker"
+                                                                       "verb" "open")))))
+    (is (equal '((:text "codex: 41%") (:text "BTC 91k" :session-id "s1" :run "/ticker" :verb "open"))
+               (nle::status-rows-shown model)))
     (is (null (nle::chat-model-toasts model)) "no toast")
     (is (not (transcript-carries-p (nle::chat-model-state model) "codex: 41%")) "no row")
     (feed-wire model (nlk:encode-unsequenced-frame "organism.notices" (nlk:json-object "notices" #())))

@@ -787,8 +787,10 @@ rows every shell draws (STATUS-ROW); live-only."
                     (nlk:standing-notices))
                "rows"
                (map 'vector (lambda (row)
-                               (destructuring-bind (key text) row
-                                 (json-object "key" key "text" text)))
+                               (destructuring-bind (key text options) row
+                                 (json-object "key" key "text" text
+                                              (:getf options :opt "session_id" "draft"
+                                                     "run" "verb"))))
                     (nlk:status-rows))))
 
 (defvar *standing-notice-publication-lock* (bt2:make-lock :name "standing-notice-publication")
@@ -916,9 +918,34 @@ while no shell is open."
                             what refusal)
                     :level :warning))))))))
 
-(defun status-row (text &key key)
+(defun status-row (text &key key session-id draft run verb)
   "Keep TEXT as one line in every attached shell's frame, under KEY, until a
-later call under KEY replaces it or a NIL TEXT clears it. => TEXT."
+later call under KEY replaces it or a NIL TEXT clears it. SESSION-ID keeps it
+to the shells showing that session. DRAFT, a text, or RUN, a slash line, is
+what the row does when the person takes it -- Tab on an empty composer, the
+accept-suggestion key: DRAFT goes into the composer, RUN runs as if typed;
+VERB, one word, names that on the row's hint. => TEXT."
+  ;; The suggestion row of #505: a cell that guesses the next prompt for one
+  ;; session puts it on that session's shells only and hands it over on the
+  ;; key, as a picker row hands over its line -- the shell does it, so no
+  ;; cell code runs there.
+  (check-type key string)
+  (check-type session-id (or null string))
+  (check-type draft (or null string))
+  (check-type run (or null string))
+  (check-type verb (or null string))
+  (when (and draft run)
+    (error "a status row does one thing on its key: :draft or :run, not both"))
+  (when (and run (not (eql 0 (position #\/ (string-left-trim " " run)))))
+    (error "a status row's :run is a slash line, as \"/weather Oslo\": ~s" run))
+  (when (and verb (not (or draft run)))
+    (error "a status row's :verb names its :draft or :run, and it has neither"))
+  (status-row-1 text key (append (and session-id (list :session-id session-id))
+                                 (and draft (list :draft draft))
+                                 (and run (list :run run))
+                                 (and verb (list :verb (one-line-row-text verb))))))
+
+(defun status-row-1 (text key options)
   ;; A cell's passive status -- a subscription's usage, a ticker -- drawn by
   ;; the shell in a fixed place (FRAME.LISP STATUS-ROWS-FRAME-ROW) and read
   ;; by no one else: unlike a standing notice, the model's notices block,
@@ -927,11 +954,11 @@ later call under KEY replaces it or a NIL TEXT clears it. => TEXT."
   ;; draws it too. A cell sets it from its :start or a worker there and
   ;; clears it from ON-STOP, so a cell turned off or restarted takes its row
   ;; out of every shell. Never durable: a restart starts with none.
-  (check-type key string)
   (check-type text (or null string))
   (bt2:with-lock-held (*standing-notice-publication-lock*)
     (let ((before (nlk:status-rows)))
-      (nlk:note-status-row key (and text (plusp (length text)) (one-line-row-text text)))
+      (nlk:note-status-row key (and text (plusp (length text)) (one-line-row-text text))
+                           options)
       (unless (equal before (nlk:status-rows))
         (broadcast-organism "organism.notices" (standing-notices-payload)))))
   text)

@@ -488,7 +488,10 @@ thread reads it and clears this place.")
     ;; suggestion open); an empty composer is a consumed no-op (the Zig
     ;; trim-and-return-null rule). Idle Tab falls through to the base
     ;; update, where accept-suggestion keeps its meaning.
-    ((and model.turn-in-flight (key-msg-matches-p model :submit-turn-queue msg))
+    ((and model.turn-in-flight (key-msg-matches-p model :submit-turn-queue msg)
+          ;; except on an empty composer under a status row that offers
+          ;; something: the base update takes the row (STATUS-ROW-ACTION).
+          (not (status-row-action model)))
      (unless (composer-empty-p model)
        ;; Fire-and-forget with a fresh command id: the pending-command
        ;; machinery stays reserved for the primary start's replay
