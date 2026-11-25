@@ -622,6 +622,9 @@ NIL when a turn is already running, which then collects the exits itself."
                                     "command_id" command-id
                                     "content" input
                                     "sequence" sequence
+                                    ;; Who sent it, for the turn its promotion
+                                    ;; starts (PROMPT-INVOCATION).
+                                    "invocation" (invocation-json-object invocation)
                                     :when steer-p "disposition" "steer"
                                     :when images
                                     "images" (coerce (image-content-items images) 'vector)
@@ -661,6 +664,16 @@ NIL when a turn is already running, which then collects the exits itself."
                  :sequence sequence
                  :queue-depth (follow-up-count next-prompts))))))))))
 
+(defun prompt-invocation (prompt)
+  "The INVOCATION a parked PROMPT was admitted under, or NIL for a prompt
+parked before prompts kept theirs."
+  ;; A malformed one starts the turn without provenance, as before prompts
+  ;; kept it, rather than wedge the queue behind a prompt that cannot promote.
+  (let ((object (gethash "invocation" prompt)))
+    (when object
+      (handler-case (invocation-from-json-object object)
+        (invocation-error () nil)))))
+
 (defun dequeue-next-turn (session-id)
   "Atomically promote the oldest pending prompt into a fresh durable turn —
 the oldest STEER first when one waits: the steer ended the turn before it so
@@ -686,9 +699,13 @@ it."
                 (prompt-id (or (gethash "prompt_id" prompt) command-id))
                 (rest (remove-if (constantly t) prompts :start index :count 1))
                 ;; A steer's started input says it was one: the turn it opens is
-                ;; the operator cutting in, and a transcript marks it so.
+                ;; the operator cutting in, and a transcript marks it so. The
+                ;; pair carries the provenance the prompt was admitted under, as
+                ;; a turn that started at once does: a history reader tells a
+                ;; person's prompt from a delivery by it, not by the words.
                 (turn (append-turn-start-facts
                        handle session-id command-id input
+                       :invocation (prompt-invocation prompt)
                        :prompt-id prompt-id :sequence 1 :disposition "started"
                        :steer (steer-prompt-p prompt)
                        :metadata (gethash "metadata" prompt))))
