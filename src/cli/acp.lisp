@@ -111,7 +111,11 @@ head, saying how much was left out.")
   ;; The config options and the slash commands the client was last given,
   ;; as JSON text.
   (told-config nil)
-  (told-commands nil))
+  (told-commands nil)
+  ;; The MCP servers the client handed the session, ACP McpServer objects as
+  ;; it sent them: the organism holds them in memory alone, so they are sent
+  ;; again after a reattach.
+  (mcp-servers '()))
 
 (nlk:access (session acp-session))
 
@@ -400,7 +404,8 @@ and the agent ends."
                   (return))
                 (setf agent.port port)
                 (dolist (session lost)
-                  (handler-case (acp-attach agent session)
+                  (handler-case (progn (acp-attach agent session)
+                                       (acp-resend-mcp-servers agent session))
                     (gateway-unreached ()
                       (bt2:with-lock-held (agent.lock)
                         (unless (eq session.link :closed) (setf session.link :lost))))))
@@ -409,6 +414,16 @@ and the agent ends."
                                "the organism could not be reached again")
                   (return))
                 (sleep 0.05)))))))))
+
+(defun acp-resend-mcp-servers (agent session)
+  "Hand the organism SESSION's MCP servers again, when the client handed it
+any: one that restarted holds none. A refusal is said on stderr, and the
+session goes on without them."
+  (when-let (servers session.mcp-servers)
+    (handler-case (acp-send-mcp-servers agent session.id servers)
+      (error (condition)
+        (format *error-output* "nodecode acp: the MCP servers of ~a were not handed again: ~a~%"
+                session.id condition)))))
 
 (defun acp-give-up (agent sessions why)
   "SESSIONS lost their organism for good: their prompts fail with WHY, and
@@ -1008,6 +1023,32 @@ unknown one is the client's not-found, naming it. => the session's detail."
       (bt2:with-lock-held (agent.lock) (remhash session.id agent.sessions))
       (acp-refuse -32603 "~a" condition))))
 
+(defun acp-mcp-servers (params)
+  "The MCP servers PARAMS' mcpServers hands the session, as a list, refused
+as invalid params when one is no stdio or http server the organism holds
+(SESSION-MCP-SERVERS-REFUSAL)."
+  (let ((servers (gethash "mcpServers" params)))
+    (if (member servers '(nil :null))
+        '()
+        (if-let (why (session-mcp-servers-refusal servers))
+          (acp-refuse -32602 "mcpServers: ~a" why)
+          (coerce servers 'list)))))
+
+(defun acp-send-mcp-servers (agent session-id servers)
+  "Have the organism hold SERVERS as SESSION-ID's client MCP servers; NIL
+drops them."
+  (acp-http agent :post (acp-session-path session-id "mcp-servers")
+            (json-object "servers" (coerce servers 'vector))))
+
+(defun acp-drop-mcp-servers (agent session)
+  "Have the organism drop SESSION's client MCP servers, when it handed any.
+A refusal is said on stderr: the session is let go all the same."
+  (when (shiftf session.mcp-servers '())
+    (handler-case (acp-send-mcp-servers agent session.id '())
+      (error (condition)
+        (format *error-output* "nodecode acp: the MCP servers of ~a were not dropped: ~a~%"
+                session.id condition)))))
+
 (defun acp-initialize (agent params)
   (declare (ignore params))
   (setf agent.initialized t)
@@ -1016,7 +1057,7 @@ unknown one is the client's not-found, naming it. => the session's detail."
    "agentCapabilities" (json-object
                         "loadSession" t
                         "promptCapabilities" (json-object "image" t "audio" nil "embeddedContext" t)
-                        "mcpCapabilities" (json-object "http" nil "sse" nil)
+                        "mcpCapabilities" (json-object "http" t "sse" nil)
                         "sessionCapabilities" (json-object "list" (json-object)
                                                            "resume" (json-object)
                                                            "fork" (json-object)
@@ -1028,8 +1069,11 @@ unknown one is the client's not-found, naming it. => the session's detail."
 (defun acp-new-session (agent params)
   "session/new: a fresh gateway session working in the client's folder."
   (let* ((cwd (acp-cwd params))
-         (session (make-acp-session :id (fresh-session-id) :cwd cwd)))
-    (acp-http agent :post "/api/gateway/sessions" (json-object "session_id" session.id "cwd" cwd))
+         (servers (acp-mcp-servers params))
+         (session (make-acp-session :id (fresh-session-id) :cwd cwd :mcp-servers servers)))
+    (acp-http agent :post "/api/gateway/sessions"
+              (json-object "session_id" session.id "cwd" cwd
+                           :opt "mcp_servers" (and servers (coerce servers 'vector))))
     (acp-open agent session)
     (values (json-object "sessionId" session.id
                          "configOptions" (acp-session-config agent session))
@@ -1039,8 +1083,9 @@ unknown one is the client's not-found, naming it. => the session's detail."
   "session/fork: a new gateway session forked from the one PARAMS name at
 its head, as the shell's /fork makes one, working in the client's folder."
   (let* ((cwd (acp-cwd params))
+         (servers (acp-mcp-servers params))
          (parent (json-value params :text "sessionId"))
-         (session (make-acp-session :id (fresh-session-id) :cwd cwd)))
+         (session (make-acp-session :id (fresh-session-id) :cwd cwd :mcp-servers servers)))
     (unless parent (acp-refuse -32602 "sessionId is required"))
     ;; A fork at an earlier point names a cursor the agent issued; this one
     ;; issues none, so a fork that names one would land somewhere else.
@@ -1049,7 +1094,8 @@ its head, as the shell's /fork makes one, working in the client's folder."
                   (gethash "cursorId" params)))
     (acp-check-session agent parent)
     (acp-http agent :post "/api/gateway/sessions"
-              (json-object "session_id" session.id "parent" parent "cwd" cwd))
+              (json-object "session_id" session.id "parent" parent "cwd" cwd
+                           :opt "mcp_servers" (and servers (coerce servers 'vector))))
     (acp-open agent session)
     (values (json-object "sessionId" session.id
                          "configOptions" (acp-session-config agent session))
@@ -1059,15 +1105,20 @@ its head, as the shell's /fork makes one, working in the client's folder."
   "session/load (HISTORY: the conversation sent again as updates) or
 session/resume: the session's link, answered once its replay is read."
   (let* ((cwd (acp-cwd params))
+         (servers (acp-mcp-servers params))
          (session-id (json-value params :text "sessionId")))
     (unless session-id (acp-refuse -32602 "sessionId is required"))
     ;; The organism's own answer: an unknown id is the client's not-found.
     ;; The folder it works in is the one its files are said from.
     (let ((detail (acp-check-session agent session-id)))
+      ;; The servers the client hands it now replace any it held: none
+      ;; handed drops what an earlier client left.
+      (acp-send-mcp-servers agent session-id servers)
       (acp-open agent (make-acp-session :id session-id
                                         :cwd (or (json-value detail :text "cwd") cwd)
                                         :replay (if history :history :quiet)
-                                        :opening id)))
+                                        :opening id
+                                        :mcp-servers servers)))
     ;; Answered from the link, once the replay ends (ACP-ON-REPLAY).
     :deferred))
 
@@ -1096,13 +1147,15 @@ those begun in CWD alone when it is given."
                                      (princ-to-string (+ start *acp-session-page*))))))
 
 (defun acp-close-session (agent params)
-  "session/close: its turn cancelled, its prompt answered, its link let go."
+  "session/close: its turn cancelled, its prompt answered, its MCP servers
+dropped, its link let go."
   (let ((session (acp-session-of agent params :open nil)))
     (when session
       (acp-cancel agent session)
       (bt2:with-lock-held (agent.lock) (remhash session.id agent.sessions))
       (when-let (prompt (shiftf session.prompt nil))
         (acp-respond agent (getf prompt :id) (json-object "stopReason" "cancelled")))
+      (acp-drop-mcp-servers agent session)
       (acp-detach session))
     nil))
 
@@ -1338,8 +1391,11 @@ or why the agent could not go on."
                                 (alexandria:hash-table-values agent.sessions)))
                (when (and session.ws (eq session.link :attached))
                  (ignore-errors (wsd:send-ping session.ws)))))
+    ;; The organism outlives this client when it serves on: what the client
+    ;; handed its sessions goes with the client.
     (dolist (session (bt2:with-lock-held (agent.lock)
                        (alexandria:hash-table-values agent.sessions)))
+      (acp-drop-mcp-servers agent session)
       (acp-detach session))
     agent.outcome))
 

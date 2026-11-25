@@ -443,6 +443,11 @@ renderer, the program loop.")
    ;; lands on, the operator's and a cell's; and the title a model writes a
    ;; session from its first prompt, which a session's owner advises ---
    #:set-session-title #:name-session
+   ;; --- the MCP servers an ACP client hands a session (gateway.lisp): held
+   ;; in memory alone, read back, and told to the hooks a cell (mcp) pushes
+   ;; to connect them ---
+   #:session-mcp-servers #:session-mcp-server-sessions #:set-session-mcp-servers
+   #:*session-mcp-servers-hooks*
    ;; --- a turn's mark that its answer waits on the person it answers
    ;; (gateway.lisp), which a channel's answer is marked through too ---
    #:answer-waits

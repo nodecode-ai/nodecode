@@ -36,14 +36,14 @@ Any other client runs `nodecode acp`, with `-p NAME` before `acp` for another pr
 
 | The editor sends | Nodecode |
 | --- | --- |
-| `session/new` | Opens a session working in the editor's folder. |
+| `session/new` | Opens a session working in the editor's folder, with the editor's MCP servers. |
 | `session/prompt` | Runs a turn and answers with how it ended, `end_turn` or `cancelled`, and the tokens it spent. A turn that fails answers with its error. A prompt sent while a cancelled turn winds down starts once that turn ends. |
 | `session/cancel` | Cancels the running turn. Its tool calls still open close as failed. |
-| `session/load` | Sends the session's conversation again, then answers. |
-| `session/resume` | Opens the session without sending its conversation again. |
-| `session/fork` | Opens a new session forked from the session at its newest turn, as `/fork` does, working in the editor's folder. |
+| `session/load` | Sends the session's conversation again, then answers. The editor's MCP servers replace the ones the session held. |
+| `session/resume` | Opens the session without sending its conversation again. The editor's MCP servers replace the ones the session held. |
+| `session/fork` | Opens a new session forked from the session at its newest turn, as `/fork` does, working in the editor's folder, with the editor's MCP servers. |
 | `session/list` | Lists this home's sessions, newest first, those of one folder when the editor names it. |
-| `session/close` | Cancels the running turn and lets the session go. It stays in your home. |
+| `session/close` | Cancels the running turn, drops the session's MCP servers and lets the session go. It stays in your home. |
 | `session/set_config_option` | Changes the session's model or reasoning effort. |
 
 A prompt's text, the files the editor attaches and its pictures go to the model as one message. An attached file the editor sends whole is written out in the message under its path; one it only links is named by its path, for Nodecode to read itself.
@@ -70,6 +70,20 @@ An error about a session the agent does not hold is `-32002`, with the session's
 
 Each session offers two config options. `model` lists the models of every provider you connected, as `/models` does, grouped by provider. `effort` lists the reasoning rungs the model admits; a model that does not reason has no `effort`. A pick on a session that already ran moves it the way `/models` does: from its next turn, and as the default new sessions start on. A pick before the first turn holds for that session alone.
 
+## The editor's MCP servers
+
+The MCP servers the editor hands a session are that session's alone. The `mcp` cell connects each on its first call. Only an evaluation in that session reaches them: `(mcp:call "t3-code" "TOOL" ...)`, `(mcp:tools)` and `(mcp:status)` find them before the servers in your own MCP configuration.
+
+| The editor hands | Nodecode |
+| --- | --- |
+| A stdio server: `name`, `command`, `args`, `env` | Runs the command with its args and env, without a shell. |
+| An http server: `type: "http"`, `name`, `url`, `headers` | Sends its requests to the url, with the headers. |
+| An SSE server, a type ACP does not name, a stdio server with no command, an http server with no `http` or `https` url, a name twice | Refuses the request with `-32602`. |
+
+The organism holds them in memory alone. A server's env and headers reach no file, log, update, error or conversation. `session/close` drops them, and so does the editor going. An organism that restarts is handed them again when each session attaches again.
+
+A program does the same over the gateway with the operator token. `POST /api/gateway/sessions` takes them under `mcp_servers`. `POST /api/gateway/sessions/<id>/mcp-servers` with `{"servers": [...]}` replaces them, and `[]` drops them. Neither says them back.
+
 ## Slash commands
 
 The editor lists the organism's slash commands, and a prompt that starts with one runs it, as a channel runs it: `/rename`, `/models`, `/context`, `/status` and the commands your cells add. Its answer is the turn's text. `/clear`, `/undo` and `/redo` are left out of the list, since each moves the conversation under the editor's transcript, which the editor cannot be told to redraw. Start a new thread in the editor instead. Typed, they still run.
@@ -92,9 +106,14 @@ Run `nodecode gateway on` to keep one organism serving the editor, the shell and
 <Instead>Let the editor own stdin and stdout.</Instead>
 </Mistake>
 <Mistake>
-<What>Expecting the editor's MCP servers in Nodecode</What>
-<Why>Nodecode does not connect the MCP servers an editor offers in `session/new`.</Why>
-<Instead>Name them in Nodecode's own MCP configuration.</Instead>
+<What>Handing Nodecode an SSE MCP server</What>
+<Why>`session/new` is refused with `-32602`: `mcpServers: MCP server "NAME" is SSE, which Nodecode does not connect: give it over http`.</Why>
+<Instead>Give the server as `type: "http"` at its streamable HTTP url.</Instead>
+</Mistake>
+<Mistake>
+<What>Expecting the editor's MCP servers in another session, or in the shell</What>
+<Why>A server the editor hands a session is that session's alone. Another session's `(mcp:tools)` does not list it.</Why>
+<Instead>Name a server every session should reach in Nodecode's own MCP configuration.</Instead>
 </Mistake>
 <Mistake>
 <What>Expecting Nodecode to read and write files through the editor</What>

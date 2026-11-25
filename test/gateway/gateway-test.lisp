@@ -7003,3 +7003,87 @@ scratch runtime directory."
         (is (eq :observed (catch 'observed
                             (nle:serve-organism-candidate :wait t :store-path path))))
         (is (= attempts 2))))))
+
+(deftest the-mcp-servers-route-holds-a-sessions-client-servers (with-gateway-session (port "mcp-route"))
+  ;; A session's client MCP servers are set over its own route and on its
+  ;; create, refused whole when one is malformed, and never said back.
+  (let* ((secret "route-secret-token-4242")
+         (stdio (nlk:json-object "name" "t3-code" "command" "/usr/bin/t3"
+                                 "env" (vector (nlk:json-object "name" "T3_TOKEN" "value" secret))))
+         (sse (nlk:json-object "type" "sse" "name" "old" "url" "https://mcp.example/sse"
+                               "headers" (vector (nlk:json-object "name" "Authorization" "value" secret)))))
+    (flet ((servers (&rest specs) (nlk:encode-json-object (nlk:json-object "servers" (coerce specs 'vector))))
+           (names (id) (mapcar (lambda (spec) (gethash "name" spec)) (nle:session-mcp-servers id))))
+      (with-saved-globals ((nle:*session-mcp-servers-hooks* '())
+                           (nle::*session-mcp-servers* (make-hash-table :test #'equal :synchronized t)))
+        (is-route (port :post "/api/gateway/sessions/no-such-session/mcp-servers" :body (servers))
+                  404 "servers for no session are refused" "unknown_session")
+        (is-route (port :post "/api/gateway/sessions/mcp-route/mcp-servers" :body (servers stdio) :token nil)
+                  401 "the route takes the operator token")
+        (is-route (port :get "/api/gateway/sessions/mcp-route/mcp-servers") 405 "the route only sets")
+        (is-route (port :post "/api/gateway/sessions/mcp-route/mcp-servers" :body "{\"servers\":{}}")
+                  400 "an object is no array" "invalid_request")
+        (is-route (port :post "/api/gateway/sessions/mcp-route/mcp-servers" :body "{}")
+                  400 "servers are required" "invalid_request")
+        (is-route (port :post "/api/gateway/sessions/mcp-route/mcp-servers" :body "{\"servers\":[1]}")
+                  400 "a server is an object" "invalid_request")
+        (is-route (port :post "/api/gateway/sessions/mcp-route/mcp-servers"
+                        :body (servers (nlk:json-object "name" "bare")))
+                  400 "a stdio server names its command" "invalid_request")
+        (is-route (port :post "/api/gateway/sessions/mcp-route/mcp-servers" :body (servers stdio stdio))
+                  400 "no name twice" "invalid_request")
+        (is-route (port :post "/api/gateway/sessions/mcp-route/mcp-servers"
+                        :body (servers (nlk:json-object "type" "http" "name" "rel" "url" "/mcp")))
+                  400 "an http server's url is absolute" "invalid_request")
+        (with-gateway-http (port :post "/api/gateway/sessions/mcp-route/mcp-servers" :body (servers stdio sse)
+                            :status 400 :says "SSE is refused")
+          (is (search "SSE" (nlk:json-value body :string "error" "message")))
+          (is (not (search secret (nlk:encode-json-object body))) "the refusal quotes no server"))
+        (is (null (nle:session-mcp-servers "mcp-route")) "nothing refused is held")
+        (with-gateway-http (port :post "/api/gateway/sessions/mcp-route/mcp-servers" :body (servers stdio)
+                            :status 200 :says "a well-formed list is held")
+          (is (eql 1 (gethash "servers" body)))
+          (is (not (search secret (nlk:encode-json-object body))) "and never said back"))
+        (is (equal '("t3-code") (names "mcp-route")))
+        (with-gateway-http (port :post "/api/gateway/sessions/mcp-route/mcp-servers" :body (servers)
+                            :status 200 :says "[] drops them"))
+        (is (null (nle:session-mcp-servers "mcp-route")))
+        ;; A create holds them from the start, and a malformed list mints nothing.
+        (with-gateway-http (port :post "/api/gateway/sessions"
+                            :body (nlk:encode-json-object
+                                   (nlk:json-object "session_id" "mcp-made" "mcp_servers" (vector stdio)))
+                            :status 200 :says "a create takes its servers")
+          (is (not (search secret (nlk:encode-json-object body))) "and does not say them back"))
+        (is (equal '("t3-code") (names "mcp-made")))
+        (is-route (port :post "/api/gateway/sessions"
+                        :body (nlk:encode-json-object
+                               (nlk:json-object "session_id" "mcp-refused" "mcp_servers" (vector sse))))
+                  400 "a create with an SSE server is refused" "invalid_request")
+        (is (not (nlk:session-exists-p "mcp-refused")) "and mints nothing")
+        (is-route (port :post "/api/gateway/sessions"
+                        :body "{\"session_id\":\"mcp-refused\",\"mcp_servers\":\"t3-code\"}")
+                  400 "mcp_servers is an array" "invalid_request")))))
+
+(deftest a-session-mcp-servers-hook-that-fails-leaves-the-rest-told ()
+  ;; Every hook hears each set; one that signals is said on stderr by the
+  ;; session and the hook, never the servers, and the hooks after it still run.
+  (let* ((secret "hook-secret-token-4242")
+         (spec (nlk:json-object "name" "t3-code" "command" "t3"
+                                "env" (vector (nlk:json-object "name" "T3_TOKEN" "value" secret))))
+         (heard '())
+         (stderr (make-string-output-stream)))
+    (with-saved-globals ((nle:*session-mcp-servers-hooks*
+                          (list (lambda (id specs) (error "choked on ~a ~a" id (gethash "env" (first specs))))
+                                (lambda (id specs) (push (cons id specs) heard))))
+                         (nle::*session-mcp-servers* (make-hash-table :test #'equal :synchronized t)))
+      (let ((*error-output* stderr))
+        (nle:set-session-mcp-servers "s-hooked" (list spec)))
+      (is (equal (list (cons "s-hooked" (list spec))) heard) "the hook after the failing one is told")
+      (is (equal (list spec) (nle:session-mcp-servers "s-hooked")))
+      (let ((said (get-output-stream-string stderr)))
+        (is (search "s-hooked" said) "the failure names the session")
+        (is (not (search secret said)) "and never the servers"))
+      (let ((*error-output* (make-broadcast-stream)))
+        (nle:set-session-mcp-servers "s-hooked" nil))
+      (is (equal (cons "s-hooked" nil) (first heard)) "a drop is told as NIL")
+      (is (null (nle:session-mcp-servers "s-hooked"))))))

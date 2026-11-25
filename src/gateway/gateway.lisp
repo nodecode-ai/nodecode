@@ -3756,12 +3756,14 @@ runs a background evaluation."
 (defun delete-gateway-sessions (session-id &aux (plan (nlk:delete-session session-id))
                                                 (ids (getf plan :sessions)))
   "NLK:DELETE-SESSION of SESSION-ID, and what this process holds of the
-sessions that went dropped with them: their rows views and registry
-entries. => the delete's plan."
+sessions that went dropped with them: their rows views, registry entries
+and client MCP servers. => the delete's plan."
   (close-session-rows-views ids)
   (dolist (table (list *gateway-sessions* *session-registry*))
     (sb-ext:with-locked-hash-table (table)
       (dolist (id ids) (remhash id table))))
+  (dolist (id ids)
+    (when (session-mcp-servers id) (set-session-mcp-servers id nil)))
   plan)
 
 (defun delete-gateway-session (session-id dry-run)
@@ -3875,6 +3877,12 @@ go and deletes nothing)."
          ;; on the spawn. A fork that names none works where its parent does.
          (when (or (gethash "cwd" request) (null (gethash "parent" request)))
            (nlk:check-session-cwd (gethash "cwd" request)))
+         ;; The client MCP servers it holds from the start, an ACP client's
+         ;; (SET-SESSION-MCP-SERVERS): refused before anything is minted, held
+         ;; once the session is, and never said back.
+         (unless (member (gethash "mcp_servers" request) '(nil :null))
+           (when-let (why (session-mcp-servers-refusal (gethash "mcp_servers" request)))
+             (nlk::protocol-refuse :invalid_request "mcp_servers: ~a" why)))
          ;; The target the session runs on, all optional: a launch's
          ;; `--provider', `--model' and `--effort' (#141), the members a
          ;; start_turn takes, checked the same way. A refused one is the
@@ -3909,6 +3917,8 @@ go and deletes nothing)."
                (when-let (refusal (apply #'pin-start-turn-target id target))
                  (return-from handle-gateway-sessions-http
                    (gateway-error-response 400 (first refusal) (second refusal)))))
+             (let ((servers (coerce (json-array request "mcp_servers") 'list)))
+               (when servers (set-session-mcp-servers id servers)))
              ;; The target as read is said back: the shell sends it, its
              ;; members apart, on the first start_turn -- which an organism
              ;; that never read the spec takes word for word.
@@ -4319,6 +4329,123 @@ string gives back the name its first prompt makes. => the name now in effect."
       (broadcast-organism "session_titled" (json-object "session_id" session-id "title" named)
                           :session-id session-id))
     named))
+
+;;; --- a session's client MCP servers ---------------------------------------------
+;;; An ACP client hands its agent MCP servers of its own with each session it
+;;; opens (session/new, session/load, session/resume, session/fork): T3 Code's
+;;; carries a token for its thread in the server's env. The organism holds
+;;; them by session, in memory alone, and tells the mcp cell, which connects
+;;; them, through *SESSION-MCP-SERVERS-HOOKS*. A spec's env and headers are
+;;; secrets: nothing here writes a spec to disk, a log, a fact, a reply or an
+;;; error's words. A restart forgets them all, and the client sends them again.
+
+(defvar *session-mcp-servers* (make-hash-table :test #'equal :synchronized t)
+  "Session id -> the client MCP server specs held for it (SET-SESSION-MCP-SERVERS).")
+
+(defvar *session-mcp-servers-hooks* '()
+  "Functions of (SESSION-ID SPECS) told each time a session's client MCP servers are set; SPECS NIL drops them.")
+
+(defun session-mcp-servers (session-id)
+  "The client MCP server specs held for SESSION-ID, a list of ACP McpServer
+objects, or NIL."
+  (values (gethash session-id *session-mcp-servers*)))
+
+(defun session-mcp-server-sessions ()
+  "The ids of every session that holds client MCP servers: what a cell that
+starts again -- its folder restarted, /mcp turned back on -- reads back,
+since the hooks told the cell before it went."
+  (alexandria:hash-table-keys *session-mcp-servers*))
+
+(defun set-session-mcp-servers (session-id specs)
+  "Hold SPECS, a list of ACP McpServer objects as NLK:DECODE-JSON reads them,
+as SESSION-ID's client MCP servers, in memory alone; NIL drops them. Then
+every hook in *SESSION-MCP-SERVERS-HOOKS* is called with SESSION-ID and SPECS.
+=> SPECS."
+  ;; The refusals name no value: a spec's env or headers would ride the words.
+  (unless (stringp session-id)
+    (error "set-session-mcp-servers takes a session id string"))
+  (unless (and (listp specs) (every #'hash-table-p specs))
+    (error "set-session-mcp-servers takes a list of MCP server objects"))
+  (if specs
+      (setf (gethash session-id *session-mcp-servers*) (copy-list specs))
+      (remhash session-id *session-mcp-servers*))
+  ;; The hooks run outside any lock: the table's own is released, and a hook
+  ;; may read the table back. A hook that signals is said on stderr by its
+  ;; name and the condition's type alone, since a condition's words may quote
+  ;; the spec it choked on; the rest are still told.
+  (dolist (hook *session-mcp-servers-hooks*)
+    (handler-case (funcall hook session-id specs)
+      (error (condition)
+        (format *error-output* "nodecode: the session MCP servers hook ~s failed for ~a (~s)~%"
+                hook session-id (type-of condition)))))
+  specs)
+
+(defun session-mcp-servers-refusal (specs)
+  "Why SPECS, a decoded JSON value, is no list of client MCP servers a session
+may hold, or NIL when it is one: an array of ACP McpServer objects, each a
+stdio server (a name and a command) or an http one (a name and an absolute
+http or https URL), no name twice. The words name a server by its place and
+its name alone."
+  ;; SSE is refused: ACP deprecates it, and the mcp cell speaks stdio and
+  ;; streamable HTTP. Args, env and headers are optional, but well formed when
+  ;; given: a list the cell would choke on is the client's mistake, said here.
+  (flet ((pairs-p (value)
+           (and (vectorp value) (not (stringp value))
+                (every (lambda (pair) (and (stringp (json-value pair :string "name"))
+                                           (stringp (json-value pair :string "value"))))
+                       value)))
+         (web-url-p (url)
+           (let ((uri (and (stringp url) (ignore-errors (quri:uri url)))))
+             (and uri
+                  (member (quri:uri-scheme uri) '("http" "https") :test #'equal)
+                  (plusp (length (quri:uri-host uri)))))))
+    (if (not (and (vectorp specs) (not (stringp specs))))
+        "the MCP servers are an array"
+        (let ((names '()))
+          (loop for spec across specs
+                for index from 0
+                for name = (json-value spec :text "name")
+                for type = (json-value spec :any "type")
+                do (cond
+                     ((not (hash-table-p spec))
+                      (return (format nil "MCP server ~d is no object" index)))
+                     ((null name)
+                      (return (format nil "MCP server ~d has no name" index)))
+                     ((member name names :test #'string=)
+                      (return (format nil "MCP server ~d names ~s, which an earlier one names" index name)))
+                     ((member type '(nil "stdio") :test #'equal)
+                      (unless (json-value spec :text "command")
+                        (return (format nil "MCP server ~s has no command" name)))
+                      (unless (member (gethash "args" spec) '(nil :null))
+                        (let ((args (gethash "args" spec)))
+                          (unless (and (vectorp args) (not (stringp args)) (every #'stringp args))
+                            (return (format nil "MCP server ~s: args is an array of strings" name)))))
+                      (unless (or (member (gethash "env" spec) '(nil :null)) (pairs-p (gethash "env" spec)))
+                        (return (format nil "MCP server ~s: env is an array of {name, value} strings" name))))
+                     ((equal type "http")
+                      (unless (web-url-p (gethash "url" spec))
+                        (return (format nil "MCP server ~s needs an absolute http or https url" name)))
+                      (unless (or (member (gethash "headers" spec) '(nil :null))
+                                  (pairs-p (gethash "headers" spec)))
+                        (return (format nil "MCP server ~s: headers is an array of {name, value} strings" name))))
+                     ((equal type "sse")
+                      (return (format nil "MCP server ~s is SSE, which Nodecode does not connect: give it over http" name)))
+                     (t
+                      (return (format nil "MCP server ~s has type ~:[that is no string~;~:*~s~]: stdio and http are"
+                                      name (and (stringp type) type)))))
+                   (push name names))))))
+
+(define-gateway-route handle-gateway-session-mcp-servers-http (env session-id)
+  "POST /api/gateway/sessions/<id>/mcp-servers {\"servers\": [...]} — the
+client MCP servers the session holds from now on, ACP McpServer objects
+(SET-SESSION-MCP-SERVERS); [] drops them. => {session_id, servers}: how many
+it holds. The servers are never said back."
+  (:route :post "mcp-servers" "session MCP servers")
+  (let ((servers (gethash "servers" (gateway-request-json env))))
+    (when-let (why (session-mcp-servers-refusal servers))
+      (nlk::protocol-refuse :invalid_request "servers: ~a" why))
+    (set-session-mcp-servers session-id (coerce servers 'list))
+    (json-object "session_id" session-id "servers" (length servers))))
 
 ;;; --- what a session's answer waits on ------------------------------------------
 ;;; An answer that waits on the person it answers -- a question, a go or no-go,

@@ -300,3 +300,85 @@ has. BODY's end closes its stdin."
       (let ((agent (nle::make-acp-agent :output (make-broadcast-stream))))
         (nle::acp-fail-open-calls agent session)
         (is (zerop (hash-table-count (nle::acp-session-calls session))) "a turn's end closes what it left open")))))
+
+(deftest acp-mcp-servers-reach-the-organism-and-never-the-client ()
+  ;; The MCP servers a client hands a session are the organism's to hold and
+  ;; the hook's to hear, on session/new, session/fork and session/load alike;
+  ;; session/close and the agent's end drop them. SSE, an unknown type and a
+  ;; server with no command are invalid params. A server's env and headers
+  ;; ride no update, answer or error.
+  (let* ((told (list '()))
+         (lock (bt2:make-lock :name "acp-test-told"))
+         (secret "t3-secret-token-4242")
+         (cwd (namestring (fixture-workspace)))
+         (stdio (nlk:json-object "name" "t3-code" "command" "/usr/bin/t3" "args" (vector "mcp")
+                                 "env" (vector (nlk:json-object "name" "T3_TOKEN" "value" secret))))
+         (http (nlk:json-object "type" "http" "name" "web" "url" "https://mcp.example/x"
+                                "headers" (vector (nlk:json-object "name" "Authorization" "value" secret))))
+         (sse (nlk:json-object "type" "sse" "name" "old" "url" "https://mcp.example/sse"
+                               "headers" (vector (nlk:json-object "name" "Authorization" "value" secret)))))
+    (flet ((names (specs) (mapcar (lambda (spec) (gethash "name" spec)) specs))
+           (told () (bt2:with-lock-held (lock) (reverse (car told)))))
+      (with-saved-globals ((nle:*session-mcp-servers-hooks*
+                            (list (lambda (id specs) (bt2:with-lock-held (lock) (push (cons id specs) (car told))))))
+                           (nle::*session-mcp-servers* (make-hash-table :test #'equal :synchronized t)))
+        (with-gateway-session (port "acp-mcp" :cwd cwd)
+          (let (id fork)
+            (with-acp (port send messages outcome)
+              (send (acp-call 1 "initialize" (nlk:json-object "protocolVersion" 1)))
+              (let ((answer (await (:timeout 10) (acp-answer (messages) 1))))
+                (is (eq t (nlk:json-value answer :boolean "result" "agentCapabilities" "mcpCapabilities" "http")))
+                (is (null (nlk:json-value answer :boolean "result" "agentCapabilities" "mcpCapabilities" "sse"))))
+              (send (acp-call 2 "session/new" (nlk:json-object "cwd" cwd "mcpServers" (vector stdio http))))
+              (setf id (await (:timeout 10) (nlk:json-value (acp-answer (messages) 2) :string "result" "sessionId")))
+              (is (equal '("t3-code" "web") (names (nle:session-mcp-servers id))) "session/new hands them over")
+              (is (equal '("t3-code" "web") (names (cdr (assoc id (told) :test #'equal)))) "and the hook hears them")
+              (send (acp-call 3 "session/fork" (nlk:json-object "sessionId" "acp-mcp" "cwd" cwd
+                                                                "mcpServers" (vector stdio))))
+              (setf fork (await (:timeout 10) (nlk:json-value (acp-answer (messages) 3) :string "result" "sessionId")))
+              (is (equal '("t3-code") (names (nle:session-mcp-servers fork))) "session/fork hands its own")
+              (send (acp-call 4 "session/load" (nlk:json-object "sessionId" "acp-mcp" "cwd" cwd
+                                                                "mcpServers" (vector http))))
+              (is (await (:timeout 10) (acp-answer (messages) 4)))
+              (is (equal '("web") (names (nle:session-mcp-servers "acp-mcp"))) "session/load hands them over")
+              (send (acp-call 5 "session/new" (nlk:json-object "cwd" cwd "mcpServers" (vector sse))))
+              (send (acp-call 6 "session/new" (nlk:json-object "cwd" cwd "mcpServers"
+                                                               (vector (nlk:json-object "name" "bare")))))
+              (send (acp-call 7 "session/new" (nlk:json-object "cwd" cwd "mcpServers"
+                                                               (vector (nlk:json-object "type" "ws" "name" "odd")))))
+              (send (acp-call 8 "session/new" (nlk:json-object "cwd" cwd "mcpServers"
+                                                               (vector (nlk:json-object "type" "http" "name" "ftp"
+                                                                                        "url" "ftp://mcp.example")))))
+              (is (await (:timeout 10) (acp-answer (messages) 8)))
+              (flet ((code (n) (nlk:json-value (acp-answer (messages) n) :integer "error" "code")))
+                (is (eql -32602 (code 5)) "an SSE server is refused")
+                (is (eql -32602 (code 6)) "a stdio server with no command")
+                (is (eql -32602 (code 7)) "a type ACP does not name")
+                (is (eql -32602 (code 8)) "an http server whose url is not http"))
+              (let ((heard (loop for (nil . specs) in (told) append (names specs))))
+                (is (null (intersection '("old" "bare" "odd" "ftp") heard :test #'equal)) "no refused server is heard"))
+              (send (acp-call 9 "session/close" (nlk:json-object "sessionId" id)))
+              (is (await (:timeout 10) (acp-answer (messages) 9)))
+              (is (null (nle:session-mcp-servers id)) "session/close drops them")
+              (let ((dropped (find-if (lambda (entry) (and (equal id (car entry)) (null (cdr entry)))) (told))))
+                (is dropped "and the hook hears NIL"))
+              (let ((wire (mapcar #'nlk:encode-json-object (messages))))
+                (is (notany (lambda (line) (search secret line)) wire) "no env or header value rides the wire")))
+            (is (null (nle:session-mcp-servers fork)) "the agent's end drops the servers of what it held open")
+            (is (null (nle:session-mcp-servers "acp-mcp")))))))))
+
+(deftest acp-a-reattach-hands-the-organism-its-mcp-servers-again ()
+  ;; The organism holds a session's MCP servers in memory alone, so one that
+  ;; restarted holds none: a link attached again hands them over again.
+  (let ((spec (nlk:json-object "name" "t3-code" "command" "/usr/bin/t3")))
+    (with-saved-globals ((nle:*session-mcp-servers-hooks* '())
+                         (nle::*session-mcp-servers* (make-hash-table :test #'equal :synchronized t)))
+      (with-gateway-session (port "acp-mcp-lost" :cwd (namestring (fixture-workspace)))
+        (let* ((agent (nle::make-acp-agent :output (make-broadcast-stream) :port port :token "test-token"
+                                           :find-port (constantly port)))
+               (session (nle::make-acp-session :id "acp-mcp-lost" :link :lost :mcp-servers (list spec))))
+          (setf (gethash "acp-mcp-lost" (nle::acp-agent-sessions agent)) session)
+          (nlk:with-cleanup ((nle::acp-detach session))
+            (nle::acp-reattach agent)
+            (is (await (:timeout 10) (eq :attached (nle::acp-session-link session))) "the link attaches again")
+            (is (await (:timeout 10) (nle:session-mcp-servers "acp-mcp-lost")) "and the servers are held again")))))))
