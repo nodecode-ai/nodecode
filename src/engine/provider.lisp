@@ -2397,9 +2397,9 @@ own, while that target admits it, else the default (*REASONING-EFFORT*)."
   "True when CONDITION represents a transient provider failure worth retrying."
   ;; Retryable: nil status (timeout, network error, truncation, empty
   ;; response, in-stream error without a code), 408, 409, 425, 429, and every
-  ;; 5xx. Not retryable: 400, 401, 403, 404, 413, 422 — a second identical
-  ;; request cannot succeed where the first was rejected for content or auth
-  ;; reasons.
+  ;; 5xx. Not retryable: every other 4xx (400, 401, 402, 403, 404, 413, 422
+  ;; ...) -- a second identical request cannot succeed where the first was
+  ;; rejected for its content, its key or its balance.
   (and (not (typep condition 'provider-refused))
        (or (null status)
            (member status '(408 409 425 429))
@@ -4067,9 +4067,11 @@ one lane resolution, one capability resolution."
     ("broken_answer" . "broken answer") ("refusal" . "refusal"))
   "The failures that can move a round to the failover chain, (ID . LABEL) in
 the order a picker lists them: a 429; a server or transport failure, a
-timeout or a stall; an attempt that streamed no token by its deadline, or
-was skipped while it waited (ATTEMPT-WATCH); a stream cut short, an empty
-answer, a malformed tool call or a loop; the model's refusal.")
+timeout, a stall, or a status no retry cures (a rejected key, a spent
+balance, a model the provider does not serve); an attempt that streamed no
+token by its deadline, or was skipped while it waited (ATTEMPT-WATCH); a
+stream cut short, an empty answer, a malformed tool call or a loop; the
+model's refusal.")
 
 (defvar *failover* t
   "NIL holds a provider call to the model it was aimed at: a probe asks one
@@ -4083,6 +4085,8 @@ model, never the chain behind it.")
         ((typep condition '(or provider-stream-incomplete provider-empty-response
                             provider-malformed-tool-call provider-reasoning-loop))
          "broken_answer")
+        ;; A 5xx, a failure below HTTP, a stall, and a status no retry cures:
+        ;; this model cannot answer, whatever the request says.
         (t "outage")))
 
 (defun failover-triggers ()

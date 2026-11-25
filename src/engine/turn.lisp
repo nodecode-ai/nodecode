@@ -3431,26 +3431,23 @@ did not say."
              ;; error is allowed to stand.
              (unless (evict-and-retarget) (error e))
              (incf overflow-recoveries))
-            ;; Four failures walk the chain at once. On a candidate (the
-            ;; round has walked the chain), a failure no retry cures is that
-            ;; candidate's verdict, not the round's: the chain walks on, and
-            ;; only past its last entry does it stand. Without this, a relay's
-            ;; 400 for a model it does not serve would end a turn with the
-            ;; next entry untried. A refusal (never retryable) is the
-            ;; selection's verdict on this one request, not on the turn: with
-            ;; a chain configured, its first candidate answers this round and
-            ;; the selection is asked again once the turn's refusal hold is
-            ;; over (NEXT-ROUND-CONTEXT). A slow start leaves for the
-            ;; candidate that stood behind its attempt at once: retried, the
-            ;; same cold start would be waited out again. With the chain spent
-            ;; each stands, or the ladder below retries it.
+            ;; Two failures leave for the chain at once, never down the ladder
+            ;; below: a slow start, whose retry would wait out the same cold
+            ;; start again, and a failure no retry cures -- a refusal, a key
+            ;; the provider rejects, a spent balance, a model it does not
+            ;; serve -- which the same request would meet again. Off the
+            ;; selection each leaves only when its trigger is on (TRY-FALLBACK
+            ;; reads FAILOVER-CHAIN-FOR): a free lane's 403 free_paused once
+            ;; ended turns with every backup untried. On a candidate the chain
+            ;; walks on whatever failed it, so a relay's 400 for a model it
+            ;; does not serve never ends a turn with the next entry untried.
+            ;; A refusal is the selection's verdict on this one request, not
+            ;; on the turn: its candidate answers this round and the selection
+            ;; is asked again once the turn's refusal hold is over
+            ;; (NEXT-ROUND-CONTEXT); any other move holds for the turn. With
+            ;; the chain spent each stands, or the ladder below retries it.
             ((let ((refusal-p (and (typep e 'provider-refused) (null fallback-tried))))
-               (and (or (typep e '(or provider-refused provider-slow-start))
-                        (and (not (retryable-provider-error-p e))
-                             ;; off the selection, a failure no retry can cure --
-                             ;; a 403, a 401, a 400 -- has one road left before it
-                             ;; stands: the candidate the operator put behind it.
-                             (or fallback-tried (failover-chain-for e nil))))
+               (and (or (typep e 'provider-slow-start) (not (retryable-provider-error-p e)))
                     (try-fallback e)
                     (or (not refusal-p) (setf refusal-fallback-p t))))
              nil)
