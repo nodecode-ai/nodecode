@@ -27,6 +27,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 LIMIT = 3
 # Past this a run_one has not given up on its hung run: a fail, not a wait.
 PATIENCE = 30
+# SIGKILL takes a process down when the kernel next runs it, so on a busy box a
+# killed child still reads as running for a few milliseconds after killpg
+# returns. One still there after this long escaped the kill.
+DYING = 5.0
 
 STAND_IN = r'''
 import os, signal, subprocess, sys, time
@@ -92,6 +96,15 @@ class Case:
         except OSError:
             return []
 
+    def survivors(self):
+        """The children still alive once a killed one has had DYING seconds to go."""
+        deadline = time.time() + DYING
+        while True:
+            left = [pid for pid in self.children() if alive(pid)]
+            if not left or time.time() >= deadline:
+                return left
+            time.sleep(0.05)
+
     def call(self, fn, *args):
         signal.signal(signal.SIGALRM, on_alarm)
         signal.alarm(PATIENCE)
@@ -121,8 +134,7 @@ def a_hung_run_is_killed_whole_and_says_what_it_was_doing(gate, root):
         for words in ("turns", "stand-in started", "stand-in backtrace: waiting forever"):
             if words not in said:
                 problems.append("what it said lacks %r:\n%s" % (words, said))
-        time.sleep(0.5)
-        left = [pid for pid in case.children() if alive(pid)]
+        left = case.survivors()
         if not case.children():
             problems.append("the stand-in never started its child")
         if left:
@@ -167,7 +179,7 @@ def a_second_hang_cannot_measure(gate, root):
             problems.append("two hangs, counted %d" % len(hangs))
         if "hung" not in said:
             problems.append("it does not say the runs hung: %s" % said)
-        left = [pid for pid in case.children() if alive(pid)]
+        left = case.survivors()
         if left:
             problems.append("a hung run's child outlived it: pid %s" % left)
         return "\n".join(problems)
