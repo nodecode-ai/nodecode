@@ -271,12 +271,54 @@ help section list SUMMARY. A NIL SUMMARY takes TOPIC off. => TOPIC."
                               (and summary (list (list* topic summary text)))))
   topic)
 
-(defun help-topic-lines ()
-  "One `  :topic - summary' line per topic: what (help) indexes and the help
-section carries."
-  (with-output-to-string (out)
-    (loop for (topic summary) in *help-topics*
-          do (format out "  ~(~s~) - ~a~%" topic summary))))
+(defun help-topic-lines (&optional budget)
+  "One `  :topic - summary' line per topic: what (help) indexes. Within BUDGET
+characters, when one is given, what the help section carries: every topic
+described when they all fit, else the first described while their lines and
+the names of the rest fit, the rest named on one `also:' line. The names
+always ride, so a BUDGET too small for them names every topic."
+  ;; The order is *HELP-TOPICS*' own -- the core's, then the running cells'
+  ;; -- never a ranking by use: the section rides the cached prefix of every
+  ;; round, and one that reorders as topics are read would break it.
+  (let* ((count (length *help-topics*))
+         (lines (map 'vector (lambda (topic) (format nil "  ~(~s~) - ~a~%" (first topic) (second topic)))
+                     *help-topics*))
+         (names (map 'vector (lambda (topic) (format nil "~(~s~)" (first topic))) *help-topics*)))
+    ;; The characters of the first UPTO described and the rest named: a line
+    ;; counts its newline; the names line is its indent, `also: ' when a
+    ;; described line stands above it, each name with the space before the
+    ;; next, and its newline.
+    (flet ((size (upto)
+             (+ (reduce #'+ lines :end upto :key #'length)
+                (if (< upto count)
+                    (+ (if (plusp upto) 8 2) (- count upto) (reduce #'+ names :start upto :key #'length))
+                    0))))
+      (let ((described (cond ((or (null budget) (<= (size count) budget)) count)
+                             (t (loop with n = 0
+                                      while (and (< (1+ n) count) (<= (size (1+ n)) budget))
+                                      do (incf n)
+                                      finally (return n))))))
+        (with-output-to-string (out)
+          (loop for line across (subseq lines 0 described) do (write-string line out))
+          (when (< described count)
+            (format out "  ~:[~;also: ~]~{~a~^ ~}~%" (plusp described)
+                    (coerce (subseq names described) 'list))))))))
+
+(nlk:define-section ("help")
+  (:guide "The help section at the head of every session lists the manual's topics, a line each, within its size; (help) lists every one described.")
+  ("hot_budget" :integer :default 8192 :min 0
+                :doc "characters of the help section below its first line: every topic described when they fit, else the first ones and the rest named; the names always ride, so 0 names them all"))
+
+(defun help-budget ()
+  "The help section's budget in characters, help.hot_budget; NIL, every topic
+described, when the config holds a member of the wrong shape, which /settings
+and the health check name."
+  ;; A refused member must not cost a round its manual: the section is built
+  ;; at every request, and it falls back to what an unset budget gives.
+  (handler-case (getf (nlk:section-settings (nlk:find-section '("help"))
+                                            (json-value (read-shared-config) :object "help"))
+                      :hot-budget)
+    (nlk:config-refusal () nil)))
 
 (defun help-index (out verbs)
   "The (help) index onto OUT: each of VERBS with the first sentence of its

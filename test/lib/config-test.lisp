@@ -147,6 +147,17 @@
     (is (equal '(:kinds ("c") :bare ("d")) (settings "{\"kinds\": [\"c\"], \"bare\": [\"d\"]}")))
     (is (equal '(:kinds nil :bare nil) (settings "{\"kinds\": []}")))))
 
+(deftest help-section-takes-a-names-only-hot-budget ()
+  ;; 0 is a choice: the help section names every topic and describes none.
+  (flet ((budget (json)
+           (getf (nlk:section-settings (nlk:find-section '("help")) (and json (shasht:read-json json)))
+                 :hot-budget)))
+    (is (= 8192 (budget nil)) "unset, every topic of a stock image fits")
+    (is (= 0 (budget "{\"hot_budget\": 0}")))
+    ;; below 0 refuses
+    (is (eq :refused (handler-case (budget "{\"hot_budget\": -1}")
+                       (nlk:config-refusal () :refused))))))
+
 (deftest index-section-takes-a-names-only-hot-budget ()
   ;; A small index is a choice, not a fault.  The section is fresh bytes at the
   ;; head of every conversation, and a refused budget costs the operator the
