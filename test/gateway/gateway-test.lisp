@@ -6817,6 +6817,30 @@ default target is PROVIDER/MODEL-ID, restored after."
           (is (eql 2 (nle::hand-failed-self)) "a new death is handed again")
           (is (= 2 (length handed))))))))
 
+(deftest the-failed-self-hand-on-lists-the-newest-generations-and-fits-one-message (with-temp-gateway (port))
+  ;; A home that had sealed 482 generations listed them in 338,895
+  ;; characters, past what one message may carry: the hand-on was refused
+  ;; whole, and the floor the boot stood on went unsaid. It lists the newest
+  ;; few and says how many more (generations) has.
+  (let ((handed '()))
+    (with-temp-directory (cells "pristine-cells")
+      (with-saved-globals ((nlk:*pristine* t) (nlk::*cells-directory* cells))
+        (loop repeat 15
+              do (nlk::seal-generation "k1" (list (list :name "nl-a" :kind "layer" :origin "folder"))))
+        (with-stubbed-fdefinition (nle:submit (session-id prompt &rest keys)
+                                   (push (cons session-id prompt) handed)
+                                   nil)
+          (nlk::write-death-marker "k1" 1 "the self loaded under key k1 died before it served")
+          (is (eql 1 (nle::hand-failed-self)))
+          (let ((text (cdr (first handed))))
+            (is (= 10 (count-if (lambda (line) (uiop:string-prefix-p "generation " line)) (nlk::lines text))) "the newest ten")
+            (is-carrying (text text)
+              ("generation 15" "the newest first")
+              ("generation 6" "down to the tenth")
+              (:absent "generation 5")
+              ("5 older generations not listed: (generations) lists them all" "and how many more"))
+            (is (<= (length text) nle::*max-input-characters*))))))))
+
 (deftest mutation-announcement-carries-the-existing-snippet-note-and-clears-its-scope ()
   (let ((seen nil))
     (with-stubbed-fdefinition (nle::broadcast-organism (kind payload)
