@@ -581,3 +581,35 @@ COLORS, alternating JSON keys and values."
     (is (equal '(59 57 55) (nle::visual-style-bg (gethash :composer palette))) "Tungstene composer takes the former hover color")
     (is (equal '(59 57 55) (nle::visual-style-bg (gethash :user-block palette))) "Tungstene user block takes the former hover color")
     (is (equal '(85 83 81) (nle::visual-style-bg (gethash :user-block-hover palette))) "Tungstene hover adds a second lift")))
+
+;;; --- Windows 10's console host ----------------------------------------------
+
+(deftest color-profile-on-windows-is-its-console-hosts ()
+  ;; Windows 10's console host painted 256-color frames though it draws 24-bit
+  ;; SGR exactly: Windows sets no TERM, and the probe that would have
+  ;; upgraded the guess is not asked where that host would print it.
+  (flet ((detect (build &optional env)
+           (nle::detect-color-profile
+            :windows-build build
+            :getenv (lambda (name) (cdr (assoc name env :test #'equal))))))
+    (is (eq :truecolor (detect 19045)) "Windows 10's host with no TERM: truecolor")
+    (is (eq :ansi (detect 10586)) "before build 14931 the host drew 16 colors")
+    (is (eq :ansi256 (detect nil)) "off Windows a missing TERM keeps its guess")
+    (is (eq :ansi256 (detect 19045 '(("TERM" . "xterm-256color")))) "a TERM set on Windows still speaks")
+    (is (eq :ansi (detect 19045 '(("NO_COLOR" . "1")))) "NO_COLOR outranks the host")))
+
+(deftest status-marks-turn-plain-where-the-font-has-no-braille ()
+  ;; Windows 10's console host drew the live mark as `□□': Consolas has no braille.
+  (let ((nlt::*glyph-stand-ins* (nlt::glyph-stand-ins (lambda (char) (< (char-code char) #x2800))))
+        (step nle::*status-running-frame-ms*))
+    (dolist (kind (mapcar #'car nle::*status-marks*))
+      (let ((frames (loop for i below 16 collect (nle::status-mark (* i step) kind))))
+        (dolist (frame frames)
+          (is (and (= 2 (length frame)) (every #'nlt::cp437-glyph-p frame))
+              (format nil "~(~a~) frame ~s is two cells of code page 437" kind frame)))
+        (is (> (length (remove-duplicates frames :test #'equal)) 1)
+            (format nil "~(~a~) still animates" kind))))
+    (is (handler-case (progn (nle::status-mark 0 :not-an-activity) nil)
+          (error () t)) "an unknown kind still fails"))
+  ;; A font with braille keeps the braille marks.
+  (is (every (lambda (char) (<= #x2800 (char-code char) #x28ff)) (nle::status-mark 0 :thinking))))

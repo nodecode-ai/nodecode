@@ -458,8 +458,39 @@ as a window title, the empty string included."
 
 ;;; --- the truecolor probe ---------------------------------------------------
 
+;;; --- control strings -------------------------------------------------------
+
+(deftest control-strings-are-asked-only-where-the-host-swallows-them ()
+  ;; Windows 10's console host printed the startup probes into the frame, as
+  ;; `Gi=1,s=1,v=1,a=q,t=d,f=24;AAAA$qm+q524742' in the composer.
+  (flet ((parsed-p (build &optional wt-session)
+           (nlt::control-strings-parsed-p
+            :windows-build build
+            :getenv (lambda (name) (and (equal name "WT_SESSION") wt-session)))))
+    (is (parsed-p nil) "off Windows every terminal swallows them")
+    (is (not (parsed-p 19045)) "Windows 10's console host prints them")
+    (is (not (parsed-p 19045 "")) "an empty WT_SESSION names no Windows Terminal")
+    (let ((wt-session "0b6e9d2a-5c11-4f6e-9f43-1c2d3e4f5a6b"))
+      (is (parsed-p 19045 wt-session) "Windows Terminal's own host parses them on Windows 10 too"))
+    (is (parsed-p 22000) "Windows 11's host swallows them")
+    (is (parsed-p 26100))))
+
+(deftest windows-build-reads-the-running-windows ()
+  #-win32 (is (null (nlt::windows-build)) "off Windows there is no build")
+  #+win32 (is (typep (nlt::windows-build) '(integer 10240)) "a Windows 10 build or later, not GetVersionEx's 9200"))
+
+(deftest no-control-string-probe-is-written-where-the-host-would-print-it ()
+  (with-stubbed-fdefinition (nlt::control-strings-parsed-p (&rest args) nil)
+    (let ((truecolor (with-output-to-string (s) (nlt:request-truecolor s)))
+          (graphics (with-output-to-string (s) (nlt:request-kitty-graphics s nil)))
+          (background (with-output-to-string (s) (nlt:request-background s))))
+      (is (string= "" truecolor) "the truecolor probe is two DCS: nothing is asked, the guess stands")
+      (is (string= "" graphics) "the graphics query is an APC")
+      (is (search (format nil "~C]11;?" #\Escape) background) "OSC the host parses: the background is still asked"))))
+
 (deftest truecolor-probe-sets-asks-and-resets-in-one-write ()
-  (let ((out (with-output-to-string (s) (nlt:request-truecolor s))))
+  (let ((out (with-stubbed-fdefinition (nlt::control-strings-parsed-p (&rest args) t)
+               (with-output-to-string (s) (nlt:request-truecolor s)))))
     (is-let* ((sentinel (search (csi "38:2:1:2:3m") out))
               (readback (search (format nil "~CP$qm~C\\" #\Escape #\Escape) out))
               (tcap (search (format nil "~CP+q524742~C\\" #\Escape #\Escape) out)))
@@ -467,3 +498,30 @@ as a window title, the empty string included."
       (tcap is "XTGETTCAP asks for the RGB capability")
       ((and sentinel readback (< sentinel readback)) is)
       ((search (csi "0m") out :start2 (or readback 0)) is))))
+
+;;; --- the Windows clipboard and console font ---------------------------------
+
+(deftest windows-clipboard-text-ends-lines-as-windows-pastes-them ()
+  (is (string= (format nil "a~C~%b" #\Return) (nlt::crlf-text (format nil "a~%b"))) "a bare newline gains its CR")
+  (let ((crlf (format nil "a~C~%b" #\Return)))
+    (is (string= crlf (nlt::crlf-text crlf)) "a CR LF stays one line end"))
+  (is (string= "ab" (nlt::crlf-text "ab"))))
+
+(deftest a-copy-over-ssh-leaves-the-far-clipboard-alone ()
+  ;; Windows 10's console host takes no OSC 52, so Windows copies through the
+  ;; clipboard API; over ssh that clipboard is the far machine's.
+  (is (nlt::over-ssh-p :getenv (lambda (name)
+                                 (and (equal name "SSH_CONNECTION") "10.0.0.2 50000 10.0.0.1 22"))))
+  (is (nlt::over-ssh-p :getenv (lambda (name) (and (equal name "SSH_CLIENT") "10.0.0.2 50000 22"))))
+  (is (not (nlt::over-ssh-p :getenv (constantly nil))))
+  (is (not (nlt::over-ssh-p :getenv (constantly ""))) "an empty variable names no session")
+  #-win32 (is (null (nlt::windows-clipboard-write "x")) "off Windows there is no clipboard API"))
+
+(deftest a-console-font-that-cannot-be-asked-is-taken-as-code-page-437 ()
+  (let ((drawn-p (nlt::console-glyph-predicate :face nil)))
+    (is (funcall drawn-p #\a))
+    (is (funcall drawn-p #\┤) "a box glyph of code page 437")
+    (is (not (funcall drawn-p #\✓)) "✓ is not one")
+    (is (not (funcall drawn-p (code-char #x283f))) "nor is braille"))
+  #-win32 (let ((nlt::*glyph-stand-ins* nil))
+            (is (null (nlt::measure-glyph-stand-ins)) "off Windows nothing is measured")))

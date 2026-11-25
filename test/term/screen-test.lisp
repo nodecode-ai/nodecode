@@ -171,3 +171,45 @@
     (is-table (in) (search in written) ("ab" "the first row")
       ((csi "2H") "an absolute move to the second row, its column the default")
       ("cd" "the second row"))))
+
+;;; --- glyph stand-ins -------------------------------------------------------
+;;; Windows 10's console host draws each cell from its window's one font and
+;;; falls back to no other: the live mark showed as `□□', since Consolas has
+;;; no braille. A glyph the font lacks is written as a stand-in it has.
+
+(deftest glyph-stand-ins-follow-what-the-font-draws ()
+  (let* ((consolas-lacks "✓✗✕⋮⌎⎿✦◉◇▣↷↶↦↺")
+         (table (nlt::glyph-stand-ins
+                 (lambda (char) (not (or (find char consolas-lacks)
+                                         (<= #x2800 (char-code char) #x28ff)))))))
+    (is (eql #\√ (gethash #\✓ table)) "✓ stands as √, which the font has")
+    (is (eql #\× (gethash #\✕ table)) "✕ as ×")
+    (is (eql #\└ (gethash #\⌎ table)) "⌎ as a box corner")
+    (is (eql #\Space (gethash (code-char #x2800) table)) "the blank braille pattern is a space")
+    (is (eql #\· (gethash (code-char #x283f) table)) "every other braille pattern a dot")
+    (is (null (nth-value 1 (gethash #\─ table))) "a glyph the font has is not in the table"))
+  (let ((table (nlt::glyph-stand-ins (lambda (char) (< (char-code char) #x80)))))
+    (is (eql #\v (gethash #\✓ table)) "a font without √ either: down the chain to ASCII")
+    (is (eql #\. (gethash (code-char #x2801) table)) "no middle dot either: a period"))
+  (is (null (nlt::glyph-stand-ins (constantly t))) "a font with every glyph needs no table")
+  ;; A dumped image carries no console's measured font.
+  (is (member 'nlt::forget-glyph-stand-ins sb-ext:*save-hooks*)))
+
+(deftest every-stand-in-is-one-cell-like-its-glyph ()
+  (loop for (char . stand-ins) in nlt::*glyph-stand-in-chains*
+        do (is (< (char-code (car (last stand-ins))) #x80) (format nil "~a's chain ends in ASCII" char))
+           (dolist (stand-in stand-ins)
+             (is (= 1 (nlt:codepoint-width stand-in))
+                 (format nil "~a stands as ~a, one cell" char stand-in)))))
+
+(deftest painter-writes-a-glyph-the-font-lacks-as-its-stand-in ()
+  (flet ((painted (row)
+           (with-output-to-string (out)
+             (nlt:render-diff nil (nlt:parse-styled-string (list row) 4 1) out))))
+    (let ((nlt::*glyph-stand-ins* (nlt::glyph-stand-ins (lambda (char) (char/= char #\✓)))))
+      (let ((written (painted "✓ ok")))
+        (is (search "√ ok" written) "the stand-in is written in the glyph's cell")
+        (is (null (search "✓" written)) "the glyph itself never is"))
+      (is (not (nlt:glyph-drawn-p #\✓)))
+      (is (nlt:glyph-drawn-p #\a)))
+    (is (search "✓ ok" (painted "✓ ok")) "with no table every glyph is itself")))
