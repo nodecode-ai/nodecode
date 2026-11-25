@@ -57,6 +57,10 @@ head, saying how much was left out.")
   (lock (bt2:make-lock :name "acp-state") :read-only t)
   (port nil)
   (token nil)
+  ;; The process the client's agent runs in, as its links' subscribe says
+  ;; it: the organism holds the MCP servers this agent hands its sessions as
+  ;; this process's, and drops them once its last link closes.
+  (pid (sb-posix:getpid) :read-only t)
   ;; Finds the port the organism serving the store publishes, starting one
   ;; when none does, by a deadline: NIL past it (STORE-ORGANISM-PORT).
   (find-port nil)
@@ -306,15 +310,15 @@ commands, every one of them."
 
 ;;; --- the links ------------------------------------------------------------------
 
-(defun acp-subscribe (session ws)
+(defun acp-subscribe (agent session ws)
   "Subscribe WS to SESSION alone, answering the organism's questions,
-resumed past the newest fact read when one was."
+resumed past the newest fact read when one was, as AGENT's process."
   (send-gateway-command
    ws :set-session-subscriptions
    (json-object "subscriptions" (vector (json-object "session_id" session.id
                                                      :opt "cursor" session.cursor))
                 "answers" t
-                "pid" (sb-posix:getpid))))
+                "pid" agent.pid)))
 
 (defun acp-attach (agent session)
   "Open SESSION's link to the gateway AGENT reaches: handshake, subscribe,
@@ -335,7 +339,7 @@ and return once attached. A gateway that is not there is GATEWAY-UNREACHED."
                            (answer-gateway-challenge ws frame "acp" agent.token))
                           (:gateway-connect-ack
                            (setf (car state) :attached)
-                           (acp-subscribe session ws)
+                           (acp-subscribe agent session ws)
                            (bt2:signal-semaphore ready))
                           (:gateway-connect-rejected
                            (setf (car state) (or (gethash "message" (nlk:sync-message-payload frame))
@@ -983,7 +987,7 @@ is withdrawn."
       ;; already shows stays.
       ((equal type "session_resync_required")
        (setf session.cursor nil session.replay :quiet)
-       (acp-subscribe session session.ws)))))
+       (acp-subscribe agent session session.ws)))))
 
 ;;; --- requests ---------------------------------------------------------------------
 
@@ -1038,10 +1042,13 @@ as invalid params when one is no stdio or http server the organism holds
           (coerce servers 'list)))))
 
 (defun acp-send-mcp-servers (agent session-id servers)
-  "Have the organism hold SERVERS as SESSION-ID's client MCP servers; NIL
-drops them."
+  "Have the organism hold SERVERS as the client MCP servers this client holds
+for SESSION-ID, in place of the ones it held; NIL drops them. They are this
+process's: another client's servers on the same session stay, and the
+organism drops these once this process's last link to it closes, however
+it ends."
   (acp-http agent :post (acp-session-path session-id "mcp-servers")
-            (json-object "servers" (coerce servers 'vector))))
+            (json-object "servers" (coerce servers 'vector) "pid" agent.pid)))
 
 (defun acp-drop-mcp-servers (agent session)
   "Have the organism drop SESSION's client MCP servers, when it handed any.
@@ -1074,9 +1081,8 @@ A refusal is said on stderr: the session is let go all the same."
   (let* ((cwd (acp-cwd params))
          (servers (acp-mcp-servers params))
          (session (make-acp-session :id (fresh-session-id) :cwd cwd :mcp-servers servers)))
-    (acp-http agent :post "/api/gateway/sessions"
-              (json-object "session_id" session.id "cwd" cwd
-                           :opt "mcp_servers" (and servers (coerce servers 'vector))))
+    (acp-http agent :post "/api/gateway/sessions" (json-object "session_id" session.id "cwd" cwd))
+    (when servers (acp-send-mcp-servers agent session.id servers))
     (acp-open agent session)
     (values (json-object "sessionId" session.id
                          "configOptions" (acp-session-config agent session))
@@ -1097,8 +1103,8 @@ its head, as the shell's /fork makes one, working in the client's folder."
                   (gethash "cursorId" params)))
     (acp-check-session agent parent)
     (acp-http agent :post "/api/gateway/sessions"
-              (json-object "session_id" session.id "parent" parent "cwd" cwd
-                           :opt "mcp_servers" (and servers (coerce servers 'vector))))
+              (json-object "session_id" session.id "parent" parent "cwd" cwd))
+    (when servers (acp-send-mcp-servers agent session.id servers))
     (acp-open agent session)
     (values (json-object "sessionId" session.id
                          "configOptions" (acp-session-config agent session))
@@ -1114,8 +1120,8 @@ session/resume: the session's link, answered once its replay is read."
     ;; The organism's own answer: an unknown id is the client's not-found.
     ;; The folder it works in is the one its files are said from.
     (let ((detail (acp-check-session agent session-id)))
-      ;; The servers the client hands it now replace any it held: none
-      ;; handed drops what an earlier client left.
+      ;; The servers the client hands it now replace the ones this client
+      ;; held: none handed drops those. Another client's stay.
       (acp-send-mcp-servers agent session-id servers)
       (acp-open agent (make-acp-session :id session-id
                                         :cwd (or (json-value detail :text "cwd") cwd)
@@ -1371,12 +1377,14 @@ or an answer to a request of ours."
 
 ;;; --- the process ------------------------------------------------------------------
 
-(defun run-acp (&key port token find-port (input *standard-input*) (output *standard-output*))
+(defun run-acp (&key port token find-port (input *standard-input*) (output *standard-output*)
+                     (pid (sb-posix:getpid)))
   "Serve one ACP client on INPUT and OUTPUT against the gateway at PORT,
 TOKEN its operator token, FIND-PORT how a link the gateway let go finds the
-organism serving next (a function of a deadline). => :EOF once INPUT ends,
-or why the agent could not go on."
-  (let ((agent (make-acp-agent :output output :port port :token token :find-port find-port)))
+organism serving next (a function of a deadline), PID the process it says
+it is (this one's; a test names another). => :EOF once INPUT ends, or why
+the agent could not go on."
+  (let ((agent (make-acp-agent :output output :port port :token token :find-port find-port :pid pid)))
     (spawn "acp-input"
       (loop for line = (handler-case (read-line input nil nil)
                          (error (condition) (acp-end agent (format nil "stdin: ~a" condition)) nil))

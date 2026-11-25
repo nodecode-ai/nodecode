@@ -5,11 +5,11 @@
 
 (in-package #:nodecode.test)
 
-(defmacro with-acp ((port send messages outcome) &body body)
+(defmacro with-acp ((port send messages outcome &key pid) &body body)
   "Run RUN-ACP on PORT's gateway over two pipes, with SEND writing one
 message (a JSON object) to its stdin, MESSAGES answering every line it wrote
 to its stdout so far, parsed, and OUTCOME answering what it returned once it
-has. BODY's end closes its stdin."
+has; PID, when given, the process it says it is. BODY's end closes its stdin."
   (alexandria:with-gensyms (thread result lines stdin feed stdout drain reader)
     `(multiple-value-bind (,stdin ,feed) (rpc-pipe)
        (multiple-value-bind (,drain ,stdout) (rpc-pipe)
@@ -22,7 +22,8 @@ has. BODY's end closes its stdin."
                            (setf (car ,result)
                                  (nlk:with-cleanup ((ignore-errors (close ,stdout)))
                                    (nle::run-acp :port ,port :token "test-token"
-                                                 :input ,stdin :output ,stdout))))))
+                                                 :input ,stdin :output ,stdout
+                                                 ,@(and pid `(:pid ,pid))))))))
            (flet ((,send (object)
                     (write-line (nlk:encode-json-object object) ,feed)
                     (finish-output ,feed))
@@ -331,7 +332,8 @@ has. BODY's end closes its stdin."
            (told () (bt2:with-lock-held (lock) (reverse (car told)))))
       (with-saved-globals ((nle:*session-mcp-servers-hooks*
                             (list (lambda (id specs) (bt2:with-lock-held (lock) (push (cons id specs) (car told))))))
-                           (nle::*session-mcp-servers* (make-hash-table :test #'equal :synchronized t)))
+                           (nle::*session-mcp-servers* (make-hash-table :test #'equal :synchronized t))
+                           (nle::*session-mcp-server-holders* (make-hash-table :test #'equal)))
         (with-gateway-session (port "acp-mcp" :cwd cwd)
           (let (id fork)
             (with-acp (port send messages outcome)
@@ -382,7 +384,8 @@ has. BODY's end closes its stdin."
   ;; restarted holds none: a link attached again hands them over again.
   (let ((spec (nlk:json-object "name" "t3-code" "command" "/usr/bin/t3")))
     (with-saved-globals ((nle:*session-mcp-servers-hooks* '())
-                         (nle::*session-mcp-servers* (make-hash-table :test #'equal :synchronized t)))
+                         (nle::*session-mcp-servers* (make-hash-table :test #'equal :synchronized t))
+                         (nle::*session-mcp-server-holders* (make-hash-table :test #'equal)))
       (with-gateway-session (port "acp-mcp-lost" :cwd (namestring (fixture-workspace)))
         (let* ((agent (nle::make-acp-agent :output (make-broadcast-stream) :port port :token "test-token"
                                            :find-port (constantly port)))
@@ -392,3 +395,37 @@ has. BODY's end closes its stdin."
             (nle::acp-reattach agent)
             (is (await (:timeout 10) (eq :attached (nle::acp-session-link session))) "the link attaches again")
             (is (await (:timeout 10) (nle:session-mcp-servers "acp-mcp-lost")) "and the servers are held again")))))))
+
+(deftest acp-each-client-holds-its-own-mcp-servers ()
+  ;; Two clients on one session each hold their own servers: the one that
+  ;; quits takes its own alone, and one whose link closes without a word, as
+  ;; a crash or a kill leaves it, has its servers dropped by the organism.
+  (let ((cwd (namestring (fixture-workspace)))
+        (one (nlk:json-object "name" "one" "command" "/usr/bin/one"))
+        (two (nlk:json-object "name" "two" "command" "/usr/bin/two")))
+    (flet ((names () (mapcar (lambda (spec) (gethash "name" spec)) (nle:session-mcp-servers "acp-own")))
+           (resume (send messages servers)
+             (funcall send (acp-call 1 "initialize" (nlk:json-object "protocolVersion" 1)))
+             (funcall send (acp-call 2 "session/resume" (nlk:json-object "sessionId" "acp-own" "cwd" cwd
+                                                                     "mcpServers" servers)))
+             (await (:timeout 10) (acp-answer (funcall messages) 2))))
+      (with-saved-globals ((nle:*session-mcp-servers-hooks* '())
+                           (nle::*session-mcp-servers* (make-hash-table :test #'equal :synchronized t))
+                           (nle::*session-mcp-server-holders* (make-hash-table :test #'equal))
+                           (nle::*mcp-servers-departure-seconds* 0))
+        (with-gateway-session (port "acp-own" :cwd cwd)
+          (with-acp (port send messages outcome :pid 4000001)
+            (is (resume #'send #'messages (vector one)))
+            (with-acp (port send-b messages-b outcome-b :pid 4000002)
+              (is (resume #'send-b #'messages-b (vector two)))
+              (is (equal '("one" "two") (names)) "each client's servers are the session's"))
+            (is (await (:timeout 10) (equal '("one") (names))) "the client that quit took its own alone"))
+          (is (await (:timeout 10) (null (names))) "and the last one took its own")
+          (let ((agent (nle::make-acp-agent :output (make-broadcast-stream) :port port :token "test-token"
+                                            :find-port (constantly port) :pid 4000003))
+                (session (nle::make-acp-session :id "acp-own" :link :lost)))
+            (nle::acp-attach agent session)
+            (nle::acp-send-mcp-servers agent "acp-own" (list two))
+            (is (equal '("two") (names)))
+            (nle::acp-detach session)
+            (is (await (:timeout 10) (null (names))) "a client whose last link closed lost its servers")))))))

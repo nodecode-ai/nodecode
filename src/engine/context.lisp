@@ -1840,7 +1840,11 @@ ones no durable row holds."
           (when-let (build (ignore-errors (build-skew-text))) (list (cons "build" build)))
           (when-let (resumed (and turn (equal session-id (nlk:durable-turn-session-id turn))
                                   (gethash (nlk:durable-turn-turn-id turn) *resumed-turns*)))
-            (list (cons "resumed" resumed)))))
+            (list (cons "resumed" resumed)))
+          ;; MCP servers its client handed the session that no cell connects
+          ;; (gateway.lisp): the mcp cell, once on, says its own `mcp-session'.
+          (when-let (unheard (ignore-errors (session-mcp-servers-unheard-text session-id)))
+            (list (cons "mcp-session" unheard)))))
 
 (defun sections-message (sections &aux (overlay (harness-overlay-prompt "" sections)))
   "SECTIONS as one user-role message of <harness> blocks, or NIL when there

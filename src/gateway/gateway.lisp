@@ -3762,8 +3762,7 @@ and client MCP servers. => the delete's plan."
   (dolist (table (list *gateway-sessions* *session-registry*))
     (sb-ext:with-locked-hash-table (table)
       (dolist (id ids) (remhash id table))))
-  (dolist (id ids)
-    (when (session-mcp-servers id) (set-session-mcp-servers id nil)))
+  (dolist (id ids) (forget-session-mcp-servers id))
   plan)
 
 (defun delete-gateway-session (session-id dry-run)
@@ -4338,16 +4337,31 @@ string gives back the name its first prompt makes. => the name now in effect."
 ;;; them, through *SESSION-MCP-SERVERS-HOOKS*. A spec's env and headers are
 ;;; secrets: nothing here writes a spec to disk, a log, a fact, a reply or an
 ;;; error's words. A restart forgets them all, and the client sends them again.
+;;;
+;;; Each client holds its own list for a session. An ACP agent names itself
+;;; by its process id, the pid its links' subscribe already says, and its
+;;; list goes when it sets another, drops it, or its last link to this
+;;; organism closes: a client that quits, crashes or is killed takes its
+;;; servers with it, and a second client on the same session neither
+;;; replaces nor drops the first one's. A program that names no pid holds a
+;;; list of its own until it sets another. The session's servers are every
+;;; holder's, a name held twice the newest list's.
 
 (defvar *session-mcp-servers* (make-hash-table :test #'equal :synchronized t)
-  "Session id -> the client MCP server specs held for it (SET-SESSION-MCP-SERVERS).")
+  "Session id -> the client MCP server specs the session holds, every client's merged (SET-SESSION-MCP-SERVERS).")
+
+(defvar *session-mcp-server-holders* (make-hash-table :test #'equal)
+  "Session id -> ((PID . SPECS) ...), the oldest list first: PID the client that set it, NIL a program's. Changed under *SESSION-MCP-SERVERS-LOCK*.")
+
+(defvar *session-mcp-servers-lock* (bt2:make-lock :name "session-mcp-servers")
+  "Held while who holds which servers changes and the hooks hear of it, so they hear each change in its order.")
 
 (defvar *session-mcp-servers-hooks* '()
-  "Functions of (SESSION-ID SPECS) told each time a session's client MCP servers are set; SPECS NIL drops them.")
+  "Functions of (SESSION-ID SPECS) told each time a session's client MCP servers change; SPECS NIL drops them.")
 
 (defun session-mcp-servers (session-id)
-  "The client MCP server specs held for SESSION-ID, a list of ACP McpServer
-objects, or NIL."
+  "The client MCP server specs SESSION-ID holds, every client's, a list of ACP
+McpServer objects, or NIL."
   (values (gethash session-id *session-mcp-servers*)))
 
 (defun session-mcp-server-sessions ()
@@ -4356,29 +4370,113 @@ starts again -- its folder restarted, /mcp turned back on -- reads back,
 since the hooks told the cell before it went."
   (alexandria:hash-table-keys *session-mcp-servers*))
 
-(defun set-session-mcp-servers (session-id specs)
+(defun merged-mcp-servers (holders)
+  "The servers HOLDERS, ((PID . SPECS) ...) oldest first, make together: every
+list's servers, oldest list first, but those a newer list names too."
+  ;; Only clients are weighed against each other: one client's own list
+  ;; reaches the hooks as it handed it, a name twice included, which the
+  ;; route refuses and a cell says for a list set from Lisp.
+  (copy-list
+   (loop for ((nil . specs) . newer) on holders
+         for named = (loop for (nil . later) in newer
+                           nconc (mapcar (lambda (spec) (gethash "name" spec)) later))
+         append (remove-if (lambda (spec) (member (gethash "name" spec) named :test #'equal))
+                           specs))))
+
+(defun hold-session-mcp-servers (session-id holders)
+  "Make HOLDERS who holds SESSION-ID's client MCP servers, and tell every hook
+in *SESSION-MCP-SERVERS-HOOKS* the servers they make. Call with
+*SESSION-MCP-SERVERS-LOCK* held. => those servers."
+  (let ((specs (merged-mcp-servers holders)))
+    (if holders
+        (setf (gethash session-id *session-mcp-server-holders*) holders)
+        (remhash session-id *session-mcp-server-holders*))
+    (if specs
+        (setf (gethash session-id *session-mcp-servers*) specs)
+        (remhash session-id *session-mcp-servers*))
+    ;; The lock stays held, so the hooks hear the changes in their order; a
+    ;; hook may read the servers back (SESSION-MCP-SERVERS), never set them.
+    ;; One that signals is said on stderr by its name and the condition's
+    ;; type alone, since a condition's words may quote the spec it choked on;
+    ;; the rest are still told.
+    (dolist (hook *session-mcp-servers-hooks*)
+      (handler-case (funcall hook session-id specs)
+        (error (condition)
+          (format *error-output* "nodecode: the session MCP servers hook ~s failed for ~a (~s)~%"
+                  hook session-id (type-of condition)))))
+    specs))
+
+(defun set-session-mcp-servers (session-id specs &key pid)
   "Hold SPECS, a list of ACP McpServer objects as NLK:DECODE-JSON reads them,
-as SESSION-ID's client MCP servers, in memory alone; NIL drops them. Then
-every hook in *SESSION-MCP-SERVERS-HOOKS* is called with SESSION-ID and SPECS.
-=> SPECS."
+as the client MCP servers the client in process PID holds for SESSION-ID --
+PID NIL a program's -- in memory alone, in place of the ones it held; NIL
+drops them. The session's servers become every client's (SESSION-MCP-SERVERS)
+and every hook in *SESSION-MCP-SERVERS-HOOKS* is told them. => SPECS."
   ;; The refusals name no value: a spec's env or headers would ride the words.
   (unless (stringp session-id)
     (error "set-session-mcp-servers takes a session id string"))
   (unless (and (listp specs) (every #'hash-table-p specs))
     (error "set-session-mcp-servers takes a list of MCP server objects"))
-  (if specs
-      (setf (gethash session-id *session-mcp-servers*) (copy-list specs))
-      (remhash session-id *session-mcp-servers*))
-  ;; The hooks run outside any lock: the table's own is released, and a hook
-  ;; may read the table back. A hook that signals is said on stderr by its
-  ;; name and the condition's type alone, since a condition's words may quote
-  ;; the spec it choked on; the rest are still told.
-  (dolist (hook *session-mcp-servers-hooks*)
-    (handler-case (funcall hook session-id specs)
-      (error (condition)
-        (format *error-output* "nodecode: the session MCP servers hook ~s failed for ~a (~s)~%"
-                hook session-id (type-of condition)))))
+  (unless (typep pid '(or null integer))
+    (error "set-session-mcp-servers takes an integer pid, or NIL"))
+  (bt2:with-lock-held (*session-mcp-servers-lock*)
+    (let ((holders (remove pid (gethash session-id *session-mcp-server-holders*) :key #'car)))
+      (hold-session-mcp-servers session-id (if specs
+                                               (append holders (list (cons pid (copy-list specs))))
+                                               holders))))
   specs)
+
+(defun forget-session-mcp-servers (session-id)
+  "Drop every client's MCP servers of SESSION-ID, a session that is gone."
+  (bt2:with-lock-held (*session-mcp-servers-lock*)
+    (when (gethash session-id *session-mcp-server-holders*)
+      (hold-session-mcp-servers session-id '()))))
+
+(defun peer-pid-attached-p (pid)
+  "Whether a link of the client in process PID is still open to this organism."
+  (sb-ext:with-locked-hash-table (*gateway-peer-states*)
+    (loop for state being the hash-values of *gateway-peer-states*
+            thereis (and (eql pid (gw-peer-state-pid state)) (not (gw-peer-state-closed-p state))))))
+
+(defvar *mcp-servers-departure-seconds* 10
+  "How long the MCP servers of a client whose last link to this organism
+closed outlive it: one that links again within this -- a reattach, its next
+session's link -- keeps them.")
+
+(defun drop-departed-mcp-servers (pid)
+  "Drop the client MCP servers the client in process PID held, when no link
+of it to this organism is open: it quit, crashed or was killed, and its
+servers go with it."
+  (when (integerp pid)
+    (bt2:with-lock-held (*session-mcp-servers-lock*)
+      (unless (peer-pid-attached-p pid)
+        (loop for (session-id . holders) in (alexandria:hash-table-alist *session-mcp-server-holders*)
+              when (assoc pid holders)
+                do (hold-session-mcp-servers session-id (remove pid holders :key #'car)))))))
+
+(defun drop-mcp-servers-on-departure (pid)
+  "A link of the client in process PID closed: when PID holds client MCP
+servers, drop them *MCP-SERVERS-DEPARTURE-SECONDS* later unless a link of it
+is open by then."
+  ;; The wait covers a client between links: its link the organism let go
+  ;; and the one it reattaches, or a session it closed and the next one it
+  ;; opened, whose servers it sends before that link subscribes.
+  (when (and (integerp pid)
+             (bt2:with-lock-held (*session-mcp-servers-lock*)
+               (loop for holders being the hash-values of *session-mcp-server-holders*
+                       thereis (assoc pid holders))))
+    (spawn "mcp-servers-departure"
+      (sleep *mcp-servers-departure-seconds*)
+      (drop-departed-mcp-servers pid))))
+
+(defun session-mcp-servers-unheard-text (session-id)
+  "What SESSION-ID's model reads while its client handed it MCP servers no
+cell connects -- the mcp cell is off -- or NIL: the cell's own section
+names them once it runs."
+  (when-let (specs (and (null *session-mcp-servers-hooks*) (session-mcp-servers session-id)))
+    (format nil "This session's client handed it MCP servers (~{~a~^, ~}), and none is connected: ~
+the mcp cell that connects them is not on. /cells turns it on; until then its tools are out of reach."
+            (mapcar (lambda (spec) (gethash "name" spec)) specs))))
 
 (defun session-mcp-servers-refusal (specs)
   "Why SPECS, a decoded JSON value, is no list of client MCP servers a session
@@ -4436,16 +4534,25 @@ its name alone."
                    (push name names))))))
 
 (define-gateway-route handle-gateway-session-mcp-servers-http (env session-id)
-  "POST /api/gateway/sessions/<id>/mcp-servers {\"servers\": [...]} — the
-client MCP servers the session holds from now on, ACP McpServer objects
-(SET-SESSION-MCP-SERVERS); [] drops them. => {session_id, servers}: how many
-it holds. The servers are never said back."
+  "POST /api/gateway/sessions/<id>/mcp-servers {\"servers\": [...], \"pid\": N}
+— the client MCP servers the client in process N holds for the session from
+now on, ACP McpServer objects (SET-SESSION-MCP-SERVERS), until it sends
+others, [] drops them or its last link to the organism closes; with no pid,
+until a request that names none sends others. => {session_id, servers,
+taken}: how many the session holds, every client's, and whether a cell
+connects them. The servers are never said back."
   (:route :post "mcp-servers" "session MCP servers")
-  (let ((servers (gethash "servers" (gateway-request-json env))))
+  (let* ((request (gateway-request-json env))
+         (servers (gethash "servers" request))
+         (pid (gethash "pid" request)))
     (when-let (why (session-mcp-servers-refusal servers))
       (nlk::protocol-refuse :invalid_request "servers: ~a" why))
-    (set-session-mcp-servers session-id (coerce servers 'list))
-    (json-object "session_id" session-id "servers" (length servers))))
+    (unless (typep pid '(or null (member :null) (integer 1)))
+      (nlk::protocol-refuse :invalid_request "pid: a process id, a positive integer"))
+    (set-session-mcp-servers session-id (coerce servers 'list) :pid (and (integerp pid) pid))
+    (json-object "session_id" session-id
+                 "servers" (length (session-mcp-servers session-id))
+                 "taken" (and *session-mcp-servers-hooks* t))))
 
 ;;; --- what a session's answer waits on ------------------------------------------
 ;;; An answer that waits on the person it answers -- a question, a go or no-go,
@@ -4714,9 +4821,12 @@ the longest directory's (a path ending in /) that URI lies under."
                              (nlk:note-boot-phase "ws-acked"))))))
            (wsd:on :close ws
                    (lambda (&key &allow-other-keys)
-                     (stop-gw-peer ws)
-                     (remove-peer (car subscription-ref) ws)
-                     (close-rows-views ws)))
+                     (let ((state (stop-gw-peer ws)))
+                       (remove-peer (car subscription-ref) ws)
+                       (close-rows-views ws)
+                       ;; The client's last link: the MCP servers it handed
+                       ;; its sessions go with it, however it went.
+                       (when state (drop-mcp-servers-on-departure state.pid)))))
            (lambda-ignoring (responder)
              (wsd:start-connection ws))))
         ((and routed (not (cdr routed)) (not (gateway-http-authorized-p env)))

@@ -39,11 +39,11 @@ Any other client runs `nodecode acp`, with `-p NAME` before `acp` for another pr
 | `session/new` | Opens a session working in the editor's folder, with the editor's MCP servers. |
 | `session/prompt` | Runs a turn and answers with how it ended, `end_turn` or `cancelled`, and the tokens it spent. A turn that fails answers with its error. A prompt sent while a cancelled turn winds down starts once that turn ends. |
 | `session/cancel` | Cancels the running turn. Its tool calls still open close as failed. |
-| `session/load` | Sends the session's conversation again, then answers. The editor's MCP servers replace the ones the session held. |
-| `session/resume` | Opens the session without sending its conversation again. The editor's MCP servers replace the ones the session held. |
+| `session/load` | Sends the session's conversation again, then answers. The editor's MCP servers replace the ones it handed the session before. |
+| `session/resume` | Opens the session without sending its conversation again. The editor's MCP servers replace the ones it handed the session before. |
 | `session/fork` | Opens a new session forked from the session at its newest turn, as `/fork` does, working in the editor's folder, with the editor's MCP servers. |
 | `session/list` | Lists this home's sessions, newest first, those of one folder when the editor names it. |
-| `session/close` | Cancels the running turn, drops the session's MCP servers and lets the session go. It stays in your home. |
+| `session/close` | Cancels the running turn, drops the MCP servers the editor handed the session and lets the session go. It stays in your home. |
 | `session/set_config_option` | Changes the session's model or reasoning effort. |
 
 A prompt's text, the files the editor attaches and its pictures go to the model as one message. An attached file the editor sends whole is written out in the message under its path; one it only links is named by its path, for Nodecode to read itself.
@@ -72,7 +72,7 @@ Each session offers two config options. `model` lists the models of every provid
 
 ## The editor's MCP servers
 
-The MCP servers the editor hands a session are that session's alone. The `mcp` cell connects each on its first call. Only an evaluation in that session reaches them: `(mcp:call "t3-code" "TOOL" ...)`, `(mcp:tools)` and `(mcp:status)` find them before the servers in your own MCP configuration.
+The MCP servers the editor hands a session are that session's alone. The `mcp` cell connects each as soon as it is handed; while that cell is off, they wait, and the session's model is told so. Only an evaluation in that session reaches them: `(mcp:call "t3-code" "TOOL" ...)`, `(mcp:tools)` and `(mcp:status)` find them before the servers in your own MCP configuration.
 
 | The editor hands | Nodecode |
 | --- | --- |
@@ -80,9 +80,9 @@ The MCP servers the editor hands a session are that session's alone. The `mcp` c
 | An http server: `type: "http"`, `name`, `url`, `headers` | Sends its requests to the url, with the headers. |
 | An SSE server, a type ACP does not name, a stdio server with no command, an http server with no `http` or `https` url, a name twice | Refuses the request with `-32602`. |
 
-The organism holds them in memory alone. A server's env and headers reach no file, log, update, error or conversation. `session/close` drops them, and so does the editor going. An organism that restarts is handed them again when each session attaches again.
+The organism holds them in memory alone. A server's env and headers reach no file, log, update, error or conversation. `session/close` drops them, and so does the editor going, however it goes: a crash or a kill takes them with it, ten seconds after its last link to the organism closes. Two editors on one session each keep their own, and a name both hand is the newest one's. An organism that restarts is handed them again when each session attaches again.
 
-A program does the same over the gateway with the operator token. `POST /api/gateway/sessions` takes them under `mcp_servers`. `POST /api/gateway/sessions/<id>/mcp-servers` with `{"servers": [...]}` replaces them, and `[]` drops them. Neither says them back.
+A program does the same over the gateway with the operator token. `POST /api/gateway/sessions` takes them under `mcp_servers`. `POST /api/gateway/sessions/<id>/mcp-servers` with `{"servers": [...]}` replaces them, and `[]` drops them; with `"pid"`, the servers are that process's and go ten seconds after its last link to the organism closes, unless it links again by then. Neither says them back.
 
 ## Slash commands
 
@@ -109,6 +109,11 @@ Run `nodecode gateway on` to keep one organism serving the editor, the shell and
 <What>Handing Nodecode an SSE MCP server</What>
 <Why>`session/new` is refused with `-32602`: `mcpServers: MCP server "NAME" is SSE, which Nodecode does not connect: give it over http`.</Why>
 <Instead>Give the server as `type: "http"` at its streamable HTTP url.</Instead>
+</Mistake>
+<Mistake>
+<What>Expecting the editor's MCP servers with the `mcp` cell off</What>
+<Why>Nodecode holds them, but only the `mcp` cell connects them. The session's model is told they wait on it.</Why>
+<Instead>Turn the `mcp` cell on with `/cells`.</Instead>
 </Mistake>
 <Mistake>
 <What>Expecting the editor's MCP servers in another session, or in the shell</What>
