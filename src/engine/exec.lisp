@@ -2156,7 +2156,8 @@ after N s] line."
 
 (defun $ (name)
   "The entry named NAME in this eval call's strings object: the text
-exactly as the model sent it, JSON escaping only."
+exactly as the model sent it, JSON escaping only. A NAME that is plainly the
+text itself and names no entry is that text."
   ;; A missing entry errors with what the call does carry, so the next call
   ;; corrects instead of guessing.
   (check-type name string)
@@ -2166,10 +2167,12 @@ exactly as the model sent it, JSON escaping only."
         ;; times (gpt-6-astra, 2026-09)
         (literal-p (or (> (length name) 40)
                        (find-if (lambda (c) (member c '(#\Space #\Tab #\Newline #\Return))) name))))
+    ;; Text given as the name is the text meant, and it is exact: the form
+    ;; ran, so the reader's gate found no escape it would have lost
+    ;; (STRING-ESCAPE-REPORT). Refused, it cost a session's first edit a
+    ;; round, whatever the description said.
     (when (and literal-p (not (and (hash-table-p strings) (nth-value 1 (gethash name strings)))))
-      (error "($ ~s) takes an entry's name, not its text: send strings ~
-              {\"script\": <this text>} beside the form and write ($ \"script\")"
-             (nlk:clip name 60)))
+      (return-from $ name))
     (unless (hash-table-p strings)
       (error "this eval call carried no strings object; pass ~
               strings {~s: \"...\"} beside the form, or put the text in the ~
