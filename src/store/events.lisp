@@ -1632,7 +1632,11 @@ log. Empty EVENTS with no MISS is an answer: nothing after CURSOR."
 ;;; --- turn lifecycle events ----------------------------------------------
 
 (define-event turn-started +kind-turn-started+
-  "Admission fact. Input is also stored as TURN.INPUT_COMMITTED."
+  "Admission fact. Input is also stored as TURN.INPUT_COMMITTED. Who began
+the turn is its row's invocation source, never its words: kind \"gateway\"
+for a client's start_turn, \"fork\" (id the parent session) for a fork's
+task, a cell's own kind for what it submits (NLE:SUBMIT :SOURCE), whether the
+turn started at once or waited in the queue first."
   ((input :string "input" :default "")
    (parent-turn-id :string "parent-turn-id"
                    :doc "Head turn at admission. NIL = root. Absent on

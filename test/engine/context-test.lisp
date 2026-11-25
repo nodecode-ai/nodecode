@@ -914,6 +914,39 @@ the chat lane sends, message by message."
     (nlk:note-standing "channels.discord" nil :info)
     (is (null (nle::read-live-sections nil)) "and rides nothing")))
 
+(deftest the-help-section-keeps-within-help-hot-budget ()
+  ;; help.hot_budget: the section rides every request, so an operator caps
+  ;; it. Within the budget the first topics stay described and the rest are
+  ;; named on one line; the names always ride, so 0 names every topic; (help)
+  ;; still describes each one; and a member of the wrong shape costs the
+  ;; round no manual.
+  (with-saved-globals ((nle::*help-topics* '((:aa "alpha summary" . "A")
+                                             (:bb "beta summary" . "B")
+                                             (:cc "gamma summary" . "C"))))
+    (let ((full (format nil "  :aa - alpha summary~%  :bb - beta summary~%  :cc - gamma summary~%"))
+          (names (format nil "  :aa :bb :cc~%")))
+      (is (equal full (nle::help-topic-lines)) "no budget describes every topic")
+      (is (equal full (nle::help-topic-lines 65)) "a budget they fit in describes every one")
+      ;; a character short, the last is named; then the first described while
+      ;; the names of the rest fit beside them
+      (is (equal (format nil "  :aa - alpha summary~%  :bb - beta summary~%  also: :cc~%")
+                 (nle::help-topic-lines 64)))
+      (is (equal (format nil "  :aa - alpha summary~%  also: :bb :cc~%") (nle::help-topic-lines 54)))
+      (is (equal names (nle::help-topic-lines 37)) "too small for one line names them all")
+      (is (equal names (nle::help-topic-lines 0)) "0 names them all")
+      (with-temp-file (path :contents "{\"help\": {\"hot_budget\": 0}}")
+        (let ((nle::*shared-config-path* path))
+          (is-carrying (text (cell-section nil "help"))
+            ("(help :topic)" "the section's first line stands")
+            ("  :aa :bb :cc" "every topic named")
+            (:absent "alpha summary" "and none described"))
+          (is (search "  :cc - gamma summary" (nle:help)) "(help) describes every topic")))
+      (dolist (member '("\"small\"" "-1"))
+        (with-temp-file (path :contents (format nil "{\"help\": {\"hot_budget\": ~a}}" member))
+          (let ((nle::*shared-config-path* path))
+            (is (search (string-right-trim '(#\Newline) full) (cell-section nil "help"))
+                (format nil "a refused ~a describes every topic" member))))))))
+
 (deftest the-help-section-is-the-cores-own (with-temp-store ())
   ;; A durable row of the name is replaced by the core's own: one authority
   ;; per name.

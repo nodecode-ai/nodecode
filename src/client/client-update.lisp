@@ -165,6 +165,9 @@ thread reads it and clears this place.")
             ;; The whole board: the hooks it says are skipped are the
             ;; footer's chip (SKIPPED-HOOK-SEGS).
             (note-skipped-hooks model payload)
+            ;; and the cells' status rows, the line over the footer
+            ;; (STATUS-ROWS-FRAME-ROW).
+            (note-status-rows model payload)
             (refresh-status-dialog model :board payload))
            ((string= kind "organism.notice")
             ;; The organism speaking to every attached shell (NLE:NOTICE):
@@ -485,7 +488,10 @@ thread reads it and clears this place.")
     ;; suggestion open); an empty composer is a consumed no-op (the Zig
     ;; trim-and-return-null rule). Idle Tab falls through to the base
     ;; update, where accept-suggestion keeps its meaning.
-    ((and model.turn-in-flight (key-msg-matches-p model :submit-turn-queue msg))
+    ((and model.turn-in-flight (key-msg-matches-p model :submit-turn-queue msg)
+          ;; except on an empty composer under a status row that offers
+          ;; something: the base update takes the row (STATUS-ROW-ACTION).
+          (not (status-row-action model)))
      (unless (composer-empty-p model)
        ;; Fire-and-forget with a fresh command id: the pending-command
        ;; machinery stays reserved for the primary start's replay
@@ -586,6 +592,10 @@ thread reads it and clears this place.")
        ;; runs the ask's line with it (tui/commands/bare.lisp SUBMIT-ASK).
        (when (chat-model-composer-ask model)
          (return-from update (values model (nth-value 1 (submit-ask model text)))))
+       ;; `!' runs the rest here, on this shell's machine, and nothing goes
+       ;; to the session (tui/commands/local-command.lisp).
+       (when (draft-local-command text)
+         (return-from update (values model (run-local-command model text))))
        (when (slash-input-p text)
          ;; Slash commands dispatch through the shared submit seam (ui.lisp);
          ;; EXECUTE-SLASH-COMMAND below routes the gateway-backed ones over

@@ -146,6 +146,34 @@ is NIL. => the entry, or NIL when cleared."
   (bt2:with-lock-held (*notices-lock*)
     (copy-list *notices*)))
 
+;;; Beside the notices, the status rows (NLE:STATUS-ROW): one line of TEXT
+;;; under a KEY, which every shell draws in a fixed place of its own frame
+;;; for as long as it stands. Shells only: the model never reads a row, the
+;;; live tail and /cells carry none. Same rules as the board -- keyed,
+;;; live-only, a NIL text clears, a restart starts empty -- under the same
+;;; lock, so the two travel in one organism.notices payload.
+
+(defvar *status-rows* '()
+  "((KEY TEXT OPTIONS) ...) in first-posting order, OPTIONS the row's plist
+of :SESSION-ID, :DRAFT, :RUN and :VERB (NLE:STATUS-ROW).")
+
+(defun note-status-row (key text &optional options)
+  "Make TEXT, with OPTIONS, the status row under KEY, or clear KEY when TEXT
+is NIL. => the entry, or NIL when cleared."
+  (check-type key string)
+  (check-type text (or null string))
+  (check-type options list)
+  (bt2:with-lock-held (*notices-lock*)
+    (setf *status-rows* (if text
+                            (put-in-place *status-rows* key (list text options) #'string=)
+                            (remove key *status-rows* :key #'first :test #'string=)))
+    (and text (list key text options))))
+
+(defun status-rows ()
+  "A copy of the status rows: ((KEY TEXT OPTIONS) ...)."
+  (bt2:with-lock-held (*notices-lock*)
+    (copy-list *status-rows*)))
+
 ;;; --- the log of what was said -----------------------------------------------
 ;;; THE BOARD STANDS; THE LOG REMEMBERS. A notice WITHOUT a key (gateway.lisp
 ;;; NOTICE) is said once: it reaches the shells attached at that moment, a

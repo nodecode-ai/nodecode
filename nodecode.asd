@@ -392,6 +392,7 @@ of stacking."
      (:file "tui/commands/accounts")
      (:file "tui/commands/cell-control")
      (:file "tui/commands/open-effect")
+     (:file "tui/commands/local-command")
      (:file "tui/commands/headless")
      (:file "tui/commands/context-view")
      (:file "tui/commands/tree")
@@ -701,6 +702,7 @@ of stacking."
      ;; Uses gateway-test's WS peers and account-login-test's fixtures.
      (:file "tui/logout-all-shells-test")
      (:file "tui/open-effect-test")
+     (:file "tui/local-command-test")
      ;; Uses gateway-test's silent peers.
      (:file "gateway/questions-test")
      (:file "gateway/follow-test")

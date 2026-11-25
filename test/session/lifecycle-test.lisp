@@ -409,6 +409,47 @@ once parked — and cancel the turn once it is."
         (is-present next "completing the active turn frees the promotion"
           (is-shape next (second "[Image #1] and this?") (third '(("image/png" . "QUJD")))))))))
 
+(defun %started-source (session-id command-id)
+  "(KIND ID) of the invocation source on the TURN.STARTED COMMAND-ID admitted,
+(NIL NIL) when it carries none."
+  (let* ((json (nlk:events :session-id session-id :command-id command-id
+                           :kind nlk::+kind-turn-started+
+                           :as :value :columns '("invocation_json")))
+         (invocation (and json (nlk:decode-json json))))
+    (list (nlk:json-value invocation :string "source" "kind")
+          (nlk:json-value invocation :string "source" "id"))))
+
+(deftest a-queued-prompt-promotes-under-the-source-that-sent-it ()
+  ;; Issue #522: the same words, a person's and a peer's, are told apart by
+  ;; the source their turns start under. A prompt that waited behind a running
+  ;; turn -- a follow-up, or a steer with no fact of its own until promotion --
+  ;; must keep that source, or its turn reads as nobody's.
+  (with-session-store ("queue-source")
+    (flet ((admit (command-id source id &rest keys)
+             (apply #'nlk:admit-active-turn-input "queue-source" command-id "the build is green"
+                    :invocation (nlk:default-invocation "turn.start" command-id
+                                                        :source source :id id)
+                    keys)))
+      (let* ((turn (%admitted-active-turn "queue-source" "qs-busy" "busy prompt"))
+             (busy-id turn.turn-id))
+        (is (eq :queued (nlk:active-input-admission-disposition
+                         (admit "qs-peer" "mycel" "peer-7"))))
+        (is (eq :steered (nlk:active-input-admission-disposition
+                          (admit "qs-person" "gateway" nil
+                                 :disposition :steer :expected-turn-id busy-id))))
+        (nlk:complete-turn turn nil)
+        (nlk:complete-turn (first (nlk::dequeue-next-turn "queue-source")) nil)
+        (nlk:complete-turn (first (nlk::dequeue-next-turn "queue-source")) nil)
+        (is (equal '("gateway" nil) (%started-source "queue-source" "qs-person")))
+        (is (equal '("mycel" "peer-7") (%started-source "queue-source" "qs-peer")))))))
+
+(deftest a-parked-prompt-from-before-prompts-kept-their-source-still-promotes ()
+  ;; A queue written by an older build holds prompts with no invocation: they
+  ;; promote as they did, with none, and so does one whose record is not one.
+  (let ((prompt (nlk:json-object "invocation" (nlk:json-object "action" "turn.start"))))
+    (is (null (nlk::prompt-invocation (nlk:json-object "content" "old"))))
+    (is (null (nlk::prompt-invocation prompt)))))
+
 ;;; --- DEFINE-TURN-FACT ----------------------------------------------------
 ;;; The durable turn-fact declaration. Two things are locked: the eight-field
 ;;; turn envelope every fact carries (which a hand-written recorder could omit

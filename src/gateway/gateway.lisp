@@ -773,12 +773,25 @@ standing notice."
                :opt "key" key))
 
 (defun standing-notices-payload ()
-  "The complete typed standing board, including quiet entries; live-only."
+  "The complete typed standing board, including quiet entries, and the status
+rows every shell draws (STATUS-ROW); live-only."
+  ;; The rows ride this payload rather than a frame kind of their own: a
+  ;; shell refuses a session-less kind it does not know as a protocol error
+  ;; (DECODE-SYNC-MESSAGE), and a shell from before the rows stays attached
+  ;; to a gateway that moved to a release with them. Here they are one field
+  ;; such a shell never reads.
   (json-object "notices"
                (map 'vector (lambda (notice)
                                (destructuring-bind (key text level) notice
                                  (notice-payload text level key)))
-                    (nlk:standing-notices))))
+                    (nlk:standing-notices))
+               "rows"
+               (map 'vector (lambda (row)
+                               (destructuring-bind (key text options) row
+                                 (json-object "key" key "text" text
+                                              (:getf options :opt "session_id" "draft"
+                                                     "run" "verb"))))
+                    (nlk:status-rows))))
 
 (defvar *standing-notice-publication-lock* (bt2:make-lock :name "standing-notice-publication")
   "Order board writes and whole-board publications, without keeping another board.")
@@ -904,6 +917,55 @@ while no shell is open."
             (notice (format nil "gateway: ~a cannot keep running after this shell closes — ~a"
                             what refusal)
                     :level :warning))))))))
+
+(defun status-row (text &key key session-id draft run verb)
+  "Keep TEXT as one line in every attached shell's frame, under KEY, until a
+later call under KEY replaces it or a NIL TEXT clears it. SESSION-ID keeps it
+to the shells showing that session. DRAFT, a text, or RUN, a slash line, is
+what the row does when the person takes it -- Tab on an empty composer, the
+accept-suggestion key: DRAFT goes into the composer, RUN runs as if typed;
+VERB, one word, names that on the row's hint. => TEXT."
+  ;; The suggestion row of #505: a cell that guesses the next prompt for one
+  ;; session puts it on that session's shells only and hands it over on the
+  ;; key, as a picker row hands over its line -- the shell does it, so no
+  ;; cell code runs there.
+  (check-type key string)
+  (check-type session-id (or null string))
+  (check-type draft (or null string))
+  (check-type run (or null string))
+  (check-type verb (or null string))
+  (when (and draft run)
+    (error "a status row does one thing on its key: :draft or :run, not both"))
+  (when (and run (not (eql 0 (position #\/ (string-left-trim " " run)))))
+    (error "a status row's :run is a slash line, as \"/weather Oslo\": ~s" run))
+  (when (and verb (not (or draft run)))
+    (error "a status row's :verb names its :draft or :run, and it has neither"))
+  (status-row-1 text key (append (and session-id (list :session-id session-id))
+                                 (and draft (list :draft draft))
+                                 (and run (list :run run))
+                                 (and verb (list :verb (one-line-row-text verb))))))
+
+(defun status-row-1 (text key options)
+  ;; A cell's passive status -- a subscription's usage, a ticker -- drawn by
+  ;; the shell in a fixed place (FRAME.LISP STATUS-ROWS-FRAME-ROW) and read
+  ;; by no one else: unlike a standing notice, the model's notices block,
+  ;; /cells and the toasts never carry a row. Like a keyed notice it stands:
+  ;; it rides the board's organism.notices frame, so a shell attaching later
+  ;; draws it too. A cell sets it from its :start or a worker there and
+  ;; clears it from ON-STOP, so a cell turned off or restarted takes its row
+  ;; out of every shell. Never durable: a restart starts with none.
+  (check-type text (or null string))
+  (bt2:with-lock-held (*standing-notice-publication-lock*)
+    (let ((before (nlk:status-rows)))
+      (nlk:note-status-row key (and text (plusp (length text)) (one-line-row-text text))
+                           options)
+      (unless (equal before (nlk:status-rows))
+        (broadcast-organism "organism.notices" (standing-notices-payload)))))
+  text)
+
+(defun one-line-row-text (text)
+  "TEXT as the one line a status row draws: its line breaks and tabs spaces."
+  (substitute-if #\Space (lambda (c) (member c '(#\Newline #\Return #\Tab))) text))
 
 (defun notice (text &key (level :info) key)
   "Say TEXT to the operator: every attached shell puts it up as a toast

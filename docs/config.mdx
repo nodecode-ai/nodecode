@@ -180,10 +180,11 @@ A desktop notice when a turn ends. The section's presence turns it on.
 A cancelled turn sends no notice.
 
 {/* source: src/engine/turn.lisp, src/import/seams.lisp, src/gateway/gateway.lisp, src/tui/settings-sheet.lisp */}
-## index, import, welcome and tui
+## help, index, import, welcome and tui
 
 | Key | Type | Default |
 | --- | --- | --- |
+| `help.hot_budget` | Integer, 0 or more | 8192: characters of the manual's topic list below its first line, which every request carries. Past it the first topics keep their one-line summary and the rest are named only. The names always stay, so `0` names every topic without a summary. `(help)` still lists every topic with its summary. |
 | `index.hot_budget` | Integer, 120 or more | 8192: characters of the index below its first line. A small budget names the definitions without describing them. |
 | `index.stale_days` | Integer, 1 or more | 30: a skill or a layer definition unused this long reads as cold. A memory never does. |
 | `import.session_budget` | Integer, 1 or more | 200: conversations one import carries before the rest wait |
