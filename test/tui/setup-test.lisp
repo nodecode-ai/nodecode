@@ -283,6 +283,44 @@ answers what the command answers."
         (is (eq :details (nle::picker-highlighted-value model.dialog)) "on the row it left from")
         (is (null (said-rows model)))))))
 
+(deftest setup-last-page-takes-the-task-its-start-row-asks-for ()
+  ;; The last page's Start row says `type a task', and the page took no text:
+  ;; `abc' typed at it painted nowhere, and its Enter closed the page on an
+  ;; empty chat with no turn (a first-run take, 2026-11-25). A printable key
+  ;; or a paste now starts, as Esc does, and lands in the composer; the
+  ;; page's own keys still work, and a page over a caveat, which offers no
+  ;; task, keeps its keys.
+  (with-frame-model (model 100 30 :session-id "setup-last-page-types")
+    (let ((run (nle::make-setup-run :steps '(:provider :model :effort)))
+          (pasted 0))
+      (with-stubbed-fdefinitions ((nle::setup-caveats (run) '())
+                                  (nle::paste-clipboard-image (model) (incf pasted) nil))
+        (nle::setup-stage-finish model run)
+        (is (ready-page-p model))
+        (is (search "type a task" (nle::picker-row-detail (first (nle::picker-dialog-rows model.dialog)))))
+        (press model #\a #\b #\c)
+        (is (null model.dialog) "the first key started")
+        (is (equal "abc" (composer-value model)) "and every key reached the composer")
+        (nle::editor-reset model.editor)
+        (nle::setup-stage-finish model run)
+        (nle:update model (nlt:make-paste-msg :text "what is in this folder?"))
+        (is (null model.dialog) "a paste starts too")
+        (is (equal "what is in this folder?" (composer-value model)) "and lands where typing does")
+        (nle::editor-reset model.editor)
+        (nle::setup-stage-finish model run)
+        (press model #\v :mod nlt:+mod-ctrl+)
+        (is (null model.dialog) "Ctrl+V starts as well")
+        (is (= 1 pasted) "and pastes as it does in the composer")
+        (nle::setup-stage-finish model run)
+        (press model :enter)
+        (is (null model.dialog) "Enter on Start still closes it")
+        (is (equal "" (composer-value model)) "on an empty chat"))
+      (with-stubbed-fdefinition (nle::setup-caveats (run) (list (list "model" "no model configured")))
+        (nle::setup-stage-finish model run)
+        (press model #\x)
+        (is (ready-page-p model) "a page over a caveat offers no task, and keeps its keys")
+        (is (equal "" (composer-value model)))))))
+
 (deftest setup-a-saved-key-returns-to-the-providers-and-enter-goes-on ()
   ;; The walk connects every provider the operator has a key for, then picks
   ;; a model from all of them. A saved key returns to the list rather than

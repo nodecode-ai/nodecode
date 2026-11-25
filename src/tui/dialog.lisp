@@ -780,9 +780,9 @@ at that end. => T when the list moved, NIL for an empty list."
 
 (nlk:define-side-table picker-type-through (:weakness :key)
   "Live-only: a picker that opened by itself after another pick -- the
-reasoning effort /models offers once a model lands -- => T. Typing was never
-meant for it: a printable key closes it, keeping what stands, and lands in the
-composer (UPDATE).")
+reasoning effort /models offers once a model lands -- or one that asks for
+typing it cannot take, the setup walk's last page => T. A printable key or a
+paste closes it, keeping what stands, and lands in the composer (UPDATE).")
 
 (defun dismiss-dialog (model handler)
   "Close MODEL's dialog, then call HANDLER — its ON-CANCEL or ON-SUCCESS, or NIL — on MODEL."
