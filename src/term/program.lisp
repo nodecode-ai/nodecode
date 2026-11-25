@@ -110,6 +110,10 @@ back since.")
   (running nil)
   ;; T once its terminal hung up (HANG-UP): nothing queued is folded after.
   (hung-up nil)
+  ;; What a signal asked since the input loop last looked (ON-SIGNAL).
+  (resize-pending nil)
+  (suspend-pending nil)
+  (hang-up-pending nil)
   (tty-stream nil)
   (worker nil)
   (input-thread nil)
@@ -149,8 +153,8 @@ queued once GRACE seconds have passed -- at once when GRACE is 0."
   ;; kept the process painting into a dead tty, a core busy, until it was
   ;; killed by hand (#530). The grace keeps what was typed before the end:
   ;; a responsive loop folds it and the quit behind it well inside a second.
-  ;; Slot writes and a spawn, so a signal handler may call it; the quit that
-  ;; ends a blocked drain is posted from a thread of its own.
+  ;; The quit that ends a blocked drain is posted from a thread of its own,
+  ;; so no caller waits out the grace.
   (flet ((stop () (setf program.hung-up t program.running nil)))
     (when (zerop grace) (stop))
     (nlk:spawn "nlt-hangup"
@@ -182,12 +186,12 @@ syscall failure or the end of file on its stream."
       (hang-up program)
       (%report program where condition)))
 
-(defun resize-program (program &optional (post #'send))
-  "Measure the terminal, size PROGRAM's renderer to it, and tell the model
-through POST — SEND, or %DEFER from a signal handler. => (WIDTH . HEIGHT)."
+(defun resize-program (program)
+  "Measure the terminal, size PROGRAM's renderer to it, and tell the model.
+=> (WIDTH . HEIGHT)."
   (multiple-value-bind (width height) (terminal-size)
     (setf (renderer-width program.renderer) width (renderer-height program.renderer) height)
-    (funcall post program (make-window-size-msg :width width :height height))
+    (send program (make-window-size-msg :width width :height height))
     (cons width height)))
 
 (defun write-clipboard (program text &optional report)
@@ -364,8 +368,9 @@ COUNT the number folded."
   ;; pty's master gone -- and nothing types there again: the program hangs
   ;; up (HANG-UP), and so does a read the dead tty fails. Polled on, it held the process alive with
   ;; no terminal anywhere, and the shell later fronted an organism of its
-  ;; own (T-348). On Windows the loop also measures the console every tenth
-  ;; of a second, the resize signal that platform lacks.
+  ;; own (T-348). The loop also serves what a signal marked (ON-SIGNAL): a
+  ;; new size, a suspend, a hang-up. Windows has no such signals, and there
+  ;; the loop measures the console every tenth of a second instead.
   (let ((stream program.tty-stream)
         #+win32 (size (multiple-value-call #'cons (terminal-size)))
         #+win32 (measure-at (get-internal-real-time)))
@@ -384,6 +389,7 @@ COUNT the number folded."
                                    collect msg
                                    finally (setf ended (eq msg :ended)))))
                  (dolist (msg events) (send program msg))
+                 #-win32 (serve-signals program)
                  (cond (ended (hang-up program :grace *hang-up-grace-seconds*))
                        ((null events) (sleep 0.001)))
                  #+win32
@@ -394,63 +400,45 @@ COUNT the number folded."
                    (setf measure-at (nlk:deadline-after 1/10))))))))
 
 ;;; --- signals -------------------------------------------------------------
-;;; A handler runs on whichever thread the signal interrupts: it neither
-;;; takes the mailbox lock nor writes the terminal; it hands the request to
-;;; a short-lived thread whose SEND the loop thread serves.
-
-(defvar *deferred-posts* (make-hash-table :test 'equal :synchronized t)
-  "(PROGRAM . MESSAGE-TYPE) -> (PENDING . T) for a deferred post still in flight.")
-
-(defvar *deferred-posts-lock* (bt2:make-lock :name "deferred-posts")
-  "The lock the deferred-post table's read-modify-write takes.")
-
-(defun post-deferred (key program)
-  "Post what KEY holds until nothing is pending, then forget KEY."
-  (unwind-protect
-       (loop for msg = (bt2:with-lock-held (*deferred-posts-lock*)
-                         (let ((pending (gethash key *deferred-posts*)))
-                           (when pending (prog1 (car pending) (setf (car pending) nil)))))
-             while msg
-             do (ignore-errors (send program msg)))
-    (bt2:with-lock-held (*deferred-posts-lock*) (remhash key *deferred-posts*))))
-
-(defun %defer (program msg)
-  "Hand MSG to PROGRAM's loop from a signal handler, one post per kind at a time.
-
-A signal lands on whichever thread it interrupts and a window drag is a
-SIGWINCH per pixel, so what SEND posts runs on a thread of its own and a
-second message of the same kind folds into the post already in flight — the
-latest one, posted after it — rather than spawning past it: a drag costs one
-thread per kind, not one per pixel.
-
-The post is spawned with SB-THREAD, not through bordeaux-threads. bordeaux
-0.9.4 starts a thread by recording a wrapper for it under
-*KNOWN-THREADS-LOCK* and has the new thread look that record up; the new
-thread can get there first, and the BT-ERROR it then raises is signalled
-inside the very mutex RECORD-CONDITION re-grabs, so SBCL answers \"Recursive
-lock attempt\" and the thread dies with the message unposted — which froze a
-TUI for an hour. Going around bt2 costs only the inherited dynamic bindings,
-which a two-line relay does not want. What the body raises is still caught
-here, so a failure reports through the loop instead of ending the thread."
-  (let ((key (cons program (type-of msg))))
-    (bt2:with-lock-held (*deferred-posts-lock*)
-      (let ((pending (gethash key *deferred-posts*)))
-        (cond (pending (setf (car pending) msg))
-              (t (setf (gethash key *deferred-posts*) (cons msg t))
-                 (#+sb-thread sb-thread:make-thread #-sb-thread bt2:make-thread
-                  (lambda ()
-                    (let ((*print-readably* nil))
-                      (handler-case (post-deferred key program)
-                        (error (e) (ignore-errors (%report program :signal e))))))
-                  :name "nlt-signal")))))))
+;;; A handler runs on whichever thread the signal interrupts, inside whatever
+;;; that thread holds, and SBCL takes the next signal again inside any lock
+;;; the handler takes itself. So a handler marks a slot and does nothing else
+;;; -- no lock, no thread, no message -- and the input loop, which turns every
+;;; millisecond, serves the mark on a thread of its own (SERVE-SIGNALS).
+;;;
+;;; A handler used to spawn a thread to post its message, and bordeaux's
+;;; MAKE-THREAD takes its thread table's lock: a SIGWINCH on a thread already
+;;; holding it (one starting up, or the loop asking BT2:CURRENT-THREAD)
+;;; failed "Recursive lock attempt", the thread it had half started died
+;;; looking for its own record, and the window kept its old frame until
+;;; something else painted. A fast drag nested handler in handler inside that
+;;; lock until SBCL stopped the process: "maximum interrupt nesting depth (8)
+;;; exceeded" (#549).
 
 #-win32
 (defun on-signal (program signal)
-  "Hand what SIGNAL asks of PROGRAM to its loop: SIGWINCH re-measures,
-SIGTSTP suspends, SIGHUP -- its terminal hung up, the window closed -- quits."
-  (cond ((= signal sb-posix:sigwinch) (resize-program program #'%defer))
-        ((= signal sb-posix:sighup) (hang-up program :grace *hang-up-grace-seconds*))
-        (t (%defer program :suspend))))
+  "Mark what SIGNAL asks of PROGRAM for its input loop: SIGWINCH a new
+measure, SIGTSTP a suspend, SIGHUP -- its terminal hung up, the window
+closed -- a quit."
+  (cond ((= signal sb-posix:sigwinch) (setf program.resize-pending t))
+        ((= signal sb-posix:sighup) (setf program.hang-up-pending t))
+        (t (setf program.suspend-pending t))))
+
+#-win32
+(defun serve-signals (program)
+  "Do on this thread what the signals since the last look asked of PROGRAM."
+  ;; A mark is cleared before it is served, so a signal that lands meanwhile
+  ;; marks it again and the next look serves it: a drag's last size is the
+  ;; one measured, however many went by between two looks.
+  (when program.resize-pending
+    (setf program.resize-pending nil)
+    (resize-program program))
+  (when program.suspend-pending
+    (setf program.suspend-pending nil)
+    (send program :suspend))
+  (when program.hang-up-pending
+    (setf program.hang-up-pending nil)
+    (hang-up program :grace *hang-up-grace-seconds*)))
 
 ;;; --- run -----------------------------------------------------------------
 
@@ -511,8 +499,8 @@ model's INIT command, the first frame, then the loop."
          (enter-raw-mode)
          (enter-modes tty)
          (setf program.running t)
-         ;; SIGWINCH re-measures, SIGTSTP asks the loop to suspend, SIGHUP to
-         ;; quit (ON-SIGNAL); Windows has none of them.
+         ;; SIGWINCH, SIGTSTP and SIGHUP mark the program for the input loop
+         ;; to serve (ON-SIGNAL); Windows has none of them.
          (setf handlers
                #+win32 '()
                #-win32
