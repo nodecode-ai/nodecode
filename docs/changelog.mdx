@@ -32,6 +32,39 @@ nodecode 0.1.7+2629050e1
 The version comes first and the build label, the commit the release was built from, follows the `+`. An installed build moves to a new release by itself, between turns. `nodecode update` moves it now. See [Updates](updates.mdx).
 
 {/* source: tools/release/publish.sh */}
+## 0.1.17
+
+Linux, macOS and Windows. Changes since 0.1.16 (`beee92a7e`).
+
+- `nodecode acp` runs Nodecode as the agent of any Agent Client Protocol client, such as Zed or JetBrains. Each editor session is a gateway session the shell, the web page and the channels see too, and a link lost when the gateway stops attaches again to the next one.
+- In the shell, `!` before a command runs it on the machine the shell runs on, in the folder the shell started in, with its output shown as it comes. Enter once it has ended puts the command, its output and a nonzero exit status into the draft. The gateway never sees it.
+- An error from the selected provider that no retry cures (401, 402, 403 or 404) walks the failover chain instead of ending the turn.
+- A provider stream whose tail breaks after the answer is complete keeps the answer instead of ending the turn raw.
+- A fault inside Nodecode fails its turn in plain words and keeps the stack it struck on.
+- The first-run walk's last page takes the task it asks for: typing there lands in the composer.
+- The edit tool matches and writes a file whose lines end in CRLF in CRLF.
+- `help.hot_budget` caps the characters of the manual's topic lines every request carries; its default changes nothing. `index.hot_budget` takes values down to 120.
+- A cell can keep a line in every open shell, between the composer and the footer: `(nle:status-row TEXT :key KEY)`. A row can stand for one session and offer a draft or a slash line on Tab.
+- A shell quits at once: closing its link to the gateway no longer waits out a 2-second bound or prints "compilation unit aborted", and a terminal that hangs up ends its shell.
+- A session whose tools left a very large workspace diff reopens: a diff is bounded where it is made and again when an older one is read.
+- An evaluation interrupted or a turn stopped mid-wait takes the child processes it waited on down with it.
+- A home whose default model is a cell's provider, such as `claude-code`, says its boot note instead of logging that it does not know the provider.
+- In a home made by `profile create`, which shares its source's secrets, a secret pasted while setting up a channel is named for that home, so a second bot no longer replaces the first one's token.
+- A sticky profile loads again; it failed with `The function TRIMMED is undefined`.
+- A cell file rewritten with an older date runs its new code: peripheral caches follow the folder's contents, not file dates.
+- Restarting a channel by name restarts the channel kit it runs in; it used to restart nothing and answer as if it had.
+- A gateway whose serving work is stuck stops its systemd watchdog heartbeats, so systemd restarts it, and an idle gateway stops at once on SIGTERM instead of ending its unit failed.
+- On Windows, a joined thread leaves no handle open.
+- The manual says nodecode.ai serves `/v1/messages` and `/v1/responses`, and the docs say its WebSocket API takes free keys.
+- The stock cells move to cells `37366ad`:
+  - cron: a job whose fires keep failing pauses itself and tells the session that scheduled it once, and each fire sends its own prompt alone.
+  - channel kit: a line that meets a turn just started steers it, the answer replies to the line that steered it, a lane woken after it was let go is told where it is, a board post needs no turn in its thread, and a late part of an ended turn never takes the running card.
+  - discord: a video is sent as a file, never as a voice recording.
+  - mcp: a server stands idle on the catalog it kept until a call needs it, and its initialize instructions reach the model in `(help :mcp)`.
+  - experience: a reflection spends under a budget, and every recap says what became of it.
+  - A printed channel adapter, provider session or tool client never shows its secret.
+
+{/* source: tools/release/publish.sh */}
 ## 0.1.16
 
 Linux, macOS and Windows. Changes since 0.1.15 (`572814a28`).
