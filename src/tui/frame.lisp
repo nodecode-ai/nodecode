@@ -111,6 +111,21 @@ from the ones COLLECT-DURING-WAIT hid inside provider wait."
                                       key mod))
             (dismiss-dialog model (picker-dialog-on-cancel dialog)))
 
+           ;; A picker nobody opened -- the reasoning effort /models offers
+           ;; once a model lands -- is not where typing goes: a printable key
+           ;; closes it, keeping what stands, and reaches the composer as if
+           ;; it had never opened. Without this, a `yo' typed after the pick
+           ;; vanished and its Enter picked a rung (Mac take, 2026-10-21). The
+           ;; image-paste chord goes the same way, ahead of the dialog's
+           ;; reading of the clipboard below, so a paste lands where typing
+           ;; does; the setup walk's last page is one such picker too.
+           ((and dialog (picker-type-through dialog)
+                 (or (and (characterp key) (graphic-char-p key) (not ctrl) (not alt))
+                     (model-key-matches-p model :paste-image key mod)))
+            (dismiss-dialog model (picker-dialog-on-cancel dialog))
+            (unless (chat-model-dialog model)
+              (return-from update (update model msg))))
+
            ;; The image-paste chord over a dialog pastes the clipboard's text
            ;; into its field: a field holds no image, and Ctrl+V is what an
            ;; operator reaches for with a key to paste. Where nothing reads
@@ -124,17 +139,6 @@ from the ones COLLECT-DURING-WAIT hid inside provider wait."
               (picker-dialog-paste model text)
               (setf (picker-dialog-subtitle dialog)
                     "No clipboard to read here — paste with your terminal (Ctrl+Shift+V)")))
-
-           ;; A picker nobody opened -- the reasoning effort /models offers
-           ;; once a model lands -- is not where typing goes: a printable key
-           ;; closes it, keeping what stands, and reaches the composer as if
-           ;; it had never opened. Without this, a `yo' typed after the pick
-           ;; vanished and its Enter picked a rung (Mac take, 2026-10-21).
-           ((and dialog (picker-type-through dialog)
-                 (characterp key) (graphic-char-p key) (not ctrl) (not alt))
-            (dismiss-dialog model (picker-dialog-on-cancel dialog))
-            (unless (chat-model-dialog model)
-              (return-from update (update model msg))))
 
            ;; An open modal picker owns every remaining key.
            (dialog (picker-dialog-key model key :ctrl ctrl :alt alt :shift shift :mod mod))
@@ -300,6 +304,12 @@ from the ones COLLECT-DURING-WAIT hid inside provider wait."
       ;; only an image file's path -- a snip, an image copied in Explorer, a
       ;; file dragged in -- stages that file.
       ((nlt:paste-msg-p msg)
+       ;; A picker typing goes through (PICKER-TYPE-THROUGH) lets a paste
+       ;; through too: it closes as a key closes it, and the paste lands in
+       ;; the composer below.
+       (let ((dialog (chat-model-dialog model)))
+         (when (and dialog (picker-type-through dialog))
+           (dismiss-dialog model (picker-dialog-on-cancel dialog))))
        (cond ((chat-model-dialog model)
               (picker-dialog-paste model (nlt:paste-msg-text msg)))
              (t (let ((text (nlt:paste-msg-text msg)))
