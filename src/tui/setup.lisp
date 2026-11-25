@@ -1352,10 +1352,12 @@ CHOSEN narrows the setup walk to the chosen provider."
                                 (first (setup-run-providers run))
                                 (let ((ids (connected-provider-ids)))
                                   (and ids (null (rest ids)) (first ids)))))
+          ;; MODELS-PROVIDER-ROW-P keeps the provider's failed-listing row, so a
+          ;; provider that lists nothing says why: `claude-code/ no listing
+          ;; (Claude Code is not logged in here: ...)', not a bare `No models
+          ;; found' (2026-11-11). Enter on it goes back to the providers.
           (register-picker-tabs
-           dialog (list (list :label provider :value provider
-                              :match (lambda (row id &aux (value (picker-row-value row)))
-                                       (and (consp value) (string-equal (first value) id))))))
+           dialog (list (list :label provider :value provider :match #'models-provider-row-p)))
           (seat-models-picker dialog provider))))))
 
 ;;; --- stage: finish -----------------------------------------------------------
