@@ -136,8 +136,13 @@ fill the journal once per heartbeat.")
   #-linux
   (declare (ignore message)))
 
+(defvar *systemd-told-ready* nil
+  "Whether this process's unit was told it is ready: from then on it runs
+under its watchdog, no longer under its start timeout.")
+
 (defun systemd-ready ()
   "Tell a systemd notify unit that the gateway owner is initialized."
+  (setf *systemd-told-ready* t)
   (systemd-notify "READY=1"))
 
 (defun systemd-watchdog-window ()

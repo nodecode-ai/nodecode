@@ -1718,6 +1718,8 @@ an exec in its boot."
         ;; Said already, by this process before an exec in its boot (a
         ;; published warm image): the same unit's process, past its ready.
         (said (plusp (length (uiop:getenv +gateway-ready-variable+)))))
+    ;; the unit heard it from the process before the exec: its watchdog runs
+    (when said (setf nlk::*systemd-told-ready* t))
     (loop
       (when (gateway-stop-requested-p) (return said))
       (when (nlk::store-lease-held-elsewhere-p path)

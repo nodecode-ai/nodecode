@@ -931,6 +931,47 @@ not (or nothing can say), else one line."
                      this snapshot runs as it was taken, and a plain launch loads the folder as it is now"
                 (getf *saved-image* :name))))))
 
+(defparameter *folder-load-seconds* 600
+  "How long a serve's folder load holds its unit's start open, in seconds:
+past it the service manager's own timeout lands, and the self that ran over
+is one that died before serving (DECIDE-PRISTINE).")
+
+(defparameter *load-beat-seconds* 10
+  "How often a serve's folder load tells its unit that it goes on, in seconds.")
+
+(defun call-with-load-beat (thunk &key (seconds *folder-load-seconds*) (every *load-beat-seconds*))
+  "Call THUNK, a serve's folder load, telling a systemd notify unit every
+EVERY seconds that the process goes on, for at most SECONDS: its start
+timeout extended, and its watchdog fed once the unit was told it is ready.
+Outside systemd, THUNK alone."
+  ;; The ready line comes after the load, and until it the unit runs under the
+  ;; service manager's start timeout: 90 s by default, 45 s under Fedora's user
+  ;; manager, and a generated unit sets none of its own. A folder whose load
+  ;; ran past it was killed mid-load, and the launch after read the kill as a
+  ;; self that died before serving: it stood on the floor, no folder and no
+  ;; channels. A unit told ready before the load (a gateway that waited for a
+  ;; shell's store) runs under its watchdog instead, which the same beat
+  ;; feeds -- only then: a WATCHDOG=1 before the ready line arms the watchdog
+  ;; in the middle of the start. A load still running past SECONDS has
+  ;; stalled, and the timeout lands as it always did. The beat is joined
+  ;; before the load's caller goes on: a trial forks after its boot, and a
+  ;; fork refuses while another thread runs.
+  (if (zerop (length (or (uiop:getenv "NOTIFY_SOCKET") "")))
+      (funcall thunk)
+      (let* ((done (bt2:make-semaphore :name "load-beat"))
+             ;; the load runs on the thread that would tell it: no change while it runs
+             (message (format nil "EXTEND_TIMEOUT_USEC=~d~:[~;~%WATCHDOG=1~]"
+                              (round (* 3 every 1000000)) *systemd-told-ready*))
+             (beat (spawn "load-beat"
+                     (loop with until = (+ (get-internal-real-time)
+                                           (* seconds internal-time-units-per-second))
+                           do (systemd-notify message)
+                           until (or (bt2:wait-on-semaphore done :timeout every)
+                                     (>= (get-internal-real-time) until))))))
+        (unwind-protect (funcall thunk)
+          (bt2:signal-semaphore done)
+          (bt2:join-thread beat)))))
+
 (defun boot-cells (&key spawn hand-over receipt)
   "Load the folder — through the warm-image cache when a published image
 matches its current key — and answer the records. Under RECEIPT (a serve)
@@ -1088,7 +1129,7 @@ if this one dies before it serves."
            (format *error-output* "~&warm: ~a; loading directly~%" refusal)))
        (nlk:note-boot-phase "load-direct")
        (when receipt (write-self-receipt key))
-       (load-cells)
+       (if receipt (call-with-load-beat #'load-cells) (load-cells))
        (nlk:note-boot-phase "folder-loaded")
        (refresh-shipped-cell-notice)
        ;; Bounded like AWAIT-WARM-VERIFICATION: a key that failed or ran over
