@@ -1627,26 +1627,30 @@ entries: take the store's ownership lock, seed the session, and raise the
 floor."
   ;; The folder already loaded in MAIN, so the image is the composed self by
   ;; the time the lock is taken. Returns (VALUES SESSION-ID OPERATOR-TOKEN).
-  ;; Signals NLK::STORE-IN-USE, store untouched, when a live process already
-  ;; owns it.
-  (let ((sid (or session-id (fresh-session-id)))
-        ;; The token every local first-party surface shares, minted on first use.
-        (token (or (gateway-configured-operator-token)
-                   (let ((token (format nil "~(~{~2,'0x~}~)" (coerce (random-bytes 32) 'list))))
-                     ;; The directory closes before the file exists, so no one else can
-                     ;; open the token file while it is being written.
-                     (write-secret-file (home "operator-token") token)
-                     token))))
-    (nlk:note-boot-phase "store-token")
+  ;; Signals NLK::STORE-IN-USE, store and operator token untouched, when a
+  ;; live process already owns it.
+  (let ((sid (or session-id (fresh-session-id))))
     (nlk:open-store :path (or store-path nlk::*default-store-path*))
     (nlk:note-boot-phase "store-opened")
-    ;; The boot session is minted standing by: it becomes durable with the
-    ;; first block, so a boot nobody spoke in leaves no session at all. The
-    ;; floor engagement below names it as the boot that engaged, and lands
-    ;; either way (an organism fact asserts nothing about the session).
-    (nlk:standby-session :id sid)
-    (nlk:engage-floor :session-id sid)
-    (values sid token)))
+    ;; The token every local first-party surface shares, minted on first use,
+    ;; and only once the lock is held: serves started together on a fresh home
+    ;; each minted their own and wrote the file before the open's election,
+    ;; and when a loser's write came last, the file no longer held the token
+    ;; the winner served with, so every shell that read it was refused 401.
+    (let ((token (or (gateway-configured-operator-token)
+                     (let ((token (format nil "~(~{~2,'0x~}~)" (coerce (random-bytes 32) 'list))))
+                       ;; The directory closes before the file exists, so no one else can
+                       ;; open the token file while it is being written.
+                       (write-secret-file (home "operator-token") token)
+                       token))))
+      (nlk:note-boot-phase "store-token")
+      ;; The boot session is minted standing by: it becomes durable with the
+      ;; first block, so a boot nobody spoke in leaves no session at all. The
+      ;; floor engagement below names it as the boot that engaged, and lands
+      ;; either way (an organism fact asserts nothing about the session).
+      (nlk:standby-session :id sid)
+      (nlk:engage-floor :session-id sid)
+      (values sid token))))
 
 ;;; +GATEWAY-SESSION-ID+, the session a gateway's boot names, is spelled the
 ;;; way FRESH-SESSION-ID spells the rest; engine/exec.lisp defines it, since a

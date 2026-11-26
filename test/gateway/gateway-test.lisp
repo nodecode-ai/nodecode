@@ -4701,6 +4701,28 @@ request."
       (is (null (probe-file (nlk::self-receipt-path))) "a lost election takes it")
       (is (null (nlk:decide-pristine)) "and the launch after loads the folder"))))
 
+(deftest a-serve-that-loses-at-the-lock-leaves-the-operator-token-alone
+    (with-temp-directory (dir "token-after-lock" :close-store t))
+  ;; Shells started together on a fresh home each spawn a serve, and each
+  ;; serve that got past the probe minted a token and wrote OPERATOR-TOKEN
+  ;; before the store's open held the election. When a loser's write came
+  ;; last, the winner served with the token it minted, the file held another,
+  ;; and every shell that read it was refused 401 until the gateway
+  ;; restarted. Only the store's holder mints, so the file is the served one.
+  (let ((path (merge-pathnames "history.db" dir))
+        (file (merge-pathnames "operator-token" dir))
+        (nlk:*home* dir))
+    (with-env-var ("NODECODE_GATEWAY_OPERATOR_TOKEN" nil)
+      (with-env-var ("NODECODE_OPERATOR_TOKEN" nil)
+        (with-lock-holder ((nlk::lock-path-for-store path))
+          (is (signals-error nlk::store-in-use (nle::boot-owned-organism :store-path path)) "another process holds the store"))
+        (is (null (probe-file file)) "a serve that lost at the lock wrote no token")
+        (with-stubbed-fdefinitions ((nlk:standby-session (&rest args) (declare (ignore args)) nil)
+                                    (nlk:engage-floor (&rest args) (declare (ignore args)) nil))
+          (let ((token (nth-value 1 (nle::boot-owned-organism :store-path path))))
+            (is (plusp (length token)) "the holder mints one")
+            (is (equal token (nle::gateway-configured-operator-token)) "and the file holds the token it serves with")))))))
+
 ;;; --- start-confirmed acceptance latch ----------------------------------------
 ;;; The latch itself is GATEWAY-BINDS-KERNEL-ASSIGNED-PORT-AND-PUBLISHES-IT's.
 
