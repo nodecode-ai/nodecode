@@ -1230,36 +1230,6 @@ completed. BODY runs with SID bound."
     (is (search "2 lines" receipt) receipt)
     (is (equal (format nil "one~%two~%") (uiop:read-file-string path)))))
 
-(deftest file-verbs-take-a-bracket-or-a-star-as-a-character (with-temp-trees ((root "verb-wild")))
-  ;; A Next.js route folder, app/(docs)/[slug]/page.tsx, read as a Lisp
-  ;; namestring is a wildcard pattern with no native name: EDIT, WRITE-FILE
-  ;; and LOOK refused it. They read a path as the shell does, and their
-  ;; receipts name the file the same way.
-  (flet ((under (name) (concatenate 'string (uiop:native-namestring root) name))
-         (native (path) (uiop:native-namestring (uiop:parse-native-namestring path)))
-         (text (path) (uiop:read-file-string (uiop:parse-native-namestring path))))
-    (let ((page (under "app/(docs)/[slug]/page.tsx"))
-          (shot (under "[...all]/shot.png")))
-      (let ((receipt (nle:write-file page (format nil "old~%"))))
-        (is (search (native page) receipt) receipt))
-      (is-carrying (receipt (nle:edit page "old" "new")) "line 1"
-        (is (search (native page) receipt) receipt))
-      (is (equal (format nil "new~%") (text page)))
-      (nle:write-file shot "")
-      (alexandria:write-byte-vector-into-file *one-pixel-png* (uiop:parse-native-namestring shot)
-                                              :if-exists :supersede)
-      (is (equal (native shot) (uiop:native-namestring (nth-value 1 (nle::image-file-octets shot))))))
-    ;; Windows takes no `*' or `?' in a name.
-    #-win32
-    (let ((star (under "a*b?.txt")))
-      (let ((receipt (nle:write-file star "x")))
-        (is (search star receipt) receipt))
-      (is (equal "x" (text star))))
-    ;; `~/' is still the home, and what follows it is read as a name too.
-    (is (equal (uiop:native-namestring (merge-pathnames (uiop:parse-native-namestring "notes/[x].md")
-                                                        (user-homedir-pathname)))
-               (uiop:native-namestring (nle::eval-snippet-path "~/notes/[x].md"))))))
-
 #-win32
 (deftest edit-and-write-file-keep-the-files-own-mode (with-temp-trees ((root "file-mode")))
   ;; The rename that replaces a file carries its mode across: an edit never
@@ -1318,7 +1288,7 @@ completed. BODY runs with SID bound."
 after TAG and deleted on unwind with the images staged under TURN-ID, when
 given; CALL, when given, is the executing tool call of a current durable
 turn carrying that id."
-  `(let ((,path (namestring (temp-path ,tag "png")))
+  `(let ((,path (uiop:native-namestring (temp-path ,tag "png")))
          ,@(when call `((nle::*executing-tool-call-id* ,call)
                         (nle::*current-durable-turn* (detached-turn "look-session" ,turn-id)))))
      (nlk:with-cleanup (,@(when turn-id `((nle::forget-turn-images ,turn-id)))
@@ -1330,6 +1300,36 @@ turn carrying that id."
   "Whether MESSAGE carries an image part."
   (some (lambda (part) (equal "image_url" (nle::content-part-type part)))
         (nle::message-content-parts (gethash "content" message))))
+
+(deftest file-verbs-take-a-bracket-or-a-star-as-a-character (with-temp-trees ((root "verb-wild")))
+  ;; A Next.js route folder, app/(docs)/[slug]/page.tsx, read as a Lisp
+  ;; namestring is a wildcard pattern with no native name: EDIT, WRITE-FILE
+  ;; and LOOK refused it. They read a path as the shell does, and their
+  ;; receipts name the file the same way.
+  (flet ((under (name) (concatenate 'string (uiop:native-namestring root) name))
+         (native (path) (uiop:native-namestring (uiop:parse-native-namestring path)))
+         (text (path) (uiop:read-file-string (uiop:parse-native-namestring path))))
+    (let ((page (under "app/(docs)/[slug]/page.tsx"))
+          (shot (under "[...all]/shot.png")))
+      (let ((receipt (nle:write-file page (format nil "old~%"))))
+        (is (search (native page) receipt) receipt))
+      (is-carrying (receipt (nle:edit page "old" "new")) "line 1"
+        (is (search (native page) receipt) receipt))
+      (is (equal (format nil "new~%") (text page)))
+      (nle:write-file shot "")
+      (alexandria:write-byte-vector-into-file *one-pixel-png* (uiop:parse-native-namestring shot)
+                                              :if-exists :supersede)
+      (is (equal (native shot) (uiop:native-namestring (nth-value 1 (nle::image-file-octets shot))))))
+    ;; Windows takes no `*' or `?' in a name.
+    #-win32
+    (let ((star (under "a*b?.txt")))
+      (let ((receipt (nle:write-file star "x")))
+        (is (search star receipt) receipt))
+      (is (equal "x" (text star))))
+    ;; `~/' is still the home, and what follows it is read as a name too.
+    (is (equal (uiop:native-namestring (merge-pathnames (uiop:parse-native-namestring "notes/[x].md")
+                                                        (user-homedir-pathname)))
+               (uiop:native-namestring (nle::eval-snippet-path "~/notes/[x].md"))))))
 
 (deftest look-attaches-the-image-to-the-turn-under-its-call ()
   (with-look-image (path "look" :turn-id "look-turn" :call "call-look")
@@ -1462,7 +1462,8 @@ turn carrying that id."
 
 (defun file-url (path)
   "PATH as a file: URL, its drive led by a slash on Windows: file:///C:/x."
-  (format nil "file://~a~a" #+win32 "/" #-win32 "" path))
+  #+win32 (format nil "file:///~a" (substitute #\/ #\\ path))
+  #-win32 (format nil "file://~a" path))
 
 (deftest an-answer-s-local-picture-is-an-image-fact (with-temp-workspace (cache))
   (with-look-image (path "answer-image")
@@ -1479,15 +1480,15 @@ turn carrying that id."
             ("media_type" "image/png") ("bytes" 70) ("width" 1) ("height" 1)
             ("png_path" copy "a PNG's copy is its own preview"))
           (is (= 64 (length (gethash "id" fact))) "named by its bytes, for the route")
-          (is (uiop:subpathp (pathname copy) cache) "the bytes are kept in the cache")
-          (is (equalp *one-pixel-png* (alexandria:read-file-into-byte-vector copy)) "as the file held them")
+          (is (uiop:subpathp (uiop:parse-native-namestring copy) cache) "the bytes are kept in the cache")
+          (is (equalp *one-pixel-png* (alexandria:read-file-into-byte-vector (uiop:parse-native-namestring copy))) "as the file held them")
           (is-shape (aref facts 1) ("target" (file-url path) "a file: URL keeps its spelling")
             ("path" path "and names the same file") ("id" (gethash "id" fact) "the same bytes"))
           (is (null (nle::answer-images "No picture here, only [a link](x.png).")) "an answer naming none has no facts")
           (let ((nle::*answer-image-limit* 1))
             (is (= 1 (length (nle::answer-images (format nil "![a](~a) ![b](~a)" path (file-url path))))) "one answer carries no more than the limit"))
           #+win32
-          (is (= 1 (length (nle::answer-images (format nil "![c](file://~a)" path)))) "file://C:/x, the drive where a host would be, names the file too"))))))
+          (is (= 1 (length (nle::answer-images (format nil "![c](file://~a)" (substitute #\/ #\\ path))))) "file://C:/x, the drive where a host would be, names the file too"))))))
 
 (deftest an-answer-naming-a-picture-keeps-its-fact-and-sends-the-model-nothing (with-temp-store ())
   ;; The whole loop: the round's message fact carries the picture's fact
@@ -1510,7 +1511,7 @@ turn carrying that id."
              (images (nlk:json-array payload "metadata" "images")))
         (is (= 1 (length images)) "the one local image; the missing file and the remote stay links")
         (is-shape (aref images 0) ("target" "dot.png")
-          ("path" (namestring (merge-pathnames "dot.png" folder)) "resolved against the session's folder, as LOOK resolves"))
+          ("path" (uiop:native-namestring (merge-pathnames "dot.png" folder)) "resolved against the session's folder, as LOOK resolves"))
         (is (null (gethash "metadata" (gethash "message" payload))) "the wire message is as the provider wrote it"))
       (is (search "![alt](path)" (cdr (assoc "folder" (nle::read-harness-sections "answer-loop") :test #'string=))) "every session's standing text says an answer may")
       (let ((said (remove "assistant" (first rounds) :test-not #'equal :key (lambda (message) (gethash "role" message))))
