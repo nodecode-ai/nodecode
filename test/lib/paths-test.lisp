@@ -80,6 +80,18 @@
     #+win32 (is (equal "~/.NODECODE/CONFIG.JSONC" (nlk:home-abbreviated (string-upcase native)))))
   (is (equal "/elsewhere/file" (nlk:home-abbreviated "/elsewhere/file")) "a path elsewhere is itself"))
 
+(deftest expand-home-reads-brackets-and-stars-as-the-path-s-own-characters ()
+  ;; `~/x/[slug]/' is a folder named `[slug]' under the home, as the shell
+  ;; reads it and as the same path without its `~/' already is. Read as a Lisp
+  ;; namestring the brackets are a wildcard, and the pathname names no file:
+  ;; /export's target, a config folder and an import source all broke on it.
+  (let ((home (uiop:native-namestring (user-homedir-pathname))))
+    (dolist (rest '("x/[slug]/" "x/[slug]/notes.md" "a*b/c?d.txt" "[draft]"))
+      (let ((path (nlk:expand-home (concatenate 'string "~/" rest)))
+            (spelled #+win32 (substitute #\\ #\/ rest) #-win32 rest))
+        (is (not (wild-pathname-p path)) (format nil "~~/~a is no wildcard" rest))
+        (is (equal (concatenate 'string home spelled) (ignore-errors (sb-ext:native-namestring path))) (format nil "~~/~a is ~a under the home" rest rest))))))
+
 (deftest paths-profile-label-says-a-name-for-every-home ()
   ;; The display name is total where the layout question is not: the
   ;; default home is named `default', not left silent.
