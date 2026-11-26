@@ -54,10 +54,13 @@ runs a user unit in, whatever $HOME this process was handed — or NIL.
 
 (defun expand-home (text &aux (text (string-trim '(#\Space #\Tab) text)))
   "TEXT, a path as the shell idiom writes it, with a leading `~/' read against
-the operator's home, as a pathname."
-  (if (uiop:string-prefix-p "~/" text)
-      (home-path (subseq text 2))
-      (uiop:parse-native-namestring text)))
+the operator's home, as a pathname. Bare `~' is the home itself, the way
+HOME-ABBREVIATED writes it."
+  ;; Read as a native namestring, bare `~' is a file of that name in the
+  ;; working folder: `/export ~' wrote one there.
+  (cond ((string= text "~") (home-path ""))
+        ((uiop:string-prefix-p "~/" text) (home-path (subseq text 2)))
+        (t (uiop:parse-native-namestring text))))
 
 (defun home-abbreviated (path)
   "PATH with the operator's home written `~': `~/src/thing', bare `~' at

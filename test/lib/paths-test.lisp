@@ -48,6 +48,19 @@
   (is (equal "elsewhere" (nlk:profile-name #p"/tmp/elsewhere/")))
   (is (equal "elsewhere" (nlk:profile-name "/tmp/elsewhere"))))
 
+(deftest expand-home-reads-a-bare-tilde-as-the-home ()
+  ;; The shell reads `~' as the home, and HOME-ABBREVIATED writes the home
+  ;; that way. Read as a native namestring it named a file `~' in the working
+  ;; folder: `/export ~' wrote one there, and a config folder set to `~' was
+  ;; `./~/'.
+  (let ((home (uiop:native-namestring (user-homedir-pathname))))
+    (dolist (text '("~" " ~ " "~/"))
+      (let ((path (nlk:expand-home text)))
+        (is (uiop:absolute-pathname-p path) (format nil "~s is an absolute path" text))
+        (is (equal home (uiop:native-namestring path)) (format nil "~s is the home" text))))
+    (let ((written (nlk:home-abbreviated home)))
+      (is (equal home (uiop:native-namestring (nlk:expand-home written))) "HOME-ABBREVIATED's home reads back"))))
+
 (deftest home-abbreviated-names-the-home-however-a-path-spells-it ()
   ;; A hint names a file as the operator writes it: under their home, `~/'.
   ;; On Windows a path arrives with `\' (a native namestring) as often as
