@@ -48,26 +48,53 @@ under the cells folder (through its links)."
      (lambda (d) (dolist (f (uiop:directory-files d "*.lisp")) (push f files))))
     files))
 
+(defun drift-cell-hook-keys (form)
+  "The DEFINE-HOOK keys of a DEFINE-CELL FORM's :hook clauses whose point is
+written as a literal: each is laid under the cell's key, its package's name
+downcased, when the cell starts -- a call inside START-CELL, so no expansion
+shows it as a definition."
+  (let ((name (second form)))
+    (when (and name (symbolp name) (symbol-package name))
+      (let ((key (string-downcase (package-name (symbol-package name)))))
+        (loop for clause in (cddr form)
+              for point = (and (consp clause) (eq (first clause) :hook) (consp (rest clause))
+                               (name-designator-string (literal-designator (second clause))))
+              when point
+                collect (list :operator "DEFINE-HOOK" :name point :qualifiers (list key)))))))
+
 (defun drift-expanded-keys (form)
   "The DEFINITION-KEYs of what FORM, a toplevel form, defines once its macros
-are expanded: a DEFINE-CELL's START-CELL and SETTING, a DEFINE-PERIPHERAL's
-*STOP* and its condition's reader -- what a file defines though it never
-writes the name down."
+are expanded: a DEFINE-CELL's START-CELL and SETTING and the hooks its :hook
+clauses lay, a DEFINE-PERIPHERAL's *STOP* and its condition's reader, a
+DEFSTRUCT's constructors, copier, predicate and accessors -- what a file
+defines though it never writes the name down."
   ;; Walks special forms and expands macros; a call's arguments are not
   ;; walked, nor anything quoted. Bounded, and NIL for whatever does not
-  ;; expand here: the index only ever gains names.
-  (let ((budget 2000) found)
+  ;; expand here: the index only ever gains names. A DEFSTRUCT is expanded
+  ;; like any macro: SBCL's expansion defines each name it generates with
+  ;; SB-C:XDEFUN -- the :conc-name, :constructor, :copier, :predicate and
+  ;; :include rules applied by the Lisp itself, not restated here.
+  (let ((budget 2000) found
+        (xdefun (find-symbol "XDEFUN" "SB-C")))
     (labels ((walk (form depth)
                (when (and (consp form) (symbolp (first form)) (plusp (decf budget)) (< depth 24))
                  (let* ((head (first form))
                         (operator (symbol-name head)))
                    (cond ((member head '(quote function)))
-                         ((member operator *defining-operators* :test #'string=)
+                         ((and xdefun (eq head xdefun))
+                          (when-let (name (name-designator-string (second form)))
+                            (push (list :operator "DEFUN" :name name) found)))
+                         ((and (member operator *defining-operators* :test #'string=)
+                               (string/= operator "DEFSTRUCT"))
                           (when-let (key (definition-key form)) (push key found))
                           (walk-all (cddr form) depth))
                          ((special-operator-p head) (walk-all (rest form) depth))
                          ((macro-function head)
-                          (multiple-value-bind (expansion expanded) (ignore-errors (macroexpand-1 form))
+                          (when (string= operator "DEFINE-CELL")
+                            (setf found (append (drift-cell-hook-keys form) found)))
+                          (multiple-value-bind (expansion expanded)
+                              (ignore-errors (handler-bind ((warning #'muffle-warning))
+                                               (macroexpand-1 form)))
                             (when expanded
                               (when-let (key (definition-key form)) (push key found))
                               (walk expansion (1+ depth)))))))))
@@ -80,11 +107,12 @@ writes the name down."
 (defun drift-file-expansion-keys (file entries)
   "The DEFINITION-KEYs that ENTRIES, FILE's (KEY START END PACKAGE), define
 through their macros' expansions; only an entry whose operator is no standard
-definition is read again."
+definition, or is a DEFSTRUCT, is read again."
   (let ((text nil))
     (loop for (key start end package) in entries
           when (and (packagep package)
-                    (not (member (getf key :operator) *defining-operators* :test #'string=)))
+                    (or (not (member (getf key :operator) *defining-operators* :test #'string=))
+                        (string= (getf key :operator) "DEFSTRUCT")))
             append (ignore-errors
                     (let ((form (let ((*package* package) (*read-eval* nil))
                                   (read-from-string (or text (setf text (uiop:read-file-string file)))
@@ -134,10 +162,12 @@ OBJECT's, carry no pathname."
     (values (drift-key-string "DEFMETHOD" name qualifiers specializers)
             (string-downcase (format nil "~a~{ ~a~} (~{~a~^ ~})" name qualifiers specializers)))))
 
-(defun drift-live-only (packages index)
+(defun drift-live-only (packages index &optional own)
   "Each definition this image holds that no kept file defines and no file
 loaded: (PACKAGE-NAME LABEL) for the functions, macros and variables homed
-in PACKAGES, and for every method and hook the image holds."
+in PACKAGES, and for every method and hook the image holds -- a method under
+the package of its first specializer class homed in one of OWN, else its
+generic's, and a hook under \"hook\"."
   (let (found (seen (make-hash-table :test 'equal)))
     (flet ((note (package label key)
              (unless (or (gethash key index) (gethash key seen))
@@ -166,8 +196,9 @@ in PACKAGES, and for every method and hook the image holds."
                        (drift-system-generic-p generic))
              (when (drift-unfiled-p method)
                (multiple-value-bind (key label) (drift-method-label generic method)
-                 (let ((home (ignore-errors (symbol-package (let ((n (sb-mop:generic-function-name generic)))
-                                                              (if (consp n) (second n) n))))))
+                 (let ((home (or (drift-own-specializer-package method own)
+                                 (ignore-errors (symbol-package (let ((n (sb-mop:generic-function-name generic)))
+                                                                  (if (consp n) (second n) n)))))))
                    (note (if home (package-name home) "?") (format nil "defmethod ~a" label) key))))))))
       (loop for (name . chain) in *hooks*
             do (loop for (hook-key . fn) in chain
@@ -175,6 +206,17 @@ in PACKAGES, and for every method and hook the image holds."
                      when (drift-unfiled-p fn)
                        do (note "hook" (format nil "define-hook ~(~a~) ~s" (name-designator-string name) hook-key) key))))
     (nreverse found)))
+
+(defun drift-own-specializer-package (method own)
+  "The first of OWN, packages, that homes the name of a class METHOD
+specializes on -- a cell's method on a generic of the Lisp's or the
+kernel's, PRINT-OBJECT on its struct, is the cell's -- else NIL."
+  (loop for specializer in (sb-mop:method-specializers method)
+        for name = (and (not (typep specializer 'sb-mop:eql-specializer))
+                        (ignore-errors (class-name specializer)))
+        for home = (and name (symbolp name) (symbol-package name))
+        when (and home (member home own))
+          return home))
 
 (defun drift-system-generic-p (generic)
   "Whether GENERIC is the Lisp's own machinery -- named by nothing, a keyword,
@@ -207,11 +249,15 @@ the image lacks."
 NAME a cell's name, or a folder holding a made cell's .asd. Once a cell's
 files are its record, a definition only evaluated works now and is gone at
 the next boot. => a plist: :LIVE-ONLY ((PACKAGE LABEL) ...), what the image
-holds that came from no file and that no kept file defines -- the cell's
-package first, then the kernel's and the layer's, where a definition that
-was meant for the cell may have landed -- every method and hook included;
-:NOT-LIVE the labels the cell's files define and the image lacks, a file
-ahead of the image; :CLEAN T when both are empty. Reads only."
+holds for the cell that came from no file and that no kept file defines:
+what is homed in the cell's own packages, a method on one of their classes,
+and every hook; :ELSEWHERE the same for the kernel's and the layer's
+packages and every other method -- where a definition meant for the cell
+may have landed, and where every other session's evals land too, so it is
+listed to read and never counted against the cell; :NOT-LIVE the labels
+the cell's files define and the image lacks, a file ahead of the image;
+:CLEAN T when :LIVE-ONLY and :NOT-LIVE are empty. A cell with no package
+of its own is the floor's: its :ELSEWHERE is its :LIVE-ONLY. Reads only."
   (let* ((directory (if (or (pathnamep name) (find #\/ name))
                         (uiop:ensure-directory-pathname name)
                         (cell-directory (made-cell-name name))))
@@ -222,9 +268,10 @@ ahead of the image; :CLEAN T when both are empty. Reads only."
                                          (member (package-name p) '("COMMON-LISP-USER" "ASDF-USER") :test #'string=)))
                          (remove-duplicates (mapcar #'fourth entries))))
          (index (drift-kept-index (drift-roots directory)))
-         (live-only (drift-live-only (append own floor) index))
-         (own-names (mapcar #'package-name own))
-         (live-only (stable-sort live-only (lambda (a b) (and (member (first a) own-names :test #'string=)
-                                                              (not (member (first b) own-names :test #'string=))))))
+         (found (drift-live-only (append own floor) index own))
+         (cell-names (list* "hook" (mapcar #'package-name (or own floor))))
+         (live-only (remove-if-not (lambda (entry) (member (first entry) cell-names :test #'string=)) found))
+         (elsewhere (remove-if (lambda (entry) (member (first entry) cell-names :test #'string=)) found))
          (not-live (drift-file-not-live entries)))
-    (list :live-only live-only :not-live not-live :clean (and (null live-only) (null not-live)))))
+    (list :live-only live-only :elsewhere elsewhere :not-live not-live
+          :clean (and (null live-only) (null not-live)))))
