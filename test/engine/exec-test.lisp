@@ -1230,6 +1230,36 @@ completed. BODY runs with SID bound."
     (is (search "2 lines" receipt) receipt)
     (is (equal (format nil "one~%two~%") (uiop:read-file-string path)))))
 
+(deftest file-verbs-take-a-bracket-or-a-star-as-a-character (with-temp-trees ((root "verb-wild")))
+  ;; A Next.js route folder, app/(docs)/[slug]/page.tsx, read as a Lisp
+  ;; namestring is a wildcard pattern with no native name: EDIT, WRITE-FILE
+  ;; and LOOK refused it. They read a path as the shell does, and their
+  ;; receipts name the file the same way.
+  (flet ((under (name) (concatenate 'string (uiop:native-namestring root) name))
+         (native (path) (uiop:native-namestring (uiop:parse-native-namestring path)))
+         (text (path) (uiop:read-file-string (uiop:parse-native-namestring path))))
+    (let ((page (under "app/(docs)/[slug]/page.tsx"))
+          (shot (under "[...all]/shot.png")))
+      (let ((receipt (nle:write-file page (format nil "old~%"))))
+        (is (search (native page) receipt) receipt))
+      (is-carrying (receipt (nle:edit page "old" "new")) "line 1"
+        (is (search (native page) receipt) receipt))
+      (is (equal (format nil "new~%") (text page)))
+      (nle:write-file shot "")
+      (alexandria:write-byte-vector-into-file *one-pixel-png* (uiop:parse-native-namestring shot)
+                                              :if-exists :supersede)
+      (is (equal (native shot) (uiop:native-namestring (nth-value 1 (nle::image-file-octets shot))))))
+    ;; Windows takes no `*' or `?' in a name.
+    #-win32
+    (let ((star (under "a*b?.txt")))
+      (let ((receipt (nle:write-file star "x")))
+        (is (search star receipt) receipt))
+      (is (equal "x" (text star))))
+    ;; `~/' is still the home, and what follows it is read as a name too.
+    (is (equal (uiop:native-namestring (merge-pathnames (uiop:parse-native-namestring "notes/[x].md")
+                                                        (user-homedir-pathname)))
+               (uiop:native-namestring (nle::eval-snippet-path "~/notes/[x].md"))))))
+
 #-win32
 (deftest edit-and-write-file-keep-the-files-own-mode (with-temp-trees ((root "file-mode")))
   ;; The rename that replaces a file carries its mode across: an edit never

@@ -2918,9 +2918,14 @@ cannot open the path the fact carries, where a terminal reads it itself."
                                                       :order :newest :as :payload)
                                           "metadata" "images")
                           :key (lambda (image) (json-value image :text "id")) :test #'equal)))
-         (original (some (lambda (key) (when-let (path (json-value image :text key)) (probe-file path)))
+         ;; The fact names its files natively (exec.lisp IMAGE-FACT): a `[' in
+         ;; one is a character, never a wildcard.
+         (original (some (lambda (key)
+                           (when-let (path (json-value image :text key))
+                             (probe-file (uiop:parse-native-namestring path))))
                          '("copy_path" "path")))
-         (file (or original (when-let (png (json-value image :text "png_path")) (probe-file png)))))
+         (file (or original (when-let (png (json-value image :text "png_path"))
+                              (probe-file (uiop:parse-native-namestring png))))))
     (if file
         (list 200 (list :content-type (if original (json-value image :text "media_type") "image/png")
                         :x-content-type-options "nosniff" :cache-control "private, no-cache")

@@ -2225,12 +2225,28 @@ it, whose entry STRINGS carries, replaced by that entry as a string literal."
         (error () text))
       text))
 
+(defun native-file-pathname (text &aux (step (position-if (lambda (ch) (find ch #+win32 "/\\" #-win32 "/")) text)))
+  "TEXT, a file's name as a shell writes it, as a pathname: `[', `*' and
+`?' are characters in it, never wildcards, and a leading `~/' or `~USER/' is
+that home."
+  ;; Read as a Lisp namestring, a Next.js route folder, app/[slug]/page.tsx,
+  ;; is a pattern with no native name, and every verb on it refused.
+  (if (and step (plusp step) (char= #\~ (char text 0))
+           (not (find-if (lambda (ch) (find ch "*?[]{}\\")) text :end step)))
+      (merge-pathnames (uiop:parse-native-namestring (subseq text (1+ step)))
+                       (pathname (subseq text 0 (1+ step))))
+      (uiop:parse-native-namestring text)))
+
 (defun eval-snippet-path (path)
   "PATH resolved the way SH anchors its children: a relative path is
-against the session's directory, else the image's."
-  (if-let (directory (ambient-session-directory))
-    (merge-pathnames path (uiop:ensure-directory-pathname directory))
-    (merge-pathnames path)))
+against the session's directory, else the image's. A string is a file's own
+name (NATIVE-FILE-PATHNAME), so answer it back with UIOP:NATIVE-NAMESTRING."
+  (let ((path (if (stringp path) (native-file-pathname path) path)))
+    (if-let (directory (ambient-session-directory))
+      (merge-pathnames path (if (stringp directory)
+                                (uiop:parse-native-namestring directory :ensure-directory t)
+                                (uiop:ensure-directory-pathname directory)))
+      (merge-pathnames path))))
 
 (defun write-file-text (path text)
   "The one atomic writer under EDIT and WRITE-FILE: parents created, the
@@ -2442,7 +2458,7 @@ answer a receipt naming the line."
          (text (handler-case (uiop:read-file-string resolved
                                                     :external-format :utf-8)
                  (error (e) (error "cannot read ~a: ~a"
-                                   (namestring resolved) e))))
+                                   (uiop:native-namestring resolved) e))))
          (crlf (and (crlf-file-text-p text)
                     (or (bare-newline-p old) (bare-newline-p new))))
          (old (if crlf (crlf-text old) old))
@@ -2459,7 +2475,7 @@ answer a receipt naming the line."
                  finally (return (values best at)))
          (if (zerop matched)
              (error "~a does not contain OLD, not even its first character"
-                    (namestring resolved))
+                    (uiop:native-namestring resolved))
              (let ((point (+ position matched)))
                ;; A carriage return prints as nothing: a divergence there
                ;; (a file of mixed endings) says so, or both sides read alike.
@@ -2468,7 +2484,7 @@ answer a receipt naming the line."
                        file continues ~s~%OLD continues  ~s~:[~;~%~
                        The file's line ends in a carriage return (CRLF) ~
                        where OLD's ends in a bare newline.~]"
-                      (namestring resolved) matched
+                      (uiop:native-namestring resolved) matched
                       (1+ (count #\Newline text :end point))
                       (subseq text point (min (length text) (+ point 60)))
                       (subseq old matched (min (length old) (+ matched 60)))
@@ -2476,12 +2492,12 @@ answer a receipt naming the line."
                            (< matched (length old)) (char= #\Newline (char old matched))))))))
       ((search old text :start2 (+ start (length old)))
        (error "OLD occurs ~d times in ~a; widen it until it names one place"
-              (ppcre:count-matches `(:sequence ,old) text) (namestring resolved)))
+              (ppcre:count-matches `(:sequence ,old) text) (uiop:native-namestring resolved)))
       (t
        (let ((edited (uiop:strcat (subseq text 0 start) new (subseq text (+ start (length old))))))
          (write-file-text resolved edited)
          (format nil "edited ~a: line ~d, -~d +~d line~:p~{~@[; ~a~]~}"
-                 (namestring resolved)
+                 (uiop:native-namestring resolved)
                  (1+ (count #\Newline text :end start))
                  (text-line-count old) (text-line-count new)
                  (cons (and crlf "its CRLF line endings kept")
@@ -2504,7 +2520,7 @@ newline says so, since a reader that counts newlines finds one line fewer."
     ;; receipts differ by one character only, and a model reading the file
     ;; back (wc -l, a cat) spends a round checking for a lost character.
     (format nil "wrote ~a: ~d line~:p, ~d character~:p~:[~; (no trailing newline)~]~{~@[; ~a~]~}"
-            (namestring resolved) (text-line-count text) (length text)
+            (uiop:native-namestring resolved) (text-line-count text) (length text)
             (/= (text-line-count text) (count #\Newline text))
             (source-clauses resolved text before))))
 
@@ -2551,9 +2567,9 @@ fetched picture, and a file an answer names. LOOK reads a file up to
   "The PNG file a terminal can be shown for the image at RESOLVED: RESOLVED
 itself when its bytes already are a PNG, a cached transcode of it when they
 are not, and NIL when no transcoder on this box would make one
-(NLT:*PNG-TRANSCODERS*). Answers a namestring."
+(NLT:*PNG-TRANSCODERS*). Answers a native namestring."
   (if (equal media-type "image/png")
-      (namestring resolved)
+      (uiop:native-namestring resolved)
       (let ((cached (image-cache-file octets "png")))
         (with-handlers ((error () nil))
           (let ((ready (or (and (equal "image/png"
@@ -2561,7 +2577,7 @@ are not, and NIL when no transcoder on this box would make one
                                 cached)
                            (progn (ensure-directories-exist cached)
                                   (nlt:transcode-to-png resolved cached)))))
-            (and ready (namestring ready)))))))
+            (and ready (uiop:native-namestring ready)))))))
 
 ;;; The picture an answer names is drawn from its bytes as they were when the
 ;;; answer was written, whatever the file holds later: the image keeps them
@@ -2602,21 +2618,21 @@ bytes — and answer a one-line receipt."
       (error "~a reads text only, by models.dev; (select-model ...) one whose input includes image, then look again"
              *model*))
     (let ((turn (or *current-durable-turn*
-                    (error "no turn is running to show ~a in" (namestring resolved)))))
+                    (error "no turn is running to show ~a in" (uiop:native-namestring resolved)))))
       (when (turn-images-withheld-p (nlk:durable-turn-turn-id turn))
         (error "~a ~a did not accept two requests that carried this turn's images and would not take ~a either; work from the file another way, or (select-model ...) one whose input includes image"
-               *provider* *model* (namestring resolved)))
+               *provider* *model* (uiop:native-namestring resolved)))
       (bind (((sent sent-type sent-width sent-height)
               (handler-case (fit-image octets)
                 (image-unfit (e)
                   (error "~a cannot be shown: ~a; shrink or convert it first"
-                         (namestring resolved) (image-unfit-reason e))))))
+                         (uiop:native-namestring resolved) (image-unfit-reason e))))))
         (attach-turn-images (nlk:durable-turn-turn-id turn)
                             (list (cons sent-type (cl-base64:usb8-array-to-base64-string sent)))
                             :anchor (json-value *executing-tool-call-id* :text))
         (let ((fact (display-fact "image" (image-fact resolved octets))))
           (format nil "[image: ~a, ~a~@[~a~], ~:d bytes~@[~a~]; shown to you from the next round until this turn ends]"
-                  (namestring resolved) media-type
+                  (uiop:native-namestring resolved) media-type
                   (when-let (width (gethash "width" fact))
                     (format nil " ~dx~d" width (gethash "height" fact)))
                   (length octets)
@@ -2635,13 +2651,13 @@ they open an image of no more than CEILING bytes. => (values OCTETS RESOLVED)."
                 octets (make-array (if (> size ceiling) (min size 16) size)
                                    :element-type '(unsigned-byte 8)))
           (read-sequence octets in))
-      (error (e) (error "cannot read ~a: ~a" (namestring resolved) e)))
+      (error (e) (error "cannot read ~a: ~a" (uiop:native-namestring resolved) e)))
     (unless (image-media-type octets)
       (error "~a is not an image this verb can show: its bytes open no PNG, JPEG, GIF or WebP"
-             (namestring resolved)))
+             (uiop:native-namestring resolved)))
     (when (> size ceiling)
       (error "~a is ~:d bytes, over the ~:d-byte ceiling one image may take; shrink it first"
-             (namestring resolved) size ceiling))
+             (uiop:native-namestring resolved) size ceiling))
     (values octets resolved)))
 
 (defun image-fact (resolved octets &key target &aux (media-type (image-media-type octets)))
@@ -2658,12 +2674,12 @@ RESOLVED NIL is a picture that came as bytes with no file -- a prompt's
                  "source" (cond (target "answer") (resolved "look") (t "prompt"))
                  :opt "target" target
                  :opt "id" (and kept (subseq (nlk::sha256-text octets) 7))
-                 :opt "path" (and resolved (namestring resolved))
+                 :opt "path" (and resolved (uiop:native-namestring resolved))
                  "media_type" media-type
                  "bytes" (length octets)
                  :opt "width" width
                  :opt "height" height
-                 :opt "copy_path" (and copy (namestring copy))
+                 :opt "copy_path" (and copy (uiop:native-namestring copy))
                  :opt "png_path" (when-let (file (or copy resolved))
                                    (image-preview-png file octets media-type)))))
 
