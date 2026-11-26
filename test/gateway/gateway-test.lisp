@@ -6535,9 +6535,102 @@ default target is PROVIDER/MODEL-ID, restored after."
               (is (equal "fresh draft" (composer-value model)) "and the draft is what the row set")
               ;; The shell says it performs the clipboard and the draft.
               (nle::execute-slash-command model "fx" "seen")
-              (is (equal (append '(:clipboard :draft)
+              (is (equal (append '(:clipboard :draft :dismiss)
                                  (and (nle::terminal-tab-command '("nodecode")) '(:open)))
                          (first performed))))))))))
+
+(deftest cell-command-dismiss-effect-leaves-the-stack-and-draft-alone (with-temp-gateway (port))
+  ;; A settled operation leaves every inherited picker, without treating that
+  ;; as Esc (which would run ON-CANCEL and reopen its parent), or editing the box.
+  (with-saved-globals (nle::*registered-commands* nle::*gateway-commands*)
+    (let ((action "done") (seen nil) (root-reads 0) (provider-reads 0))
+      (nle:register-command
+       "dismiss-pack" "t-dismiss"
+       (nlk:lambda-ignoring (args session-id)
+         (nlk:dispatch args equal
+           ("seen" (setf seen nle:*slash-effects*) "seen")
+           ("done" (values "settled" nil '((:dismiss t))))
+           ("false" (values "not settled" nil '((:dismiss nil))))
+           ("malformed" (values "not settled" nil '((:dismiss "yes"))))
+           ("unknown" (values "not settled" nil '((:sparkle t))))
+           ("plain" "not settled")
+           ("refuse" (error "refused"))
+           ("replace" (values "new root"
+                              (nle:list-dialog :title "Replacement" :rows '((:label "back")))
+                              '((:dismiss t))))
+           ("confirm" (values "confirm"
+                              (nle:list-dialog :title "Confirm"
+                                               :rows (list (nle:run-row "Confirm" (format nil "/t-dismiss ~a" action))))))
+           ("provider" (incf provider-reads)
+                       (values "provider"
+                               (nle:list-dialog :title "Provider"
+                                                :rows '((:label "Reset" :run (:enter "/t-dismiss confirm"))))))
+           ("" (incf root-reads)
+               (values "root"
+                       (nle:list-dialog :title "Root"
+                                        :rows '((:label "Provider" :run (:enter "/t-dismiss provider"))))))))
+       :description "Dismissal fixture")
+      (nle:slash "/t-dismiss seen")
+      (is (null seen) "a headless caller does not claim dismissal support")
+      (with-gateway-http (port :post "/api/gateway/slash"
+                               :body "{\"line\":\"/t-dismiss seen\",\"effects\":[\"dismiss\",\"sparkle\"]}")
+        (is (equal '(:dismiss) seen) "the gateway passes dismissal and still drops unknown names"))
+      (let* ((model (gateway-frame-model port "ext-dismiss"))
+             (editor (nle::chat-model-editor model)))
+        (type-string model (format nil "keep this~%and this"))
+        (setf (nle::editor-col editor) 2
+              (nle::editor-mark editor) '(1 . 1))
+        (labels ((snapshot ()
+                   (list (composer-value model) (nle::editor-row editor) (nle::editor-col editor)
+                         (nle::editor-epoch editor) (copy-tree (nle::editor-mark editor))))
+                 (nested ()
+                   (nle::execute-slash-command model "t-dismiss" "")
+                   (dialog-keys model :enter :enter)
+                   (is (equal "Confirm" (nle::picker-dialog-title (nle::chat-model-dialog model))) "the operation runs from a grandchild picker")))
+          (let ((before (snapshot)))
+            (nested)
+            (let ((reads (list root-reads provider-reads)))
+              (dialog-keys model :enter)
+              (is (null (nle::chat-model-dialog model)) "successful dismissal leaves the whole nested stack closed")
+              (is (equal reads (list root-reads provider-reads)) "dismissal does not invoke cancellation or reread ancestors"))
+            (is (equal "settled" (nle::status-said model)) "settlement text remains visible")
+            (multiple-value-bind (lines under status) (nle::composer-status-lines model 76)
+              (declare (ignore status))
+              (is (and under (equal '("settled") lines)) "a dismissal acknowledgement actually paints under the untouched draft"))
+            (is (equal before (snapshot)) "draft, caret, selection and edit epoch remain untouched")
+            ;; A direct invocation must close the current panel too, not just
+            ;; suppress the row-specific ancestor reopening.
+            (nested)
+            (is (null (nle::execute-slash-command model "t-dismiss" "done")) "a direct completion owns its held acknowledgement")
+            (multiple-value-bind (lines under status) (nle::composer-status-lines model 76)
+              (declare (ignore status))
+              (is (and under (equal '("settled") lines)) "direct completion also paints acknowledgement under the draft"))
+            (is (null (nle::chat-model-dialog model)) "direct dismissal closes an existing picker")
+            (is (equal before (snapshot)) "direct dismissal also leaves the composer alone")
+            (is (not (nle::composer-status-error-p (nle::chat-model-composer-status model))) "a successful completion is not painted as an error")
+            (nle::editor-insert editor "x")
+            (is (null (nle::active-status model)) "the completion acknowledgement retires when the draft is edited")
+            (setf before (snapshot))
+            ;; False, wrong-typed, unknown and absent effects are not dismissal;
+            ;; a refusal keeps the confirmation panel as a recoverable choice.
+            (dolist (next '("false" "malformed" "unknown" "plain" "refuse"))
+              (setf action next)
+              (nested)
+              (dialog-keys model :enter)
+              (is (and (nle::chat-model-dialog model)
+                       (equal "Confirm" (nle::picker-dialog-title (nle::chat-model-dialog model)))) "a non-dismissal or refusal reopens the same confirmation")
+              (let ((status (nle::active-status model)))
+                (is (or (null status) (not (nle::composer-status-held status))) "an ordinary one-line non-dismissal remains transient news"))
+              (is (equal before (snapshot)) "refused and non-dismissal results do not edit the draft"))
+            ;; A replacement accompanies dismissal as a new root, not a child of
+            ;; the retired operation. Esc cannot resurrect its old stack.
+            (setf action "replace")
+            (nested)
+            (dialog-keys model :enter)
+            (is (equal "Replacement" (nle::picker-dialog-title (nle::chat-model-dialog model))) "dismiss plus dialog opens its replacement")
+            (dialog-keys model :escape)
+            (is (null (nle::chat-model-dialog model)) "the replacement has no inherited stack")
+            (is (equal before (snapshot)) "replacement and cancellation keep the draft intact")))))))
 
 (deftest cell-command-trigger-opens-its-dialog-only-as-the-first-character (with-temp-gateway (port))
   ;; A command registered with a TRIGGER answers that character typed as the
