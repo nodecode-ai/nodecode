@@ -34,7 +34,17 @@ strix --target ./app
 
 ## What a scan spends
 
-Strix reports its own usage as it runs, and an agentic loop is a very cacheable one: on a 30-line Flask app in quick mode it made 88 requests, 7.1M input tokens of which 6.9M were cache hits, and 171.7k output tokens. On 2026-11-10, a weekday, that came to about 0.36 at [Cyber v1's prices](pricing.mdx#what-a-call-costs). Nearly all of the input is the same prefix on every call, so the cached-input price does the work and the full input price pays for the 200k that differed.
+Strix prices a model from LiteLLM's table, which has no entry for this one, so give it [Cyber v1's prices](pricing.mdx#what-a-call-costs) in dollars per million tokens. These variables need Strix 1.7.1 or later:
+
+```sh
+export STRIX_LLM_INPUT_COST_PER_MTOK="0.33"
+export STRIX_LLM_CACHED_INPUT_COST_PER_MTOK="0.009"
+export STRIX_LLM_OUTPUT_COST_PER_MTOK="1.32"
+```
+
+They are the weekday prices. From Friday 00:00 to Monday 00:00 Amsterdam time every token costs half, so a weekend scan costs half of what Strix reports, and they leave out the 4x cached price a request pays above 262,144 input tokens.
+
+With them set, Strix reports what a scan costs as it runs, and an agentic loop is a very cacheable one: on a 37-line Flask app in quick mode, Strix 1.7.1 made 258 requests in 9 minutes, 20.7M input tokens of which 19.96M were cache hits, and 122.7k output tokens, and reported $0.59 on 2026-11-26, a weekday. Nearly all of the input is the same prefix on every call, so the cached-input price does the work and the full input price pays for the 0.7M that differed.
 
 ## Where its sandbox cannot read
 
@@ -47,4 +57,4 @@ strix --target ./app --instruction "Find the SQL injection and prove it with a l
       -m quick --max-turns 60 --max-budget 1.00
 ```
 
-A reasoning model spends tokens before it answers, so a turn limit in the single digits ends a scan in the middle of the reconnaissance. `--max-budget` is in dollars and stops it there.
+A reasoning model spends tokens before it answers, so a turn limit in the single digits ends a scan in the middle of the reconnaissance. `--max-budget` is in dollars, counted at the prices above, and stops it there.

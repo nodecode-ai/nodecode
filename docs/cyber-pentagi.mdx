@@ -45,6 +45,19 @@ PentAGI's OpenAI provider takes a base URL of its own, so `OPEN_AI_KEY=sk-nc-...
 
 `LLM_SERVER_CONFIG_PATH` takes a YAML file that gives each of PentAGI's agents its own model. One model for every agent is the default, and the model to start with; a second, smaller model for the parser and the summariser is the usual first cut.
 
+For an agent the file runs with thinking off, Cyber v1 needs one more line. PentAGI sends no reasoning field for a model name it does not know, and Cyber v1 thinks by default, so `mode: "off"` alone leaves it thinking; the top-level `reasoning_effort` turns it off:
+
+```yaml
+simple:
+  model: nodecode-cyber-v1
+  reasoning:
+    mode: "off"
+  extra_body:
+    reasoning_effort: "none"
+```
+
 ## What was checked
 
-The settings above are PentAGI's own, as its README and `.env.example` give them, and the endpoint they point at answers as [the quickstart](cyber.mdx) shows. PentAGI's whole stack has not been run against it here yet.
+On 2026-11-26 we ran PentAGI 2.2.0 end to end on the four variables above, with no config file. Its provider test, `ctester`, passed all 290 of its checks; with a config file that turns thinking off as above it passed all 294, and without the `extra_body` lines four of them failed.
+
+A flow against OWASP Juice Shop, on the stack's own Docker network, ran for 41 minutes: the pentester swept all 65,535 TCP ports, identified the app, proved a SQL injection in its login with a working request, and wrote the report. It took 3.03M input tokens, 63% of them cached, and 518k output tokens, about $1.07 at [Cyber v1's prices](pricing.mdx#what-a-call-costs); the summariser alone wrote 378k of that output. Nodecode serves no embedding model, so the embeddings PentAGI's memory needs came from a local [text-embeddings-inference](https://github.com/huggingface/text-embeddings-inference) server.
