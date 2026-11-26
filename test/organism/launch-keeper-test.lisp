@@ -80,6 +80,45 @@ spawns pushed onto SPAWNS instead of run."
       (is (= 100 files) "every file is visited")
       (is (< (- (sb-ext:get-bytes-consed) before) (* 100 1024)) "under a kilobyte a file"))))
 
+(deftest the-folder-walk-keeps-long-ascii-paths-under-the-allocation-budget
+    (with-temp-trees ((base "walk-long-cost")))
+  ;; A keeper root in a disposable profile can be much longer than /tmp.
+  ;; Keep the original 100-file budget, but exercise the path-length cause.
+  (let ((root base))
+    (loop while (< (length (namestring root)) 300)
+          do (setf root (merge-pathnames "padding-0123456789abcdef/" root)))
+    (dotimes (i 100)
+      (write-temp-file (merge-pathnames (format nil "d~d/f~d.lisp" (mod i 10) i) root) "x"))
+    (let ((files 0))
+      (nlk::map-visible-file-tree root (lambda (path stat) (declare (ignore path stat)) (incf files)))
+      (let ((before (sb-ext:get-bytes-consed)))
+        (nlk::map-visible-file-tree root (lambda (path stat) (declare (ignore path stat))))
+        (let ((bytes (- (sb-ext:get-bytes-consed) before)))
+          (is (= 100 files) "every long-path file is visited")
+          (is (< bytes (* 100 1024)) "long ASCII paths retain the same per-file budget"))))))
+
+(deftest the-folder-walk-retains-paths-and-unicode-without-visiting-hidden-entries
+    (with-temp-trees ((root "walk-names")))
+  (let* ((relative '("plain/file.lisp" "café/é.lisp" "界/🙂.lisp" "界/plain.lisp"))
+         (expected (mapcar (lambda (name) (namestring (merge-pathnames name root))) relative))
+         (held '()) (copies '()))
+    (dolist (name relative) (write-temp-file (merge-pathnames name root) "x"))
+    (write-temp-file (merge-pathnames ".hidden/file.lisp" root) "x")
+    (write-temp-file (merge-pathnames "plain/.hidden.lisp" root) "x")
+    #-win32 (sb-posix:symlink (namestring (merge-pathnames "missing" root))
+                             (namestring (merge-pathnames "dangling" root)))
+    (nlk::map-visible-file-tree root
+      (lambda (path stat)
+        (declare (ignore stat))
+        (push path held)
+        (push (copy-seq path) copies)))
+    (is (equal copies held) "later callbacks never mutate retained path strings")
+    ;; Preserve ASCII, Latin-1 and non-base Unicode names, excluding hidden entries.
+    (is (equal (sort (copy-list expected) #'string<) (sort (copy-list held) #'string<)))
+    (nlk::map-visible-file-tree root (lambda (path stat) (declare (ignore path stat))))
+    (is (equal copies held) "another walk cannot mutate retained namestrings")
+    (is (every #'probe-file held) "retained namestrings still locate the original files")))
+
 (deftest the-folder-walk-follows-a-link-and-cuts-its-cycle (with-temp-trees ((root "walk-cycle")))
   ;; A link back up the tree is followed and cut where it comes round: the
   ;; walk knows a folder by what it is, not by the path it came in by -- on
