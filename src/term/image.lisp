@@ -157,8 +157,8 @@ macOS's own.")
   ;; => TARGET on
   ;; success, NIL when every transcoder is missing or refused the file.
   (dolist (command *png-transcoders*)
-    (let ((argv (sublis `((:source . ,(namestring source)) (:target . ,(namestring target))
-                          (:first-frame . ,(format nil "~a[0]" (namestring source))))
+    (let ((argv (sublis `((:source . ,(uiop:native-namestring source)) (:target . ,(uiop:native-namestring target))
+                          (:first-frame . ,(format nil "~a[0]" (uiop:native-namestring source))))
                         command)))
       (when (and (nlk:exits-zero-p argv)
                  (equal "image/png" (image-media-type (file-octets target))))
