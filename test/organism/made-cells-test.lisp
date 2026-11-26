@@ -190,6 +190,33 @@ model uses. => its receipt."
       (is (null (remove "TESTER-TOKYO" (getf drift :live-only) :key #'first :test-not #'string=))
           (format nil "cell.lisp written again leaves no drift either: ~s" (getf drift :live-only))))))
 
+(deftest made-cell-a-struct-and-a-hook-clause-are-the-file-s-own (with-made-cell-fixture ())
+  ;; the recipe again, the code file holding what a provider cell holds: a
+  ;; DEFSTRUCT -- its BOA constructor, copier, predicate and accessors, and
+  ;; an :include's inherited ones under its own :conc-name, none written down
+  ;; -- and DEFINE-CELL :hook clauses, laid inside START-CELL where no
+  ;; expansion shows them; all of it is the file's own, not drift
+  (make-test-cell "lane")
+  (nlk:with-cleanup ((nle::stop-cells '("tester-lane")))
+    (write-cell-file "lane" "lane"
+                     (format nil "(in-package #:tester-lane)~%~%~
+                                  (defstruct (link (:constructor make-link (key))) key (busy nil))~%~%~
+                                  (defstruct (held (:include link) (:conc-name hold-)) name)~%~%~
+                                  (defun lane-price (next &rest args) (apply next args))~%~%~
+                                  (defun lane-quote (x) x)~%~%~
+                                  (define-cell lane (:section (\"tester-lane-section\"))~%~
+                                    (:hook :tester-lane-point #'lane-price)~%~
+                                    (:hook 'lane-quote #'lane-price))~%"))
+    (nle:restart-cells "tester-lane")
+    (is (fboundp (find-symbol "HOLD-BUSY" "TESTER-LANE")) "the struct is live, its inherited accessor included")
+    (let* ((drift (nlk:cell-drift "lane"))
+           (live (getf drift :live-only)))
+      (is (null (remove "TESTER-LANE" live :key #'first :test-not #'string=))
+          (format nil "no name the structs generate is drift: ~s" live))
+      (is (notany (lambda (entry) (search "\"tester-lane\"" (second entry))) live)
+          (format nil "no hook its :hook clauses laid is drift: ~s" live))
+      (is (null (getf drift :not-live)) "and the files are live"))))
+
 (defun chime-code (&rest commands)
   "The made cell chime's code file: one DEFINE-CELL declaring COMMANDS."
   (format nil "(in-package #:tester-chime)~%~%(defun chime (args session-id) (declare (ignore args session-id)) \"ding\")~%~%~

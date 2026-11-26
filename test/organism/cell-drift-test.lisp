@@ -87,6 +87,29 @@ cell is (exec.lisp runs each on its own)."
           (uiop:delete-directory-tree (uiop:pathname-parent-directory-pathname directory) :validate t :if-does-not-exist :ignore)
           (uiop:delete-directory-tree (uiop:pathname-directory-pathname loader) :validate t :if-does-not-exist :ignore))))))
 
+(deftest cell-drift-keeps-the-floor-s-evals-apart-from-the-cell-s ()
+  ;; an eval in the layer's package, any session's, is listed under
+  ;; :elsewhere and never counted against the cell: a cell whose files hold
+  ;; all it runs reads :live-only empty though the layer has drift of its own
+  (let* ((name (format nil "drift-e-~d" (random 1000000)))
+         (floor-name (string-upcase (format nil "~a-floor-only" name)))
+         (evolved (find-package '#:nodecode.evolved)))
+    (multiple-value-bind (directory code package) (drift-fixture name)
+      (declare (ignore code))
+      (unwind-protect
+           (progn
+             (drift-eval-in evolved (format nil "(defun ~a () 7)" floor-name))
+             (drift-eval-in package "(defun cell-only () 8)")
+             (let* ((drift (nlk:cell-drift directory))
+                    (label (format nil "defun ~(~a~)" floor-name)))
+               (is (not (member label (drift-live-labels drift) :test #'string=)) "the layer's eval is not the cell's drift")
+               (is (member label (mapcar #'second (getf drift :elsewhere)) :test #'string=) "it is listed under :elsewhere")
+               (is (member "defun cell-only" (drift-live-labels drift) :test #'string=) "the cell's own eval still is")))
+        (let ((symbol (find-symbol floor-name evolved)))
+          (when symbol (fmakunbound symbol) (unintern symbol evolved)))
+        (ignore-errors (delete-package package))
+        (uiop:delete-directory-tree (uiop:pathname-parent-directory-pathname directory) :validate t :if-does-not-exist :ignore)))))
+
 (deftest cell-drift-names-an-evaluated-hook-and-a-file-ahead ()
   (let* ((name (format nil "drift-b-~d" (random 1000000)))
          (point (intern (string-upcase (format nil "~a-point" name)) :keyword)))
