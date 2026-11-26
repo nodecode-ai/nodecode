@@ -56,13 +56,16 @@ runs a user unit in, whatever $HOME this process was handed — or NIL.
   "TEXT, a path as the shell idiom writes it, with a leading `~/' read against
 the operator's home, as a pathname. Every character after the `~/' is the
 path's own, as the shell reads it: `[slug]', `*' and `?' name themselves,
-never a wildcard."
+never a wildcard. Bare `~' is the home itself, the way HOME-ABBREVIATED
+writes it."
   ;; The rest is a native namestring like the whole of a path with no `~/':
   ;; read as a Lisp namestring, `[slug]' is a pattern, and the pathname names
-  ;; no file that can be opened, probed or written.
-  (if (uiop:string-prefix-p "~/" text)
-      (home-path (uiop:parse-native-namestring (subseq text 2)))
-      (uiop:parse-native-namestring text)))
+  ;; no file that can be opened, probed or written. Bare `~' read that way is
+  ;; a file of that name in the working folder: `/export ~' wrote one there.
+  (cond ((string= text "~") (home-path ""))
+        ((uiop:string-prefix-p "~/" text)
+         (home-path (uiop:parse-native-namestring (subseq text 2))))
+        (t (uiop:parse-native-namestring text))))
 
 (defun home-abbreviated (path)
   "PATH with the operator's home written `~': `~/src/thing', bare `~' at
