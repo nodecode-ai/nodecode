@@ -54,9 +54,14 @@ runs a user unit in, whatever $HOME this process was handed — or NIL.
 
 (defun expand-home (text &aux (text (string-trim '(#\Space #\Tab) text)))
   "TEXT, a path as the shell idiom writes it, with a leading `~/' read against
-the operator's home, as a pathname."
+the operator's home, as a pathname. Every character after the `~/' is the
+path's own, as the shell reads it: `[slug]', `*' and `?' name themselves,
+never a wildcard."
+  ;; The rest is a native namestring like the whole of a path with no `~/':
+  ;; read as a Lisp namestring, `[slug]' is a pattern, and the pathname names
+  ;; no file that can be opened, probed or written.
   (if (uiop:string-prefix-p "~/" text)
-      (home-path (subseq text 2))
+      (home-path (uiop:parse-native-namestring (subseq text 2)))
       (uiop:parse-native-namestring text)))
 
 (defun home-abbreviated (path)
