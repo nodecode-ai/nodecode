@@ -170,6 +170,19 @@ git clone <url> ~/.nodecode/cells/<name>
 ```
 
 {/* source: src/organism/cells.lisp */}
+## Composer completions
+
+A cell can offer a named completion lane opened by a punctuation character.
+It appears at the beginning of a word, including mid-prompt. Tab inserts a
+candidate as plain text; selecting it does not send a prompt. The file lane
+wins a prefix collision, then the earlier registered lane. A per-profile
+`sigils.json` setting can move the file lane or a cell's named lane.
+
+These rows are previews: they may be cached, are global rather than specific
+to your session, and are limited to 512 candidates. The cell interprets a
+completed reference when you submit, not when the menu displays it. Stopping
+the cell removes its lanes from attached shells.
+
 ## Updates
 
 Shipped cells follow the binary. The check runs at launch, before the folder loads.

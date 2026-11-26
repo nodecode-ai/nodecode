@@ -213,6 +213,10 @@ all of it comes back off."
   ;;       ARGUMENT-HINT or COMPLETE a cell written before still passes is
   ;;       taken and shown nowhere. Stop takes the cell's commands out of
   ;;       the catalog. One clause per command.
+  ;;   (:lane NAME SIGIL ROWS &key description)
+  ;;       REGISTER-COMPOSER-LANE under the cell's key: SIGIL opens the
+  ;;       composer lane NAME, ROWS answers its candidates; stop takes the
+  ;;       cell's lanes out. One clause per lane.
   ;;   (:help TOPIC SUMMARY TEXT)   the cell's manual: (help TOPIC) answers
   ;;       TEXT, and every request's help section carries SUMMARY, one line
   ;;       (SET-HELP-TOPIC); stop takes the topic off.
@@ -280,6 +284,12 @@ all of it comes back off."
                         spelling reads reads))
                (contribute '() `(register-command ,key ,spelling ,run ,@keys)
                            `(unregister-commands ,key))))
+            (:lane
+             ;; (:lane NAME SIGIL ROWS &key description): REGISTER-COMPOSER-LANE.
+             (destructuring-bind (name sigil rows &key description) arguments
+               (declare (ignore name sigil rows description))
+               (contribute '() `(register-composer-lane ,key ,@arguments)
+                           `(unregister-composer-lanes ,key))))
             (:help
              (destructuring-bind (topic summary text &aux (it (gensym "TOPIC"))) arguments
                (contribute `((,it ,topic)) `(set-help-topic ,it ,summary ,text)

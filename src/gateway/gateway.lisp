@@ -1471,10 +1471,22 @@ worker ran or not, then promote SESSION-ID's next queued prompt."
 of its own, :INLINE inside the SUBMIT that admits it (a gate that covers
 naming), NIL never (the test posture).")
 
+(defun sigils-from-wire (object)
+  "A start_turn's sigils -- the sending shell's table of lane name to the one
+character that opened it -- as an alist ((NAME . CHAR) ...); NIL when it sent
+none, and an entry that is no one-character string is dropped."
+  (when (hash-table-p object)
+    (loop for name being the hash-keys of object using (hash-value sigil)
+          when (and (stringp sigil) (= 1 (length sigil)))
+            collect (cons name (char sigil 0)))))
+
 (defun submit (session-id prompt &key steer images command-id invocation source source-id
-                                 (tools nil tools-p))
+                                 (tools nil tools-p) sigils)
   "Put PROMPT into SESSION-ID: the one in-process ingress, which the
-WebSocket start_turn/steer_turn commands are shells over."
+WebSocket start_turn/steer_turn commands are shells over. SIGILS, the shell's
+sigil table as SIGILS-FROM-WIRE reads it, is for a cell's hook around this:
+which character opened which lane in the composer the prompt was written in."
+  (declare (ignore sigils))
   ;; Returns the
   ;; NLK:ACTIVE-INPUT-ADMISSION the kernel recorded — its disposition is
   ;; :STARTED (a worker thread now owns the turn), :QUEUED (parked behind the
@@ -2259,19 +2271,23 @@ the session's selection back."
                                   ;; on, all optional (PIN-START-TURN-TARGET).
                                   (provider :text "provider")
                                   (model :text "model")
-                                  (effort :text "effort"))
+                                  (effort :text "effort")
+                                  ;; The shell's sigil table, for a cell's
+                                  ;; SUBMIT hook (SIGILS-FROM-WIRE).
+                                  (sigils :any "sigils"))
   (:require (and sid prompt) "session_id and non-empty prompt are required")
   (:subscribed "subscribe to the session before starting a turn")
   (:target provider model effort)
-  (:admit "turn.start"))
+  (:admit "turn.start" :sigils (sigils-from-wire sigils)))
 
 (define-sync-command :steer-turn ((prompt :text "prompt")
                                   (images :any "images")
-                                  (expected :string "expected_turn_id"))
+                                  (expected :string "expected_turn_id")
+                                  (sigils :any "sigils"))
   (:require (and sid expected prompt)
             "session_id, expected_turn_id, and non-empty prompt are required")
   (:followed "subscribe to the session, or one it hangs under, before steering a turn")
-  (:admit "turn.steer" :steer expected))
+  (:admit "turn.steer" :steer expected :sigils (sigils-from-wire sigils)))
 
 (define-sync-command :withdraw-prompt ((prompt-id :string "prompt_id"))
   ;; Up on a queued prompt, a steer or a follow-up, from the shell that
