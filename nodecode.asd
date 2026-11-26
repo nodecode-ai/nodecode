@@ -355,6 +355,7 @@ of stacking."
      (:file "tui/paint")
      (:file "tui/fact-block")
      (:file "tui/composer")
+     (:file "tui/composer-lanes")
      (:file "tui/dialog")
      (:file "tui/models-wizard")
      (:file "tui/history")
@@ -410,6 +411,7 @@ of stacking."
      ;; a client that renders and does not fold. After client: it folds with
      ;; APPLY-GATEWAY-EVENT and subscribes the way a shell does.
      (:file "gateway/rows")
+     (:file "gateway/lanes")
      ;; observe: where the time and money went -- one session's timeline
      ;; and the usage across sessions, folded from the facts the turn loop
      ;; records, for the web page; its routes are gateway routes.
@@ -680,6 +682,8 @@ of stacking."
      (:file "tui/own-models-test")
      (:file "tui/profile-delete-test")
      (:file "tui/composer-test")
+     (:file "tui/composer-sigils-test")
+     (:file "tui/composer-lanes-test")
      (:file "tui/setup-test")
      (:file "tui/setup-sign-in-test")
      (:file "tui/indentation-test")
@@ -725,6 +729,7 @@ of stacking."
      (:file "gateway/activity-test")
      (:file "gateway/notify-test")
      (:file "gateway/rows-test")
+     (:file "gateway/lanes-test")
      ;; rpc-test drives the same WS fixtures: a program's lines through
      ;; `nodecode rpc' to a gateway and its frames back.
      (:file "cli/rpc-test")

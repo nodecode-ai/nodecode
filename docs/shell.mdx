@@ -134,6 +134,8 @@ A turn is one prompt and the work the model does to answer it. One turn runs per
 
 The command reads nothing from the keyboard, so a program that asks a question gets no answer and ends. Up brings the `!` line back like a prompt. A draft that starts with a blank, ` !important`, is sent as a prompt. When a cell made `!` its trigger, typing `!` opens that cell's list instead; Esc closes it, and the draft then runs here as above.
 
+To move file completion off `@`, so that `a@b.de` stays plain text, put a `sigils.json` beside `keybinds.json`: one JSON object, lane name to one character, e.g. `{"file": "&"}`. A moved sigil opens its lane only at the start of the text or after whitespace, so `a&b` stays text. With the default table, `@` keeps opening anywhere; once moved, `@` is plain text. Pick a character no other prefix uses. Letters, digits, spaces, `/` and anything longer than one character are ignored, and so is a file that does not read. It is read once, when the composer first needs it, so a change shows at the next launch, including a launch from a warm image.
+
 {/* source: src/tui/frame.lisp */}
 ## Header
 
