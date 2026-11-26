@@ -243,7 +243,16 @@ STAT is refilled for the next file, so FN reads it before it returns."
   ;; stat there answers 0 for every inode, and fails outright on a path that
   ;; ends in a separator, as every folder's here does -- keyed by stat, the
   ;; walk visited no file at all.
-  (labels ((walk (directory &aux (key #+win32 (file-identity directory)
+  (labels ((join-name (directory name)
+             ;; Keep ASCII paths narrow without first allocating a wide copy.
+             ;; Non-base characters retain their full representation; every
+             ;; callback still receives its own independently retainable path.
+             (let ((name (narrow-string name)))
+               (concatenate (if (and (typep directory 'simple-base-string)
+                                     (typep name 'simple-base-string))
+                                'simple-base-string 'string)
+                            directory name)))
+           (walk (directory &aux (key #+win32 (file-identity directory)
                                       #-win32 (and (ignore-errors (sb-posix:stat directory stat))
                                                    (format nil "~d:~d" (sb-posix:stat-dev stat)
                                                            (sb-posix:stat-ino stat)))))
@@ -256,7 +265,7 @@ STAT is refilled for the next file, so FN reads it before it returns."
                          do (let ((name (sb-posix:dirent-name entry)))
                               ;; dot entries: . and .., .git, .NAME.tmp
                               (when (and (plusp (length name)) (char/= #\. (char name 0)))
-                                (let ((full (concatenate 'string directory name)))
+                                (let ((full (join-name directory name)))
                                   (when (ignore-errors (sb-posix:stat full stat))
                                     ;; The mode test, not S_ISDIR: SBCL's sb-posix
                                     ;; carries the mode constants on every platform
@@ -265,9 +274,9 @@ STAT is refilled for the next file, so FN reads it before it returns."
                                     ;; three.
                                     (if (= (logand (sb-posix:stat-mode stat) sb-posix:s-ifmt)
                                            sb-posix:s-ifdir)
-                                        (walk (concatenate 'string full "/"))
+                                        (walk (join-name full "/"))
                                         (funcall fn full stat))))))))))))
-    (walk (namestring (uiop:ensure-directory-pathname root)))))
+    (walk (narrow-string (namestring (uiop:ensure-directory-pathname root))))))
 
 (defun folder-key (&aux (manifest '()))
   "The launch key: sha256 over a canonical manifest of everything the load
