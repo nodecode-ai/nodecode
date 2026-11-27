@@ -2739,6 +2739,9 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
          ;; Whether this round's images were already withheld: the
          ;; withholding runs once, and a second failure is the lane's.
          (images-withheld-p nil)
+         ;; Whether this round already forgot the estimate's measured ratio
+         ;; to get past our own refusal: once, and a second is the window's.
+         (calibration-forgotten-p nil)
          ;; How many times a refusal taught the lane how to ask this round
          ;; (RESEND-RELEARNED).
          (relearnings 0)
@@ -3439,6 +3442,25 @@ did not say."
             ;; A refusal that says how the request should have asked goes
             ;; first: the images arm would read it as theirs.
             ((resend-relearned e) nil)
+            ;; Our own refusal, when only the measured ratio fills the window
+            ;; (FORGET-CALIBRATION-FILLING-WINDOW): the request fits at its
+            ;; chars/4 estimate, and the ratio is measured again only after a
+            ;; round the server answered, which a refusal never sends. If it
+            ;; stood, every later request of this model would meet the same
+            ;; ratio, in every session, until the image restarts (one lane's
+            ;; whole-turn usage read as one request's set it at 168x). The
+            ;; ratio is forgotten once and the round goes: the answer measures
+            ;; it anew, and a request truly over the window meets the
+            ;; server's rejection and the overflow arm below. Before the
+            ;; images arm: an image is not what fills a window the request
+            ;; fits at its own estimate, images included.
+            ((and (typep e 'provider-no-output-room)
+                  (not calibration-forgotten-p)
+                  (setf calibration-forgotten-p (forget-calibration-filling-window context)))
+             (note-phase "output-room status=recalibrated forgot-ratio=~,2f estimate=~d"
+                         calibration-forgotten-p (compiled-context-estimated-tokens context))
+             (rerun-at-once e (format nil "dropped a ~,1fx correction to the prompt estimate after: ~a"
+                                      calibration-forgotten-p (provider-error-detail e))))
             ;; A request that carried images is re-sent without them first:
             ;; a configuration that names no wire is not the images' fault,
             ;; nor an address nothing listens on, nor a second failure of the
@@ -3460,8 +3482,7 @@ did not say."
              ;; over its window, and our calibrated estimate of it bounds
              ;; the window from above (estimate-grade — a later proven
              ;; floor beats it).
-             (when (nlk:store-open-p)
-               (nlk:observe-context-window-ceiling config.provider config.model (max 1 (scaled-estimate))))
+             (observe-context-window-rejection config (max 1 (scaled-estimate)))
              ;; One shared recovery step (terminal turn, else live-turn
              ;; rounds); nothing evictable means the rejection stands.
              ;; Step until it fits, not once: with an unknown window the

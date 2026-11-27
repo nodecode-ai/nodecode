@@ -3884,6 +3884,60 @@ ATTACH-VISIBLE-IMAGES puts in front of the round."
       (signals-error nle::provider-no-output-room (nle::call-provider context)))
     (is (zerop calls) "no round trip is spent on a request that cannot answer")))
 
+(deftest a-ratio-alone-filling-the-window-is-forgotten-and-the-round-goes ()
+  ;; One round's measured prompt over its estimate scales every later
+  ;; estimate, and it is measured again only after a round the server
+  ;; answered. A lane that reported a whole inner loop's usage as one round's
+  ;; set it at 168x: every later request, at its own chars/4 a tenth of the
+  ;; window, scaled past it and was refused before it was sent, so nothing
+  ;; could ever measure the ratio again and the lane failed every turn, in
+  ;; every session, until the image restarted.
+  (let ((nle::*context-estimate-calibration* (make-hash-table :test #'equal))
+        (context (nle::context-with
+                  (user-context (make-string 40000 :initial-element #\x))
+                  :provider-config (nle::make-effective-provider-config
+                                    :provider "p" :model "m" :api-key "k"
+                                    :lane "openai-completions"
+                                    :endpoint "http://stub.invalid"
+                                    :context-tokens 200000
+                                    :context-tokens-operator-p t
+                                    :output-limit 16000)))
+        (calls 0))
+    (nle::observe-context-estimate "p" "m" 1000 168000)
+    (with-stubbed-fdefinitions
+        ((nle::call-provider-streaming (context &key on-part)
+           (declare (ignore context on-part))
+           (incf calls)
+           (wire-message "assistant" :content "answered")))
+      (is (equal "answered" (gethash "content" (nle::call-provider context)))))
+    (is (= 1 calls) "the round is sent, so the server's answer can measure the ratio again")
+    (is (= 1.0d0 (nle::context-estimate-ratio "p" "m")) "the ratio that refused it is forgotten")))
+
+(deftest a-request-over-the-window-at-its-own-estimate-keeps-its-ratio-and-is-refused ()
+  ;; Forgetting the ratio is for a request that fits without it: one whose
+  ;; chars/4 estimate already fills the window is refused as before, and the
+  ;; ratio it was measured under stays.
+  (let ((nle::*context-estimate-calibration* (make-hash-table :test #'equal))
+        (context (nle::context-with
+                  (user-context (make-string 40000 :initial-element #\x))
+                  :provider-config (nle::make-effective-provider-config
+                                    :provider "p" :model "m" :api-key "k"
+                                    :lane "openai-completions"
+                                    :endpoint "http://stub.invalid"
+                                    :context-tokens 8192
+                                    :context-tokens-operator-p t
+                                    :output-limit 4096)))
+        (calls 0))
+    (nle::observe-context-estimate "p" "m" 1000 2000)
+    (with-stubbed-fdefinitions
+        ((nle::call-provider-streaming (context &key on-part)
+           (declare (ignore context on-part))
+           (incf calls)
+           (wire-message "assistant" :content "never reached")))
+      (signals-error nle::provider-no-output-room (nle::call-provider context)))
+    (is (zerop calls))
+    (is (= 2.0d0 (nle::context-estimate-ratio "p" "m")))))
+
 (deftest chat-request-carries-capability-derived-max-tokens (with-catalog-fixture (path))
   (let* ((nle::*model* "acme-large")
          (nle::*max-completion-tokens* nil)
@@ -5051,6 +5105,40 @@ next boot resume."
         (is (typep condition 'nle::provider-error))))
     (is (= 1 calls) "nothing evictable means no blind retry")
     (is (zerop (nlk:retained-history-floor "overflow-stuck")))))
+
+(deftest a-floor-over-the-declared-window-yields-to-the-server-s-rejection (with-temp-store ())
+  ;; A floor outranks every ceiling, so one written from a lane's whole-turn
+  ;; usage (agy's summed turn: 2.5M for a model that declares 1M) held the
+  ;; window at a size no request ever reached, through every restart. When
+  ;; the server then refuses a request smaller than that floor, the catalog
+  ;; and the server both stand against it, and the rejection takes its place.
+  (let ((nle::*context-estimate-calibration* (make-hash-table :test #'equal))
+        (context (nle::context-with
+                  (user-context (make-string 80000 :initial-element #\x))
+                  :provider-config (nle::make-effective-provider-config
+                                    :provider "fl-p" :model "fl-m" :api-key "k"
+                                    :lane "openai-completions"
+                                    :endpoint "http://stub.invalid"
+                                    :context-tokens 16000
+                                    :output-limit 4000))))
+    (nlk:observe-context-window-floor "fl-p" "fl-m" 40000)
+    (is (= 40000 (nle::context-window-belief "fl-p" "fl-m" 16000 nil)))
+    (with-stubbed-fdefinitions
+        ((nle::call-provider-streaming (context &key on-part)
+           (declare (ignore context on-part))
+           (error 'nle::provider-error :status 413 :detail "context too large")))
+      (ignore-errors (nle::call-provider context)))
+    (is (= 16000 (nle::context-window-belief "fl-p" "fl-m" 16000 nil)) "the declared window stands")
+    (is (null (nlk:context-window-observation "fl-p" "fl-m")) "the floor is withdrawn"))
+  ;; A floor inside the declared window still outranks an estimate-grade
+  ;; ceiling under it, as it did.
+  (nlk:observe-context-window-floor "fl-p2" "fl-m2" 12000)
+  (nle::observe-context-window-rejection
+   (nle::make-effective-provider-config :provider "fl-p2" :model "fl-m2" :context-tokens 16000
+                                        :api-key "k" :lane "openai-completions"
+                                        :endpoint "http://stub.invalid")
+   10000)
+  (is (= 12000 (nlk:context-window-observation "fl-p2" "fl-m2"))))
 
 (deftest provider-output-limit-400-evicts-nothing (with-temp-store ())
   ;; A 400 saying `max_tokens' exceeds the model's output limit would read as

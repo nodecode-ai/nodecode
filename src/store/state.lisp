@@ -344,6 +344,21 @@ TOKENS as over its context window."
                            coalesce(floor_tokens, 0)),
       updated_at = excluded.updated_at"))
 
+(defun retract-context-window-floor (provider-id model-id)
+  "Withdraw the floor recorded for (PROVIDER-ID, MODEL-ID): evidence against
+it outweighed it (OBSERVE-CONTEXT-WINDOW-REJECTION)."
+  ;; No-op without an open store, or without a row. => NIL.
+  (check-strings provider-id model-id)
+  (when (store-open-p)
+    (with-store-transaction (handle)
+      (sqlite:execute-non-query
+       handle
+       "update context_window_observations
+           set floor_tokens = null, updated_at = ?
+         where provider_id = ? and model_id = ?"
+       (iso-now) provider-id model-id)))
+  nil)
+
 (defun context-window-observation (provider-id model-id)
   "(values FLOOR CEILING) for (PROVIDER-ID, MODEL-ID) — either may be NIL,
 and both are NIL when nothing was ever observed or the store is closed."
