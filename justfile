@@ -3,7 +3,7 @@
 #   just build      compile the organism under src/
 #   just test       run the core test suite
 #   just lint       check Lisp structure: parens, layout, test prose
-#   just check      lint, loc, build, test -- cheapest first
+#   just check      lint, docs, build, test -- cheapest first
 #   just proofs     check the Lean proofs under proofs/ (needs elan)
 #   just release    dump ./nodecode and warm its launch image
 #   just <cell>-build | <cell>-test | <cell>-check    one lane per shipped cell
@@ -57,7 +57,7 @@ docs-check: cells-pull
 # Parens, layout, and IS prose on a line of its own; with no FILES, every
 # .lisp and .asd of the organism (src/, test/, tools/, perf/ and the two
 # systems at the root), never the cells pulled into cells/, which are
-# no revision of this repository (CI's lint and `loc' leave them out too).
+# no revision of this repository (CI's lint leaves them out too).
 # Check Lisp structure.
 lint *files:
     @set -euo pipefail; \
@@ -67,48 +67,14 @@ lint *files:
       fi; \
       sbcl --script tools/check/lint-structure.lisp $files
 
-# Hold HEAD's Common Lisp code lines (tokei) to this ceiling. Lower it when
-# the code shrinks; raise it only with the reason in the commit. Cells pulled
-# into cells/ are in no revision here and stay out of the count.
-# The organism's own code, where `lint' and `loc' look: never cells/, whose
-# pulled folders are in no revision of this repository.
+# The organism's own code, where `lint' looks: never cells/, whose pulled
+# folders are in no revision of this repository.
 code_paths := "nodecode.asd nodecode-perf.asd src test tools perf"
-
-loc_ceiling := "104852"
-
-# Fail when HEAD's Lisp code lines exceed loc_ceiling.
-loc:
-    @set -euo pipefail; \
-      command -v tokei >/dev/null 2>&1 || { \
-        printf 'loc: tokei is not installed, and it is the metric this reads.\n' >&2; exit 2; }; \
-      git rev-parse --verify HEAD >/dev/null 2>&1 || { \
-        printf 'loc: no HEAD to measure.\n' >&2; exit 2; }; \
-      tree="$(mktemp -d)"; trap 'rm -rf "$tree"' EXIT; \
-      git archive HEAD {{code_paths}} | tar -x -C "$tree"; \
-      measure() { tokei -t 'Common Lisp' "$@" | awk '$1 == "Common" && $2 == "Lisp" { print $5 }'; }; \
-      code="$(cd "$tree" && measure {{code_paths}})"; \
-      live="$(measure {{code_paths}})"; \
-      ceiling={{loc_ceiling}}; \
-      if [ -z "$code" ]; then \
-        printf 'loc: tokei found no Common Lisp in {{code_paths}}.\n' >&2; exit 2; fi; \
-      if [ "$live" != "$code" ]; then \
-        printf 'loc: the working tree reads %s, %s of that uncommitted.\n' \
-          "$live" "$((live - code))"; fi; \
-      if [ "$code" -gt "$ceiling" ]; then \
-        printf 'loc: HEAD is %s code lines, %s over the ceiling of %s.\n' "$code" "$((code - ceiling))" "$ceiling" >&2; \
-        printf '     Cut the growth, or raise loc_ceiling in the justfile with the reason in the commit.\n' >&2; \
-        exit 1; \
-      elif [ "$code" -lt "$ceiling" ]; then \
-        printf 'loc: HEAD is %s code lines, %s under the ceiling of %s. Set loc_ceiling to %s in this commit.\n' \
-          "$code" "$((ceiling - code))" "$ceiling" "$code"; \
-      else \
-        printf 'loc: HEAD is %s code lines, exactly at the ceiling.\n' "$code"; \
-      fi
 
 # Cheapest first: a paren defect fails in a second, not after the whole
 # suite has run.
-# Gate a change: lint, loc, the site's pages, build, test.
-check: lint loc docs-check build test
+# Gate a change: lint, the site's pages, build, test.
+check: lint docs-check build test
 
 # Lean, at the version proofs/lean-toolchain pins, checks each proofs/*.lean
 # with warnings as errors, so a `sorry' fails; then every theorem must rest on

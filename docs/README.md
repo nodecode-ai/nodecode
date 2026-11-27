@@ -12,7 +12,7 @@ From the repository root:
 ```sh
 just build          # pull the pinned cells, compile the system
 just test           # the test suite
-just check          # lint, line-count ceiling, build and test
+just check          # lint, docs check, build and test
 just release        # dump ./nodecode
 just <cell>-check   # one cell's lint, build and tests (just mcp-check, ...)
 ```
