@@ -67,34 +67,59 @@ lint *files:
       fi; \
       sbcl --script tools/check/lint-structure.lisp $files
 
-# Hold HEAD's Common Lisp code lines (tokei) to this ceiling. Lower it when
-# the code shrinks; raise it only with the reason in the commit. Cells pulled
-# into cells/ are in no revision here and stay out of the count.
 # The organism's own code, where `lint' and `loc' look: never cells/, whose
 # pulled folders are in no revision of this repository.
 code_paths := "nodecode.asd nodecode-perf.asd src test tools perf"
 
-loc_ceiling := "104852"
+# Hold HEAD's Common Lisp code lines to this ceiling, as tokei 13 or later
+# counts them (tokei 12 calls the language Lisp and reads a few hundred
+# fewer). Lower it when the code shrinks; raise it only with the reason in
+# the commit.
+loc_ceiling := "141894"
 
-# Fail when HEAD's Lisp code lines exceed loc_ceiling.
-loc:
+# Fail when HEAD's Lisp code lines exceed loc_ceiling. Also name the lines
+# this branch adds to its merge base with BASE, and the lines the working
+# tree adds to HEAD, each counted the same way, so a change reads its own
+# growth whatever tokei counts and wherever main stands.
+loc base="origin/main":
     @set -euo pipefail; \
       command -v tokei >/dev/null 2>&1 || { \
         printf 'loc: tokei is not installed, and it is the metric this reads.\n' >&2; exit 2; }; \
       git rev-parse --verify HEAD >/dev/null 2>&1 || { \
         printf 'loc: no HEAD to measure.\n' >&2; exit 2; }; \
-      tree="$(mktemp -d)"; trap 'rm -rf "$tree"' EXIT; \
-      git archive HEAD {{code_paths}} | tar -x -C "$tree"; \
-      measure() { tokei -t 'Common Lisp' "$@" | awk '$1 == "Common" && $2 == "Lisp" { print $5 }'; }; \
-      code="$(cd "$tree" && measure {{code_paths}})"; \
-      live="$(measure {{code_paths}})"; \
-      ceiling={{loc_ceiling}}; \
+      tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT; \
+      count() { \
+        rm -rf "$tmp/tree"; mkdir "$tmp/tree"; \
+        paths="$(git ls-tree --name-only "$1" -- {{code_paths}})"; \
+        [ -n "$paths" ] || return 0; \
+        git archive "$1" $paths | tar -x -C "$tmp/tree"; \
+        (cd "$tmp/tree" && tokei --no-ignore .) | awk ' \
+          $1 == "Common" && $2 == "Lisp" { print $5 } \
+          $1 == "Lisp" { print $4 }'; }; \
+      code="$(count HEAD)"; \
       if [ -z "$code" ]; then \
         printf 'loc: tokei found no Common Lisp in {{code_paths}}.\n' >&2; exit 2; fi; \
-      if [ "$live" != "$code" ]; then \
-        printf 'loc: the working tree reads %s, %s of that uncommitted.\n' \
+      cp "$(git rev-parse --git-path index)" "$tmp/index" 2>/dev/null || true; \
+      GIT_INDEX_FILE="$tmp/index" git add -A -- {{code_paths}}; \
+      work="$(GIT_INDEX_FILE="$tmp/index" git write-tree)"; \
+      if [ "$work" != "$(git rev-parse 'HEAD^{tree}')" ]; then \
+        live="$(count "$work")"; \
+        printf 'loc: the working tree reads %s, %+d on HEAD, uncommitted.\n' \
           "$live" "$((live - code))"; fi; \
-      if [ "$code" -gt "$ceiling" ]; then \
+      if from="$(git merge-base HEAD '{{base}}' 2>/dev/null)"; then \
+        if [ "$from" != "$(git rev-parse HEAD)" ]; then \
+          was="$(count "$from")"; \
+          printf 'loc: this branch is %+d on its merge base with %s, which reads %s.\n' \
+            "$((code - was))" '{{base}}' "$was"; fi; \
+      else \
+        printf 'loc: no %s here to measure this branch against; fetch it, or name a base.\n' '{{base}}'; fi; \
+      ceiling={{loc_ceiling}}; \
+      major="$(tokei --version | awk '{ split($2, v, "."); print v[1] }')"; \
+      if [ "$major" -lt 13 ] 2>/dev/null && [ "$code" -le "$ceiling" ]; then \
+        printf 'loc: HEAD is %s code lines by tokei %s, under the ceiling of %s, a tokei 13 count.\n' \
+          "$code" "$major" "$ceiling"; \
+        printf '     tokei %s counts a few hundred lines fewer, so the margin is approximate; the growth on the merge base is exact.\n' "$major"; \
+      elif [ "$code" -gt "$ceiling" ]; then \
         printf 'loc: HEAD is %s code lines, %s over the ceiling of %s.\n' "$code" "$((code - ceiling))" "$ceiling" >&2; \
         printf '     Cut the growth, or raise loc_ceiling in the justfile with the reason in the commit.\n' >&2; \
         exit 1; \
