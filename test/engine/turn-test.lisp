@@ -3177,6 +3177,45 @@ refusal; NIL, an answer; past the list, an answer)."
     (is (= 2 calls) "one refusal, one candidate: no retry was spent")
     (is (equal '("connection_refused") (mapcar (lambda (payload) (getf payload :reason)) parts)) "the move names the refusal")))
 
+(deftest a-lost-network-path-to-a-host-that-answered-is-waited-out
+    (let ((nle::*max-request-retries* 2) (nle::*retry-base-delay* 0)
+          (nle::*lost-path-retry-seconds* 0) (nle::*lost-path-patience* 60)
+          (nle::*answered-addresses* (make-hash-table :test 'equal :synchronized t))
+          (lost 0) (calls 0) (parts '())))
+  ;; The machine lost its uplink mid-turn (2026-11-27, five minutes): every
+  ;; running turn spent its request budget, four retries and about 3 s of
+  ;; backoff, inside the first minute, a fork fifty minutes into its work
+  ;; among them, and failed 40 s before the network came back. A host that
+  ;; answered before exists, so its name failing to resolve is the path going
+  ;; down: the round waits it out past the budget. A host that never answered
+  ;; may be a mistyped base_url, and stands at the budget as before.
+  (flet ((post (url)
+           (incf calls)
+           (nle::cancellable-post ("{}" url)
+             (if (plusp lost)
+                 (progn (decf lost) (error 'usocket:ns-host-not-found-error))
+                 (wire-message "assistant" :content "answered")))))
+    (with-streaming-provider-stub (nil nil (post "https://api.example.test/v1/chat/completions"))
+      (is (equal "answered" (gethash "content" (nle::call-provider (user-context)))))
+      (setf lost 5 calls 0)
+      (let ((message (nle::call-provider
+                      (user-context)
+                      :on-part (lambda (part)
+                                 (when (eq :stream-retry part.kind) (push part.payload parts))))))
+        (is (equal "answered" (gethash "content" message)) "five lost attempts on a budget of two, then the answer")))
+    (is (= 6 calls) "every lost attempt was tried again")
+    (is (equal '(nil nil nil 2 2) (mapcar (lambda (payload) (getf payload :limit)) parts)) "past the budget a retry counts to no limit")
+    (setf lost 99 calls 0)
+    (with-streaming-provider-stub (nil nil (post "https://api.typo.test/v1/chat/completions"))
+      (is-carrying (text (princ-to-string (signals-error nle::provider-error (nle::call-provider (user-context)))))
+        "host not found at api.typo.test:443"))
+    (is (= 3 calls) "a host that never answered spends the budget and stands")
+    (setf lost 99 calls 0)
+    (let ((nle::*lost-path-patience* 0))
+      (with-streaming-provider-stub (nil nil (post "https://api.example.test/v1/chat/completions"))
+        (signals-error nle::provider-error (nle::call-provider (user-context)))))
+    (is (= 3 calls) "with the patience spent, a lost path stands at the budget")))
+
 (deftest an-unresolvable-candidate-is-recorded-and-skipped (with-session-store ("failover-bad"))
   (with-durable-turn (turn "failover-bad" :command-id "failover-bad-cmd" :input "go" :current t :retry-delay 0)
     (let* ((nle::*max-stream-retries* 0)

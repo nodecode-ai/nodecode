@@ -1397,6 +1397,33 @@ field -- else DETAIL itself."
   (:documentation "The endpoint refused the connection: nothing listens at
 its address."))
 
+(define-error provider-path-down (provider-error) ((answered-before-p :initform nil))
+  (:default-initargs :scope :request)
+  ;; The name did not resolve or no route led to the host: the request never
+  ;; left this machine's network. A host that answered this image before
+  ;; exists, so losing it is an outage of the path -- the image's uplink or
+  ;; its resolver -- that a turn waits out (WAITS-OUT-LOST-PATH-P), however
+  ;; long its run so far; one that never answered may be a typo in base_url
+  ;; and spends the request budget like any transport failure.
+  (:documentation "The request never reached its host: the name did not
+resolve, or no route led there. ANSWERED-BEFORE-P is true when that address
+answered this image before (ADDRESS-ANSWERED-P)."))
+
+(defvar *answered-addresses* (make-hash-table :test 'equal :synchronized t)
+  "Each `host:port' a provider request reached in this image's life, as a key:
+an answer, or an HTTP status refusing one. A host that answered exists, so a
+later failure to resolve or route to it is the path going down, never a
+mistyped address (PROVIDER-PATH-DOWN).")
+
+(defun note-address-answered (url &aux (address (url-address url)))
+  "Remember that URL's host answered a provider request."
+  (when address
+    (setf (gethash address *answered-addresses*) t)))
+
+(defun address-answered-p (url &aux (address (url-address url)))
+  "True when URL's host answered a provider request in this image before."
+  (and address (gethash address *answered-addresses*) t))
+
 (define-error provider-slow-start (provider-error) ()
   ;; No status: with nowhere to go it is retried like any stall. With the
   ;; failover candidate that stood behind the attempt, the round leaves for
@@ -2453,6 +2480,41 @@ own, while that target admits it, else the default (*REASONING-EFFORT*)."
        (or (null status)
            (member status '(408 409 425 429))
            (and (integerp status) (>= status 500)))))
+
+(defparameter *lost-path-patience* 600
+  "Seconds a round waits for a lost network path to come back, counted from
+its first failure to reach the host, once the request budget is spent: the
+path to a host that answered this image before (PROVIDER-PATH-DOWN).")
+
+(defparameter *lost-path-retry-seconds* 15
+  "Seconds between the attempts that wait out a lost network path: each costs
+one name lookup and announces one retry.")
+
+;;; The request budget is sized for one request's blip: four retries, about
+;;; 3 s of backoff. When the machine itself loses its uplink or its resolver,
+;;; every running turn spent it inside the first minute and failed, a fork
+;;; fifty minutes into its work among them, 40 s before the network came back
+;;; (2026-11-27, visebox's five-minute outage). A host that answered before
+;;; exists, so its name failing to resolve is the path, not the address.
+
+(defun lost-path-age (since)
+  "Seconds since SINCE, the internal real time a round first failed to reach its host."
+  (/ (- (get-internal-real-time) since) internal-time-units-per-second))
+
+(defun waits-out-lost-path-p (condition since)
+  "True when CONDITION lost the path to a host that answered this image before,
+and SINCE, the internal real time the round first failed to reach it, is still
+within *LOST-PATH-PATIENCE*: the round keeps trying past its request budget."
+  (and (typep condition 'provider-path-down)
+       (provider-path-down-answered-before-p condition)
+       since
+       (< (lost-path-age since) *lost-path-patience*)))
+
+(defun lost-path-retry-delay (since)
+  "Seconds before the next attempt at a lost path: *LOST-PATH-RETRY-SECONDS*,
+jittered +/-10%, never past the patience SINCE has left."
+  (max 0 (min (- *lost-path-patience* (lost-path-age since))
+              (* *lost-path-retry-seconds* (+ 1 (/ (- (random 2001) 1000) 10000.0))))))
 
 (defun relearned-request (condition config)
   "What CONDITION taught CONFIG's lane about asking its model, a phrase, once
@@ -5331,13 +5393,16 @@ FIELDS -- a format control over ARGUMENTS -- after the timing."
 cancellable wait: Esc interrupts the thread parked on connect/headers instead
 of waiting for bytes off the socket."
   ;; The cancel unwind passes through untouched; a status failure carries
-  ;; REQUEST-JSON as evidence, a refusal names ADDRESS, and every other
-  ;; transport failure classifies by its class (a host's, by ADDRESS too).
+  ;; REQUEST-JSON as evidence, a refusal names ADDRESS, a host not found or
+  ;; not reached says whether ADDRESS answered before (PROVIDER-PATH-DOWN),
+  ;; and every other transport failure classifies by its class (a host's, by
+  ;; ADDRESS too). Every head that arrives marks ADDRESS answered.
   (alexandria:with-gensyms (c e body headers)
     `(handler-case
          (nlk:with-cancellable-wait (*current-durable-turn*)
            (with-phase-note ("post-headers" "req-bytes=~d" (length ,request-json))
-             ,@post-form))
+             (multiple-value-prog1 (progn ,@post-form)
+               (note-address-answered ,address))))
        (nlk:turn-cancelled-condition (,c) (error ,c))
        ;; with its Retry-After; the bounded body, its Content-Type and the request ride as evidence
        (dex:http-request-failed (,e)
@@ -5364,6 +5429,7 @@ of waiting for bytes off the socket."
          ;; would be worse than a partial body.
          (let ((,body (nlk:body-text (dex:response-body ,e) +max-provider-evidence-bytes+))
                (,headers (ignore-errors (dex:response-headers ,e))))
+           (note-address-answered ,address)
            (error 'provider-error
                   :status (dex:response-status ,e)
                   :detail (subseq ,body 0 (min 400 (length ,body)))
@@ -5381,6 +5447,10 @@ of waiting for bytes off the socket."
          (error 'provider-connection-refused
                 :detail (format nil "~a — is the server running?"
                                 (transport-failure-label ,e ,address))))
+       ((or usocket:ns-error usocket:host-unreachable-error usocket:network-unreachable-error) (,e)
+         (error 'provider-path-down
+                :detail (transport-failure-label ,e ,address)
+                :answered-before-p (address-answered-p ,address)))
        (error (,e)
          (error 'provider-error :scope :request
                 :detail (transport-failure-label ,e ,address))))))
