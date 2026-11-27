@@ -1046,6 +1046,28 @@ measured, ceilings are estimates)."
    config.context-tokens
    config.context-tokens-operator-p))
 
+(defun observe-context-window-rejection (config estimate)
+  "Record the server's context rejection of a request estimated at ESTIMATE
+tokens under CONFIG as a ceiling, retracting first a floor that claims more
+than the model's declared window and that this rejection falls beneath."
+  ;; A floor is proof only as far as the usage it was read from counted one
+  ;; request: a lane that reports a whole inner loop's usage as one round's
+  ;; writes a floor no request ever reached (agy's summed turn wrote 2.5M for
+  ;; a 1M model), and the floor outranks every ceiling, so it would stand for
+  ;; good. A floor over the declared window that the server itself then
+  ;; refuses a smaller request against has the catalog and the server both
+  ;; against it, and the rejection takes its place. A floor inside the
+  ;; declared window keeps outranking estimate-grade ceilings, as it did, and
+  ;; an operator window or an unknown one leaves the floor alone.
+  (when (nlk:store-open-p)
+    (let ((provider config.provider) (model config.model) (declared config.context-tokens))
+      (when (and (stringp provider) (stringp model)
+                 (integerp declared) (not config.context-tokens-operator-p))
+        (let ((floor (nlk:context-window-observation provider model)))
+          (when (and floor (> floor declared) (< estimate floor))
+            (nlk:retract-context-window-floor provider model))))
+      (nlk:observe-context-window-ceiling provider model estimate))))
+
 ;;; --- the measured prompt -----------------------------------------------------
 ;;; ESTIMATE-JSON-TOKENS is chars/4, and characters are not what the server
 ;;; counts. Every round the server processes reports the prompt as it counted
@@ -1086,6 +1108,12 @@ ESTIMATED count as the (PROVIDER, MODEL) ratio, replacing the last."
              (integerp measured) (plusp measured))
     (setf (gethash (format nil "~a/~a" provider model) *context-estimate-calibration*)
           (/ (float measured 1.0d0) estimated))))
+
+(defun forget-context-estimate (provider model)
+  "Drop the (PROVIDER, MODEL) ratio: its estimates read chars/4 again until a
+round the server answers measures it anew."
+  (when (and (stringp provider) (stringp model))
+    (remhash (format nil "~a/~a" provider model) *context-estimate-calibration*)))
 
 ;;; Under it the request cannot answer — every token of the window is prompt —
 ;;; and the only reply it can produce is a finish_reason=length with nothing
@@ -1224,6 +1252,27 @@ outranks the capability-derived shrink-to-fit; NIL when neither source knows."
      (effective-context-budget config)
      (round (* (compiled-context-estimated-tokens context)
                (context-estimate-ratio config.provider config.model))))))
+
+(defun forget-calibration-filling-window (context &aux (config context.provider-config)
+                                                        (ratio (context-estimate-ratio
+                                                                config.provider config.model)))
+  "When CONTEXT's request leaves an answer room at its own chars/4 estimate,
+so only the measured ratio scaling it up fills the window, forget that ratio
+and => it; else NIL."
+  ;; The ratio is measured again only after a round the server answered, and a
+  ;; round refused before it is sent is never answered: a ratio that fills the
+  ;; window on its own would refuse every later request of the model, in every
+  ;; session, until the image restarts.
+  (when (and (null config.max-completion-tokens)
+             (> ratio 1)
+             (multiple-value-bind (cap shrunk-p)
+                 (agent-max-output-tokens config.output-limit
+                                          (effective-context-budget config)
+                                          (compiled-context-estimated-tokens context))
+               (or (not shrunk-p)
+                   (and (integerp cap) (>= cap +min-usable-output-tokens+)))))
+    (forget-context-estimate config.provider config.model)
+    ratio))
 
 ;;; --- conditions ---------------------------------------------------------
 

@@ -264,7 +264,7 @@ renderer, the program loop.")
    #:cancel-turn #:+tool-command-keys+
    #:tool-command-string #:deref-literal-refs #:record-background-shell-exit
    #:exited-shell-document
-   #:observe-context-window-floor #:observe-context-window-ceiling
+   #:observe-context-window-floor #:observe-context-window-ceiling #:retract-context-window-floor
    #:context-window-observation #:duplicate-turn-command #:turn-already-active
    #:turn-already-terminal
    ;; --- collection scheduling (A3) ---
