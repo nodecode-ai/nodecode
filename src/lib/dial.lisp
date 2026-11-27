@@ -124,6 +124,17 @@ addresses is raced through DIAL; everything else goes straight to NEXT."
 ;;; nothing listens on would wait for the whole timeout, where curl says
 ;;; `connection refused' at once.
 
+(defun sockopt-errno (socket)
+  "The SO_ERROR of a failed connect's socket, whichever name this SBCL gives it.
+
+SBCL exports SB-BSD-SOCKETS:SOCKOPT-ERROR in some builds and only the internal
+SOCKET-ERRNO in others; the reader cannot name a symbol that may be absent, so
+the name is looked up at call time."
+  (let ((sym (or (find-symbol "SOCKOPT-ERROR" "SB-BSD-SOCKETS")
+                 (find-symbol "SOCKET-ERRNO" "SB-BSD-SOCKETS"))))
+    (when (and sym (fboundp sym))
+      (funcall sym socket))))
+
 (defun peername-or-connect-failure (next socket)
   "SB-BSD-SOCKETS:SOCKET-PEERNAME's advice: a socket whose connect failed
 signals that failure, read from SO_ERROR (ECONNREFUSED, EHOSTUNREACH, ...),
@@ -131,7 +142,7 @@ in place of the `not connected' getpeername answers for it; a socket with
 nothing pending fails as NEXT does."
   (handler-bind ((sb-bsd-sockets:socket-error
                    (lambda-ignoring (condition)
-                     (let ((errno (ignore-errors (sb-bsd-sockets:sockopt-error socket))))
+                     (let ((errno (ignore-errors (sockopt-errno socket))))
                        (when (and errno (plusp errno))
                          (sb-bsd-sockets:socket-error "connect" errno))))))
     (funcall next socket)))
