@@ -242,7 +242,7 @@ just release     # pull the shipped cells, dump ./nodecode
 ./nodecode
 ```
 
-`just check` runs lint, the line-count ceiling, build and test. A source build doesn't update itself: pull and run `just release` again. To work on Nodecode itself, start with [docs/README.md](docs/README.md).
+`just check` runs lint, the docs check, build and test. A source build doesn't update itself: pull and run `just release` again. To work on Nodecode itself, start with [docs/README.md](docs/README.md).
 
 </details>
 
