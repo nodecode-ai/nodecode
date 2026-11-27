@@ -256,4 +256,4 @@ Run `/doctor`: it lists what is missing and prints a fix for each problem. To as
 
 <br>
 
-<sub>MIT; see [LICENSE](LICENSE). [NOTICE](NOTICE) carries the attribution for cl-tuition, which the terminal core builds on. The emblems are drawn in cells from other people's footage: the nautilus from video S2 of Barord et al., PLOS ONE 9(6): e100799, 2014, under CC BY 4.0, and John McCarthy from The Computer Chronicles, 1984, © Stewart Cheifet Productions. Every source is listed on [nodecode.ai/credits](https://nodecode.ai/credits).</sub>
+<sub>MIT; see [LICENSE](LICENSE). [NOTICE](NOTICE) carries the attribution for cl-tuition, which the terminal core builds on. The emblems are drawn in cells from other people's footage: the nautilus from video S2 of Barord et al., PLOS ONE 9(6): e100799, 2014, under CC BY 4.0, and John McCarthy from The Computer Chronicles, 1984, © Stewart Cheifet Productions. Every source is listed on [nodecode.ai/credits](https://nodecode.ai/credits). Also packaged on [Snapcraft](https://snapcraft.io/nodecode) and archived on [Zenodo](https://zenodo.org/records/24610519) (`10.5281/zenodo.24610519`).</sub>
