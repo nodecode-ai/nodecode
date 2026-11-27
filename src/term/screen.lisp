@@ -238,13 +238,13 @@ WRAP it goes on at column X of the next screen row instead. => BUFFER."
                             (let* ((bel (position #\Bel string :start i))
                                    (st (search '(#\Escape #\\) string :start2 i))
                                    (end (if (and bel st) (min bel st) (or bel st)))
-                                   (body (subseq string i (or end len))))
+                                   (body (subseq string i (min (or end len) (length string)))))
                               (setf i (if end (+ end (if (eql end bel) 1 2)) len))
-                              (when (and (>= (length body) 2) (string= "8;" body :end2 2))
+                              (when (and (>= (length body) 2) (string= "8;" body :end2 (min 2 (length body))))
                                 (let ((p2 (position #\; body :start 2)))
                                   ;; an empty URI closes the link
                                   (setf link (and p2 (< (1+ p2) (length body))
-                                                  (subseq body (1+ p2)))))))))))
+                                                  (subseq body (1+ (min p2 (1- (length body))))))))))))))
                      ;; a tab is one column wide and paints as a space
                      (let ((cw (codepoint-width ch)))
                        (unless (zerop cw)
