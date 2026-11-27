@@ -7123,3 +7123,18 @@ scratch runtime directory."
         (is (eq :observed (catch 'observed
                             (nle:serve-organism-candidate :wait t :store-path path))))
         (is (= attempts 2))))))
+
+(deftest gateway-taskmaster-raises-connection-ceiling (with-temp-gateway (port))
+  (let* ((thread (clack.handler::handler-acceptor nle::*gateway-handler*))
+         (acceptor (await (:tries 50)
+                     (bt2:with-lock-held (nle::*clack-owners-lock*)
+                       (let ((owner (gethash thread nle::*clack-owners*)))
+                         (and owner (nle::clack-owner-acceptor owner))))))
+         (taskmaster (and acceptor (hunchentoot::acceptor-taskmaster acceptor))))
+    (is (typep taskmaster 'hunchentoot:one-thread-per-connection-taskmaster) "gateway uses Hunchentoot's threaded taskmaster")
+    (is (= 512 (hunchentoot:taskmaster-max-thread-count taskmaster)) "gateway allows up to 512 concurrent connection threads")
+    (is (= 576 (hunchentoot:taskmaster-max-accept-count taskmaster)) "gateway reserves 64 accept headroom above its thread ceiling")
+    (let ((nle::*gateway-max-thread-count* 0)
+          (nle::*gateway-max-accept-headroom* 0))
+      (multiple-value-bind (threads accept) (nle::gateway-taskmaster-limits)
+        (is (and (>= threads 1) (> accept threads)) "taskmaster limits enforce accept > threads >= 1")))))
