@@ -50,6 +50,27 @@ stopped and the thread joined however BODY leaves."
        (setf (nlt:program-running ,program) nil)
        (ignore-errors (bt2:join-thread ,loop-thread)))))
 
+(defclass quiet-tty (sb-gray:fundamental-character-input-stream) ()
+  (:documentation "A terminal nobody types into: no key waits, and it never ends."))
+
+(defmethod sb-gray:stream-read-char-no-hang ((stream quiet-tty)) nil)
+(defmethod sb-gray:stream-listen ((stream quiet-tty)) nil)
+
+(defmacro with-input-loop ((program) &body body &aux (input (gensym "INPUT")))
+  "Run BODY with PROGRAM's input loop reading a quiet terminal, as RUN starts
+it; the program is stopped and the thread joined however BODY leaves."
+  `(progn
+     (setf (nlt::program-tty-stream ,program) (make-instance 'quiet-tty))
+     (let ((,input (nlk:spawn "test-input" (nlt::input-loop ,program))))
+       (unwind-protect (progn ,@body)
+         (setf (nlt:program-running ,program) nil)
+         (ignore-errors (bt2:join-thread ,input))))))
+
+(defun raise-here (signal)
+  "Deliver SIGNAL to this thread alone, as the kernel hands one to whichever
+thread it interrupts."
+  (sb-alien:alien-funcall (sb-alien:extern-alien "raise" (function sb-alien:int sb-alien:int)) signal))
+
 (deftest loop-receives-sends-from-any-thread-and-stops-on-quit (let* ((program (make-probe-program))
                                                                       (model program.model)))
   (with-event-loop (program loop-thread)
@@ -88,9 +109,10 @@ stopped and the thread joined however BODY leaves."
   ;; SIGHUP is what closing a terminal window sends: the program quits
   ;; through its loop, as a quit message stops it (T-348).
   (with-event-loop (program loop-thread)
-    (nlt::on-signal program sb-posix:sighup)
-    (is (await () (not (bt2:thread-alive-p loop-thread))) "the loop stops")
-    (is (null program.running) "and the program is no longer running")))
+    (with-input-loop (program)
+      (nlt::on-signal program sb-posix:sighup)
+      (is (await () (not (bt2:thread-alive-p loop-thread))) "the loop stops")
+      (is (null program.running) "and the program is no longer running"))))
 
 (deftest a-hangup-stops-the-loop-ahead-of-its-queue (let* ((program (make-probe-program))
                                                            (model program.model)))
@@ -112,9 +134,10 @@ stopped and the thread joined however BODY leaves."
     (setf (probe-answer model) (lambda (msg) (declare (ignore msg)) (sleep 1/20) nil))
     (dotimes (i 100) (nlt:send program (nlt:make-tick-msg)))
     (with-event-loop (program loop-thread)
-      (nlt::on-signal program sb-posix:sighup)
-      (is (await (:timeout 2) (not (bt2:thread-alive-p loop-thread))) "the loop stops within its grace")
-      (is (< (length (probe-seen model)) 50) "ahead of the rest of its queue"))))
+      (with-input-loop (program)
+        (nlt::on-signal program sb-posix:sighup)
+        (is (await (:timeout 2) (not (bt2:thread-alive-p loop-thread))) "the loop stops within its grace")
+        (is (< (length (probe-seen model)) 50) "ahead of the rest of its queue")))))
 
 (defclass dead-tty (sb-gray:fundamental-character-input-stream sb-gray:fundamental-character-output-stream) ()
   (:documentation "A pty whose master closed: every read and write fails EIO."))
@@ -370,3 +393,49 @@ stopped and the thread joined however BODY leaves."
     (is (await () seen) "a failing fold reaches the handler")
     (is (equal '(:event-loop . t) (first seen))))
   (is (null program.loop-thread)))
+
+#-win32
+(deftest a-window-drag-costs-one-measure-not-a-thread-a-pixel (let ((program (make-probe-program))))
+  ;; A drag is a SIGWINCH per pixel, and each one spawned a thread to post
+  ;; its size (#549). A signal now marks the program, and the input loop
+  ;; measures once for however many landed between two of its turns.
+  (dotimes (i 200) (nlt::on-signal program sb-posix:sigwinch))
+  (let ((posters (count "nlt-signal" (sb-thread:list-all-threads) :key #'sb-thread:thread-name :test #'equal)))
+    (is (sb-concurrency:mailbox-empty-p program.mailbox) "the signals posted nothing")
+    (is (zerop posters) "and spawned no thread"))
+  (with-event-loop (program loop-thread)
+    (with-input-loop (program)
+      (is (await () (seen-of-type program.model 'nlt::window-size-msg)) "the input loop measures")
+      (sleep 1/20)
+      (is (= 1 (length (seen-of-type program.model 'nlt::window-size-msg))) "once"))))
+
+#-win32
+(deftest a-resize-signal-inside-the-thread-tables-lock-still-arrives (let ((program (make-probe-program))
+                                                                         (lock (symbol-value (find-symbol ".KNOWN-THREADS-LOCK." :bt2)))
+                                                                         (failure nil)
+                                                                         (deaths '())))
+  ;; A signal lands on whichever thread it interrupts. One that landed on a
+  ;; thread holding bordeaux's thread-table lock -- starting a thread, or the
+  ;; loop asking BT2:CURRENT-THREAD -- spawned from inside it: "Recursive
+  ;; lock attempt", the poster it had half started died, and the size never
+  ;; arrived (#549). Here the handler RUN installs takes a real SIGWINCH there.
+  (with-saved-globals ((sb-ext:*invoke-debugger-hook*
+                        (lambda (condition hook)
+                          (declare (ignore hook))
+                          (push condition deaths)
+                          (sb-thread:abort-thread))))
+    (let ((old (sb-sys:enable-interrupt sb-posix:sigwinch
+                                        (lambda (signal code scp)
+                                          (declare (ignore code scp))
+                                          (nlt::on-signal program signal)))))
+      (unwind-protect
+           (with-event-loop (program loop-thread)
+             (with-input-loop (program)
+               (bt2:join-thread
+                (nlk:spawn "test-holder"
+                  (handler-case (bt2:with-lock-held (lock) (raise-here sb-posix:sigwinch))
+                    (error (e) (setf failure e)))))
+               (is (null failure) "the interrupted thread goes on")
+               (is (await () (seen-of-type program.model 'nlt::window-size-msg)) "the size reaches the model")
+               (is (null deaths) "and no thread dies")))
+        (sb-sys:enable-interrupt sb-posix:sigwinch (or old :default))))))
