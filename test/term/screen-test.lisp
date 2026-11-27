@@ -171,3 +171,16 @@
     (is-table (in) (search in written) ("ab" "the first row")
       ((csi "2H") "an absolute move to the second row, its column the default")
       ("cd" "the second row"))))
+
+(deftest parser-keeps-osc8-and-wide-glyphs-apart-on-one-row ()
+  ;; the recorded crash: byte positions from position/search against cell
+  ;; counts from length, on a row where wide glyphs widen the gap
+  (let* ((osc (format nil "~C]8;;https://example.com~C\\" #\Escape #\Escape))
+         (wide (make-string 135 :initial-element (code-char #x4e16)))
+         (row (concatenate 'string osc wide "tail"))
+         (buffer (nlt:parse-styled-string (list row) 40 400)))
+    (is (< (length row) 550) "the row parses: no BOUNDING-INDICES-BAD-ERROR")
+    (is (string= "https://example.com"
+                 (nlt:cell-link (nlt:screen-buffer-ref buffer 0 0))) "the link lands")
+    (is (string= "tail" (string-right-trim " " (painted-row buffer 0))) "the tail paints")
+    (is (= 135 (count (code-char #x4e16) (painted-row buffer 0))) "each wide glyph takes two cells")))
