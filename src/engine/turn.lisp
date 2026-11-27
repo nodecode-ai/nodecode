@@ -2742,6 +2742,11 @@ separate turn.usage fact owns here. The round index rides *PROVIDER-ROUND*."
          ;; Whether this round already forgot the estimate's measured ratio
          ;; to get past our own refusal: once, and a second is the window's.
          (calibration-forgotten-p nil)
+         ;; The internal real time this round's current streak of failures to
+         ;; reach its host began, and whether the round is past its request
+         ;; budget waiting that lost path out (WAITS-OUT-LOST-PATH-P).
+         (lost-path-since nil)
+         (waiting-out-path-p nil)
          ;; How many times a refusal taught the lane how to ask this round
          ;; (RESEND-RELEARNED).
          (relearnings 0)
@@ -3463,10 +3468,10 @@ did not say."
                                       calibration-forgotten-p (provider-error-detail e))))
             ;; A request that carried images is re-sent without them first:
             ;; a configuration that names no wire is not the images' fault,
-            ;; nor an address nothing listens on, nor a second failure of the
-            ;; same round.
+            ;; nor an address nothing listens on, nor a host the request never
+            ;; reached, nor a second failure of the same round.
             ((and (not images-withheld-p)
-                  (not (typep e '(or provider-config-error provider-connection-refused)))
+                  (not (typep e '(or provider-config-error provider-connection-refused provider-path-down)))
                   (withhold-images-and-retarget e))
              (setf images-withheld-p t))
             ;; Before the overflow arm, which it would otherwise match on
@@ -3519,6 +3524,15 @@ did not say."
                (seal-streamed-attempt (provider-error-detail e) "stood")
                (amend-terminal-failover-note e)
                (error e))
+             ;; A lost path's clock starts at its first failure and stops at
+             ;; any other: a host that resolves again and then fails is no
+             ;; longer the outage, and the budget the wait spent is its own
+             ;; again.
+             (setf lost-path-since (and (typep e 'provider-path-down)
+                                        (or lost-path-since (get-internal-real-time))))
+             (when (and waiting-out-path-p (null lost-path-since))
+               (setf waiting-out-path-p nil
+                     request-retries-used 0))
              ;; Route the failure to its budget by capture scope: :request
              ;; failures spend the per-stream-attempt request budget, every
              ;; other scope spends the stream budget and refills the request
@@ -3545,15 +3559,26 @@ did not say."
                                      (past-rerun-ceiling-p)))
                     ;; A refused connection spends the request budget at once:
                     ;; nothing listens there, and the next attempt hears the same.
-                    (exhausted (or (typep e 'provider-connection-refused) (>= used limit))))
+                    (exhausted (or (typep e 'provider-connection-refused) (>= used limit)))
+                    ;; Past the budget, a host that answered before and now
+                    ;; cannot be reached is the machine's network gone, not
+                    ;; the request: the round waits for it to come back, up
+                    ;; to *LOST-PATH-PATIENCE*, rather than losing the turn.
+                    (waiting (and exhausted (waits-out-lost-path-p e lost-path-since))))
                (cond
-                 ((and exhausted (try-fallback e))
+                 ;; The chain is asked once, when the budget is first spent:
+                 ;; a candidate on another host may still be reached.
+                 ((and exhausted (not waiting-out-path-p) (try-fallback e))
                   ;; The chain took the round: the failed attempt is sealed
                   ;; by the fallback itself (disposition rerun), the loop
                   ;; re-runs against the candidate, and the ladder below is
                   ;; NOT walked — no retry fact, no counters, no sleep.
                   nil)
-                 (exhausted
+                 ((and exhausted (not waiting))
+                  (when waiting-out-path-p
+                    (setf (provider-error-note e)
+                          (format nil "(the network path stayed down through a ~d-minute wait)"
+                                  (round *lost-path-patience* 60))))
                   ;; An exhausted budget keeps its last attempt too — and
                   ;; the failure says what survived.
                   (seal-streamed-attempt (provider-error-detail e) "stood")
@@ -3571,13 +3596,18 @@ did not say."
                       (seal-streamed-attempt (provider-error-detail e)
                                              (if continue-p "continued" "rerun"))
                     (when continue-p (extend-seal text thinking)))
-                  (let ((delay (provider-retry-delay
-                                (1+ used)
-                                config.retry-base-delay
-                                :retry-after (provider-error-retry-after e)
-                                :status (provider-error-status e))))
+                  ;; A wait past the budget has no limit to count down to:
+                  ;; its retries read `retry 6 in 15s', never `6 of 4'.
+                  (when waiting (setf waiting-out-path-p t))
+                  (let ((delay (if waiting
+                                   (lost-path-retry-delay lost-path-since)
+                                   (provider-retry-delay
+                                    (1+ used)
+                                    config.retry-base-delay
+                                    :retry-after (provider-error-retry-after e)
+                                    :status (provider-error-status e)))))
                     (announce-retry e scope delay (provider-error-detail e)
-                                    (1+ used) limit (and continue-p t))
+                                    (1+ used) (unless waiting limit) (and continue-p t))
                     (if request-p
                         (incf request-retries-used)
                         (setf stream-attempt (1+ stream-attempt)
