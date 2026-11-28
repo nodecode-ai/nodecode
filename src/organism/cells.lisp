@@ -2063,10 +2063,9 @@ them compiled."
   ;; holds it already, and the load lock keeps a second thread from opening one
   ;; beside. A wait is a boot phase. A NIL cache -- the hermetic posture --
   ;; takes none, and neither does a cache whose folder cannot be made (nothing
-  ;; compiles into it) or Windows, where LOCK-FILE cannot wait.
+  ;; compiles into it).
   (bt2:with-recursive-lock-held (*cell-load-lock*)
     (let* ((path (and *peripheral-cache-directory* (not *compile-lock-held*)
-                      (not (uiop:os-windows-p))
                       (ignore-errors (ensure-directories-exist
                                       (merge-pathnames "compile.lock" *peripheral-cache-directory*)))))
            (lock (and path (ignore-errors
@@ -2300,11 +2299,29 @@ left (BEFORE for the first) against OWNERS. => the records, in load order."
               (setf before after)))
           (push cell records))))))
 
+(defvar *whole-load-compile-lock* #+win32 t #-win32 nil
+  "Whether a load of the cell folders holds the compile lock
+(CALL-WITH-COMPILE-LOCK) from its first file to its last, its layers'
+units and fasls with its peripherals: on Windows, where two processes loading
+one layer from the shared caches at once refuse each other its files.")
+
 (defun folder-records (folders owners before)
   "The records of FOLDERS: those LOAD-CELL-FOLDERS loads, from BEFORE against OWNERS, then
 one per knowledge cell: on the report, never loaded -- nothing in it is evaluated (knowledge.lisp)."
+  ;; Windows replaces no file another process holds open, and opens none another
+  ;; is replacing: two serves booting at once on one cache each published a
+  ;; layer's fasl the other had open, and opened one the other was renaming
+  ;; into place -- `being used by another process' -- so a layer file went
+  ;; unloaded in whichever lost that moment, the gateway that went on to serve
+  ;; included. There one process loads from the caches at a time and the next
+  ;; finds the files compiled. POSIX renames under a reader, so two loads share
+  ;; the caches side by side and take the lock around a peripheral's ASDF load
+  ;; alone.
   (append (when-let (loaded (remove-if #'cell-folder-knowledge-p folders))
-            (load-cell-folders loaded owners before))
+            (flet ((load-folders () (load-cell-folders loaded owners before)))
+              (if *whole-load-compile-lock*
+                  (call-with-compile-lock #'load-folders)
+                  (load-folders))))
           (loop for folder in folders
                 when (cell-folder-knowledge-p folder)
                   collect (make-cell :name folder.name :path folder.directory :kind :knowledge

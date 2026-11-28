@@ -1791,18 +1791,10 @@ answers is called: it lets go and joins that thread."
       (is (equal '("nl-never-defined") answered)))))
 
 (defun compile-lock-contended-p (path)
-  "Whether another process -- a python3 child -- is refused the fcntl lock on
-PATH: T while a process holds it."
-  (equal "held" (string-trim '(#\Newline)
-                             (uiop:run-program
-                              (list "python3" "-c" "import fcntl,sys
-f=open(sys.argv[1],'a')
-try:
-    fcntl.lockf(f,fcntl.LOCK_EX|fcntl.LOCK_NB)
-    print('took')
-except OSError:
-    print('held')" (namestring path))
-                              :output :string))))
+  "Whether another process is refused the lock on PATH as LOCK-FILE takes it
+-- fcntl's, or on Windows the file opened with no sharing: T while a process
+holds it."
+  (equal "refused" (string-trim '(#\Newline #\Return) (nlk:run-bounded (lock-try-argv path)))))
 
 (deftest cells-compile-into-one-cache-one-process-at-a-time (with-temp-directory (cache "compile-cache"))
   ;; ASDF publishes a fasl by deleting the one there and renaming its own in,
@@ -1894,6 +1886,40 @@ except OSError:
           (let ((records (sb-thread:join-thread loader)))
             (is (= 1 (length records)))
             (is (eq :loaded (nlk:cell-state (first records))))))))))
+
+(deftest cells-a-layer-load-waits-on-windows-while-another-process-loads-from-the-cache (with-cell-fixture (root))
+  ;; Windows replaces no file another process holds open and opens none another
+  ;; is replacing: two serves booting at once on one cache refused each other a
+  ;; layer's fasls, `being used by another process', and in 7 of 8 races the
+  ;; gateway that went on to serve was missing a layer file's definitions.
+  ;; There the whole load holds the cache's compile lock, a layer's files
+  ;; included: one waits while another process holds the cache, and loads once
+  ;; it lets go. Bound here as Windows has it, so every platform runs the wait.
+  (let ((entered (bt2:make-semaphore :name "test-layer-queued-entered"))
+        (name (format nil "nl-layer-queued-~36r" (random (expt 36 6))))
+        (loader nil))
+    (write-layer-folder root name
+                        '(("probe" . "(let ((probe (symbol-value (find-symbol \"*LOAD-PROBE*\" \"NODECODE.TEST\"))))
+  (when probe (funcall probe)))")))
+    (with-saved-globals ((nlk::*cells-directory* root)
+                         (*load-probe* (lambda () (bt2:signal-semaphore entered))))
+      (with-temp-directory (cache "layer-queued-cache")
+        (nlk:with-cleanup ((asdf:initialize-output-translations))
+          (with-lock-holder ((merge-pathnames "compile.lock" cache))
+            ;; the loader's thread sees the cache only as this one hands it over
+            (setf loader (loader-thread (lambda (&aux (nlk::*peripheral-cache-directory* cache)
+                                                      (nlk::*whole-load-compile-lock* t))
+                                          (nlk:load-cell name))))
+            ;; the layer's file does not load while another process holds the cache
+            (is (null (bt2:wait-on-semaphore entered :timeout 1)))
+            (is (null (nlk:find-cell name))))
+          ;; that process gone, the load runs
+          (is (bt2:wait-on-semaphore entered :timeout 60))
+          (let ((records (sb-thread:join-thread loader)))
+            (is (= 1 (length records)))
+            (is (eq :loaded (nlk:cell-state (first records))))
+            (is (eq :layer (nlk:cell-kind (first records)))))))))
+  (is (eq (uiop:os-windows-p) nlk::*whole-load-compile-lock*) "on by default on Windows alone"))
 
 ;;; --- trusted source readers ------------------------------------------------
 

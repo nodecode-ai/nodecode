@@ -1489,11 +1489,14 @@ its own random state from (CryptGenRandom)."
   (setf (gethash lock *held-locks*) path)
   lock)
 
+(defparameter +lock-wait-poll-seconds+ 0.05
+  "How often a wait for a lock another process holds asks again on Windows,
+where no wait for a file opened with no sharing can be left to the kernel.")
+
 (defun lock-file (path &key wait &aux (native (uiop:native-namestring path)))
   "Take the exclusive lock on the file at PATH, creating it, and answer the
 lock — a descriptor, a handle on Windows — or NIL when another live process
-holds it. WAIT waits for that process to let go instead, NIL then only when
-the kernel will not lock the file at all (POSIX: Windows answers at once)."
+holds it. WAIT waits for that process to let go instead."
   (declare (ignorable wait))
   ;; The kernel releases a lock with its process, so a crash cannot
   ;; wedge the next taker: an fcntl record lock (per process, unshared by fork)
@@ -1502,8 +1505,11 @@ the kernel will not lock the file at all (POSIX: Windows answers at once)."
   ;; *HELD-LOCKS*, which is what keeps a later probe from closing it. Signals
   ;; when the file cannot be opened at all. The descriptor closes at an exec
   ;; (FD_CLOEXEC): a successor would hold a lock it does not know of for
-  ;; life. A wait is the kernel's, never a poll, taken again when a signal
-  ;; ends it early.
+  ;; life. A wait is the kernel's on POSIX, taken again when a signal ends it
+  ;; early. Windows has no wait for an open the holder's no-sharing refuses, so
+  ;; there the open is asked again every +LOCK-WAIT-POLL-SECONDS+; the lock
+  ;; this process holds already is refused at once, never waited on, since the
+  ;; open that wait asks again would be refused by this very process for ever.
   #-win32
   (let ((fd (sb-posix:open native (logior sb-posix:o-creat sb-posix:o-rdwr) #o600)))
     (sb-posix:fcntl fd sb-posix:f-setfd 1)
@@ -1514,12 +1520,18 @@ the kernel will not lock the file at all (POSIX: Windows answers at once)."
                 (sb-posix:close fd)
                 (return nil))))))
   #+win32
-  (let ((handle (%create-file native +generic-read-write+ 0 nil
-                              +open-always+ +file-attribute-normal+ 0)))
-    (cond ((/= handle sb-win32::invalid-handle) (note-held-lock handle native))
-          ((= (sb-win32::get-last-error) +error-sharing-violation+) nil)
-          (t (error "cannot lock ~a: Windows error ~d"
-                    path (sb-win32::get-last-error))))))
+  (flet ((take ()
+           (let ((handle (%create-file native +generic-read-write+ 0 nil
+                                       +open-always+ +file-attribute-normal+ 0)))
+             (cond ((/= handle sb-win32::invalid-handle) (note-held-lock handle native))
+                   ((= (sb-win32::get-last-error) +error-sharing-violation+) nil)
+                   (t (error "cannot lock ~a: Windows error ~d"
+                             path (sb-win32::get-last-error)))))))
+    (if (and wait (not (held-lock path)))
+        (loop (let ((lock (take)))
+                (when lock (return lock)))
+              (sleep +lock-wait-poll-seconds+))
+        (take))))
 
 (defun held-lock (path &aux (native (uiop:native-namestring path)))
   "The lock this process holds on the file at PATH (a LOCK-FILE answer), or
