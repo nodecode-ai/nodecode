@@ -2462,6 +2462,31 @@ facts, so the elapse reads between them."
       ;; Under the answer.
       (is (< (position "answered" rows :key #'nle::transcript-row-text :test #'equal)
              (position line rows))))))
+
+(deftest a-round-that-fell-back-keeps-a-line-naming-both-models (with-temp-store ())
+  ;; The footer names the session's own model and the finish divider rests
+  ;; hidden: a round the failover chain moved answered as if the picked model
+  ;; had. The fact reaches a shell, live and replayed, and the turn keeps one
+  ;; line on it where it moved, above the answer the next model gave.
+  (is (not (nlk:event-kind-replay-suppressed-p nlk::+kind-provider-fallback+)))
+  (ensure-durable-session "fallback-rest")
+  (with-durable-turn (turn "fallback-rest" :input "q" :complete t)
+    (nlk:record-provider-fallback turn :from-provider "anthropic" :from-model "claude-opus"
+                                       :to-provider "deepseek" :to-model "deepseek-flash"
+                                       :reason "refusal")
+    (nlk:record-assistant-message turn (nlk:json-object "role" "assistant" "content" "answered")))
+  (let* ((rows (nle::transcript-rows (nle::fold-log :session-id "fallback-rest")))
+         (line (find-if (lambda (row) (search "Fell back" (nle::transcript-row-text row))) rows)))
+    (is-present line "the turn keeps its fallback line"
+      (is (equal "• Fell back from claude-opus to deepseek-flash (refusal)"
+                 (nle::transcript-row-text line)))
+      (is (not (nle::redundant-finish-divider-p line)) "it shows where the divider hides")
+      (is (< (position line rows) (position "answered" rows :key #'nle::transcript-row-text :test #'equal)) "above the answer the next model gave")))
+  ;; One model name on two providers names the providers, or it would read as
+  ;; a model falling back to itself.
+  (is (equal "• Fell back from openrouter/glm-5 to zai/glm-5 (outage)"
+             (nle::fallback-line-text "openrouter" "glm-5" "zai" "glm-5" "outage"))))
+
 (deftest context-eviction-folds-divider-and-dims (with-temp-store ())
   ;; S2: /evict must leave transcript evidence — the Zig context divider
   ;; rests at the boundary and the evicted region above it renders dim.

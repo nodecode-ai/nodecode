@@ -793,7 +793,7 @@ so a streamed item and its durable fact are one row, never two."
        ;; the payload and the metadata as a stored row is -- so the keys, the
        ;; types and the defaults are the declaration's and never a copy.
        ((member kind '("session.context.evicted" "turn.attempt_voided" "turn.usage"
-                       "turn.provider_retry" "turn.input_committed"
+                       "turn.provider_retry" "turn.provider_fallback" "turn.input_committed"
                        "turn.assistant_message_completed")
                 :test #'string=)
         (apply-event st (gateway-fact-event kind payload event turn-id)))
@@ -963,9 +963,10 @@ so a streamed item and its durable fact are one row, never two."
              (if-let (text (json-value delta :string "text"))
                (ingest-stream-body st :reasoning text :turn-id turn-id)
                st))
-            ;; fallback: The round moved to another model. The wording lives in the
-            ;; shell's own lane (the durable turn.provider_fallback fact);
-            ;; this delta is the live hint, and it is not assistant text.
+            ;; fallback: The round moved to another model. The wording is the
+            ;; durable turn.provider_fallback fact's, folded above as it lands
+            ;; (INGEST-PROVIDER-FALLBACK-FACT); this delta is the live hint,
+            ;; and it is not assistant text.
             ((equal delta-type "fallback")
              st)
             ((equal delta-type "stream_reset")

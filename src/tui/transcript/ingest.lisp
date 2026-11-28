@@ -161,6 +161,36 @@ advise users to temporarily switch to alternative services.'"
           (getf tally :count)
           (retry-said tally)))
 
+(defun fallback-line-text (from-provider from-model to-provider to-model reason)
+  "One turn.provider_fallback fact as the line its turn keeps where the round
+moved: `• Fell back from claude-opus to deepseek-flash (refusal)', the words
+a room's card says it in."
+  ;; A move between two providers that serve one model name names the
+  ;; providers as well: by its models alone it would read as a model falling
+  ;; back to itself.
+  (flet ((side (provider model)
+           (cond ((zerop (length model)) (and (plusp (length provider)) provider))
+                 ((and (equal from-model to-model) (plusp (length provider)))
+                  (format nil "~a/~a" provider model))
+                 (t model))))
+    (format nil "• Fell back ~@[from ~a ~]to ~a~@[ (~a)~]"
+            (side from-provider from-model)
+            (or (side to-provider to-model) "the next model")
+            (and (plusp (length reason)) reason))))
+
+(define-ingest ingest-provider-fallback-fact (st &key turn-id from-provider from-model
+                                                 to-provider to-model reason)
+  "Fold one turn.provider_fallback fact: the round moved to the failover
+chain's next model, and its turn keeps one muted line where it moved
+(FALLBACK-LINE-TEXT)."
+  ;; The footer names the session's own model and the finish divider rests
+  ;; hidden, so an answer the chain's next model gave read as the picked
+  ;; model's. The line rests at the fact's own position, live and replayed
+  ;; alike: under the failed attempt's sealed rows, above the answer that
+  ;; followed.
+  (tail-row st :kind :finish-divider :role "system" :turn-id turn-id :hydrated t
+               :text (fallback-line-text from-provider from-model to-provider to-model reason)))
+
 (define-ingest ingest-attempt-voided-fact (st &key attempt reasoning text
                                               detail stream-duration-ms
                                               disposition turn-id)
@@ -979,6 +1009,9 @@ how it ended (EXEC-END), for a surface that draws the words itself."
 
 (define-fold nlk:provider-retry-event ingest-provider-retry-fact ()
   delay-seconds status provider detail scope (:turn-id (nlk::event-turn-id event)))
+
+(define-fold nlk:provider-fallback-event ingest-provider-fallback-fact ()
+  from-provider from-model to-provider to-model reason (:turn-id (nlk::event-turn-id event)))
 
 ;;; --- fold ---------------------------------------------------------------
 ;;; fold-log walks the event log page by page and reduces it through apply-event,
