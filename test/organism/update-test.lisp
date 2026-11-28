@@ -426,7 +426,7 @@ it runs pushes :STOPPED or :STARTED onto (CAR LOG)."
   (with-saved-globals ((nle::*gateway-run* t) (nle::*serving* t) (nle::*fronted* nil))
     (with-stubbed-fdefinitions ((nlk:gateway-installed-p (&optional home) nil)
                                 (nlk:organism-binary () "/opt/nodecode/current/nodecode"))
-      (is (eq #-win32 :exec #+win32 nil (nle::restart-way)) "by hand, itself")))
+      (is (eq :exec (nle::restart-way)) "by hand, itself")))
   (with-saved-globals ((nle::*gateway-run* nil) (nle::*serving* t) (nle::*fronted* t))
     (with-stubbed-fdefinitions ((nlk:gateway-installed-p (&optional home) nil)
                                 (nlk:organism-binary () "/opt/nodecode/current/nodecode"))
@@ -435,6 +435,29 @@ it runs pushes :STOPPED or :STARTED onto (CAR LOG)."
     (with-stubbed-fdefinitions ((nlk:gateway-installed-p (&optional home) nil)
                                 (nlk:organism-binary () nil))
       (is (null (nle::restart-way)) "an image no installed binary started cannot"))))
+
+(deftest a-headless-owner-s-restart-runs-its-binary-again-in-its-place
+    (let ((started '()) (made-way '())))
+  ;; The page's restart of a headless serve (LIFECYCLE :SERVE :RESTART) lets
+  ;; the store go and ends in RUN-CURRENT-AGAIN. Windows has no exec: there it
+  ;; answered `exec ...: not on Windows', and the serve exited with nothing to
+  ;; bring it back. Now the binary starts as this process's successor.
+  (with-stubbed-fdefinitions ((nlk:organism-binary () "C:\\nc\\current\\nodecode.exe")
+                              (nlk::close-inherited-descriptors () nil)
+                              #-win32
+                              (nlk::exec-program (path argv)
+                                (push (cons path (rest argv)) started)
+                                nil)
+                              #+win32
+                              (nlk::start-successor (command) (push command started) 4242)
+                              #+win32
+                              (nlk::make-way-for (pid path)
+                                (declare (ignore path))
+                                (push pid made-way)
+                                nil))
+    (is (null (nle::run-current-again '("nodecode" "serve"))) "no refusal")
+    (is (equal '(("C:\\nc\\current\\nodecode.exe" "serve")) started) "the installed binary, on this process's own arguments")
+    #+win32 (is (equal '(4242) made-way) "and this process makes way for it")))
 
 (deftest update-exit-for-restart-execs-in-place-with-no-unit (let ((next '())))
   (with-saved-globals ((nle::*stop-reason* nil) (nle::*restart-reason* "an update"))

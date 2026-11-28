@@ -1906,10 +1906,11 @@ the exec (SERVE-NEXT :SWITCH)."
   (serve-next :switch))
 
 (defun run-current-again (&optional (argv sb-ext:*posix-argv*))
-  "Exec this organism's installed binary on ARGV, every descriptor above
-stderr closed first. Answers only the kernel's refusal."
+  "Run this organism's installed binary on ARGV in this process's place
+(NLK::RUN-IN-PLACE), every descriptor above stderr closed first. Answers only
+the refusal."
   (nlk::close-inherited-descriptors)
-  (nlk::exec-program (nlk:organism-binary) argv))
+  (nlk::run-in-place (nlk:organism-binary) argv))
 
 (defun stop-on-sigterm (supervisor)
   "Install a closure over the already running supervisor, not thread-local state."
