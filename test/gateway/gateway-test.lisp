@@ -2482,6 +2482,27 @@ had time to send anything more: a row sent twice arrives after the match."
         (let ((late (attached-shell "s-retried")))
           (is-eventually (line late) "and a shell attached after reads it off the replay"))))))
 
+(deftest a-shell-folds-the-failover-its-round-took
+    (with-gateway-session (port "s-fell-back"))
+  ;; A shell folds only the durable kinds it declares: turn.provider_fallback
+  ;; reached a shell and folded into nothing, so its transcript never said a
+  ;; round moved models, while it ran or replayed.
+  (multiple-value-bind (stream turn) (round-in-flight "s-fell-back" "try it")
+    (let ((live (attached-shell "s-fell-back")))
+      (nlk:record-provider-fallback turn :from-provider "mock" :from-model "big"
+                                         :to-provider "mock" :to-model "small"
+                                         :reason "auth" :status 401)
+      (funcall stream :facts)
+      (flet ((line (shell)
+               (third (find-if (lambda (row) (search "Fell back" (or (third row) ""))) (funcall shell)))))
+        (is-eventually (line live) "the live shell says the round moved while it runs")
+        (is (equal "• Fell back from big to small (auth)" (line live)))
+        (nlk:record-assistant-message turn (nlk:json-object "role" "assistant" "content" "answered"))
+        (nlk:complete-turn turn nil)
+        (funcall stream :facts)
+        (let ((late (attached-shell "s-fell-back")))
+          (is-eventually (line late) "and a shell attached after reads it off the replay"))))))
+
 (deftest a-replayed-retry-counts-down-what-is-left-of-its-delay ()
   ;; A shell switched back mid-backoff was sent the whole delay again, and
   ;; counted 8s down from the moment it attached.
