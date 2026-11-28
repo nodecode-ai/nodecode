@@ -500,10 +500,11 @@ the child on unwind."
       (is (not (nlk:file-locked-p path)) "and the release frees it"))))
 
 (deftest a-lock-taken-waiting-is-had-once-its-holder-lets-go (with-temp-workspace (dir))
-  ;; WAIT is the kernel's wait for the holder, not a refusal: the cell
-  ;; loader waits so for another process compiling into its cache (ip-02).
-  ;; And no lock outlives an exec: its descriptor closes there.
-  #-win32
+  ;; WAIT is a wait for the holder, not a refusal: the cell loader waits so
+  ;; for another process compiling into its cache (ip-02). On Windows it
+  ;; answered NIL at once, so two serves booting together loaded one layer
+  ;; from one cache side by side and refused each other its fasls. And no
+  ;; lock outlives an exec: its descriptor closes there.
   (let* ((path (merge-pathnames "wait.lock" dir))
          (asking (bt2:make-semaphore :name "test-lock-asking"))
          (lock :waiting)
@@ -520,7 +521,9 @@ the child on unwind."
     ;; and has it once that process is gone
     (is (integerp lock))
     (is (nlk:file-locked-p path))
-    (is (logtest 1 (sb-posix:fcntl lock sb-posix:f-getfd)))
+    #-win32 (is (logtest 1 (sb-posix:fcntl lock sb-posix:f-getfd)))
+    ;; Windows: a wait for the lock this process holds is refused, never waited on for ever
+    #+win32 (is (null (nlk:lock-file path :wait t)))
     (nlk:unlock-file lock)
     (is (not (nlk:file-locked-p path)))))
 
