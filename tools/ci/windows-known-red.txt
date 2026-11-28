@@ -20,7 +20,6 @@ STORE-GUARD-SURVIVES-UNWINDING-A-BARE-HANDLE-LOOP flaky  # once ended its proces
 CONTROL-INDEX-ROUTE-LISTS-OPENS-SAVES-AND-FORGETS flaky  # a gateway stop past 3 s ends the run (CUT-SHORT, exit 143)
 
 ## test/organism/update-test.lisp (25)
-UPDATE-REFUSED-RELEASE-RESTARTS-A-HEADLESS-OWNER-WITH-NO-UNIT
 
 ## test/organism/generation-test.lisp (22)
 A-RESTORE-CLONES-A-LOST-HUB-FOLDER-BACK-AT-ITS-PIN
@@ -196,5 +195,4 @@ SH-CHILDREN-LEAD-THEIR-OWN-SESSIONS  # cannot exist on Windows: no POSIX session
 STOPPED-CHILD-TREE-COLLAPSES-WITH-A-VERDICT  # cannot exist on Windows: no job-control stop, and the scan reads Linux's /proc
 TERMINAL-SIZE-READS-BOTH-DIMENSIONS-OFF-A-REAL-TERMINAL  # cannot exist on Windows: no pseudo-terminals
 TWO-THOUSAND-APPENDS-UNDER-250MS  # over the CPU gate on the 8-core guest: 359 ms CPU, user and kernel (556 ms wall); Linux btrfs 87-117 ms CPU
-UPDATE-EXIT-FOR-RESTART-EXECS-IN-PLACE-WITH-NO-UNIT  # cannot exist on Windows: no exec
 UPDATE-FEED-SESSION-ENDS-WHEN-THE-CONNECTION-GOES-SILENT skip  # a deadline does not end a read on a Windows pipe: it waits out the test timeout
